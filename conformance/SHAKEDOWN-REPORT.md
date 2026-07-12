@@ -32,6 +32,17 @@ First run of the kit against the Relay conformance product. Everything below was
 - Console spend caps on Anthropic + OpenAI, and the three named API keys.
 - A first real-CLI ticket: one Relay ticket run end to end with actual `claude`/`codex` runs via `run-agent.sh` (everything here used the mock adapter or direct execution; real-CLI runs spend real money and were left for the operator's go-ahead).
 
-## Verdict
+## Hardening round (same day) — two-model review of the built kit
 
-The kit's enforcement layer works mechanically end to end. The loop's paperwork (roles, flow, rubric) is written but has not yet been exercised with real model runs — that is the first thing the operator go-ahead should buy.
+Fresh Fable and GPT Sol sessions read every file and returned **not done**, with overlapping findings. All fixed and re-verified:
+
+1. **Immutability gate bypass (both reviewers):** v1 exempted commits whose *message* contained `[test-author]` — a marker the builder itself controls. Rewritten to two identity-free mechanical rules: a commit may touch tests or code, never both (separation); and every test commit must precede every implementation commit (order). Verified: clean branch passes; late test edit fails rule 2; a mixed commit carrying the old marker fails rule 1.
+2. **Kill switch gaps (both):** the KILL file was `$PWD`-relative (running from the wrong directory stopped nothing) and `pgrep -x claude` would kill the operator's own sessions. Now both scripts anchor to the repo root, and the switch targets only factory-launched runs via PID files the wrapper writes (`factory/runs/*.pid`). Verified from a subdirectory.
+3. **Budget holes (both):** cap checks now *reserve* the new run's full per-run budget under a lock (no starting at $74.99 of a $75 cap; no concurrent-run race), a per-ticket budget across all runs is enforced (`PER_TICKET_BUDGET_USD`), and an unparsable run cost keeps the conservative full-budget reservation instead of silently logging $0. All three verified with the mock adapter.
+4. **Cross-family rule became mechanical:** the wrapper now maps roles to adapters (builder/planner → claude-code; test-author/reviewer → codex) and refuses mismatches, instead of trusting prompts.
+5. **Operator approval became mechanical:** branch protection now requires 1 approving GitHub review (the operator's, after reading the bundle) — previously 0, which made approval-before-merge procedural only.
+6. Smaller fixes: bash-3.2-safe adapter invocation (macOS stock shell), stale `--max-turns` row in the envelope template, FACTORY.md now copies all workflow files and defines the `ENVELOPE.env` format, runbook "drop the KILL file" ambiguity, rejection-path conformance test added (suite now 8 green), crash-recovery test now asserts the job is provably mid-flight (attempted, not done) at kill time, and Relay's SPEC documents its known modeling limit (crash between an external side effect and its receipt is a product-engine concern, not testable in Relay).
+
+## Verdict (post-hardening)
+
+The enforcement layer now holds against its own reviewers' attacks: no identity-based bypasses, anchored kill switch, reservation-based caps, mechanical cross-family and approval rules. Conformance suite: 8/8 green. Remaining honest gap, unchanged: **no ticket has yet run with real (non-mock) CLI agents** — that first real run is what the operator go-ahead buys, and it is the kit's final acceptance test.
