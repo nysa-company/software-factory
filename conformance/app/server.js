@@ -141,7 +141,11 @@ const server = http.createServer(async (req, res) => {
       return res.end(ui());
     }
     if (req.method === "GET" && url.pathname === "/api/state") return json(res, 200, state);
-    if (req.method === "GET" && url.pathname === "/health") return json(res, 200, { ok: true });
+    if (req.method === "GET" && url.pathname === "/health") {
+      const queue = { pending: 0, done: 0, dead: 0 };
+      for (const j of state.jobs) if (j.status in queue) queue[j.status] += 1;
+      return json(res, 200, { ok: true, queue });
+    }
     if (req.method === "POST" && url.pathname === "/webhook/event") {
       const body = await readBody(req);
       const result = acceptEvent(body);
