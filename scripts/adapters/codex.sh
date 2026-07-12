@@ -36,11 +36,13 @@ FULL_TASK="$TASK"
 
 $TASK"
 
-# First-real-run finding (2026-07-12): exec mode defaults to a read-only
-# sandbox; test-author must write test files and commit, so grant
-# workspace-write (still sandboxed to the worktree; exec never prompts).
+# First-real-run finding (2026-07-12): workspace-write is not enough — it
+# blocks TCP listen (tests spawn a real server) and blocks git commits from
+# worktrees (their .git metadata lives in the main repo, outside the sandbox).
+# Same call as the claude adapter: bypass the CLI sandbox; containment comes
+# from the envelope (budget, timeout), the worktree, and CI gates.
 OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-  codex exec --json -s workspace-write "$FULL_TASK" 2>&1)" || STATUS=$?
+  codex exec --json --dangerously-bypass-approvals-and-sandbox "$FULL_TASK" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"
 
 # Cost estimation from token counts. If tokens are missing, emit NO cost token
