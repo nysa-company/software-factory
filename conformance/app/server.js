@@ -126,7 +126,7 @@ function ui() {
   const row = (cells) => `<tr>${cells.map(c => `<td>${String(c)}</td>`).join("")}</tr>`;
   return `<!doctype html><meta charset="utf-8"><title>Relay</title>
 <style>body{font-family:system-ui;margin:2rem;max-width:60rem}table{border-collapse:collapse;width:100%;margin-bottom:1.5rem}td,th{border:1px solid #ddd;padding:.4rem .6rem;text-align:left;font-size:14px}h2{margin:.2rem 0 .4rem}</style>
-<h1>Relay</h1>
+<h1>Relay v2</h1>
 <h2>Events (${state.events.length})</h2><table><tr><th>id</th><th>type</th><th>received</th></tr>${state.events.map(e => row([e.id, e.type, e.receivedAt])).join("")}</table>
 <h2>Jobs</h2><table><tr><th>id</th><th>status</th><th>attempts</th><th>lastError</th></tr>${state.jobs.map(j => row([j.id, j.status, j.attempts, j.lastError || ""])).join("")}</table>
 <h2>Approvals</h2><table><tr><th>id</th><th>to</th><th>subject</th><th>status</th></tr>${state.approvals.map(a => row([a.id, a.action.to, a.action.subject, a.status])).join("")}</table>
