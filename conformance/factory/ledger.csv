@@ -1,0 +1,8 @@
+date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status
+2026-07-12,08:03:32,T-101,test-author,codex,1,1,0.3501,0
+2026-07-12,08:06:13,T-101,builder,claude-code,1,3,0.6907800000000001,7
+2026-07-12,08:07:46,T-101,builder,claude-code,1,7,1.484044,0
+2026-07-12,08:11:42,T-101,reviewer,codex,1,1,0.7345,0
+2026-07-12,08:22:15,T-101,test-author,codex,1,1,0.2515,0
+2026-07-12,08:24:50,T-101,reviewer,codex,1,1,0.3489,0
+2026-07-12,08:27:20,T-101,narrator,claude-code,1,8,0.9962,0
