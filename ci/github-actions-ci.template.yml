@@ -1,0 +1,38 @@
+# CI template — extracted from the Relay shakedown (what was actually needed,
+# nothing speculative). Copy to .github/workflows/ci.yml in the product repo
+# and adjust the placeholders marked <...>.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # <add: npm ci / lint / typecheck once the product has them>
+      - name: tests
+        run: npm test
+        working-directory: <app directory>
+      # <add: build step + Playwright self-referential snapshots once UI exists>
+
+  test-immutability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the check walks every commit on the branch
+      - name: builder commits must not touch tests
+        run: .github/scripts/test-immutability-check.sh
+        env:
+          BASE_REF: origin/${{ github.base_ref || 'main' }}
+          TEST_PATHS: <test paths, e.g. "app/tests/">
+
+# Both jobs go into branch protection as required checks: "ci" and
+# "test-immutability" (see ci/branch-protection.md).
