@@ -48,10 +48,46 @@ after(() => {
 });
 
 test("1. on a fresh server, /health reports an empty queue", async () => {
-  assert.deepStrictEqual(await getHealth(), {
+  const response = await fetch(`${BASE}/health`);
+  assert.strictEqual(response.status, 200);
+  assert.deepStrictEqual(await response.json(), {
     ok: true,
     queue: { pending: 0, done: 0, dead: 0 },
   });
+});
+
+test("1b. after an event is accepted, /health reports queue.pending incremented by 1", async () => {
+  const pendingPort = 4722;
+  const pendingBase = `http://localhost:${pendingPort}`;
+  const pendingDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-health-pending-test-"));
+  const pendingProc = spawn(process.execPath, [SERVER], {
+    env: { ...process.env, PORT: String(pendingPort), DATA_DIR: pendingDataDir, WORKER_MS: "600000" },
+    stdio: "ignore",
+  });
+
+  try {
+    for (let i = 0; i < 50; i++) {
+      try {
+        if ((await fetch(`${pendingBase}/health`)).ok) break;
+      } catch { /* not up yet */ }
+      if (i === 49) throw new Error("pending server did not come up");
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    await fetch(`${pendingBase}/webhook/event`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "health-pending", payload: {} }),
+    });
+
+    assert.deepStrictEqual(await (await fetch(`${pendingBase}/health`)).json(), {
+      ok: true,
+      queue: { pending: 1, done: 0, dead: 0 },
+    });
+  } finally {
+    pendingProc.kill("SIGKILL");
+    fs.rmSync(pendingDataDir, { recursive: true, force: true });
+  }
 });
 
 test("2. after a job completes, /health reports queue.done incremented by 1", async () => {
