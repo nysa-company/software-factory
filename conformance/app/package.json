@@ -1,0 +1,10 @@
+{
+  "name": "relay-conformance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nysa-shaped conformance product for the software factory kit. Zero dependencies.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/conformance.test.js"
+  }
+}
