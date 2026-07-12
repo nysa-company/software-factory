@@ -1,0 +1,3 @@
+date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status
+2026-07-11,20:59:35,R-1,builder,mock,1,3,0.42,0
+2026-07-11,20:59:35,R-2,builder,mock,1,3,1.90,0

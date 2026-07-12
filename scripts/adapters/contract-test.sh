@@ -10,7 +10,7 @@ bad() { echo "[contract-test] FAIL: $*" >&2; FAIL=1; }
 # --- claude-code assumptions ---
 if command -v claude >/dev/null; then
   note "claude: $(claude --version 2>/dev/null | head -n1)"
-  claude --help 2>/dev/null | grep -q -- "--max-turns" || bad "claude: --max-turns flag missing"
+  claude --help 2>/dev/null | grep -q -- "--max-budget-usd" || bad "claude: --max-budget-usd flag missing (hard budget stop)"
   claude --help 2>/dev/null | grep -q -- "--output-format" || bad "claude: --output-format flag missing"
   claude --help 2>/dev/null | grep -q -- "--append-system-prompt" || bad "claude: --append-system-prompt flag missing"
 else

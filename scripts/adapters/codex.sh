@@ -8,7 +8,7 @@
 # print agent output, and print a final line: "turns=N cost_usd=X".
 set -euo pipefail
 
-PINNED_VERSION="${CODEX_PINNED:-0.x}"  # set the exact installed version at instantiation
+PINNED_VERSION="${CODEX_PINNED:-0.144.1}"  # pinned at shakedown 2026-07-11
 
 BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
 while [[ $# -gt 0 ]]; do

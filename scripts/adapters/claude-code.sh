@@ -7,7 +7,7 @@
 # print agent output, and print a final line: "turns=N cost_usd=X".
 set -euo pipefail
 
-PINNED_VERSION="${CLAUDE_CODE_PINNED:-2.x}"  # set the exact installed version at instantiation
+PINNED_VERSION="${CLAUDE_CODE_PINNED:-2.1.207}"  # pinned at shakedown 2026-07-11
 
 BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
 while [[ $# -gt 0 ]]; do
@@ -33,18 +33,20 @@ esac
 APPEND=()
 [[ -s "$PROMPT_FILE" ]] && APPEND=(--append-system-prompt "$(cat "$PROMPT_FILE")")
 
-# JSON output carries total_cost_usd and num_turns; timeout guards the wall clock.
+# Shakedown finding (2026-07-11, Claude Code 2.1.207): --max-turns is gone from
+# the CLI; --max-budget-usd exists and is a HARD in-run dollar stop — strictly
+# better enforcement than the old post-hoc check. Turns remain logged from the
+# JSON result; timeout guards the wall clock.
 OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-  claude -p "$TASK" --output-format json --max-turns "$MAX_TURNS" "${APPEND[@]}" 2>&1)" || STATUS=$?
+  claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" "${APPEND[@]}" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"
 
 COST="$(printf '%s' "$OUT" | sed -n 's/.*"total_cost_usd"[: ]*\([0-9.]*\).*/\1/p' | head -n1)"
 TURNS="$(printf '%s' "$OUT" | sed -n 's/.*"num_turns"[: ]*\([0-9]*\).*/\1/p' | head -n1)"
 
-# Budget is checked post-hoc per run (the CLI has no hard USD stop); the daily
-# cap in run-agent.sh is the cumulative backstop, console caps the final one.
+# Post-hoc sanity check stays as a belt-and-suspenders alert.
 if [[ -n "$COST" && -n "$BUDGET" ]] && awk -v c="$COST" -v b="$BUDGET" 'BEGIN{exit !(c>b)}'; then
-  echo "BUDGET EXCEEDED: run cost \$$COST > per-run budget \$$BUDGET — flag on ticket" >&2
+  echo "BUDGET EXCEEDED despite --max-budget-usd: \$$COST > \$$BUDGET — investigate before next run" >&2
   STATUS=7
 fi
 
