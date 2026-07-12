@@ -36,8 +36,11 @@ FULL_TASK="$TASK"
 
 $TASK"
 
+# First-real-run finding (2026-07-12): exec mode defaults to a read-only
+# sandbox; test-author must write test files and commit, so grant
+# workspace-write (still sandboxed to the worktree; exec never prompts).
 OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-  codex exec --json "$FULL_TASK" 2>&1)" || STATUS=$?
+  codex exec --json -s workspace-write "$FULL_TASK" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"
 
 # Cost estimation from token counts. If tokens are missing, emit NO cost token

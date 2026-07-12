@@ -36,13 +36,19 @@ esac
 # JSON result; timeout guards the wall clock.
 # Note: no bash arrays for the optional prompt (macOS ships bash 3.2, where
 # empty-array expansion under `set -u` aborts).
+# First-real-run finding (2026-07-12): headless -p mode cannot edit files or
+# run commands without --dangerously-skip-permissions. Factory runs are
+# autonomous by design; containment comes from the envelope (budget, timeout),
+# the worktree, and CI gates — not from interactive permission prompts.
 if [[ -s "$PROMPT_FILE" ]]; then
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
     claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
+    --dangerously-skip-permissions \
     --append-system-prompt "$(cat "$PROMPT_FILE")" 2>&1)" || STATUS=$?
 else
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" 2>&1)" || STATUS=$?
+    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
+    --dangerously-skip-permissions 2>&1)" || STATUS=$?
 fi
 STATUS="${STATUS:-0}"
 
