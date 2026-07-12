@@ -6,6 +6,7 @@ Settings for the product repo's `main` branch. These make the factory's rules me
 
 - Require a pull request before merging; no direct pushes.
 - Required status checks: `ci` (lint, typecheck, tests, build, snapshots) and `test-immutability`.
+- **Require 1 approving review** — the operator's GitHub approval, given only after reading the Narrator bundle. This makes approval-before-merge mechanical, not procedural: agents cannot merge without it.
 - Require branches to be up to date before merging.
 - Do not allow bypassing the above (including administrators).
 - No merge queue at single-builder stage — it queues nothing; add it only when concurrency arrives.
@@ -18,7 +19,7 @@ gh api repos/OWNER/REPO/branches/main/protection -X PUT \
   -f 'required_status_checks[contexts][]=ci' \
   -f 'required_status_checks[contexts][]=test-immutability' \
   -f 'enforce_admins=true' \
-  -f 'required_pull_request_reviews[required_approving_review_count]=0' \
+  -f 'required_pull_request_reviews[required_approving_review_count]=1' \
   -F 'restrictions=null'
 ```
 

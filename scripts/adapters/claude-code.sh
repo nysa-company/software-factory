@@ -30,19 +30,25 @@ case "$INSTALLED" in
   *) echo "WARNING: installed Claude Code ($INSTALLED) != pinned ($PINNED_VERSION). Run adapters/contract-test.sh before continuing." >&2 ;;
 esac
 
-APPEND=()
-[[ -s "$PROMPT_FILE" ]] && APPEND=(--append-system-prompt "$(cat "$PROMPT_FILE")")
-
 # Shakedown finding (2026-07-11, Claude Code 2.1.207): --max-turns is gone from
 # the CLI; --max-budget-usd exists and is a HARD in-run dollar stop — strictly
 # better enforcement than the old post-hoc check. Turns remain logged from the
 # JSON result; timeout guards the wall clock.
-OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-  claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" "${APPEND[@]}" 2>&1)" || STATUS=$?
+# Note: no bash arrays for the optional prompt (macOS ships bash 3.2, where
+# empty-array expansion under `set -u` aborts).
+if [[ -s "$PROMPT_FILE" ]]; then
+  OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
+    --append-system-prompt "$(cat "$PROMPT_FILE")" 2>&1)" || STATUS=$?
+else
+  OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" 2>&1)" || STATUS=$?
+fi
 STATUS="${STATUS:-0}"
 
 COST="$(printf '%s' "$OUT" | sed -n 's/.*"total_cost_usd"[: ]*\([0-9.]*\).*/\1/p' | head -n1)"
 TURNS="$(printf '%s' "$OUT" | sed -n 's/.*"num_turns"[: ]*\([0-9]*\).*/\1/p' | head -n1)"
+[[ -z "$COST" ]] && echo "WARNING: no total_cost_usd in claude output — wrapper will keep its conservative reservation" >&2
 
 # Post-hoc sanity check stays as a belt-and-suspenders alert.
 if [[ -n "$COST" && -n "$BUDGET" ]] && awk -v c="$COST" -v b="$BUDGET" 'BEGIN{exit !(c>b)}'; then
@@ -51,5 +57,9 @@ if [[ -n "$COST" && -n "$BUDGET" ]] && awk -v c="$COST" -v b="$BUDGET" 'BEGIN{ex
 fi
 
 printf '%s\n' "$OUT"
-echo "turns=${TURNS:-0} cost_usd=${COST:-0}"
+if [[ -n "$COST" ]]; then
+  echo "turns=${TURNS:-0} cost_usd=$COST"
+else
+  echo "turns=${TURNS:-0}"  # no cost_usd token → wrapper keeps the reservation
+fi
 exit "$STATUS"

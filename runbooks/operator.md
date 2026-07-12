@@ -29,7 +29,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Model provider down (Claude or OpenAI outage)
 
 - Notice: runs fail immediately with API errors; provider status page confirms.
-- Do: nothing is broken on your side. Stop starting runs (drop the KILL file if agents are scheduled), wait it out. Work already merged is unaffected.
+- Do: nothing is broken on your side. If agents are scheduled, run `scripts/kill-switch.sh` (it creates the `factory/KILL` stop file); otherwise just wait it out. Work already merged is unaffected.
 - Don't: swap a role to the other model family to keep moving — the cross-family separation is a quality control, not a convenience.
 
 ## Linear, GitHub, or Railway down

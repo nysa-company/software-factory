@@ -101,9 +101,32 @@ test("6. allowlist: approved send to unlisted recipient is blocked, not sent", a
   assert.strictEqual(s.outbox.filter(o => o.approvalId === "appr-e6").length, 0);
 });
 
+test("6b. reject: closes the proposal, nothing sends", async () => {
+  await post("/webhook/event", { id: "e6b", payload: { to: "test@example.com" } });
+  await settle(x => x.approvals.some(a => a.id === "appr-e6b"));
+  const r = await (await post("/api/approvals/appr-e6b/reject")).json();
+  assert.strictEqual(r.status, "rejected");
+  const s = await getState();
+  assert.strictEqual(s.outbox.filter(o => o.approvalId === "appr-e6b").length, 0);
+  // approve after reject is refused
+  assert.strictEqual((await post("/api/approvals/appr-e6b/approve")).status, 409);
+});
+
 test("7. crash recovery: SIGKILL mid-flight loses nothing, duplicates nothing", async () => {
-  // enqueue work that will still be pending when we kill the server
+  // enqueue retrying work and wait until it is PROVABLY mid-flight:
+  // attempted at least once, not yet done. Killing before any attempt (or
+  // after completion) would not exercise recovery.
   await post("/webhook/event", { id: "e7", payload: { failTimes: 2, to: "test@example.com" } });
+  // tight poll (10ms): the pending-with-attempts window is only ~2 worker ticks wide
+  let midJob = null;
+  for (let i = 0; i < 300; i++) {
+    const s = await getState();
+    const j = s.jobs.find(j => j.eventId === "e7");
+    if (j && j.attempts >= 1 && j.status === "pending") { midJob = j; break; }
+    if (j && j.status !== "pending") break; // completed before we caught it
+    await new Promise(r => setTimeout(r, 10));
+  }
+  assert.ok(midJob, "job must be observed mid-flight (attempted, not done) at kill time");
   proc.kill("SIGKILL"); // no cleanup, no flush — the hard case
   await new Promise(r => setTimeout(r, 200));
 

@@ -10,5 +10,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 echo "mock adapter ran task: ${*:-<none>}"
-echo "turns=3 cost_usd=${MOCK_COST:-0.42}"
+if [[ "${MOCK_NO_COST:-0}" == "1" ]]; then
+  echo "turns=3"
+else
+  echo "turns=3 cost_usd=${MOCK_COST:-0.42}"
+fi
 exit "${MOCK_STATUS:-0}"

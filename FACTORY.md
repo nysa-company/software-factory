@@ -5,7 +5,8 @@ This file is the checklist for turning the kit into a running factory for one pr
 ## Step 1 — Product repo
 
 - Create the product repo as a **sibling folder** (never nested inside another repo).
-- Copy from the kit: `envelope/ENVELOPE.template.md` → `factory/ENVELOPE.md`, `roles/` → `factory/roles/`, `workflows/ticket-flow.md` → `factory/`, `ci/test-immutability-check.sh` → `.github/scripts/`.
+- Copy from the kit: `envelope/ENVELOPE.template.md` → `factory/ENVELOPE.md`, `roles/` → `factory/roles/`, all three `workflows/` files (`ticket-flow.md`, `linear.md`, `evidence-rubric.md`) → `factory/`, `ci/test-immutability-check.sh` → `.github/scripts/`, `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`.
+- Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. The validator checks the two files agree.
 - Product docs the factory needs (written per product, not in the kit):
   - `docs/engine-spec.md` — data model, durable job model (retries, idempotency, crash recovery), external-action policy, connector safety (sandboxed/allowlisted sends until production).
   - `docs/acceptance/<first-slice>.md` — the vertical-slice acceptance spec the backlog is cut from.

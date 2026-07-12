@@ -40,24 +40,29 @@ OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
   codex exec --json "$FULL_TASK" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"
 
-# Cost estimation from token counts if present; otherwise 0 with a warning —
-# the shakedown calibrates this against the OpenAI console.
+# Cost estimation from token counts. If tokens are missing, emit NO cost token
+# — the wrapper then keeps its conservative full-budget reservation instead of
+# silently logging $0 against the caps.
 IN_TOK="$(printf '%s' "$OUT" | sed -n 's/.*"input_tokens"[: ]*\([0-9]*\).*/\1/p' | tail -n1)"
 OUT_TOK="$(printf '%s' "$OUT" | sed -n 's/.*"output_tokens"[: ]*\([0-9]*\).*/\1/p' | tail -n1)"
-COST="0"
+COST=""
 if [[ -n "$IN_TOK" && -n "$OUT_TOK" ]]; then
   COST="$(awk -v i="$IN_TOK" -v o="$OUT_TOK" \
     -v ir="${CODEX_USD_PER_MTOK_IN:-1.25}" -v or="${CODEX_USD_PER_MTOK_OUT:-10}" \
     'BEGIN{printf "%.4f", (i*ir + o*or)/1000000}')"
 else
-  echo "WARNING: no token usage found in codex output; cost logged as 0 — reconcile with console" >&2
+  echo "WARNING: no token usage in codex output — wrapper will keep its conservative reservation. Reconcile with console." >&2
 fi
 
-if awk -v c="$COST" -v b="${BUDGET:-999999}" 'BEGIN{exit !(c>b)}'; then
+if [[ -n "$COST" ]] && awk -v c="$COST" -v b="${BUDGET:-999999}" 'BEGIN{exit !(c>b)}'; then
   echo "BUDGET EXCEEDED: run cost \$$COST > per-run budget \$$BUDGET — flag on ticket" >&2
   STATUS=7
 fi
 
 printf '%s\n' "$OUT"
-echo "turns=1 cost_usd=$COST"
+if [[ -n "$COST" ]]; then
+  echo "turns=1 cost_usd=$COST"
+else
+  echo "turns=1"
+fi
 exit "$STATUS"

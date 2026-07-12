@@ -35,3 +35,7 @@ Nysa's real failure modes are not CRUD — they are intake, async processing, ap
 7. Crash recovery: kill the server mid-flight; restart; pending work completes; nothing duplicated.
 
 Config via env: `PORT` (default 4700), `DATA_DIR` (default `./data`), `ALLOWLIST` (comma-separated, default `test@example.com`), `WORKER_MS` (worker tick, default 200).
+
+## Known modeling limitation
+
+Relay's "send" is an in-process outbox write persisted atomically with the status change, so the real-world failure window — crash *between* an external side effect and recording its receipt — cannot occur here. That window is a product-engine concern (idempotency keys on the connector, write-then-verify), owed by each product's engine spec; Relay tests everything up to that boundary.

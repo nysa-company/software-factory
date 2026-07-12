@@ -17,7 +17,7 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 
 - Contract wrong mid-build → ticket back to Ready; planner re-plans; contract change is a new version, never a silent edit.
 - Reviewer deadlock after 2 rounds → Blocked-Escalated; operator picks an outcome from the Narrator's plain-language options.
-- Budget cap hit mid-run → run stops; wrapper posts the stop on the ticket; ticket → Blocked-Escalated.
+- Budget cap hit → the wrapper refuses to start (or the adapter's hard budget stop ends the run); whoever launched the run moves the ticket to Blocked-Escalated with the wrapper's message. At pilot stage that's the operator; a dispatcher automates it later.
 - Preview deploy broken → bundle not produced; ticket back to builder.
 - Defect found after Done → new bug ticket linked to the original (escaped defect); one reopen allowed, second → Blocked-Escalated.
 
