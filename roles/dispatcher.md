@@ -1,4 +1,4 @@
-Version: 3
+Version: 4
 
 # Role: Dispatcher
 
@@ -17,7 +17,7 @@ The ticket board (tickets in `factory/tickets/` at pilot stage; Linear once wire
 
 ## Output
 
-Role runs launched in the sequence defined by `workflows/ticket-flow.md` (planner → test-author → builder → reviewer → narrator), ticket state moves with logged reasons, and escalations. Nothing else.
+Role runs launched in the sequence defined by `workflows/ticket-flow.md` (planner → spec-linter → test-author → builder → reviewer → narrator), ticket state moves with logged reasons, and escalations. Nothing else. The spec-linter writes its own `SPEC-LINT: PASS`/`FAIL` verdict onto the ticket — you never write that line; if the sequencer refuses because a lint run left no verdict, that is an escalation (a lint run that can't produce its verdict is a broken run), not a line for you to add.
 
 ## Rules
 
@@ -55,3 +55,4 @@ Ticket T-102 sits in Ready. Correct dispatch: run `scripts/preflight.sh --ticket
 - v1: initial — written for the Hermes dispatcher trial on the Relay conformance product.
 - v2: stage selection moved from judgment to mechanism — `scripts/next-stage.sh` is now mandatory before every launch; reviewer verdicts must be recorded on the ticket file (the sequencer blocks until they are).
 - v3: mandatory preflight before first launch; close-out ledger flow (bookkeeping branch + PR); AWAIT-OPERATOR runs `scripts/reorder-test-fixes.sh` before opening the PR.
+- v4: spec-linter stage between planner and test-author (sequencer-driven); the linter writes its own SPEC-LINT verdict — a missing verdict is an escalation, never a dispatcher write.

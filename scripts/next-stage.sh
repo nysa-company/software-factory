@@ -70,8 +70,8 @@ TICKET_FILE="$TICKETS_DIR/$TICKET.md"
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
 # (cat the ledger defensively: a missing ledger means zero runs, not an error.)
 count_ok() { { cat "$LEDGER" 2>/dev/null || true; } | awk -F, -v t="$TICKET" -v r="$1" 'NR>1 && $3==t && $4==r && $9=="0"' | wc -l | tr -d ' '; }
-P="$(count_ok planner)"; TA="$(count_ok test-author)"; B="$(count_ok builder)"
-R="$(count_ok reviewer)"; N="$(count_ok narrator)"
+P="$(count_ok planner)"; SL="$(count_ok spec-linter)"; TA="$(count_ok test-author)"
+B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"
 
 # Reviewer verdicts must be recorded on the ticket file by the dispatcher.
 # Count them; they are the only stage input outside the ledger.
@@ -105,6 +105,31 @@ VOID_RUNS="${VOID_DATA#*|}"
 REVIEWER_RUNS=$((R - VOID_COUNT))
 
 if [[ "$P" -eq 0 ]]; then echo "RUN planner"; exit 0; fi
+
+# --- spec-lint gate: plan → lint → (replan on FAIL) → tests ---
+# The spec-linter appends its own verdict line (SPEC-LINT: PASS/FAIL) to the
+# ticket; each planner run must be followed by one lint run, each FAIL by one
+# replan. The gate applies only before the test-author has run, so tickets
+# already past planning (including all pre-gate tickets) are unaffected.
+if [[ "$TA" -eq 0 ]]; then
+  SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
+  SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
+  if [[ "$SL" -gt $((SLP + SLF)) ]]; then
+    echo "REFUSE spec-linter has $SL successful run(s) but only $((SLP + SLF)) SPEC-LINT verdict(s) on $TICKET_FILE — the lint run must end with a 'SPEC-LINT: PASS' or 'SPEC-LINT: FAIL' line"
+    exit 1
+  fi
+  if [[ "$SL" -lt $((SLP + SLF)) ]]; then
+    echo "REFUSE ticket logs $((SLP + SLF)) SPEC-LINT verdict(s) but the ledger has only $SL successful spec-linter run(s) — correct the ticket bookkeeping"
+    exit 1
+  fi
+  if [[ "$SLF" -ge 2 ]]; then
+    echo "ESCALATE spec-lint failed twice — the spec keeps failing its own checklist; operator decides how to unblock planning"
+    exit 0
+  fi
+  if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
+  if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
+fi
+
 if [[ "$TA" -eq 0 ]]; then echo "RUN test-author"; exit 0; fi
 if [[ "$B" -eq 0 ]]; then echo "RUN builder"; exit 0; fi
 if [[ "$REVIEWER_RUNS" -eq 0 ]]; then echo "RUN reviewer"; exit 0; fi

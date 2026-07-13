@@ -80,7 +80,7 @@ fi
 mkdir -p "$WT/conformance/factory/tickets"
 printf '# T-200\n' > "$WT/conformance/factory/tickets/T-200.md"
 STAGE="$(FACTORY_ROOT="$WT/conformance" "$NEXT_STAGE" --ticket T-200 2>&1)"
-if [[ "$STAGE" == "RUN test-author" ]]; then
+if [[ "$STAGE" == "RUN spec-linter" ]]; then
   pass "sequencer combines canonical ledger with caller ticket"
 else
   fail "sequencer combines canonical ledger with caller ticket" "got '$STAGE'"
@@ -176,6 +176,10 @@ ledger_header > "$WALK/factory/ledger.csv"
 WALK_OK=1
 expect_stage "RUN planner" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 planner >> "$WALK/factory/ledger.csv"
+expect_stage "RUN spec-linter" "$WALK" T-500 || WALK_OK=0
+ledger_row T-500 spec-linter >> "$WALK/factory/ledger.csv"
+expect_stage "REFUSE" "$WALK" T-500 || WALK_OK=0
+printf 'SPEC-LINT: PASS\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN test-author" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 test-author >> "$WALK/factory/ledger.csv"
 expect_stage "RUN builder" "$WALK" T-500 || WALK_OK=0
@@ -207,6 +211,37 @@ expect_stage "REFUSE" "$WALK" T-501 || REJECT_OK=0
 printf 'reviewer round 2: APPROVE\n' >> "$WALK/factory/tickets/T-501.md"
 expect_stage "RUN narrator" "$WALK" T-501 || REJECT_OK=0
 [[ "$REJECT_OK" -eq 1 ]] && pass "sequencer rejection-round walkthrough"
+# (T-501 seeded no spec-linter rows: a ticket already past test-author skips
+# the lint gate — that is the backward-compatibility contract for old tickets.)
+
+# Spec-lint fail → replan → lint → pass; second fail escalates.
+printf '# T-502\n' > "$WALK/factory/tickets/T-502.md"
+{
+  ledger_row T-502 planner
+  ledger_row T-502 spec-linter
+} >> "$WALK/factory/ledger.csv"
+LINT_OK=1
+printf 'SPEC-LINT: FAIL — criterion 2 not pass/fail\n' >> "$WALK/factory/tickets/T-502.md"
+expect_stage "RUN planner" "$WALK" T-502 || LINT_OK=0
+ledger_row T-502 planner >> "$WALK/factory/ledger.csv"
+expect_stage "RUN spec-linter" "$WALK" T-502 || LINT_OK=0
+ledger_row T-502 spec-linter >> "$WALK/factory/ledger.csv"
+expect_stage "REFUSE" "$WALK" T-502 || LINT_OK=0
+printf 'SPEC-LINT: PASS\n' >> "$WALK/factory/tickets/T-502.md"
+expect_stage "RUN test-author" "$WALK" T-502 || LINT_OK=0
+[[ "$LINT_OK" -eq 1 ]] && pass "spec-lint fail-replan-pass walkthrough"
+
+printf '# T-503\n' > "$WALK/factory/tickets/T-503.md"
+{
+  ledger_row T-503 planner
+  ledger_row T-503 spec-linter
+  ledger_row T-503 planner
+  ledger_row T-503 spec-linter
+} >> "$WALK/factory/ledger.csv"
+printf 'SPEC-LINT: FAIL — round 1\nSPEC-LINT: FAIL — round 2\n' >> "$WALK/factory/tickets/T-503.md"
+if expect_stage "ESCALATE spec-lint failed twice" "$WALK" T-503; then
+  pass "spec-lint two-fail escalation"
+fi
 
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAIL: $FAILURES factory-script test(s) failed" >&2
