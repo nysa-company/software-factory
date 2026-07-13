@@ -126,7 +126,33 @@ else
   fail "ticket not Ready ($STATE)"
 fi
 
-# (f) GH_TOKEN — warn only
+# (f) kit pin — the product certifies which kit commit it runs against.
+# factory/KIT_PIN holds a kit commit SHA (full or short). Missing pin is a
+# warning (single-project era); a mismatch is a hard fail so a kit upgrade
+# never changes a project's behavior silently. A product living inside the
+# kit repo itself (e.g. the Relay conformance app) is implicitly pinned.
+KIT_PIN_FILE="$FACTORY_DIR/KIT_PIN"
+KIT_HEAD="$(git -C "$KIT_DIR" rev-parse HEAD 2>/dev/null || true)"
+PRODUCT_TOPLEVEL="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+KIT_TOPLEVEL="$(git -C "$KIT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$KIT_TOPLEVEL" && "$PRODUCT_TOPLEVEL" == "$KIT_TOPLEVEL" ]]; then
+  pass "product lives inside the kit repo — kit pin implicit ($( [[ -n "$KIT_HEAD" ]] && echo "${KIT_HEAD:0:7}" || echo unknown))"
+elif [[ ! -f "$KIT_PIN_FILE" ]]; then
+  warn "no kit pin ($KIT_PIN_FILE missing) — write the certified kit SHA there so kit upgrades are deliberate"
+elif [[ -z "$KIT_HEAD" ]]; then
+  fail "kit pin present but kit dir is not a git repo ($KIT_DIR)"
+else
+  PINNED_SHA="$(grep -m1 -oE '[0-9a-f]{7,40}' "$KIT_PIN_FILE" || true)"
+  if [[ -z "$PINNED_SHA" ]]; then
+    fail "kit pin file has no SHA: $KIT_PIN_FILE"
+  elif [[ "$KIT_HEAD" == "$PINNED_SHA"* ]]; then
+    pass "kit pin matches (${PINNED_SHA:0:7})"
+  else
+    fail "kit pin mismatch: kit at ${KIT_HEAD:0:7}, product certified against ${PINNED_SHA:0:7} — re-certify the project (run its suite against the new kit, update factory/KIT_PIN) or check out the pinned kit commit"
+  fi
+fi
+
+# (g) GH_TOKEN — warn only
 if [[ -n "${GH_TOKEN:-}" ]]; then
   pass "GH_TOKEN available (environment)"
 elif [[ -f "$HOME/.hermes/profiles/factory/.env" ]] && grep -qE '^GH_TOKEN=' "$HOME/.hermes/profiles/factory/.env" 2>/dev/null; then

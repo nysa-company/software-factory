@@ -2,10 +2,29 @@
 
 This file is the checklist for turning the kit into a running factory for one product. Every blank below must be filled before the first ticket runs. The validator section at the end is the pass/fail gate.
 
+## The engine model (multi-project, 2026-07-13)
+
+The kit is **installed once per machine and shared by every product** — like git itself. Product repos never contain kit code; they contain only their own state. Every script separates the two mechanically: `KIT_DIR` (where the script lives — adapters, sequencer, role prompts) vs `FACTORY_ROOT` (the product repo — tickets, ledger, envelope). A run is always:
+
+```bash
+cd <kit clone> && FACTORY_ROOT=<product repo> bash scripts/run-agent.sh --role <role> \
+  --ticket <T-NNN> --prompt-file roles/<role>.md [--workdir <worktree>] -- "task text"
+```
+
+What lives where:
+
+- **Kit (this repo, one clone per machine):** scripts, adapters + CLI version pins, role contracts, workflow docs, runbooks, CI templates. Fixes land here once, through PRs.
+- **Product repo (one per project):** `factory/` (ENVELOPE.env, PROJECT.env, KIT_PIN, tickets/, ledger.csv, runs/), product docs, its instantiated CI workflow, its own GitHub ruleset + deploy key + kanban board.
+- **`factory/KIT_PIN`** — the kit commit SHA this product is certified against. `scripts/preflight.sh` hard-fails on a mismatch, so a kit upgrade never changes a project's behavior silently; upgrading = run the product's calibration against the new kit, then update the pin. (A product living inside the kit repo, like the Relay conformance app, is implicitly pinned.)
+- **`factory/PROJECT.env`** — the project descriptor a dispatcher reads: `PROJECT_NAME`, `GH_REPO` (owner/repo slug), `TEST_PATHS` (for the immutability gate and reorder script), `WORKTREES_DIR`, `TICKET_BRANCH_PREFIX`. See `conformance/factory/PROJECT.env` for the reference copy.
+
+Budget note: per-product caps live in each product's `ENVELOPE.env`; the machine-level cap in `~/.factory/global.env` already sums across all products, so adding projects never multiplies the daily budget.
+
 ## Step 1 — Product repo
 
-- Create the product repo as a **sibling folder** (never nested inside another repo).
-- Copy from the kit: `envelope/ENVELOPE.template.md` → `factory/ENVELOPE.md`, `roles/` → `factory/roles/`, all three `workflows/` files (`ticket-flow.md`, `linear.md`, `evidence-rubric.md`) → `factory/`, `ci/test-immutability-check.sh` → `.github/scripts/`, `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`.
+- Create the product repo as a **sibling folder** (never nested inside another repo). Do NOT copy kit scripts into it — the engine model above is the contract.
+- Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN` (current kit SHA), and an empty `tickets/`.
+- Copy exactly two CI files (GitHub requires workflows to live in the repo they run on): `ci/test-immutability-check.sh` → `.github/scripts/` and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`, with `TEST_PATHS` set from `PROJECT.env`.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. The validator checks the two files agree.
 - Product docs the factory needs (written per product, not in the kit):
   - `docs/engine-spec.md` — data model, durable job model (retries, idempotency, crash recovery), external-action policy, connector safety (sandboxed/allowlisted sends until production).
@@ -45,7 +64,8 @@ One trivial end-to-end feature through the full loop before any backlog exists. 
 
 All boxes checked = the factory may start. Any box unchecked = it may not.
 
-- [ ] Product repo exists, sibling location, kit files copied
+- [ ] Product repo exists, sibling location, `factory/` state dir created (no kit code copied; only the two CI files)
+- [ ] `factory/KIT_PIN` holds the certified kit SHA; `factory/PROJECT.env` filled per the reference copy
 - [ ] `ENVELOPE.md` has no unfilled blanks
 - [ ] Console spend caps set on both providers and screenshot saved in `factory/`
 - [ ] Three named API keys exist; none shared across concerns
