@@ -64,13 +64,14 @@ async function getState(base) {
   return (await fetch(`${base}/api/state`)).json();
 }
 
-async function createApproval(base, eventId) {
+async function createApproval(base, eventId, action = {}) {
   const response = await post(base, "/webhook/event", {
     id: eventId,
     payload: {
       to: "test@example.com",
       subject: `Subject ${eventId}`,
       body: `Body ${eventId}`,
+      ...action,
     },
   });
   assert.strictEqual(response.status, 200);
@@ -153,24 +154,61 @@ test("2. Reject without a body or without a reason → the approval is rejected 
   });
 });
 
-test("3. Rejecting a non-pending approval → 409 and the record is unchanged, including its original reason", async () => {
+test("3. Rejecting an already-rejected (or otherwise non-pending) approval → 409 and the record is unchanged, including its original reason", async () => {
   await withServer(4743, async ({ base }) => {
-    const pending = await createApproval(base, "reject-twice");
-    await post(base, `/api/approvals/${pending.id}/reject`, { reason: "keep this reason" });
-    const beforeSecondReject = (await getState(base)).approvals.find(item => item.id === pending.id);
+    const cases = [
+      {
+        eventId: "reject-twice",
+        makeNonPending: async pending => {
+          const response = await post(base, `/api/approvals/${pending.id}/reject`, {
+            reason: "keep this reason",
+          });
+          assert.strictEqual(response.status, 200);
+        },
+        status: "rejected",
+        expectedReason: "keep this reason",
+      },
+      {
+        eventId: "reject-sent",
+        makeNonPending: async pending => {
+          const response = await post(base, `/api/approvals/${pending.id}/approve`, {});
+          assert.strictEqual(response.status, 200);
+        },
+        status: "sent",
+      },
+      {
+        eventId: "reject-blocked",
+        approvalPayload: { to: "stranger@example.com" },
+        makeNonPending: async pending => {
+          const response = await post(base, `/api/approvals/${pending.id}/approve`, {});
+          assert.strictEqual(response.status, 403);
+        },
+        status: "blocked_recipient",
+      },
+    ];
 
-    const response = await post(base, `/api/approvals/${pending.id}/reject`, {
-      reason: "replacement reason",
-    });
-    assert.strictEqual(response.status, 409);
-    assert.deepStrictEqual(await response.json(), {
-      ok: false,
-      error: "already rejected",
-    });
+    for (const item of cases) {
+      const pending = await createApproval(base, item.eventId, item.approvalPayload);
+      await item.makeNonPending(pending);
+      const beforeReject = (await getState(base)).approvals.find(entry => entry.id === pending.id);
 
-    const afterSecondReject = (await getState(base)).approvals.find(item => item.id === pending.id);
-    assert.strictEqual(JSON.stringify(afterSecondReject), JSON.stringify(beforeSecondReject));
-    assert.deepStrictEqual(afterSecondReject, expectedApproval(pending, "keep this reason"));
+      const response = await post(base, `/api/approvals/${pending.id}/reject`, {
+        reason: "replacement reason",
+      });
+      assert.strictEqual(response.status, 409);
+      assert.deepStrictEqual(await response.json(), {
+        ok: false,
+        error: `already ${item.status}`,
+      });
+
+      const afterReject = (await getState(base)).approvals.find(entry => entry.id === pending.id);
+      assert.strictEqual(JSON.stringify(afterReject), JSON.stringify(beforeReject));
+      if (item.status === "rejected") {
+        assert.deepStrictEqual(afterReject, expectedApproval(pending, item.expectedReason));
+      } else {
+        assert.strictEqual(Object.hasOwn(afterReject, "reason"), false);
+      }
+    }
   });
 });
 
