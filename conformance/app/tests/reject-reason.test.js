@@ -238,3 +238,17 @@ test("4. Reason survives a server kill and restart", async () => {
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("Unknown approval → 404 with exactly the frozen no-such-approval response", async () => {
+  await withServer(4745, async ({ base }) => {
+    const response = await post(base, "/api/approvals/appr-unknown/reject", {
+      reason: "irrelevant",
+    });
+
+    assert.strictEqual(response.status, 404);
+    assert.deepStrictEqual(await response.json(), {
+      ok: false,
+      error: "no such approval",
+    });
+  });
+});
