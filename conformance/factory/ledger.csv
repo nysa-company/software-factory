@@ -21,3 +21,12 @@ date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status
 2026-07-12,22:38:48,T-103,test-author,codex,1,1,0.2461,0
 2026-07-12,22:40:20,T-103,reviewer,codex,1,1,0.1490,0
 2026-07-12,22:43:55,T-103,narrator,claude-code,1,21,0.6907641999999999,0
+2026-07-12,23:02:24,T-104,planner,claude-code,1,26,1.0210898,0
+2026-07-12,23:06:10,T-104,test-author,codex,1,1,0.4673,0
+2026-07-12,23:08:01,T-104,builder,claude-code,1,15,0.5076823,0
+2026-07-12,23:10:53,T-104,reviewer,codex,1,1,0.2527,0
+2026-07-12,23:14:09,T-104,test-author,codex,1,1,0.3445,0
+2026-07-12,23:16:39,T-104,reviewer,codex,1,1,0.4161,0
+2026-07-12,23:19:38,T-104,reviewer,codex,1,1,0.4833,0
+2026-07-12,23:30:22,T-104,reviewer,codex,1,1,0.2678,0
+2026-07-12,23:35:00,T-104,narrator,claude-code,1,28,0.8694196,0
