@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # run-agent.sh — the only sanctioned way to start a factory agent run.
 # Enforces per-run, per-ticket, and daily budgets; serializes cap checks with a
-# lock; anchors all state to the product repo root (not $PWD); logs every run
-# to the cost ledger; enforces the cross-family role→adapter mapping.
+# lock; anchors run artifacts to the caller's product root while routing the
+# ledger to the main working tree; logs every run to the cost ledger; enforces
+# the cross-family role→adapter mapping; rejects overlapping ticket+role runs.
 #
 # Usage:
 #   run-agent.sh --role builder --ticket T-123 --prompt-file factory/roles/builder.md \
@@ -18,10 +19,55 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # --- anchor factory state to the repo root, never to $PWD ---
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
-LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/ledger.csv}"
+
+# A linked worktree has its own copy of factory/, but costs must have one
+# source of truth. Map the caller's FACTORY_ROOT to the same relative path
+# under the main working tree. An explicit FACTORY_LEDGER always wins.
+canonical_ledger() {
+  local root="$1" root_abs worktree_root common_dir main_root relative
+  root_abs="$(cd "$root" 2>/dev/null && pwd -P || printf '%s' "$root")"
+  if worktree_root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" &&
+     common_dir="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)"; then
+    worktree_root="$(cd "$worktree_root" && pwd -P)"
+    case "$common_dir" in
+      /*) ;;
+      *) common_dir="$worktree_root/$common_dir" ;;
+    esac
+    main_root="$(cd "$common_dir/.." && pwd -P)"
+    if [[ "$root_abs" == "$worktree_root" ]]; then
+      relative=""
+    elif [[ "$root_abs" == "$worktree_root/"* ]]; then
+      relative="${root_abs#"$worktree_root/"}"
+    else
+      printf '%s/factory/ledger.csv\n' "$root_abs"
+      return
+    fi
+    printf '%s%s/factory/ledger.csv\n' "$main_root" "${relative:+/$relative}"
+  else
+    printf '%s/factory/ledger.csv\n' "$root_abs"
+  fi
+}
+
+LEDGER="${FACTORY_LEDGER:-$(canonical_ledger "$REPO_ROOT")}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
-LOCK_DIR="$FACTORY_DIR/.ledger.lock"
+LEDGER_DIR="$(dirname "$LEDGER")"
+LOCK_DIR="$LEDGER_DIR/.ledger.lock"
 RUNS_DIR="$FACTORY_DIR/runs"
+ACTIVE_RUN_FILE=""
+ACTIVE_RUN_TEMP=""
+OWNS_ACTIVE_RUN=0
+HELD_LEDGER_LOCK=0
+HELD_GLOBAL_LOCK=0
+
+cleanup() {
+  [[ "$HELD_GLOBAL_LOCK" -eq 0 ]] || rmdir "$GLOBAL_LOCK" 2>/dev/null || true
+  [[ "$HELD_LEDGER_LOCK" -eq 0 ]] || rmdir "$LOCK_DIR" 2>/dev/null || true
+  [[ -z "$ACTIVE_RUN_TEMP" ]] || rm -f "$ACTIVE_RUN_TEMP"
+  if [[ "$OWNS_ACTIVE_RUN" -eq 1 ]]; then
+    rm -f "$ACTIVE_RUN_FILE"
+  fi
+}
+trap cleanup EXIT
 
 ROLE="" TICKET="" PROMPT_FILE="" ADAPTER="" WORKDIR="$PWD"
 while [[ $# -gt 0 ]]; do
@@ -79,15 +125,37 @@ if [[ -f "$FACTORY_DIR/KILL" ]]; then
   exit 4
 fi
 
-mkdir -p "$FACTORY_DIR" "$RUNS_DIR"
+ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
+[[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
+
+mkdir -p "$FACTORY_DIR" "$RUNS_DIR" "$LEDGER_DIR"
 [[ -f "$LEDGER" ]] || echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$LEDGER"
 TODAY="$(date +%F)"
 
 # --- serialized cap check with budget reservation ---
 # mkdir is atomic: it is the lock. Reservation counts this run's full per-run
 # budget against the caps, so N concurrent runs cannot all squeeze past.
-for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && break; sleep 0.2; [[ $i -eq 50 ]] && { echo "ledger lock stuck — see runbook" >&2; exit 8; }; done
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "ledger lock stuck — see runbook" >&2; exit 8; }; done
+
+# --- one live run per ticket+role across all linked worktrees ---
+# Acquisition is serialized by the ledger lock above, including stale cleanup.
+ACTIVE_RUNS_DIR="$LEDGER_DIR/.active-runs"
+GUARD_KEY="$(printf '%s.%s' "$TICKET" "$ROLE" | tr -c 'A-Za-z0-9._-' '_')"
+ACTIVE_RUN_FILE="$ACTIVE_RUNS_DIR/$GUARD_KEY.pid"
+ACTIVE_RUN_TEMP="$ACTIVE_RUNS_DIR/.$GUARD_KEY.$$.pid"
+mkdir -p "$ACTIVE_RUNS_DIR"
+echo "$$" > "$ACTIVE_RUN_TEMP"
+while ! ln "$ACTIVE_RUN_TEMP" "$ACTIVE_RUN_FILE" 2>/dev/null; do
+  EXISTING_PID="$(cat "$ACTIVE_RUN_FILE" 2>/dev/null || true)"
+  if [[ "$EXISTING_PID" =~ ^[0-9]+$ ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "live run already exists for $TICKET role $ROLE (wrapper pid $EXISTING_PID) — refusing duplicate launch" >&2
+    exit 7
+  fi
+  rm -f "$ACTIVE_RUN_FILE"
+done
+OWNS_ACTIVE_RUN=1
+rm -f "$ACTIVE_RUN_TEMP"
+ACTIVE_RUN_TEMP=""
 
 SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
 SPENT_TICKET="$(awk -F, -v t="$TICKET" 'NR>1 && $3==t {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
@@ -105,26 +173,24 @@ RUN_ID="$(date +%s)-$$"
 if [[ -n "$GLOBAL_LEDGER" ]]; then
   mkdir -p "$(dirname "$GLOBAL_LEDGER")"
   [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$GLOBAL_LEDGER"
-  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && break; sleep 0.2; [[ $i -eq 50 ]] && { echo "global ledger lock stuck — see runbook" >&2; rmdir "$LOCK_DIR"; exit 8; }; done
+  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "global ledger lock stuck — see runbook" >&2; rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0; exit 8; }; done
   SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
   if awk -v s="$SPENT_GLOBAL" -v r="$PER_RUN_BUDGET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
     echo "MACHINE daily cap would be exceeded across all factories (spent \$$SPENT_GLOBAL + reserve \$$PER_RUN_BUDGET_USD > \$$GLOBAL_DAILY_CAP_USD) — refusing. See runbooks/operator.md." >&2
-    rmdir "$GLOBAL_LOCK" "$LOCK_DIR"; trap - EXIT; exit 5
+    rmdir "$GLOBAL_LOCK" "$LOCK_DIR"; HELD_GLOBAL_LOCK=0; HELD_LEDGER_LOCK=0; exit 5
   fi
   echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID" >> "$GLOBAL_LEDGER"
   rmdir "$GLOBAL_LOCK"
+  HELD_GLOBAL_LOCK=0
 fi
 
 # Reserve: write a provisional ledger row at full per-run budget; replaced with
 # the real cost after the run. A crash leaves the conservative row in place.
 echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID" >> "$LEDGER"
-rmdir "$LOCK_DIR"; trap - EXIT
+rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 
 PROMPT_VERSION="unversioned"
 [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
-
-ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
-[[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
 
 # --- run; record PID so the kill switch can target factory runs precisely ---
 set +e
@@ -155,23 +221,21 @@ if [[ -z "$COST" ]]; then
 fi
 
 # Replace the reservation row with the real result (under lock).
-for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && break; sleep 0.2; done
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }; sleep 0.2; done
 TMP_LEDGER="$LEDGER.tmp.$$"
 grep -v ",reserved-$RUN_ID\$" "$LEDGER" > "$TMP_LEDGER" || true
 echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS" >> "$TMP_LEDGER"
 mv "$TMP_LEDGER" "$LEDGER"
-rmdir "$LOCK_DIR"; trap - EXIT
+rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 
 # Same replacement in the machine-global ledger, if configured.
 if [[ -n "$GLOBAL_LEDGER" && -f "$GLOBAL_LEDGER" ]]; then
-  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && break; sleep 0.2; done
-  trap 'rmdir "$GLOBAL_LOCK" 2>/dev/null || true' EXIT
+  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }; sleep 0.2; done
   TMP_GLOBAL="$GLOBAL_LEDGER.tmp.$$"
   grep -v ",reserved-$RUN_ID\$" "$GLOBAL_LEDGER" > "$TMP_GLOBAL" || true
   echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS" >> "$TMP_GLOBAL"
   mv "$TMP_GLOBAL" "$GLOBAL_LEDGER"
-  rmdir "$GLOBAL_LOCK"; trap - EXIT
+  rmdir "$GLOBAL_LOCK"; HELD_GLOBAL_LOCK=0
 fi
 
 printf '%s\n' "$RESULT"

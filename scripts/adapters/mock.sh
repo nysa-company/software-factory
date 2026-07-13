@@ -9,6 +9,7 @@ while [[ $# -gt 0 ]]; do
     *) shift;;
   esac
 done
+[[ "${MOCK_SLEEP:-0}" == "0" ]] || sleep "$MOCK_SLEEP"
 echo "mock adapter ran task: ${*:-<none>}"
 if [[ "${MOCK_NO_COST:-0}" == "1" ]]; then
   echo "turns=3"

@@ -19,6 +19,8 @@ jobs:
       - name: tests
         run: npm test
         working-directory: conformance/app
+      - name: factory script regressions
+        run: bash ci/test-factory-scripts.sh
 
   test-immutability:
     runs-on: ubuntu-latest
