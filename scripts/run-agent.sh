@@ -106,7 +106,7 @@ fi
 # Override only via FACTORY_ADAPTER_OVERRIDE (used for mock in kit tests).
 case "$ROLE" in
   builder|planner) DEFAULT_ADAPTER="claude-code";;
-  test-author|reviewer) DEFAULT_ADAPTER="codex";;
+  test-author|reviewer|spec-linter) DEFAULT_ADAPTER="codex";;
   narrator) DEFAULT_ADAPTER="claude-code";;
   *) echo "unknown role: $ROLE" >&2; exit 2;;
 esac
