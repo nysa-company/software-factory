@@ -52,6 +52,24 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Postgres (staging): Railway dashboard → database → Backups → restore. Staging data is disposable; fixtures re-seed it.
 - Board: Linear is the source of truth and is cloud-hosted; the ledger CSV is in the product repo and versioned with it.
 
+## Preflight failed before launch
+
+- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from `scripts/preflight.sh` — adapter contract, version pin, budget headroom, git state, or ticket not Ready.
+- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh` after a CLI upgrade and set matching `CLAUDE_CODE_PINNED` / `CODEX_PINNED` in `~/.factory/global.env`; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected ticket reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is `State: Ready`. Re-run preflight yourself to verify, then tell the dispatcher to resume.
+- Don't: tell the dispatcher to launch anyway — every FAIL is predictable at kickoff and will block mid-pipeline.
+
+## Close-out ledger PR
+
+- Notice: at ticket close-out the dispatcher opens a short-lived bookkeeping PR (e.g. `bookkeeping/T-NNN-closeout`) carrying new ledger rows and run logs.
+- Do: review and merge it like any factory bookkeeping change — this is the sanctioned ledger write path, not a controls violation.
+- Don't: ask the dispatcher to commit ledger rows directly to `main` or to a ticket branch outside this flow.
+
+## Test commit order before operator review
+
+- Notice: reviewer approved but CI fails the test-immutability gate because test commits came after implementation.
+- Do: ensure `scripts/reorder-test-fixes.sh` is present (branch `kit/reorder-test-fixes` in the kit repo). The dispatcher runs it at AWAIT-OPERATOR before opening the PR. If the script is missing, merge or cherry-pick it from that branch first.
+- Don't: waive the immutability gate or ask the builder to edit tests post-implementation.
+
 ## The general rule
 
 When unsure: kill switch first (it's always safe), read the ledger and the ticket trail second, escalate to a fresh planning session third. Nothing in the factory is made worse by stopping it.
