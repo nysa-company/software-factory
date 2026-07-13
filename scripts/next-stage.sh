@@ -85,7 +85,10 @@ VERDICTS=$((A + RC))
 VOID_DATA="$(awk -v max="$R" '
   {
     line=tolower($0)
-    if (line ~ /^[[:space:]]*operator note:[[:space:]]*reviewer run[[:space:]]*[0-9]+[[:space:]]+void[[:space:]]*[-—][[:space:]]*duplicate[[:space:]]*$/) {
+    # Separator between "void" and "duplicate" is matched loosely: an em dash
+    # inside a bracket expression is locale-dependent in awk (worked in a UTF-8
+    # login shell, failed over ssh with C.UTF-8), so accept any non-alnum run.
+    if (line ~ /^[[:space:]]*operator note:[[:space:]]*reviewer run[[:space:]]*[0-9]+[[:space:]]+void[^a-z0-9]*duplicate[[:space:]]*$/) {
       sub(/^.*reviewer run[[:space:]]*/, "", line)
       sub(/[[:space:]].*$/, "", line)
       n=line+0
