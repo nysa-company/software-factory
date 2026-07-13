@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Adapter: Codex CLI (model family B — test-author, reviewer).
+# Adapter: Codex CLI (production family — planner, builder, narrator;
+# flipped from checking roles 2026-07-13, operator decision).
 # Codex does not expose the same budget controls as Claude Code; this adapter
 # enforces wall-clock timeout, estimates cost from token usage in the output,
 # and relies on the daily cap + console caps as the hard stops.
