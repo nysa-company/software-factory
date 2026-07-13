@@ -21,6 +21,10 @@ jobs:
         working-directory: conformance/app
       - name: factory script regressions
         run: bash ci/test-factory-scripts.sh
+      - name: reorder-test-fixes suite
+        run: bash ci/reorder-test-fixes-test.sh
+      - name: preflight suite
+        run: bash ci/preflight-test.sh
 
   test-immutability:
     runs-on: ubuntu-latest
