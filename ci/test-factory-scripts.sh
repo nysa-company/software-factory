@@ -202,6 +202,8 @@ printf 'reviewer round 1: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 narrator >> "$WALK/factory/ledger.csv"
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
+printf 'Operator-Approval: Linear\n' >> "$WALK/factory/tickets/T-500.md"
+expect_stage "AWAIT-MERGE" "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
 
 # One rejection, a fix, and a successful second review.

@@ -116,15 +116,30 @@ else
   fi
 fi
 
-# (e) ticket exists and is Ready
+# (e) ticket exists, is reconciled Ready, and belongs to a known initiative
 TICKET_FILE="$FACTORY_DIR/tickets/$TICKET.md"
 if [[ ! -f "$TICKET_FILE" ]]; then
   fail "ticket file missing: $TICKET_FILE"
 elif grep -qE '^State: Ready' "$TICKET_FILE"; then
   pass "ticket $TICKET is Ready"
+  INITIATIVE="$(sed -n 's/^Initiative:[[:space:]]*//p' "$TICKET_FILE" | head -n1)"
+  if [[ -z "$INITIATIVE" ]]; then
+    fail "ticket has no Initiative field"
+  elif [[ ! -f "$FACTORY_DIR/initiatives/$INITIATIVE.md" ]]; then
+    fail "ticket initiative not found: $FACTORY_DIR/initiatives/$INITIATIVE.md"
+  else
+    pass "ticket belongs to initiative $INITIATIVE"
+  fi
 else
   STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
   fail "ticket not Ready ($STATE)"
+fi
+
+LINEAR_MAP="$FACTORY_DIR/linear-map.json"
+if [[ -f "$LINEAR_MAP" ]] && grep -q '"last_success_at":[[:space:]]*"[^"]' "$LINEAR_MAP"; then
+  pass "Linear reconciliation has a recorded successful pull"
+else
+  warn "no successful Linear reconciliation recorded — verify board sync before trusting a new operator action"
 fi
 
 # (f) kit pin — the product certifies which kit commit it runs against.

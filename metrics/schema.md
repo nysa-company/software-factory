@@ -6,15 +6,15 @@ What gets measured per ticket, where it comes from, and what it gates. Weekly re
 
 | Field | Source |
 |---|---|
-| ticket id | Linear |
+| ticket id | Markdown filename; Linear identifier stored in `linear-map.json` |
 | cost_usd | sum of ledger rows for the ticket (`factory/ledger.csv`) |
 | attempts | count of builder runs in the ledger |
 | review_rounds | reviewer comments on the PR (0–2) |
-| cycle_time | Linear timestamps: Ready → Done |
-| operator_minutes | operator self-report on approval (one number in the approval comment) |
+| cycle_time | reconciled Linear Ready timestamp → factory Done log timestamp |
+| operator_minutes | operator self-report in the Linear approval comment |
 | escalated | did the ticket ever enter Blocked-Escalated (boolean + reason) |
 | escaped_defect | a later bug ticket links back to this Done ticket (boolean, retroactive) |
-| external | ticket carried the `external` label |
+| external | Markdown `External:` field projected as the Linear `external` label |
 | prompt versions | logged per run in the ledger |
 
 ## Definitions that keep the numbers honest

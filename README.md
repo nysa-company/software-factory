@@ -10,7 +10,7 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 |---|---|
 | `FACTORY.md` | How to instantiate the kit for a product, plus the onboarding validator checklist |
 | `envelope/` | Budget and escalation template — the factory's hard limits |
-| `roles/` | Versioned prompt files for the five roles (planner, test-author, builder, reviewer, narrator) |
+| `roles/` | Versioned contracts for dispatcher, planner, spec-linter, test-author, builder, reviewer, and narrator |
 | `workflows/` | Linear board setup, the per-ticket flow, the evidence rubric |
 | `scripts/` | Run wrapper with cost ledger, CLI adapters, kill switch, spend rollup |
 | `ci/` | Test-immutability check, branch protection, walking-skeleton pattern, rollback drill, Railway recipe |
@@ -26,6 +26,79 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 4. Test author and reviewer run on a different model family than the builder.
 5. Two review rounds, then the ticket escalates to a human with a plain-language note.
 
+## How Linear and Markdown work together
+
+Linear is the visual board and the operator's decision surface. Git is the
+durable execution record. Every `factory/initiatives/I-NNN.md` file maps to a
+Linear Project, and every `factory/tickets/T-NNN.md` file maps to a Linear
+issue. A per-product `com.factory.linear-sync.*` job reconciles them every
+three minutes.
+
+Linear owns the decisions a human should make:
+
+- issue priority and initiative/Project membership;
+- Backlog → Ready;
+- Awaiting Approval → Approved;
+- the agreed resume stage for a Blocked-Escalated ticket;
+- Project status and target date.
+
+Markdown owns acceptance criteria, the frozen contract, factory-stage
+movement, machine-readable verdicts, logs, evidence bundles, costs, and final
+Done close-out. Editing factory-owned text or moving an issue through agent
+stages directly in Linear is corrected on the next sync.
+
+The compact board flow is:
+
+`Backlog → Ready → Planning → Building → Review → Awaiting Approval → Approved → Done`
+
+- Planning contains planner and spec-linter work.
+- Building contains test-author and builder work.
+- Review contains reviewer and Narrator/evidence work.
+- Blocked-Escalated is reachable from any active phase.
+- Approved means the operator authorized the change; Done means merge and
+  staging deployment were also confirmed.
+
+Detailed role progress remains in the issue checklist and log instead of
+creating a column for every agent.
+
+## Where the operator participates
+
+The factory needs you at four points:
+
+1. **Choose the work.** Ensure the durable initiative and ticket files exist.
+   The reconciler creates and maps their Linear Project and issue. Creating an
+   unrelated issue only in Linear does not create a runnable factory ticket.
+2. **Prioritize it.** Set the Linear priority and Project, then move Backlog →
+   Ready. Wait for the sync-health timestamp in `factory/linear-map.json` to
+   advance.
+3. **Resolve exceptions.** Read Blocked-Escalated notes, decide the requested
+   question, set `Resume-State:` in the ticket record, and move the Linear
+   issue to that agreed phase.
+4. **Approve the result.** In Awaiting Approval, read the evidence bundle and
+   open the preview. Move the issue to Approved only when it is safe to merge,
+   or send it back with a concrete reason. Done is recorded after merge and
+   staging confirmation.
+
+## Does moving a ticket to Ready start the factory?
+
+**Not by itself in the current installation.** Moving a mapped Linear issue to
+Ready is reconciled into its Markdown ticket within about three minutes, but
+the installed job is a reconciler, not an autonomous dispatcher.
+
+After the Ready transition is visible locally, a dispatcher session must:
+
+1. run `scripts/preflight.sh --ticket T-NNN`;
+2. follow `scripts/next-stage.sh --ticket T-NNN`;
+3. launch each role through `scripts/run-agent.sh`.
+
+If a standing dispatcher is added later, Ready can become its kickoff signal.
+Until then, Ready means **authorized and eligible to start**, not **already
+running**. Never bypass a preflight failure.
+
 ## Quick start
 
 Read `FACTORY.md`, copy the templates into your product repo, fill the blanks, run the validator checklist, then start with a walking skeleton (`ci/walking-skeleton.md`). Do not create a ticket backlog before the skeleton's staging URL works.
+
+For the complete transition and ownership rules, see
+`workflows/linear.md`, `workflows/ticket-flow.md`, and
+`runbooks/operator.md`.

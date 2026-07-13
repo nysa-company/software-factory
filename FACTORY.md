@@ -14,7 +14,7 @@ cd <kit clone> && FACTORY_ROOT=<product repo> bash scripts/run-agent.sh --role <
 What lives where:
 
 - **Kit (this repo, one clone per machine):** scripts, adapters + CLI version pins, role contracts, workflow docs, runbooks, CI templates. Fixes land here once, through PRs.
-- **Product repo (one per project):** `factory/` (ENVELOPE.env, PROJECT.env, KIT_PIN, tickets/, ledger.csv, runs/), product docs, its instantiated CI workflow, its own GitHub ruleset + deploy key + kanban board.
+- **Product repo (one per product):** `factory/` (ENVELOPE.env, PROJECT.env, KIT_PIN, initiatives/, tickets/, ledger.csv, runs/), product docs, its instantiated CI workflow, its own GitHub ruleset + deploy key. All products share the Software Factory Linear team; each initiative gets a Linear Project.
 - **`factory/KIT_PIN`** — the kit commit SHA this product is certified against. `scripts/preflight.sh` hard-fails on a mismatch, so a kit upgrade never changes a project's behavior silently; upgrading = run the product's calibration against the new kit, then update the pin. (A product living inside the kit repo, like the Relay conformance app, is implicitly pinned.)
 - **`factory/PROJECT.env`** — the project descriptor a dispatcher reads: `PROJECT_NAME`, `GH_REPO` (owner/repo slug), `TEST_PATHS` (for the immutability gate and reorder script), `WORKTREES_DIR`, `TICKET_BRANCH_PREFIX`. See `conformance/factory/PROJECT.env` for the reference copy.
 
@@ -23,7 +23,7 @@ Budget note: per-product caps live in each product's `ENVELOPE.env`; the machine
 ## Step 1 — Product repo
 
 - Create the product repo as a **sibling folder** (never nested inside another repo). Do NOT copy kit scripts into it — the engine model above is the contract.
-- Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN` (current kit SHA), and an empty `tickets/`.
+- Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN` (current kit SHA), and empty `initiatives/` and `tickets/` directories.
 - Copy exactly two CI files (GitHub requires workflows to live in the repo they run on): `ci/test-immutability-check.sh` → `.github/scripts/` and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`, with `TEST_PATHS` set from `PROJECT.env`.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. The validator checks the two files agree.
 - Product docs the factory needs (written per product, not in the kit):
@@ -42,9 +42,9 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 
 ## Step 4 — Linear
 
-Set up the board per `workflows/linear.md`: five workflow states plus Done, the ticket template with acceptance-criteria and spec-link checklist fields.
+Set up the shared Software Factory team per `workflows/linear.md`: compact phase-level workflow states, the factory issue template, risk/external labels, and one Linear Project per file in `factory/initiatives/`.
 
-At pilot stage the board is a one-way, read-only mirror of `factory/tickets/` maintained by `scripts/linear-sync.py` (see the pilot-stage amendment at the top of `workflows/linear.md`). Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create the team and workflow states; the `com.nysa.linear-sync` launchd job keeps it in sync every 3 minutes.
+Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path.
 
 ## Step 5 — CI and hosting
 
@@ -64,13 +64,13 @@ One trivial end-to-end feature through the full loop before any backlog exists. 
 
 All boxes checked = the factory may start. Any box unchecked = it may not.
 
-- [ ] Product repo exists, sibling location, `factory/` state dir created (no kit code copied; only the two CI files)
+- [ ] Product repo exists, sibling location, `factory/initiatives/` and `factory/tickets/` created (no kit code copied; only the two CI files)
 - [ ] `factory/KIT_PIN` holds the certified kit SHA; `factory/PROJECT.env` filled per the reference copy
 - [ ] `ENVELOPE.md` has no unfilled blanks
 - [ ] Console spend caps set on both providers and screenshot saved in `factory/`
 - [ ] Three named API keys exist; none shared across concerns
 - [ ] No secrets in git history (`git log -p | grep -i` for key patterns, or a scanner)
-- [ ] Linear board matches `workflows/linear.md`; ticket template installed; `scripts/linear-sync.py --setup` run and the sync launchd job loaded (pilot: read-only mirror)
+- [ ] Linear board matches `workflows/linear.md`; initiative Projects and ticket template installed; `scripts/linear-sync.py --setup` run; `com.factory.linear-sync` loaded; sync health is current
 - [ ] Branch protection on; test-immutability check is a required status
 - [ ] Staging deploy works; preview deploys work on PRs
 - [ ] Rollback drill performed once, timed, and noted in `factory/`

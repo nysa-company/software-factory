@@ -59,7 +59,7 @@ STUB
 
 write_envelope() {
   local dir="$1" daily_cap="${2:-15.00}"
-  mkdir -p "$dir/factory/tickets"
+  mkdir -p "$dir/factory/tickets" "$dir/factory/initiatives"
   cat > "$dir/factory/ENVELOPE.env" <<ENV
 PER_RUN_BUDGET_USD=1.50
 PER_TICKET_BUDGET_USD=6.50
@@ -76,11 +76,22 @@ write_ready_ticket() {
 # $ticket — test ticket
 
 State: Ready
+Initiative: I-001
+Priority: normal
 
 ## Description
 
 Preflight test ticket.
 TICKET
+  cat > "$dir/factory/initiatives/I-001.md" <<'INITIATIVE'
+# Test initiative
+
+Status: planned
+
+## Summary
+
+Preflight fixture.
+INITIATIVE
 }
 
 init_git_repo() {

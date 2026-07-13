@@ -1,36 +1,77 @@
 {
   "_config": {
+    "labels": {
+      "external": "52d74582-e9d3-4e23-ad89-17a2f47ef640",
+      "risk:high": "1d66a0b2-7d52-436a-bd2a-2606b320af3a",
+      "risk:low": "4c599495-91eb-4c99-9b72-587764df7357",
+      "risk:medium": "0f763196-9969-4cde-83b1-466734d0c420"
+    },
     "states": {
+      "approved": "dc2543b0-8d33-4cfa-ac03-2ff1171f1e9b",
+      "awaiting approval": "6847f604-a5a8-4d2b-a4ba-82982cd196f0",
       "backlog": "fc699666-1076-4eb4-9f73-4c3539009735",
       "blocked-escalated": "02fb78d2-8a69-494f-bb3c-0a0adb171406",
+      "building": "d21b5580-0135-4d46-a2c4-eb03021be684",
       "done": "8c64bda2-1d94-4c21-8c63-d7b2d36dc816",
-      "in progress": "f784ec3a-8073-417c-9022-b7ec92054de4",
+      "planning": "70831899-754f-478e-a761-d82c7aeb506a",
       "ready": "7bc86e6c-caff-4e20-9240-b5a602d033e3",
       "review": "fd7ea143-562d-40c0-a533-33eab9d9336c"
     },
     "team_id": "fa5d2afa-8891-4b19-b8a3-941fa6c6ee82",
-    "team_key": "SF"
+    "team_key": "SF",
+    "template_id": "c606e15c-1e05-4208-8e41-092676e5d0a1"
+  },
+  "_sync": {
+    "last_error": null,
+    "last_success_at": "2026-07-13T22:31:23+00:00"
+  },
+  "initiatives": {
+    "I-001": {
+      "project_id": "64e7ca47-7d13-4c76-a31e-48944b723852",
+      "project_url": "https://linear.app/nysa/project/relay-conformance-c343735afdc4"
+    },
+    "I-002": {
+      "project_id": "df685314-c61f-4560-8b97-cd55f030207d",
+      "project_url": "https://linear.app/nysa/project/linear-factory-workflow-0532311967cc",
+      "view_id": "6f0e5e57-3999-4913-8d24-1dc93e870c14",
+      "view_slug": "6d4f538afeab"
+    }
   },
   "tickets": {
     "T-101": {
       "bundle_posted": true,
+      "identifier": "SF-1",
       "issue_id": "cdee5256-3371-4f34-9397-054e29df605e",
-      "log_cursor": 6
+      "log_cursor": 6,
+      "operator_fields_initialized": true
     },
     "T-102": {
       "bundle_posted": true,
+      "identifier": "SF-2",
       "issue_id": "b8be9d49-f6b7-466c-b068-f63f6fc5af7e",
-      "log_cursor": 16
+      "log_cursor": 16,
+      "operator_fields_initialized": true
     },
     "T-103": {
       "bundle_posted": true,
+      "identifier": "SF-3",
       "issue_id": "001d09d7-3631-48e4-81e3-9eae1942e5ec",
-      "log_cursor": 18
+      "log_cursor": 18,
+      "operator_fields_initialized": true
     },
     "T-104": {
       "bundle_posted": true,
+      "identifier": "SF-4",
       "issue_id": "fd783f5f-86fe-4352-a7af-ea25fbcdd123",
-      "log_cursor": 22
+      "log_cursor": 22,
+      "operator_fields_initialized": true
+    },
+    "T-105": {
+      "bundle_posted": false,
+      "identifier": "SF-5",
+      "issue_id": "be5e76d7-8530-4269-a160-8d850f3671e5",
+      "log_cursor": 1,
+      "operator_fields_initialized": true
     }
   }
 }

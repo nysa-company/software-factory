@@ -8,6 +8,7 @@
 #   FIX <builder|test-author> — reviewer requested changes; dispatcher picks
 #                           which role per the feedback, then reviewer rerun
 #   AWAIT-OPERATOR        — bundle posted; operator approval/merge is next
+#   AWAIT-MERGE           — Linear approval ingested; merge/deploy is next
 #   ESCALATE <reason>     — stop; a human decision is required
 #   REFUSE <reason>       — bookkeeping incomplete; fix the record first
 #
@@ -151,6 +152,10 @@ fi
 
 if [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
+  if grep -qiE '^Operator-Approval:[[:space:]]*Linear([[:space:]]|$)' "$TICKET_FILE"; then
+    echo "AWAIT-MERGE operator approval ingested from Linear; merge and staging confirmation are next"
+    exit 0
+  fi
   echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
   exit 0
 fi

@@ -12,6 +12,20 @@ else
   FAIL=1
 fi
 
+if python3 "$ROOT/ci/linear-sync-test.py"; then
+  echo "PASS: Linear reconciler regression suite"
+else
+  echo "FAIL: Linear reconciler regression suite" >&2
+  FAIL=1
+fi
+
+if bash "$ROOT/ci/preflight-test.sh"; then
+  echo "PASS: preflight regression suite"
+else
+  echo "FAIL: preflight regression suite" >&2
+  FAIL=1
+fi
+
 APP_OUTPUT="$ROOT/.test-app-output.$$"
 if (cd "$ROOT/conformance/app" && npm test) > "$APP_OUTPUT" 2>&1; then
   echo "PASS: conformance app suite"

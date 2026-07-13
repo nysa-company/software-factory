@@ -4,7 +4,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Stuck ticket (no movement for hours)
 
-- Notice: ticket sits In progress with no new commits or comments.
+- Notice: ticket sits in an active role column with no new commits or comments.
 - Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role via `run-agent.sh`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
 - Don't: let a stuck run keep burning budget while you wait.
 
@@ -40,7 +40,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Linear, GitHub, or Railway down
 
-- Do: the factory pauses; nothing needs saving. Board state is in Linear's cloud, code is in GitHub, deploys are in Railway — each recovers on its own. If Linear is down and something is urgent, write decisions in a dated note file and transcribe to tickets after.
+- Do: if Linear is down, in-flight factory work continues from the ticket files, but do not expect a new priority, Ready, approval, or unblock action to take effect until sync recovers. Check `_sync.last_success_at` and `_sync.last_error` in `factory/linear-map.json`. GitHub or Railway outages still pause the stages that depend on them.
+- Don't: edit factory-owned Linear descriptions or force local state to imitate an operator transition that has not been ingested.
 
 ## Broken connector (external sends failing)
 
@@ -50,7 +51,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Restore from backup
 
 - Postgres (staging): Railway dashboard → database → Backups → restore. Staging data is disposable; fixtures re-seed it.
-- Board: Linear is the source of truth and is cloud-hosted; the ledger CSV is in the product repo and versioned with it.
+- Board: restore the product repo first. Markdown and the ledger are the durable execution record; `scripts/linear-sync.py --setup` plus a normal sync recreates Projects/issues and mappings. Linear remains authoritative only for operator-owned priority, Project membership, Ready, approval, and unblock actions.
 
 ## Preflight failed before launch
 
@@ -83,6 +84,14 @@ These run in your interactive session — never inside the loop. The factory's o
 **spec-kit, pinned install.** `specify` v0.12.11 is installed via `uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@v0.12.11`; the authoring workspace is `~/Projects/spec-authoring` (claude integration, `.specify/` + `.claude/commands/`). Flow for an epic: `/speckit-specify` (write the spec from an intent) → `/speckit-clarify` (structured de-risking questions) → `/speckit-checklist` (requirements-quality checklist) — then carve the result into factory tickets by hand, or use `/speckit-taskstoissues` to seed the board. Do not use `/speckit-implement`, `/speckit-plan`, or `/speckit-tasks` to produce factory artifacts — they duplicate the Planner/Builder and skip the factory's gates. Upgrading the pin: bump the `uv tool install` tag, then refresh `vendor/spec-kit/` per its README.
 
 **gstack planning suite (already installed under `~/.claude/skills/gstack/`).** Interactive-only by its own design (its preamble blocks headless runs). Useful for instantiation-scale documents: `/office-hours` and `/plan-ceo-review` to pressure-test scope, `/plan-eng-review` for an engine spec, `/spec` for authoring a single rich ticket. Treat their output as draft input to the Planner, not as a frozen contract — the Planner still owns the ticket and the spec-linter still lints it.
+
+## Linear initiatives and approvals
+
+- Create the durable initiative record first at `factory/initiatives/I-NNN.md`; the reconciler creates the Linear Project. Set its status and target date in Linear.
+- Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates `Initiative:` in the ticket file.
+- Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
+- Approve only from Awaiting Approval by moving the issue to Approved. This records authorization; it does not claim the PR is merged. Factory close-out moves Approved → Done only after merge and staging confirmation.
+- Resume an escalated ticket by setting `Resume-State:` locally to the agreed stage, then move the Linear issue out of Blocked-Escalated to that same stage. Mismatched or otherwise illegal transitions are rejected and reported in sync health.
 
 ## The general rule
 
