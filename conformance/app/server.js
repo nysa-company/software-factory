@@ -44,6 +44,8 @@ function acceptEvent(evt) {
     status: "pending", // pending | done | dead
     attempts: 0,
     lastError: null,
+    retries: 0,
+    attemptsSinceRetry: 0,
   });
   persist();
   return { ok: true, duplicate: false, eventId: evt.id };
@@ -52,12 +54,13 @@ function acceptEvent(evt) {
 function processJob(job) {
   const evt = state.events.find(e => e.id === job.eventId);
   job.attempts += 1;
+  job.attemptsSinceRetry += 1;
   // Simulated transient/permanent failure: payload.failTimes = number of
   // attempts that must fail before success (99 = effectively permanent).
   const failTimes = Number(evt?.payload?.failTimes || 0);
   if (job.attempts <= failTimes) {
     job.lastError = `simulated failure on attempt ${job.attempts}`;
-    if (job.attempts >= MAX_ATTEMPTS) job.status = "dead";
+    if (job.attemptsSinceRetry >= MAX_ATTEMPTS) job.status = "dead";
     persist();
     return;
   }
@@ -107,6 +110,19 @@ function reject(id, body) {
   appr.reason = reason;
   persist();
   return { ok: true, status: "rejected", reason };
+}
+
+function retryJob(id) {
+  const job = state.jobs.find(j => j.id === id);
+  if (!job) return { ok: false, code: 404, error: "no such job" };
+  if (job.status !== "dead") {
+    return { ok: false, code: 409, error: `only dead jobs can be retried (status: ${job.status})` };
+  }
+  job.status = "pending";
+  job.attemptsSinceRetry = 0;
+  job.retries += 1;
+  persist();
+  return { ok: true, code: 200, status: "pending", retries: job.retries };
 }
 
 // ---------- http ----------
@@ -165,6 +181,11 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const { code, ...result } = reject(mReject[1], body);
       return json(res, result.ok ? 200 : code, result);
+    }
+    const mRetry = url.pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
+    if (req.method === "POST" && mRetry) {
+      const { code, ...result } = retryJob(mRetry[1]);
+      return json(res, code, result);
     }
     json(res, 404, { error: "not found" });
   } catch (e) {
