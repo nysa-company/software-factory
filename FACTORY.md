@@ -55,3 +55,14 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Walking skeleton merged; operator has clicked the staging URL
 - [ ] Kill switch tested: `scripts/kill-switch.sh` stops a live run
 - [ ] Metrics ledger file exists and the run wrapper writes to it
+
+## Deferred stages and ops backlog (activate at first deployed product)
+
+Recorded 2026-07-13 with the spec-kit/gstack tiered adoption; none of these are built until the first product instantiation (Nysa) has a deployed web app. Rationale and full catalog mapping: NYSA `deliverables/2026-07-13-speckit-gstack-evaluation.md`.
+
+- **Verifier stage** — `roles/verifier.md`, report-only browser QA between Reviewer approval and Narrator: vendor gstack's `browse` binary at a pinned version (goto/snapshot/click/console; no preamble), adopt its health-score rubric and issue taxonomy verbatim in the role contract; screenshots + score + regression baseline go into the evidence bundle; findings above threshold route like a REQUEST CHANGES; never commits. Pilot on one ticket before making it standing.
+- **Security audit** — periodic gstack `/cso`-style pass, operator-triggered; high value for an LLM product.
+- **Post-deploy monitoring** — gstack `/canary` pattern after each staging/production deploy.
+- **Perf baselines** — gstack `/benchmark` pattern; regression numbers per ticket once there is a deploy to measure.
+- **Code-quality score** — gstack `/health` weighted score as a CI-adjacent metric on the product repo.
+- **Spec drift check** — spec-kit `/speckit.converge` pattern between milestones: does the codebase still match the living spec.
