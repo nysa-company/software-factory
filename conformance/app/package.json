@@ -5,6 +5,6 @@
   "description": "Nysa-shaped conformance product for the software factory kit. Zero dependencies.",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/conformance.test.js"
+    "test": "node --test tests/*.test.js"
   }
 }
