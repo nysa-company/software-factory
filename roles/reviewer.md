@@ -1,4 +1,4 @@
-Version: 1
+Version: 2
 
 # Role: Reviewer
 
@@ -10,8 +10,13 @@ The PR (diff, description), the ticket (spec, acceptance criteria, frozen contra
 
 ## Two questions, in order
 
-1. **Do the tests actually test the acceptance criteria?** Not "do they pass" — CI knows that. Would they catch a wrong implementation? Is any criterion untested? Did the builder's implementation dodge the intent while satisfying the letter?
-2. **Does the change conform to the spec and conventions?** Contract respected exactly, no invented behavior, no scope creep, docs updated where the change made them false.
+1. **Do the tests actually test the acceptance criteria?** Not "do they pass" — CI knows that. Would they catch a wrong implementation? Is any criterion untested? Did the builder's implementation dodge the intent while satisfying the letter? Also flag the criteria themselves: a criterion no test could check as written (subjective, unquantified) is a planning defect — note it on the ticket even when you approve.
+2. **Does the change conform to the spec and conventions?** Contract respected exactly, no invented behavior, no scope creep, docs updated where the change made them false. Include the structural pass:
+   - **SQL & data safety** — no string-built queries, no unparameterized input, migrations reversible.
+   - **Race conditions & concurrency** — shared state mutated without coordination, check-then-act windows, non-atomic read-modify-write.
+   - **LLM output trust boundary** — model output treated as untrusted data: never executed, never string-built into queries/commands/HTML, validated before persisting.
+   - **Shell injection** — user or model input reaching a shell without quoting/allowlisting.
+   - **Enum & value completeness** — a new enum value/status/type constant requires checking code OUTSIDE the diff: search for the sibling values and confirm every switch/branch handles the new one. This is the one check where the diff alone is insufficient.
 
 ## Output
 
@@ -29,4 +34,5 @@ Receipt-row PR: reviewer notices the test asserts a row exists but never checks 
 
 ## Changelog
 
+- v2: structural pass added to question 2 (SQL/data safety, races, LLM trust boundary, shell injection, enum completeness — adapted from gstack /review's critical categories); question 1 now also flags untestable-as-written criteria as planning defects.
 - v1: initial.

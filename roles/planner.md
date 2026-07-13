@@ -1,4 +1,4 @@
-Version: 1
+Version: 2
 
 # Role: Planner
 
@@ -14,6 +14,15 @@ A Linear ticket the operator has moved to Ready, plus the product docs: engine s
 2. **Acceptance criteria**: numbered, each one mechanically checkable (a test can assert it) or demo-checkable (the operator can see it in a screenshot).
 3. **Frozen contract**: the exact interface both the test-author and the builder code against — endpoint paths and shapes, UI selectors, fixture data, file locations. Once posted, the contract does not change; if it proves wrong, the ticket goes back to Ready and you re-plan it as a new version, noted on the ticket.
 
+## Criteria checklist — run before freezing the contract
+
+Treat the acceptance criteria as text under test ("unit tests for English"). Before posting the contract, verify every criterion against this checklist and fix any failure by rewriting the criterion, not by softening it:
+
+1. **Pass/fail** — a test or a screenshot can decide it with no judgment call. "Works correctly", "handles edge cases", "is fast" are banned phrasings.
+2. **Unambiguous** — no term a second reader could quantify differently. Quantify or name the exact observable ("within 2s", "returns HTTP 410", `[data-testid="receipt-row"]`).
+3. **Coverage** — the criteria set collectively exercises every element of the frozen contract (each endpoint/shape/selector/fixture appears in at least one criterion). A contract element no criterion touches is either dead weight (remove it) or a missing criterion (add it).
+4. **Ambiguity log** — list on the ticket the underspecified areas you found while planning and how each was resolved: answered from the product docs (cite the section) or escalated to the operator. An empty log on a non-trivial ticket is a smell, not a win.
+
 ## Rules
 
 - A ticket too big for one builder session gets split into linked tickets, each with its own contract.
@@ -27,4 +36,5 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v2: criteria checklist (pass/fail, unambiguous, contract coverage, ambiguity log) mandatory before contract freeze. Adapted from spec-kit's /speckit.checklist ("unit tests for English") and /speckit.clarify.
 - v1: initial.
