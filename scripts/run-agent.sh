@@ -42,6 +42,20 @@ TASK="${*:-}"
 source "$ENV_FILE"
 PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
 
+# --- optional machine-level cap across all factories on this machine ---
+# ~/.factory/global.env defines GLOBAL_DAILY_CAP_USD; every run on the machine
+# then also reserves against ~/.factory/global-ledger.csv, so N projects can't
+# multiply the daily budget silently. Absent file = single-project behavior.
+GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
+GLOBAL_LEDGER="" GLOBAL_LOCK=""
+if [[ -f "$GLOBAL_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$GLOBAL_ENV"
+  GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
+  GLOBAL_LOCK="$(dirname "$GLOBAL_ENV")/.ledger.lock"
+  [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
+fi
+
 # --- cross-family role→adapter mapping (mechanical, not a prompt rule) ---
 # Override only via FACTORY_ADAPTER_OVERRIDE (used for mock in kit tests).
 case "$ROLE" in
@@ -85,9 +99,24 @@ if awk -v s="$SPENT_TICKET" -v r="$PER_RUN_BUDGET_USD" -v cap="$PER_TICKET_BUDGE
   echo "ticket budget would be exceeded for $TICKET (spent \$$SPENT_TICKET + reserve \$$PER_RUN_BUDGET_USD > \$$PER_TICKET_BUDGET_USD) — move ticket to Blocked-Escalated." >&2
   exit 5
 fi
+# Global cap check + reservation (own lock, taken while holding the repo
+# lock — lock order is always repo → global, so no deadlock is possible).
+RUN_ID="$(date +%s)-$$"
+if [[ -n "$GLOBAL_LEDGER" ]]; then
+  mkdir -p "$(dirname "$GLOBAL_LEDGER")"
+  [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$GLOBAL_LEDGER"
+  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && break; sleep 0.2; [[ $i -eq 50 ]] && { echo "global ledger lock stuck — see runbook" >&2; rmdir "$LOCK_DIR"; exit 8; }; done
+  SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
+  if awk -v s="$SPENT_GLOBAL" -v r="$PER_RUN_BUDGET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+    echo "MACHINE daily cap would be exceeded across all factories (spent \$$SPENT_GLOBAL + reserve \$$PER_RUN_BUDGET_USD > \$$GLOBAL_DAILY_CAP_USD) — refusing. See runbooks/operator.md." >&2
+    rmdir "$GLOBAL_LOCK" "$LOCK_DIR"; trap - EXIT; exit 5
+  fi
+  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID" >> "$GLOBAL_LEDGER"
+  rmdir "$GLOBAL_LOCK"
+fi
+
 # Reserve: write a provisional ledger row at full per-run budget; replaced with
 # the real cost after the run. A crash leaves the conservative row in place.
-RUN_ID="$(date +%s)-$$"
 echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID" >> "$LEDGER"
 rmdir "$LOCK_DIR"; trap - EXIT
 
@@ -133,6 +162,17 @@ grep -v ",reserved-$RUN_ID\$" "$LEDGER" > "$TMP_LEDGER" || true
 echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS" >> "$TMP_LEDGER"
 mv "$TMP_LEDGER" "$LEDGER"
 rmdir "$LOCK_DIR"; trap - EXIT
+
+# Same replacement in the machine-global ledger, if configured.
+if [[ -n "$GLOBAL_LEDGER" && -f "$GLOBAL_LEDGER" ]]; then
+  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && break; sleep 0.2; done
+  trap 'rmdir "$GLOBAL_LOCK" 2>/dev/null || true' EXIT
+  TMP_GLOBAL="$GLOBAL_LEDGER.tmp.$$"
+  grep -v ",reserved-$RUN_ID\$" "$GLOBAL_LEDGER" > "$TMP_GLOBAL" || true
+  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS" >> "$TMP_GLOBAL"
+  mv "$TMP_GLOBAL" "$GLOBAL_LEDGER"
+  rmdir "$GLOBAL_LOCK"; trap - EXIT
+fi
 
 printf '%s\n' "$RESULT"
 exit "$STATUS"
