@@ -2,7 +2,7 @@
 
 A product-agnostic kit for running an AI software factory: agents plan, build, review, and document work on a Linear board; a human sets priorities and approves from evidence bundles, never from diffs.
 
-Built July 2026 for the Nysa project, factored out so any product can use it. Design decisions and their history live in the NYSA repo (`deliverables/2026-07-11-autonomous-software-factory-brief.md`).
+Built July 2026 for the Nysa project, factored out so any product can use it. Design decisions and their history live in the [Nysa product repository](https://github.com/nysa-company/nysa/blob/main/deliverables/2026-07-11-autonomous-software-factory-brief.md).
 
 ## What's in the box
 
