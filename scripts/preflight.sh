@@ -36,10 +36,11 @@ if [[ -f "$GLOBAL_ENV" ]]; then
 fi
 
 # (a) adapter contract test — CLIs must be on PATH and honor adapter assumptions
-if "$KIT_DIR/scripts/adapters/contract-test.sh" >/dev/null 2>&1; then
+if CONTRACT_OUT="$("$KIT_DIR/scripts/adapters/contract-test.sh" 2>&1)"; then
   pass "adapter contract test passed"
 else
-  fail "adapter contract test failed — run scripts/adapters/contract-test.sh"
+  fail "adapter contract test failed — output follows"
+  printf '%s\n' "$CONTRACT_OUT" | sed 's/^/  | /'
 fi
 
 # (b) version pins match installed CLIs (pins may come from ~/.factory/global.env)

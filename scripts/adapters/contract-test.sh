@@ -8,11 +8,15 @@ note() { echo "[contract-test] $*"; }
 bad() { echo "[contract-test] FAIL: $*" >&2; FAIL=1; }
 
 # --- claude-code assumptions ---
+# Capture help output once, then grep the variable: piping `cli --help` straight
+# into `grep -q` under pipefail is racy — grep exits on the first match and can
+# SIGPIPE the CLI, failing the pipeline spuriously (seen flaky in preflight tests).
 if command -v claude >/dev/null; then
   note "claude: $(claude --version 2>/dev/null | head -n1)"
-  claude --help 2>/dev/null | grep -q -- "--max-budget-usd" || bad "claude: --max-budget-usd flag missing (hard budget stop)"
-  claude --help 2>/dev/null | grep -q -- "--output-format" || bad "claude: --output-format flag missing"
-  claude --help 2>/dev/null | grep -q -- "--append-system-prompt" || bad "claude: --append-system-prompt flag missing"
+  CLAUDE_HELP="$(claude --help 2>/dev/null || true)"
+  grep -q -- "--max-budget-usd" <<<"$CLAUDE_HELP" || bad "claude: --max-budget-usd flag missing (hard budget stop)"
+  grep -q -- "--output-format" <<<"$CLAUDE_HELP" || bad "claude: --output-format flag missing"
+  grep -q -- "--append-system-prompt" <<<"$CLAUDE_HELP" || bad "claude: --append-system-prompt flag missing"
 else
   bad "claude CLI not installed"
 fi
@@ -20,7 +24,8 @@ fi
 # --- codex assumptions ---
 if command -v codex >/dev/null; then
   note "codex: $(codex --version 2>/dev/null | head -n1)"
-  codex exec --help 2>/dev/null | grep -q -- "--json" || bad "codex: exec --json flag missing"
+  CODEX_HELP="$(codex exec --help 2>/dev/null || true)"
+  grep -q -- "--json" <<<"$CODEX_HELP" || bad "codex: exec --json flag missing"
 else
   bad "codex CLI not installed"
 fi
