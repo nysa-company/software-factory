@@ -3,3 +3,7 @@ factory/ledger.csv
 factory/KILL
 **/factory/.linear-sync.lock
 *.log
+.env
+.env.local
+*.pem
+*.key

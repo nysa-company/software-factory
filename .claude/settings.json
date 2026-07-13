@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(./**/credentials*.json)"
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "nysa-agents-plugin": {
+      "source": {"source": "github", "repo": "nysa-company/nysa-agents-plugin"},
+      "autoUpdate": true
+    }
+  }
+}
