@@ -8,7 +8,7 @@ Settings for the product repo's `main` branch. These make the factory's rules me
 - Required status checks: `ci` (lint, typecheck, tests, build, snapshots) and `test-immutability`.
 - **Require 1 approving review** — the operator's GitHub approval, given only after reading the Narrator bundle. This makes approval-before-merge mechanical, not procedural: agents cannot merge without it.
 - Require branches to be up to date before merging.
-- Do not allow bypassing the above (including administrators).
+- Do not allow bypassing the above (including administrators) — **once the org has ≥2 humans**. At single-operator stage, leave administrators exempt (`enforce_admins: false`): GitHub forbids approving your own PR, so a sole human with a strict rule can never merge. The agents' credentials (deploy keys, tokens) are never admin, so the gates still bind every agent.
 - No merge queue at single-builder stage — it queues nothing; add it only when concurrency arrives.
 
 ## Or via CLI
