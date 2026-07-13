@@ -1,0 +1,36 @@
+{
+  "_config": {
+    "states": {
+      "backlog": "fc699666-1076-4eb4-9f73-4c3539009735",
+      "blocked-escalated": "02fb78d2-8a69-494f-bb3c-0a0adb171406",
+      "done": "8c64bda2-1d94-4c21-8c63-d7b2d36dc816",
+      "in progress": "f784ec3a-8073-417c-9022-b7ec92054de4",
+      "ready": "7bc86e6c-caff-4e20-9240-b5a602d033e3",
+      "review": "fd7ea143-562d-40c0-a533-33eab9d9336c"
+    },
+    "team_id": "fa5d2afa-8891-4b19-b8a3-941fa6c6ee82",
+    "team_key": "SF"
+  },
+  "tickets": {
+    "T-101": {
+      "bundle_posted": true,
+      "issue_id": "cdee5256-3371-4f34-9397-054e29df605e",
+      "log_cursor": 6
+    },
+    "T-102": {
+      "bundle_posted": true,
+      "issue_id": "b8be9d49-f6b7-466c-b068-f63f6fc5af7e",
+      "log_cursor": 16
+    },
+    "T-103": {
+      "bundle_posted": true,
+      "issue_id": "001d09d7-3631-48e4-81e3-9eae1942e5ec",
+      "log_cursor": 18
+    },
+    "T-104": {
+      "bundle_posted": true,
+      "issue_id": "fd783f5f-86fe-4352-a7af-ea25fbcdd123",
+      "log_cursor": 22
+    }
+  }
+}

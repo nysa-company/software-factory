@@ -25,6 +25,8 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 
 Set up the board per `workflows/linear.md`: five workflow states plus Done, the ticket template with acceptance-criteria and spec-link checklist fields.
 
+At pilot stage the board is a one-way, read-only mirror of `factory/tickets/` maintained by `scripts/linear-sync.py` (see the pilot-stage amendment at the top of `workflows/linear.md`). Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create the team and workflow states; the `com.nysa.linear-sync` launchd job keeps it in sync every 3 minutes.
+
 ## Step 5 — CI and hosting
 
 - GitHub: branch protection per `ci/branch-protection.md`, the test-immutability check wired as a required status.
@@ -48,7 +50,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Console spend caps set on both providers and screenshot saved in `factory/`
 - [ ] Three named API keys exist; none shared across concerns
 - [ ] No secrets in git history (`git log -p | grep -i` for key patterns, or a scanner)
-- [ ] Linear board matches `workflows/linear.md`; ticket template installed
+- [ ] Linear board matches `workflows/linear.md`; ticket template installed; `scripts/linear-sync.py --setup` run and the sync launchd job loaded (pilot: read-only mirror)
 - [ ] Branch protection on; test-immutability check is a required status
 - [ ] Staging deploy works; preview deploys work on PRs
 - [ ] Rollback drill performed once, timed, and noted in `factory/`
