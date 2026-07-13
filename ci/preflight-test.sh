@@ -208,6 +208,35 @@ write_envelope "$NOTICKET"
 init_git_repo "$NOTICKET"
 assert_preflight "missing ticket fail" 1 "FAIL: ticket file missing" "$NOTICKET" "T-999"
 
+# --- kit pin: unpinned external product warns but passes ---
+UNPINNED="$TMP/unpinned"
+mkdir -p "$UNPINNED"
+write_envelope "$UNPINNED"
+write_ready_ticket "$UNPINNED" "T-007"
+init_git_repo "$UNPINNED"
+out="$(run_preflight "$UNPINNED" "T-007")" || true
+if grep -qF "WARN: no kit pin" <<<"$out" && grep -qF "PREFLIGHT PASS" <<<"$out"; then
+  echo "PASS: kit pin unpinned warns but passes"
+else
+  echo "FAIL: kit pin unpinned warns but passes"
+  echo "$out"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- kit pin: match passes, mismatch fails ---
+PINNED="$TMP/pinned"
+mkdir -p "$PINNED"
+write_envelope "$PINNED"
+write_ready_ticket "$PINNED" "T-008"
+init_git_repo "$PINNED"
+KIT_HEAD_NOW="$(git -C "$KIT_DIR" rev-parse HEAD)"
+echo "$KIT_HEAD_NOW" > "$PINNED/factory/KIT_PIN"
+git -C "$PINNED" add -A && git -C "$PINNED" commit -qm "pin" && git -C "$PINNED" push -q origin main
+assert_preflight "kit pin match passes" 0 "PASS: kit pin matches" "$PINNED" "T-008"
+echo "0000000deadbeef0000000deadbeef00000000" > "$PINNED/factory/KIT_PIN"
+git -C "$PINNED" add -A && git -C "$PINNED" commit -qm "bad pin" && git -C "$PINNED" push -q origin main
+assert_preflight "kit pin mismatch fails" 1 "FAIL: kit pin mismatch" "$PINNED" "T-008"
+
 # --- GH_TOKEN warn-but-pass ---
 NOWARN="$TMP/nowarn"
 mkdir -p "$NOWARN"

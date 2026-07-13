@@ -70,6 +70,12 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: ensure `scripts/reorder-test-fixes.sh` is present (branch `kit/reorder-test-fixes` in the kit repo). The dispatcher runs it at AWAIT-OPERATOR before opening the PR. If the script is missing, merge or cherry-pick it from that branch first.
 - Don't: waive the immutability gate or ask the builder to edit tests post-implementation.
 
+## Upgrading the kit when multiple products run on it
+
+- Notice: kit `main` moved (a fix or feature merged) while products are pinned to an older SHA via `factory/KIT_PIN`; preflight fails their next kickoff with "kit pin mismatch".
+- Do: upgrade one product at a time — pull the kit, run its test suites plus the product's own suite, then commit the new SHA to that product's `factory/KIT_PIN`. Products you haven't re-certified keep failing preflight, which is the point: no silent behavior change mid-ticket. If you need to run an un-upgraded product urgently, check the kit clone out at its pinned SHA instead of loosening the pin.
+- Don't: delete the pin to make preflight pass, or upgrade all products in one batch commit without running their suites.
+
 ## Authoring epics and big tickets (operator-side tools, not factory stages)
 
 These run in your interactive session — never inside the loop. The factory's own spec quality gate is the spec-linter stage; these tools raise the quality of what you feed it.
