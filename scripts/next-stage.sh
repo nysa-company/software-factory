@@ -33,11 +33,17 @@ canonical_ledger() {
   if worktree_root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" &&
      common_dir="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)"; then
     worktree_root="$(cd "$worktree_root" && pwd -P)"
+    # A relative --git-common-dir is relative to git's cwd ($root), NOT the
+    # worktree root — resolving against the wrong base broke main-clone
+    # subdirectory roots (e.g. FACTORY_ROOT=<repo>/conformance).
     case "$common_dir" in
       /*) ;;
-      *) common_dir="$worktree_root/$common_dir" ;;
+      *) common_dir="$root_abs/$common_dir" ;;
     esac
-    main_root="$(cd "$common_dir/.." && pwd -P)"
+    if ! main_root="$(cd "$common_dir/.." 2>/dev/null && pwd -P)"; then
+      printf '%s/factory/ledger.csv\n' "$root_abs"
+      return
+    fi
     if [[ "$root_abs" == "$worktree_root" ]]; then
       relative=""
     elif [[ "$root_abs" == "$worktree_root/"* ]]; then

@@ -76,6 +76,17 @@ else
   fail "linked worktree writes canonical main ledger"
 fi
 
+# Main-clone subdirectory root: canonical ledger must resolve to itself
+# (regression: relative --git-common-dir was resolved against the wrong base,
+# producing a nonexistent path and an empty LEDGER).
+if run_mock "$MAIN/conformance" planner T-202 >/dev/null 2>"$TMP/mainclone.err" &&
+   [[ "$(awk -F, '$3=="T-202" {n++} END {print n+0}' "$MAIN/conformance/factory/ledger.csv")" == "1" ]] &&
+   ! grep -q "No such file or directory" "$TMP/mainclone.err"; then
+  pass "main-clone subdirectory root writes its own ledger"
+else
+  fail "main-clone subdirectory root writes its own ledger" "$(cat "$TMP/mainclone.err")"
+fi
+
 # Sequencer reads that canonical ledger but the worktree-local ticket.
 mkdir -p "$WT/conformance/factory/tickets"
 printf '# T-200\n' > "$WT/conformance/factory/tickets/T-200.md"
