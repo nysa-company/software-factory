@@ -32,6 +32,12 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: nothing is broken on your side. If agents are scheduled, run `scripts/kill-switch.sh` (it creates the `factory/KILL` stop file); otherwise just wait it out. Work already merged is unaffected.
 - Don't: swap a role to the other model family to keep moving — the cross-family separation is a quality control, not a convenience.
 
+## Duplicate reviewer row
+
+- Notice: `next-stage.sh` refuses because successful reviewer runs outnumber verdicts, and the extra row came from an overlapping duplicate rather than a real review round.
+- Do: count successful reviewer rows for that ticket from oldest to newest. Add `OPERATOR NOTE: reviewer run <N> void — duplicate` to the ticket, using the duplicate row's one-based number. Run `next-stage.sh` again. The next reviewer round number comes from recorded verdicts, so the void row does not renumber it.
+- Don't: invent a verdict for the duplicate row or delete ledger history.
+
 ## Linear, GitHub, or Railway down
 
 - Do: the factory pauses; nothing needs saving. Board state is in Linear's cloud, code is in GitHub, deploys are in Railway — each recovers on its own. If Linear is down and something is urgent, write decisions in a dated note file and transcribe to tickets after.
