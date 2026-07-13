@@ -21,6 +21,8 @@ jobs:
         working-directory: conformance/app
       - name: factory script regressions
         run: bash ci/test-factory-scripts.sh
+      - name: Linear reconciler regressions
+        run: python3 ci/linear-sync-test.py
       - name: reorder-test-fixes suite
         run: bash ci/reorder-test-fixes-test.sh
       - name: preflight suite
