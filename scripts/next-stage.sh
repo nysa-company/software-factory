@@ -61,7 +61,20 @@ fi
 
 # All recorded verdicts are REQUEST CHANGES.
 if [[ "$RC" -ge 2 ]]; then
-  echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides"
+  # Operator override: after the two-round limit, the operator can authorize
+  # exactly one extra reviewer round by recording a ticket line of the form
+  #   OPERATOR AUTHORIZATION: reviewer round <N>
+  # where N is the next round number (recorded runs + 1). The dispatcher may
+  # never write this line on its own initiative — only on an explicit
+  # operator instruction, which the escalation that got the operator here
+  # provides the audit trail for.
+  NEXT_ROUND=$((R + 1))
+  AUTH="$(grep -ciE "OPERATOR AUTHORIZATION: *reviewer round *$NEXT_ROUND\b" "$TICKET_FILE" || true)"; AUTH="${AUTH:-0}"
+  if [[ "$AUTH" -ge 1 ]]; then
+    echo "RUN reviewer"
+    exit 0
+  fi
+  echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: reviewer round $NEXT_ROUND' line on the ticket, written on explicit operator instruction)"
   exit 0
 fi
 
