@@ -1,5 +1,7 @@
 # Linear setup
 
+**Pilot-stage amendment (2026-07-13):** during the pilot, the ticket files in `factory/tickets/` are execution truth and Linear is a **one-way, read-only projection** maintained by `scripts/linear-sync.py` (launchd job `com.nysa.linear-sync`, every 3 minutes). Manual edits in Linear are overwritten on the next sync cycle. The board-of-record model described below is deferred — it would put a network API in the sequencer's control path — and may never be adopted; revisit only if the operator wants to prioritize or approve from Linear.
+
 Linear is the only board of record. Execution state may exist elsewhere later (a dispatcher's internal ledger), but intent, priority, and status truth live here.
 
 ## Workflow states
