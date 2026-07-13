@@ -80,7 +80,13 @@ async function waitForJob(base, jobId, predicate, tries = 100) {
 }
 
 test("1. A dead job, retried → pending again; a job whose cause is fixed completes and produces its proposed action as normal", async () => {
-  await withServer(4751, async ({ base }) => {
+  const port = 4751;
+  const base = `http://localhost:${port}`;
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-retry-transition-test-"));
+  let proc = startServer(port, dataDir, 50);
+
+  try {
+    await waitForHealth(base);
     const eventId = "retry-then-complete";
     const jobId = `job-${eventId}`;
     await postEvent(base, eventId, {
@@ -89,7 +95,25 @@ test("1. A dead job, retried → pending again; a job whose cause is fixed compl
       subject: "Recovered action",
       body: "The retry completed.",
     });
-    await waitForJob(base, jobId, job => job.status === "dead");
+    const { job: deadJob } = await waitForJob(base, jobId, job => job.status === "dead");
+    assert.deepStrictEqual(
+      {
+        attempts: deadJob.attempts,
+        lastError: deadJob.lastError,
+        retries: deadJob.retries,
+        attemptsSinceRetry: deadJob.attemptsSinceRetry,
+      },
+      {
+        attempts: 3,
+        lastError: "simulated failure on attempt 3",
+        retries: 0,
+        attemptsSinceRetry: 3,
+      },
+    );
+
+    await stopServer(proc);
+    proc = startServer(port, dataDir, 60_000);
+    await waitForHealth(base);
 
     const response = await retryJob(base, jobId);
     assert.strictEqual(response.status, 200);
@@ -99,6 +123,30 @@ test("1. A dead job, retried → pending again; a job whose cause is fixed compl
       retries: 1,
     });
 
+    await stopServer(proc);
+    proc = startServer(port, dataDir, 60_000);
+    await waitForHealth(base);
+    const persistedRetry = (await getState(base)).jobs.find(item => item.id === jobId);
+    assert.deepStrictEqual(
+      {
+        status: persistedRetry.status,
+        attempts: persistedRetry.attempts,
+        lastError: persistedRetry.lastError,
+        retries: persistedRetry.retries,
+        attemptsSinceRetry: persistedRetry.attemptsSinceRetry,
+      },
+      {
+        status: "pending",
+        attempts: 3,
+        lastError: "simulated failure on attempt 3",
+        retries: 1,
+        attemptsSinceRetry: 0,
+      },
+    );
+
+    await stopServer(proc);
+    proc = startServer(port, dataDir, 50);
+    await waitForHealth(base);
     const { job, state } = await waitForJob(base, jobId, item => item.status === "done");
     assert.deepStrictEqual(
       {
@@ -124,11 +172,20 @@ test("1. A dead job, retried → pending again; a job whose cause is fixed compl
         body: "The retry completed.",
       },
     );
-  });
+  } finally {
+    await stopServer(proc);
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 test("2. A dead job, retried, still failing → dead again after exactly 3 new attempts, with cumulative attempts visible on the record", async () => {
-  await withServer(4752, async ({ base }) => {
+  const port = 4752;
+  const base = `http://localhost:${port}`;
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-second-retry-test-"));
+  let proc = startServer(port, dataDir, 50);
+
+  try {
+    await waitForHealth(base);
     const eventId = "retry-still-failing";
     const jobId = `job-${eventId}`;
     await postEvent(base, eventId, { failTimes: 99 });
@@ -163,7 +220,64 @@ test("2. A dead job, retried, still failing → dead again after exactly 3 new a
         attemptsSinceRetry: 3,
       },
     );
-  });
+
+    await stopServer(proc);
+    proc = startServer(port, dataDir, 60_000);
+    await waitForHealth(base);
+    const secondResponse = await retryJob(base, jobId);
+    assert.strictEqual(secondResponse.status, 200);
+    assert.deepStrictEqual(await secondResponse.json(), {
+      ok: true,
+      status: "pending",
+      retries: 2,
+    });
+
+    const secondRetry = (await getState(base)).jobs.find(item => item.id === jobId);
+    assert.deepStrictEqual(
+      {
+        status: secondRetry.status,
+        attempts: secondRetry.attempts,
+        lastError: secondRetry.lastError,
+        retries: secondRetry.retries,
+        attemptsSinceRetry: secondRetry.attemptsSinceRetry,
+      },
+      {
+        status: "pending",
+        attempts: 6,
+        lastError: "simulated failure on attempt 6",
+        retries: 2,
+        attemptsSinceRetry: 0,
+      },
+    );
+
+    await stopServer(proc);
+    proc = startServer(port, dataDir, 50);
+    await waitForHealth(base);
+    const { job: twiceDeadJob } = await waitForJob(
+      base,
+      jobId,
+      item => item.status === "dead" && item.retries === 2,
+    );
+    assert.deepStrictEqual(
+      {
+        status: twiceDeadJob.status,
+        attempts: twiceDeadJob.attempts,
+        lastError: twiceDeadJob.lastError,
+        retries: twiceDeadJob.retries,
+        attemptsSinceRetry: twiceDeadJob.attemptsSinceRetry,
+      },
+      {
+        status: "dead",
+        attempts: 9,
+        lastError: "simulated failure on attempt 9",
+        retries: 2,
+        attemptsSinceRetry: 3,
+      },
+    );
+  } finally {
+    await stopServer(proc);
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 test("3. Retry of a non-dead job (pending or done) → refused with 409, record unchanged", async () => {
