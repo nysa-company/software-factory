@@ -53,6 +53,7 @@ test("1. on a fresh server, /health reports an empty queue", async () => {
   assert.deepStrictEqual(await response.json(), {
     ok: true,
     queue: { pending: 0, done: 0, dead: 0 },
+    approvals: { pending: 0, sent: 0, rejected: 0, blocked_recipient: 0 },
   });
 });
 
@@ -83,6 +84,7 @@ test("1b. after an event is accepted, /health reports queue.pending incremented 
     assert.deepStrictEqual(await (await fetch(`${pendingBase}/health`)).json(), {
       ok: true,
       queue: { pending: 1, done: 0, dead: 0 },
+      approvals: { pending: 0, sent: 0, rejected: 0, blocked_recipient: 0 },
     });
   } finally {
     pendingProc.kill("SIGKILL");
@@ -97,6 +99,7 @@ test("2. after a job completes, /health reports queue.done incremented by 1", as
   assert.deepStrictEqual(await getHealth(), {
     ok: true,
     queue: { pending: 0, done: 1, dead: 0 },
+    approvals: { pending: 1, sent: 0, rejected: 0, blocked_recipient: 0 },
   });
 });
 
@@ -107,5 +110,6 @@ test("3. after a job exhausts retries, /health reports queue.dead incremented by
   assert.deepStrictEqual(await getHealth(), {
     ok: true,
     queue: { pending: 0, done: 1, dead: 1 },
+    approvals: { pending: 1, sent: 0, rejected: 0, blocked_recipient: 0 },
   });
 });
