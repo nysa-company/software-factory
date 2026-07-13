@@ -98,13 +98,15 @@ function approve(id) {
   return { ok: true, status: "sent" };
 }
 
-function reject(id) {
+function reject(id, body) {
   const appr = state.approvals.find(a => a.id === id);
   if (!appr) return { ok: false, code: 404, error: "no such approval" };
   if (appr.status !== "pending") return { ok: false, code: 409, error: `already ${appr.status}` };
+  const reason = typeof body?.reason === "string" ? body.reason : null;
   appr.status = "rejected";
+  appr.reason = reason;
   persist();
-  return { ok: true, status: "rejected" };
+  return { ok: true, status: "rejected", reason };
 }
 
 // ---------- http ----------
@@ -160,8 +162,9 @@ const server = http.createServer(async (req, res) => {
     }
     const mReject = url.pathname.match(/^\/api\/approvals\/([^/]+)\/reject$/);
     if (req.method === "POST" && mReject) {
-      const result = reject(mReject[1]);
-      return json(res, result.ok ? 200 : result.code, result);
+      const body = await readBody(req);
+      const { code, ...result } = reject(mReject[1], body);
+      return json(res, result.ok ? 200 : code, result);
     }
     json(res, 404, { error: "not found" });
   } catch (e) {
