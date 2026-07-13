@@ -1,0 +1,33 @@
+# Live CI for this repo, instantiated from ci/github-actions-ci.template.yml.
+# The "product" here is the Relay conformance app; when the kit is
+# instantiated for a real product, that repo gets its own copy.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: tests
+        run: npm test
+        working-directory: conformance/app
+
+  test-immutability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the check walks every commit on the branch
+      - name: builder commits must not touch tests
+        run: bash ci/test-immutability-check.sh
+        env:
+          BASE_REF: origin/${{ github.base_ref || 'main' }}
+          TEST_PATHS: conformance/app/tests/
