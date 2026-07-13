@@ -18,7 +18,7 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 
 ## Step 3 — Keys and secrets
 
-- Three separate API keys minimum: factory-builder (family A), factory-reviewer/test-author (family B), product runtime. Named so console dashboards split spend cleanly.
+- Three separate API keys minimum: factory-production (planner/builder/narrator), factory-checking (spec-linter/test-author/reviewer), product runtime. Named so console dashboards split spend cleanly.
 - Secrets live only in GitHub Actions secrets and the hosting platform. No `.env` in git, ever.
 
 ## Step 4 — Linear

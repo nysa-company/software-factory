@@ -5,12 +5,12 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 ## Sequence
 
 1. **Operator** moves a ticket to Ready. That is the whole prioritization interface.
-2. **Planner** (family A) posts the spec'd description, acceptance criteria, and frozen contract on the ticket. Creates the ticket branch. Ticket → In progress. If the product docs can't answer a question, ticket → Blocked-Escalated with the question instead.
-3. **Spec-linter** (family B) lints the ticket text itself — criteria quality, contract coverage, consistency, edge coverage — and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator. The gate only exists between planning and test authoring — tickets past step 4 never re-lint.
-4. **Test-author** (family B) commits failing tests as the first commits on the ticket branch, asserting the frozen contract. Confirms they fail for the right reason. Ticks "Tests written".
-5. **Builder** (family A, fresh git worktree on the same branch) implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
+2. **Planner** (production family — Codex) posts the spec'd description, acceptance criteria, and frozen contract on the ticket. Creates the ticket branch. Ticket → In progress. If the product docs can't answer a question, ticket → Blocked-Escalated with the question instead.
+3. **Spec-linter** (checking family — Claude) lints the ticket text itself — criteria quality, contract coverage, consistency, edge coverage — and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator. The gate only exists between planning and test authoring — tickets past step 4 never re-lint.
+4. **Test-author** (checking family — Claude) commits failing tests as the first commits on the ticket branch, asserting the frozen contract. Confirms they fail for the right reason. Ticks "Tests written".
+5. **Builder** (production family — Codex, fresh git worktree on the same branch) implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
 6. **CI** runs: lint, typecheck, tests, build, self-referential snapshots, test-immutability check.
-7. **Reviewer** (family B) checks test adequacy and spec conformance. Approve, or request changes (max 2 rounds → Blocked-Escalated with a plain-language note). Ticket → Review.
+7. **Reviewer** (checking family — Claude) checks test adequacy and spec conformance. Approve, or request changes (max 2 rounds → Blocked-Escalated with a plain-language note). Ticket → Review.
 8. **Narrator** posts the evidence bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note.
 9. **Operator** approves from the bundle (or sends back with what's wrong). Approval = merge + staging deploy. Ticket → Done.
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Adapter: Claude Code CLI (model family A — builder, planner).
+# Adapter: Claude Code CLI (checking family — spec-linter, test-author, reviewer;
+# flipped from production roles 2026-07-13, operator decision).
 # Pinned CLI version below; the contract test fails loudly when the installed
 # CLI drifts, instead of silently losing budget enforcement.
 #

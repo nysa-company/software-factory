@@ -104,10 +104,15 @@ fi
 
 # --- cross-family role→adapter mapping (mechanical, not a prompt rule) ---
 # Override only via FACTORY_ADAPTER_OVERRIDE (used for mock in kit tests).
+# 2026-07-13 flip (operator decision): production roles (planner, builder,
+# narrator) run on codex; checking roles (spec-linter, test-author, reviewer)
+# run on claude-code. Rationale: the token-heavy runs land on the cheaper
+# family while the cross-family invariant — checkers never share a family
+# with producers — is preserved.
 case "$ROLE" in
-  builder|planner) DEFAULT_ADAPTER="claude-code";;
-  test-author|reviewer|spec-linter) DEFAULT_ADAPTER="codex";;
-  narrator) DEFAULT_ADAPTER="claude-code";;
+  builder|planner) DEFAULT_ADAPTER="codex";;
+  test-author|reviewer|spec-linter) DEFAULT_ADAPTER="claude-code";;
+  narrator) DEFAULT_ADAPTER="codex";;
   *) echo "unknown role: $ROLE" >&2; exit 2;;
 esac
 if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
