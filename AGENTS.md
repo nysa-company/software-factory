@@ -25,6 +25,12 @@ Product-agnostic kit for running an AI software factory. Read `FACTORY.md` befor
 
 Append an entry to `context/memory.md` for significant decisions, reversals, incidents, or system changes. Keep its Current truth section synchronized.
 
+## Learning promotion
+
+- Keep one-off notes in `.context/`, cross-session project truth in `context/memory.md`, and stable repository rules in `AGENTS.md`, documentation, or deterministic checks.
+- Propose a shared plugin skill only after the workflow repeats three times, appears across repositories, or is risky enough to require deterministic consistency.
+- Use the plugin's `/skill-promote` workflow in a clone or worktree of `nysa-agents-plugin`; never edit an installed plugin cache or publish a skill without review.
+
 ## Git (team standard)
 
 - Branch before committing if on the default branch — never commit directly to it.

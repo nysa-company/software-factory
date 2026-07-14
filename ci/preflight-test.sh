@@ -106,6 +106,7 @@ PER_RUN_MAX_TURNS=15
 PER_RUN_TIMEOUT_MIN=5
 DAILY_CAP_USD=$daily_cap
 ENV
+  printf '%s\n' 'VERIFY_COMMAND="bash ci/test-all.sh"' > "$dir/factory/PROJECT.env"
   echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$dir/factory/ledger.csv"
 }
 

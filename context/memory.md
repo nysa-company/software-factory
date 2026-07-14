@@ -7,7 +7,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - This repository is a product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions in this repository use their own numbering, beginning at Decision 1.
 - Backend fallback is pre-execution selection: production stays OpenAI-family, checking stays Anthropic-family, and one logical role run submits its task to at most one agent process.
-- The shared repository baseline is declared in `.agents/repo-standard.json` and enforced by `scripts/repo-check` plus redacted secret scanning.
+- The shared repository baseline v2 is declared in `.agents/repo-standard.json` and enforced by `scripts/repo-check` plus redacted secret scanning.
 - Autonomous Codex runs use the repository permission profile; checking roles receive role-scoped tools. Raw run output stays local under `.context/factory-runs/`.
 
 ## Log
@@ -29,3 +29,9 @@ Codex remains the production primary and Claude Code the checking primary. Optio
 Category: System change
 
 Adopted the shared repository baseline with secret/history scanning, branch conventions, Conductor/PR setup, and scoped conformance instructions. Agent worktrees reject secret-bearing files, adapters use constrained permissions, and raw run output stays outside git.
+
+## 2026-07-13 — Baseline v2 and shared-skill promotion
+
+Category: System change
+
+Upgraded to baseline v2 while preserving the factory's custom branch, CI, Conductor, PR, and conformance policies. Repeated cross-repository workflows now graduate through the plugin's reviewed `/skill-promote` process; monthly config review is no longer a default.

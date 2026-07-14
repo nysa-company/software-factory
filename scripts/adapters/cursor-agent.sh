@@ -7,13 +7,15 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
 
-BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
+BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD" ROLE="" VERIFY_COMMAND=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --role) ROLE="$2"; shift 2 ;;
     --budget) BUDGET="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --timeout-min) TIMEOUT_MIN="$2"; shift 2 ;;
     --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
+    --verify-command) VERIFY_COMMAND="$2"; shift 2 ;;
     --workdir) WORKDIR="$2"; shift 2 ;;
     --) shift; break ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;

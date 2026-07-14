@@ -238,7 +238,7 @@ WT="$TMP/worktree"
 mkdir -p "$MAIN/conformance"
 write_envelope "$MAIN/conformance"
 git -C "$MAIN" init -q
-git -C "$MAIN" add conformance/factory/ENVELOPE.env
+git -C "$MAIN" add conformance/factory/ENVELOPE.env conformance/factory/PROJECT.env
 GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com \
 GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com \
   git -C "$MAIN" commit -qm "fixture"
@@ -374,8 +374,8 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
    [[ "$(awk -F, '$3=="T-211" {print $8}' "$FALLBACK/factory/ledger.csv")" == "1.00" ]] &&
    [[ "$(wc -l < "$FALLBACK_TRACE" | tr -d ' ')" == "1" ]] &&
    grep -q '^cursor-task$' "$FALLBACK_TRACE"; then
-  FALLBACK_OUT="$(ls "$FALLBACK/factory/runs/"*.out)"
-  FALLBACK_META="$(ls "$FALLBACK/factory/runs/"*.meta)"
+  FALLBACK_OUT="$(ls "$FALLBACK/.context/factory-runs/"*.out)"
+  FALLBACK_META="$(ls "$FALLBACK/.context/factory-runs/"*.meta)"
   if ! grep -qE 'supersecret|abc123|user:pass' "$FALLBACK_OUT" &&
      grep -q '\[REDACTED\]' "$FALLBACK_OUT" &&
      grep -q 'input_tokens=70' "$FALLBACK_OUT" &&
@@ -597,7 +597,7 @@ MOCK_SLEEP=30 MOCK_DESCENDANT_PID_FILE="$DESCENDANT_PID_FILE" \
 KILL_WRAPPER_PID=$!
 KILL_PID_FILE=""
 for _i in $(seq 1 100); do
-  KILL_PID_FILE="$(ls "$KILL_ROOT/factory/runs/"*.pid 2>/dev/null || true)"
+  KILL_PID_FILE="$(ls "$KILL_ROOT/.context/factory-runs/"*.pid 2>/dev/null || true)"
   [[ -n "$KILL_PID_FILE" && -f "$DESCENDANT_PID_FILE" ]] && break
   sleep 0.05
 done
@@ -634,7 +634,7 @@ FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL_SWITCH" "$RACE_ROOT" >/dev/null
 wait "$RACE_WRAPPER_PID" 2>/dev/null || true
 RACE_DESCENDANT_PID="$(awk 'NR==1 {print; exit}' "$RACE_DESCENDANT" 2>/dev/null || true)"
 if [[ -f "$RACE_ROOT/factory/KILL" &&
-      -z "$(ls "$RACE_ROOT/factory/runs/"*.pid 2>/dev/null || true)" ]] &&
+      -z "$(ls "$RACE_ROOT/.context/factory-runs/"*.pid 2>/dev/null || true)" ]] &&
    { [[ -z "$RACE_DESCENDANT_PID" ]] ||
      ! kill -0 "$RACE_DESCENDANT_PID" 2>/dev/null; }; then
   pass "launch lock closes kill-switch PID publication race"
@@ -656,7 +656,7 @@ fi
 
 # A stale/reused PID identity is retained and never signalled.
 STALE_ROOT="$TMP/stale-pid"
-mkdir -p "$STALE_ROOT/factory/runs"
+mkdir -p "$STALE_ROOT/.context/factory-runs"
 python3 -c 'import os,time; os.setsid(); time.sleep(30)' &
 STALE_PROC_PID=$!
 for _i in $(seq 1 100); do
@@ -664,12 +664,12 @@ for _i in $(seq 1 100); do
   [[ "$STALE_PGID" == "$STALE_PROC_PID" ]] && break
   sleep 0.01
 done
-cat > "$STALE_ROOT/factory/runs/stale-test.meta" <<META
+cat > "$STALE_ROOT/.context/factory-runs/stale-test.meta" <<META
 run_id=stale-test
 phase=spawned
 pgid=$STALE_PROC_PID
 META
-cat > "$STALE_ROOT/factory/runs/stale-test.pid" <<PID
+cat > "$STALE_ROOT/.context/factory-runs/stale-test.pid" <<PID
 pid=$STALE_PROC_PID
 pgid=$STALE_PROC_PID
 run_id=stale-test
@@ -678,7 +678,7 @@ PID
 FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL_SWITCH" "$STALE_ROOT" \
   > "$TMP/stale-kill.out" 2>&1
 if kill -0 "$STALE_PROC_PID" 2>/dev/null &&
-   [[ -f "$STALE_ROOT/factory/runs/stale-test.pid" ]] &&
+   [[ -f "$STALE_ROOT/.context/factory-runs/stale-test.pid" ]] &&
    grep -q "refusing stale or mismatched" "$TMP/stale-kill.out"; then
   pass "kill switch refuses stale PID identity"
 else

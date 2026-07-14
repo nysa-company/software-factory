@@ -15,9 +15,12 @@ import sys
 
 MANIFEST = Path(".agents/repo-standard.json")
 SUPPORTED_SCHEMA = 1
-SUPPORTED_BASELINE = 1
-SECRET_IGNORES = (".env", ".env.*", "*.pem", "*.key")
+SUPPORTED_BASELINE = 2
+SECRET_IGNORES = (
+    ".env", ".env.*", "!.env.example", "!.env.*.example", "*.pem", "*.key",
+)
 VALID_PROFILES = {"service", "library", "toolkit"}
+PLACEHOLDER_VERIFY = re.compile(r"<[^>]+>|\b(?:todo|tbd|replace me)\b", re.I)
 
 
 class Check:
@@ -49,10 +52,10 @@ def load_manifest(root: Path, check: Check) -> dict | None:
         return None
     schema = value.get("schema_version")
     if schema != SUPPORTED_SCHEMA:
-        check.warnings.append(
-            f"unsupported schema_version {schema!r}; supported={SUPPORTED_SCHEMA}; skipping checks"
+        check.failures.append(
+            f"unsupported schema_version {schema!r}; supported={SUPPORTED_SCHEMA}"
         )
-        return {}
+        return None
     return value
 
 
@@ -70,7 +73,7 @@ def enabled(features: dict, name: str) -> bool:
 def validate(root: Path) -> Check:
     check = Check()
     manifest = load_manifest(root, check)
-    if manifest is None or manifest == {}:
+    if manifest is None:
         return check
 
     baseline = manifest.get("baseline_version")
@@ -105,7 +108,7 @@ def validate(root: Path) -> Check:
                 except (TypeError, ValueError):
                     check.failures.append(f"{label}.expires must be YYYY-MM-DD")
 
-    for required in ("AGENTS.md", "CLAUDE.md", "context/memory.md", ".claude/config-review.json"):
+    for required in ("AGENTS.md", "CLAUDE.md", "context/memory.md"):
         check.require((root / required).is_file(), f"missing {required}")
     if (root / "CLAUDE.md").is_file():
         check.require(text(root, "CLAUDE.md").strip() == "@AGENTS.md", "CLAUDE.md must contain only @AGENTS.md")
@@ -114,6 +117,18 @@ def validate(root: Path) -> Check:
     check.require(bool(ignore), "missing or empty .gitignore")
     for pattern in SECRET_IGNORES:
         check.require(pattern in ignore.splitlines(), f".gitignore missing {pattern}")
+    ignored = set(subprocess.run(
+        ["git", "check-ignore", "--no-index", "--stdin"],
+        cwd=root,
+        input=".env\n.env.local\n.env.example\n.env.team.example\n",
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines())
+    check.require({".env", ".env.local"}.issubset(ignored), "real environment files must be ignored")
+    check.require(
+        ignored.isdisjoint({".env.example", ".env.team.example"}),
+        "environment example files must remain trackable",
+    )
 
     if enabled(features, "secret_scan"):
         scanner = root / "scripts/secret-scan"
@@ -130,7 +145,11 @@ def validate(root: Path) -> Check:
     if enabled(features, "pull_request_template"):
         check.require((root / ".github/pull_request_template.md").is_file(), "pull_request_template enabled but template is missing")
 
+    if enabled(features, "config_review"):
+        check.require((root / ".claude/config-review.json").is_file(), "config_review enabled but .claude/config-review.json is missing")
+
     if enabled(features, "git_flow"):
+        check.require((root / "docs/git-flow.md").is_file(), "git_flow enabled but docs/git-flow.md is missing")
         agents = text(root, "AGENTS.md").lower()
         check.require("branch" in agents and "main" in agents, "git_flow enabled but AGENTS.md lacks branch/main guidance")
         pattern = manifest.get("branch_pattern")
@@ -152,6 +171,27 @@ def validate(root: Path) -> Check:
 
     verify = manifest.get("verification_command")
     check.require(isinstance(verify, str) and bool(verify.strip()), "verification_command is required")
+    if isinstance(verify, str) and verify.strip():
+        check.require(
+            PLACEHOLDER_VERIFY.search(verify) is None,
+            "verification_command must be concrete, not a placeholder",
+        )
+
+    if enabled(features, "github_ci"):
+        workflow_dir = root / ".github/workflows"
+        workflows = [
+            path for pattern in ("*.yml", "*.yaml")
+            for path in workflow_dir.glob(pattern)
+        ] if workflow_dir.is_dir() else []
+        workflow_text = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace") for path in workflows
+        )
+        check.require(bool(workflows), "github_ci enabled but no GitHub Actions workflow exists")
+        check.require("fetch-depth: 0" in workflow_text, "github_ci requires full-history checkout (fetch-depth: 0)")
+        check.require("scripts/repo-check" in workflow_text, "github_ci must run scripts/repo-check")
+        check.require("scripts/secret-scan" in workflow_text, "github_ci must run scripts/secret-scan")
+        if isinstance(verify, str) and verify.strip() and PLACEHOLDER_VERIFY.search(verify) is None:
+            check.require(verify in workflow_text, "github_ci must run verification_command")
 
     scoped = manifest.get("scoped_agents", [])
     check.require(isinstance(scoped, list), "scoped_agents must be a JSON array")
@@ -187,10 +227,7 @@ def main() -> int:
     if check.failures:
         print(f"repo-check: {len(check.failures)} failure(s)", file=sys.stderr)
         return 1
-    if any("unsupported schema_version" in warning for warning in check.warnings):
-        print("repo-check: skipped")
-    else:
-        print("repo-check: PASS")
+    print("repo-check: PASS")
     return 0
 
 

@@ -2,8 +2,6 @@ conformance/app/data/
 .context/
 factory/ledger.csv
 factory/KILL
-**/factory/runs/*.out
-**/factory/runs/*.pid
 **/factory/.linear-sync.lock
 *.log
 # Legacy wrapper output; existing tracked history stays until approved cleanup.

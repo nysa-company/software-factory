@@ -8,9 +8,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,20 +30,12 @@ jobs:
         run: bash ci/secret-scan-test.sh
       - name: adapter permission policies
         run: bash ci/adapter-policy-test.sh
-      - name: tests
-        run: npm test
-        working-directory: conformance/app
-      - name: factory script regressions
-        run: bash ci/test-factory-scripts.sh
-      - name: Linear reconciler regressions
-        run: python3 ci/linear-sync-test.py
-      - name: reorder-test-fixes suite
-        run: bash ci/reorder-test-fixes-test.sh
-      - name: preflight suite
-        run: bash ci/preflight-test.sh
+      - name: declared verification command
+        run: bash ci/test-all.sh
 
   macos-bash-3:
     runs-on: macos-14
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,6 +50,7 @@ jobs:
 
   test-immutability:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:

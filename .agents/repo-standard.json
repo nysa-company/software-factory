@@ -1,11 +1,13 @@
 {
   "schema_version": 1,
-  "baseline_version": 1,
+  "baseline_version": 2,
   "profile": "toolkit",
   "features": {
     "repo_check": true,
     "secret_scan": true,
     "git_flow": true,
+    "github_ci": true,
+    "config_review": false,
     "conductor": true,
     "pull_request_template": true
   },

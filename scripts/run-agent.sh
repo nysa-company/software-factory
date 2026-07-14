@@ -377,6 +377,7 @@ RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
 rm -f "$RUN_READY_FILE" "$RUN_GO_FILE"
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
   "$RUN_READY_FILE" "$RUN_GO_FILE" "$ADAPTER_SH" \
+  --role "$ROLE" \
   --budget "$PER_RUN_BUDGET_USD" \
   --max-turns "$PER_RUN_MAX_TURNS" \
   --timeout-min "$PER_RUN_TIMEOUT_MIN" \
