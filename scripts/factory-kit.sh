@@ -942,13 +942,14 @@ import os, pathlib, subprocess, sys
 root = pathlib.Path(checkout)
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
-selected = subprocess.run(
-    ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
-)
-if selected.returncode == 0:
-    developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
-    if os.path.isfile(os.path.join(developer_bin, "git")):
-        path_value = developer_bin + os.pathsep + path_value
+if os.path.isfile("/usr/bin/xcode-select"):
+    selected = subprocess.run(
+        ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
+    )
+    if selected.returncode == 0:
+        developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
+        if os.path.isfile(os.path.join(developer_bin, "git")):
+            path_value = developer_bin + os.pathsep + path_value
 environment = {
     "PATH": path_value,
     "HOME": home,
@@ -1254,13 +1255,14 @@ deny_sibling = sys.argv[12]
 deny_home = sys.argv[13]
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
-selected = subprocess.run(
-    ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
-)
-if selected.returncode == 0:
-    developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
-    if os.path.isfile(os.path.join(developer_bin, "git")):
-        path_value = developer_bin + os.pathsep + path_value
+if os.path.isfile("/usr/bin/xcode-select"):
+    selected = subprocess.run(
+        ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
+    )
+    if selected.returncode == 0:
+        developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
+        if os.path.isfile(os.path.join(developer_bin, "git")):
+            path_value = developer_bin + os.pathsep + path_value
 environment = {
     "PATH": path_value,
     "HOME": home,
