@@ -90,7 +90,7 @@ EOF
 }
 
 safe_remove_owned_temp() {
-  python3 - "$1" "$2" "$3" <<'PY'
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
 import os, pathlib, shutil, stat, sys
 root = pathlib.Path(sys.argv[1])
 expected_device, expected_inode = map(int, sys.argv[2:4])
@@ -605,11 +605,10 @@ acquire_lock() {
     owner_pid="$(awk -F= '$1=="pid" {print $2; exit}' "$lock/owner" 2>/dev/null || true)"
     owner_start="$(awk -F= '$1=="process_start" {print substr($0,index($0,"=")+1); exit}' "$lock/owner" 2>/dev/null || true)"
     owner_nonce="$(awk -F= '$1=="nonce" {print $2; exit}' "$lock/owner" 2>/dev/null || true)"
-    if [[ -f "$lock/owner" ]]; then
-      owner_hash="$(file_hash "$lock/owner")"
-    else
-      owner_hash="missing"
-    fi
+    # A concurrent holder may release the lock between the existence check
+    # and the hash read; treat a vanished owner file as missing and retry.
+    owner_hash="$(file_hash "$lock/owner" 2>/dev/null || true)"
+    [[ -n "$owner_hash" ]] || owner_hash="missing"
     if [[ "$owner_pid" =~ ^[0-9]+$ && "$owner_nonce" =~ ^[0-9a-f]{32}$ &&
           -n "$owner_start" ]] &&
        kill -0 "$owner_pid" 2>/dev/null &&
