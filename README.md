@@ -8,14 +8,11 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 
 | Folder | Contents |
 |---|---|
-| `FACTORY.md` | How to instantiate the kit for a product, plus the onboarding validator checklist |
+| `docs/` | Product brief, architecture, factory setup, workflows, runbooks, operations, and metrics |
 | `envelope/` | Budget and escalation template — the factory's hard limits |
 | `roles/` | Versioned contracts for dispatcher, planner, spec-linter, test-author, builder, reviewer, and narrator |
-| `workflows/` | Linear board setup, the per-ticket flow, the evidence rubric |
 | `scripts/` | Run wrapper with cost ledger, CLI adapters, kill switch, spend rollup |
-| `ci/` | Test-immutability check, branch protection, walking-skeleton pattern, rollback drill, Railway recipe |
-| `runbooks/` | Operator runbook: what to do when things break |
-| `metrics/` | Per-ticket metrics schema |
+| `ci/` | Executable regression checks and the product CI template |
 | `conformance/` | The Nysa-shaped conformance product — the kit's permanent test bed |
 
 ## Core rules (enforced by the kit, not by prompts)
@@ -98,8 +95,9 @@ running**. Never bypass a preflight failure.
 
 ## Quick start
 
-Read `FACTORY.md`, copy the templates into your product repo, fill the blanks, run the validator checklist, then start with a walking skeleton (`ci/walking-skeleton.md`). Do not create a ticket backlog before the skeleton's staging URL works.
+Read the [product brief](docs/product-brief.md), [architecture](docs/architecture.md), and [factory setup checklist](docs/factory-setup.md). Copy the required templates into the product repo, fill the blanks, run the validator, then start with the [walking skeleton](docs/operations/walking-skeleton.md). Do not create a ticket backlog before its staging URL works.
 
 For the complete transition and ownership rules, see
-`workflows/linear.md`, `workflows/ticket-flow.md`, and
-`runbooks/operator.md`.
+[`docs/workflows/linear.md`](docs/workflows/linear.md),
+[`docs/workflows/ticket-flow.md`](docs/workflows/ticket-flow.md), and
+[`docs/runbooks/operator.md`](docs/runbooks/operator.md).

@@ -1,4 +1,4 @@
-# Evidence rubric
+# Review evidence rubric
 
 What the operator must see in the Narrator's bundle before approving, by risk class. The class is set by the planner via labels; when in doubt, the higher class applies.
 

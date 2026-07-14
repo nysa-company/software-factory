@@ -1,5 +1,7 @@
 # Rollback drill
 
+Use this operational drill before a product factory enters its pilot.
+
 Rehearsed once at instantiation (required by the validator checklist) and available any time a merged change turns out wrong.
 
 ## The procedure

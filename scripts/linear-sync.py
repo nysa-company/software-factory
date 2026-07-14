@@ -29,6 +29,9 @@ TEAM_NAME = "Software Factory"
 TEAM_KEY = "SF"
 MAX_COMMENT_CHARS = 60000
 
+# Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
+# The second element is the Linear workflow-state *type* used when the
+# column has to be created during --setup.
 STATES = {
     "backlog": ("Backlog", "backlog"),
     "ready": ("Ready", "unstarted"),

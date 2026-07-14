@@ -1,4 +1,4 @@
-# Operator runbook
+# Factory operator runbook
 
 What to do when something breaks, written for a non-technical operator. Each entry: how you notice, what to do, what not to do.
 
@@ -17,7 +17,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Failed deploy / broken staging
 
 - Notice: staging URL errors, or a Narrator bundle says "preview broken".
-- Do: check Railway's dashboard for the failing deploy log; the usual fix is reverting the last merged PR per `ci/rollback-drill.md`. If staging is down but no recent merge happened, restart the Railway service from its dashboard.
+- Do: check Railway's dashboard for the failing deploy log; the usual fix is reverting the last merged PR per `docs/operations/rollback-drill.md`. If staging is down but no recent merge happened, restart the Railway service from its dashboard.
 - Don't: approve anything while staging is broken — bundles can't be verified.
 
 ## Leaked secret (a key appears in a file, log, or commit)

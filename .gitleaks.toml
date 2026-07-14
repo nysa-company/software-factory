@@ -1,0 +1,9 @@
+title = "Software Factory Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Baseline receipt contains SHA-256 ownership hashes, not credentials"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)\.agents/repo-standard\.json$''']

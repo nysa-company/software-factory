@@ -1,4 +1,4 @@
-# Metrics schema
+# Factory metrics
 
 What gets measured per ticket, where it comes from, and what it gates. Weekly reporting tooling is built after the first shakedown, from observed needs — this schema is fixed now so the data exists from ticket 1.
 

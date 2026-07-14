@@ -1,4 +1,4 @@
-# Railway recipe
+# Railway operations
 
 Railway hosts staging, PR preview deploys, and Postgres. Chosen over Fly.io for a non-technical operator: no Dockerfile required, built-in Postgres with automated backups, deploys from GitHub pushes.
 

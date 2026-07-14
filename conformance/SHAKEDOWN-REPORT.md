@@ -27,8 +27,8 @@ First run of the kit against the Relay conformance product. Everything below was
 ## Needs the operator (not executable from this session)
 
 - GitHub remote for this repo + branch protection + the CI template wired (`ci/github-actions-ci.template.yml`).
-- Linear board per `workflows/linear.md`, and `LINEAR_API_KEY` for the spend rollup.
-- Railway account for staging/preview deploys (`ci/railway.md`).
+- Linear board per `docs/workflows/linear.md`, and `LINEAR_API_KEY` for the spend rollup.
+- Railway account for staging/preview deploys (`docs/operations/railway.md`).
 - Console spend caps on Anthropic + OpenAI, and the three named API keys.
 - A first real-CLI ticket: one Relay ticket run end to end with actual `claude`/`codex` runs via `run-agent.sh` (everything here used the mock adapter or direct execution; real-CLI runs spend real money and were left for the operator's go-ahead).
 

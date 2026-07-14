@@ -1,4 +1,4 @@
-# Per-ticket flow
+# Ticket workflow
 
 The full lifecycle of one ticket, with the two invariants that never bend: **tests are authored before implementation by a different model family**, and **the operator approves from an evidence bundle before merge**.
 

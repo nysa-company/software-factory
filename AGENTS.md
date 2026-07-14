@@ -1,6 +1,6 @@
 # Software Factory Kit
 
-Product-agnostic kit for running an AI software factory. Read `FACTORY.md` before changing the engine model, role contracts, ticket flow, or product-instantiation contract.
+Product-agnostic kit for running an AI software factory. Read `docs/product-brief.md`, `docs/architecture.md`, and `docs/factory-setup.md` before changing the engine model, role contracts, ticket flow, or product-instantiation contract.
 
 ## Run checks
 
@@ -12,7 +12,7 @@ Product-agnostic kit for running an AI software factory. Read `FACTORY.md` befor
 - Keep the kit product-agnostic; Nysa-specific state belongs in the Nysa product repository.
 - Reuse the existing shell and Python helpers before adding dependencies.
 - Preserve the builder/test-author separation and evidence-first approval flow.
-- Update `FACTORY.md` and the relevant runbook when an engine contract changes.
+- Update the relevant file under `docs/` and `context/memory.md` when durable product or engine truth changes.
 
 ## Session end
 
@@ -31,3 +31,16 @@ Append an entry to `context/memory.md` for significant decisions, reversals, inc
 - When printing back any config, env vars, JSON, or logs, redact every value whose KEY matches `key|token|secret|password|url|dsn|conn|auth` (case-insensitive), AND every `scheme://user:pass@host` URL — regardless of how the value looks. Credentials hide inside URLs and in innocuous-looking key-named fields.
 - Prefer printing key names only.
 - If a secret does leak into a transcript, commit, or log: flag it prominently and recommend rotating the exposed credential immediately.
+
+<!-- nysa-agents:repo-standard:start -->
+## Repository baseline (managed)
+
+- Verification: run `bash ci/test-all.sh` plus `scripts/repo-check` and `scripts/secret-scan` before declaring a code change complete.
+- The protected default branch is `main`. Create short-lived branches matching `^(feat|fix|docs|chore|refactor|test|hotfix|spike)/[a-z0-9]+(?:-[a-z0-9]+)*$`; never push or merge without explicit approval.
+- Never print credentials or raw secret-bearing configuration. Redact values by key name and credential-bearing URL before sharing output.
+- Put disposable agent scratch and generated reports in gitignored `.context/`.
+- Keep tracked cross-session truth in `context/memory.md` under `Current truth` and `Log`; promote stable knowledge instead of keeping raw transcripts.
+- Stable documentation belongs in the declared documentation roots: `docs/`. Update the relevant document when its truth changes.
+- Startup-critical rules belong in `AGENTS.md`; narrower subtree differences belong in scoped instruction files.
+- Scoped instruction files: none.
+<!-- nysa-agents:repo-standard:end -->
