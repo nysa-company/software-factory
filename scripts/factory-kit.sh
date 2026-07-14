@@ -947,9 +947,17 @@ if os.path.isfile("/usr/bin/xcode-select"):
         ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
     )
     if selected.returncode == 0:
-        developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
-        if os.path.isfile(os.path.join(developer_bin, "git")):
-            path_value = developer_bin + os.pathsep + path_value
+        developer_git = os.path.join(selected.stdout.strip(), "usr", "bin", "git")
+        if os.path.isfile(developer_git):
+            override_bin = os.path.join(scratch, "factory-tools")
+            os.makedirs(override_bin, exist_ok=True)
+            git_link = os.path.join(override_bin, "git")
+            if os.path.lexists(git_link):
+                if not os.path.islink(git_link) or os.readlink(git_link) != developer_git:
+                    raise SystemExit("sandbox Git override path is unsafe")
+            else:
+                os.symlink(developer_git, git_link)
+            path_value = override_bin + os.pathsep + path_value
 environment = {
     "PATH": path_value,
     "HOME": home,
@@ -1264,9 +1272,17 @@ if os.path.isfile("/usr/bin/xcode-select"):
         ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
     )
     if selected.returncode == 0:
-        developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
-        if os.path.isfile(os.path.join(developer_bin, "git")):
-            path_value = developer_bin + os.pathsep + path_value
+        developer_git = os.path.join(selected.stdout.strip(), "usr", "bin", "git")
+        if os.path.isfile(developer_git):
+            override_bin = os.path.join(scratch, "factory-tools")
+            os.makedirs(override_bin, exist_ok=True)
+            git_link = os.path.join(override_bin, "git")
+            if os.path.lexists(git_link):
+                if not os.path.islink(git_link) or os.readlink(git_link) != developer_git:
+                    raise SystemExit("sandbox Git override path is unsafe")
+            else:
+                os.symlink(developer_git, git_link)
+            path_value = override_bin + os.pathsep + path_value
 environment = {
     "PATH": path_value,
     "HOME": home,
