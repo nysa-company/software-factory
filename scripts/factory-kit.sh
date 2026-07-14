@@ -1176,6 +1176,12 @@ for path in ("/dev/null", "/dev/random", "/dev/urandom"):
     lines.append("(allow file-read* (literal %s))\n" % quote(path))
 lines.append('(allow file-write* (literal "/dev/null"))\n')
 lines.append("(allow signal (target self))\n")
+# Product and kit suites may bind ephemeral local servers, but they do not
+# need DNS or external connectivity. Keep loopback separate from the reviewed
+# certification-only network opt-in below.
+lines.append('(allow network-bind (local ip "localhost:*"))\n')
+lines.append('(allow network-inbound (local ip "localhost:*"))\n')
+lines.append('(allow network-outbound (remote ip "localhost:*"))\n')
 for path in extra_denied:
     if path:
         lines.append("(deny file-read* (subpath %s))\n" % quote(str(pathlib.Path(path).resolve())))
