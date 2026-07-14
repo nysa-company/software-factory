@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "baseline_version": 1,
+  "profile": "toolkit",
+  "features": {
+    "repo_check": true,
+    "secret_scan": true,
+    "git_flow": true,
+    "conductor": true,
+    "pull_request_template": true
+  },
+  "branch_pattern": "^(ticket/T-[0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*|bookkeeping/T-[0-9]+-closeout|(feat|fix|docs|chore|refactor|test|hotfix|spike)/[a-z0-9]+(?:-[a-z0-9]+)*)$",
+  "verification_command": "bash ci/test-all.sh",
+  "scoped_agents": ["conformance"],
+  "exceptions": []
+}

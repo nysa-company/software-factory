@@ -61,7 +61,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Close-out ledger PR
 
-- Notice: at ticket close-out the dispatcher opens a short-lived bookkeeping PR (e.g. `bookkeeping/T-NNN-closeout`) carrying new ledger rows and redacted run metadata/evidence. Redacted `factory/runs/*.out` streams remain local and ignored; unredacted Cursor output is never persisted.
+- Notice: at ticket close-out the dispatcher opens a short-lived bookkeeping PR (e.g. `bookkeeping/T-NNN-closeout`) carrying new ledger rows and redacted run metadata/evidence. Raw output stays local under `.context/factory-runs/`; unredacted Cursor output is never committed.
 - Do: review and merge it like any factory bookkeeping change — this is the sanctioned ledger write path, not a controls violation. Check `run_id`, family, exact Cursor model, selection reason, and cost basis for fallback runs.
 - Don't: ask the dispatcher to commit ledger rows directly to `main` or to a ticket branch outside this flow.
 

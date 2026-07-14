@@ -5,7 +5,13 @@ Product-agnostic kit for running an AI software factory. Read `FACTORY.md` befor
 ## Run checks
 
 - Full suite: `bash ci/test-all.sh`
+- Baseline: `scripts/repo-check`
+- Secret history and working tree: `scripts/secret-scan`
 - Target the smallest relevant shell test while iterating, then run the full suite before completion.
+
+## Scoped instructions
+
+- `conformance/AGENTS.md` adds synthetic-data, Node command, and test-immutability constraints for the Relay proof app. Read it before changing anything under `conformance/`.
 
 ## Conventions
 
@@ -13,6 +19,7 @@ Product-agnostic kit for running an AI software factory. Read `FACTORY.md` befor
 - Reuse the existing shell and Python helpers before adding dependencies.
 - Preserve the builder/test-author separation and evidence-first approval flow.
 - Update `FACTORY.md` and the relevant runbook when an engine contract changes.
+- Future raw agent output is local-only under `.context/factory-runs/`; never commit it. The already tracked historical run outputs remain unchanged until the operator separately approves their removal.
 
 ## Session end
 
@@ -21,6 +28,7 @@ Append an entry to `context/memory.md` for significant decisions, reversals, inc
 ## Git (team standard)
 
 - Branch before committing if on the default branch — never commit directly to it.
+- Ticket work uses `ticket/T-NNN-<slug>`; close-out ledger work uses `bookkeeping/T-NNN-closeout`; other maintenance uses `<type>/<short-kebab-summary>` as declared in `.agents/repo-standard.json`.
 - On non-default branches, commit at logical checkpoints and at session end without asking. Never push, merge, or open a PR unless the user explicitly asks.
 - Commit messages: a concise summary line that explains the *why*.
 - Use the `gh` CLI for GitHub operations (PRs, issues).

@@ -11,6 +11,13 @@ STUB_BIN="$TMP/bin"
 FAILURES=0
 mkdir -p "$STUB_BIN"
 
+cat > "$STUB_BIN/gitleaks" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$STUB_BIN/gitleaks"
+export GITLEAKS_BIN="$STUB_BIN/gitleaks"
+
 cleanup() {
   if [[ -n "${FIRST_PID:-}" ]] && kill -0 "$FIRST_PID" 2>/dev/null; then
     kill "$FIRST_PID" 2>/dev/null || true
@@ -31,6 +38,7 @@ write_envelope() {
     'PER_RUN_MAX_TURNS=5' \
     'PER_RUN_TIMEOUT_MIN=1' \
     'DAILY_CAP_USD=50.00' > "$1/factory/ENVELOPE.env"
+  printf '%s\n' 'VERIFY_COMMAND="bash ci/test-all.sh"' > "$1/factory/PROJECT.env"
 }
 
 write_backend_stubs() {

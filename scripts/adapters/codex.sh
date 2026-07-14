@@ -9,21 +9,28 @@
 # print agent output, and print a final line: "turns=N cost_usd=X".
 set -euo pipefail
 
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck disable=SC1091
+source "$KIT_DIR/.codex/factory-permissions.env"
+
 PINNED_VERSION="${CODEX_PINNED:-0.144.1}"  # pinned at shakedown 2026-07-11
 
-BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
+BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD" ROLE="" VERIFY_COMMAND=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --role) ROLE="$2"; shift 2;;
     --budget) BUDGET="$2"; shift 2;;
     --max-turns) MAX_TURNS="$2"; shift 2;;
     --timeout-min) TIMEOUT_MIN="$2"; shift 2;;
     --prompt-file) PROMPT_FILE="$2"; shift 2;;
+    --verify-command) VERIFY_COMMAND="$2"; shift 2;;
     --workdir) WORKDIR="$2"; shift 2;;
     --) shift; break;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 TASK="${*:-}"
+[[ -n "$ROLE" && -n "$VERIFY_COMMAND" ]] || { echo "role and verify command are required" >&2; exit 2; }
 
 command -v codex >/dev/null || { echo "codex CLI not installed" >&2; exit 6; }
 INSTALLED="$(codex --version 2>/dev/null | head -n1 || true)"
@@ -37,13 +44,19 @@ FULL_TASK="$TASK"
 
 $TASK"
 
-# First-real-run finding (2026-07-12): workspace-write is not enough — it
-# blocks TCP listen (tests spawn a real server) and blocks git commits from
-# worktrees (their .git metadata lives in the main repo, outside the sandbox).
-# Same call as the claude adapter: bypass the CLI sandbox; containment comes
-# from the envelope (budget, timeout), the worktree, and CI gates.
+# The repo's named permission profile grants worktree writes, denies secret
+# files, allows only loopback networking, and treats the linked worktree's
+# common git directory as an additional workspace root for commits.
+GIT_COMMON_DIR="$(git -C "$WORKDIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
+  echo "workdir is not a git worktree: $WORKDIR" >&2
+  exit 6
+}
 OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-  codex exec --json --dangerously-bypass-approvals-and-sandbox "$FULL_TASK" 2>&1)" || STATUS=$?
+  codex exec --json --strict-config --ephemeral -a never \
+    -c "default_permissions=\"$CODEX_FACTORY_PERMISSION_NAME\"" \
+    -c "$CODEX_FACTORY_PERMISSION_CONFIG" \
+    -c "$CODEX_FACTORY_SHELL_CONFIG" \
+    --add-dir "$GIT_COMMON_DIR" "$FULL_TASK" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"
 
 # Cost estimation from token counts. If tokens are missing, emit NO cost token

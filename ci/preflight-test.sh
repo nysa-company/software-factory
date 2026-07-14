@@ -25,6 +25,10 @@ case "\${1:-}" in
     echo "--max-budget-usd"
     echo "--output-format"
     echo "--append-system-prompt"
+    echo "--permission-mode"
+    echo "--allowedTools"
+    echo "--disallowedTools"
+    echo "--no-session-persistence"
     exit 0 ;;
   auth) [[ "\${2:-}" == "status" ]] && exit 0 ;;
 esac
@@ -41,7 +45,11 @@ case "\${1:-}" in
   --version) echo "codex-cli $ver"; exit 0 ;;
   login) [[ "\${2:-}" == "status" ]] && exit 0 ;;
   exec)
-    if [[ "\${2:-}" == "--help" ]]; then echo "--json"; fi
+    if [[ "\${2:-}" == "--help" ]]; then echo "--json --strict-config --ephemeral --add-dir --ask-for-approval"; fi
+    exit 0
+    ;;
+  doctor)
+    echo '{"checks":[{"id":"config.load","status":"ok"}]}'
     exit 0
     ;;
 esac
@@ -69,6 +77,14 @@ esac
 exit 0
 STUB
   chmod +x "$STUB_BIN/agent"
+}
+
+write_stub_gitleaks() {
+  cat > "$STUB_BIN/gitleaks" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$STUB_BIN/gitleaks"
 }
 
 write_stub_timeout() {
@@ -136,6 +152,7 @@ run_preflight() {
   shift 2
   local env_args=(
     PATH="$STUB_BIN:$PATH"
+    GITLEAKS_BIN="$STUB_BIN/gitleaks"
     FACTORY_ROOT="$factory_root"
     FACTORY_GLOBAL_ENV="$TMP/default-global.env"
     CLAUDE_CODE_PINNED=
@@ -182,6 +199,7 @@ write_stub_claude "2.1.207"
 write_stub_codex "0.144.1"
 write_stub_cursor "2026.07.test" "0"
 write_stub_timeout
+write_stub_gitleaks
 cat > "$TMP/default-global.env" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00
 CLAUDE_CODE_PINNED=2.1.207

@@ -3,7 +3,7 @@
 #   1. Drops a KILL file anchored at the product repo's factory/ dir
 #      (same anchor run-agent.sh checks — not $PWD-dependent).
 #   2. Terminates factory-launched process groups precisely, via the PID files
-#      the run wrapper writes (factory/runs/*.pid) — NOT every agent process on
+#      the run wrapper writes (.context/factory-runs/*.pid) — NOT every agent process on
 #      the machine; the operator's own sessions are untouched.
 #   3. Disables factory launchd schedules (com.factory.*, rollup exempt).
 # Key rotation is NOT here — that is incident response for a suspected leak
@@ -15,7 +15,7 @@ set -uo pipefail
 
 REPO_ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
-RUNS_DIR="$FACTORY_DIR/runs"
+RUNS_DIR="${FACTORY_RUNS_DIR:-$REPO_ROOT/.context/factory-runs}"
 LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
 HELD_LAUNCH_LOCK=0
 

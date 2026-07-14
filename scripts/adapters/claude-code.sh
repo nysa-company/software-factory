@@ -10,19 +10,22 @@ set -euo pipefail
 
 PINNED_VERSION="${CLAUDE_CODE_PINNED:-2.1.207}"  # pinned at shakedown 2026-07-11
 
-BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
+BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD" ROLE="" VERIFY_COMMAND=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --role) ROLE="$2"; shift 2;;
     --budget) BUDGET="$2"; shift 2;;
     --max-turns) MAX_TURNS="$2"; shift 2;;
     --timeout-min) TIMEOUT_MIN="$2"; shift 2;;
     --prompt-file) PROMPT_FILE="$2"; shift 2;;
+    --verify-command) VERIFY_COMMAND="$2"; shift 2;;
     --workdir) WORKDIR="$2"; shift 2;;
     --) shift; break;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
 TASK="${*:-}"
+[[ -n "$ROLE" && -n "$VERIFY_COMMAND" ]] || { echo "role and verify command are required" >&2; exit 2; }
 
 command -v claude >/dev/null || { echo "claude CLI not installed" >&2; exit 6; }
 INSTALLED="$(claude --version 2>/dev/null | head -n1 || true)"
@@ -35,21 +38,51 @@ esac
 # the CLI; --max-budget-usd exists and is a HARD in-run dollar stop — strictly
 # better enforcement than the old post-hoc check. Turns remain logged from the
 # JSON result; timeout guards the wall clock.
-# Note: no bash arrays for the optional prompt (macOS ships bash 3.2, where
-# empty-array expansion under `set -u` aborts).
-# First-real-run finding (2026-07-12): headless -p mode cannot edit files or
-# run commands without --dangerously-skip-permissions. Factory runs are
-# autonomous by design; containment comes from the envelope (budget, timeout),
-# the worktree, and CI gates — not from interactive permission prompts.
+# `dontAsk` makes any unlisted tool fail closed in headless mode. Checking
+# roles can read/edit their evidence and run the declared verification command;
+# only the test-author receives commit and targeted Node test commands.
+GIT_COMMON_DIR="$(git -C "$WORKDIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
+  echo "workdir is not a git worktree: $WORKDIR" >&2
+  exit 6
+}
+COMMON_TOOLS="Read,Glob,Grep,Edit,Write,Bash(git status*),Bash(git diff*),Bash(git log*),Bash($VERIFY_COMMAND)"
+case "$ROLE" in
+  test-author)
+    ALLOWED_TOOLS="$COMMON_TOOLS,Bash(git add *),Bash(git commit *),Bash(npm test*),Bash(node --test *)"
+    ;;
+  reviewer|spec-linter)
+    ALLOWED_TOOLS="$COMMON_TOOLS"
+    ;;
+  *)
+    echo "claude-code adapter refuses production role: $ROLE" >&2
+    exit 2
+    ;;
+esac
+
+# Keep unrelated credentials out of Claude's tool subprocesses. Preserve only
+# Claude's own provider credential names when the installation uses them.
+SANITIZED_ENV=(env)
+while IFS= read -r ENV_NAME; do
+  case "$ENV_NAME" in
+    ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN) ;;
+    *KEY*|*key*|*TOKEN*|*token*|*SECRET*|*secret*|*PASSWORD*|*password*|*DSN*|*dsn*|*CONN*|*conn*|*AUTH*|*auth*)
+      SANITIZED_ENV+=( -u "$ENV_NAME" )
+      ;;
+  esac
+done < <(compgen -e)
 if [[ -s "$PROMPT_FILE" ]]; then
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
-    --dangerously-skip-permissions \
+    "${SANITIZED_ENV[@]}" claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
+    --permission-mode dontAsk --allowedTools "$ALLOWED_TOOLS" \
+    --disallowedTools "WebSearch,WebFetch" --add-dir "$GIT_COMMON_DIR" \
+    --no-session-persistence \
     --append-system-prompt "$(cat "$PROMPT_FILE")" 2>&1)" || STATUS=$?
 else
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
-    --dangerously-skip-permissions 2>&1)" || STATUS=$?
+    "${SANITIZED_ENV[@]}" claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
+    --permission-mode dontAsk --allowedTools "$ALLOWED_TOOLS" \
+    --disallowedTools "WebSearch,WebFetch" --add-dir "$GIT_COMMON_DIR" \
+    --no-session-persistence 2>&1)" || STATUS=$?
 fi
 STATUS="${STATUS:-0}"
 

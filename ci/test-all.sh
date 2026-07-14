@@ -5,6 +5,41 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 
+if "$ROOT/scripts/repo-check"; then
+  echo "PASS: repository baseline"
+else
+  echo "FAIL: repository baseline" >&2
+  FAIL=1
+fi
+
+if "$ROOT/scripts/secret-scan"; then
+  echo "PASS: secret scan"
+else
+  echo "FAIL: secret scan" >&2
+  FAIL=1
+fi
+
+if bash "$ROOT/ci/secret-scan-test.sh"; then
+  echo "PASS: secret scanner regression suite"
+else
+  echo "FAIL: secret scanner regression suite" >&2
+  FAIL=1
+fi
+
+if bash "$ROOT/ci/adapter-policy-test.sh"; then
+  echo "PASS: adapter policy suite"
+else
+  echo "FAIL: adapter policy suite" >&2
+  FAIL=1
+fi
+
+if bash "$ROOT/ci/codex-permission-test.sh"; then
+  echo "PASS: Codex permission profile suite"
+else
+  echo "FAIL: Codex permission profile suite" >&2
+  FAIL=1
+fi
+
 if bash "$ROOT/ci/test-factory-scripts.sh"; then
   echo "PASS: factory script regression suite"
 else

@@ -36,7 +36,7 @@ Role runs launched in the sequence defined by `workflows/ticket-flow.md` (planne
 
 ## Close-out ledger flow
 
-During a ticket, ledger rows and redacted run manifests accumulate — you do not edit `factory/ledger.csv` mid-pipeline. Redacted `factory/runs/*.out` streams remain local and ignored; unredacted Cursor output is never persisted. At **ticket close-out** (after the narrator posts the bundle and before or as part of moving the ticket to Review), the **one sanctioned ledger write path** is:
+During a ticket, ledger rows and redacted run manifests accumulate — you do not edit `factory/ledger.csv` mid-pipeline. Raw output stays local under `.context/factory-runs/`; unredacted Cursor output is never committed. At **ticket close-out** (after the narrator posts the bundle and before or as part of moving the ticket to Review), the **one sanctioned ledger write path** is:
 
 1. Commit the new ledger rows and redacted metadata/evidence summaries to a short-lived bookkeeping branch (e.g. `bookkeeping/T-NNN-closeout`).
 2. Open a PR from that branch to `main` with a one-line title naming the ticket.

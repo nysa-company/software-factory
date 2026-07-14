@@ -17,14 +17,14 @@ Implementation commits on the ticket branch, after the test commits, ending with
 - **Never touch test files.** CI fails the PR mechanically if your commits modify test paths; don't fight it. If a test looks wrong, say so on the ticket and stop — the reviewer adjudicates.
 - Code against the frozen contract exactly. If the contract can't be implemented as written, stop and flag it on the ticket; do not improvise a different interface.
 - Follow the conventions doc. Smallest change that satisfies the tests; no drive-by refactors, no new dependencies without a ticket note explaining why.
-- Update product docs only when your change makes them false (e.g. a new endpoint), and say so in the PR description.
+- Update product docs only when your change makes them false (e.g. a new endpoint), and say so in the PR handoff.
 - **Fix rounds: no fix without a root cause.** When you return after a reviewer REQUEST CHANGES or a failing run, first write one sentence on the ticket log naming the root cause of each item ("X fails because Y"), then fix that cause. Never pattern-match a symptom away (retry loops, broadened catches, widened types, sleep calls) without stating why the symptom existed. If you cannot determine the root cause within the run, say so on the ticket and stop — that is an escalation, not a failure.
-- Your PR description lists: what changed, files touched, any flagged concerns. Plain language — the operator may read it.
+- Your PR handoff lists: what changed, files touched, any flagged concerns. Plain language — the dispatcher uses it for the operator-visible PR description.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
 
 ## Worked example (regression check)
 
-For the receipt-row ticket: commits add the `GET /api/receipts` handler, the store query, and the row component using `data-testid="receipt-row"`; no commit touches `tests/`. PR description: "Adds receipt rows for approved actions. Touches api/receipts.ts, store.ts, ReceiptRow.tsx. No concerns."
+For the receipt-row ticket: commits add the `GET /api/receipts` handler, the store query, and the row component using `data-testid="receipt-row"`; no commit touches `tests/`. PR handoff: "Adds receipt rows for approved actions. Touches api/receipts.ts, store.ts, ReceiptRow.tsx. No concerns."
 
 ## Changelog
 

@@ -59,7 +59,7 @@ ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 LEDGER_DIR="$(dirname "$LEDGER")"
 LOCK_DIR="$LEDGER_DIR/.ledger.lock"
 LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
-RUNS_DIR="$FACTORY_DIR/runs"
+RUNS_DIR="${FACTORY_RUNS_DIR:-$REPO_ROOT/.context/factory-runs}"
 ACTIVE_RUN_FILE=""
 ACTIVE_RUN_TEMP=""
 OWNS_ACTIVE_RUN=0
@@ -167,6 +167,11 @@ TASK="${*:-}"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
+PROJECT_ENV="${FACTORY_PROJECT_ENV:-$FACTORY_DIR/PROJECT.env}"
+[[ -f "$PROJECT_ENV" ]] || { echo "project descriptor not found: $PROJECT_ENV" >&2; exit 3; }
+# shellcheck disable=SC1090
+source "$PROJECT_ENV"
+[[ -n "${VERIFY_COMMAND:-}" ]] || { echo "VERIFY_COMMAND is required in $PROJECT_ENV" >&2; exit 3; }
 
 # --- optional machine-level cap across all factories on this machine ---
 # ~/.factory/global.env defines GLOBAL_DAILY_CAP_USD; every run on the machine
@@ -223,6 +228,21 @@ ADAPTER="$SELECTED"
 
 ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
+
+# Refuse autonomous work in a tree containing likely secret files, then scan
+# committed history and the current tree with redacted output.
+SECRET_FILE_MATCHES="$(rg --files --hidden --no-ignore \
+    -g '.env' -g '.env.*' -g '!.env.example' -g '!.env.*.example' \
+    -g '*.pem' -g '*.key' -g 'credentials*.json' -g '!.git/**' \
+    "$WORKDIR" 2>/dev/null || true)"
+if [[ -n "$SECRET_FILE_MATCHES" ]]; then
+  echo "prohibited secret file present in agent worktree — refusing launch" >&2
+  exit 9
+fi
+"$KIT_DIR/scripts/secret-scan" --root "$WORKDIR" || {
+  echo "secret scan failed — refusing launch" >&2
+  exit 9
+}
 
 mkdir -p "$FACTORY_DIR" "$RUNS_DIR" "$LEDGER_DIR"
 REPO_LEDGER_HEADER="date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
@@ -361,6 +381,7 @@ python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
   --max-turns "$PER_RUN_MAX_TURNS" \
   --timeout-min "$PER_RUN_TIMEOUT_MIN" \
   --prompt-file "${PROMPT_FILE:-/dev/null}" \
+  --verify-command "$VERIFY_COMMAND" \
   --workdir "$WORKDIR" \
   -- "$TASK" > "$RUNS_DIR/$RUN_ID.out" 2>&1 &
 RUN_PID=$!

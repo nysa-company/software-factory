@@ -1,0 +1,28 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+setup = "npm --prefix conformance/app install --ignore-scripts --no-audit --no-fund"
+archive = "true"
+run_mode = "concurrent"
+
+[scripts.run.web]
+command = "PORT=\"${CONDUCTOR_PORT:-4700}\" npm --prefix conformance/app start"
+default = true
+icon = "globe"
+
+[scripts.run.tests]
+command = "bash ci/test-all.sh"
+icon = "test-tube"
+
+[git]
+delete_branch_on_archive = true
+archive_on_merge = true
+worktree_push_auto_setup_remote = true
+
+[prompts]
+rename_branch = """
+Preserve ticket/T-NNN-<slug> for factory tickets and
+bookkeeping/T-NNN-closeout for close-out ledger work. For other maintenance,
+use <type>/<short-kebab-summary> with feat, fix, docs, chore, refactor, test,
+hotfix, or spike. Do not rename unless the user explicitly asks.
+"""

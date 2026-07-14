@@ -10,6 +10,7 @@ REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "
 FACTORY_DIR="$REPO_ROOT/factory"
 LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/ledger.csv}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
+PROJECT_ENV="${FACTORY_PROJECT_ENV:-$FACTORY_DIR/PROJECT.env}"
 PROJECTED_TICKET_USD="${PROJECTED_TICKET_USD:-5.00}"
 
 TICKET=""
@@ -35,7 +36,32 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
 fi
 
-# (a) backend routes — resolve without submitting any task.
+# (a) repository safety checks run before any autonomous CLI.
+if "$KIT_DIR/scripts/secret-scan" --root "$REPO_ROOT"; then
+  pass "secret scan passed"
+else
+  fail "secret scan failed"
+fi
+
+if [[ ! -f "$PROJECT_ENV" ]]; then
+  fail "project descriptor missing: $PROJECT_ENV"
+else
+  # shellcheck disable=SC1090
+  source "$PROJECT_ENV"
+  [[ -n "${VERIFY_COMMAND:-}" ]] && pass "project verification command declared" ||
+    fail "VERIFY_COMMAND missing from project descriptor"
+fi
+
+if [[ ! -f "$KIT_DIR/.codex/config.toml" || ! -f "$KIT_DIR/.codex/factory-permissions.env" ]]; then
+  fail "Codex factory safety configuration missing"
+elif CODEX_CONFIG_JSON="$(cd "$REPO_ROOT" && codex doctor --json 2>/dev/null)" &&
+     printf '%s' "$CODEX_CONFIG_JSON" | python3 -c 'import json,sys; data=json.load(sys.stdin); raise SystemExit(0 if any(c.get("id")=="config.load" and c.get("status")=="ok" for c in data.get("checks", [])) else 1)'; then
+  pass "Codex project permission profile loaded"
+else
+  fail "Codex project permission profile did not load"
+fi
+
+# (b) backend routes — resolve without submitting any task.
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
 if CONTRACT_OUT="$(FACTORY_GLOBAL_ENV="$GLOBAL_ENV" "$KIT_DIR/scripts/adapters/contract-test.sh" --routes 2>&1)"; then

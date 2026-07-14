@@ -29,15 +29,35 @@ check_adapter() {
   factory_probe_adapter "$adapter"
   if [[ "$PROBE_STATE" == "READY" ]]; then
     note "$adapter: READY (${PROBE_REASON})"
+    check_capabilities "$adapter"
   else
     bad "$adapter: $PROBE_STATE (${PROBE_REASON})"
   fi
+}
+
+check_capabilities() {
+  local adapter="$1" help
+  case "$adapter" in
+    claude-code)
+      help="$(claude --help 2>/dev/null || true)"
+      for flag in --max-budget-usd --output-format --append-system-prompt --permission-mode --allowedTools --disallowedTools --no-session-persistence; do
+        grep -q -- "$flag" <<<"$help" || bad "claude: $flag flag missing"
+      done
+      ;;
+    codex)
+      help="$(codex exec --help 2>/dev/null || true)"
+      for flag in --json --strict-config --ephemeral --add-dir --ask-for-approval; do
+        grep -q -- "$flag" <<<"$help" || bad "codex: $flag flag missing"
+      done
+      ;;
+  esac
 }
 
 if [[ "$MODE" == "routes" ]]; then
   for role in planner spec-linter; do
     if factory_resolve_role "$role"; then
       note "$role route: $FACTORY_SELECTED_ADAPTER ($FACTORY_SELECTION_REASON)"
+      check_capabilities "$FACTORY_SELECTED_ADAPTER"
     else
       bad "$role route: ${FACTORY_RESOLVE_ERROR:-unknown}"
     fi

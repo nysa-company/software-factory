@@ -26,6 +26,7 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 4. Test author and reviewer run on a different model family than the builder.
 5. Two review rounds, then the ticket escalates to a human with a plain-language note.
 6. Backend fallback is pre-execution selection, never retry: one role run submits its task to at most one agent process.
+7. Every run starts behind a redacted secret scan; adapters use constrained permissions and local-only raw output.
 
 ## How Linear and Markdown work together
 

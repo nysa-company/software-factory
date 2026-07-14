@@ -1,4 +1,5 @@
 conformance/app/data/
+.context/
 factory/ledger.csv
 factory/KILL
 **/factory/runs/*.out
@@ -6,6 +7,12 @@ factory/KILL
 **/factory/.linear-sync.lock
 *.log
 .env
-.env.local
+.env.*
+!.env.example
+!.env.*.example
 *.pem
 *.key
+credentials*.json
+**/credentials*.json
+__pycache__/
+*.py[cod]
