@@ -756,6 +756,174 @@ if expect_stage "ESCALATE spec-lint failed twice" "$WALK" T-503; then
   pass "spec-lint two-fail escalation"
 fi
 
+# ---------------------------------------------------------------------------
+# T-106: operator backend-readiness diagnostic (contract-test.sh --readiness),
+# frozen command contract version 1. These checks fail before the builder adds
+# the --readiness mode — the flag is unrecognized, so the command prints the
+# old usage line and exits 2 with no adapter/route records — and pass once the
+# contract is implemented. Existing checks above are untouched.
+CONTRACT_TEST="$ROOT/scripts/adapters/contract-test.sh"
+READINESS_DIR="$TMP/readiness"
+mkdir -p "$READINESS_DIR"
+READINESS_SCAN="$READINESS_DIR/scan.out"   # accumulated Fixtures A-E output (AC8)
+: > "$READINESS_SCAN"
+READINESS_DIRTY=""                          # fixtures that left a task trace (AC6)
+
+# Run --readiness under a global env built from write_backend_global "$extra".
+# Empties FACTORY_TEST_TRACE first, captures combined output to $out, records
+# READINESS_STATUS, and flags any fixture whose trace ended up non-empty.
+run_readiness() {
+  local name="$1" extra="$2" out="$3"
+  local gfile="$READINESS_DIR/$name.env" trace="$READINESS_DIR/$name.trace"
+  write_backend_global "$gfile" "$extra"
+  : > "$trace"
+  READINESS_STATUS=0
+  PATH="$STUB_BIN:$PATH" FACTORY_GLOBAL_ENV="$gfile" FACTORY_TEST_TRACE="$trace" \
+    "$CONTRACT_TEST" --readiness > "$out" 2>&1 || READINESS_STATUS=$?
+  [[ -s "$trace" ]] && READINESS_DIRTY="$READINESS_DIRTY $name"
+  cat "$out" >> "$READINESS_SCAN"
+}
+
+# The contract's six records (four adapters, two routes), in output order.
+readiness_records() { grep -E '^\[contract-test\] (adapter|route)=' "$1"; }
+
+# AC1 — Fixture A: four ready adapters and both primary routes; exit 0.
+A_OUT="$READINESS_DIR/a.out"
+run_readiness fixtureA "" "$A_OUT"
+A_EXPECT="$(cat <<'REC'
+[contract-test] adapter=codex family=openai state=READY reason=local_contract_ready
+[contract-test] adapter=cursor-openai family=openai state=READY reason=local_contract_ready
+[contract-test] adapter=claude-code family=anthropic state=READY reason=local_contract_ready
+[contract-test] adapter=cursor-anthropic family=anthropic state=READY reason=local_contract_ready
+[contract-test] route=production family=openai state=SAFE adapter=codex reason=primary_ready
+[contract-test] route=checking family=anthropic state=SAFE adapter=claude-code reason=primary_ready
+REC
+)"
+if [[ "$READINESS_STATUS" -eq 0 && "$(readiness_records "$A_OUT")" == "$A_EXPECT" ]]; then
+  pass "AC1 readiness Fixture A: four ready adapters and primary routes exit 0"
+else
+  fail "AC1 readiness Fixture A: four ready adapters and primary routes exit 0" \
+    "status $READINESS_STATUS"
+fi
+
+# AC2 — Fixture B: disabled optional fallbacks stay visible as
+# UNAVAILABLE/fallback_disabled while ready primaries keep both routes SAFE.
+B_OUT="$READINESS_DIR/b.out"
+run_readiness fixtureB 'export FACTORY_CURSOR_FALLBACK_ENABLED=0' "$B_OUT"
+B_EXPECT="$(cat <<'REC'
+[contract-test] adapter=codex family=openai state=READY reason=local_contract_ready
+[contract-test] adapter=cursor-openai family=openai state=UNAVAILABLE reason=fallback_disabled
+[contract-test] adapter=claude-code family=anthropic state=READY reason=local_contract_ready
+[contract-test] adapter=cursor-anthropic family=anthropic state=UNAVAILABLE reason=fallback_disabled
+[contract-test] route=production family=openai state=SAFE adapter=codex reason=primary_ready
+[contract-test] route=checking family=anthropic state=SAFE adapter=claude-code reason=primary_ready
+REC
+)"
+if [[ "$READINESS_STATUS" -eq 0 && "$(readiness_records "$B_OUT")" == "$B_EXPECT" ]]; then
+  pass "AC2 readiness Fixture B: disabled fallback visible, primary routes safe"
+else
+  fail "AC2 readiness Fixture B: disabled fallback visible, primary routes safe" \
+    "status $READINESS_STATUS"
+fi
+
+# AC3 — Fixture C: unavailable primaries select the ready startup fallback in
+# each family with reason primary_test_primary_down; exit 0.
+C_OUT="$READINESS_DIR/c.out"
+run_readiness fixtureC \
+  $'export FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down\nexport FACTORY_PROBE_CLAUDE_CODE=UNAVAILABLE:test_primary_down' \
+  "$C_OUT"
+C_EXPECT="$(cat <<'REC'
+[contract-test] adapter=codex family=openai state=UNAVAILABLE reason=test_primary_down
+[contract-test] adapter=cursor-openai family=openai state=READY reason=local_contract_ready
+[contract-test] adapter=claude-code family=anthropic state=UNAVAILABLE reason=test_primary_down
+[contract-test] adapter=cursor-anthropic family=anthropic state=READY reason=local_contract_ready
+[contract-test] route=production family=openai state=SAFE adapter=cursor-openai reason=primary_test_primary_down
+[contract-test] route=checking family=anthropic state=SAFE adapter=cursor-anthropic reason=primary_test_primary_down
+REC
+)"
+if [[ "$READINESS_STATUS" -eq 0 && "$(readiness_records "$C_OUT")" == "$C_EXPECT" ]]; then
+  pass "AC3 readiness Fixture C: unavailable primaries select startup fallbacks"
+else
+  fail "AC3 readiness Fixture C: unavailable primaries select startup fallbacks" \
+    "status $READINESS_STATUS"
+fi
+
+# AC4 — Fixture D: unavailable production primary with disabled fallback leaves
+# production with no route (exit 1) while checking stays SAFE.
+D_OUT="$READINESS_DIR/d.out"
+run_readiness fixtureD \
+  $'export FACTORY_CURSOR_FALLBACK_ENABLED=0\nexport FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down' \
+  "$D_OUT"
+D_EXPECT="$(cat <<'REC'
+[contract-test] adapter=codex family=openai state=UNAVAILABLE reason=test_primary_down
+[contract-test] adapter=cursor-openai family=openai state=UNAVAILABLE reason=fallback_disabled
+[contract-test] adapter=claude-code family=anthropic state=READY reason=local_contract_ready
+[contract-test] adapter=cursor-anthropic family=anthropic state=UNAVAILABLE reason=fallback_disabled
+[contract-test] route=production family=openai state=UNSAFE adapter=none reason=no_ready_route_primary_test_primary_down_fallback_fallback_disabled
+[contract-test] route=checking family=anthropic state=SAFE adapter=claude-code reason=primary_ready
+REC
+)"
+if [[ "$READINESS_STATUS" -eq 1 && "$(readiness_records "$D_OUT")" == "$D_EXPECT" ]]; then
+  pass "AC4 readiness Fixture D: no production route exits 1, checking stays safe"
+else
+  fail "AC4 readiness Fixture D: no production route exits 1, checking stays safe" \
+    "status $READINESS_STATUS"
+fi
+
+# AC5 — Fixture E: an INVALID production primary fails closed (exit 1) and never
+# selects the ready fallback.
+E_OUT="$READINESS_DIR/e.out"
+run_readiness fixtureE 'export FACTORY_PROBE_CODEX=INVALID:test_contract_drift' "$E_OUT"
+E_EXPECT="$(cat <<'REC'
+[contract-test] adapter=codex family=openai state=INVALID reason=test_contract_drift
+[contract-test] adapter=cursor-openai family=openai state=READY reason=local_contract_ready
+[contract-test] adapter=claude-code family=anthropic state=READY reason=local_contract_ready
+[contract-test] adapter=cursor-anthropic family=anthropic state=READY reason=local_contract_ready
+[contract-test] route=production family=openai state=UNSAFE adapter=none reason=primary_test_contract_drift
+[contract-test] route=checking family=anthropic state=SAFE adapter=claude-code reason=primary_ready
+REC
+)"
+if [[ "$READINESS_STATUS" -eq 1 && "$(readiness_records "$E_OUT")" == "$E_EXPECT" ]]; then
+  pass "AC5 readiness Fixture E: invalid primary fails closed without fallback"
+else
+  fail "AC5 readiness Fixture E: invalid primary fails closed without fallback" \
+    "status $READINESS_STATUS"
+fi
+
+# AC6 — every fixture above ran the readiness command (route records present)
+# yet left its FACTORY_TEST_TRACE empty, proving no task-bearing stub branch ran.
+if [[ -z "$READINESS_DIRTY" ]] &&
+   grep -q '^\[contract-test\] route=production ' "$READINESS_SCAN" &&
+   grep -q '^\[contract-test\] route=checking ' "$READINESS_SCAN"; then
+  pass "AC6 readiness fixtures submit no task (trace stays empty)"
+else
+  fail "AC6 readiness fixtures submit no task (trace stays empty)" \
+    "dirty:${READINESS_DIRTY:-none}"
+fi
+
+# AC8 — a positional task is a usage error (exit 2, exact usage line, empty
+# trace); Fixtures A-E output leaks no model ID, version, task text, or secret.
+SENTINEL_OUT="$READINESS_DIR/sentinel.out"
+SENTINEL_TRACE="$READINESS_DIR/sentinel.trace"
+SENTINEL_GLOBAL="$READINESS_DIR/sentinel.env"
+write_backend_global "$SENTINEL_GLOBAL"
+: > "$SENTINEL_TRACE"
+SENTINEL_STATUS=0
+PATH="$STUB_BIN:$PATH" FACTORY_GLOBAL_ENV="$SENTINEL_GLOBAL" \
+  FACTORY_TEST_TRACE="$SENTINEL_TRACE" \
+  "$CONTRACT_TEST" --readiness sentinel-task > "$SENTINEL_OUT" 2>&1 || SENTINEL_STATUS=$?
+READINESS_USAGE='usage: contract-test.sh [--adapters a,b | --routes | --readiness]'
+if [[ "$SENTINEL_STATUS" -eq 2 ]] &&
+   grep -Fxq "$READINESS_USAGE" "$SENTINEL_OUT" &&
+   [[ ! -s "$SENTINEL_TRACE" && -s "$READINESS_SCAN" ]] &&
+   ! grep -qE 'gpt-5\.6-sol-high|claude-sonnet-5-thinking-high|0\.144\.1|2\.1\.207|2026\.07\.test|sentinel-task|supersecret|abc123|user:pass' \
+     "$READINESS_SCAN"; then
+  pass "AC8 readiness rejects task text (exit 2) and excludes model/version/secret output"
+else
+  fail "AC8 readiness rejects task text (exit 2) and excludes model/version/secret output" \
+    "status $SENTINEL_STATUS"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAIL: $FAILURES factory-script test(s) failed" >&2
   exit 1
