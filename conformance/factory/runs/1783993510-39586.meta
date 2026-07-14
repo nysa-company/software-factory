@@ -1,0 +1,14 @@
+run_id=1783993510-39586
+phase=completed
+ticket=T-106
+role=test-author
+adapter=claude-code
+provider_family=anthropic
+model_id=cli-default
+selection_reason=primary_ready
+adapter_version=2.1.207 (Claude Code)
+primary_probe=READY:local_contract_ready
+pid=39769
+pgid=39769
+process_start=Mon Jul 13 19:45:10 2026
+updated_at=2026-07-14T01:49:49Z

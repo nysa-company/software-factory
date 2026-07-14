@@ -23,7 +23,7 @@
   },
   "_sync": {
     "last_error": null,
-    "last_success_at": "2026-07-14T01:04:19+00:00"
+    "last_success_at": "2026-07-14T03:31:14+00:00"
   },
   "initiatives": {
     "I-001": {
@@ -70,6 +70,13 @@
       "bundle_posted": false,
       "identifier": "SF-5",
       "issue_id": "be5e76d7-8530-4269-a160-8d850f3671e5",
+      "log_cursor": 1,
+      "operator_fields_initialized": true
+    },
+    "T-106": {
+      "bundle_posted": false,
+      "identifier": "SF-6",
+      "issue_id": "7af550dd-32b5-4035-bffd-1fa229efa052",
       "log_cursor": 1,
       "operator_fields_initialized": true
     }

@@ -1,0 +1,14 @@
+run_id=1783993290-36199
+phase=completed
+ticket=T-106
+role=spec-linter
+adapter=claude-code
+provider_family=anthropic
+model_id=cli-default
+selection_reason=primary_ready
+adapter_version=2.1.207 (Claude Code)
+primary_probe=READY:local_contract_ready
+pid=36377
+pgid=36377
+process_start=Mon Jul 13 19:41:30 2026
+updated_at=2026-07-14T01:44:21Z
