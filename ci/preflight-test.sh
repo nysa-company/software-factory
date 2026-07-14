@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # preflight-test.sh — sandboxed tests for scripts/preflight.sh.
-# Stubs claude/codex/timeout on a prepended PATH; never invokes real CLIs.
+# Stubs claude/codex/Cursor/timeout on a prepended PATH; never invokes real CLIs.
 set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,6 +26,7 @@ case "\${1:-}" in
     echo "--output-format"
     echo "--append-system-prompt"
     exit 0 ;;
+  auth) [[ "\${2:-}" == "status" ]] && exit 0 ;;
 esac
 exit 0
 STUB
@@ -38,6 +39,7 @@ write_stub_codex() {
 #!/usr/bin/env bash
 case "\${1:-}" in
   --version) echo "codex-cli $ver"; exit 0 ;;
+  login) [[ "\${2:-}" == "status" ]] && exit 0 ;;
   exec)
     if [[ "\${2:-}" == "--help" ]]; then echo "--json"; fi
     exit 0
@@ -46,6 +48,27 @@ esac
 exit 0
 STUB
   chmod +x "$STUB_BIN/codex"
+}
+
+write_stub_cursor() {
+  local ver="${1:-2026.07.test}" status="${2:-0}"
+  cat > "$STUB_BIN/agent" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+  --version|-v) echo "Cursor Agent $ver"; exit 0 ;;
+  --help|-h)
+    printf '%s\n' --print --output-format --workspace --model --force --trust
+    exit 0 ;;
+  status)
+    [[ "$status" == "0" ]] && echo '{"authenticated":true}'
+    exit "$status" ;;
+  models)
+    printf '%s\n' 'gpt-5.6-sol-high' 'claude-sonnet-5-thinking-high'
+    exit 0 ;;
+esac
+exit 0
+STUB
+  chmod +x "$STUB_BIN/agent"
 }
 
 write_stub_timeout() {
@@ -111,7 +134,17 @@ init_git_repo() {
 run_preflight() {
   local factory_root="$1" ticket="$2"
   shift 2
-  local env_args=(PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$factory_root")
+  local env_args=(
+    PATH="$STUB_BIN:$PATH"
+    FACTORY_ROOT="$factory_root"
+    FACTORY_GLOBAL_ENV="$TMP/default-global.env"
+    CLAUDE_CODE_PINNED=
+    CODEX_PINNED=
+    FACTORY_CURSOR_FALLBACK_ENABLED=0
+    CURSOR_AGENT_VERSION=
+    CURSOR_OPENAI_MODEL=
+    CURSOR_ANTHROPIC_MODEL=
+  )
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --global-env) env_args+=(FACTORY_GLOBAL_ENV="$2"); shift 2;;
@@ -147,7 +180,14 @@ assert_preflight() {
 
 write_stub_claude "2.1.207"
 write_stub_codex "0.144.1"
+write_stub_cursor "2026.07.test" "0"
 write_stub_timeout
+cat > "$TMP/default-global.env" <<'ENV'
+GLOBAL_DAILY_CAP_USD=50.00
+CLAUDE_CODE_PINNED=2.1.207
+CODEX_PINNED=0.144.1
+FACTORY_CURSOR_FALLBACK_ENABLED=0
+ENV
 
 # --- all-pass ---
 ALLPASS="$TMP/allpass"
@@ -173,8 +213,69 @@ write_envelope "$PINFAIL"
 write_ready_ticket "$PINFAIL" "T-002"
 init_git_repo "$PINFAIL"
 write_stub_claude "9.9.999"
-assert_preflight "version-pin fail" 1 "FAIL: Claude Code pin mismatch" "$PINFAIL" "T-002"
+assert_preflight "version-pin fail" 1 "primary_version_mismatch" "$PINFAIL" "T-002"
 write_stub_claude "2.1.207"
+
+# --- primary ready; optional Cursor fallback unavailable warns but passes ---
+FALLBACK_WARN="$TMP/fallback-warn"
+mkdir -p "$FALLBACK_WARN"
+write_envelope "$FALLBACK_WARN"
+write_ready_ticket "$FALLBACK_WARN" "T-020"
+init_git_repo "$FALLBACK_WARN"
+write_stub_cursor "2026.07.test" "1"
+FALLBACK_WARN_ENV="$TMP/fallback-warn-global/global.env"
+mkdir -p "$(dirname "$FALLBACK_WARN_ENV")"
+cat > "$FALLBACK_WARN_ENV" <<'ENV'
+GLOBAL_DAILY_CAP_USD=50.00
+CLAUDE_CODE_PINNED=2.1.207
+CODEX_PINNED=0.144.1
+FACTORY_CURSOR_FALLBACK_ENABLED=1
+CURSOR_AGENT_VERSION=2026.07.test
+CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
+CURSOR_ANTHROPIC_MODEL=claude-sonnet-5-thinking-high
+ENV
+assert_preflight "fallback unavailable warns" 0 "WARN: production Cursor fallback not ready" \
+  "$FALLBACK_WARN" "T-020" --global-env "$FALLBACK_WARN_ENV"
+
+# --- unavailable primary selects a ready family-matched Cursor route ---
+FALLBACK_READY="$TMP/fallback-ready"
+mkdir -p "$FALLBACK_READY"
+write_envelope "$FALLBACK_READY"
+write_ready_ticket "$FALLBACK_READY" "T-021"
+init_git_repo "$FALLBACK_READY"
+write_stub_cursor "2026.07.test" "0"
+FALLBACK_READY_ENV="$TMP/fallback-ready-global/global.env"
+mkdir -p "$(dirname "$FALLBACK_READY_ENV")"
+cat > "$FALLBACK_READY_ENV" <<'ENV'
+GLOBAL_DAILY_CAP_USD=50.00
+CLAUDE_CODE_PINNED=2.1.207
+CODEX_PINNED=0.144.1
+FACTORY_CURSOR_FALLBACK_ENABLED=1
+CURSOR_AGENT_VERSION=2026.07.test
+CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
+CURSOR_ANTHROPIC_MODEL=claude-sonnet-5-thinking-high
+FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down
+ENV
+assert_preflight "unavailable primary selects Cursor" 0 "production primary unavailable" \
+  "$FALLBACK_READY" "T-021" --global-env "$FALLBACK_READY_ENV"
+
+# --- unavailable primary with disabled fallback has no safe route ---
+NO_ROUTE="$TMP/no-route"
+mkdir -p "$NO_ROUTE"
+write_envelope "$NO_ROUTE"
+write_ready_ticket "$NO_ROUTE" "T-022"
+init_git_repo "$NO_ROUTE"
+NO_ROUTE_ENV="$TMP/no-route-global/global.env"
+mkdir -p "$(dirname "$NO_ROUTE_ENV")"
+cat > "$NO_ROUTE_ENV" <<'ENV'
+GLOBAL_DAILY_CAP_USD=50.00
+CLAUDE_CODE_PINNED=2.1.207
+CODEX_PINNED=0.144.1
+FACTORY_CURSOR_FALLBACK_ENABLED=0
+FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down
+ENV
+assert_preflight "no safe backend route fails" 1 "no_ready_route" \
+  "$NO_ROUTE" "T-022" --global-env "$NO_ROUTE_ENV"
 
 # --- repo budget fail ---
 REPOBUDGET="$TMP/repobudget"

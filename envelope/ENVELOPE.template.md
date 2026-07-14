@@ -6,14 +6,14 @@ Hard limits for the factory. The run wrapper and provider console caps enforce t
 
 | Limit | Value | Enforced by |
 |---|---|---|
-| Per-run budget (USD) | $<FILL: e.g. 5> | adapter hard stop (`--max-budget-usd` for Claude Code) + wrapper reservation |
+| Per-run budget (USD) | $<FILL: e.g. 5> | wrapper reservation; adapter hard stop where supported (`--max-budget-usd` for Claude Code) |
 | Per-ticket budget (USD), all runs summed | $<FILL: e.g. 15> | run wrapper ledger check (`PER_TICKET_BUDGET_USD`) |
 | Per-run max turns | <FILL: e.g. 60> | logged; the dollar budget is the hard stop |
 | Per-run wall-clock cap | <FILL: e.g. 45 min> | run wrapper timeout |
 | Daily factory cap (USD) | $<FILL: e.g. 75> | run wrapper ledger check + provider console caps |
 | Monthly cap (USD) | $<FILL> | provider console caps |
 
-Cap checks reserve the new run's full per-run budget before starting (a run can't start at $74.99 of a $75 cap), and unparsable run costs keep that conservative reservation in the ledger rather than logging $0.
+Cap checks reserve the new run's full per-run budget before starting (a run can't start at $74.99 of a $75 cap), and unparsable run costs keep that conservative reservation in the ledger rather than logging $0. Cursor CLI has no documented per-run dollar stop, so its full reservation always remains; approved telemetry may add an observational estimate only.
 
 When the daily cap is hit the run wrapper refuses to start new runs until the next day. The console caps are the backstop if the wrapper is bypassed or broken.
 

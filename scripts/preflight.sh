@@ -35,42 +35,55 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
 fi
 
-# (a) adapter contract test — CLIs must be on PATH and honor adapter assumptions
-if CONTRACT_OUT="$("$KIT_DIR/scripts/adapters/contract-test.sh" 2>&1)"; then
-  pass "adapter contract test passed"
+# (a) backend routes — resolve without submitting any task.
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/backend-policy.sh"
+if CONTRACT_OUT="$(FACTORY_GLOBAL_ENV="$GLOBAL_ENV" "$KIT_DIR/scripts/adapters/contract-test.sh" --routes 2>&1)"; then
+  pass "backend route contract test passed"
 else
-  fail "adapter contract test failed — output follows"
+  fail "backend route contract test failed — output follows"
   printf '%s\n' "$CONTRACT_OUT" | sed 's/^/  | /'
 fi
 
-# (b) version pins match installed CLIs (pins may come from ~/.factory/global.env)
-CLAUDE_PIN="${CLAUDE_CODE_PINNED:-2.1.207}"
-CODEX_PIN="${CODEX_PINNED:-0.144.1}"
-if ! command -v claude >/dev/null; then
-  fail "claude CLI not on PATH (required for version pin check)"
-elif ! command -v codex >/dev/null; then
-  fail "codex CLI not on PATH (required for version pin check)"
-else
-  INSTALLED_CLAUDE="$(claude --version 2>/dev/null | head -n1 || true)"
-  INSTALLED_CODEX="$(codex --version 2>/dev/null | head -n1 || true)"
-  case "$INSTALLED_CLAUDE" in
-    *"$CLAUDE_PIN"*) pass "Claude Code pin matches ($CLAUDE_PIN)" ;;
-    *) fail "Claude Code pin mismatch: installed ($INSTALLED_CLAUDE) != pinned ($CLAUDE_PIN)" ;;
-  esac
-  case "$INSTALLED_CODEX" in
-    *"$CODEX_PIN"*) pass "Codex pin matches ($CODEX_PIN)" ;;
-    *) fail "Codex pin mismatch: installed ($INSTALLED_CODEX) != pinned ($CODEX_PIN)" ;;
-  esac
-fi
+# Report both role-group routes. This is kickoff visibility only;
+# run-agent.sh resolves again immediately before every role launch.
+for ROLE_SAMPLE in planner spec-linter; do
+  GROUP="$(factory_role_group "$ROLE_SAMPLE")"
+  PRIMARY="$(factory_group_primary "$GROUP")"
+  FALLBACK="$(factory_group_fallback "$GROUP")"
+  factory_probe_adapter "$PRIMARY"
+  PRIMARY_STATE="$PROBE_STATE"
+  PRIMARY_REASON="$PROBE_REASON"
+  if [[ "$PRIMARY_STATE" == "READY" ]]; then
+    pass "$GROUP primary route ready ($PRIMARY)"
+    if [[ "${FACTORY_CURSOR_FALLBACK_ENABLED:-0}" == "1" ]]; then
+      factory_probe_adapter "$FALLBACK"
+      if [[ "$PROBE_STATE" == "READY" ]]; then
+        pass "$GROUP Cursor fallback ready ($FALLBACK)"
+      else
+        warn "$GROUP Cursor fallback not ready: $PROBE_STATE ($PROBE_REASON)"
+      fi
+    else
+      pass "$GROUP Cursor fallback disabled (primary-only compatibility mode)"
+    fi
+  else
+    factory_probe_adapter "$FALLBACK"
+    if [[ "$PRIMARY_STATE" == "UNAVAILABLE" && "$PROBE_STATE" == "READY" ]]; then
+      warn "$GROUP primary unavailable ($PRIMARY_REASON); pre-execution route selects $FALLBACK"
+    else
+      fail "$GROUP has no safe route: primary=$PRIMARY_STATE/$PRIMARY_REASON fallback=$PROBE_STATE/$PROBE_REASON"
+    fi
+  fi
+done
 
-# (c) daily budget — same spend computation as run-agent.sh, reserve = PROJECTED_TICKET_USD
+# (b) daily budget — same spend computation as run-agent.sh, reserve = PROJECTED_TICKET_USD
 if [[ ! -f "$ENV_FILE" ]]; then
   fail "envelope not found: $ENV_FILE"
 else
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   TODAY="$(date +%F)"
-  [[ -f "$LEDGER" ]] || echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$LEDGER"
+  [[ -f "$LEDGER" ]] || echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$LEDGER"
   SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
   if awk -v s="$SPENT_TODAY" -v r="$PROJECTED_TICKET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
     fail "repo daily cap insufficient (spent \$$SPENT_TODAY + reserve \$$PROJECTED_TICKET_USD > \$$DAILY_CAP_USD)"
@@ -79,7 +92,7 @@ else
   fi
   if [[ -n "$GLOBAL_LEDGER" && -n "${GLOBAL_DAILY_CAP_USD:-}" ]]; then
     mkdir -p "$(dirname "$GLOBAL_LEDGER")"
-    [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$GLOBAL_LEDGER"
+    [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$GLOBAL_LEDGER"
     SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
     if awk -v s="$SPENT_GLOBAL" -v r="$PROJECTED_TICKET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
       fail "machine daily cap insufficient (spent \$$SPENT_GLOBAL + reserve \$$PROJECTED_TICKET_USD > \$$GLOBAL_DAILY_CAP_USD)"

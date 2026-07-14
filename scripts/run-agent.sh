@@ -58,22 +58,96 @@ LEDGER="${FACTORY_LEDGER:-$(canonical_ledger "$REPO_ROOT")}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 LEDGER_DIR="$(dirname "$LEDGER")"
 LOCK_DIR="$LEDGER_DIR/.ledger.lock"
+LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
 RUNS_DIR="$FACTORY_DIR/runs"
 ACTIVE_RUN_FILE=""
 ACTIVE_RUN_TEMP=""
 OWNS_ACTIVE_RUN=0
 HELD_LEDGER_LOCK=0
 HELD_GLOBAL_LOCK=0
+HELD_LAUNCH_LOCK=0
+RUN_PID=""
+RUN_PGID=""
+RUN_GROUP_ACTIVE=0
+RUN_GROUP_TERMINATED=1
+RUN_PID_FILE=""
+RUN_READY_FILE=""
+RUN_GO_FILE=""
+RUN_START_ID=""
+MANIFEST=""
+MANIFEST_PHASE=""
+
+meta_value() {
+  printf '%s' "${1:-}" | tr '\n,' '__'
+}
+
+write_manifest() {
+  local phase="$1" tmp
+  [[ -n "$MANIFEST" ]] || return 0
+  tmp="$MANIFEST.tmp.$$"
+  {
+    echo "run_id=$(meta_value "${RUN_ID:-}")"
+    echo "phase=$(meta_value "$phase")"
+    echo "ticket=$(meta_value "$TICKET")"
+    echo "role=$(meta_value "$ROLE")"
+    echo "adapter=$(meta_value "${ADAPTER:-}")"
+    echo "provider_family=$(meta_value "${SELECTED_FAMILY:-}")"
+    echo "model_id=$(meta_value "${SELECTED_MODEL:-}")"
+    echo "selection_reason=$(meta_value "${SELECTION_REASON:-}")"
+    echo "adapter_version=$(meta_value "${SELECTED_VERSION:-}")"
+    echo "primary_probe=$(meta_value "${PRIMARY_PROBE_SUMMARY:-}")"
+    echo "pid=$(meta_value "${RUN_PID:-}")"
+    echo "pgid=$(meta_value "${RUN_PGID:-}")"
+    echo "process_start=$(meta_value "${RUN_START_ID:-}")"
+    echo "updated_at=$(date -u +%FT%TZ)"
+  } > "$tmp"
+  mv "$tmp" "$MANIFEST"
+  MANIFEST_PHASE="$phase"
+}
+
+terminate_run_group() {
+  [[ "$RUN_GROUP_ACTIVE" -eq 1 && "$RUN_PGID" =~ ^[0-9]+$ ]] || return 0
+  if ! kill -0 -- "-$RUN_PGID" 2>/dev/null; then
+    RUN_GROUP_ACTIVE=0
+    RUN_GROUP_TERMINATED=1
+    return 0
+  fi
+  kill -TERM -- "-$RUN_PGID" 2>/dev/null || true
+  sleep 1
+  kill -KILL -- "-$RUN_PGID" 2>/dev/null || true
+  RUN_GROUP_ACTIVE=0
+  sleep 0.1
+  if kill -0 -- "-$RUN_PGID" 2>/dev/null; then
+    RUN_GROUP_TERMINATED=0
+    return 1
+  fi
+  RUN_GROUP_TERMINATED=1
+}
 
 cleanup() {
+  terminate_run_group || true
+  if [[ -n "$RUN_PID_FILE" ]]; then
+    if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
+      rm -f "$RUN_PID_FILE"
+    else
+      echo "WARNING: retaining $RUN_PID_FILE because the process group survived cleanup" >&2
+    fi
+  fi
+  [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
+  [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
+  if [[ -n "$MANIFEST" && "$MANIFEST_PHASE" != "completed" && "$MANIFEST_PHASE" != "abandoned" ]]; then
+    write_manifest "abandoned"
+  fi
   [[ "$HELD_GLOBAL_LOCK" -eq 0 ]] || rmdir "$GLOBAL_LOCK" 2>/dev/null || true
   [[ "$HELD_LEDGER_LOCK" -eq 0 ]] || rmdir "$LOCK_DIR" 2>/dev/null || true
+  [[ "$HELD_LAUNCH_LOCK" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
   [[ -z "$ACTIVE_RUN_TEMP" ]] || rm -f "$ACTIVE_RUN_TEMP"
   if [[ "$OWNS_ACTIVE_RUN" -eq 1 ]]; then
     rm -f "$ACTIVE_RUN_FILE"
   fi
 }
 trap cleanup EXIT
+trap 'exit 143' TERM INT HUP
 
 ROLE="" TICKET="" PROMPT_FILE="" ADAPTER="" WORKDIR="$PWD"
 while [[ $# -gt 0 ]]; do
@@ -108,45 +182,99 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
 fi
 
-# --- cross-family role→adapter mapping (mechanical, not a prompt rule) ---
-# Override only via FACTORY_ADAPTER_OVERRIDE (used for mock in kit tests).
-# 2026-07-13 flip (operator decision): production roles (planner, builder,
-# narrator) run on codex; checking roles (spec-linter, test-author, reviewer)
-# run on claude-code. Rationale: the token-heavy runs land on the cheaper
-# family while the cross-family invariant — checkers never share a family
-# with producers — is preserved.
-case "$ROLE" in
-  builder|planner) DEFAULT_ADAPTER="codex";;
-  test-author|reviewer|spec-linter) DEFAULT_ADAPTER="claude-code";;
-  narrator) DEFAULT_ADAPTER="codex";;
-  *) echo "unknown role: $ROLE" >&2; exit 2;;
-esac
-if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
-  ADAPTER="$FACTORY_ADAPTER_OVERRIDE"
-elif [[ -z "$ADAPTER" ]]; then
-  ADAPTER="$DEFAULT_ADAPTER"
-elif [[ "$ADAPTER" != "$DEFAULT_ADAPTER" ]]; then
-  echo "role '$ROLE' must run on adapter '$DEFAULT_ADAPTER' (cross-family rule); got '$ADAPTER'" >&2
-  exit 2
-fi
-
 # --- kill switch check (anchored) ---
 if [[ -f "$FACTORY_DIR/KILL" ]]; then
   echo "KILL file present ($FACTORY_DIR/KILL) — factory is stopped. Remove it to resume." >&2
   exit 4
 fi
 
+# --- resolve one backend before reservation and before submitting the task ---
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/backend-policy.sh"
+if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
+  if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" || "${FACTORY_TEST_MODE:-0}" != "1" ]]; then
+    echo "FACTORY_ADAPTER_OVERRIDE requires FACTORY_TEST_MODE=1 and the mock adapter" >&2
+    exit 2
+  fi
+  SELECTED="$FACTORY_ADAPTER_OVERRIDE"
+  SELECTED_FAMILY="$(factory_adapter_family "$SELECTED" 2>/dev/null || echo test)"
+  SELECTED_MODEL="${FACTORY_OVERRIDE_MODEL:-}"
+  SELECTED_VERSION="test"
+  SELECTION_REASON="test_override"
+  PRIMARY_PROBE_SUMMARY="test_override"
+elif factory_resolve_role "$ROLE"; then
+  SELECTED="$FACTORY_SELECTED_ADAPTER"
+  SELECTED_FAMILY="$FACTORY_SELECTED_FAMILY"
+  SELECTED_MODEL="${FACTORY_SELECTED_MODEL:-cli-default}"
+  [[ -n "$SELECTED_MODEL" ]] || SELECTED_MODEL="cli-default"
+  SELECTED_VERSION="$FACTORY_SELECTED_VERSION"
+  SELECTION_REASON="$FACTORY_SELECTION_REASON"
+  PRIMARY_PROBE_SUMMARY="${FACTORY_PRIMARY_STATE}:${FACTORY_PRIMARY_REASON}"
+else
+  echo "no safe backend route for role '$ROLE': ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
+  exit 6
+fi
+
+if [[ -n "$ADAPTER" && "$ADAPTER" != "$SELECTED" ]]; then
+  echo "role '$ROLE' resolved to adapter '$SELECTED'; explicit adapter '$ADAPTER' is forbidden" >&2
+  exit 2
+fi
+ADAPTER="$SELECTED"
+
 ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
 
 mkdir -p "$FACTORY_DIR" "$RUNS_DIR" "$LEDGER_DIR"
-[[ -f "$LEDGER" ]] || echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$LEDGER"
+REPO_LEDGER_HEADER="date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
+GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
+LEGACY_REPO_HEADER="date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
+PARTIAL_REPO_HEADER="$LEGACY_REPO_HEADER,run_id,provider_family"
+LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
+PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
 TODAY="$(date +%F)"
+RUN_ID="$(date +%s)-$$"
+MANIFEST="$RUNS_DIR/$RUN_ID.meta"
+write_manifest "resolved"
+
+# Serialize task registration with kill-switch KILL creation + PID scanning.
+for i in $(seq 1 100); do
+  mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
+  sleep 0.1
+done
+if [[ "$HELD_LAUNCH_LOCK" -ne 1 ]]; then
+  echo "launch lock stuck — no task was submitted" >&2
+  exit 8
+fi
+if [[ -f "$FACTORY_DIR/KILL" ]]; then
+  echo "KILL file appeared before reservation; no task was submitted" >&2
+  exit 4
+fi
+if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+      "${FACTORY_TEST_BEFORE_REGISTER_SLEEP:-0}" != "0" ]]; then
+  sleep "$FACTORY_TEST_BEFORE_REGISTER_SLEEP"
+fi
 
 # --- serialized cap check with budget reservation ---
 # mkdir is atomic: it is the lock. Reservation counts this run's full per-run
 # budget against the caps, so N concurrent runs cannot all squeeze past.
 for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "ledger lock stuck — see runbook" >&2; exit 8; }; done
+if [[ ! -f "$LEDGER" ]]; then
+  echo "$REPO_LEDGER_HEADER" > "$LEDGER"
+else
+  CURRENT_HEADER="$(awk 'NR==1 {print; exit}' "$LEDGER")"
+  case "$CURRENT_HEADER" in
+    "$REPO_LEDGER_HEADER") ;;
+    "$LEGACY_REPO_HEADER"|"$PARTIAL_REPO_HEADER")
+      TMP_HEADER="$LEDGER.header.$$"
+      { echo "$REPO_LEDGER_HEADER"; awk 'NR>1' "$LEDGER"; } > "$TMP_HEADER"
+      mv "$TMP_HEADER" "$LEDGER"
+      ;;
+    *)
+      echo "unsupported ledger schema; refusing automatic rewrite: $CURRENT_HEADER" >&2
+      exit 3
+      ;;
+  esac
+fi
 
 # --- one live run per ticket+role across all linked worktrees ---
 # Acquisition is serialized by the ledger lock above, including stale cleanup.
@@ -180,74 +308,182 @@ if awk -v s="$SPENT_TICKET" -v r="$PER_RUN_BUDGET_USD" -v cap="$PER_TICKET_BUDGE
 fi
 # Global cap check + reservation (own lock, taken while holding the repo
 # lock — lock order is always repo → global, so no deadlock is possible).
-RUN_ID="$(date +%s)-$$"
+PROMPT_VERSION="unversioned"
+[[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
+LEDGER_FAMILY="$(meta_value "$SELECTED_FAMILY")"
+LEDGER_MODEL="$(meta_value "$SELECTED_MODEL")"
+LEDGER_REASON="$(meta_value "$SELECTION_REASON")"
+LEDGER_VERSION="$(meta_value "$SELECTED_VERSION")"
 if [[ -n "$GLOBAL_LEDGER" ]]; then
   mkdir -p "$(dirname "$GLOBAL_LEDGER")"
-  [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$GLOBAL_LEDGER"
   for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "global ledger lock stuck — see runbook" >&2; rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0; exit 8; }; done
+  if [[ ! -f "$GLOBAL_LEDGER" ]]; then
+    echo "$GLOBAL_LEDGER_HEADER" > "$GLOBAL_LEDGER"
+  else
+    CURRENT_GLOBAL_HEADER="$(awk 'NR==1 {print; exit}' "$GLOBAL_LEDGER")"
+    case "$CURRENT_GLOBAL_HEADER" in
+      "$GLOBAL_LEDGER_HEADER") ;;
+      "$LEGACY_GLOBAL_HEADER"|"$PARTIAL_GLOBAL_HEADER")
+        TMP_HEADER="$GLOBAL_LEDGER.header.$$"
+        { echo "$GLOBAL_LEDGER_HEADER"; awk 'NR>1' "$GLOBAL_LEDGER"; } > "$TMP_HEADER"
+        mv "$TMP_HEADER" "$GLOBAL_LEDGER"
+        ;;
+      *)
+        echo "unsupported global ledger schema; refusing automatic rewrite: $CURRENT_GLOBAL_HEADER" >&2
+        exit 3
+        ;;
+    esac
+  fi
   SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
   if awk -v s="$SPENT_GLOBAL" -v r="$PER_RUN_BUDGET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
     echo "MACHINE daily cap would be exceeded across all factories (spent \$$SPENT_GLOBAL + reserve \$$PER_RUN_BUDGET_USD > \$$GLOBAL_DAILY_CAP_USD) — refusing. See runbooks/operator.md." >&2
     rmdir "$GLOBAL_LOCK" "$LOCK_DIR"; HELD_GLOBAL_LOCK=0; HELD_LEDGER_LOCK=0; exit 5
   fi
-  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID" >> "$GLOBAL_LEDGER"
+  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION" >> "$GLOBAL_LEDGER"
   rmdir "$GLOBAL_LOCK"
   HELD_GLOBAL_LOCK=0
 fi
 
 # Reserve: write a provisional ledger row at full per-run budget; replaced with
 # the real cost after the run. A crash leaves the conservative row in place.
-echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID" >> "$LEDGER"
+echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION" >> "$LEDGER"
 rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
+write_manifest "reserved"
 
-PROMPT_VERSION="unversioned"
-[[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
-
-# --- run; record PID so the kill switch can target factory runs precisely ---
+# --- run one task-bearing process in an isolated process group ---
 set +e
-"$ADAPTER_SH" \
+RUN_READY_FILE="$RUNS_DIR/.$RUN_ID.ready"
+RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE"
+python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
+  "$RUN_READY_FILE" "$RUN_GO_FILE" "$ADAPTER_SH" \
   --budget "$PER_RUN_BUDGET_USD" \
   --max-turns "$PER_RUN_MAX_TURNS" \
   --timeout-min "$PER_RUN_TIMEOUT_MIN" \
   --prompt-file "${PROMPT_FILE:-/dev/null}" \
   --workdir "$WORKDIR" \
   -- "$TASK" > "$RUNS_DIR/$RUN_ID.out" 2>&1 &
-ADAPTER_PID=$!
-echo "$ADAPTER_PID" > "$RUNS_DIR/$RUN_ID.pid"
-wait "$ADAPTER_PID"
-STATUS=$?
+RUN_PID=$!
+RUN_PGID="$RUN_PID"
+RUN_GROUP_ACTIVE=1
+RUN_GROUP_TERMINATED=0
+for _ready_try in $(seq 1 500); do
+  [[ -f "$RUN_READY_FILE" ]] && break
+  kill -0 "$RUN_PID" 2>/dev/null || break
+  sleep 0.01
+done
+READY_PID="$(sed -n 's/^pid=//p' "$RUN_READY_FILE" 2>/dev/null | awk 'NR==1 {print; exit}')"
+READY_PGID="$(sed -n 's/^pgid=//p' "$RUN_READY_FILE" 2>/dev/null | awk 'NR==1 {print; exit}')"
+if [[ "$READY_PID" != "$RUN_PID" || "$READY_PGID" != "$RUN_PID" ]]; then
+  echo "process-group readiness handshake failed; no task was submitted" >&2
+  terminate_run_group
+  wait "$RUN_PID" 2>/dev/null
+  STATUS=125
+elif [[ -f "$FACTORY_DIR/KILL" ]]; then
+  echo "KILL file appeared before task submission; run cancelled" >&2
+  terminate_run_group
+  wait "$RUN_PID" 2>/dev/null
+  STATUS=4
+else
+  RUN_START_ID="$(ps -o lstart= -p "$RUN_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  if [[ -z "$RUN_START_ID" ]]; then
+    echo "could not validate process start identity; no task was submitted" >&2
+    terminate_run_group
+    wait "$RUN_PID" 2>/dev/null
+    STATUS=125
+  else
+    RUN_PID_FILE="$RUNS_DIR/$RUN_ID.pid"
+    {
+      echo "pid=$RUN_PID"
+      echo "pgid=$RUN_PGID"
+      echo "run_id=$RUN_ID"
+      echo "process_start=$RUN_START_ID"
+    } > "$RUN_PID_FILE"
+    write_manifest "prepared"
+    if [[ -f "$FACTORY_DIR/KILL" ]]; then
+      echo "KILL file appeared before GO; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=4
+    else
+      : > "$RUN_GO_FILE"
+      write_manifest "spawned"
+      rmdir "$LAUNCH_LOCK"
+      HELD_LAUNCH_LOCK=0
+      wait "$RUN_PID"
+      STATUS=$?
+    fi
+  fi
+fi
+if [[ "$HELD_LAUNCH_LOCK" -eq 1 ]]; then
+  rmdir "$LAUNCH_LOCK"
+  HELD_LAUNCH_LOCK=0
+fi
 set -e
-rm -f "$RUNS_DIR/$RUN_ID.pid"
+terminate_run_group || true
+if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
+  rm -f "$RUN_PID_FILE"
+  RUN_PID_FILE=""
+else
+  echo "WARNING: process group $RUN_PGID survived; PID record retained for kill-switch" >&2
+fi
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE"
+RUN_READY_FILE=""
+RUN_GO_FILE=""
 RESULT="$(cat "$RUNS_DIR/$RUN_ID.out")"
 
 METRICS_LINE="$(printf '%s\n' "$RESULT" | tail -n1)"
 TURNS="$(sed -n 's/.*turns=\([0-9][0-9]*\).*/\1/p' <<<"$METRICS_LINE")"
 COST="$(sed -n 's/.*cost_usd=\([0-9.][0-9.]*\).*/\1/p' <<<"$METRICS_LINE")"
+COST_BASIS="$(sed -n 's/.*cost_basis=\([A-Za-z0-9_-]*\).*/\1/p' <<<"$METRICS_LINE")"
 # Unparsable cost: keep the conservative full-budget reservation and say so
 # loudly — never silently log $0 against the caps.
 if [[ -z "$COST" ]]; then
   echo "WARNING: run cost unparsable — ledger keeps conservative reservation of \$$PER_RUN_BUDGET_USD for this run. Reconcile with the provider console." >&2
   COST="$PER_RUN_BUDGET_USD"
   TURNS="${TURNS:-0}"
+  COST_BASIS="conservative_reservation"
+elif [[ -z "$COST_BASIS" ]]; then
+  case "$ADAPTER" in
+    claude-code) COST_BASIS="provider_reported" ;;
+    codex) COST_BASIS="estimated_tokens" ;;
+    mock) COST_BASIS="test_fixture" ;;
+    *) COST_BASIS="estimated_tokens" ;;
+  esac
 fi
 
 # Replace the reservation row with the real result (under lock).
-for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }; sleep 0.2; done
+for i in $(seq 1 50); do
+  mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }
+  sleep 0.2
+done
+if [[ "$HELD_LEDGER_LOCK" -ne 1 ]]; then
+  echo "ledger lock stuck while finalizing run $RUN_ID — conservative reservation retained" >&2
+  exit 8
+fi
 TMP_LEDGER="$LEDGER.tmp.$$"
-grep -v ",reserved-$RUN_ID\$" "$LEDGER" > "$TMP_LEDGER" || true
-echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS" >> "$TMP_LEDGER"
+awk -F, -v reserved="reserved-$RUN_ID" '$9 != reserved' "$LEDGER" > "$TMP_LEDGER"
+echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$TMP_LEDGER"
 mv "$TMP_LEDGER" "$LEDGER"
 rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 
 # Same replacement in the machine-global ledger, if configured.
 if [[ -n "$GLOBAL_LEDGER" && -f "$GLOBAL_LEDGER" ]]; then
-  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }; sleep 0.2; done
+  for i in $(seq 1 50); do
+    mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }
+    sleep 0.2
+  done
+  if [[ "$HELD_GLOBAL_LOCK" -ne 1 ]]; then
+    echo "global ledger lock stuck while finalizing run $RUN_ID — conservative reservation retained" >&2
+    exit 8
+  fi
   TMP_GLOBAL="$GLOBAL_LEDGER.tmp.$$"
-  grep -v ",reserved-$RUN_ID\$" "$GLOBAL_LEDGER" > "$TMP_GLOBAL" || true
-  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS" >> "$TMP_GLOBAL"
+  awk -F, -v reserved="reserved-$RUN_ID" '$10 != reserved' "$GLOBAL_LEDGER" > "$TMP_GLOBAL"
+  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$TMP_GLOBAL"
   mv "$TMP_GLOBAL" "$GLOBAL_LEDGER"
   rmdir "$GLOBAL_LOCK"; HELD_GLOBAL_LOCK=0
 fi
 
+write_manifest "completed"
 printf '%s\n' "$RESULT"
 exit "$STATUS"

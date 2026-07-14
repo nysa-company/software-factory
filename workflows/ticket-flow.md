@@ -5,14 +5,16 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 ## Sequence
 
 1. **Operator** moves a ticket from Backlog to Ready in Linear. The reconciler records that transition in the ticket file; no live API call is made by preflight.
-2. **Planner** (production family — Codex) starts at Planning, posts the spec'd description, acceptance criteria, and frozen contract on the ticket, and creates the ticket branch. If the product docs cannot answer a question, ticket → Blocked-Escalated with the question instead.
-3. **Spec-linter** (checking family — Claude) remains in Planning, checks criteria quality, contract coverage, consistency, and edge coverage, and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator.
-4. **Test-author** (checking family — Claude) starts Building and commits failing tests as the first commits on the ticket branch, asserting the frozen contract. Confirms they fail for the right reason.
-5. **Builder** (production family — Codex, fresh git worktree on the same branch) runs in Building and implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
+2. **Planner** (production/OpenAI family; Codex primary, family-matched Cursor fallback) starts at Planning, posts the spec'd description, acceptance criteria, and frozen contract on the ticket, and creates the ticket branch. If the product docs cannot answer a question, ticket → Blocked-Escalated with the question instead.
+3. **Spec-linter** (checking/Anthropic family; Claude Code primary, family-matched Cursor fallback) remains in Planning, checks criteria quality, contract coverage, consistency, and edge coverage, and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator.
+4. **Test-author** (checking/Anthropic family) starts Building and commits failing tests as the first commits on the ticket branch, asserting the frozen contract. Confirms they fail for the right reason.
+5. **Builder** (production/OpenAI family, fresh git worktree on the same branch) runs in Building and implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
 6. **CI** runs: lint, typecheck, tests, build, self-referential snapshots, test-immutability check.
 7. **Reviewer** runs in Review and checks test adequacy and spec conformance. Approve, or request changes back to Building (max 2 rounds → Blocked-Escalated with a plain-language note).
 8. **Narrator** remains in Review and posts the bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note. Ticket → Awaiting Approval.
 9. **Operator** approves from the bundle by moving the Linear issue to Approved (or sends it back with what is wrong). The reconciler records the approval locally. After the PR is merged and staging is confirmed, factory close-out moves the ticket to Done.
+
+Backend fallback is selected by `run-agent.sh` before it submits the role task. Once any task-bearing CLI starts, every failure is terminal for that run; the dispatcher escalates instead of launching another backend.
 
 ## Failure routes
 
