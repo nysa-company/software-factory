@@ -15,6 +15,22 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 | `ci/` | Executable regression checks and the product CI template |
 | `conformance/` | The Nysa-shaped conformance product — the kit's permanent test bed |
 
+## Role backends
+
+| Role | Group | Primary provider / adapter | Primary model | Optional fallback / model |
+|---|---|---|---|---|
+| Dispatcher | Coordinator | Hermes Agent (deployment-configured provider) | Deployment-configured; outside the worker backend policy | None |
+| Planner | Production | OpenAI / Codex CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `gpt-5.6-sol-high` |
+| Spec-linter | Checking | Anthropic / Claude Code CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `claude-sonnet-5-thinking-high` |
+| Test-author | Checking | Anthropic / Claude Code CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `claude-sonnet-5-thinking-high` |
+| Builder | Production | OpenAI / Codex CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `gpt-5.6-sol-high` |
+| Reviewer | Checking | Anthropic / Claude Code CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `claude-sonnet-5-thinking-high` |
+| Narrator | Production | OpenAI / Codex CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `gpt-5.6-sol-high` |
+
+Cursor fallback is disabled by default. When enabled, the wrapper selects the
+matching provider-family route before submitting the task; fallback is never a
+retry after a failed run.
+
 ## Core rules (enforced by the kit, not by prompts)
 
 1. Budgets live in the run wrapper and provider console caps. Agents cannot raise their own limits.
