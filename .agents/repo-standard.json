@@ -1,0 +1,34 @@
+{
+  "baseline_version": 3,
+  "branch_pattern": "^(feat|fix|docs|chore|refactor|test|hotfix|spike)/[a-z0-9]+(?:-[a-z0-9]+)*$",
+  "default_branch": "main",
+  "documentation_roots": [
+    "docs"
+  ],
+  "exceptions": [],
+  "features": {
+    "artifact_check": true,
+    "conductor": false,
+    "config_review": true,
+    "git_flow": true,
+    "github_ci": true,
+    "local_pr_workflow": true,
+    "pull_request_template": true,
+    "repo_check": true,
+    "secret_scan": true
+  },
+  "managed": {
+    "blocks": {
+      ".gitignore": "c58171d8dc5fe3318c38df004e7bb1d7cc1ce56b7fe745e23a92757575a35508",
+      "AGENTS.md": "ab7bc6b19454163a702f7533d96c2366a1cc64884a3109e4c2063589799cb414"
+    },
+    "files": {
+      "scripts/repo-check": "e90eb6918057d7766d4a2ef22df3426ff8957e3b17dfdef7bbdc6f362fce82c5",
+      "scripts/secret-scan": "9ffe80b07abff9f17031ba6a786a2de17952523759f731dc5d8b9d728e526895"
+    }
+  },
+  "profile": "toolkit",
+  "schema_version": 1,
+  "scoped_agents": [],
+  "verification_command": "bash ci/test-all.sh"
+}

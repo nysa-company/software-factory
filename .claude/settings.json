@@ -1,4 +1,13 @@
 {
+  "extraKnownMarketplaces": {
+    "nysa-agents-plugin": {
+      "autoUpdate": true,
+      "source": {
+        "repo": "nysa-company/nysa-agents-plugin",
+        "source": "github"
+      }
+    }
+  },
   "permissions": {
     "deny": [
       "Read(./.env)",
@@ -7,11 +16,5 @@
       "Read(./**/*.key)",
       "Read(./**/credentials*.json)"
     ]
-  },
-  "extraKnownMarketplaces": {
-    "nysa-agents-plugin": {
-      "source": {"source": "github", "repo": "nysa-company/nysa-agents-plugin"},
-      "autoUpdate": true
-    }
   }
 }

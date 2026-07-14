@@ -8,25 +8,32 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: tests
-        run: npm test
-        working-directory: conformance/app
-      - name: factory script regressions
-        run: bash ci/test-factory-scripts.sh
-      - name: Linear reconciler regressions
-        run: python3 ci/linear-sync-test.py
-      - name: reorder-test-fixes suite
-        run: bash ci/reorder-test-fixes-test.sh
-      - name: preflight suite
-        run: bash ci/preflight-test.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: repository baseline
+        run: scripts/repo-check
+      - name: secret scan
+        run: scripts/secret-scan
+      - name: artifact policy
+        run: scripts/artifact-check --base origin/main
+      - name: full verification
+        run: bash ci/test-all.sh
+        env:
+          BASE_REF: origin/main
 
   macos-bash-3:
     runs-on: macos-14

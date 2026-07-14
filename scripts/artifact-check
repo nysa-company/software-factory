@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Reject local artifacts and durable Markdown outside approved documentation paths."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path, PurePosixPath
+import subprocess
+import sys
+
+
+BLOCKED_PARTS = {".context", "node_modules", "dist", "build", "coverage", "__pycache__"}
+BLOCKED_SUFFIXES = {".log", ".tmp", ".swp", ".pem", ".key"}
+DOCUMENT_FILES = {"AGENTS.md", "CLAUDE.md", "README.md", "TODOS.md", "context/memory.md"}
+DOCUMENT_ROOTS = {".github", "conformance", "deploy", "docs", "envelope", "roles", "templates", "vendor"}
+
+
+def changed(root: Path, base: str | None, working_tree: bool) -> list[str]:
+    if working_tree:
+        paths: set[str] = set()
+        for command in (
+            ["git", "diff", "--name-only"],
+            ["git", "diff", "--cached", "--name-only"],
+            ["git", "ls-files", "--others", "--exclude-standard"],
+        ):
+            result = subprocess.run(command, cwd=root, text=True, capture_output=True)
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or "git working-tree inspection failed")
+            paths.update(result.stdout.splitlines())
+        return sorted(paths)
+    if not base:
+        raise RuntimeError("--base is required unless --working-tree is used")
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "git diff failed")
+    return result.stdout.splitlines()
+
+
+def blocked(path: str) -> bool:
+    candidate = PurePosixPath(path)
+    return bool(BLOCKED_PARTS.intersection(candidate.parts)) or candidate.suffix.lower() in BLOCKED_SUFFIXES
+
+
+def misplaced_document(path: str) -> bool:
+    candidate = PurePosixPath(path)
+    if candidate.suffix.lower() != ".md" or candidate.as_posix() in DOCUMENT_FILES:
+        return False
+    return not candidate.parts or candidate.parts[0] not in DOCUMENT_ROOTS
+
+
+def self_test() -> None:
+    assert misplaced_document("decision.md")
+    assert not misplaced_document("docs/decision.md")
+    assert not misplaced_document("roles/reviewer.md")
+    assert not misplaced_document("context/memory.md")
+    assert blocked("build/output.log")
+    assert not blocked("docs/operations/rollback-drill.md")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--base")
+    parser.add_argument("--working-tree", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        print("artifact-check: self-test PASS")
+        return 0
+    try:
+        paths = changed(args.root.resolve(), args.base, args.working_tree)
+    except RuntimeError as exc:
+        print(f"artifact-check: {exc}", file=sys.stderr)
+        return 2
+    artifact_failures = sorted(path for path in paths if blocked(path))
+    document_failures = sorted(path for path in paths if misplaced_document(path))
+    for path in artifact_failures:
+        print(f"FAIL: disallowed artifact path: {path}", file=sys.stderr)
+    for path in document_failures:
+        print(f"FAIL: durable Markdown must live under docs/: {path}", file=sys.stderr)
+    if artifact_failures or document_failures:
+        return 1
+    print("artifact-check: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
