@@ -308,10 +308,14 @@ write_envelope "$PRIMARY"
 PRIMARY_GLOBAL="$TMP/primary-global/global.env"
 write_backend_global "$PRIMARY_GLOBAL"
 PRIMARY_TRACE="$TMP/primary.trace"
+PRIMARY_OUT="$TMP/primary.out"
+PRIMARY_STATUS=0
 : > "$PRIMARY_TRACE"
-if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PRIMARY" \
-     FACTORY_GLOBAL_ENV="$PRIMARY_GLOBAL" FACTORY_TEST_TRACE="$PRIMARY_TRACE" \
-     "$RUN_AGENT" --role planner --ticket T-210 -- "primary route" >/dev/null &&
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PRIMARY" \
+  FACTORY_GLOBAL_ENV="$PRIMARY_GLOBAL" FACTORY_TEST_TRACE="$PRIMARY_TRACE" \
+  "$RUN_AGENT" --role planner --ticket T-210 -- "primary route" \
+  > "$PRIMARY_OUT" 2>&1 || PRIMARY_STATUS=$?
+if [[ "$PRIMARY_STATUS" -eq 0 ]] &&
    [[ "$(awk -F, '$3=="T-210" {print $5}' "$PRIMARY/factory/ledger.csv")" == "codex" ]] &&
    [[ "$(awk -F, '$3=="T-210" {print $11}' "$PRIMARY/factory/ledger.csv")" == "openai" ]] &&
    [[ "$(awk -F, '$3=="T-210" {print $13}' "$PRIMARY/factory/ledger.csv")" == "primary_ready" ]] &&
@@ -319,7 +323,8 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PRIMARY" \
    grep -q '^codex-task$' "$PRIMARY_TRACE"; then
   pass "ready primary submits exactly one primary task"
 else
-  fail "ready primary submits exactly one primary task"
+  fail "ready primary submits exactly one primary task" "status $PRIMARY_STATUS"
+  awk '{print "  | " $0}' "$PRIMARY_OUT" >&2
 fi
 
 # A non-task UNAVAILABLE probe selects family-matched Cursor before reservation.
@@ -421,12 +426,14 @@ write_envelope "$TASK_FAIL"
 TASK_FAIL_GLOBAL="$TMP/task-fail-global/global.env"
 write_backend_global "$TASK_FAIL_GLOBAL"
 TASK_FAIL_TRACE="$TMP/task-fail.trace"
+TASK_FAIL_OUT="$TMP/task-fail.out"
 : > "$TASK_FAIL_TRACE"
 TASK_FAIL_STATUS=0
 PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$TASK_FAIL" \
   FACTORY_GLOBAL_ENV="$TASK_FAIL_GLOBAL" FACTORY_TEST_TRACE="$TASK_FAIL_TRACE" \
   STUB_CODEX_STATUS=42 \
-  "$RUN_AGENT" --role planner --ticket T-212 -- "task failure" >/dev/null ||
+  "$RUN_AGENT" --role planner --ticket T-212 -- "task failure" \
+  > "$TASK_FAIL_OUT" 2>&1 ||
   TASK_FAIL_STATUS=$?
 if [[ "$TASK_FAIL_STATUS" -eq 42 &&
       "$(wc -l < "$TASK_FAIL_TRACE" | tr -d ' ')" == "1" ]] &&
@@ -435,6 +442,7 @@ if [[ "$TASK_FAIL_STATUS" -eq 42 &&
   pass "post-submission primary failure never launches Cursor"
 else
   fail "post-submission primary failure never launches Cursor" "status $TASK_FAIL_STATUS"
+  awk '{print "  | " $0}' "$TASK_FAIL_OUT" >&2
 fi
 
 # INVALID primary state fails closed before any task process or reservation.
