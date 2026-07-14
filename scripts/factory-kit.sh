@@ -28,11 +28,18 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
-  local status=$? item path nonce
+  local status=$? item path identity device inode kind nonce
   trap - EXIT
   if [[ -n "$TEMP_PATHS" ]]; then
     printf '%s' "$TEMP_PATHS" | while IFS= read -r item; do
-      [[ -z "$item" ]] || rm -rf "$item"
+      [[ -n "$item" ]] || continue
+      kind="${item##*|}"
+      identity="${item%|*}"
+      inode="${identity##*|}"
+      identity="${identity%|*}"
+      device="${identity##*|}"
+      path="${identity%|*}"
+      safe_remove_owned_temp "$path" "$device" "$inode" "$kind" >/dev/null 2>&1 || true
     done
   fi
   if [[ -n "$HELD_LOCKS" ]]; then
@@ -51,8 +58,92 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 remember_temp() {
-  TEMP_PATHS="${1}
+  local path="$1" identity
+  identity="$(python3 - "$path" <<'PY'
+import os, stat, sys
+value = os.lstat(sys.argv[1])
+if stat.S_ISLNK(value.st_mode):
+    raise SystemExit("remembered temporary path is a symlink")
+if stat.S_ISDIR(value.st_mode):
+    kind = "d"
+elif stat.S_ISREG(value.st_mode):
+    kind = "f"
+else:
+    raise SystemExit("remembered temporary path has an unsupported type")
+print("%s|%s|%s" % (value.st_dev, value.st_ino, kind))
+PY
+)" || die "could not record temporary directory ownership: $path"
+  TEMP_PATHS="${path}|${identity}
 ${TEMP_PATHS}"
+}
+
+forget_temp() {
+  local target="$1" item next=""
+  while IFS= read -r item; do
+    [[ -n "$item" && "${item%|*|*|*}" != "$target" ]] &&
+      next="${next}${item}
+"
+  done <<EOF
+$TEMP_PATHS
+EOF
+  TEMP_PATHS="$next"
+}
+
+safe_remove_owned_temp() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import os, pathlib, shutil, stat, sys
+root = pathlib.Path(sys.argv[1])
+expected_device, expected_inode = map(int, sys.argv[2:4])
+expected_kind = sys.argv[4]
+try:
+    value = root.lstat()
+except FileNotFoundError:
+    raise SystemExit(0)
+if (
+    stat.S_ISLNK(value.st_mode) or
+    value.st_dev != expected_device or value.st_ino != expected_inode
+):
+    raise SystemExit(0)
+if expected_kind == "f":
+    if not stat.S_ISREG(value.st_mode):
+        raise SystemExit(0)
+    os.chmod(str(root), stat.S_IMODE(value.st_mode) | stat.S_IRUSR | stat.S_IWUSR)
+    value = root.lstat()
+    if value.st_dev == expected_device and value.st_ino == expected_inode:
+        root.unlink()
+    raise SystemExit(0)
+if expected_kind != "d" or not stat.S_ISDIR(value.st_mode):
+    raise SystemExit(0)
+for directory, names, files in os.walk(str(root), topdown=False, followlinks=False):
+    for name in files:
+        path = pathlib.Path(directory) / name
+        try:
+            mode = path.lstat().st_mode
+            if not stat.S_ISLNK(mode):
+                os.chmod(str(path), stat.S_IMODE(mode) | stat.S_IRUSR | stat.S_IWUSR)
+        except FileNotFoundError:
+            pass
+    for name in names:
+        path = pathlib.Path(directory) / name
+        try:
+            mode = path.lstat().st_mode
+            if not stat.S_ISLNK(mode):
+                os.chmod(
+                    str(path),
+                    stat.S_IMODE(mode) | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR,
+                )
+        except FileNotFoundError:
+            pass
+    mode = os.lstat(directory).st_mode
+    os.chmod(
+        directory,
+        stat.S_IMODE(mode) | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR,
+    )
+value = root.lstat()
+if value.st_dev != expected_device or value.st_ino != expected_inode:
+    raise SystemExit(0)
+shutil.rmtree(str(root))
+PY
 }
 
 remember_lock() {
@@ -619,6 +710,93 @@ for path in [root] + list(root.rglob("*")):
     if stat.S_IMODE(path.lstat().st_mode) & 0o222:
         raise SystemExit("writable installed path: %s" % path)
 PY
+}
+
+seal_release_contents_for_publish() {
+  python3 - "$1" <<'PY'
+import os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+paths = list(root.rglob("*"))
+for path in reversed(paths):
+    if path.is_symlink():
+        raise SystemExit("symlink is forbidden in managed release: %s" % path)
+    mode = stat.S_IMODE(path.lstat().st_mode)
+    os.chmod(str(path), mode & ~0o222)
+root_mode = stat.S_IMODE(root.lstat().st_mode)
+os.chmod(str(root), (root_mode & ~0o022) | stat.S_IWUSR)
+PY
+}
+
+verify_release_publish_ready() {
+  python3 - "$1" <<'PY'
+import pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+mode = stat.S_IMODE(root.lstat().st_mode)
+if not mode & stat.S_IWUSR or mode & (stat.S_IWGRP | stat.S_IWOTH):
+    raise SystemExit("staging release root is not owner-writable only")
+for path in root.rglob("*"):
+    if path.is_symlink():
+        raise SystemExit("symlink is forbidden in managed release: %s" % path)
+    if stat.S_IMODE(path.lstat().st_mode) & 0o222:
+        raise SystemExit("writable staged release content: %s" % path)
+PY
+}
+
+fsync_directory() {
+  python3 - "$1" <<'PY'
+import os, sys
+descriptor = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+record_publish_phase() {
+  local phase="$1" root="$2" release="$3" manifest="$4" trace
+  trace="${FACTORY_KIT_TEST_PUBLISH_TRACE:-}"
+  [[ -n "$trace" ]] || return 0
+  [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+    die "publish tracing requires FACTORY_KIT_TEST_MODE"
+  python3 - "$trace" "$phase" "$root" "$release" "$manifest" <<'PY'
+import json, pathlib, stat, sys
+trace, phase, root, release, manifest = map(pathlib.Path, sys.argv[1:])
+root_mode = stat.S_IMODE(root.lstat().st_mode)
+writable_descendants = 0
+for path in root.rglob("*"):
+    if not path.is_symlink() and stat.S_IMODE(path.lstat().st_mode) & 0o222:
+        writable_descendants += 1
+with trace.open("a") as stream:
+    stream.write(json.dumps({
+        "phase": str(phase),
+        "root_owner_writable": bool(root_mode & stat.S_IWUSR),
+        "root_any_writable": bool(root_mode & 0o222),
+        "writable_descendants": writable_descendants,
+        "release_exists": release.exists(),
+        "manifest_exists": manifest.exists(),
+    }, sort_keys=True) + "\n")
+PY
+}
+
+maybe_fail_publish_phase() {
+  local phase="$1" owned_path="${2:-}" requested quarantine
+  requested="${FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE:-}"
+  [[ -z "$requested" || "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+    die "publish fault injection requires FACTORY_KIT_TEST_MODE"
+  [[ "$requested" == "$phase" ]] || return 0
+  quarantine="${FACTORY_KIT_TEST_REPLACE_TEMP_BEFORE_CLEANUP:-}"
+  if [[ -n "$quarantine" ]]; then
+    [[ "$phase" == "contents_sealed" && -n "$owned_path" ]] ||
+      die "temporary replacement hook is valid only for sealed contents"
+    [[ ! -e "$quarantine" && ! -L "$quarantine" ]] ||
+      die "temporary replacement quarantine already exists"
+    mv "$owned_path" "$quarantine"
+    mkdir "$owned_path"
+    printf 'foreign replacement\n' > "$owned_path/foreign-marker"
+    chmod a-w "$owned_path/foreign-marker" "$owned_path"
+  fi
+  die "injected failure after publish phase $phase"
 }
 
 verify_release() {
@@ -1513,6 +1691,10 @@ cmd_install() {
   local sha="$1" source="$2" origin_override="$3"
   local source_top canonical_sha kit_tree release temp checkout origin origin_identity lock manifest
   local workspace
+  case "${FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE:-}" in
+    ""|contents_sealed|release_verified) ;;
+    *) die "unknown publish fault-injection phase" ;;
+  esac
   validate_sha "$sha"
   validate_managed_layout
   source_top="$(absolute_dir "$source")"
@@ -1584,12 +1766,26 @@ cmd_install() {
   verify_symlinks_contained "$temp" || die "candidate contains an escaping symlink"
   [[ "$(git_tree_for_directory "$temp")" == "$kit_tree" ]] ||
     die "materialized release does not match Git tree"
-  chmod -R a-w "$temp"
-  verify_read_only "$temp" || die "failed to seal release read-only"
+  seal_release_contents_for_publish "$temp"
+  verify_release_publish_ready "$temp" ||
+    die "failed to seal staged release contents"
+  record_publish_phase contents_sealed "$temp" "$release" "$manifest"
+  maybe_fail_publish_phase contents_sealed "$temp"
   mv "$temp" "$release"
-  TEMP_PATHS="$(printf '%s' "$TEMP_PATHS" | awk -v p="$temp" '$0 != p')"
+  chmod a-w "$release"
+  forget_temp "$temp"
+  remember_temp "$release"
+  record_publish_phase renamed_root_sealed "$release" "$release" "$manifest"
+  fsync_directory "$release"
+  fsync_directory "$RELEASES_DIR"
+  record_publish_phase parent_fsynced "$release" "$release" "$manifest"
+  verify_read_only "$release" || die "failed to seal published release read-only"
   verify_release "$sha" "$kit_tree"
+  record_publish_phase release_verified "$release" "$release" "$manifest"
+  maybe_fail_publish_phase release_verified "$release"
   write_install_manifest "$sha" "$origin_identity" "$kit_tree" "$release"
+  forget_temp "$release"
+  record_publish_phase manifest_written "$release" "$release" "$manifest"
   verify_release_from_manifest "$sha" >/dev/null
   release_lock "$lock"
   say "INSTALL OK: $sha ($origin)"

@@ -528,8 +528,91 @@ expect_failure "partial release without manifest is rejected" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
 chmod -R u+w "$STATE/releases/$SHA_B"
 rm -rf "$STATE/releases/$SHA_B"
-expect_success "second exact release installs" \
+
+FOREIGN_QUARANTINE="$TMP/owned-sealed-release"
+export FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE=contents_sealed
+export FACTORY_KIT_TEST_REPLACE_TEMP_BEFORE_CLEANUP="$FOREIGN_QUARANTINE"
+expect_failure "cleanup refuses a replaced remembered temp path" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
+unset FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE
+unset FACTORY_KIT_TEST_REPLACE_TEMP_BEFORE_CLEANUP
+REPLACEMENT_TEMP="$(compgen -G "$STATE/releases/.install-$SHA_B-*" | awk 'NR == 1 {print}')"
+if [[ -n "$REPLACEMENT_TEMP" &&
+      -f "$REPLACEMENT_TEMP/foreign-marker" &&
+      -d "$FOREIGN_QUARANTINE" ]] &&
+   python3 - "$REPLACEMENT_TEMP" <<'PY'
+import pathlib, stat, sys
+raise SystemExit(
+    0 if not stat.S_IMODE(pathlib.Path(sys.argv[1]).lstat().st_mode) & stat.S_IWUSR else 1
+)
+PY
+then
+  pass "cleanup leaves inode-mismatched paths untouched"
+else
+  fail "cleanup leaves inode-mismatched paths untouched"
+fi
+chmod -R u+w "$REPLACEMENT_TEMP" "$FOREIGN_QUARANTINE"
+rm -rf "$REPLACEMENT_TEMP" "$FOREIGN_QUARANTINE"
+
+export FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE=contents_sealed
+expect_failure "cleanup removes an owned sealed staging tree" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+unset FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE
+if [[ ! -e "$STATE/releases/$SHA_B" &&
+      ! -e "$STATE/manifests/$SHA_B.json" ]] &&
+   ! compgen -G "$STATE/releases/.install-$SHA_B-*" >/dev/null; then
+  pass "owned sealed staging cleanup restores an empty publication slot"
+else
+  fail "owned sealed staging cleanup restores an empty publication slot"
+fi
+
+export FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE=release_verified
+expect_failure "untrusted renamed release is cleaned before manifest" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+unset FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE
+if [[ ! -e "$STATE/releases/$SHA_B" &&
+      ! -e "$STATE/manifests/$SHA_B.json" ]] &&
+   ! compgen -G "$STATE/releases/.install-$SHA_B-*" >/dev/null; then
+  pass "pre-manifest publication failure has no trusted visibility"
+else
+  fail "pre-manifest publication failure has no trusted visibility"
+fi
+
+PUBLISH_TRACE="$TMP/publish-order.jsonl"
+export FACTORY_KIT_TEST_PUBLISH_TRACE="$PUBLISH_TRACE"
+expect_success "second exact release publishes portably" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+unset FACTORY_KIT_TEST_PUBLISH_TRACE
+if python3 - "$PUBLISH_TRACE" <<'PY'
+import json, pathlib, sys
+rows = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+expected = [
+    "contents_sealed",
+    "renamed_root_sealed",
+    "parent_fsynced",
+    "release_verified",
+    "manifest_written",
+]
+assert [row["phase"] for row in rows] == expected
+assert rows[0]["root_owner_writable"]
+assert rows[0]["root_any_writable"]
+assert rows[0]["writable_descendants"] == 0
+assert not rows[0]["release_exists"]
+assert not rows[0]["manifest_exists"]
+for row in rows[1:4]:
+    assert not row["root_any_writable"]
+    assert row["writable_descendants"] == 0
+    assert row["release_exists"]
+    assert not row["manifest_exists"]
+assert not rows[4]["root_any_writable"]
+assert rows[4]["release_exists"]
+assert rows[4]["manifest_exists"]
+PY
+then
+  pass "publication seals contents before rename and manifests last"
+else
+  fail "publication seals contents before rename and manifests last"
+fi
 
 PRODUCT_ONE="$(make_product product-one)"
 set_pin "$PRODUCT_ONE" "$SHA_A"

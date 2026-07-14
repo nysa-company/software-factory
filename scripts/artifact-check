@@ -12,7 +12,17 @@ import sys
 BLOCKED_PARTS = {".context", "node_modules", "dist", "build", "coverage", "__pycache__"}
 BLOCKED_SUFFIXES = {".log", ".tmp", ".swp", ".pem", ".key"}
 DOCUMENT_FILES = {"AGENTS.md", "CLAUDE.md", "README.md", "TODOS.md", "context/memory.md"}
-DOCUMENT_ROOTS = {".github", "conformance", "deploy", "docs", "envelope", "roles", "templates", "vendor"}
+DOCUMENT_ROOTS = {
+    ".github",
+    "conformance",
+    "deploy",
+    "docs",
+    "envelope",
+    "integrations",
+    "roles",
+    "templates",
+    "vendor",
+}
 
 
 def changed(root: Path, base: str | None, working_tree: bool) -> list[str]:
@@ -56,6 +66,7 @@ def misplaced_document(path: str) -> bool:
 def self_test() -> None:
     assert misplaced_document("decision.md")
     assert not misplaced_document("docs/decision.md")
+    assert not misplaced_document("integrations/hermes/templates/profile/SOUL.md")
     assert not misplaced_document("roles/reviewer.md")
     assert not misplaced_document("context/memory.md")
     assert blocked("build/output.log")
