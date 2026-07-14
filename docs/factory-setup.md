@@ -7,7 +7,9 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 ## Step 1 — Product repo
 
 - Create the product repo as a **sibling folder** (never nested inside another repo). Do NOT copy kit scripts into it — the engine model in `docs/architecture.md` is the contract.
-- Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN` (current kit SHA), and empty `initiatives/` and `tickets/` directories.
+- Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN`, an executable certification script, and empty `initiatives/` and `tickets/` directories.
+- Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
+- Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Copy exactly two CI files (GitHub requires workflows to live in the repo they run on): `ci/test-immutability-check.sh` → `.github/scripts/` and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`, with `TEST_PATHS` set from `PROJECT.env`.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. The validator checks the two files agree.
 - Product docs the factory needs (written per product, not in the kit):
@@ -30,17 +32,45 @@ Set up the shared Software Factory team per `docs/workflows/linear.md`: compact 
 
 Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path.
 
-## Step 5 — CI and hosting
+## Step 5 — Hermes release boundary
+
+- Create `~/.factory/bin` and `~/.factory/kits`. Install
+  `integrations/hermes/bin/factory-launch` at
+  `~/.factory/bin/factory-launch` only through an explicit bootstrap or
+  contract migration.
+- Create the dedicated factory profile at
+  `~/.hermes/profiles/factory`. Install the canonical `SOUL.md` and
+  `skills/factory-dispatch/SKILL.md` from `integrations/hermes/templates/`.
+- Add `~/.hermes/profiles/factory/projects/<project>.env` with
+  `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
+  from legacy registry files and resolves the active release itself. Registry
+  files contain paths only, never credentials.
+- Keep the factory gateway and machine dashboard as separate LaunchAgents.
+  Do not embed secret-bearing environment keys in either plist.
+- Install and certify the pinned release:
+
+  ```bash
+  bash scripts/factory-kit.sh install --repo "$PWD" --sha "<full-sha>"
+  bash scripts/factory-kit.sh certify \
+    --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
+  ```
+
+- Create a separate sandbox product and Hermes canary profile. Do not copy the
+  production `.env`, secret files, registry, ledger, board mapping, or
+  LaunchAgent. Run the real-Hermes canary in
+  [hermes-integration.md](hermes-integration.md) before the first activation.
+
+## Step 6 — CI and hosting
 
 - GitHub: branch protection per `docs/git-flow.md`, with the test-immutability check wired as a required status.
 - Hosting: Railway per `docs/operations/railway.md` (staging + preview deploys + Postgres).
 - Rehearse the rollback drill (`docs/operations/rollback-drill.md`) once before the pilot.
 
-## Step 6 — Walking skeleton
+## Step 7 — Walking skeleton
 
 One trivial end-to-end feature through the full loop before any backlog exists. Gate: the operator opens a working staging URL. See `docs/operations/walking-skeleton.md`.
 
-## Step 7 — Calibration
+## Step 8 — Calibration
 
 3 tickets (5 max) through the full loop with sandboxed external actions before cutting the real backlog. Prove: test handoff, pre-merge evidence bundle, one intentional rollback, cost capture in the ledger, one simulated crash recovery.
 
@@ -49,7 +79,11 @@ One trivial end-to-end feature through the full loop before any backlog exists. 
 All boxes checked = the factory may start. Any box unchecked = it may not.
 
 - [ ] Product repo exists, sibling location, `factory/initiatives/` and `factory/tickets/` created (no kit code copied; only the two CI files)
-- [ ] `factory/KIT_PIN` holds the certified kit SHA; `factory/PROJECT.env` filled per the reference copy
+- [ ] `factory/KIT_PIN` contains exactly one lowercase full SHA; `factory/PROJECT.env` names an executable, repository-contained `CERTIFY_SCRIPT`
+- [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
+- [ ] `~/.factory/bin/factory-launch` is installed; `contract --json` returns the expected version and `doctor --json` has no error category
+- [ ] Factory Hermes profile, project registry, and factory gateway LaunchAgent are separate from the dashboard and primary Hermes profile
+- [ ] Real-Hermes canary uses a separate profile/product and no copied production secrets; redacted evidence is recorded
 - [ ] `ENVELOPE.md` has no unfilled blanks
 - [ ] Console spend caps set on the primary providers; Cursor usage controls reviewed before fallback is enabled
 - [ ] Production, checking, Cursor, and product-runtime credentials are separated; none are committed
@@ -61,5 +95,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Walking skeleton merged; operator has clicked the staging URL
 - [ ] Kill switch tested: `scripts/kill-switch.sh` stops a live run
 - [ ] Metrics ledger file exists and the run wrapper writes to it
+- [ ] Activation/reconcile interruption and fail-closed kit rollback drilled; `MAINTENANCE` remains after rollback
+- [ ] Measured control-plane outage is within 5 minutes and full rollback RTO is within 30 minutes, or the factory remains in maintenance until the gap is resolved
 
 Deferred stages live in the root `TODOS.md` until their activation conditions are met.

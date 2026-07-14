@@ -1,0 +1,829 @@
+#!/usr/bin/env bash
+# Stable Hermes boundary. Install explicitly at ~/.factory/bin/factory-launch.
+# This file is the trust root: it resolves one active release, validates it,
+# then uses only helpers from that physical release for the entire invocation.
+set -u
+
+CONTRACT_VERSION="1.0.0"
+PREFLIGHT_SCHEMA="nysa.software-factory.preflight/v1"
+NEXT_STAGE_SCHEMA="nysa.software-factory.next-stage/v1"
+
+# The launcher validates paths and Git state before constructing the helper
+# environment. Caller-controlled interpreter and repository controls must not
+# influence either phase.
+unset CDPATH ENV BASH_ENV GH_TOKEN PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE \
+  PYTHONINSPECT PYTHONBREAKPOINT PYTHONWARNINGS PYTHONHASHSEED PYTHONSAFEPATH \
+  PYTHONNOUSERSITE GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR \
+  GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT \
+  GIT_CONFIG_PARAMETERS GIT_CONFIG_NOSYSTEM GIT_ATTR_NOSYSTEM GIT_EXEC_PATH \
+  GIT_NAMESPACE GIT_PREFIX GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
+  GIT_NO_REPLACE_OBJECTS GIT_CEILING_DIRECTORIES \
+  GIT_DISCOVERY_ACROSS_FILESYSTEM 2>/dev/null || true
+
+die() {
+  echo "factory-launch: $*" >&2
+  exit 1
+}
+
+usage() {
+  echo "usage: factory-launch <project> <contract|doctor|preflight|next-stage|reorder-test-fixes|run> [arguments]" >&2
+  exit 2
+}
+
+BOOTSTRAP_PYTHON="/usr/bin/python3"
+[[ -x "$BOOTSTRAP_PYTHON" ]] || die "fixed system python3 is required"
+ACCOUNT_HOME="$("$BOOTSTRAP_PYTHON" -I -S - <<'PY'
+import os
+import pwd
+
+home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+if not os.path.isabs(home) or not os.path.isdir(home):
+    raise SystemExit(1)
+print(home)
+PY
+)" || die "account home cannot be resolved"
+SELF_PATH="$("$BOOTSTRAP_PYTHON" -I -S - "${BASH_SOURCE[0]}" <<'PY'
+import os
+import sys
+
+path = os.path.realpath(sys.argv[1])
+if not os.path.isabs(path) or not os.path.isfile(path):
+    raise SystemExit(1)
+print(path)
+PY
+)" || die "launcher self path cannot be resolved"
+INSTALLED_LAUNCHER_PATH="$ACCOUNT_HOME/.factory/bin/factory-launch"
+
+if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
+  if [[ ${FACTORY_LAUNCH_TEST_MODE+x} == x ||
+        ${FACTORY_LAUNCH_TEST_HOME+x} == x ||
+        ${FACTORY_LAUNCH_TEST_ACCOUNT_HOME+x} == x ||
+        ${FACTORY_KITS_ROOT+x} == x ||
+        ${HERMES_FACTORY_PROFILE+x} == x ]]; then
+    die "installed launcher refuses test mode and root overrides"
+  fi
+  HOME="$ACCOUNT_HOME"
+  RAW_KITS_ROOT="$ACCOUNT_HOME/.factory/kits"
+  RAW_PROFILE="$ACCOUNT_HOME/.hermes/profiles/factory"
+else
+  [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
+    die "launcher must execute from the installed trust-root path"
+  if [[ -n "${FACTORY_LAUNCH_TEST_ACCOUNT_HOME:-}" ]]; then
+    case "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" in
+      /*) ;;
+      *) die "test account home must be absolute" ;;
+    esac
+    [[ -d "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" ]] ||
+      die "test account home is missing"
+    TEST_ACCOUNT_HOME="$(cd "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" 2>/dev/null && pwd -P)" ||
+      die "test account home cannot be resolved"
+    [[ "$SELF_PATH" != "$TEST_ACCOUNT_HOME/.factory/bin/factory-launch" ]] ||
+      die "installed launcher path refuses repository test mode"
+  fi
+  [[ -n "${FACTORY_LAUNCH_TEST_HOME:-}" &&
+     -n "${FACTORY_KITS_ROOT:-}" &&
+     -n "${HERMES_FACTORY_PROFILE:-}" ]] ||
+    die "repository test mode requires explicit isolated roots"
+  case "$FACTORY_LAUNCH_TEST_HOME" in
+    /*) ;;
+    *) die "test HOME must be absolute" ;;
+  esac
+  [[ -d "$FACTORY_LAUNCH_TEST_HOME" ]] || die "test HOME is missing"
+  HOME="$(cd "$FACTORY_LAUNCH_TEST_HOME" 2>/dev/null && pwd -P)" ||
+    die "test HOME cannot be resolved"
+  RAW_KITS_ROOT="$FACTORY_KITS_ROOT"
+  RAW_PROFILE="$HERMES_FACTORY_PROFILE"
+fi
+
+export HOME
+SAFE_PATH="$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+PATH="$SAFE_PATH"
+export PATH
+
+[[ $# -ge 2 ]] || usage
+PROJECT="$1"
+COMMAND="$2"
+shift 2
+
+[[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+  die "invalid project slug"
+
+PYTHON_BIN="$BOOTSTRAP_PYTHON"
+
+expand_absolute_path() {
+  local value="$1"
+  case "$value" in
+    *'`'*|*'$('*)
+      return 1
+      ;;
+  esac
+  case "$value" in
+    '${HOME}'/*) value="$HOME/${value#'${HOME}'/}" ;;
+    '$HOME'/*) value="$HOME/${value#'$HOME'/}" ;;
+    '~'/*) value="$HOME/${value#'~'/}" ;;
+  esac
+  case "$value" in
+    /*) printf '%s\n' "$value" ;;
+    *) return 1 ;;
+  esac
+}
+
+RAW_TMPDIR="${TMPDIR:-/tmp}"
+SAFE_TMPDIR="$(expand_absolute_path "$RAW_TMPDIR" 2>/dev/null || true)"
+[[ -n "$SAFE_TMPDIR" && -d "$SAFE_TMPDIR" ]] ||
+  die "TMPDIR must be an existing absolute path"
+SAFE_TMPDIR="$(cd "$SAFE_TMPDIR" 2>/dev/null && pwd -P)" ||
+  die "TMPDIR cannot be resolved"
+TMPDIR="$SAFE_TMPDIR"
+export TMPDIR
+
+reject_symlink_components() {
+  local path="$1" label="$2"
+  "$PYTHON_BIN" -I -S - "$path" <<'PY' || die "$label contains a symlink"
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_absolute():
+    raise SystemExit(1)
+current = pathlib.Path(path.anchor)
+for part in path.parts[1:]:
+    current = current / part
+    if os.path.islink(str(current)):
+        raise SystemExit(1)
+PY
+}
+
+require_managed_directory() {
+  local path="$1" label="$2"
+  [[ -d "$path" && ! -L "$path" ]] || die "$label is missing or a symlink"
+  reject_symlink_components "$path" "$label"
+}
+
+require_managed_file() {
+  local path="$1" label="$2"
+  [[ -f "$path" && ! -L "$path" ]] || die "$label is missing or a symlink"
+  reject_symlink_components "$path" "$label"
+}
+
+KITS_ROOT="$(expand_absolute_path "$RAW_KITS_ROOT" 2>/dev/null || true)"
+PROFILE_DIR="$(expand_absolute_path "$RAW_PROFILE" 2>/dev/null || true)"
+[[ -n "$KITS_ROOT" && -n "$PROFILE_DIR" ]] ||
+  die "factory kits root and Hermes profile must be absolute safe paths"
+require_managed_directory "$KITS_ROOT" "factory kits root"
+require_managed_directory "$PROFILE_DIR" "Hermes factory profile"
+KITS_ROOT="$(cd "$KITS_ROOT" 2>/dev/null && pwd -P)" ||
+  die "factory kits root cannot be resolved"
+PROFILE_DIR="$(cd "$PROFILE_DIR" 2>/dev/null && pwd -P)" ||
+  die "Hermes factory profile cannot be resolved"
+
+PROFILE_GH_TOKEN=""
+PROFILE_ENV_FILE="$PROFILE_DIR/.env"
+if [[ -e "$PROFILE_ENV_FILE" || -L "$PROFILE_ENV_FILE" ]]; then
+  reject_symlink_components "$PROFILE_ENV_FILE" "Hermes profile environment"
+  PROFILE_GH_TOKEN=$("$PYTHON_BIN" -I -S - "$PROFILE_ENV_FILE" 2>/dev/null <<'PY'
+import os
+import re
+import stat
+import sys
+
+path = sys.argv[1]
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+try:
+    descriptor = os.open(path, flags)
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError
+    if metadata.st_uid != os.geteuid():
+        raise ValueError
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise ValueError
+    if metadata.st_size > 65536:
+        raise ValueError
+    with os.fdopen(descriptor, "r", encoding="utf-8", errors="strict") as handle:
+        descriptor = -1
+        lines = handle.read().splitlines()
+finally:
+    if "descriptor" in locals() and descriptor >= 0:
+        os.close(descriptor)
+
+assignment = re.compile(
+    r"^(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*?)[ \t]*$"
+)
+seen = set()
+github_token = None
+for raw in lines:
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        continue
+    match = assignment.fullmatch(raw)
+    if not match:
+        raise SystemExit(1)
+    name, encoded = match.groups()
+    if name in seen:
+        raise SystemExit(1)
+    seen.add(name)
+    if encoded[:1] in ("\"", "'"):
+        quote = encoded[0]
+        if len(encoded) < 2 or encoded[-1] != quote or quote in encoded[1:-1]:
+            raise SystemExit(1)
+        value = encoded[1:-1]
+    else:
+        if any(character.isspace() for character in encoded):
+            raise SystemExit(1)
+        if any(character in encoded for character in ("\"", "'", "#")):
+            raise SystemExit(1)
+        unsafe_fragments = (chr(96), chr(36) + "(", chr(36) + "{", "\\")
+        if any(fragment in encoded for fragment in unsafe_fragments):
+            raise SystemExit(1)
+        value = encoded
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise SystemExit(1)
+    unsafe_fragments = (chr(96), chr(36) + "(", chr(36) + "{", "\\")
+    if any(fragment in value for fragment in unsafe_fragments):
+        raise SystemExit(1)
+    if name == "GH_TOKEN":
+        if not value:
+            raise SystemExit(1)
+        github_token = value
+if github_token is not None:
+    sys.stdout.write(github_token)
+PY
+) || die "Hermes profile environment is unsafe or malformed"
+fi
+
+require_managed_directory "$KITS_ROOT/projects" "factory projects directory"
+require_managed_directory "$KITS_ROOT/releases" "factory releases directory"
+require_managed_directory "$KITS_ROOT/projects/$PROJECT" "project state directory"
+require_managed_directory "$PROFILE_DIR/projects" "Hermes projects directory"
+ACTIVE_FILE="$KITS_ROOT/projects/$PROJECT/active.json"
+REGISTRY_FILE="$PROFILE_DIR/projects/$PROJECT.env"
+require_managed_file "$ACTIVE_FILE" "project active record"
+require_managed_file "$REGISTRY_FILE" "project registry"
+
+# Parse only PRODUCT_ROOT. Registry files are data and are never sourced.
+REGISTRY_DATA="$(awk '
+  /^[[:space:]]*#/ { next }
+  {
+    line=$0
+    sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+    if (line ~ /^PRODUCT_ROOT[[:space:]]*=/) {
+      count++
+      sub(/^PRODUCT_ROOT[[:space:]]*=[[:space:]]*/, "", line)
+      sub(/[[:space:]]+$/, "", line)
+      if ((line ~ /^".*"$/) || (line ~ /^'\''.*'\''$/)) {
+        line=substr(line, 2, length(line)-2)
+      }
+      value=line
+    }
+  }
+  END {
+    if (count == 1) print value
+    else exit 1
+  }
+' "$REGISTRY_FILE" 2>/dev/null || true)"
+PRODUCT_ROOT="$(expand_absolute_path "$REGISTRY_DATA" 2>/dev/null || true)"
+[[ -n "$PRODUCT_ROOT" && -d "$PRODUCT_ROOT" ]] ||
+  die "registry PRODUCT_ROOT is missing or unsafe"
+PRODUCT_ROOT="$(cd "$PRODUCT_ROOT" 2>/dev/null && pwd -P)" ||
+  die "registry PRODUCT_ROOT cannot be resolved"
+
+# Parse active.json exactly once. Atomic replacements after this point cannot
+# change RELEASE_PATH or any helper selected for this invocation.
+ACTIVE_DATA="$("$PYTHON_BIN" -I -S - "$ACTIVE_FILE" "$PROJECT" <<'PY'
+import json
+import sys
+
+path, expected_project = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as handle:
+        value = json.load(handle)
+except Exception:
+    raise SystemExit(1)
+
+required = (
+    "project",
+    "kit_sha",
+    "kit_tree",
+    "contract_version",
+    "product_path",
+    "release_path",
+)
+if any(key not in value for key in required):
+    raise SystemExit(1)
+if value["project"] != expected_project:
+    raise SystemExit(1)
+for key in required:
+    item = value[key]
+    if not isinstance(item, str) or not item or "\n" in item or "\r" in item or "\t" in item:
+        raise SystemExit(1)
+print("\t".join(value[key] for key in required))
+PY
+)" || die "project active record is invalid"
+
+IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
+  ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH <<EOF
+$ACTIVE_DATA
+EOF
+
+[[ "$KIT_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+  die "active kit SHA is not a lowercase full SHA"
+[[ "$KIT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
+  die "active kit tree is not a lowercase full object ID"
+[[ "$ACTIVE_CONTRACT" == "$CONTRACT_VERSION" ]] ||
+  die "active Hermes contract is incompatible"
+
+ACTIVE_PRODUCT_PATH="$(expand_absolute_path "$ACTIVE_PRODUCT_PATH" 2>/dev/null || true)"
+ACTIVE_RELEASE_PATH="$(expand_absolute_path "$ACTIVE_RELEASE_PATH" 2>/dev/null || true)"
+[[ -n "$ACTIVE_PRODUCT_PATH" && -n "$ACTIVE_RELEASE_PATH" ]] ||
+  die "active record contains unsafe paths"
+[[ -d "$ACTIVE_PRODUCT_PATH" && -d "$ACTIVE_RELEASE_PATH" ]] ||
+  die "active record paths are missing"
+require_managed_directory "$ACTIVE_RELEASE_PATH" "active release path"
+
+ACTIVE_PRODUCT_PATH="$(cd "$ACTIVE_PRODUCT_PATH" 2>/dev/null && pwd -P)" ||
+  die "active product path cannot be resolved"
+RELEASE_PATH="$(cd "$ACTIVE_RELEASE_PATH" 2>/dev/null && pwd -P)" ||
+  die "active release path cannot be resolved"
+EXPECTED_RELEASE="$KITS_ROOT/releases/$KIT_SHA"
+require_managed_directory "$EXPECTED_RELEASE" "expected release path"
+EXPECTED_RELEASE="$(cd "$EXPECTED_RELEASE" 2>/dev/null && pwd -P)" ||
+  die "expected release path cannot be resolved"
+[[ "$RELEASE_PATH" == "$EXPECTED_RELEASE" ]] ||
+  die "active release escapes its exact physical release location"
+[[ "$ACTIVE_PRODUCT_PATH" == "$PRODUCT_ROOT" ]] ||
+  die "active product path does not match the registry"
+[[ ! -e "$RELEASE_PATH/.git" ]] ||
+  die "active release contains unexpected Git metadata"
+
+"$PYTHON_BIN" -I -S - "$RELEASE_PATH" <<'PY' ||
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+for base, dirs, files in os.walk(str(root), followlinks=False):
+    for name in dirs + files:
+        path = pathlib.Path(base) / name
+        if not path.is_symlink():
+            continue
+        target = os.readlink(str(path))
+        if os.path.isabs(target):
+            raise SystemExit(1)
+        try:
+            (path.parent / target).resolve().relative_to(root)
+        except ValueError:
+            raise SystemExit(1)
+PY
+  die "active release contains an escaping symlink"
+
+TREE_TMP=""
+RAW_OUTPUT_FILE=""
+cleanup_runtime() {
+  [[ -z "$RAW_OUTPUT_FILE" ]] || rm -f "$RAW_OUTPUT_FILE"
+  [[ -z "$TREE_TMP" ]] || rm -rf "$TREE_TMP"
+}
+trap cleanup_runtime EXIT
+trap 'exit 143' HUP INT TERM
+
+TREE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-launch-tree.XXXXXX")" ||
+  die "cannot allocate release validation workspace"
+git init --bare -q "$TREE_TMP/repo.git" ||
+  die "cannot initialize release validation workspace"
+git --git-dir="$TREE_TMP/repo.git" config core.bare false ||
+  die "cannot configure release validation workspace"
+GIT_INDEX_FILE="$TREE_TMP/index" git --git-dir="$TREE_TMP/repo.git" \
+  --work-tree="$RELEASE_PATH" read-tree --empty ||
+  die "cannot initialize release tree"
+GIT_INDEX_FILE="$TREE_TMP/index" git --git-dir="$TREE_TMP/repo.git" \
+  --work-tree="$RELEASE_PATH" add -A -- . ||
+  die "cannot inspect release tree"
+ACTUAL_TREE="$(GIT_INDEX_FILE="$TREE_TMP/index" git --git-dir="$TREE_TMP/repo.git" \
+  --work-tree="$RELEASE_PATH" write-tree)" ||
+  die "cannot calculate release tree"
+[[ "$ACTUAL_TREE" == "$KIT_TREE" ]] ||
+  die "active release tree does not match the activation record"
+
+CONTRACT_FILE="$RELEASE_PATH/integrations/hermes/contract.json"
+require_managed_file "$CONTRACT_FILE" "active release contract manifest"
+RELEASE_CONTRACT="$("$PYTHON_BIN" -I -S - "$CONTRACT_FILE" <<'PY'
+import json
+import sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    contract = value["contract_version"]
+except Exception:
+    raise SystemExit(1)
+if not isinstance(contract, str):
+    raise SystemExit(1)
+print(contract)
+PY
+)" || die "active release contract manifest is invalid"
+[[ "$RELEASE_CONTRACT" == "$ACTIVE_CONTRACT" ]] ||
+  die "active record and release contract disagree"
+ROLE_WHITELIST="$("$PYTHON_BIN" -I -S - "$CONTRACT_FILE" <<'PY'
+import json
+import re
+import sys
+
+try:
+    roles = json.load(open(sys.argv[1], encoding="utf-8"))["launcher"]["commands"]["run"]["role_whitelist"]
+except Exception:
+    raise SystemExit(1)
+if not isinstance(roles, list) or not roles:
+    raise SystemExit(1)
+for role in roles:
+    if not isinstance(role, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", role):
+        raise SystemExit(1)
+    print(role)
+PY
+)" || die "active release run role whitelist is invalid"
+
+export FACTORY_RELEASE_SHA="$KIT_SHA"
+export FACTORY_RELEASE_TREE="$KIT_TREE"
+export FACTORY_RELEASE_PATH="$RELEASE_PATH"
+export FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT"
+
+run_selected_helper() {
+  if [[ -n "$PROFILE_GH_TOKEN" ]]; then
+    /usr/bin/env -i \
+      HOME="$HOME" \
+      PATH="$SAFE_PATH" \
+      TMPDIR="$SAFE_TMPDIR" \
+      FACTORY_ROOT="$PRODUCT_ROOT" \
+      FACTORY_RELEASE_SHA="$KIT_SHA" \
+      FACTORY_RELEASE_TREE="$KIT_TREE" \
+      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
+      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
+      GH_TOKEN="$PROFILE_GH_TOKEN" \
+      /bin/bash "$@"
+  else
+    /usr/bin/env -i \
+      HOME="$HOME" \
+      PATH="$SAFE_PATH" \
+      TMPDIR="$SAFE_TMPDIR" \
+      FACTORY_ROOT="$PRODUCT_ROOT" \
+      FACTORY_RELEASE_SHA="$KIT_SHA" \
+      FACTORY_RELEASE_TREE="$KIT_TREE" \
+      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
+      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
+      /bin/bash "$@"
+  fi
+}
+
+exec_selected_helper() {
+  if [[ -n "$PROFILE_GH_TOKEN" ]]; then
+    exec /usr/bin/env -i \
+      HOME="$HOME" \
+      PATH="$SAFE_PATH" \
+      TMPDIR="$SAFE_TMPDIR" \
+      FACTORY_ROOT="$PRODUCT_ROOT" \
+      FACTORY_RELEASE_SHA="$KIT_SHA" \
+      FACTORY_RELEASE_TREE="$KIT_TREE" \
+      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
+      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
+      GH_TOKEN="$PROFILE_GH_TOKEN" \
+      /bin/bash "$@"
+  else
+    exec /usr/bin/env -i \
+      HOME="$HOME" \
+      PATH="$SAFE_PATH" \
+      TMPDIR="$SAFE_TMPDIR" \
+      FACTORY_ROOT="$PRODUCT_ROOT" \
+      FACTORY_RELEASE_SHA="$KIT_SHA" \
+      FACTORY_RELEASE_TREE="$KIT_TREE" \
+      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
+      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
+      /bin/bash "$@"
+  fi
+}
+
+require_exact() {
+  local expected="$1"
+  shift
+  [[ $# -eq 1 && "$1" == "$expected" ]] || usage
+}
+
+validate_ticket_command() {
+  [[ $# -eq 3 && "$1" == "--ticket" && "$3" == "--json" ]] || usage
+  [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+  TICKET="$2"
+}
+
+git_common_directory() {
+  local root="$1" common
+  common="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  case "$common" in
+    /*) ;;
+    *) common="$root/$common" ;;
+  esac
+  (cd "$common" 2>/dev/null && pwd -P)
+}
+
+resolve_product_workdir() {
+  local raw="$1" top product_common workdir_common
+  case "$raw" in
+    /*) ;;
+    *) die "workdir must be absolute" ;;
+  esac
+  case "$raw" in
+    *'`'*|*'$('*|*$'\n'*|*$'\r'*|*$'\t'*)
+      die "workdir contains unsafe characters"
+      ;;
+    *'/../'*|*/..|*'/./'*|*/.|*//*)
+      die "workdir contains path traversal"
+      ;;
+  esac
+  [[ -d "$raw" && ! -L "$raw" ]] ||
+    die "workdir is missing or a symlink"
+  reject_symlink_components "$raw" "workdir"
+  RESOLVED_WORKDIR="$(cd "$raw" 2>/dev/null && pwd -P)" ||
+    die "workdir cannot be resolved"
+  git -C "$RESOLVED_WORKDIR" rev-parse --is-inside-work-tree 2>/dev/null |
+    grep -Fqx true || die "workdir is not a Git worktree"
+  top="$(git -C "$RESOLVED_WORKDIR" rev-parse --show-toplevel 2>/dev/null)" ||
+    die "worktree root cannot be resolved"
+  top="$(cd "$top" 2>/dev/null && pwd -P)" ||
+    die "worktree root cannot be resolved"
+  [[ "$top" == "$RESOLVED_WORKDIR" ]] ||
+    die "workdir must be the Git worktree root"
+  product_common="$(git_common_directory "$PRODUCT_ROOT" 2>/dev/null || true)"
+  workdir_common="$(git_common_directory "$RESOLVED_WORKDIR" 2>/dev/null || true)"
+  [[ -n "$product_common" && "$workdir_common" == "$product_common" ]] ||
+    die "workdir does not belong to the registered product"
+}
+
+ticket_branch_prefix() {
+  local descriptor="$PRODUCT_ROOT/factory/PROJECT.env" data count value
+  TICKET_BRANCH_PREFIX="ticket/"
+  [[ -e "$descriptor" ]] || return 0
+  [[ -f "$descriptor" && ! -L "$descriptor" ]] ||
+    die "product project descriptor is not a safe regular file"
+  data="$(awk '
+    /^[[:space:]]*#/ { next }
+    {
+      line=$0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      if (line ~ /^TICKET_BRANCH_PREFIX[[:space:]]*=/) {
+        count++
+        sub(/^TICKET_BRANCH_PREFIX[[:space:]]*=[[:space:]]*/, "", line)
+        sub(/[[:space:]]+$/, "", line)
+        if ((line ~ /^".*"$/) || (line ~ /^'\''.*'\''$/)) {
+          line=substr(line, 2, length(line)-2)
+        }
+        value=line
+      }
+    }
+    END { printf "%d\t%s\n", count+0, value }
+  ' "$descriptor" 2>/dev/null)" ||
+    die "cannot parse product ticket branch prefix"
+  IFS="$(printf '\t')" read -r count value <<EOF
+$data
+EOF
+  case "$count" in
+    0) ;;
+    1) TICKET_BRANCH_PREFIX="$value" ;;
+    *) die "product ticket branch prefix must be defined at most once" ;;
+  esac
+  [[ "$TICKET_BRANCH_PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*/$ ]] ||
+    die "product ticket branch prefix is invalid"
+  case "$TICKET_BRANCH_PREFIX" in
+    *..*|*//*|*@\{*|*\\*|*~*|*^*|*:*)
+      die "product ticket branch prefix is invalid"
+      ;;
+  esac
+}
+
+validate_ticket_worktree() {
+  local ticket="$1" product_top git_dir common branch expected
+  ticket_branch_prefix
+  expected="$TICKET_BRANCH_PREFIX$ticket"
+  git check-ref-format --branch "$expected" >/dev/null 2>&1 ||
+    die "ticket branch name is invalid"
+  product_top="$(git -C "$PRODUCT_ROOT" rev-parse --show-toplevel 2>/dev/null)" ||
+    die "registered product Git root cannot be resolved"
+  product_top="$(cd "$product_top" 2>/dev/null && pwd -P)" ||
+    die "registered product Git root cannot be resolved"
+  [[ "$RESOLVED_WORKDIR" != "$product_top" ]] ||
+    die "ticket workdir must be a distinct linked worktree"
+  common="$(git_common_directory "$RESOLVED_WORKDIR" 2>/dev/null || true)"
+  git_dir="$(git -C "$RESOLVED_WORKDIR" rev-parse --git-dir 2>/dev/null)" ||
+    die "run worktree Git directory cannot be resolved"
+  case "$git_dir" in
+    /*) ;;
+    *) git_dir="$RESOLVED_WORKDIR/$git_dir" ;;
+  esac
+  git_dir="$(cd "$git_dir" 2>/dev/null && pwd -P)" ||
+    die "run worktree Git directory cannot be resolved"
+  [[ -n "$common" && "$git_dir" != "$common" ]] ||
+    die "ticket workdir must be a linked worktree"
+  branch="$(git -C "$RESOLVED_WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null)" ||
+    die "ticket worktree must be on a non-detached branch"
+  [[ "$branch" == "$expected" ]] ||
+    die "worktree branch does not match the requested ticket"
+}
+
+role_is_allowed() {
+  printf '%s\n' "$ROLE_WHITELIST" | grep -Fqx "$1"
+}
+
+resolve_prompt_path() {
+  local raw="$1" role="$2" raw_dir expected
+  case "$raw" in
+    /*) ;;
+    *) die "prompt path must be absolute" ;;
+  esac
+  case "$raw" in
+    *'`'*|*'$('*|*$'\n'*|*$'\r'*|*$'\t'*)
+      die "prompt path contains unsafe characters"
+      ;;
+    *'/../'*|*/..|*'/./'*|*/.|*//*)
+      die "prompt path contains path traversal"
+      ;;
+  esac
+  require_managed_file "$raw" "run prompt"
+  raw_dir="$(cd "$(dirname "$raw")" 2>/dev/null && pwd -P)" ||
+    die "prompt path cannot be resolved"
+  RESOLVED_PROMPT="$raw_dir/$(basename "$raw")"
+  expected="$RELEASE_PATH/roles/$role.md"
+  require_managed_file "$expected" "canonical release prompt"
+  [[ "$RESOLVED_PROMPT" == "$expected" ]] ||
+    die "prompt path is not the canonical release role prompt"
+}
+
+wrap_json_command() {
+  local schema="$1" command_name="$2" ticket="$3" script="$4"
+  local output rc=0 json_rc=0
+  shift 4
+  require_managed_file "$script" "active release $command_name helper"
+  RAW_OUTPUT_FILE="$TREE_TMP/raw-output"
+  : > "$RAW_OUTPUT_FILE" || die "cannot allocate command output"
+  output="$RAW_OUTPUT_FILE"
+  run_selected_helper "$script" "$@" > "$output" 2>&1 || rc=$?
+  "$PYTHON_BIN" -I -S - "$schema" "$CONTRACT_VERSION" "$PROJECT" "$ticket" \
+    "$command_name" "$rc" "$output" <<'PY'
+import json
+import re
+import sys
+
+schema, contract, project, ticket, command, exit_code, path = sys.argv[1:]
+text = open(path, encoding="utf-8", errors="replace").read()
+
+SENSITIVE = r"[A-Za-z0-9_.-]*(?:key|token|secret|password|url|dsn|conn|auth)[A-Za-z0-9_.-]*"
+text = text.replace("\x00", "")
+text = re.sub(
+    r"(?im)(authorization\s*:\s*)(?:bearer|basic|token)?\s*[^\r\n]*",
+    lambda match: match.group(1) + "[redacted]",
+    text,
+)
+text = re.sub(r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+", "[redacted-url]", text)
+quoted = re.compile(
+    rf"(?is)(?P<prefix>[\"']?{SENSITIVE}[\"']?\s*[:=]\s*)"
+    rf"(?P<quote>[\"'])(?:\\.|(?!(?P=quote)).)*(?P=quote)"
+)
+text = quoted.sub(lambda match: match.group("prefix") + "[redacted]", text)
+key_line = re.compile(
+    rf"(?i)^(?P<prefix>.*?[\"']?{SENSITIVE}[\"']?\s*[:=]\s*)(?P<value>.*)$"
+)
+redacted_lines = []
+continuation_indent = None
+for line in text.splitlines(keepends=True):
+    content = line.rstrip("\r\n")
+    ending = line[len(content):]
+    indent = len(content) - len(content.lstrip(" \t"))
+    if continuation_indent is not None:
+        if not content.strip() or indent > continuation_indent:
+            redacted_lines.append(content[:indent] + "[redacted]" + ending)
+            continue
+        continuation_indent = None
+    match = key_line.match(content)
+    if match:
+        value = match.group("value").strip()
+        redacted_lines.append(match.group("prefix") + "[redacted]" + ending)
+        if value in ("", "|", ">", "|-", ">-"):
+            continuation_indent = indent
+        continue
+    redacted_lines.append(line)
+text = "".join(redacted_lines)
+rc = int(exit_code)
+value = {
+    "schema": schema,
+    "schema_version": 1,
+    "contract_version": contract,
+    "command": command,
+    "project": project,
+    "ticket": ticket,
+    "status": "ok" if rc == 0 else "error",
+    "exit_code": rc,
+    "output": text,
+}
+if command == "next-stage":
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    action, _, detail = first.partition(" ")
+    value["action"] = action or None
+    value["detail"] = detail or None
+print(json.dumps(value, indent=2, sort_keys=True))
+PY
+  json_rc=$?
+  rm -f "$output"
+  RAW_OUTPUT_FILE=""
+  [[ "$json_rc" -eq 0 ]] || return 1
+  return "$rc"
+}
+
+case "$COMMAND" in
+  contract)
+    require_exact "--json" "$@"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "$PYTHON_BIN" -I -S - "$CONTRACT_FILE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+print(json.dumps(value, indent=2, sort_keys=True))
+PY
+    ;;
+  doctor)
+    require_exact "--json" "$@"
+    DOCTOR="$RELEASE_PATH/scripts/factory-doctor.sh"
+    require_managed_file "$DOCTOR" "active release doctor"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec_selected_helper "$DOCTOR" --json --project "$PROJECT" \
+      --profile-dir "$PROFILE_DIR" --registry "$REGISTRY_FILE" \
+      --kit-dir "$RELEASE_PATH" --product-root "$PRODUCT_ROOT" --kit-sha "$KIT_SHA"
+    ;;
+  preflight)
+    validate_ticket_command "$@"
+    wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
+      "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET"
+    rc=$?
+    exit "$rc"
+    ;;
+  next-stage)
+    validate_ticket_command "$@"
+    wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
+      "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET"
+    rc=$?
+    exit "$rc"
+    ;;
+  reorder-test-fixes)
+    [[ $# -ge 5 &&
+       "$1" == "--ticket" &&
+       "$3" == "--workdir" &&
+       "$5" == "--" ]] || usage
+    REORDER_TICKET="$2"
+    [[ "$REORDER_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    resolve_product_workdir "$4"
+    validate_ticket_worktree "$REORDER_TICKET"
+    shift 5
+    [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
+      die "product is in maintenance; reorder refused"
+    REORDER_HELPER="$RELEASE_PATH/scripts/reorder-test-fixes.sh"
+    require_managed_file "$REORDER_HELPER" "active release reorder helper"
+    cd "$RESOLVED_WORKDIR" || die "reorder workdir became unavailable"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec_selected_helper "$REORDER_HELPER" "$@"
+    ;;
+  run)
+    [[ $# -ge 10 &&
+       "$1" == "--role" &&
+       "$3" == "--ticket" &&
+       "$5" == "--prompt-file" &&
+       "$7" == "--workdir" &&
+       "$9" == "--" ]] || usage
+    RUN_ROLE="$2"
+    RUN_TICKET="$4"
+    RUN_PROMPT="$6"
+    RUN_WORKDIR="$8"
+    role_is_allowed "$RUN_ROLE" || die "run role is not allowed by the active contract"
+    [[ "$RUN_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    resolve_prompt_path "$RUN_PROMPT" "$RUN_ROLE"
+    resolve_product_workdir "$RUN_WORKDIR"
+    validate_ticket_worktree "$RUN_TICKET"
+    shift 9
+    TASK_NONEMPTY=0
+    for task_part in "$@"; do
+      [[ -z "$task_part" ]] || TASK_NONEMPTY=1
+    done
+    [[ "$TASK_NONEMPTY" -eq 1 ]] || die "run task must be nonempty"
+    [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
+      die "product is in maintenance; run refused"
+    RUNNER="$RELEASE_PATH/scripts/run-agent.sh"
+    require_managed_file "$RUNNER" "active release run helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec_selected_helper "$RUNNER" \
+      --role "$RUN_ROLE" \
+      --ticket "$RUN_TICKET" \
+      --prompt-file "$RESOLVED_PROMPT" \
+      --workdir "$RESOLVED_WORKDIR" \
+      -- "$@"
+    ;;
+  *)
+    usage
+    ;;
+esac

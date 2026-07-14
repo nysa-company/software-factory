@@ -9,6 +9,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Backend fallback is pre-execution selection: production stays OpenAI-family, checking stays Anthropic-family, and one logical role run submits its task to at most one agent process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, config-review, and full local PR gates enabled. The canonical verification command is `bash ci/test-all.sh`.
+- Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
+- External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
+- Release activation is maintenance-gated, receipt-bound, and journaled. Rollback restores the previous generation while keeping `MAINTENANCE`; automatic pruning is intentionally unavailable.
+- Linux and macOS system-Bash verification both feed the required aggregate `ci` status. The real Hermes canary, live cutover, outage target, and rollback RTO have not yet been accepted.
 
 ## Log
 
@@ -29,3 +33,27 @@ Codex remains the production primary and Claude Code the checking primary. Optio
 Category: System change
 
 Durable documentation was centralized under `docs/` and mechanically checked during PR readiness and CI. Plugin AI review is a pre-publication gate for changes to this kit; the factory's independent Reviewer, Narrator evidence bundle, and human approval remain authoritative for product tickets.
+
+## 2026-07-14 — Decision 4: Exact-SHA product release isolation
+
+Category: Decision
+
+Products activate independently from sealed, read-only `releases/<full-sha>` trees under `~/.factory/kits`. External products fail closed without one exact full `KIT_PIN`; the implicit pin is limited to the in-kit conformance test bed, and ticket `Kit-SHA` affinity prevents silent mid-ticket upgrades.
+
+## 2026-07-14 — Decision 5: Stable versioned Hermes boundary
+
+Category: Decision
+
+Hermes uses the bootstrap-managed `~/.factory/bin/factory-launch` contract instead of mutable checkout scripts. Contract `1.0.0` resolves and validates one physical release per invocation, exposes redacted public JSON and a read-only doctor, and treats unknown or error results as dispatch stops.
+
+## 2026-07-14 — Decision 6: Fail-closed activation and rollback
+
+Category: Decision
+
+Activation requires maintenance before the shared launch lock, an unexpired exact-tuple receipt, and a recoverable journal; rollback restores retained previous bits but keeps execution stopped until the protected product pin is reverted and revalidated. The acceptance targets are a control-plane outage of at most 5 minutes and full rollback RTO of at most 30 minutes. No automatic prune is allowed until real-ticket retention and rollback evidence exists; the first real Hermes canary and live cutover remain pending.
+
+## 2026-07-14 — Decision 7: Release checks have no bypass identity
+
+Category: System change
+
+The active `main` Ruleset has an empty bypass list and binds the required `ci` and `test-immutability` contexts to the GitHub Actions app (`integration_id` 15368). Release installation rejects bypass actors, unbound contexts, missing PR enforcement, or checks reported by another app.

@@ -5,6 +5,7 @@ Durable product and operating truth lives under `docs/`:
 - [product-brief.md](product-brief.md) — purpose, audience, scope, and invariants.
 - [architecture.md](architecture.md) — engine boundaries, role flow, budgets, and trust model.
 - [factory-setup.md](factory-setup.md) — product-instantiation checklist and validator.
+- [hermes-integration.md](hermes-integration.md) — immutable kit releases, public Hermes contract, certification, canary, activation, recovery, rollback, and retention.
 - [git-flow.md](git-flow.md) — branch, PR, merge, and protection policy.
 - [ai-review.md](ai-review.md) — local pre-publication AI review rubric.
 - [workflows/](workflows/) — ticket, Linear, and evidence workflows.

@@ -1,0 +1,33 @@
+{
+  "fixture_version": 1,
+  "redacted": true,
+  "hermes": {
+    "agent_version": "0.18.2",
+    "build_version": "2026.7.7.2"
+  },
+  "profile": {
+    "name": "factory",
+    "path": "~/.hermes/profiles/factory",
+    "files": [
+      "SOUL.md",
+      "skills/factory-dispatch/SKILL.md",
+      "projects/relay.env",
+      ".env"
+    ],
+    "environment_key_presence": {
+      "GH_TOKEN": true
+    }
+  },
+  "live_kit_path": "~/Projects/nysa-company/software-factory",
+  "services": [
+    {
+      "kind": "gateway",
+      "launch_agent": "separate"
+    },
+    {
+      "kind": "dashboard",
+      "launch_agent": "separate"
+    }
+  ],
+  "secret_values_included": false
+}

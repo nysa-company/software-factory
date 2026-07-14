@@ -1,0 +1,313 @@
+# Hermes integration and safe kit releases
+
+Hermes reaches the software factory through one version-neutral command:
+`~/.factory/bin/factory-launch`. The launcher resolves a product's active,
+certified kit release once per invocation. A merge to the kit's `main` branch
+does not change a running product.
+
+This document is the reference and release procedure. The operator recovery
+steps are in [runbooks/operator.md](runbooks/operator.md).
+
+## Trust and storage model
+
+The default state root is `~/.factory/kits`. Tests may override it with
+`FACTORY_KITS_ROOT`.
+
+```text
+~/.factory/
+├── bin/factory-launch
+└── kits/
+    ├── releases/<full-40-character-sha>/
+    ├── receipts/<receipt-id>.json
+    └── projects/<project>/
+        ├── active.json
+        └── activation-journal/<generation>-<sha>.json
+```
+
+- `factory-launch` is the bootstrap trust root. Replace it only as an explicit
+  contract migration, never as a side effect of activating a candidate.
+- A release directory is materialized from one Git tree, contains no `.git`,
+  rejects escaping symlinks, and is sealed read-only.
+- `active.json`, not a convenience symlink, is the authoritative per-product
+  selection. It binds generation, kit SHA/tree, receipt, product tree,
+  contract version, product path, and physical release path.
+- The launcher parses `active.json` once, validates the physical release path
+  and tree, and then uses helpers only from that release for the invocation.
+- External products must have `factory/KIT_PIN` containing exactly one
+  lowercase, full 40-character SHA equal to the physical kit release.
+
+The only implicit-pin exception is the repository's `conformance/` test bed
+when it shares the kit repository, Git common directory, and HEAD. This
+exception exists for in-kit regression tests. It is not valid for a live
+product or deployment certification; external products and
+`factory-kit.sh certify` require an explicit full `KIT_PIN`.
+
+## Ticket release affinity
+
+At the first role launch, `run-agent.sh` takes `factory/.launch.lock`,
+revalidates the pin, and appends exactly one `Kit-SHA: <full-sha>` line to the
+canonical ticket. Later preflight, sequencing, and role runs refuse a lease
+that differs from the physical release. Blocked and resumed tickets retain
+the same affinity.
+
+Activation does not migrate ticket leases. Before activation, the operator
+must verify that no nonterminal ticket is leased to a different SHA. The
+current release manager rejects live run records but does not scan non-running
+ticket state, so this operator check is required.
+
+Run manifests record the kit SHA/tree, product tree, ticket lease, contract
+version, and physical kit path. The activated receipt ID is available from
+`active.json`; the current run-manifest format does not copy that ID into each
+manifest.
+
+## Public Hermes contract
+
+Contract version `1.0.0` certifies Hermes Agent `0.18.2`, build
+`2026.7.7.2`. The canonical manifest is
+`integrations/hermes/contract.json`.
+
+```bash
+~/.factory/bin/factory-launch <project> contract --json
+~/.factory/bin/factory-launch <project> doctor --json
+~/.factory/bin/factory-launch <project> preflight --ticket T-123 --json
+~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --json
+```
+
+`contract` returns the manifest. `doctor` returns
+`nysa.software-factory.hermes-doctor/v1`. `preflight` and `next-stage` preserve
+the selected helper's exit code and wrap its redacted text in versioned JSON.
+`next-stage` also returns `action` and `detail`.
+
+`run` and `reorder-test-fixes` are process boundaries rather than JSON
+commands. Their arguments and behavior are still compatibility-sensitive and
+defined in the manifest. Unknown schemas, categories, actions, or contract
+versions are stop conditions.
+
+The doctor is diagnostic and read-only. It uses temporary files for bounded
+CLI version probes, reports credential presence only, redacts secret-bearing
+keys and credential URLs, and never authenticates or repairs anything.
+`warning` does not mean authentication succeeded. `error` blocks dispatch.
+
+## Install and certify an exact release
+
+Set the candidate to a full commit already merged into `origin/main`.
+
+```bash
+KIT_REPO="$HOME/Projects/nysa-company/software-factory"
+PRODUCT_REPO="$HOME/Projects/example-product"
+PROJECT="example"
+SHA="$(git -C "$KIT_REPO" rev-parse origin/main)"
+
+bash "$KIT_REPO/scripts/factory-kit.sh" install \
+  --repo "$KIT_REPO" \
+  --sha "$SHA"
+```
+
+Installation verifies canonical origin identity, full-SHA ancestry on fetched
+`origin/main`, required GitHub checks, and the candidate tree. It runs the kit
+suite, repository check, and secret scan in a disposable writable checkout,
+then archives the verified Git object into
+`~/.factory/kits/releases/$SHA` and seals it read-only. Existing valid
+installs are idempotent; partial or corrupt paths fail closed.
+
+The product must be clean, pinned to the same SHA, and define one executable,
+repository-contained path:
+
+```text
+CERTIFY_SCRIPT=factory/certify.sh
+```
+
+Then certify:
+
+```bash
+bash "$KIT_REPO/scripts/factory-kit.sh" certify \
+  --project "$PROJECT" \
+  --product "$PRODUCT_REPO" \
+  --sha "$SHA"
+```
+
+Certification runs the kit checks against a disposable writable copy and
+runs the product's certification script with a fixed working directory,
+sanitized environment, and timeout. A passing receipt binds:
+
+- project, kit SHA/tree/canonical origin, and contract version;
+- product absolute path, origin, Git tree, `KIT_PIN` hash, and `PROJECT.env`
+  hash;
+- host, operating system, architecture, previous generation, and required
+  check results;
+- creation and expiry timestamps.
+
+Receipts are mode `0600`. Their default lifetime is 86,400 seconds and may be
+changed with `FACTORY_KIT_RECEIPT_TTL_SECONDS`. Activation rechecks receipt
+expiry and every bound value. Product, pin, config, host, release, or contract
+drift requires recertification.
+
+The implemented receipt does not yet bind live Hermes profile files,
+LaunchAgent hashes, or every CLI path/version. The real-Hermes canary and
+cutover evidence cover those machine-specific surfaces.
+
+## Plan and activate
+
+Candidate installation and certification do not interrupt the live factory.
+Before cutover:
+
+1. Confirm the candidate passed required Linux and macOS CI.
+2. Complete the real-Hermes canary below.
+3. Confirm no role run is active and no nonterminal ticket has a conflicting
+   `Kit-SHA`.
+4. Commit the candidate `factory/KIT_PIN` through the product's protected PR
+   flow and confirm the merged product tree is the certified tree.
+5. Create `factory/MAINTENANCE`. This blocks preflight, sequencing, launches,
+   and release-sensitive reordering.
+6. Wait for existing role processes to drain. Do not delete PID records to
+   make the check pass.
+
+Validate without mutation:
+
+```bash
+bash "$KIT_REPO/scripts/factory-kit.sh" plan \
+  --project "$PROJECT" \
+  --product "$PRODUCT_REPO" \
+  --sha "$SHA"
+```
+
+Activation requires `MAINTENANCE` to exist before it takes the product launch
+lock. Launches check maintenance before the lock, after taking the lock, and
+again before the task GO signal. Therefore either a launch passes the barrier
+first or activation drains it; no new task can cross after maintenance is
+published.
+
+```bash
+bash "$KIT_REPO/scripts/factory-kit.sh" activate \
+  --project "$PROJECT" \
+  --product "$PRODUCT_REPO" \
+  --sha "$SHA"
+```
+
+The journal phases are:
+
+```text
+prepared
+maintenance_published
+launch_drained
+services_stopped
+activation_record_switched
+integration_bundle_switched
+services_started
+healthy
+committed
+```
+
+`rolled_back` is terminal for an aborted or reversed generation. The release
+manager atomically writes the journal and `active.json`. In the current
+implementation, the service and integration phase names are transaction
+checkpoints; `factory-kit.sh` does not itself call `launchctl`, copy profile
+files, or perform the external health smoke. The operator must stop/start the
+factory-only Hermes profile and reconciler, switch any compatibility bundle,
+and collect health evidence around activation.
+
+If activation is interrupted, leave maintenance in place and run:
+
+```bash
+bash "$KIT_REPO/scripts/factory-kit.sh" reconcile \
+  --project "$PROJECT" \
+  --product "$PRODUCT_REPO"
+```
+
+Before the pointer-switch phase, reconcile restores the previous state. At or
+after the switch, it commits only when the active generation and receipt still
+validate; otherwise it restores the previous generation.
+
+## Real-Hermes canary
+
+A real canary has not yet been run. Do not use contract-test success as a
+substitute.
+
+1. Create a dedicated sandbox product repository and separate profile, for
+   example `~/.hermes/profiles/factory-canary`. Give it its own project slug,
+   factory state, tickets, ledger, and registry.
+2. Install `SOUL.md` and `skills/factory-dispatch/SKILL.md` from the candidate
+   release into the canary profile. Adapt the factory gateway LaunchAgent with
+   a distinct label and `--profile factory-canary`.
+3. Do not copy the production profile's `.env`, secret files, board mapping,
+   ledger, registry, or LaunchAgent. Use no credentials when possible; if a
+   probe requires one, create a separate least-privilege sandbox credential.
+4. Point the canary registry's `PRODUCT_ROOT` only at the sandbox product.
+   Registry files are data and must contain no secrets.
+5. Start the canary with the real installed Hermes binary and its normal
+   profile-loading/LaunchAgent mechanism. Mock only task adapters and external
+   actions.
+6. Through Hermes, verify `contract --json`, `doctor --json`, preflight,
+   `next-stage`, and one mock role launch. Confirm the run manifest names the
+   candidate SHA/tree and physical release.
+7. Stop and remove the canary LaunchAgent after capturing redacted evidence.
+
+Run the full canary for the first cutover and any compatibility-sensitive
+change. Compatible releases may use contract tests plus doctor probes only
+after the first real canary and cutover have been accepted.
+
+## Bounded outage and acceptance evidence
+
+Preparation, install, certification, and canary work happen beside the active
+release and have no planned control-plane outage. The measured outage starts
+when `MAINTENANCE` is published and ends only after the factory profile and
+reconciler are healthy, doctor has no error, a sandbox smoke passes, and the
+operator removes `MAINTENANCE`. Existing task processes must drain before
+activation; the dashboard and primary Hermes profile remain untouched.
+
+Operational targets:
+
+- planned control-plane outage: at most 5 minutes;
+- restore previous known bits after a failed health decision: at most
+  5 minutes, with maintenance still present;
+- full rollback RTO: at most 30 minutes, measured until the protected
+  `KIT_PIN` revert is merged, the previous tuple is revalidated, health and
+  sandbox smoke pass, and maintenance is cleared.
+
+Acceptance requires a redacted, timestamped record of:
+
+- candidate and previous full SHAs/trees, CI URLs or check IDs, receipt ID and
+  expiry, and certified product tree;
+- separate canary profile/LaunchAgent identity, real Hermes version, launcher
+  contract result, doctor JSON, sequencer result, and mock-run provenance;
+- maintenance publication, drain confirmation, journal phase history,
+  `active.json` generation, service PIDs, Linear sync freshness, and repeated
+  health probes;
+- outage duration and, for the drill, known-bits restore time plus full
+  rollback RTO;
+- protected pin PR/revert PR and proof that the previous release reads any
+  state written by the candidate.
+
+No live canary, cutover, outage target, or rollback RTO has been accepted yet.
+
+## Rollback and retention
+
+On failed activation health:
+
+```bash
+bash "$KIT_REPO/scripts/factory-kit.sh" rollback \
+  --project "$PROJECT" \
+  --product "$PRODUCT_REPO"
+```
+
+Rollback atomically restores the previous activation record and verifies that
+the previous sealed tree is present. It deliberately keeps
+`factory/MAINTENANCE`. It does not revert the product's `KIT_PIN`, restart
+services, or prove old-code compatibility with candidate-written state.
+
+Revert `KIT_PIN` through the protected product PR flow, revalidate the
+resulting tree against the previous release, restart the factory-only services,
+run doctor and sandbox smoke, and only then remove maintenance.
+
+Automatic pruning is intentionally unavailable. Retain every release that is:
+
+- active or the previous generation;
+- named by a nonterminal ticket's `Kit-SHA`;
+- referenced by a receipt or any activation journal;
+- needed to read candidate-written persistent state;
+- inside the rollback evidence window.
+
+Manual removal is eligible only after a defined minimum age, multiple
+successful real tickets on newer releases, a successful rollback drill,
+verified backward readability or snapshot/restore evidence, and an audit that
+no active record, ticket, receipt, or journal references the release.

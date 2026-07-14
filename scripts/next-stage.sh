@@ -25,8 +25,25 @@
 # Usage: next-stage.sh --ticket T-NNN   (FACTORY_ROOT anchors the factory dir)
 set -euo pipefail
 
+TICKET=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ticket) TICKET="$2"; shift 2;;
+    *) echo "unknown arg: $1" >&2; exit 2;;
+  esac
+done
+[[ -n "$TICKET" ]] || { echo "usage: next-stage.sh --ticket T-NNN" >&2; exit 2; }
+[[ "$TICKET" =~ ^T-[0-9]+$ ]] || { echo "invalid ticket identifier" >&2; exit 2; }
+
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/kit-pin.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
+if ! factory_validate_runtime_overrides; then
+  echo "REFUSE $FACTORY_RUNTIME_OVERRIDE_ERROR"
+  exit 1
+fi
 
 canonical_ledger() {
   local root="$1" root_abs worktree_root common_dir main_root relative
@@ -62,17 +79,20 @@ canonical_ledger() {
 LEDGER="${FACTORY_LEDGER:-$(canonical_ledger "$REPO_ROOT")}"
 TICKETS_DIR="$FACTORY_DIR/tickets"
 
-TICKET=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --ticket) TICKET="$2"; shift 2;;
-    *) echo "unknown arg: $1" >&2; exit 2;;
-  esac
-done
-[[ -n "$TICKET" ]] || { echo "usage: next-stage.sh --ticket T-NNN" >&2; exit 2; }
-
 TICKET_FILE="$TICKETS_DIR/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "REFUSE no ticket file at $TICKET_FILE"; exit 1; }
+if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+  echo "REFUSE MAINTENANCE file present — factory control plane is paused"
+  exit 1
+fi
+if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
+  echo "REFUSE $FACTORY_KIT_PIN_ERROR"
+  exit 1
+fi
+if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
+  echo "REFUSE $FACTORY_TICKET_KIT_ERROR"
+  exit 1
+fi
 
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
 # (cat the ledger defensively: a missing ledger means zero runs, not an error.)
@@ -195,5 +215,5 @@ FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
 if [[ "$FIX_AFTER" -eq 1 ]]; then
   echo "RUN reviewer"
 else
-  echo "FIX builder-or-test-author — reviewer round 1 requested changes; launch test-author if the tests were faulted, builder if the code was; then reviewer again"
+  echo "FIX builder-or-test-author"
 fi

@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  ci:
+  linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +48,22 @@ jobs:
         run: brew install coreutils
       - name: full suite under system Bash
         run: /bin/bash ci/test-all.sh
+
+  # Keep the existing required "ci" context while making it aggregate both
+  # supported execution environments. A macOS failure can no longer merge
+  # merely because the Linux job passed.
+  ci:
+    if: always()
+    needs: [linux, macos-bash-3]
+    runs-on: ubuntu-latest
+    steps:
+      - name: require Linux and macOS verification
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos-bash-3.result }}
+        run: |
+          test "$LINUX_RESULT" = success
+          test "$MACOS_RESULT" = success
 
   test-immutability:
     runs-on: ubuntu-latest
