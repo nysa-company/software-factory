@@ -1,0 +1,14 @@
+run_id=1783993028-31724
+phase=completed
+ticket=T-106
+role=planner
+adapter=cursor-openai
+provider_family=openai
+model_id=gpt-5.6-sol-high
+selection_reason=primary_version_probe_failed
+adapter_version=2026.07.09-a3815c0
+primary_probe=UNAVAILABLE:version_probe_failed
+pid=32108
+pgid=32108
+process_start=Mon Jul 13 19:37:08 2026
+updated_at=2026-07-14T01:40:59Z
