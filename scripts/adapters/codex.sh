@@ -54,8 +54,9 @@ OUT_TOK="$(printf '%s' "$OUT" | sed -n 's/.*"output_tokens"[: ]*\([0-9]*\).*/\1/
 COST=""
 if [[ -n "$IN_TOK" && -n "$OUT_TOK" ]]; then
   COST="$(awk -v i="$IN_TOK" -v o="$OUT_TOK" \
-    -v ir="${CODEX_USD_PER_MTOK_IN:-1.25}" -v or="${CODEX_USD_PER_MTOK_OUT:-10}" \
-    'BEGIN{printf "%.4f", (i*ir + o*or)/1000000}')"
+    -v in_rate="${CODEX_USD_PER_MTOK_IN:-1.25}" \
+    -v out_rate="${CODEX_USD_PER_MTOK_OUT:-10}" \
+    'BEGIN{printf "%.4f", (i*in_rate + o*out_rate)/1000000}')"
 else
   echo "WARNING: no token usage in codex output — wrapper will keep its conservative reservation. Reconcile with console." >&2
 fi

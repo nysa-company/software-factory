@@ -1,6 +1,8 @@
 conformance/app/data/
 factory/ledger.csv
 factory/KILL
+**/factory/runs/*.out
+**/factory/runs/*.pid
 **/factory/.linear-sync.lock
 *.log
 .env

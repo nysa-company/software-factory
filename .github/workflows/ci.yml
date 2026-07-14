@@ -28,6 +28,20 @@ jobs:
       - name: preflight suite
         run: bash ci/preflight-test.sh
 
+  macos-bash-3:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install GNU timeout
+        run: brew install coreutils
+      - name: full suite under system Bash
+        run: /bin/bash ci/test-all.sh
+
   test-immutability:
     runs-on: ubuntu-latest
     steps:

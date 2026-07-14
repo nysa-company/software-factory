@@ -9,7 +9,16 @@ while [[ $# -gt 0 ]]; do
     *) shift;;
   esac
 done
-[[ "${MOCK_SLEEP:-0}" == "0" ]] || sleep "$MOCK_SLEEP"
+if [[ "${MOCK_SLEEP:-0}" != "0" ]]; then
+  if [[ -n "${MOCK_DESCENDANT_PID_FILE:-}" ]]; then
+    bash -c 'sleep "$1" & wait' -- "$MOCK_SLEEP" &
+    MOCK_CHILD_PID=$!
+    echo "$MOCK_CHILD_PID" > "$MOCK_DESCENDANT_PID_FILE"
+    wait "$MOCK_CHILD_PID"
+  else
+    sleep "$MOCK_SLEEP"
+  fi
+fi
 echo "mock adapter ran task: ${*:-<none>}"
 if [[ "${MOCK_NO_COST:-0}" == "1" ]]; then
   echo "turns=3"

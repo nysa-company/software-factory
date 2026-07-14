@@ -29,8 +29,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Model provider down (Claude or OpenAI outage)
 
 - Notice: runs fail immediately with API errors; provider status page confirms.
-- Do: nothing is broken on your side. If agents are scheduled, run `scripts/kill-switch.sh` (it creates the `factory/KILL` stop file); otherwise just wait it out. Work already merged is unaffected.
-- Don't: swap a role to the other model family to keep moving — the cross-family separation is a quality control, not a convenience.
+- Do: if the primary is positively unavailable during the wrapper's non-task probe and a calibrated same-family Cursor fallback is enabled, the wrapper selects it before submitting the task. An outage discovered only after task submission is a failed run: stop, inspect the run manifest, and wait or make a new operator-authorized attempt. If agents are scheduled, `scripts/kill-switch.sh` remains the safe stop.
+- Don't: manually swap families or relaunch after a post-submission failure. Cross-family separation and one-agent-per-logical-run are quality controls, not conveniences.
 
 ## Duplicate reviewer row
 
@@ -55,14 +55,14 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Preflight failed before launch
 
-- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from `scripts/preflight.sh` — adapter contract, version pin, budget headroom, git state, or ticket not Ready.
-- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh` after a CLI upgrade and set matching `CLAUDE_CODE_PINNED` / `CODEX_PINNED` in `~/.factory/global.env`; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected ticket reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is `State: Ready`. Re-run preflight yourself to verify, then tell the dispatcher to resume.
+- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from `scripts/preflight.sh` — no safe backend route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
+- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh --routes`; reconcile `CLAUDE_CODE_PINNED`, `CODEX_PINNED`, or `CURSOR_AGENT_VERSION` in `~/.factory/global.env`; run `agent login` and verify the exact configured Cursor models when fallback is enabled; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight yourself before resuming.
 - Don't: tell the dispatcher to launch anyway — every FAIL is predictable at kickoff and will block mid-pipeline.
 
 ## Close-out ledger PR
 
-- Notice: at ticket close-out the dispatcher opens a short-lived bookkeeping PR (e.g. `bookkeeping/T-NNN-closeout`) carrying new ledger rows and run logs.
-- Do: review and merge it like any factory bookkeeping change — this is the sanctioned ledger write path, not a controls violation.
+- Notice: at ticket close-out the dispatcher opens a short-lived bookkeeping PR (e.g. `bookkeeping/T-NNN-closeout`) carrying new ledger rows and redacted run metadata/evidence. Redacted `factory/runs/*.out` streams remain local and ignored; unredacted Cursor output is never persisted.
+- Do: review and merge it like any factory bookkeeping change — this is the sanctioned ledger write path, not a controls violation. Check `run_id`, family, exact Cursor model, selection reason, and cost basis for fallback runs.
 - Don't: ask the dispatcher to commit ledger rows directly to `main` or to a ticket branch outside this flow.
 
 ## Test commit order before operator review

@@ -1,0 +1,8 @@
+# Exact Cursor CLI model IDs approved for family-typed factory adapters.
+# Format: model_id|provider_family|approved_init_display_name
+#
+# Additions are kit policy changes: verify the exact ID appears in `agent
+# models`, calibrate it on the conformance product, and update the kit pin.
+# Aliases, `auto`, and name-prefix inference are deliberately unsupported.
+gpt-5.6-sol-high|openai|GPT-5.6 Sol 272K High
+claude-sonnet-5-thinking-high|anthropic|Sonnet 5 300K High
