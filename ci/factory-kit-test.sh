@@ -417,7 +417,8 @@ set -eu
 cp "$2" "${FACTORY_KIT_SANDBOX_CAPTURE:?}"
 printf '%s\n' "$PATH" > "${FACTORY_KIT_SANDBOX_CAPTURE}.path"
 command -v git > "${FACTORY_KIT_SANDBOX_CAPTURE}.git"
-readlink "$(command -v git)" > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-target"
+readlink "$(command -v git)" > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-target" 2>/dev/null ||
+  : > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-target"
 command -v python3 > "${FACTORY_KIT_SANDBOX_CAPTURE}.python"
 shift 2
 exec "$@"
