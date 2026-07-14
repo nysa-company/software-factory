@@ -600,6 +600,11 @@ acquire_lock() {
   start="$(process_start_identity "$$")"
   [[ -n "$start" ]] || die "cannot determine lock process identity"
   while ! mkdir "$lock" 2>/dev/null; do
+    # A valid holder may atomically rename and remove the lock after our mkdir
+    # loses but before inspection. Absence means retry, not an unsafe path.
+    if [[ ! -e "$lock" && ! -L "$lock" ]]; then
+      continue
+    fi
     [[ -d "$lock" && ! -L "$lock" ]] || die "$label lock path is unsafe"
     [[ ! -L "$lock/owner" ]] || die "$label lock owner is unsafe"
     owner_pid="$(awk -F= '$1=="pid" {print $2; exit}' "$lock/owner" 2>/dev/null || true)"
