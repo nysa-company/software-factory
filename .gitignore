@@ -4,11 +4,16 @@ factory/KILL
 **/factory/runs/*.out
 **/factory/runs/*.pid
 **/factory/.linear-sync.lock
+**/factory/MAINTENANCE
+**/factory/.launch.lock/
+**/factory/.ledger.lock/
+**/factory/.active-runs/
 *.log
 .env
 .env.local
 *.pem
 *.key
+__pycache__/
 
 # nysa-agents:repo-standard:start
 .context/

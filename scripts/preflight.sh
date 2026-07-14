@@ -5,13 +5,6 @@
 # FACTORY_ROOT semantics match run-agent.sh (anchors factory/ under the repo root).
 set -euo pipefail
 
-KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
-FACTORY_DIR="$REPO_ROOT/factory"
-LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/ledger.csv}"
-ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
-PROJECTED_TICKET_USD="${PROJECTED_TICKET_USD:-5.00}"
-
 TICKET=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,11 +13,51 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$TICKET" ]] || { echo "usage: preflight.sh --ticket T-NNN" >&2; exit 2; }
+[[ "$TICKET" =~ ^T-[0-9]+$ ]] || { echo "invalid ticket identifier" >&2; exit 2; }
+
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
+FACTORY_DIR="$REPO_ROOT/factory"
+LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/ledger.csv}"
+ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
+PROJECTED_TICKET_USD="${PROJECTED_TICKET_USD:-5.00}"
+TICKET_FILE="$FACTORY_DIR/tickets/$TICKET.md"
 
 FAIL=0
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAIL=1; }
 warn() { echo "WARN: $*"; }
+
+# Runtime barriers, physical release validation, and existing ticket affinity
+# are hard gates. None may fall through to backend probes.
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/kit-pin.sh"
+if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+  fail "MAINTENANCE file present ($FACTORY_DIR/MAINTENANCE) — factory control plane is paused"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
+if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
+  fail "$FACTORY_KIT_PIN_ERROR"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
+if [[ "$FACTORY_KIT_PIN_IMPLICIT" -eq 1 ]]; then
+  pass "in-repo conformance product uses implicit physical kit pin (${FACTORY_KIT_SHA:0:7})"
+elif [[ "$FACTORY_KIT_PROVENANCE_MODE" == "sealed" ]]; then
+  pass "kit pin matches sealed physical release (${FACTORY_KIT_SHA:0:7})"
+else
+  pass "kit pin matches physical kit HEAD (${FACTORY_KIT_SHA:0:7})"
+fi
+if [[ -f "$TICKET_FILE" ]] &&
+   ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
+  fail "$FACTORY_TICKET_KIT_ERROR"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
+if [[ -n "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
+  pass "ticket Kit-SHA affinity matches selected kit SHA"
+fi
 
 # --- optional machine-level cap (same anchor as run-agent.sh) ---
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
@@ -33,6 +66,11 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   # shellcheck disable=SC1090
   source "$GLOBAL_ENV"
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
+fi
+if ! factory_validate_runtime_overrides; then
+  fail "$FACTORY_RUNTIME_OVERRIDE_ERROR"
+  echo "PREFLIGHT FAIL"
+  exit 1
 fi
 
 # (a) backend routes — resolve without submitting any task.
@@ -130,7 +168,6 @@ else
 fi
 
 # (e) ticket exists, is reconciled Ready, and belongs to a known initiative
-TICKET_FILE="$FACTORY_DIR/tickets/$TICKET.md"
 if [[ ! -f "$TICKET_FILE" ]]; then
   fail "ticket file missing: $TICKET_FILE"
 elif grep -qE '^State: Ready' "$TICKET_FILE"; then
@@ -155,33 +192,7 @@ else
   warn "no successful Linear reconciliation recorded — verify board sync before trusting a new operator action"
 fi
 
-# (f) kit pin — the product certifies which kit commit it runs against.
-# factory/KIT_PIN holds a kit commit SHA (full or short). Missing pin is a
-# warning (single-project era); a mismatch is a hard fail so a kit upgrade
-# never changes a project's behavior silently. A product living inside the
-# kit repo itself (e.g. the Relay conformance app) is implicitly pinned.
-KIT_PIN_FILE="$FACTORY_DIR/KIT_PIN"
-KIT_HEAD="$(git -C "$KIT_DIR" rev-parse HEAD 2>/dev/null || true)"
-PRODUCT_TOPLEVEL="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-KIT_TOPLEVEL="$(git -C "$KIT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -n "$KIT_TOPLEVEL" && "$PRODUCT_TOPLEVEL" == "$KIT_TOPLEVEL" ]]; then
-  pass "product lives inside the kit repo — kit pin implicit ($( [[ -n "$KIT_HEAD" ]] && echo "${KIT_HEAD:0:7}" || echo unknown))"
-elif [[ ! -f "$KIT_PIN_FILE" ]]; then
-  warn "no kit pin ($KIT_PIN_FILE missing) — write the certified kit SHA there so kit upgrades are deliberate"
-elif [[ -z "$KIT_HEAD" ]]; then
-  fail "kit pin present but kit dir is not a git repo ($KIT_DIR)"
-else
-  PINNED_SHA="$(grep -m1 -oE '[0-9a-f]{7,40}' "$KIT_PIN_FILE" || true)"
-  if [[ -z "$PINNED_SHA" ]]; then
-    fail "kit pin file has no SHA: $KIT_PIN_FILE"
-  elif [[ "$KIT_HEAD" == "$PINNED_SHA"* ]]; then
-    pass "kit pin matches (${PINNED_SHA:0:7})"
-  else
-    fail "kit pin mismatch: kit at ${KIT_HEAD:0:7}, product certified against ${PINNED_SHA:0:7} — re-certify the project (run its suite against the new kit, update factory/KIT_PIN) or check out the pinned kit commit"
-  fi
-fi
-
-# (g) GH_TOKEN — warn only
+# (f) GH_TOKEN — warn only
 if [[ -n "${GH_TOKEN:-}" ]]; then
   pass "GH_TOKEN available (environment)"
 elif [[ -f "$HOME/.hermes/profiles/factory/.env" ]] && grep -qE '^GH_TOKEN=' "$HOME/.hermes/profiles/factory/.env" 2>/dev/null; then

@@ -1,0 +1,240 @@
+{
+  "contract": "nysa.software-factory.hermes",
+  "contract_version": "1.0.0",
+  "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
+  "preflight_schema": "nysa.software-factory.preflight/v1",
+  "next_stage_schema": "nysa.software-factory.next-stage/v1",
+  "supported_hermes": [
+    {
+      "agent_version": "0.18.2",
+      "build_version": "2026.7.7.2",
+      "compatibility": "certified"
+    }
+  ],
+  "profile": {
+    "default_name": "factory",
+    "default_path": "~/.hermes/profiles/factory",
+    "project_registry": "projects/<project>.env",
+    "required_registry_keys": [
+      "PRODUCT_ROOT"
+    ],
+    "observed_ignored_registry_keys": [
+      "KIT_DIR"
+    ],
+    "soul": "SOUL.md",
+    "dispatcher_skill": "skills/factory-dispatch/SKILL.md"
+  },
+  "launcher": {
+    "path": "~/.factory/bin/factory-launch",
+    "source": "integrations/hermes/bin/factory-launch",
+    "trust_root": {
+      "account_home_source": "pwd.getpwuid(os.getuid()).pw_dir",
+      "installed_physical_path": "<account-home>/.factory/bin/factory-launch",
+      "production_kits_root": "<account-home>/.factory/kits",
+      "production_profile_root": "<account-home>/.hermes/profiles/factory",
+      "caller_home_and_root_overrides": "ignored or refused",
+      "repository_test_mode": "explicit isolated roots allowed only from a non-installed launcher path"
+    },
+    "argument_order": [
+      "<project>",
+      "<command>",
+      "[command arguments]"
+    ],
+    "commands": {
+      "contract": {
+        "arguments": [
+          "--json"
+        ],
+        "output": "this manifest"
+      },
+      "doctor": {
+        "arguments": [
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.hermes-doctor/v1"
+      },
+      "next-stage": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.next-stage/v1",
+        "wrapper_fields": [
+          "schema",
+          "schema_version",
+          "contract_version",
+          "command",
+          "project",
+          "ticket",
+          "status",
+          "exit_code",
+          "output",
+          "action",
+          "detail"
+        ]
+      },
+      "preflight": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.preflight/v1",
+        "wrapper_fields": [
+          "schema",
+          "schema_version",
+          "contract_version",
+          "command",
+          "project",
+          "ticket",
+          "status",
+          "exit_code",
+          "output"
+        ]
+      },
+      "reorder-test-fixes": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--workdir",
+          "<absolute-product-worktree>",
+          "--",
+          "<arguments for reorder-test-fixes.sh>"
+        ],
+        "output": "selected release helper process output and exit code",
+        "workdir_validation": [
+          "absolute physical non-symlink distinct linked Git worktree root",
+          "same Git common directory as registered PRODUCT_ROOT",
+          "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket",
+          "resolved once before helper execution"
+        ],
+        "ticket_branch": "same policy as launcher.commands.run.ticket_branch"
+      },
+      "run": {
+        "role_whitelist": [
+          "planner",
+          "spec-linter",
+          "test-author",
+          "builder",
+          "reviewer",
+          "narrator"
+        ],
+        "arguments": [
+          "--role",
+          "<role>",
+          "--ticket",
+          "<T-NNN>",
+          "--prompt-file",
+          "$FACTORY_RELEASE_PATH/roles/<role>.md",
+          "--workdir",
+          "<absolute-product-worktree>",
+          "--",
+          "<task>"
+        ],
+        "output": "process exit plus release-bound run manifest",
+        "validation": [
+          "exact argument grammar; adapter overrides forbidden",
+          "canonical non-symlink release role prompt",
+          "absolute physical non-symlink distinct linked Git worktree root",
+          "same Git common directory as registered PRODUCT_ROOT",
+          "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket",
+          "nonempty task"
+        ],
+        "ticket_branch": {
+          "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
+          "key": "TICKET_BRANCH_PREFIX",
+          "default_prefix": "ticket/",
+          "expected": "<prefix><T-NNN>"
+        }
+      }
+    },
+    "helper_environment": {
+      "FACTORY_RELEASE_SHA": "active record kit_sha",
+      "FACTORY_RELEASE_TREE": "active record kit_tree",
+      "FACTORY_RELEASE_PATH": "resolved physical release path",
+      "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version"
+    },
+    "helper_environment_allowlist": [
+      "HOME",
+      "PATH",
+      "TMPDIR",
+      "FACTORY_ROOT",
+      "FACTORY_RELEASE_SHA",
+      "FACTORY_RELEASE_TREE",
+      "FACTORY_RELEASE_PATH",
+      "FACTORY_RELEASE_CONTRACT_VERSION",
+      "GH_TOKEN"
+    ],
+    "helper_optional_credentials": {
+      "GH_TOKEN": {
+        "source": "$HERMES_FACTORY_PROFILE/.env",
+        "assignment": "exactly one optional GH_TOKEN assignment parsed as data",
+        "file_policy": "owner-owned regular non-symlink file with mode 0600",
+        "caller_value_ignored": true
+      }
+    },
+    "helper_safe_path": "$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "active_record": {
+      "path": "$FACTORY_KITS_ROOT/projects/<project>/active.json",
+      "required_fields": [
+        "project",
+        "kit_sha",
+        "kit_tree",
+        "contract_version",
+        "product_path",
+        "release_path"
+      ],
+      "release_location": "$FACTORY_KITS_ROOT/releases/<kit_sha>",
+      "selection": "resolved and validated once per invocation"
+    },
+    "managed_path_policy": "reject every symlink component before physical resolution"
+  },
+  "status_categories": [
+    "ok",
+    "warning",
+    "error",
+    "unknown"
+  ],
+  "exit_codes": {
+    "0": "no error-category checks",
+    "1": "one or more error-category checks",
+    "2": "invalid invocation"
+  },
+  "compatibility_sensitive_surfaces": [
+    "contract.json",
+    "bin/factory-launch",
+    "templates/profile/SOUL.md",
+    "templates/profile/skills/factory-dispatch/SKILL.md",
+    "templates/launchd/com.nysa.hermes-factory-gateway.plist",
+    "templates/launchd/com.nysa.hermes-dashboard.plist",
+    "scripts/factory-doctor.sh",
+    "roles/dispatcher.md",
+    "scripts/preflight.sh",
+    "scripts/next-stage.sh",
+    "scripts/run-agent.sh",
+    "scripts/reorder-test-fixes.sh"
+  ],
+  "launch_agents": {
+    "gateway": {
+      "label": "com.nysa.hermes-factory-gateway",
+      "scope": "factory profile only"
+    },
+    "dashboard": {
+      "label": "com.nysa.hermes-dashboard",
+      "scope": "machine-wide dashboard"
+    }
+  },
+  "security": {
+    "credential_reporting": "presence-only",
+    "credential_values_forbidden": true,
+    "credential_bearing_urls_forbidden": true,
+    "profile_credential_source": "mode-0600 $HERMES_FACTORY_PROFILE/.env parsed as data and never sourced",
+    "launch_agent_secrets_forbidden": true,
+    "public_redaction": [
+      "Authorization headers and bearer/basic/token values",
+      "quoted, JSON, multiline, and multi-token sensitive-key values",
+      "credential-bearing and ordinary URLs"
+    ]
+  }
+}

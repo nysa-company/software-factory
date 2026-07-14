@@ -14,7 +14,25 @@
 #   PER_RUN_TIMEOUT_MIN, DAILY_CAP_USD
 set -euo pipefail
 
-KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROLE="" TICKET="" PROMPT_FILE="" ADAPTER="" WORKDIR="$PWD"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --role) ROLE="$2"; shift 2;;
+    --ticket) TICKET="$2"; shift 2;;
+    --prompt-file) PROMPT_FILE="$2"; shift 2;;
+    --adapter) ADAPTER="$2"; shift 2;;
+    --workdir) WORKDIR="$2"; shift 2;;
+    --) shift; break;;
+    *) echo "unknown arg: $1" >&2; exit 2;;
+  esac
+done
+TASK="${*:-}"
+[[ -n "$ROLE" && -n "$TICKET" && -n "$TASK" ]] || { echo "missing required args" >&2; exit 2; }
+[[ "$TICKET" =~ ^T-[0-9]+$ ]] || { echo "invalid ticket identifier" >&2; exit 2; }
+
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/kit-pin.sh"
 
 # --- anchor factory state to the repo root, never to $PWD ---
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
@@ -76,6 +94,32 @@ RUN_GO_FILE=""
 RUN_START_ID=""
 MANIFEST=""
 MANIFEST_PHASE=""
+SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
+SEQUENCER_ERROR=""
+
+sequencer_allows_role() {
+  local output rc=0
+  SEQUENCER_ERROR=""
+  if [[ ! -f "$SEQUENCER" || -L "$SEQUENCER" ]]; then
+    SEQUENCER_ERROR="selected release sequencer is missing or unsafe"
+    return 1
+  fi
+  output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
+    bash "$SEQUENCER" --ticket "$TICKET" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    SEQUENCER_ERROR="sequencer refused the ticket state"
+    return 1
+  fi
+  if [[ "$output" == "RUN $ROLE" ]]; then
+    return 0
+  fi
+  if [[ "$output" == "FIX builder-or-test-author" &&
+        ( "$ROLE" == "builder" || "$ROLE" == "test-author" ) ]]; then
+    return 0
+  fi
+  SEQUENCER_ERROR="sequencer did not authorize the requested role"
+  return 1
+}
 
 meta_value() {
   printf '%s' "${1:-}" | tr '\n,' '__'
@@ -96,6 +140,13 @@ write_manifest() {
     echo "selection_reason=$(meta_value "${SELECTION_REASON:-}")"
     echo "adapter_version=$(meta_value "${SELECTED_VERSION:-}")"
     echo "primary_probe=$(meta_value "${PRIMARY_PROBE_SUMMARY:-}")"
+    echo "kit_sha=$(meta_value "${FACTORY_KIT_SHA:-}")"
+    echo "kit_tree=$(meta_value "${FACTORY_KIT_TREE:-}")"
+    echo "product_tree=$(meta_value "${FACTORY_PRODUCT_TREE:-}")"
+    echo "ticket_kit_sha=$(meta_value "${FACTORY_TICKET_KIT_SHA:-}")"
+    echo "contract_version=$(meta_value "${FACTORY_CONTRACT_VERSION:-}")"
+    echo "physical_kit_path=$(meta_value "${FACTORY_KIT_PATH:-}")"
+    echo "kit_provenance_mode=$(meta_value "${FACTORY_KIT_PROVENANCE_MODE:-}")"
     echo "pid=$(meta_value "${RUN_PID:-}")"
     echo "pgid=$(meta_value "${RUN_PGID:-}")"
     echo "process_start=$(meta_value "${RUN_START_ID:-}")"
@@ -149,20 +200,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM INT HUP
 
-ROLE="" TICKET="" PROMPT_FILE="" ADAPTER="" WORKDIR="$PWD"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --role) ROLE="$2"; shift 2;;
-    --ticket) TICKET="$2"; shift 2;;
-    --prompt-file) PROMPT_FILE="$2"; shift 2;;
-    --adapter) ADAPTER="$2"; shift 2;;
-    --workdir) WORKDIR="$2"; shift 2;;
-    --) shift; break;;
-    *) echo "unknown arg: $1" >&2; exit 2;;
-  esac
-done
-TASK="${*:-}"
-[[ -n "$ROLE" && -n "$TICKET" && -n "$TASK" ]] || { echo "missing required args" >&2; exit 2; }
+TICKET_FILE="$FACTORY_DIR/tickets/$TICKET.md"
 [[ -f "$ENV_FILE" ]] || { echo "envelope not found: $ENV_FILE — fill ENVELOPE.md and write ENVELOPE.env first" >&2; exit 3; }
 # shellcheck disable=SC1090
 source "$ENV_FILE"
@@ -181,11 +219,37 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   GLOBAL_LOCK="$(dirname "$GLOBAL_ENV")/.ledger.lock"
   [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
 fi
+if ! factory_validate_runtime_overrides; then
+  echo "$FACTORY_RUNTIME_OVERRIDE_ERROR; no task was submitted" >&2
+  exit 2
+fi
 
 # --- kill switch check (anchored) ---
 if [[ -f "$FACTORY_DIR/KILL" ]]; then
   echo "KILL file present ($FACTORY_DIR/KILL) — factory is stopped. Remove it to resume." >&2
   exit 4
+fi
+if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+  echo "MAINTENANCE file present ($FACTORY_DIR/MAINTENANCE) — factory control plane is paused; no task was submitted." >&2
+  exit 4
+fi
+if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
+  echo "$FACTORY_KIT_PIN_ERROR; no task was submitted" >&2
+  exit 3
+fi
+if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
+  echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
+  exit 3
+fi
+# The first manifest phase still records the release affinity that will be
+# persisted under the launch lock. factory_record_ticket_kit_sha revalidates
+# and writes it before any reservation or task submission.
+if [[ -z "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
+  FACTORY_TICKET_KIT_SHA="$FACTORY_KIT_SHA"
+fi
+if ! sequencer_allows_role; then
+  echo "$SEQUENCER_ERROR; no task was submitted" >&2
+  exit 10
 fi
 
 # --- resolve one backend before reservation and before submitting the task ---
@@ -248,6 +312,22 @@ fi
 if [[ -f "$FACTORY_DIR/KILL" ]]; then
   echo "KILL file appeared before reservation; no task was submitted" >&2
   exit 4
+fi
+if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+  echo "MAINTENANCE file appeared after launch lock acquisition; no task was submitted" >&2
+  exit 4
+fi
+if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
+  echo "$FACTORY_KIT_PIN_ERROR after launch lock acquisition; no task was submitted" >&2
+  exit 3
+fi
+if ! sequencer_allows_role; then
+  echo "$SEQUENCER_ERROR after launch lock acquisition; no task was submitted" >&2
+  exit 10
+fi
+if ! factory_record_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
+  echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
+  exit 3
 fi
 if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
       "${FACTORY_TEST_BEFORE_REGISTER_SLEEP:-0}" != "0" ]]; then
@@ -400,11 +480,35 @@ else
       echo "process_start=$RUN_START_ID"
     } > "$RUN_PID_FILE"
     write_manifest "prepared"
+    if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+          "${FACTORY_TEST_BEFORE_GO_SLEEP:-0}" != "0" ]]; then
+      sleep "$FACTORY_TEST_BEFORE_GO_SLEEP"
+    fi
     if [[ -f "$FACTORY_DIR/KILL" ]]; then
       echo "KILL file appeared before GO; no task was submitted" >&2
       terminate_run_group
       wait "$RUN_PID" 2>/dev/null
       STATUS=4
+    elif [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+      echo "MAINTENANCE file appeared before GO; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=4
+    elif ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
+      echo "$FACTORY_KIT_PIN_ERROR before GO; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=3
+    elif ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
+      echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=3
+    elif ! sequencer_allows_role; then
+      echo "$SEQUENCER_ERROR before GO; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=10
     else
       : > "$RUN_GO_FILE"
       write_manifest "spawned"

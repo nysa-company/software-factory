@@ -1,0 +1,1241 @@
+#!/usr/bin/env bash
+# Sandboxed contract tests for the public Hermes integration boundary.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DOCTOR="$ROOT/scripts/factory-doctor.sh"
+CONTRACT="$ROOT/integrations/hermes/contract.json"
+LAUNCHER="$ROOT/integrations/hermes/bin/factory-launch"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/hermes-contract-test.XXXXXX")"
+TEST_HOME="$TMP/home"
+PROFILE="$TEST_HOME/.hermes/profiles/factory"
+PRODUCT="$TMP/product"
+LAUNCH_PRODUCT="$TMP/launch-product"
+KITS_ROOT="$TEST_HOME/.factory/kits"
+STUB_BIN="$TMP/bin"
+JSON_OUT="$TMP/doctor.json"
+HUMAN_OUT="$TMP/doctor.txt"
+
+cleanup() {
+  chmod -R u+w "$TMP" 2>/dev/null || true
+  rm -rf "$TMP"
+}
+trap cleanup EXIT HUP INT TERM
+
+fail() {
+  echo "FAIL: $1" >&2
+  exit 1
+}
+
+assert_release_metadata() {
+  local file="$1" sha="$2" tree="$3" release="$4" physical
+  physical="$(cd "$release" && pwd -P)"
+  grep -qF "FACTORY_RELEASE_SHA=$sha" "$file" || fail "helper did not receive release SHA"
+  grep -qF "FACTORY_RELEASE_TREE=$tree" "$file" || fail "helper did not receive release tree"
+  grep -qF "FACTORY_RELEASE_PATH=$physical" "$file" ||
+    fail "helper did not receive physical release path"
+  grep -qF "FACTORY_RELEASE_CONTRACT_VERSION=1.0.0" "$file" ||
+    fail "helper did not receive release contract"
+}
+
+assert_helper_confinement() {
+  local file="$1" credential_expectation="${2:-present}" safe_tmp safe_home expected_cksum
+  safe_tmp="$(cd "$TMP/launcher-tmp" && pwd -P)"
+  safe_home="$(cd "$TEST_HOME" && pwd -P)"
+  grep -qF "HOME=$safe_home" "$file" || fail "helper HOME was not explicitly passed"
+  grep -qF "PATH=$safe_home/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$file" || fail "helper PATH was not the fixed safe path"
+  grep -qF "TMPDIR=$safe_tmp" "$file" || fail "helper TMPDIR was not physical"
+  grep -qF "FACTORY_ROOT=$(cd "$LAUNCH_PRODUCT" && pwd -P)" "$file" ||
+    fail "helper FACTORY_ROOT was not canonical"
+  if grep -Fq "$GH_SECRET" "$file" || grep -Fq "$CALLER_GH_SECRET" "$file"; then
+    fail "helper environment snapshot stored a credential value"
+  fi
+  if [[ "$credential_expectation" == "present" ]]; then
+    expected_cksum="$(printf '%s' "$GH_SECRET" | cksum)"
+    grep -qF "GH_TOKEN_PRESENT=true" "$file" ||
+      fail "profile GH_TOKEN did not reach selected helper"
+    grep -qF "GH_TOKEN_CKSUM=$expected_cksum" "$file" ||
+      fail "selected helper did not receive the profile-derived GH_TOKEN"
+  else
+    if grep -q '^GH_TOKEN_' "$file"; then
+      fail "caller GH_TOKEN reached helper without a profile credential"
+    fi
+  fi
+  local variable
+  for variable in \
+    FACTORY_LAUNCH_TEST_MODE FACTORY_LAUNCH_TEST_HOME \
+    FACTORY_LAUNCH_TEST_ACCOUNT_HOME FACTORY_KITS_ROOT HERMES_FACTORY_PROFILE \
+    FACTORY_ENVELOPE FACTORY_LEDGER FACTORY_GLOBAL_ENV FACTORY_TEST_MODE \
+    FACTORY_ADAPTER_OVERRIDE FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
+    FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
+    PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
+    GIT_INDEX_FILE GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT \
+    GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
+    BASH_ENV ENV; do
+    if grep -q "^$variable=" "$file"; then
+      fail "caller control propagated to helper: $variable"
+    fi
+  done
+}
+
+tree_for_directory() {
+  local directory="$1" object_dir index tree
+  object_dir="$(mktemp -d "$TMP/tree.XXXXXX")"
+  index="$object_dir/index"
+  git init --bare -q "$object_dir/repo.git"
+  git --git-dir="$object_dir/repo.git" config core.bare false
+  GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
+    --work-tree="$directory" read-tree --empty
+  GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
+    --work-tree="$directory" add -A -- .
+  tree="$(GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
+    --work-tree="$directory" write-tree)"
+  rm -rf "$object_dir"
+  printf '%s\n' "$tree"
+}
+
+write_active() {
+  local sha="$1" tree="$2" release="$3" product="${4:-$LAUNCH_PRODUCT}"
+  local active="$KITS_ROOT/projects/launchtest/active.json" temporary
+  release="$(cd "$release" && pwd -P)"
+  product="$(cd "$product" && pwd -P)"
+  temporary="$active.tmp"
+  python3 - "$temporary" "$sha" "$tree" "$release" "$product" <<'PY'
+import json
+import sys
+
+path, sha, tree, release, product = sys.argv[1:]
+value = {
+    "generation": 1,
+    "project": "launchtest",
+    "kit_sha": sha,
+    "kit_tree": tree,
+    "contract_version": "1.0.0",
+    "product_path": product,
+    "release_path": release,
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(value, handle)
+    handle.write("\n")
+PY
+  mv "$temporary" "$active"
+}
+
+run_launcher() {
+  local kits profile launcher_tmp
+  kits="${LAUNCHER_KITS_ROOT_OVERRIDE:-$(cd "$KITS_ROOT" && pwd -P)}"
+  profile="${LAUNCHER_PROFILE_OVERRIDE:-$(cd "$PROFILE" && pwd -P)}"
+  launcher_tmp="$TMP/launcher-tmp"
+  mkdir -p "$launcher_tmp"
+  HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$launcher_tmp" \
+    FACTORY_LAUNCH_TEST_MODE=1 FACTORY_LAUNCH_TEST_HOME="$TEST_HOME" \
+    FACTORY_KITS_ROOT="$kits" HERMES_FACTORY_PROFILE="$profile" \
+    FACTORY_ENVELOPE="$TMP/bypass-envelope.env" \
+    FACTORY_LEDGER="$TMP/bypass-ledger.csv" \
+    FACTORY_GLOBAL_ENV="$TMP/bypass-global.env" \
+    FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    FACTORY_PROBE_CODEX=INVALID:bypass \
+    FACTORY_PROBE_CLAUDE_CODE=INVALID:bypass \
+    FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_BIN="$TMP/agent-bypass" \
+    CODEX_PINNED=bypass MOCK_STATUS=0 PROJECTED_TICKET_USD=999999 \
+    PYTHONHOME="$TMP/python-home-bypass" PYTHONPATH="$TMP/python-path-bypass" \
+    PYTHONWARNINGS=error GIT_DIR="$TMP/git-dir-bypass" \
+    GIT_WORK_TREE="$TMP/git-work-tree-bypass" GIT_INDEX_FILE="$TMP/git-index-bypass" \
+    GIT_CONFIG_GLOBAL="$TMP/git-global-bypass" GIT_CONFIG_SYSTEM="$TMP/git-system-bypass" \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$TMP/hooks" \
+    BASH_ENV=/dev/null ENV=/dev/null GH_TOKEN="$CALLER_GH_SECRET" \
+    bash "$LAUNCHER" "$@"
+}
+
+create_test_release() {
+  local release="$1" label="$2" action="$3"
+  mkdir -p "$release/integrations/hermes" "$release/scripts" "$release/roles"
+  cp "$CONTRACT" "$release/integrations/hermes/contract.json"
+  cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
+  for role in planner spec-linter test-author builder reviewer narrator; do
+    printf '# %s prompt\n' "$role" > "$release/roles/$role.md"
+  done
+  ln -s builder.md "$release/roles/builder-link.md"
+  cat > "$release/scripts/factory-doctor.sh" <<'EOF'
+#!/usr/bin/env bash
+ENV_OUT="$FACTORY_ROOT/factory/doctor-helper.env"
+env | awk -F= '$1 != "GH_TOKEN"' | LC_ALL=C sort > "$ENV_OUT"
+if [[ ${GH_TOKEN+x} == x ]]; then
+  printf 'GH_TOKEN_PRESENT=true\nGH_TOKEN_CKSUM=%s\n' \
+    "$(printf '%s' "$GH_TOKEN" | cksum)" >> "$ENV_OUT"
+fi
+exec /bin/bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/factory-doctor-real.sh" "$@"
+EOF
+  cat > "$release/scripts/preflight.sh" <<EOF
+#!/usr/bin/env bash
+ENV_OUT="\$FACTORY_ROOT/factory/preflight-helper.env"
+env | awk -F= '\$1 != "GH_TOKEN"' | LC_ALL=C sort > "\$ENV_OUT"
+if [[ \${GH_TOKEN+x} == x ]]; then
+  printf 'GH_TOKEN_PRESENT=true\nGH_TOKEN_CKSUM=%s\n' \
+    "\$(printf '%s' "\$GH_TOKEN" | cksum)" >> "\$ENV_OUT"
+fi
+if [[ -e "\$FACTORY_ROOT/factory/test-preflight-block" ]]; then
+  printf '%s\n' started > "\$FACTORY_ROOT/factory/test-preflight-started"
+  while [[ ! -e "\$FACTORY_ROOT/factory/test-preflight-gate" ]]; do sleep 0.02; done
+fi
+echo "PREFLIGHT $label"
+if [[ -e "\$FACTORY_ROOT/factory/test-preflight-fail" ]]; then
+  printf '%s\n' \
+    "Authorization: Bearer authorization-secret-value" \
+    '{"api_token": "json secret value with spaces"}' \
+    "password: |" \
+    "  multiline-secret-one" \
+    "  multiline-secret-two" \
+    "failure at https://user:url-secret-value@example.invalid/path"
+  exit 7
+fi
+if [[ -e "\$FACTORY_ROOT/factory/test-preflight-signal" ]]; then
+  printf '%s\n' "Authorization: Bearer signal-secret-value"
+  printf '%s\n' started > "\$FACTORY_ROOT/factory/test-preflight-signal-started"
+  sleep 2
+fi
+exit 0
+EOF
+  cat > "$release/scripts/next-stage.sh" <<EOF
+#!/usr/bin/env bash
+ENV_OUT="\$FACTORY_ROOT/factory/next-stage-helper.env"
+env | awk -F= '\$1 != "GH_TOKEN"' | LC_ALL=C sort > "\$ENV_OUT"
+if [[ \${GH_TOKEN+x} == x ]]; then
+  printf 'GH_TOKEN_PRESENT=true\nGH_TOKEN_CKSUM=%s\n' \
+    "\$(printf '%s' "\$GH_TOKEN" | cksum)" >> "\$ENV_OUT"
+fi
+echo "$action"
+EOF
+  cat > "$release/scripts/run-agent.sh" <<EOF
+#!/usr/bin/env bash
+ENV_OUT="\$FACTORY_ROOT/factory/run-helper.env"
+env | awk -F= '\$1 != "GH_TOKEN"' | LC_ALL=C sort > "\$ENV_OUT"
+if [[ \${GH_TOKEN+x} == x ]]; then
+  printf 'GH_TOKEN_PRESENT=true\nGH_TOKEN_CKSUM=%s\n' \
+    "\$(printf '%s' "\$GH_TOKEN" | cksum)" >> "\$ENV_OUT"
+fi
+echo "RUN $label"
+echo "FACTORY_ROOT=\$FACTORY_ROOT"
+printf 'ARG=%s\n' "\$@"
+EOF
+  cat > "$release/scripts/reorder-test-fixes.sh" <<EOF
+#!/usr/bin/env bash
+ENV_OUT="\$FACTORY_ROOT/factory/reorder-helper.env"
+env | awk -F= '\$1 != "GH_TOKEN"' | LC_ALL=C sort > "\$ENV_OUT"
+if [[ \${GH_TOKEN+x} == x ]]; then
+  printf 'GH_TOKEN_PRESENT=true\nGH_TOKEN_CKSUM=%s\n' \
+    "\$(printf '%s' "\$GH_TOKEN" | cksum)" >> "\$ENV_OUT"
+fi
+echo "REORDER $label"
+echo "WORKDIR=\$(pwd -P)"
+printf 'ARG=%s\n' "\$@"
+EOF
+  chmod +x "$release/scripts/factory-doctor.sh" "$release/scripts/factory-doctor-real.sh" \
+    "$release/scripts/preflight.sh" \
+    "$release/scripts/next-stage.sh" "$release/scripts/run-agent.sh" \
+    "$release/scripts/reorder-test-fixes.sh"
+}
+
+mkdir -p "$PROFILE/projects" "$TEST_HOME/.hermes/secrets" "$TEST_HOME/.factory/.ledger.lock"
+mkdir -p "$PRODUCT/factory/runs" "$PRODUCT/factory/.launch.lock" "$STUB_BIN"
+printf '%s\n' 'THIS_IS_NOT_A_VALID_ENVELOPE=1' > "$TMP/bypass-envelope.env"
+cat > "$TMP/bypass-global.env" <<'EOF'
+GLOBAL_DAILY_CAP_USD=0
+FACTORY_TEST_MODE=1
+FACTORY_ADAPTER_OVERRIDE=mock
+EOF
+printf '%s\n' "caller bypass ledger must remain untouched" > "$TMP/bypass-ledger.csv"
+BYPASS_ENVELOPE_BEFORE="$(cksum "$TMP/bypass-envelope.env")"
+BYPASS_GLOBAL_BEFORE="$(cksum "$TMP/bypass-global.env")"
+BYPASS_LEDGER_BEFORE="$(cksum "$TMP/bypass-ledger.csv")"
+
+KIT_SHA="$(git -C "$ROOT" rev-parse --verify HEAD)"
+printf '%s\n' "$KIT_SHA" > "$PRODUCT/factory/KIT_PIN"
+touch "$PRODUCT/factory/MAINTENANCE"
+printf 'pid=%s\n' "$$" > "$PRODUCT/factory/runs/run-active.pid"
+
+cat > "$PROFILE/projects/relay.env" <<EOF
+KIT_DIR=$ROOT
+PRODUCT_ROOT=$PRODUCT
+EOF
+
+GH_SECRET="ghp_contract_test_value_never_print"
+CALLER_GH_SECRET="ghp_caller_value_must_be_dropped"
+LINEAR_SECRET="lin_contract_test_value_never_print"
+URL_SECRET="url-password-never-print"
+CLI_SECRET="cli-password-never-print"
+AUTH_SECRET="doctor-authorization-never-print"
+JSON_SECRET="doctor json secret with spaces"
+MULTILINE_SECRET="doctor-multiline-never-print"
+printf 'GH_TOKEN=%s\n' "$GH_SECRET" > "$PROFILE/.env"
+printf '%s\n' "$LINEAR_SECRET" > "$TEST_HOME/.hermes/secrets/linear-api-key"
+chmod 600 "$PROFILE/.env" "$TEST_HOME/.hermes/secrets/linear-api-key"
+ENV_BEFORE="$(cksum "$PROFILE/.env")"
+KEY_BEFORE="$(cksum "$TEST_HOME/.hermes/secrets/linear-api-key")"
+
+python3 - "$PRODUCT/factory/linear-map.json" "$URL_SECRET" <<'PY'
+import datetime as dt
+import json
+import sys
+
+path, password = sys.argv[1:]
+document = {
+    "_sync": {
+        "last_success_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "last_error": (
+            f"Authorization: Bearer doctor-authorization-never-print\n"
+            f'{{"api_token": "doctor json secret with spaces"}}\n'
+            f"password: |\n  doctor-multiline-never-print\n"
+            f"sync failed at https://user:{password}@example.invalid/path?token=also-secret"
+        ),
+    }
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle)
+PY
+
+cat > "$STUB_BIN/hermes" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  echo "Hermes Agent v0.18.2 (2026.7.7.2)"
+fi
+STUB
+cat > "$STUB_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "Claude Code 2.1.207"
+STUB
+cat > "$STUB_BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+echo "codex-cli 0.144.1"
+STUB
+cat > "$STUB_BIN/agent" <<'STUB'
+#!/usr/bin/env bash
+echo "Cursor Agent 2026.07.test"
+STUB
+cat > "$STUB_BIN/gh" <<EOF
+#!/usr/bin/env bash
+echo "gh version test https://cli-user:$CLI_SECRET@example.invalid/version"
+EOF
+chmod +x "$STUB_BIN/hermes" "$STUB_BIN/claude" "$STUB_BIN/codex" "$STUB_BIN/agent" "$STUB_BIN/gh"
+
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  bash "$DOCTOR" --json --project relay > "$JSON_OUT"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  bash "$DOCTOR" --project relay > "$HUMAN_OUT"
+
+assert_no_secret() {
+  local output="$1"
+  local secret
+  for secret in "$GH_SECRET" "$CALLER_GH_SECRET" "$LINEAR_SECRET" "$URL_SECRET" "$CLI_SECRET" \
+                "$AUTH_SECRET" "$JSON_SECRET" "$MULTILINE_SECRET" "also-secret" \
+                "authorization-secret-value" "json secret value with spaces" \
+                "multiline-secret-one" "multiline-secret-two" "url-secret-value" \
+                "signal-secret-value"; do
+    if LC_ALL=C grep -Fq "$secret" "$output"; then
+      fail "doctor output leaked a seeded secret"
+    fi
+  done
+  python3 - "$output" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+if re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/:]+:[^@\s]+@", text):
+    raise SystemExit("credential-bearing URL remained in doctor output")
+PY
+}
+
+assert_no_secret "$JSON_OUT"
+assert_no_secret "$HUMAN_OUT"
+[[ "$(cksum "$PROFILE/.env")" == "$ENV_BEFORE" ]] || fail "doctor changed the profile environment"
+[[ "$(cksum "$TEST_HOME/.hermes/secrets/linear-api-key")" == "$KEY_BEFORE" ]] ||
+  fail "doctor changed the Linear credential file"
+
+python3 - "$JSON_OUT" "$KIT_SHA" "$ROOT" "$PRODUCT" <<'PY'
+import json
+import sys
+
+path, sha, kit_dir, product_root = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    data = json.load(handle)
+
+assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
+assert data["schema_version"] == 1
+assert data["contract_version"] == "1.0.0"
+assert data["overall_status"] == "warning"
+assert data["project"] == "relay"
+checks = data["checks"]
+assert checks["registry"]["status"] == "ok"
+assert checks["registry"]["kit_dir"] == kit_dir
+assert checks["registry"]["product_root"] == product_root
+assert checks["kit"] == {"status": "ok", "full_sha": sha}
+assert checks["kit_pin"]["status"] == "ok"
+assert checks["kit_pin"]["full_sha"] == sha
+assert checks["kit_pin"]["valid_full_sha"] is True
+assert checks["kit_pin"]["matches_kit"] is True
+assert checks["runtime"]["status"] == "warning"
+assert checks["runtime"]["maintenance"] is True
+assert checks["runtime"]["locks"]["launch"] is True
+assert checks["runtime"]["locks"]["global_ledger"] is True
+assert checks["runtime"]["active_runs"] == 1
+assert checks["runtime"]["runs"] == [{"run_id": "run-active", "state": "active"}], checks["runtime"]
+assert checks["hermes"]["status"] == "ok"
+assert "0.18.2" in checks["hermes"]["version"]
+assert "2026.7.7.2" in checks["hermes"]["version"]
+assert [item["name"] for item in checks["clis"]["items"]] == ["claude", "codex", "agent", "gh"]
+assert checks["credentials"]["presence"] == {"github": True, "linear": True}
+assert checks["credentials"]["validated_authentication"] is False
+assert isinstance(checks["linear_sync"]["age_seconds"], int)
+assert checks["linear_sync"]["status"] == "warning"
+assert "[redacted]" in checks["linear_sync"]["last_error"]
+allowed = {"ok", "warning", "error", "unknown"}
+assert data["overall_status"] in allowed
+assert all(check["status"] in allowed for check in checks.values())
+PY
+
+printf '%s\n' "0123456789abcdef0123456789abcdef0123456" > "$PRODUCT/factory/KIT_PIN"
+BAD_PIN_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" bash "$DOCTOR" --json --project relay \
+  > "$TMP/bad-pin.json" || BAD_PIN_RC=$?
+[[ "$BAD_PIN_RC" -eq 1 ]] || fail "invalid full KIT_PIN did not return exit 1"
+python3 - "$TMP/bad-pin.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["overall_status"] == "error"
+assert data["checks"]["kit_pin"]["status"] == "error"
+assert data["checks"]["kit_pin"]["valid_full_sha"] is False
+assert data["checks"]["kit_pin"]["matches_kit"] is False
+PY
+assert_no_secret "$TMP/bad-pin.json"
+
+BAD_REGISTRY_PASSWORD="registry-password-never-print"
+BAD_REGISTRY_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" bash "$DOCTOR" --json --project relay \
+  --registry "https://registry-user:$BAD_REGISTRY_PASSWORD@example.invalid/relay.env" \
+  > "$TMP/bad-registry.json" || BAD_REGISTRY_RC=$?
+[[ "$BAD_REGISTRY_RC" -eq 1 ]] || fail "invalid registry did not return exit 1"
+if LC_ALL=C grep -Fq "$BAD_REGISTRY_PASSWORD" "$TMP/bad-registry.json"; then
+  fail "doctor leaked a credential-bearing registry URL"
+fi
+python3 - "$TMP/bad-registry.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["checks"]["registry"]["status"] == "error"
+assert data["checks"]["registry"]["path"] == "[redacted-url]"
+PY
+
+# Stable launcher: two physically separate releases and one mutable active record.
+SHA_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SHA_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+RELEASE_A="$KITS_ROOT/releases/$SHA_A"
+RELEASE_B="$KITS_ROOT/releases/$SHA_B"
+mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
+create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner"
+create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR"
+TREE_A="$(tree_for_directory "$RELEASE_A")"
+TREE_B="$(tree_for_directory "$RELEASE_B")"
+printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+REGISTRY_SENTINEL="$TMP/registry-was-sourced"
+cat > "$PROFILE/projects/launchtest.env" <<EOF
+KIT_DIR=\$(touch "$REGISTRY_SENTINEL")
+PRODUCT_ROOT=$LAUNCH_PRODUCT
+EOF
+write_active "$SHA_A" "$TREE_A" "$RELEASE_A"
+
+chmod +x "$LAUNCHER"
+run_launcher launchtest contract --json > "$TMP/launcher-contract.json"
+python3 - "$TMP/launcher-contract.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["contract"] == "nysa.software-factory.hermes"
+assert data["contract_version"] == "1.0.0"
+assert data["launcher"]["source"] == "integrations/hermes/bin/factory-launch", data["launcher"]
+PY
+[[ ! -e "$REGISTRY_SENTINEL" ]] || fail "launcher sourced arbitrary registry content"
+
+run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-a.json"
+run_launcher launchtest next-stage --ticket T-123 --json > "$TMP/next-a.json"
+PREFLIGHT_HELPER_ENV="$LAUNCH_PRODUCT/factory/preflight-helper.env"
+NEXT_HELPER_ENV="$LAUNCH_PRODUCT/factory/next-stage-helper.env"
+assert_release_metadata "$PREFLIGHT_HELPER_ENV" "$SHA_A" "$TREE_A" "$RELEASE_A"
+assert_release_metadata "$NEXT_HELPER_ENV" "$SHA_A" "$TREE_A" "$RELEASE_A"
+assert_helper_confinement "$PREFLIGHT_HELPER_ENV"
+assert_helper_confinement "$NEXT_HELPER_ENV"
+assert_no_secret "$TMP/preflight-a.json"
+assert_no_secret "$TMP/next-a.json"
+
+PROFILE_ENV_BACKUP="$TMP/profile.env.backup"
+cp -p "$PROFILE/.env" "$PROFILE_ENV_BACKUP"
+mv "$PROFILE/.env" "$PROFILE/.env.absent"
+run_launcher launchtest next-stage --ticket T-123 --json > "$TMP/next-caller-token-only.json"
+assert_helper_confinement "$NEXT_HELPER_ENV" absent
+assert_no_secret "$TMP/next-caller-token-only.json"
+mv "$PROFILE/.env.absent" "$PROFILE/.env"
+
+expect_profile_env_refusal() {
+  local label="$1" rc=0 output
+  output="$TMP/profile-env-$label.out"
+  run_launcher launchtest contract --json > "$output" 2>&1 || rc=$?
+  [[ "$rc" -eq 1 ]] || fail "unsafe profile environment was accepted: $label"
+  assert_no_secret "$output"
+}
+
+printf 'GH_TOKEN=%s\nGH_TOKEN=%s\n' "$GH_SECRET" "$CALLER_GH_SECRET" > "$PROFILE/.env"
+chmod 600 "$PROFILE/.env"
+expect_profile_env_refusal duplicate
+MALFORMED_PROFILE_SENTINEL="$TMP/malformed-profile-was-sourced"
+printf 'GH_TOKEN=$(touch %s)\n' "$MALFORMED_PROFILE_SENTINEL" > "$PROFILE/.env"
+chmod 600 "$PROFILE/.env"
+expect_profile_env_refusal malformed
+[[ ! -e "$MALFORMED_PROFILE_SENTINEL" ]] || fail "profile environment was sourced"
+printf 'GH_TOKEN=%s\n' "$GH_SECRET" > "$PROFILE/.env"
+chmod 644 "$PROFILE/.env"
+expect_profile_env_refusal broad-mode
+rm -f "$PROFILE/.env"
+ln -s "$PROFILE_ENV_BACKUP" "$PROFILE/.env"
+expect_profile_env_refusal symlink
+rm -f "$PROFILE/.env"
+cp -p "$PROFILE_ENV_BACKUP" "$PROFILE/.env"
+
+python3 - "$TMP/preflight-a.json" "$TMP/next-a.json" <<'PY'
+import json
+import sys
+
+preflight = json.load(open(sys.argv[1], encoding="utf-8"))
+stage = json.load(open(sys.argv[2], encoding="utf-8"))
+assert preflight == {
+    "command": "preflight",
+    "contract_version": "1.0.0",
+    "exit_code": 0,
+    "output": "PREFLIGHT RELEASE-A\n",
+    "project": "launchtest",
+    "schema": "nysa.software-factory.preflight/v1",
+    "schema_version": 1,
+    "status": "ok",
+    "ticket": "T-123",
+}
+assert stage["schema"] == "nysa.software-factory.next-stage/v1"
+assert stage["status"] == "ok"
+assert stage["exit_code"] == 0
+assert stage["action"] == "RUN"
+assert stage["detail"] == "planner"
+assert stage["output"] == "RUN planner\n"
+PY
+
+PREFLIGHT_FAIL_RC=0
+touch "$LAUNCH_PRODUCT/factory/test-preflight-fail"
+run_launcher launchtest preflight --ticket T-123 --json \
+  > "$TMP/preflight-fail.json" || PREFLIGHT_FAIL_RC=$?
+rm -f "$LAUNCH_PRODUCT/factory/test-preflight-fail"
+[[ "$PREFLIGHT_FAIL_RC" -eq 7 ]] || fail "preflight wrapper did not preserve exit code"
+python3 - "$TMP/preflight-fail.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["status"] == "error"
+assert data["exit_code"] == 7
+assert "PREFLIGHT RELEASE-A" in data["output"]
+assert "[redacted-url]" in data["output"], "preflight output lacked URL redaction marker"
+assert "Authorization: [redacted]" in data["output"]
+assert '"api_token": [redacted]' in data["output"]
+assert "password: [redacted]" in data["output"]
+PY
+assert_no_secret "$TMP/preflight-fail.json"
+
+touch "$LAUNCH_PRODUCT/factory/test-preflight-signal"
+SIGNAL_MARKER="$LAUNCH_PRODUCT/factory/test-preflight-signal-started"
+SIGNAL_KITS_ROOT="$(cd "$KITS_ROOT" && pwd -P)"
+SIGNAL_PROFILE="$(cd "$PROFILE" && pwd -P)"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
+  FACTORY_LAUNCH_TEST_MODE=1 FACTORY_LAUNCH_TEST_HOME="$TEST_HOME" \
+  FACTORY_KITS_ROOT="$SIGNAL_KITS_ROOT" HERMES_FACTORY_PROFILE="$SIGNAL_PROFILE" \
+  bash "$LAUNCHER" launchtest preflight --ticket T-124 --json \
+  > "$TMP/signal-wrapper.json" &
+SIGNAL_PID=$!
+for _try in $(seq 1 200); do
+  [[ -e "$SIGNAL_MARKER" ]] && break
+  sleep 0.02
+done
+[[ -e "$SIGNAL_MARKER" ]] || fail "signal cleanup fixture never reached helper"
+kill -TERM "$SIGNAL_PID"
+wait "$SIGNAL_PID" 2>/dev/null || true
+rm -f "$LAUNCH_PRODUCT/factory/test-preflight-signal" "$SIGNAL_MARKER"
+if compgen -G "$TMP/launcher-tmp/factory-launch-tree.*" >/dev/null; then
+  fail "signal cleanup retained the raw wrapper workspace"
+fi
+
+run_launcher launchtest doctor --json > "$TMP/launcher-doctor.json"
+python3 - "$TMP/launcher-doctor.json" "$SHA_A" "$RELEASE_A" "$LAUNCH_PRODUCT" <<'PY'
+import json
+import os
+import sys
+
+path, sha, release, product = sys.argv[1:]
+data = json.load(open(path, encoding="utf-8"))
+assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
+assert data["checks"]["kit"] == {"status": "ok", "full_sha": sha}
+assert data["checks"]["registry"]["kit_dir"] == os.path.realpath(release), "doctor reported wrong resolved release"
+assert data["checks"]["registry"]["product_root"] == os.path.realpath(product), "doctor reported wrong product"
+assert data["checks"]["kit_pin"]["matches_kit"] is True
+PY
+assert_no_secret "$TMP/launcher-doctor.json"
+DOCTOR_HELPER_ENV="$LAUNCH_PRODUCT/factory/doctor-helper.env"
+assert_release_metadata "$DOCTOR_HELPER_ENV" "$SHA_A" "$TREE_A" "$RELEASE_A"
+assert_helper_confinement "$DOCTOR_HELPER_ENV"
+
+printf '%s\n' "$SHA_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_B" "$TREE_B" "$RELEASE_B"
+run_launcher launchtest next-stage --ticket T-123 --json > "$TMP/next-b.json"
+python3 - "$TMP/next-b.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["action"] == "AWAIT-OPERATOR"
+assert data["detail"] is None
+assert data["output"] == "AWAIT-OPERATOR\n"
+PY
+
+KITS_ROOT_PHYS="$(cd "$KITS_ROOT" && pwd -P)"
+PROFILE_PHYS="$(cd "$PROFILE" && pwd -P)"
+ln -s "$KITS_ROOT_PHYS" "$TMP/kits-root-link"
+ROOT_LINK_RC=0
+LAUNCHER_KITS_ROOT_OVERRIDE="$TMP/kits-root-link" \
+  run_launcher launchtest contract --json > "$TMP/root-link.out" 2>&1 || ROOT_LINK_RC=$?
+[[ "$ROOT_LINK_RC" -eq 1 ]] || fail "symlink FACTORY_KITS_ROOT was accepted"
+ln -s "$PROFILE_PHYS" "$TMP/profile-link"
+PROFILE_LINK_RC=0
+LAUNCHER_PROFILE_OVERRIDE="$TMP/profile-link" \
+  run_launcher launchtest contract --json > "$TMP/profile-link.out" 2>&1 || PROFILE_LINK_RC=$?
+[[ "$PROFILE_LINK_RC" -eq 1 ]] || fail "symlink Hermes profile was accepted"
+FORGED_HOME="$TMP/forged-home"
+FORGED_KITS="$FORGED_HOME/.factory/kits"
+FORGED_PROFILE="$FORGED_HOME/.hermes/profiles/factory"
+mkdir -p "$FORGED_KITS" "$FORGED_PROFILE"
+printf 'GH_TOKEN=%s\n' "$CALLER_GH_SECRET" > "$FORGED_PROFILE/.env"
+chmod 600 "$FORGED_PROFILE/.env"
+FORGED_ROOT_RC=0
+HOME="$FORGED_HOME" FACTORY_KITS_ROOT="$FORGED_KITS" \
+  HERMES_FACTORY_PROFILE="$FORGED_PROFILE" \
+  bash "$LAUNCHER" launchtest contract --json \
+  > "$TMP/forged-root.out" 2>&1 || FORGED_ROOT_RC=$?
+[[ "$FORGED_ROOT_RC" -eq 1 ]] ||
+  fail "repository launcher accepted forged production roots"
+assert_no_secret "$TMP/forged-root.out"
+
+SIMULATED_ACCOUNT="$TMP/simulated-account"
+SIMULATED_INSTALL="$SIMULATED_ACCOUNT/.factory/bin/factory-launch"
+mkdir -p "$(dirname "$SIMULATED_INSTALL")"
+cp "$LAUNCHER" "$SIMULATED_INSTALL"
+chmod +x "$SIMULATED_INSTALL"
+SIMULATED_OVERRIDE_RC=0
+HOME="$FORGED_HOME" FACTORY_LAUNCH_TEST_MODE=1 \
+  FACTORY_LAUNCH_TEST_ACCOUNT_HOME="$SIMULATED_ACCOUNT" \
+  FACTORY_LAUNCH_TEST_HOME="$TEST_HOME" FACTORY_KITS_ROOT="$KITS_ROOT_PHYS" \
+  HERMES_FACTORY_PROFILE="$PROFILE_PHYS" \
+  bash "$SIMULATED_INSTALL" launchtest contract --json \
+  > "$TMP/simulated-installed-override.out" 2>&1 || SIMULATED_OVERRIDE_RC=$?
+[[ "$SIMULATED_OVERRIDE_RC" -eq 1 ]] ||
+  fail "installed trust-root path accepted test root overrides"
+assert_no_secret "$TMP/simulated-installed-override.out"
+
+mv "$KITS_ROOT_PHYS/projects" "$KITS_ROOT_PHYS/projects-real"
+ln -s "$KITS_ROOT_PHYS/projects-real" "$KITS_ROOT_PHYS/projects"
+PROJECTS_LINK_RC=0
+run_launcher launchtest contract --json > "$TMP/projects-link.out" 2>&1 || PROJECTS_LINK_RC=$?
+[[ "$PROJECTS_LINK_RC" -eq 1 ]] || fail "symlink projects directory was accepted"
+rm "$KITS_ROOT_PHYS/projects"
+mv "$KITS_ROOT_PHYS/projects-real" "$KITS_ROOT_PHYS/projects"
+
+mv "$KITS_ROOT_PHYS/releases" "$KITS_ROOT_PHYS/releases-real"
+ln -s "$KITS_ROOT_PHYS/releases-real" "$KITS_ROOT_PHYS/releases"
+RELEASES_LINK_RC=0
+run_launcher launchtest contract --json > "$TMP/releases-link.out" 2>&1 || RELEASES_LINK_RC=$?
+[[ "$RELEASES_LINK_RC" -eq 1 ]] || fail "symlink releases directory was accepted"
+rm "$KITS_ROOT_PHYS/releases"
+mv "$KITS_ROOT_PHYS/releases-real" "$KITS_ROOT_PHYS/releases"
+
+mv "$KITS_ROOT_PHYS/projects/launchtest" "$KITS_ROOT_PHYS/projects/launchtest-real"
+ln -s "$KITS_ROOT_PHYS/projects/launchtest-real" "$KITS_ROOT_PHYS/projects/launchtest"
+STATE_LINK_RC=0
+run_launcher launchtest contract --json > "$TMP/state-link.out" 2>&1 || STATE_LINK_RC=$?
+[[ "$STATE_LINK_RC" -eq 1 ]] || fail "symlink project state directory was accepted"
+rm "$KITS_ROOT_PHYS/projects/launchtest"
+mv "$KITS_ROOT_PHYS/projects/launchtest-real" "$KITS_ROOT_PHYS/projects/launchtest"
+
+mv "$KITS_ROOT_PHYS/projects/launchtest/active.json" \
+  "$KITS_ROOT_PHYS/projects/launchtest/active-real.json"
+ln -s "$KITS_ROOT_PHYS/projects/launchtest/active-real.json" \
+  "$KITS_ROOT_PHYS/projects/launchtest/active.json"
+ACTIVE_LINK_RC=0
+run_launcher launchtest contract --json > "$TMP/active-link.out" 2>&1 || ACTIVE_LINK_RC=$?
+[[ "$ACTIVE_LINK_RC" -eq 1 ]] || fail "symlink active record was accepted"
+rm "$KITS_ROOT_PHYS/projects/launchtest/active.json"
+mv "$KITS_ROOT_PHYS/projects/launchtest/active-real.json" \
+  "$KITS_ROOT_PHYS/projects/launchtest/active.json"
+
+mv "$RELEASE_B" "$RELEASE_B-real"
+ln -s "$RELEASE_B-real" "$RELEASE_B"
+RELEASE_LINK_RC=0
+run_launcher launchtest contract --json > "$TMP/release-link.out" 2>&1 || RELEASE_LINK_RC=$?
+[[ "$RELEASE_LINK_RC" -eq 1 ]] || fail "symlink selected release was accepted"
+rm "$RELEASE_B"
+mv "$RELEASE_B-real" "$RELEASE_B"
+
+# Refuse slug traversal, release containment escape, product drift, and tree tampering.
+TRAVERSAL_RC=0
+run_launcher "../launchtest" contract --json > "$TMP/traversal.out" 2>&1 || TRAVERSAL_RC=$?
+[[ "$TRAVERSAL_RC" -eq 1 ]] || fail "project slug traversal was accepted"
+
+OUTSIDE_RELEASE="$TMP/outside-release"
+cp -R "$RELEASE_B" "$OUTSIDE_RELEASE"
+write_active "$SHA_B" "$TREE_B" "$OUTSIDE_RELEASE"
+OUTSIDE_RC=0
+run_launcher launchtest contract --json > "$TMP/outside.out" 2>&1 || OUTSIDE_RC=$?
+[[ "$OUTSIDE_RC" -eq 1 ]] || fail "release outside FACTORY_KITS_ROOT was accepted"
+
+write_active "$SHA_B" "$TREE_B" "$RELEASE_B" "$PRODUCT"
+PRODUCT_DRIFT_RC=0
+run_launcher launchtest contract --json > "$TMP/product-drift.out" 2>&1 || PRODUCT_DRIFT_RC=$?
+[[ "$PRODUCT_DRIFT_RC" -eq 1 ]] || fail "active product path drift was accepted"
+
+write_active "$SHA_B" "$TREE_B" "$RELEASE_B"
+printf 'tampered\n' > "$RELEASE_B/untracked-tamper"
+TREE_TAMPER_RC=0
+run_launcher launchtest contract --json > "$TMP/tree-tamper.out" 2>&1 || TREE_TAMPER_RC=$?
+[[ "$TREE_TAMPER_RC" -eq 1 ]] || fail "release tree tampering was accepted"
+rm -f "$RELEASE_B/untracked-tamper"
+
+python3 - "$KITS_ROOT/projects/launchtest/active.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["contract_version"] = "9.0.0"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(value, handle)
+    handle.write("\n")
+PY
+CONTRACT_DRIFT_RC=0
+run_launcher launchtest contract --json > "$TMP/contract-drift.out" 2>&1 || CONTRACT_DRIFT_RC=$?
+[[ "$CONTRACT_DRIFT_RC" -eq 1 ]] || fail "incompatible active contract was accepted"
+
+# An active-record switch after helper start cannot change the selected release.
+printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_A" "$TREE_A" "$RELEASE_A"
+RACE_MARKER="$LAUNCH_PRODUCT/factory/test-preflight-started"
+RACE_GATE="$LAUNCH_PRODUCT/factory/test-preflight-gate"
+touch "$LAUNCH_PRODUCT/factory/test-preflight-block"
+run_launcher launchtest preflight --ticket T-999 --json > "$TMP/race.json" &
+RACE_PID=$!
+for _try in $(seq 1 200); do
+  [[ -e "$RACE_MARKER" ]] && break
+  sleep 0.02
+done
+[[ -e "$RACE_MARKER" ]] || fail "race fixture never started selected helper"
+printf '%s\n' "$SHA_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_B" "$TREE_B" "$RELEASE_B"
+touch "$RACE_GATE"
+wait "$RACE_PID"
+rm -f "$LAUNCH_PRODUCT/factory/test-preflight-block" "$RACE_MARKER" "$RACE_GATE"
+python3 - "$TMP/race.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["output"] == "PREFLIGHT RELEASE-A\n"
+PY
+
+# Close-out reorder runs only in a physical worktree for the registered product.
+git -C "$LAUNCH_PRODUCT" init -b main >/dev/null 2>&1
+git -C "$LAUNCH_PRODUCT" config user.email "hermes-contract@test.local"
+git -C "$LAUNCH_PRODUCT" config user.name "hermes-contract-test"
+printf 'launcher worktree fixture\n' > "$LAUNCH_PRODUCT/README.md"
+printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+git -C "$LAUNCH_PRODUCT" add -A
+git -C "$LAUNCH_PRODUCT" commit -qm "seed launcher worktree"
+REORDER_WORKTREE="$TMP/reorder-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-456 "$REORDER_WORKTREE"
+REORDER_WORKTREE_PHYS="$(cd "$REORDER_WORKTREE" && pwd -P)"
+RUN_WORKTREE="$TMP/run-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-123 "$RUN_WORKTREE"
+RUN_WORKTREE_PHYS="$(cd "$RUN_WORKTREE" && pwd -P)"
+WRONG_TICKET_WORKTREE="$TMP/wrong-ticket-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-999 "$WRONG_TICKET_WORKTREE"
+WRONG_TICKET_WORKTREE_PHYS="$(cd "$WRONG_TICKET_WORKTREE" && pwd -P)"
+RELEASE_B_PHYS="$(cd "$RELEASE_B" && pwd -P)"
+LAUNCH_PRODUCT_PHYS="$(cd "$LAUNCH_PRODUCT" && pwd -P)"
+run_launcher launchtest run \
+  --role builder \
+  --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" \
+  -- "build safely" > "$TMP/run-b.txt"
+RUN_HELPER_ENV="$LAUNCH_PRODUCT/factory/run-helper.env"
+assert_release_metadata "$RUN_HELPER_ENV" "$SHA_B" "$TREE_B" "$RELEASE_B"
+assert_helper_confinement "$RUN_HELPER_ENV"
+grep -qF "RUN RELEASE-B" "$TMP/run-b.txt" || fail "run did not use selected release"
+grep -qF "FACTORY_ROOT=$LAUNCH_PRODUCT_PHYS" "$TMP/run-b.txt" ||
+  fail "run did not bind the registered product root"
+grep -qF "ARG=$RELEASE_B_PHYS/roles/builder.md" "$TMP/run-b.txt" ||
+  fail "run did not pass the canonical release prompt"
+grep -qF "ARG=$RUN_WORKTREE_PHYS" "$TMP/run-b.txt" ||
+  fail "run did not pass the physical product worktree"
+grep -qF "ARG=build safely" "$TMP/run-b.txt" || fail "run changed the task"
+assert_no_secret "$TMP/run-b.txt"
+
+expect_bad_run() {
+  local label="$1"
+  shift
+  local rc=0
+  run_launcher launchtest run "$@" > "$TMP/bad-run-$label.out" 2>&1 || rc=$?
+  [[ "$rc" -ne 0 ]] || fail "invalid run was accepted: $label"
+}
+
+expect_bad_run role \
+  --role dispatcher --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- task
+expect_bad_run ticket \
+  --role builder --ticket ../T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- task
+expect_bad_run adapter \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" --adapter mock -- task
+expect_bad_run prompt-escape \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/../roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- task
+expect_bad_run prompt-symlink \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder-link.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- task
+printf 'do not read\n' > "$LAUNCH_PRODUCT_PHYS/secret-prompt.txt"
+expect_bad_run prompt-secret-file \
+  --role builder --ticket T-123 \
+  --prompt-file "$LAUNCH_PRODUCT_PHYS/secret-prompt.txt" \
+  --workdir "$RUN_WORKTREE_PHYS" -- task
+expect_bad_run empty-task \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- ""
+expect_bad_run missing-separator \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" task
+
+expect_bad_run main-checkout \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$LAUNCH_PRODUCT_PHYS" -- task
+expect_bad_run wrong-ticket-branch \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$WRONG_TICKET_WORKTREE_PHYS" -- task
+DETACHED_WORKTREE="$TMP/detached-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q --detach "$DETACHED_WORKTREE" HEAD
+DETACHED_WORKTREE_PHYS="$(cd "$DETACHED_WORKTREE" && pwd -P)"
+expect_bad_run detached-worktree \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$DETACHED_WORKTREE_PHYS" -- task
+PREFIX_SENTINEL="$TMP/prefix-injection-executed"
+printf 'TICKET_BRANCH_PREFIX=$(touch %s)\n' "$PREFIX_SENTINEL" \
+  > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+expect_bad_run unsafe-branch-prefix \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- task
+[[ ! -e "$PREFIX_SENTINEL" ]] || fail "ticket branch prefix was evaluated"
+printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'TICKET_BRANCH_PREFIX=other/' \
+  > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+expect_bad_run duplicate-branch-prefix \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- task
+printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+
+touch "$LAUNCH_PRODUCT/factory/MAINTENANCE"
+expect_bad_run maintenance \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" -- blocked
+rm -f "$LAUNCH_PRODUCT/factory/MAINTENANCE"
+
+REORDER_ARG_SENTINEL="$TMP/reorder-argument-executed"
+REORDER_INJECTION_ARG="\$(touch $REORDER_ARG_SENTINEL)"
+run_launcher launchtest reorder-test-fixes --ticket T-456 \
+  --workdir "$REORDER_WORKTREE_PHYS" -- \
+  --base main --test-paths "tests/" "$REORDER_INJECTION_ARG" > "$TMP/reorder.txt"
+REORDER_HELPER_ENV="$LAUNCH_PRODUCT/factory/reorder-helper.env"
+assert_release_metadata "$REORDER_HELPER_ENV" "$SHA_B" "$TREE_B" "$RELEASE_B"
+assert_helper_confinement "$REORDER_HELPER_ENV"
+grep -qF "REORDER RELEASE-B" "$TMP/reorder.txt" ||
+  fail "reorder did not use the selected release"
+grep -qF "WORKDIR=$REORDER_WORKTREE_PHYS" "$TMP/reorder.txt" ||
+  fail "reorder did not execute from the resolved worktree"
+grep -qF "ARG=--base" "$TMP/reorder.txt" || fail "reorder dropped helper arguments"
+grep -qF "ARG=$REORDER_INJECTION_ARG" "$TMP/reorder.txt" ||
+  fail "reorder changed a passthrough argument"
+[[ ! -e "$REORDER_ARG_SENTINEL" ]] || fail "reorder evaluated a passthrough argument"
+assert_no_secret "$TMP/reorder.txt"
+
+expect_bad_reorder() {
+  local label="$1" rc=0
+  shift
+  run_launcher launchtest reorder-test-fixes "$@" \
+    > "$TMP/bad-reorder-$label.out" 2>&1 || rc=$?
+  [[ "$rc" -ne 0 ]] || fail "invalid reorder worktree was accepted: $label"
+}
+
+expect_bad_reorder main-checkout \
+  --ticket T-456 --workdir "$LAUNCH_PRODUCT_PHYS" -- --base main
+expect_bad_reorder wrong-ticket-branch \
+  --ticket T-456 --workdir "$WRONG_TICKET_WORKTREE_PHYS" -- --base main
+expect_bad_reorder detached-worktree \
+  --ticket T-456 --workdir "$DETACHED_WORKTREE_PHYS" -- --base main
+expect_bad_reorder malformed-ticket \
+  --ticket ../T-456 --workdir "$REORDER_WORKTREE_PHYS" -- --base main
+
+REORDER_LINK="$(cd "$TMP" && pwd -P)/reorder-worktree-link"
+ln -s "$REORDER_WORKTREE_PHYS" "$REORDER_LINK"
+expect_bad_run symlink-workdir \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$REORDER_LINK" -- task
+REORDER_LINK_RC=0
+run_launcher launchtest reorder-test-fixes --ticket T-456 \
+  --workdir "$REORDER_LINK" -- --base main \
+  > "$TMP/reorder-link.out" 2>&1 || REORDER_LINK_RC=$?
+[[ "$REORDER_LINK_RC" -eq 1 ]] || fail "symlink reorder workdir was accepted"
+
+REORDER_TRAVERSAL_RC=0
+run_launcher launchtest reorder-test-fixes \
+  --ticket T-456 \
+  --workdir "$REORDER_WORKTREE_PHYS/../$(basename "$REORDER_WORKTREE_PHYS")" -- \
+  --base main > "$TMP/reorder-traversal.out" 2>&1 || REORDER_TRAVERSAL_RC=$?
+[[ "$REORDER_TRAVERSAL_RC" -eq 1 ]] || fail "reorder workdir traversal was accepted"
+
+mkdir -p "$REORDER_WORKTREE_PHYS/nested"
+REORDER_SUBDIR_RC=0
+run_launcher launchtest reorder-test-fixes --ticket T-456 \
+  --workdir "$REORDER_WORKTREE_PHYS/nested" -- \
+  --base main > "$TMP/reorder-subdir.out" 2>&1 || REORDER_SUBDIR_RC=$?
+[[ "$REORDER_SUBDIR_RC" -eq 1 ]] || fail "non-root reorder workdir was accepted"
+
+UNRELATED_REPO="$TMP/unrelated-repo"
+mkdir -p "$UNRELATED_REPO"
+git -C "$UNRELATED_REPO" init -q
+UNRELATED_REPO_PHYS="$(cd "$UNRELATED_REPO" && pwd -P)"
+expect_bad_run foreign-workdir \
+  --role builder --ticket T-123 \
+  --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
+  --workdir "$UNRELATED_REPO_PHYS" -- task
+REORDER_UNRELATED_RC=0
+run_launcher launchtest reorder-test-fixes --ticket T-456 \
+  --workdir "$UNRELATED_REPO_PHYS" -- \
+  --base main > "$TMP/reorder-unrelated.out" 2>&1 || REORDER_UNRELATED_RC=$?
+[[ "$REORDER_UNRELATED_RC" -eq 1 ]] || fail "unrelated Git worktree was accepted"
+
+touch "$LAUNCH_PRODUCT/factory/MAINTENANCE"
+REORDER_MAINTENANCE_RC=0
+run_launcher launchtest reorder-test-fixes --ticket T-456 \
+  --workdir "$REORDER_WORKTREE_PHYS" -- \
+  --base main > "$TMP/reorder-maintenance.out" 2>&1 || REORDER_MAINTENANCE_RC=$?
+[[ "$REORDER_MAINTENANCE_RC" -eq 1 ]] || fail "reorder did not refuse maintenance"
+rm -f "$LAUNCH_PRODUCT/factory/MAINTENANCE"
+
+# Real sealed-runtime smoke: copied production helpers, no .git, trusted CLI stub.
+SHA_C="cccccccccccccccccccccccccccccccccccccccc"
+RELEASE_C="$KITS_ROOT/releases/$SHA_C"
+mkdir -p "$RELEASE_C/integrations/hermes" "$RELEASE_C/scripts"
+cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
+cp -R "$ROOT/roles" "$RELEASE_C/"
+cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
+cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
+for helper in preflight.sh next-stage.sh run-agent.sh reorder-test-fixes.sh; do
+  cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
+done
+[[ ! -e "$RELEASE_C/.git" ]] || fail "real sealed fixture unexpectedly has Git metadata"
+cmp "$ROOT/scripts/next-stage.sh" "$RELEASE_C/scripts/next-stage.sh" >/dev/null ||
+  fail "real next-stage helper was not copied exactly"
+cmp "$ROOT/scripts/run-agent.sh" "$RELEASE_C/scripts/run-agent.sh" >/dev/null ||
+  fail "real run-agent helper was not copied exactly"
+REAL_TREE="$(tree_for_directory "$RELEASE_C")"
+chmod -R a-w "$RELEASE_C"
+printf '%s\n' "$SHA_C" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+mkdir -p "$LAUNCH_PRODUCT/factory/tickets" "$LAUNCH_PRODUCT/factory/initiatives"
+cat > "$LAUNCH_PRODUCT/factory/tickets/T-777.md" <<'TICKET'
+# T-777 — sealed runtime smoke
+
+State: Ready
+Initiative: I-777
+Priority: normal
+
+## Log
+TICKET
+cat > "$LAUNCH_PRODUCT/factory/initiatives/I-777.md" <<'INITIATIVE'
+# Sealed runtime smoke
+
+Status: planned
+INITIATIVE
+cat > "$LAUNCH_PRODUCT/factory/ENVELOPE.env" <<'ENVELOPE'
+PER_RUN_BUDGET_USD=1.00
+PER_TICKET_BUDGET_USD=2.00
+PER_RUN_MAX_TURNS=5
+PER_RUN_TIMEOUT_MIN=1
+DAILY_CAP_USD=10.00
+ENVELOPE
+printf '%s\n' \
+  "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" \
+  > "$LAUNCH_PRODUCT/factory/ledger.csv"
+write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
+run_launcher launchtest next-stage --ticket T-777 --json > "$TMP/real-next-stage.json"
+python3 - "$TMP/real-next-stage.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["status"] == "ok"
+assert data["action"] == "RUN"
+assert data["detail"] == "planner"
+assert data["output"] == "RUN planner\n"
+PY
+
+RELEASE_C_PHYS="$(cd "$RELEASE_C" && pwd -P)"
+REAL_RUN_WORKTREE="$TMP/real-run-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-777 "$REAL_RUN_WORKTREE"
+REAL_RUN_WORKTREE_PHYS="$(cd "$REAL_RUN_WORKTREE" && pwd -P)"
+mkdir -p "$TEST_HOME/.factory/bin"
+cat > "$TEST_HOME/.factory/bin/timeout" <<'STUB'
+#!/usr/bin/env bash
+shift
+exec "$@"
+STUB
+cat > "$TEST_HOME/.factory/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version)
+    echo "codex-cli 0.144.1"
+    ;;
+  login)
+    [[ "${2:-}" == "status" ]]
+    ;;
+  exec)
+    if [[ "${2:-}" == "--help" ]]; then
+      echo "usage: codex exec --json"
+    else
+      echo '{"type":"turn.completed","input_tokens":10,"output_tokens":5,"message":"trusted sealed test stub"}'
+    fi
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+STUB
+chmod +x "$TEST_HOME/.factory/bin/timeout" "$TEST_HOME/.factory/bin/codex"
+run_launcher launchtest run \
+  --role planner \
+  --ticket T-777 \
+  --prompt-file "$RELEASE_C_PHYS/roles/planner.md" \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" \
+  -- "sealed runtime task" > "$TMP/real-run.txt"
+grep -qF "trusted sealed test stub" "$TMP/real-run.txt" ||
+  fail "real sealed run-agent smoke did not complete"
+REAL_MANIFEST="$(ls -t "$LAUNCH_PRODUCT/factory/runs/"*.meta | awk 'NR==1 {print; exit}')"
+grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" ||
+  fail "real sealed run manifest omitted release SHA"
+grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" ||
+  fail "real sealed run manifest omitted release tree"
+grep -qF "contract_version=1.0.0" "$REAL_MANIFEST" ||
+  fail "real sealed run manifest omitted release contract"
+grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" ||
+  fail "real sealed run manifest omitted physical release path"
+grep -qF "role=planner" "$REAL_MANIFEST" ||
+  fail "real sealed run did not use the sequencer-authorized role"
+grep -qF "adapter=codex" "$REAL_MANIFEST" ||
+  fail "caller adapter override bypassed the safe backend route"
+assert_no_secret "$TMP/real-run.txt"
+[[ "$(cksum "$TMP/bypass-envelope.env")" == "$BYPASS_ENVELOPE_BEFORE" ]] ||
+  fail "caller FACTORY_ENVELOPE bypass was consumed or modified"
+[[ "$(cksum "$TMP/bypass-global.env")" == "$BYPASS_GLOBAL_BEFORE" ]] ||
+  fail "caller FACTORY_GLOBAL_ENV bypass was consumed or modified"
+[[ "$(cksum "$TMP/bypass-ledger.csv")" == "$BYPASS_LEDGER_BEFORE" ]] ||
+  fail "caller FACTORY_LEDGER bypass was consumed or modified"
+
+python3 - "$ROOT" "$CONTRACT" <<'PY'
+import json
+import os
+import plistlib
+import re
+import sys
+
+root, contract_path = sys.argv[1:]
+with open(contract_path, encoding="utf-8") as handle:
+    contract = json.load(handle)
+
+assert contract["contract"] == "nysa.software-factory.hermes"
+assert contract["contract_version"] == "1.0.0"
+assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
+assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
+assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
+assert contract["status_categories"] == ["ok", "warning", "error", "unknown"]
+assert contract["exit_codes"] == {
+    "0": "no error-category checks",
+    "1": "one or more error-category checks",
+    "2": "invalid invocation",
+}
+assert contract["supported_hermes"] == [{
+    "agent_version": "0.18.2",
+    "build_version": "2026.7.7.2",
+    "compatibility": "certified",
+}]
+assert contract["launcher"]["path"] == "~/.factory/bin/factory-launch"
+assert contract["launcher"]["source"] == "integrations/hermes/bin/factory-launch"
+commands = contract["launcher"]["commands"]
+assert commands["contract"]["arguments"] == ["--json"]
+assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
+assert commands["preflight"]["arguments"][-1] == "--json"
+assert commands["next-stage"]["arguments"][-1] == "--json"
+assert commands["reorder-test-fixes"]["arguments"] == [
+    "--ticket",
+    "<T-NNN>",
+    "--workdir",
+    "<absolute-product-worktree>",
+    "--",
+    "<arguments for reorder-test-fixes.sh>",
+]
+assert commands["reorder-test-fixes"]["ticket_branch"] == \
+    "same policy as launcher.commands.run.ticket_branch"
+assert contract["launcher"]["trust_root"] == {
+    "account_home_source": "pwd.getpwuid(os.getuid()).pw_dir",
+    "installed_physical_path": "<account-home>/.factory/bin/factory-launch",
+    "production_kits_root": "<account-home>/.factory/kits",
+    "production_profile_root": "<account-home>/.hermes/profiles/factory",
+    "caller_home_and_root_overrides": "ignored or refused",
+    "repository_test_mode": "explicit isolated roots allowed only from a non-installed launcher path",
+}
+assert commands["run"]["role_whitelist"] == [
+    "planner",
+    "spec-linter",
+    "test-author",
+    "builder",
+    "reviewer",
+    "narrator",
+]
+assert commands["run"]["ticket_branch"] == {
+    "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
+    "key": "TICKET_BRANCH_PREFIX",
+    "default_prefix": "ticket/",
+    "expected": "<prefix><T-NNN>",
+}
+assert contract["launcher"]["helper_environment"] == {
+    "FACTORY_RELEASE_SHA": "active record kit_sha",
+    "FACTORY_RELEASE_TREE": "active record kit_tree",
+    "FACTORY_RELEASE_PATH": "resolved physical release path",
+    "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+}
+assert contract["launcher"]["helper_environment_allowlist"] == [
+    "HOME",
+    "PATH",
+    "TMPDIR",
+    "FACTORY_ROOT",
+    "FACTORY_RELEASE_SHA",
+    "FACTORY_RELEASE_TREE",
+    "FACTORY_RELEASE_PATH",
+    "FACTORY_RELEASE_CONTRACT_VERSION",
+    "GH_TOKEN",
+]
+assert contract["launcher"]["helper_optional_credentials"]["GH_TOKEN"] == {
+    "source": "$HERMES_FACTORY_PROFILE/.env",
+    "assignment": "exactly one optional GH_TOKEN assignment parsed as data",
+    "file_policy": "owner-owned regular non-symlink file with mode 0600",
+    "caller_value_ignored": True,
+}
+assert contract["launcher"]["helper_safe_path"] == \
+    "$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+assert contract["launcher"]["managed_path_policy"] == \
+    "reject every symlink component before physical resolution"
+assert contract["profile"]["required_registry_keys"] == ["PRODUCT_ROOT"]
+assert contract["profile"]["observed_ignored_registry_keys"] == ["KIT_DIR"]
+assert contract["launcher"]["active_record"]["required_fields"] == [
+    "project",
+    "kit_sha",
+    "kit_tree",
+    "contract_version",
+    "product_path",
+    "release_path",
+]
+
+integration = os.path.join(root, "integrations", "hermes")
+required = [
+    "contract.json",
+    "CHANGELOG.md",
+    "bin/factory-launch",
+    "fixtures/factory-profile.json",
+    "fixtures/projects/relay.env",
+    "templates/profile/SOUL.md",
+    "templates/profile/skills/factory-dispatch/SKILL.md",
+    "templates/launchd/com.nysa.hermes-factory-gateway.plist",
+    "templates/launchd/com.nysa.hermes-dashboard.plist",
+]
+for relative in required:
+    assert os.path.isfile(os.path.join(integration, relative)), relative
+assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
+
+changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
+assert "## 1.0.0" in changelog
+assert "0.18.2" in changelog and "2026.7.7.2" in changelog
+
+for relative in [
+    "templates/profile/SOUL.md",
+    "templates/profile/skills/factory-dispatch/SKILL.md",
+]:
+    text = open(os.path.join(integration, relative), encoding="utf-8").read()
+    assert "~/.factory/bin/factory-launch" in text
+    assert " contract --json" in text
+    assert " doctor --json" in text
+    assert not re.search(r"(?:^|\s)(?:~/[^ ]*/)?scripts/(?:run-agent|preflight|next-stage)\.sh", text)
+skill = open(
+    os.path.join(integration, "templates/profile/skills/factory-dispatch/SKILL.md"),
+    encoding="utf-8",
+).read()
+assert "factory-launch <project> reorder-test-fixes" in skill
+assert "--ticket <T-NNN>" in skill
+assert "--workdir <absolute-product-worktree>" in skill
+
+fixture = json.load(open(os.path.join(integration, "fixtures/factory-profile.json"), encoding="utf-8"))
+assert fixture["redacted"] is True
+assert fixture["secret_values_included"] is False
+assert fixture["profile"]["environment_key_presence"] == {"GH_TOKEN": True}
+assert fixture["services"] == [
+    {"kind": "gateway", "launch_agent": "separate"},
+    {"kind": "dashboard", "launch_agent": "separate"},
+]
+
+labels = []
+for relative in [
+    "templates/launchd/com.nysa.hermes-factory-gateway.plist",
+    "templates/launchd/com.nysa.hermes-dashboard.plist",
+]:
+    with open(os.path.join(integration, relative), "rb") as handle:
+        plist = plistlib.load(handle)
+    labels.append(plist["Label"])
+    env = plist.get("EnvironmentVariables", {})
+    assert not any(re.search(r"key|token|secret|password|url|dsn|conn|auth", key, re.I) for key in env)
+assert labels == ["com.nysa.hermes-factory-gateway", "com.nysa.hermes-dashboard"]
+assert len(set(labels)) == 2
+PY
+
+echo "hermes-contract-test: all cases passed"

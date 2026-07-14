@@ -73,9 +73,114 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Upgrading the kit when multiple products run on it
 
-- Notice: kit `main` moved (a fix or feature merged) while products are pinned to an older SHA via `factory/KIT_PIN`; preflight fails their next kickoff with "kit pin mismatch".
-- Do: upgrade one product at a time — pull the kit, run its test suites plus the product's own suite, then commit the new SHA to that product's `factory/KIT_PIN`. Products you haven't re-certified keep failing preflight, which is the point: no silent behavior change mid-ticket. If you need to run an un-upgraded product urgently, check the kit clone out at its pinned SHA instead of loosening the pin.
-- Don't: delete the pin to make preflight pass, or upgrade all products in one batch commit without running their suites.
+- Notice: kit `main` moved while products remain on older immutable releases.
+  This is normal. A merge is a candidate, not a deployment.
+- Do: upgrade one product at a time. Install the exact merged SHA, update that
+  product's full `factory/KIT_PIN` through its protected PR, certify the exact
+  kit/product tuple, run the required canary, enter maintenance, drain, plan,
+  and activate. Follow [../hermes-integration.md](../hermes-integration.md).
+- Do: keep every other product on its own active generation. The stable
+  launcher resolves releases per project.
+- Don't: run live work from the mutable kit clone, replace `factory-launch` as
+  part of an ordinary activation, delete or abbreviate the pin, patch an
+  installed release, or upgrade all products with one untested pin change.
+
+## Release doctor reports warning or error
+
+- Notice: `~/.factory/bin/factory-launch <project> doctor --json` returns a
+  warning/error status, stale Linear sync, a pin mismatch, maintenance, a
+  lock, active/stale run records, or unsupported Hermes/CLI information.
+- Do: treat `error` as a dispatch stop. A warning requires operator review,
+  not automatic repair. Confirm the selected full SHA, physical release,
+  `KIT_PIN`, maintenance state, run PIDs, CLI versions, and Linear freshness.
+  Credential results are presence-only; test authentication separately
+  without printing values.
+- Don't: expect doctor to repair, authenticate, clear locks, kill processes, or
+  rewrite configuration. It is deliberately read-only.
+
+## Preparing and activating a release
+
+1. Confirm the candidate full SHA is on `origin/main` and the required
+   aggregate `ci` check passed on Linux and macOS.
+2. Run `factory-kit.sh install`, then `certify`. Record the receipt ID and
+   expiry.
+3. Complete the real-Hermes canary with a separate sandbox product and
+   profile. Never copy the production `.env`, secrets, board mapping, registry,
+   ledger, or LaunchAgent.
+4. Confirm no active runs and no nonterminal ticket with a different
+   `Kit-SHA`. The release manager checks live-run records but does not scan
+   non-running ticket leases.
+5. Merge the product's candidate `KIT_PIN` through the protected PR and verify
+   the merged product tree still matches the receipt.
+6. Create `factory/MAINTENANCE` before touching `.launch.lock`. Wait for
+   existing runs to drain. The run wrapper checks maintenance before taking
+   the lock, after taking it, and before GO.
+7. Run `factory-kit.sh plan`. It must report `No files were changed.`
+8. Stop only the product factory profile and reconciler. Leave the dashboard
+   and primary Hermes profile alone.
+9. Run `factory-kit.sh activate`, restart the factory services, then collect
+   doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
+   probes.
+10. Remove `MAINTENANCE` only after every acceptance check passes.
+
+The planned control-plane outage starts when maintenance is created and ends
+when maintenance is removed. Target: 5 minutes or less. Candidate preparation,
+certification, and canarying happen before maintenance and should cause no
+outage. No live canary or cutover has yet established this target.
+
+## Interrupted activation
+
+- Notice: activation exits before `committed`, `status` reports an interrupted
+  transaction, or a journal's latest phase is not terminal.
+- Do: keep `MAINTENANCE`, do not hand-edit `active.json` or the journal, and
+  run:
+
+  ```bash
+  bash scripts/factory-kit.sh reconcile \
+    --project "<project>" --product "<absolute-product-path>"
+  ```
+
+  Reconcile rolls back phases before `activation_record_switched`. At or after
+  the switch it commits only when the active generation and receipt still
+  validate; otherwise it restores the previous generation. Restart the
+  factory-only services and rerun doctor/sandbox health afterward.
+- Don't: clear maintenance, delete the journal, move an activation record, or
+  rerun activation before reconcile reaches `committed` or `rolled_back`.
+- Important: the current release manager records `services_stopped`,
+  `integration_bundle_switched`, and `services_started` as transaction
+  checkpoints but does not call `launchctl` itself. Verify the real service
+  state independently.
+
+## Failed cutover or release rollback
+
+- Notice: doctor returns an error, the factory profile does not stay healthy,
+  Linear freshness fails to recover, or the sandbox smoke does not execute
+  through the expected release.
+- Do: leave `MAINTENANCE` present and run `factory-kit.sh rollback` for the
+  project. This restores the previous `active.json` and sealed bits. Restart
+  the factory-only profile, but do not resume execution yet.
+- Do: revert the product `KIT_PIN` through its normal protected PR workflow,
+  revalidate the resulting product tree and previous release, prove the
+  previous release can read candidate-written state, rerun doctor and sandbox
+  smoke, then remove maintenance.
+- Target: restore known bits within 5 minutes and complete the full rollback
+  within 30 minutes of the failed-health decision. Full rollback ends only
+  after the pin revert is merged, previous tuple and state compatibility are
+  verified, health passes, and maintenance is cleared.
+- Don't: edit the pin locally, add a bypass, clear maintenance after pointer
+  rollback alone, or claim the drill passed without timestamps and evidence.
+
+## Release retention
+
+- Notice: old exact-SHA release directories, receipts, and journals accumulate
+  under `~/.factory/kits`.
+- Do: retain active and previous generations, every nonterminal ticket lease,
+  every receipt/journal reference, rollback-readable state versions, and
+  several older certified releases. Manual deletion requires a minimum age,
+  multiple successful real tickets, a successful rollback drill, state
+  compatibility evidence, and a zero-reference audit.
+- Don't: call `prune`; automatic pruning is intentionally not implemented. Do
+  not delete a release merely because it is not currently active.
 
 ## Authoring epics and big tickets (operator-side tools, not factory stages)
 

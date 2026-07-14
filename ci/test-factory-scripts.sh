@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Self-contained regression tests for run-agent.sh and next-stage.sh.
 set -u
+export FACTORY_TEST_MODE=1
+export FACTORY_TRUSTED_TEST_HARNESS=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_AGENT="$ROOT/scripts/run-agent.sh"
 NEXT_STAGE="$ROOT/scripts/next-stage.sh"
 KILL_SWITCH="$ROOT/scripts/kill-switch.sh"
+KIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+KIT_TREE="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
+PHYSICAL_KIT_PATH="$(cd "$ROOT" && pwd -P)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/sf-factory-tests.XXXXXX")"
 STUB_BIN="$TMP/bin"
 FAILURES=0
@@ -24,13 +29,40 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1${2:+ — $2}" >&2; FAILURES=$((FAILURES + 1)); }
 
 write_envelope() {
-  mkdir -p "$1/factory"
+  local git_mode="${2:-git}"
+  mkdir -p "$1/factory/tickets"
   printf '%s\n' \
     'PER_RUN_BUDGET_USD=1.00' \
     'PER_TICKET_BUDGET_USD=20.00' \
     'PER_RUN_MAX_TURNS=5' \
     'PER_RUN_TIMEOUT_MIN=1' \
     'DAILY_CAP_USD=50.00' > "$1/factory/ENVELOPE.env"
+  printf '%s\n' "$KIT_SHA" > "$1/factory/KIT_PIN"
+  [[ "$git_mode" == "no-git" ]] || init_product_git "$1"
+}
+
+write_ticket() {
+  local root="$1" ticket="$2" state="${3:-Ready}"
+  mkdir -p "$root/factory/tickets"
+  [[ -f "$root/factory/tickets/$ticket.md" ]] ||
+    printf '# %s\n\nState: %s\n' "$ticket" "$state" > "$root/factory/tickets/$ticket.md"
+}
+
+init_product_git() {
+  local root="$1"
+  git -C "$root" init -q
+  git -C "$root" add factory
+  GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com \
+  GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com \
+    git -C "$root" commit -qm "fixture"
+}
+
+build_sealed_release() {
+  local dir="$1"
+  mkdir -p "$dir/integrations/hermes"
+  cp -R "$ROOT/scripts" "$dir/"
+  cp "$ROOT/integrations/hermes/contract.json" \
+    "$dir/integrations/hermes/contract.json"
 }
 
 write_backend_stubs() {
@@ -136,6 +168,26 @@ ENV
 }
 
 write_backend_stubs
+ln -s "$ROOT" "$TMP/kit-link"
+LINKED_RUN_AGENT="$TMP/kit-link/scripts/run-agent.sh"
+
+IMPLICIT_PIN="$(bash -c '
+  source "$1"
+  factory_validate_kit_pin "$2" "$2/conformance"
+  printf "%s:%s\n" "$FACTORY_KIT_PIN_IMPLICIT" "$FACTORY_KIT_SHA"
+' _ "$ROOT/scripts/lib/kit-pin.sh" "$ROOT")"
+ROOT_PIN_ERROR="$(bash -c '
+  source "$1"
+  factory_validate_kit_pin "$2" "$2" >/dev/null 2>&1 || true
+  printf "%s\n" "$FACTORY_KIT_PIN_ERROR"
+' _ "$ROOT/scripts/lib/kit-pin.sh" "$ROOT")"
+if [[ "$IMPLICIT_PIN" == "1:$KIT_SHA" &&
+      "$ROOT_PIN_ERROR" == "external product requires factory/KIT_PIN" ]]; then
+  pass "only in-repo conformance receives implicit kit pin"
+else
+  fail "only in-repo conformance receives implicit kit pin" \
+    "implicit=$IMPLICIT_PIN root=$ROOT_PIN_ERROR"
+fi
 
 AUTO_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
   CURSOR_AGENT_VERSION=2026.07.test CURSOR_OPENAI_MODEL=auto \
@@ -198,6 +250,7 @@ else
 fi
 
 run_mock() {
+  write_ticket "$1" "$3"
   FACTORY_ROOT="$1" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
@@ -215,6 +268,12 @@ ledger_row() {
 
 expect_stage() {
   local expected="$1" root="$2" ticket="$3" actual status
+  mkdir -p "$root/factory"
+  [[ -f "$root/factory/KIT_PIN" ]] ||
+    printf '%s\n' "$KIT_SHA" > "$root/factory/KIT_PIN"
+  if ! git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    init_product_git "$root"
+  fi
   actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
   status=$?
   [[ "$actual" == "$expected"* ]] || {
@@ -224,13 +283,103 @@ expect_stage() {
   return 0
 }
 
+# Real sequencer and runner execute from a physical no-.git release when the
+# trusted launcher supplies a complete, self-consistent provenance tuple.
+SEALED_RELEASE="$TMP/sealed-release"
+build_sealed_release "$SEALED_RELEASE"
+SEALED_RELEASE="$(cd "$SEALED_RELEASE" && pwd -P)"
+SEALED_TREE="$(bash -c '
+  source "$1"
+  factory_directory_tree "$2"
+' _ "$ROOT/scripts/lib/kit-pin.sh" "$SEALED_RELEASE")"
+SEALED_PRODUCT="$TMP/sealed-product"
+write_envelope "$SEALED_PRODUCT"
+write_ticket "$SEALED_PRODUCT" T-190
+SEALED_STAGE="$(env \
+  FACTORY_ROOT="$SEALED_PRODUCT" \
+  FACTORY_RELEASE_SHA="$KIT_SHA" \
+  FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
+SEALED_RUN_STATUS=0
+env \
+  FACTORY_ROOT="$SEALED_PRODUCT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_RELEASE_SHA="$KIT_SHA" \
+  FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  "$SEALED_RELEASE/scripts/run-agent.sh" \
+    --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
+  SEALED_RUN_STATUS=$?
+SEALED_AFTER="$(env \
+  FACTORY_ROOT="$SEALED_PRODUCT" \
+  FACTORY_RELEASE_SHA="$KIT_SHA" \
+  FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
+SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
+if [[ "$SEALED_STAGE" == "RUN planner" &&
+      "$SEALED_RUN_STATUS" -eq 0 &&
+      "$SEALED_AFTER" == "RUN spec-linter" &&
+      -n "$SEALED_META" &&
+      ! -e "$SEALED_RELEASE/.git" ]] &&
+   grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
+   grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
+   grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
+   grep -q '^contract_version=1.0.0$' "$SEALED_META" &&
+   grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
+   grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
+   grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
+  pass "sealed release runs real sequencer and mock agent"
+else
+  fail "sealed release runs real sequencer and mock agent" \
+    "before=$SEALED_STAGE run=$SEALED_RUN_STATUS after=$SEALED_AFTER"
+fi
+
+FORGED_STAGE_STATUS=0
+FORGED_STAGE="$(env \
+  FACTORY_ROOT="$SEALED_PRODUCT" \
+  FACTORY_RELEASE_SHA="$KIT_SHA" \
+  FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$TMP" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)" ||
+  FORGED_STAGE_STATUS=$?
+if [[ "$FORGED_STAGE_STATUS" -eq 1 &&
+      "$FORGED_STAGE" == "REFUSE physical kit path does not match trusted release path" ]]; then
+  pass "sealed sequencer rejects forged release path"
+else
+  fail "sealed sequencer rejects forged release path" \
+    "status=$FORGED_STAGE_STATUS output=$FORGED_STAGE"
+fi
+
+BAD_NEXT_STATUS=0
+BAD_NEXT="$(env FACTORY_ROOT="$TMP/does-not-exist" FACTORY_RELEASE_SHA=partial \
+  "$NEXT_STAGE" --ticket '../T-190' 2>&1)" || BAD_NEXT_STATUS=$?
+BAD_RUN_STATUS=0
+BAD_RUN="$(env FACTORY_ROOT="$TMP/does-not-exist" FACTORY_RELEASE_SHA=partial \
+  "$RUN_AGENT" --role planner --ticket '../T-190' -- "invalid" 2>&1)" ||
+  BAD_RUN_STATUS=$?
+if [[ "$BAD_NEXT_STATUS" -eq 2 && "$BAD_NEXT" == "invalid ticket identifier" &&
+      "$BAD_RUN_STATUS" -eq 2 && "$BAD_RUN" == "invalid ticket identifier" ]]; then
+  pass "sequencer and runner reject malformed tickets before file access"
+else
+  fail "sequencer and runner reject malformed tickets before file access" \
+    "next=$BAD_NEXT_STATUS/$BAD_NEXT run=$BAD_RUN_STATUS/$BAD_RUN"
+fi
+
 # Canonical ledger routing from a linked worktree.
 MAIN="$TMP/main"
 WT="$TMP/worktree"
 mkdir -p "$MAIN/conformance"
-write_envelope "$MAIN/conformance"
+write_envelope "$MAIN/conformance" no-git
 git -C "$MAIN" init -q
-git -C "$MAIN" add conformance/factory/ENVELOPE.env
+git -C "$MAIN" add conformance/factory/ENVELOPE.env conformance/factory/KIT_PIN
 GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com \
 GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com \
   git -C "$MAIN" commit -qm "fixture"
@@ -268,6 +417,7 @@ fi
 # Explicit override wins over canonical routing.
 OVERRIDE="$TMP/override/ledger.csv"
 mkdir -p "$(dirname "$OVERRIDE")"
+write_ticket "$WT/conformance" T-201
 if FACTORY_ROOT="$WT/conformance" FACTORY_LEDGER="$OVERRIDE" \
      FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
      FACTORY_ADAPTER_OVERRIDE=mock \
@@ -313,20 +463,48 @@ fi
 # Mock override is impossible without the explicit test-mode gate.
 MOCK_GUARD="$TMP/mock-guard"
 write_envelope "$MOCK_GUARD"
+write_ticket "$MOCK_GUARD" T-204
 MOCK_GUARD_STATUS=0
-FACTORY_ROOT="$MOCK_GUARD" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+env -u FACTORY_TEST_MODE -u FACTORY_TRUSTED_TEST_HARNESS \
+  FACTORY_ROOT="$MOCK_GUARD" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-204 -- "forbidden mock" >/dev/null 2>&1 ||
   MOCK_GUARD_STATUS=$?
 if [[ "$MOCK_GUARD_STATUS" -eq 2 && ! -f "$MOCK_GUARD/factory/ledger.csv" ]]; then
-  pass "mock override requires explicit test mode"
+  pass "mock override requires trusted test harness"
 else
-  fail "mock override requires explicit test mode" "status $MOCK_GUARD_STATUS"
+  fail "mock override requires trusted test harness" "status $MOCK_GUARD_STATUS"
+fi
+
+PROBE_GUARD_STATUS=0
+env -u FACTORY_TRUSTED_TEST_HARNESS \
+  FACTORY_TEST_MODE=1 FACTORY_PROBE_CODEX=UNAVAILABLE:test \
+  FACTORY_ROOT="$MOCK_GUARD" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  "$RUN_AGENT" --role planner --ticket T-204 -- "forbidden probe" >/dev/null 2>&1 ||
+  PROBE_GUARD_STATUS=$?
+if [[ "$PROBE_GUARD_STATUS" -eq 2 && ! -f "$MOCK_GUARD/factory/ledger.csv" ]]; then
+  pass "probe override requires trusted test harness"
+else
+  fail "probe override requires trusted test harness" "status $PROBE_GUARD_STATUS"
+fi
+
+NEXT_OVERRIDE_STATUS=0
+NEXT_OVERRIDE="$(env -u FACTORY_TRUSTED_TEST_HARNESS \
+  FACTORY_TEST_MODE=1 FACTORY_PROBE_CODEX=UNAVAILABLE:test \
+  FACTORY_ROOT="$MOCK_GUARD" "$NEXT_STAGE" --ticket T-204 2>&1)" ||
+  NEXT_OVERRIDE_STATUS=$?
+if [[ "$NEXT_OVERRIDE_STATUS" -eq 1 &&
+      "$NEXT_OVERRIDE" == "REFUSE "*"trusted internal test harness" ]]; then
+  pass "sequencer rejects untrusted probe overrides"
+else
+  fail "sequencer rejects untrusted probe overrides" \
+    "status $NEXT_OVERRIDE_STATUS: $NEXT_OVERRIDE"
 fi
 
 # Backend resolution: primary success submits exactly one primary task.
 PRIMARY="$TMP/primary-route"
 write_envelope "$PRIMARY"
+write_ticket "$PRIMARY" T-210
 PRIMARY_GLOBAL="$TMP/primary-global/global.env"
 write_backend_global "$PRIMARY_GLOBAL"
 PRIMARY_TRACE="$TMP/primary.trace"
@@ -352,6 +530,8 @@ fi
 # A non-task UNAVAILABLE probe selects family-matched Cursor before reservation.
 FALLBACK="$TMP/fallback-route"
 write_envelope "$FALLBACK"
+write_ticket "$FALLBACK" T-211
+FALLBACK_PRODUCT_TREE="$(git -C "$FALLBACK" rev-parse 'HEAD^{tree}')"
 FALLBACK_GLOBAL="$TMP/fallback-global/global.env"
 write_backend_global "$FALLBACK_GLOBAL" \
   "export FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down"
@@ -359,7 +539,7 @@ FALLBACK_TRACE="$TMP/fallback.trace"
 : > "$FALLBACK_TRACE"
 if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      FACTORY_GLOBAL_ENV="$FALLBACK_GLOBAL" FACTORY_TEST_TRACE="$FALLBACK_TRACE" \
-     "$RUN_AGENT" --role planner --ticket T-211 -- "fallback route" >/dev/null &&
+     "$LINKED_RUN_AGENT" --role planner --ticket T-211 -- "fallback route" >/dev/null &&
    [[ "$(awk -F, '$3=="T-211" {print $5}' "$FALLBACK/factory/ledger.csv")" == "cursor-openai" ]] &&
    [[ "$(awk -F, '$3=="T-211" {print $12}' "$FALLBACK/factory/ledger.csv")" == "gpt-5.6-sol-high" ]] &&
    [[ "$(awk -F, '$3=="T-211" {print $14}' "$FALLBACK/factory/ledger.csv")" == "conservative_reservation" ]] &&
@@ -372,7 +552,13 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q '\[REDACTED\]' "$FALLBACK_OUT" &&
      grep -q 'input_tokens=70' "$FALLBACK_OUT" &&
      grep -q 'cache_tokens=15' "$FALLBACK_OUT" &&
-     grep -q '^phase=completed$' "$FALLBACK_META"; then
+     grep -q '^phase=completed$' "$FALLBACK_META" &&
+     grep -q "^kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
+     grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
+     grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
+     grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
+     grep -q '^contract_version=1.0.0$' "$FALLBACK_META" &&
+     grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
     fail "unavailable primary selects one redacted Cursor task"
@@ -384,6 +570,11 @@ fi
 # Checking roles select the Anthropic-typed Cursor adapter.
 ANTHROPIC_FALLBACK="$TMP/anthropic-fallback"
 write_envelope "$ANTHROPIC_FALLBACK"
+write_ticket "$ANTHROPIC_FALLBACK" T-214
+{
+  ledger_header
+  ledger_row T-214 planner
+} > "$ANTHROPIC_FALLBACK/factory/ledger.csv"
 ANTHROPIC_GLOBAL="$TMP/anthropic-global/global.env"
 write_backend_global "$ANTHROPIC_GLOBAL" \
   "export FACTORY_PROBE_CLAUDE_CODE=UNAVAILABLE:test_primary_down"
@@ -392,9 +583,9 @@ ANTHROPIC_TRACE="$TMP/anthropic.trace"
 if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$ANTHROPIC_FALLBACK" \
      FACTORY_GLOBAL_ENV="$ANTHROPIC_GLOBAL" FACTORY_TEST_TRACE="$ANTHROPIC_TRACE" \
      "$RUN_AGENT" --role spec-linter --ticket T-214 -- "checking fallback" >/dev/null &&
-   [[ "$(awk -F, '$3=="T-214" {print $5}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "cursor-anthropic" ]] &&
-   [[ "$(awk -F, '$3=="T-214" {print $11}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "anthropic" ]] &&
-   [[ "$(awk -F, '$3=="T-214" {print $12}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "claude-sonnet-5-thinking-high" ]] &&
+   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $5}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "cursor-anthropic" ]] &&
+   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $11}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "anthropic" ]] &&
+   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $12}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "claude-sonnet-5-thinking-high" ]] &&
    [[ "$(wc -l < "$ANTHROPIC_TRACE" | tr -d ' ')" == "1" ]]; then
   pass "checking fallback preserves Anthropic family"
 else
@@ -404,6 +595,7 @@ fi
 # Malformed Cursor output is a terminal failed run, never another fallback.
 MALFORMED="$TMP/malformed-cursor"
 write_envelope "$MALFORMED"
+write_ticket "$MALFORMED" T-215
 MALFORMED_GLOBAL="$TMP/malformed-global/global.env"
 write_backend_global "$MALFORMED_GLOBAL" \
   "export FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down"
@@ -426,6 +618,7 @@ fi
 # A reported opposite-family model fails closed despite successful CLI exit.
 MODEL_DRIFT="$TMP/model-drift"
 write_envelope "$MODEL_DRIFT"
+write_ticket "$MODEL_DRIFT" T-217
 MODEL_DRIFT_GLOBAL="$TMP/model-drift-global/global.env"
 write_backend_global "$MODEL_DRIFT_GLOBAL" \
   "export FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down"
@@ -445,6 +638,7 @@ fi
 # Once the primary task starts, its failure never launches Cursor.
 TASK_FAIL="$TMP/task-fail"
 write_envelope "$TASK_FAIL"
+write_ticket "$TASK_FAIL" T-212
 TASK_FAIL_GLOBAL="$TMP/task-fail-global/global.env"
 write_backend_global "$TASK_FAIL_GLOBAL"
 TASK_FAIL_TRACE="$TMP/task-fail.trace"
@@ -470,6 +664,7 @@ fi
 # INVALID primary state fails closed before any task process or reservation.
 INVALID="$TMP/invalid-route"
 write_envelope "$INVALID"
+write_ticket "$INVALID" T-213
 INVALID_GLOBAL="$TMP/invalid-global/global.env"
 write_backend_global "$INVALID_GLOBAL" \
   "export FACTORY_PROBE_CODEX=INVALID:test_contract_drift"
@@ -489,6 +684,7 @@ fi
 
 UNKNOWN="$TMP/unknown-route"
 write_envelope "$UNKNOWN"
+write_ticket "$UNKNOWN" T-216
 UNKNOWN_GLOBAL="$TMP/unknown-global/global.env"
 write_backend_global "$UNKNOWN_GLOBAL" \
   "export FACTORY_PROBE_CODEX=UNKNOWN:test_unclassified"
@@ -503,6 +699,260 @@ if [[ "$UNKNOWN_STATUS" -eq 6 && ! -s "$UNKNOWN_TRACE" ]]; then
   pass "unknown primary state fails before task submission"
 else
   fail "unknown primary state fails before task submission" "status $UNKNOWN_STATUS"
+fi
+
+# The sequencer, not the caller, authorizes the first role.
+WRONG_ROLE="$TMP/wrong-initial-role"
+write_envelope "$WRONG_ROLE"
+write_ticket "$WRONG_ROLE" T-218
+WRONG_ROLE_GLOBAL="$TMP/wrong-role-global/global.env"
+write_backend_global "$WRONG_ROLE_GLOBAL" \
+  "export FACTORY_PROBE_CODEX=INVALID:sequencer_must_run_first"
+WRONG_ROLE_STATUS=0
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$WRONG_ROLE" \
+  FACTORY_GLOBAL_ENV="$WRONG_ROLE_GLOBAL" \
+  "$RUN_AGENT" --role builder --ticket T-218 -- "wrong role" >/dev/null 2>&1 ||
+  WRONG_ROLE_STATUS=$?
+if [[ "$WRONG_ROLE_STATUS" -eq 10 &&
+      ! -f "$WRONG_ROLE/factory/ledger.csv" &&
+      ! -d "$WRONG_ROLE/factory/runs" ]] &&
+   ! grep -q '^Kit-SHA:' "$WRONG_ROLE/factory/tickets/T-218.md"; then
+  pass "sequencer rejects mismatched initial builder"
+else
+  fail "sequencer rejects mismatched initial builder" "status $WRONG_ROLE_STATUS"
+fi
+
+# The one non-RUN authorization is the exact mechanical FIX action.
+FIX_GATE="$TMP/fix-role-gate"
+write_envelope "$FIX_GATE"
+write_ticket "$FIX_GATE" T-226
+printf 'reviewer round 1: REQUEST CHANGES — fix code\n' \
+  >> "$FIX_GATE/factory/tickets/T-226.md"
+{
+  ledger_header
+  ledger_row T-226 planner
+  ledger_row T-226 test-author
+  ledger_row T-226 builder
+  ledger_row T-226 reviewer
+} > "$FIX_GATE/factory/ledger.csv"
+FIX_GATE_STATUS=0
+run_mock "$FIX_GATE" builder T-226 >/dev/null 2>&1 || FIX_GATE_STATUS=$?
+FIX_GATE_NEXT="$(FACTORY_ROOT="$FIX_GATE" \
+  FACTORY_LEDGER="$FIX_GATE/factory/ledger.csv" \
+  "$NEXT_STAGE" --ticket T-226 2>&1)"
+if [[ "$FIX_GATE_STATUS" -eq 0 && "$FIX_GATE_NEXT" == "RUN reviewer" ]]; then
+  pass "sequencer permits builder for exact FIX action"
+else
+  fail "sequencer permits builder for exact FIX action" \
+    "status $FIX_GATE_STATUS next=$FIX_GATE_NEXT"
+fi
+
+# Per-run strict pins refuse before backend selection or mutable run state.
+for PIN_CASE in missing abbreviated mismatch; do
+  PIN_ROOT="$TMP/run-pin-$PIN_CASE"
+  write_envelope "$PIN_ROOT"
+  write_ticket "$PIN_ROOT" T-218
+  case "$PIN_CASE" in
+    missing) rm "$PIN_ROOT/factory/KIT_PIN" ;;
+    abbreviated) printf '%s\n' "${KIT_SHA:0:12}" > "$PIN_ROOT/factory/KIT_PIN" ;;
+    mismatch) printf '%s\n' "0000000000000000000000000000000000000000" > "$PIN_ROOT/factory/KIT_PIN" ;;
+  esac
+  PIN_STATUS=0
+  FACTORY_ROOT="$PIN_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+    FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role planner --ticket T-218 -- "strict pin" >/dev/null 2>&1 ||
+    PIN_STATUS=$?
+  if [[ "$PIN_STATUS" -eq 3 && ! -f "$PIN_ROOT/factory/ledger.csv" &&
+        ! -d "$PIN_ROOT/factory/runs" ]]; then
+    pass "run-agent refuses $PIN_CASE kit pin before mutation"
+  else
+    fail "run-agent refuses $PIN_CASE kit pin before mutation" "status $PIN_STATUS"
+  fi
+done
+
+# A state transition while launch waits is caught under the launch lock.
+STATE_LOCK="$TMP/sequence-after-lock"
+write_envelope "$STATE_LOCK"
+write_ticket "$STATE_LOCK" T-224
+mkdir "$STATE_LOCK/factory/.launch.lock"
+FACTORY_ROOT="$STATE_LOCK" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-224 -- "state race" \
+  > "$TMP/sequence-after-lock.out" 2>&1 &
+STATE_LOCK_PID=$!
+for _i in $(seq 1 100); do
+  [[ -n "$(ls "$STATE_LOCK/factory/runs/"*.meta 2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+{
+  ledger_header
+  ledger_row T-224 planner
+} > "$STATE_LOCK/factory/ledger.csv"
+rmdir "$STATE_LOCK/factory/.launch.lock"
+wait "$STATE_LOCK_PID"
+STATE_LOCK_STATUS=$?
+if [[ "$STATE_LOCK_STATUS" -eq 10 &&
+      ! -f "$STATE_LOCK/factory/runs/"*.out ]] &&
+   grep -q 'after launch lock acquisition' "$TMP/sequence-after-lock.out"; then
+  pass "post-lock sequencer catches state-change race"
+else
+  fail "post-lock sequencer catches state-change race" \
+    "status $STATE_LOCK_STATUS"
+fi
+
+# A final sequencer pass closes the prepared-process-to-GO state race.
+STATE_GO="$TMP/sequence-before-go"
+write_envelope "$STATE_GO"
+write_ticket "$STATE_GO" T-225
+FACTORY_ROOT="$STATE_GO" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GO_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-225 -- "pre-GO state race" \
+  > "$TMP/sequence-before-go.out" 2>&1 &
+STATE_GO_PID=$!
+for _i in $(seq 1 100); do
+  [[ -n "$(ls "$STATE_GO/factory/runs/".*.ready 2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+ledger_row T-225 planner >> "$STATE_GO/factory/ledger.csv"
+wait "$STATE_GO_PID"
+STATE_GO_STATUS=$?
+if [[ "$STATE_GO_STATUS" -eq 10 ]] &&
+   grep -q 'before GO' "$TMP/sequence-before-go.out" &&
+   ! grep -q 'mock adapter ran task' "$STATE_GO/factory/runs/"*.out; then
+  pass "pre-GO sequencer catches state-change race"
+else
+  fail "pre-GO sequencer catches state-change race" \
+    "status $STATE_GO_STATUS"
+fi
+
+# The first role run writes one durable lease, even for a blocked ticket.
+LEASE_ROOT="$TMP/ticket-lease"
+write_envelope "$LEASE_ROOT"
+write_ticket "$LEASE_ROOT" T-219 Blocked-Escalated
+if run_mock "$LEASE_ROOT" planner T-219 >/dev/null &&
+   [[ "$(grep -c '^Kit-SHA:' "$LEASE_ROOT/factory/tickets/T-219.md")" == "1" ]] &&
+   grep -q "^Kit-SHA: $KIT_SHA$" "$LEASE_ROOT/factory/tickets/T-219.md"; then
+  pass "first blocked-ticket run records one Kit-SHA lease"
+else
+  fail "first blocked-ticket run records one Kit-SHA lease"
+fi
+sed "s/^Kit-SHA: .*$/Kit-SHA: 0000000000000000000000000000000000000000/" \
+  "$LEASE_ROOT/factory/tickets/T-219.md" > "$LEASE_ROOT/factory/tickets/T-219.tmp"
+mv "$LEASE_ROOT/factory/tickets/T-219.tmp" "$LEASE_ROOT/factory/tickets/T-219.md"
+LEASE_STATUS=0
+run_mock "$LEASE_ROOT" planner T-219 >/dev/null 2>&1 || LEASE_STATUS=$?
+LEASE_STAGE="$(FACTORY_ROOT="$LEASE_ROOT" "$NEXT_STAGE" --ticket T-219 2>&1)"
+if [[ "$LEASE_STATUS" -eq 3 &&
+      "$LEASE_STAGE" == "REFUSE ticket Kit-SHA lease does not match"* ]] &&
+   grep -q '^Kit-SHA: 0000000000000000000000000000000000000000$' \
+     "$LEASE_ROOT/factory/tickets/T-219.md" &&
+   [[ "$(grep -c '^Kit-SHA:' "$LEASE_ROOT/factory/tickets/T-219.md")" == "1" ]] &&
+   [[ "$(awk -F, '$3=="T-219" {n++} END {print n+0}' "$LEASE_ROOT/factory/ledger.csv")" == "1" ]]; then
+  pass "blocked-ticket lease mismatch refuses without overwrite"
+else
+  fail "blocked-ticket lease mismatch refuses without overwrite" \
+    "run status $LEASE_STATUS; stage $LEASE_STAGE"
+fi
+
+# Maintenance is a hard gate for both sequencing and initial launch.
+MAINT_ROOT="$TMP/maintenance-initial"
+write_envelope "$MAINT_ROOT"
+write_ticket "$MAINT_ROOT" T-220
+touch "$MAINT_ROOT/factory/MAINTENANCE"
+MAINT_STATUS=0
+FACTORY_ROOT="$MAINT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-220 -- "maintenance" >/dev/null 2>&1 ||
+  MAINT_STATUS=$?
+MAINT_STAGE="$(FACTORY_ROOT="$MAINT_ROOT" "$NEXT_STAGE" --ticket T-220 2>&1)"
+if [[ "$MAINT_STATUS" -eq 4 && ! -f "$MAINT_ROOT/factory/ledger.csv" &&
+      "$MAINT_STAGE" == "REFUSE MAINTENANCE file present"* ]]; then
+  pass "maintenance blocks initial launch and sequencing"
+else
+  fail "maintenance blocks initial launch and sequencing" \
+    "run status $MAINT_STATUS; stage $MAINT_STAGE"
+fi
+
+# If maintenance appears while launch waits, the post-lock check wins.
+AFTER_LOCK="$TMP/maintenance-after-lock"
+write_envelope "$AFTER_LOCK"
+write_ticket "$AFTER_LOCK" T-221
+mkdir "$AFTER_LOCK/factory/.launch.lock"
+FACTORY_ROOT="$AFTER_LOCK" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-221 -- "after lock" \
+  > "$TMP/after-lock.out" 2>&1 &
+AFTER_LOCK_PID=$!
+for _i in $(seq 1 100); do
+  [[ -n "$(ls "$AFTER_LOCK/factory/runs/"*.meta 2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$AFTER_LOCK/factory/MAINTENANCE"
+rmdir "$AFTER_LOCK/factory/.launch.lock"
+wait "$AFTER_LOCK_PID"
+AFTER_LOCK_STATUS=$?
+if [[ "$AFTER_LOCK_STATUS" -eq 4 &&
+      ! -f "$AFTER_LOCK/factory/ledger.csv" ]] &&
+   grep -q 'appeared after launch lock acquisition' "$TMP/after-lock.out"; then
+  pass "maintenance publication wins after launch-lock race"
+else
+  fail "maintenance publication wins after launch-lock race" \
+    "status $AFTER_LOCK_STATUS"
+fi
+
+# A launch that resolved an old physical release cannot cross a pin activation.
+PIN_RACE="$TMP/pin-after-lock"
+write_envelope "$PIN_RACE"
+write_ticket "$PIN_RACE" T-223
+mkdir "$PIN_RACE/factory/.launch.lock"
+FACTORY_ROOT="$PIN_RACE" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-223 -- "pin race" \
+  > "$TMP/pin-race.out" 2>&1 &
+PIN_RACE_PID=$!
+for _i in $(seq 1 100); do
+  [[ -n "$(ls "$PIN_RACE/factory/runs/"*.meta 2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+printf '%s\n' "0000000000000000000000000000000000000000" \
+  > "$PIN_RACE/factory/KIT_PIN"
+rmdir "$PIN_RACE/factory/.launch.lock"
+wait "$PIN_RACE_PID"
+PIN_RACE_STATUS=$?
+if [[ "$PIN_RACE_STATUS" -eq 3 && ! -f "$PIN_RACE/factory/ledger.csv" ]] &&
+   grep -q 'does not match the selected kit SHA after launch lock acquisition' \
+     "$TMP/pin-race.out"; then
+  pass "post-lock pin recheck blocks activation-path drift"
+else
+  fail "post-lock pin recheck blocks activation-path drift" \
+    "status $PIN_RACE_STATUS"
+fi
+
+# A final maintenance check closes the prepared-process-to-GO race.
+BEFORE_GO="$TMP/maintenance-before-go"
+write_envelope "$BEFORE_GO"
+write_ticket "$BEFORE_GO" T-222
+FACTORY_ROOT="$BEFORE_GO" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GO_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-222 -- "before go" \
+  > "$TMP/before-go.out" 2>&1 &
+BEFORE_GO_PID=$!
+for _i in $(seq 1 100); do
+  [[ -n "$(ls "$BEFORE_GO/factory/runs/".*.ready 2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$BEFORE_GO/factory/MAINTENANCE"
+wait "$BEFORE_GO_PID"
+BEFORE_GO_STATUS=$?
+if [[ "$BEFORE_GO_STATUS" -eq 4 ]] &&
+   grep -q 'MAINTENANCE file appeared before GO' "$TMP/before-go.out" &&
+   ! grep -q 'mock adapter ran task' "$BEFORE_GO/factory/runs/"*.out; then
+  pass "maintenance before GO prevents task submission"
+else
+  fail "maintenance before GO prevents task submission" \
+    "status $BEFORE_GO_STATUS"
 fi
 
 # Semantic round numbering with one explicitly voided duplicate row.
@@ -545,11 +995,12 @@ fi
 # Duplicate-run guard: overlap refused, same ticket+role allowed afterward.
 GUARD="$TMP/guard"
 write_envelope "$GUARD"
+write_ticket "$GUARD" T-400
 GUARD_LEDGER="$GUARD/factory/ledger.csv"
 MOCK_SLEEP=5 FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
-  "$RUN_AGENT" --role builder --ticket T-400 -- "slow run" > "$TMP/first.out" 2>&1 &
+  "$RUN_AGENT" --role planner --ticket T-400 -- "slow run" > "$TMP/first.out" 2>&1 &
 FIRST_PID=$!
 for _i in $(seq 1 50); do
   [[ -n "$(ls "$GUARD/factory/.active-runs/"*.pid 2>/dev/null || true)" ]] && break
@@ -558,7 +1009,7 @@ done
 SECOND_OUTPUT="$(FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
-  "$RUN_AGENT" --role builder --ticket T-400 -- "overlap" 2>&1)"
+  "$RUN_AGENT" --role planner --ticket T-400 -- "overlap" 2>&1)"
 SECOND_STATUS=$?
 wait "$FIRST_PID"
 FIRST_PID=""
@@ -569,22 +1020,25 @@ else
   fail "duplicate-run guard refuses overlap" "status $SECOND_STATUS: $SECOND_OUTPUT"
 fi
 
-if run_mock "$GUARD" builder T-400 >/dev/null &&
-   [[ "$(awk -F, '$3=="T-400" && $4=="builder" {n++} END {print n+0}' "$GUARD_LEDGER")" == "2" ]]; then
-  pass "duplicate-run guard allows sequential run"
+SEQUENTIAL_STATUS=0
+run_mock "$GUARD" planner T-400 >/dev/null 2>&1 || SEQUENTIAL_STATUS=$?
+if [[ "$SEQUENTIAL_STATUS" -eq 10 &&
+      "$(awk -F, '$3=="T-400" && $4=="planner" {n++} END {print n+0}' "$GUARD_LEDGER")" == "1" ]]; then
+  pass "sequencer refuses obsolete sequential role"
 else
-  fail "duplicate-run guard allows sequential run"
+  fail "sequencer refuses obsolete sequential role" "status $SEQUENTIAL_STATUS"
 fi
 
 # Kill switch terminates the isolated adapter process group and descendants.
 KILL_ROOT="$TMP/kill-root"
 write_envelope "$KILL_ROOT"
+write_ticket "$KILL_ROOT" T-401
 DESCENDANT_PID_FILE="$TMP/mock-descendant.pid"
 MOCK_SLEEP=30 MOCK_DESCENDANT_PID_FILE="$DESCENDANT_PID_FILE" \
   FACTORY_ROOT="$KILL_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
-  "$RUN_AGENT" --role builder --ticket T-401 -- "kill group" \
+  "$RUN_AGENT" --role planner --ticket T-401 -- "kill group" \
   > "$TMP/kill-wrapper.out" 2>&1 &
 KILL_WRAPPER_PID=$!
 KILL_PID_FILE=""
@@ -600,7 +1054,7 @@ NEW_AFTER_KILL_STATUS=0
 FACTORY_ROOT="$KILL_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
-  "$RUN_AGENT" --role builder --ticket T-402 -- "must refuse" >/dev/null 2>&1 ||
+  "$RUN_AGENT" --role planner --ticket T-402 -- "must refuse" >/dev/null 2>&1 ||
   NEW_AFTER_KILL_STATUS=$?
 if [[ "$KILL_PGID" =~ ^[0-9]+$ ]] &&
    ! kill -0 -- "-$KILL_PGID" 2>/dev/null &&
@@ -613,12 +1067,13 @@ fi
 # KILL creation cannot scan before an in-flight launch publishes its PID.
 RACE_ROOT="$TMP/kill-race"
 write_envelope "$RACE_ROOT"
+write_ticket "$RACE_ROOT" T-403
 RACE_DESCENDANT="$TMP/race-descendant.pid"
 MOCK_SLEEP=30 MOCK_DESCENDANT_PID_FILE="$RACE_DESCENDANT" \
   FACTORY_ROOT="$RACE_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_REGISTER_SLEEP=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
-  "$RUN_AGENT" --role builder --ticket T-403 -- "serialized kill" \
+  "$RUN_AGENT" --role planner --ticket T-403 -- "serialized kill" \
   > "$TMP/race-wrapper.out" 2>&1 &
 RACE_WRAPPER_PID=$!
 sleep 0.1

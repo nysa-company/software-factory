@@ -33,6 +33,8 @@ run_suite "Linear reconciler regression suite" python3 "$ROOT/ci/linear-sync-tes
 run_suite "factory script regression suite" bash "$ROOT/ci/test-factory-scripts.sh"
 run_suite "reorder test-fixes suite" bash "$ROOT/ci/reorder-test-fixes-test.sh"
 run_suite "preflight suite" bash "$ROOT/ci/preflight-test.sh"
+run_suite "Hermes contract suite" bash "$ROOT/ci/hermes-contract-test.sh"
+run_suite "factory kit release suite" bash "$ROOT/ci/factory-kit-test.sh"
 run_suite "conformance app suite" run_conformance
 run_suite "test immutability suite" run_immutability
 run_suite "artifact policy self-test" "$ROOT/scripts/artifact-check" --self-test
