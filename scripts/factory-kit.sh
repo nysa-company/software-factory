@@ -1125,10 +1125,14 @@ system_roots = [
     "/usr/share",
     "/private/etc",
     "/private/var/db/timezone",
-    "/private/var/select",
     "/Library/Apple",
     "/Library/Developer",
     "/Applications/Xcode.app/Contents/Developer",
+    # Apple command shims such as /usr/bin/git read this public developer
+    # selection path using the /var spelling even though /var aliases
+    # /private/var. Seatbelt matches the requested spelling, so permit both.
+    "/var/select",
+    "/private/var/select",
 ]
 toolchain_roots = []
 for item in path_value.split(os.pathsep):

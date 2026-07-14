@@ -436,6 +436,8 @@ if [[ -f "$SANDBOX_CAPTURE" ]] &&
    ! grep -qx '(allow process\*)' "$SANDBOX_CAPTURE" &&
    grep -q '^(allow process-fork)' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/System"' "$SANDBOX_CAPTURE" &&
+   grep -q 'allow file-read.*"/var/select"' "$SANDBOX_CAPTURE" &&
+   grep -q 'allow file-read.*"/private/var/select"' "$SANDBOX_CAPTURE" &&
    grep -q "$KIT_REPO" "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-write.*factory-kit-install' "$SANDBOX_CAPTURE"; then
   pass "install sandbox is filesystem and network default-deny"
