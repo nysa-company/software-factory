@@ -1175,7 +1175,9 @@ lines.append("(allow file-write* (subpath %s))\n" % quote(workspace))
 for path in ("/dev/null", "/dev/random", "/dev/urandom"):
     lines.append("(allow file-read* (literal %s))\n" % quote(path))
 lines.append('(allow file-write* (literal "/dev/null"))\n')
-lines.append("(allow signal (target self))\n")
+# Test runners must terminate the child servers they create. Every descendant
+# inherits this profile, so same-sandbox signaling cannot reach live services.
+lines.append("(allow signal (target same-sandbox))\n")
 # Product and kit suites may bind ephemeral local servers, but they do not
 # need DNS or external connectivity. Keep loopback separate from the reviewed
 # certification-only network opt-in below.
