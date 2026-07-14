@@ -121,7 +121,7 @@ factory_probe_adapter() {
       if ! command -v codex >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
-      installed="$(timeout "$probe_timeout" codex --version 2>/dev/null | awk 'NR==1 {print; exit}')"
+      installed="$(timeout "$probe_timeout" codex --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
       PROBE_VERSION="$installed"
       if [[ -z "$installed" ]]; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
@@ -142,7 +142,7 @@ factory_probe_adapter() {
       if ! command -v claude >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
-      installed="$(timeout "$probe_timeout" claude --version 2>/dev/null | awk 'NR==1 {print; exit}')"
+      installed="$(timeout "$probe_timeout" claude --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
       PROBE_VERSION="$installed"
       if [[ -z "$installed" ]]; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
@@ -178,7 +178,7 @@ factory_probe_adapter() {
       if ! command -v "$cursor_bin" >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
-      installed="$(timeout "$probe_timeout" "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print; exit}')"
+      installed="$(timeout "$probe_timeout" "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
       PROBE_VERSION="$installed"
       if [[ -z "${CURSOR_AGENT_VERSION:-}" ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="version_unapproved"; return 0

@@ -39,7 +39,7 @@ write_backend_stubs() {
 case "${1:-}" in
   --version)
     [[ "${STUB_CODEX_VERSION_EMPTY:-0}" == "1" ]] || echo "codex-cli 0.144.1"
-    exit 0
+    exit "${STUB_CODEX_VERSION_STATUS:-0}"
     ;;
   login) [[ "${2:-}" == "status" ]] && exit 0 ;;
   exec)
@@ -58,7 +58,7 @@ STUB
 case "${1:-}" in
   --version)
     [[ "${STUB_CLAUDE_VERSION_EMPTY:-0}" == "1" ]] || echo "2.1.207 (Claude Code)"
-    exit 0
+    exit "${STUB_CLAUDE_VERSION_STATUS:-0}"
     ;;
   --help)
     printf '%s\n' --max-budget-usd --output-format --append-system-prompt
@@ -182,12 +182,12 @@ else
 fi
 
 EMPTY_CODEX_VERSION_PROBE="$(PATH="$STUB_BIN:$PATH" CODEX_PINNED=0.144.1 \
-  STUB_CODEX_VERSION_EMPTY=1 \
-  bash -c 'source "$1"; factory_probe_adapter codex; echo "$PROBE_STATE:$PROBE_REASON"' \
+  STUB_CODEX_VERSION_EMPTY=1 STUB_CODEX_VERSION_STATUS=124 \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter codex; echo "$PROBE_STATE:$PROBE_REASON"' \
   _ "$ROOT/scripts/lib/backend-policy.sh")"
 EMPTY_CLAUDE_VERSION_PROBE="$(PATH="$STUB_BIN:$PATH" CLAUDE_CODE_PINNED=2.1.207 \
-  STUB_CLAUDE_VERSION_EMPTY=1 \
-  bash -c 'source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  STUB_CLAUDE_VERSION_EMPTY=1 STUB_CLAUDE_VERSION_STATUS=124 \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
   _ "$ROOT/scripts/lib/backend-policy.sh")"
 if [[ "$EMPTY_CODEX_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" &&
       "$EMPTY_CLAUDE_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" ]]; then
