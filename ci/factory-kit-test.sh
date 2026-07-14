@@ -415,6 +415,7 @@ cat > "$TMP/fake-sandbox-exec" <<'EOF'
 set -eu
 [[ "$1" == "-f" ]]
 cp "$2" "${FACTORY_KIT_SANDBOX_CAPTURE:?}"
+printf '%s\n' "$PATH" > "${FACTORY_KIT_SANDBOX_CAPTURE}.path"
 shift 2
 exec "$@"
 EOF
@@ -429,7 +430,16 @@ unset FACTORY_FIXTURE_DIRTY
 unset FACTORY_KIT_TEST_FORCE_PRODUCTION_SANDBOX
 unset FACTORY_KIT_SANDBOX_EXEC
 unset FACTORY_KIT_SANDBOX_CAPTURE
+DEVELOPER_PATH_OK=1
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  DEVELOPER_ROOT="$(xcode-select -p 2>/dev/null || true)"
+  if [[ -x "$DEVELOPER_ROOT/usr/bin/git" &&
+        ":$(<"${SANDBOX_CAPTURE}.path"):" != *":$DEVELOPER_ROOT/usr/bin:"* ]]; then
+    DEVELOPER_PATH_OK=0
+  fi
+fi
 if [[ -f "$SANDBOX_CAPTURE" ]] &&
+   [[ "$DEVELOPER_PATH_OK" == "1" ]] &&
    grep -q '^(deny default)' "$SANDBOX_CAPTURE" &&
    ! grep -qx '(allow file-read\*)' "$SANDBOX_CAPTURE" &&
    ! grep -qx '(allow network\*)' "$SANDBOX_CAPTURE" &&
@@ -442,6 +452,7 @@ if [[ -f "$SANDBOX_CAPTURE" ]] &&
    grep -Fqx '(allow signal (target same-sandbox))' "$SANDBOX_CAPTURE" &&
    ! grep -Fqx '(allow signal (target others))' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/System"' "$SANDBOX_CAPTURE" &&
+   grep -q 'allow file-read.*"/etc"' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/var/select"' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/private/var/select"' "$SANDBOX_CAPTURE" &&
    grep -q "$KIT_REPO" "$SANDBOX_CAPTURE" &&
