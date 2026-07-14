@@ -35,4 +35,4 @@ jobs:
           TEST_PATHS: <test paths, e.g. "app/tests/">
 
 # Both jobs go into branch protection as required checks: "ci" and
-# "test-immutability" (see ci/branch-protection.md).
+# "test-immutability" (see docs/git-flow.md).

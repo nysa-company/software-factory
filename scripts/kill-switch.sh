@@ -7,7 +7,7 @@
 #      the machine; the operator's own sessions are untouched.
 #   3. Disables factory launchd schedules (com.factory.*, rollup exempt).
 # Key rotation is NOT here — that is incident response for a suspected leak
-# (see runbooks/operator.md). Console spend caps stay active regardless.
+# (see docs/runbooks/operator.md). Console spend caps stay active regardless.
 #
 # Usage: kill-switch.sh [repo-root]   (default: git root of cwd)
 # Resume: rm <repo-root>/factory/KILL and re-enable schedules.

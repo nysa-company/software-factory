@@ -1,6 +1,6 @@
 # Software Factory Kit
 
-Product-agnostic kit for running an AI software factory. Read `FACTORY.md` before changing the engine model, role contracts, ticket flow, or product-instantiation contract.
+Product-agnostic kit for running an AI software factory. Read `docs/product-brief.md`, `docs/architecture.md`, and `docs/factory-setup.md` before changing the engine model, role contracts, ticket flow, or product-instantiation contract.
 
 ## Run checks
 
@@ -12,7 +12,7 @@ Product-agnostic kit for running an AI software factory. Read `FACTORY.md` befor
 - Keep the kit product-agnostic; Nysa-specific state belongs in the Nysa product repository.
 - Reuse the existing shell and Python helpers before adding dependencies.
 - Preserve the builder/test-author separation and evidence-first approval flow.
-- Update `FACTORY.md` and the relevant runbook when an engine contract changes.
+- Update the relevant file under `docs/` and `context/memory.md` when durable product or engine truth changes.
 
 ## Session end
 

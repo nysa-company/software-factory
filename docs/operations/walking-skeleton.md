@@ -1,4 +1,4 @@
-# Walking skeleton
+# Walking-skeleton operations
 
 The mandatory first milestone of any instantiation. One deliberately trivial feature pushed through every layer, proving the pipeline before any backlog exists.
 

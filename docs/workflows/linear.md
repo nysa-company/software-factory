@@ -123,7 +123,7 @@ External: no
 ## Conventions
 
 - One ticket = one builder session = one branch = one PR. The planner splits anything bigger.
-- Bug tickets link back to the Done ticket that shipped the defect (this is the escaped-defect metric; see `metrics/schema.md`).
+- Bug tickets link back to the Done ticket that shipped the defect (this is the escaped-defect metric; see `docs/metrics.md`).
 - Cost and attempts are posted on the ticket by the Narrator from the ledger.
 - Apply `risk:low`, `risk:medium`, or `risk:high`; apply `external` when the change can send outside the system.
 - Factory-managed sections in Linear carry a read-only notice. Operator notes belong in comments; structured approvals and resume decisions are ingested by state transition.
