@@ -416,6 +416,10 @@ set -eu
 [[ "$1" == "-f" ]]
 cp "$2" "${FACTORY_KIT_SANDBOX_CAPTURE:?}"
 printf '%s\n' "$PATH" > "${FACTORY_KIT_SANDBOX_CAPTURE}.path"
+command -v git > "${FACTORY_KIT_SANDBOX_CAPTURE}.git"
+/usr/bin/readlink "$(command -v git)" \
+  > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-target" 2>/dev/null || true
+command -v python3 > "${FACTORY_KIT_SANDBOX_CAPTURE}.python"
 shift 2
 exec "$@"
 EOF
@@ -433,8 +437,14 @@ unset FACTORY_KIT_SANDBOX_CAPTURE
 DEVELOPER_PATH_OK=1
 if [[ "$(uname -s)" == "Darwin" ]]; then
   DEVELOPER_ROOT="$(xcode-select -p 2>/dev/null || true)"
+  SANDBOX_PATH="$(<"${SANDBOX_CAPTURE}.path")"
+  SANDBOX_GIT_TARGET="$(<"${SANDBOX_CAPTURE}.git-target")"
+  SANDBOX_PYTHON="$(<"${SANDBOX_CAPTURE}.python")"
+  EXPECTED_PYTHON="$(PATH="$STUB_BIN:$PATH" command -v python3)"
   if [[ -x "$DEVELOPER_ROOT/usr/bin/git" &&
-        ":$(<"${SANDBOX_CAPTURE}.path"):" != *":$DEVELOPER_ROOT/usr/bin:"* ]]; then
+        ( ":$SANDBOX_PATH:" == *":$DEVELOPER_ROOT/usr/bin:"* ||
+          "$SANDBOX_GIT_TARGET" != "$DEVELOPER_ROOT/usr/bin/git" ||
+          "$SANDBOX_PYTHON" != "$EXPECTED_PYTHON" ) ]]; then
     DEVELOPER_PATH_OK=0
   fi
 fi

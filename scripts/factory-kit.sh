@@ -948,8 +948,14 @@ if os.path.isfile("/usr/bin/xcode-select"):
     )
     if selected.returncode == 0:
         developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
-        if os.path.isfile(os.path.join(developer_bin, "git")):
-            path_value = developer_bin + os.pathsep + path_value
+        developer_git = os.path.join(developer_bin, "git")
+        if os.path.isfile(developer_git):
+            git_bin = os.path.join(scratch, "developer-git-bin")
+            os.makedirs(git_bin, exist_ok=True)
+            git_shim = os.path.join(git_bin, "git")
+            if not os.path.lexists(git_shim):
+                os.symlink(developer_git, git_shim)
+            path_value = git_bin + os.pathsep + path_value
 environment = {
     "PATH": path_value,
     "HOME": home,
@@ -1261,8 +1267,14 @@ if os.path.isfile("/usr/bin/xcode-select"):
     )
     if selected.returncode == 0:
         developer_bin = os.path.join(selected.stdout.strip(), "usr", "bin")
-        if os.path.isfile(os.path.join(developer_bin, "git")):
-            path_value = developer_bin + os.pathsep + path_value
+        developer_git = os.path.join(developer_bin, "git")
+        if os.path.isfile(developer_git):
+            git_bin = os.path.join(scratch, "developer-git-bin")
+            os.makedirs(git_bin, exist_ok=True)
+            git_shim = os.path.join(git_bin, "git")
+            if not os.path.lexists(git_shim):
+                os.symlink(developer_git, git_shim)
+            path_value = git_bin + os.pathsep + path_value
 environment = {
     "PATH": path_value,
     "HOME": home,
