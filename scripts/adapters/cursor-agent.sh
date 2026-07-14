@@ -123,8 +123,8 @@ if [[ -n "${CURSOR_PRICING_SNAPSHOT_DATE:-}" &&
       -n "$RATE_IN" && -n "$RATE_OUT" &&
       $((IN_TOKENS + OUT_TOKENS + CACHE_TOKENS)) -gt 0 ]]; then
   COST="$(awk -v i="$IN_TOKENS" -v o="$OUT_TOKENS" -v c="$CACHE_TOKENS" \
-    -v ir="$RATE_IN" -v or="$RATE_OUT" -v cr="$RATE_CACHE" \
-    'BEGIN { printf "%.4f", (i*ir + o*or + c*cr)/1000000 }')"
+    -v in_rate="$RATE_IN" -v out_rate="$RATE_OUT" -v cache_rate="$RATE_CACHE" \
+    'BEGIN { printf "%.4f", (i*in_rate + o*out_rate + c*cache_rate)/1000000 }')"
 fi
 
 if [[ -n "$COST" ]] &&
