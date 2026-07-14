@@ -1171,6 +1171,7 @@ for item in read_roots:
 lines = ["""(version 1)
 (deny default)
 (allow process-fork)
+(allow process-info* (target same-sandbox))
 (allow sysctl-read)
 (allow mach-lookup)
 """]
@@ -1185,6 +1186,9 @@ lines.append("(allow file-write* (subpath %s))\n" % quote(workspace))
 for path in ("/dev/null", "/dev/random", "/dev/urandom"):
     lines.append("(allow file-read* (literal %s))\n" % quote(path))
 lines.append('(allow file-write* (literal "/dev/null"))\n')
+lines.append('(allow file-read-metadata (literal "/dev"))\n')
+lines.append('(allow file-read* (subpath "/dev/fd"))\n')
+lines.append('(allow file-write* (subpath "/dev/fd"))\n')
 # Test runners must terminate the child servers they create. Every descendant
 # inherits this profile, so same-sandbox signaling cannot reach live services.
 lines.append("(allow signal (target same-sandbox))\n")

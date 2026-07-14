@@ -8,7 +8,7 @@ export FACTORY_TRUSTED_TEST_HARNESS=1
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFLIGHT="$KIT_DIR/scripts/preflight.sh"
 KIT_HEAD_NOW="$(git -C "$KIT_DIR" rev-parse HEAD)"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/preflight-test.XXXXXX")"
 STUB_BIN="$TMP/bin"
 FAILURES=0
 

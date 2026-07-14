@@ -449,8 +449,11 @@ if [[ -f "$SANDBOX_CAPTURE" ]] &&
    grep -Fqx '(allow network-outbound (remote ip "localhost:*"))' "$SANDBOX_CAPTURE" &&
    ! grep -qx '(allow process\*)' "$SANDBOX_CAPTURE" &&
    grep -q '^(allow process-fork)' "$SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow process-info* (target same-sandbox))' "$SANDBOX_CAPTURE" &&
    grep -Fqx '(allow signal (target same-sandbox))' "$SANDBOX_CAPTURE" &&
    ! grep -Fqx '(allow signal (target others))' "$SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow file-read* (subpath "/dev/fd"))' "$SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow file-write* (subpath "/dev/fd"))' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/System"' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/etc"' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/var/select"' "$SANDBOX_CAPTURE" &&
@@ -695,8 +698,11 @@ if [[ -f "$CERT_SANDBOX_CAPTURE" ]] &&
    grep -Fqx '(allow network-outbound (remote ip "localhost:*"))' "$CERT_SANDBOX_CAPTURE" &&
    ! grep -qx '(allow process\*)' "$CERT_SANDBOX_CAPTURE" &&
    grep -q '^(allow process-fork)' "$CERT_SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow process-info* (target same-sandbox))' "$CERT_SANDBOX_CAPTURE" &&
    grep -Fqx '(allow signal (target same-sandbox))' "$CERT_SANDBOX_CAPTURE" &&
    ! grep -Fqx '(allow signal (target others))' "$CERT_SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow file-read* (subpath "/dev/fd"))' "$CERT_SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow file-write* (subpath "/dev/fd"))' "$CERT_SANDBOX_CAPTURE" &&
    grep -q "$PRODUCT_ONE" "$CERT_SANDBOX_CAPTURE" &&
    grep -q "$STATE/releases/$SHA_A" "$CERT_SANDBOX_CAPTURE" &&
    grep -q 'allow file-write.*factory-kit-certification' "$CERT_SANDBOX_CAPTURE"; then

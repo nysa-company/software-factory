@@ -36,7 +36,7 @@ trap on_exit EXIT
 
 new_repo() {
   local d
-  d="$(mktemp -d)"
+  d="$(mktemp -d "${TMPDIR:-/tmp}/reorder-test-fixes.XXXXXX")"
   CLEANUP_DIRS="$CLEANUP_DIRS $d"
   git -C "$d" init -q
   git -C "$d" config user.email test@example.com
