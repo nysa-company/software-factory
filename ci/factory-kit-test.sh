@@ -432,7 +432,11 @@ unset FACTORY_KIT_SANDBOX_CAPTURE
 if [[ -f "$SANDBOX_CAPTURE" ]] &&
    grep -q '^(deny default)' "$SANDBOX_CAPTURE" &&
    ! grep -qx '(allow file-read\*)' "$SANDBOX_CAPTURE" &&
-   ! grep -q '^(allow network' "$SANDBOX_CAPTURE" &&
+   ! grep -qx '(allow network\*)' "$SANDBOX_CAPTURE" &&
+   ! grep -qx '(allow network-outbound)' "$SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow network-bind (local ip "localhost:*"))' "$SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow network-inbound (local ip "localhost:*"))' "$SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow network-outbound (remote ip "localhost:*"))' "$SANDBOX_CAPTURE" &&
    ! grep -qx '(allow process\*)' "$SANDBOX_CAPTURE" &&
    grep -q '^(allow process-fork)' "$SANDBOX_CAPTURE" &&
    grep -q 'allow file-read.*"/System"' "$SANDBOX_CAPTURE" &&
@@ -671,7 +675,11 @@ unset FACTORY_KIT_SANDBOX_CAPTURE
 if [[ -f "$CERT_SANDBOX_CAPTURE" ]] &&
    grep -q '^(deny default)' "$CERT_SANDBOX_CAPTURE" &&
    ! grep -qx '(allow file-read\*)' "$CERT_SANDBOX_CAPTURE" &&
-   ! grep -q '^(allow network' "$CERT_SANDBOX_CAPTURE" &&
+   ! grep -qx '(allow network\*)' "$CERT_SANDBOX_CAPTURE" &&
+   ! grep -qx '(allow network-outbound)' "$CERT_SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow network-bind (local ip "localhost:*"))' "$CERT_SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow network-inbound (local ip "localhost:*"))' "$CERT_SANDBOX_CAPTURE" &&
+   grep -Fqx '(allow network-outbound (remote ip "localhost:*"))' "$CERT_SANDBOX_CAPTURE" &&
    ! grep -qx '(allow process\*)' "$CERT_SANDBOX_CAPTURE" &&
    grep -q '^(allow process-fork)' "$CERT_SANDBOX_CAPTURE" &&
    grep -q "$PRODUCT_ONE" "$CERT_SANDBOX_CAPTURE" &&
