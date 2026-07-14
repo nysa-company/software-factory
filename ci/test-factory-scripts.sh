@@ -37,7 +37,10 @@ write_backend_stubs() {
   cat > "$STUB_BIN/codex" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --version) echo "codex-cli 0.144.1"; exit 0 ;;
+  --version)
+    [[ "${STUB_CODEX_VERSION_EMPTY:-0}" == "1" ]] || echo "codex-cli 0.144.1"
+    exit 0
+    ;;
   login) [[ "${2:-}" == "status" ]] && exit 0 ;;
   exec)
     if [[ "${2:-}" == "--help" ]]; then echo "--json"; exit 0; fi
@@ -53,7 +56,10 @@ STUB
   cat > "$STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --version) echo "2.1.207 (Claude Code)"; exit 0 ;;
+  --version)
+    [[ "${STUB_CLAUDE_VERSION_EMPTY:-0}" == "1" ]] || echo "2.1.207 (Claude Code)"
+    exit 0
+    ;;
   --help)
     printf '%s\n' --max-budget-usd --output-format --append-system-prompt
     exit 0 ;;
@@ -173,6 +179,22 @@ if [[ "$FALSE_AUTH_PROBE" == "UNAVAILABLE:authentication_unavailable" ]]; then
   pass "Cursor status JSON must affirm authentication"
 else
   fail "Cursor status JSON must affirm authentication" "$FALSE_AUTH_PROBE"
+fi
+
+EMPTY_CODEX_VERSION_PROBE="$(PATH="$STUB_BIN:$PATH" CODEX_PINNED=0.144.1 \
+  STUB_CODEX_VERSION_EMPTY=1 \
+  bash -c 'source "$1"; factory_probe_adapter codex; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+EMPTY_CLAUDE_VERSION_PROBE="$(PATH="$STUB_BIN:$PATH" CLAUDE_CODE_PINNED=2.1.207 \
+  STUB_CLAUDE_VERSION_EMPTY=1 \
+  bash -c 'source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$EMPTY_CODEX_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" &&
+      "$EMPTY_CLAUDE_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" ]]; then
+  pass "empty primary version probes permit startup fallback"
+else
+  fail "empty primary version probes permit startup fallback" \
+    "codex=$EMPTY_CODEX_VERSION_PROBE claude=$EMPTY_CLAUDE_VERSION_PROBE"
 fi
 
 run_mock() {

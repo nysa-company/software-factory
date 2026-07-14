@@ -123,6 +123,9 @@ factory_probe_adapter() {
       fi
       installed="$(timeout "$probe_timeout" codex --version 2>/dev/null | awk 'NR==1 {print; exit}')"
       PROBE_VERSION="$installed"
+      if [[ -z "$installed" ]]; then
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
+      fi
       if [[ "$installed" != *"${CODEX_PINNED:-0.144.1}"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
       fi
@@ -141,6 +144,9 @@ factory_probe_adapter() {
       fi
       installed="$(timeout "$probe_timeout" claude --version 2>/dev/null | awk 'NR==1 {print; exit}')"
       PROBE_VERSION="$installed"
+      if [[ -z "$installed" ]]; then
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
+      fi
       if [[ "$installed" != *"${CLAUDE_CODE_PINNED:-2.1.207}"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
       fi
