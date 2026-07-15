@@ -1826,7 +1826,7 @@ for path in sorted(tickets.glob("T-*.md")):
     if lease:
         if lease != candidate:
             raise SystemExit("%s is nonterminal and leased to a different kit" % path.name)
-    elif state.lower() not in ("ready", "backlog"):
+    elif state.lower() not in ("ready", "backlog", "blocked-escalated"):
         raise SystemExit("%s is in progress without a Kit-SHA lease" % path.name)
 PY
 }
