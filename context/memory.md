@@ -13,6 +13,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Rollback restores the previous generation while keeping `MAINTENANCE`; automatic pruning is intentionally unavailable.
 - Linux and macOS system-Bash verification both feed the required aggregate `ci` status. The first real Hermes canary, Relay generation-1 cutover, and legacy restore/recutover exception passed on 2026-07-15; the five-minute outage target and formal generation-2 rollback RTO remain unaccepted.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported; product activation/rollback and live dispatcher tickets remain serialized. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
 
 ## Log
 
@@ -63,3 +64,9 @@ The active `main` Ruleset has an empty bypass list and binds the required `ci` a
 Category: System change
 
 The isolated real-Hermes canary passed on release `45008d5`, and Relay generation 1 activated release `3b63cc7` before a hash-verified legacy restore and candidate recutover drill. The activation-to-clear interval was 5m50s, so the five-minute outage target remains unmet; formal `factory-kit rollback` begins with generation 2 because the legacy runtime had no previous activation record.
+
+## 2026-07-15 — Decision 9: Parallel development, serialized production
+
+Category: Decision
+
+Multiple focused kit branches and independently certified merged SHAs may progress concurrently, while each product pin change, activation, rollback, and live dispatcher ticket remains serialized and ticket-boundary gated. Relay T-107 proved the managed lifecycle on one Kit-SHA through planner, spec-linter, test-author, builder, reviewer, Narrator, approval, protected merge, production smoke, and Done closeout; the temporary PR #12 check override was restored immediately and is not accepted as protected evidence, while PRs #13 and #14 passed the restored required checks.

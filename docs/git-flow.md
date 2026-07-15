@@ -11,6 +11,41 @@ Settings for the product repo's `main` branch. These make the factory's rules me
 - Delete the merged branch. Keep no long-lived integration branches unless concurrency creates a measured need.
 - The local plugin AI review is a pre-publication check for this kit repository. It does not replace the factory Reviewer, Narrator evidence bundle, or human approval for product tickets.
 
+## Parallel kit development
+
+Kit development is parallel; production release selection is serialized.
+Developers may keep multiple focused branches and linked worktrees open at the
+same time:
+
+```bash
+git fetch origin main
+git worktree add ../sf-worktrees/<feature> -b feat/<feature> origin/main
+```
+
+Each worktree owns one coherent change, runs the full local suite, and opens its
+own protected PR. Never share uncommitted files, a branch, or a worktree between
+features. Rebase or merge the latest protected `main` before final checks when
+another PR lands first. A merge produces one independently addressable
+candidate SHA; it does not update any live product.
+
+For every candidate that may reach production:
+
+1. wait for its protected `ci` and `test-immutability` checks;
+2. install that exact merged SHA as a sealed release;
+3. certify the exact release/product-tree tuple;
+4. run an isolated real-Hermes canary when a compatibility-sensitive surface
+   changed;
+5. open a separate protected product `KIT_PIN` PR; and
+6. activate only at a ticket boundary under maintenance and the shared launch
+   barrier.
+
+Only one product activation or rollback may run at a time. Do not activate a
+second candidate while a ticket has a nonterminal lease, a run is active, or an
+activation journal is incomplete. The current dispatcher also remains
+single-ticket: parallel feature branches and candidate releases are supported,
+but simultaneous live dispatcher tickets require a separate concurrency
+milestone and contract change.
+
 ## Kit release lifecycle
 
 A merge to this repository's `main` creates an eligible candidate, not a live
