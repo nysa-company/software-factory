@@ -923,6 +923,91 @@ prepare_writable_product_copy() {
     git -C "$PREPARED_PRODUCT" commit -qm "product certification fixture"
 }
 
+prepare_pinned_scanner() {
+  local source="$1" checkout="$2" scratch="$3"
+  local scanner="$checkout/scripts/secret-scan"
+  [[ -f "$scanner" ]] || return 0
+  grep -Fq 'VERSION = "8.30.1"' "$scanner" || return 0
+  python3 - "$source" "$checkout" "$scratch" <<'PY'
+import hashlib
+import io
+import os
+import pathlib
+import platform
+import tarfile
+import urllib.request
+import sys
+
+source, checkout, scratch = map(pathlib.Path, sys.argv[1:])
+source = source.resolve()
+checkout = checkout.resolve()
+scratch = scratch.resolve()
+version = "8.30.1"
+artifacts = {
+    ("Darwin", "arm64"): ("darwin_arm64", "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5"),
+    ("Darwin", "x86_64"): ("darwin_x64", "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709"),
+    ("Linux", "aarch64"): ("linux_arm64", "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080"),
+    ("Linux", "x86_64"): ("linux_x64", "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"),
+}
+key = (platform.system(), platform.machine())
+if key not in artifacts:
+    raise SystemExit("unsupported platform for pinned scanner")
+suffix, expected = artifacts[key]
+source_archive = source / ".context" / "tools" / "gitleaks" / version / "gitleaks.tar.gz"
+archive_bytes = b""
+if source_archive.is_file():
+    candidate = source_archive.read_bytes()
+    if hashlib.sha256(candidate).hexdigest() == expected:
+        archive_bytes = candidate
+if not archive_bytes:
+    url = (
+        "https://github.com/gitleaks/gitleaks/releases/download/"
+        f"v{version}/gitleaks_{version}_{suffix}.tar.gz"
+    )
+    download = pathlib.Path(scratch) / "gitleaks-download.tar.gz"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            archive_bytes = response.read(100 * 1024 * 1024 + 1)
+    except OSError as exc:
+        raise SystemExit(f"could not download pinned scanner: {exc}")
+    if len(archive_bytes) > 100 * 1024 * 1024:
+        raise SystemExit("pinned scanner download exceeded size limit")
+    if hashlib.sha256(archive_bytes).hexdigest() != expected:
+        raise SystemExit("pinned scanner download checksum mismatch")
+    download.write_bytes(archive_bytes)
+with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as bundle:
+    members = [
+        member for member in bundle.getmembers()
+        if pathlib.PurePosixPath(member.name).name == "gitleaks" and member.isfile()
+    ]
+    if len(members) != 1:
+        raise SystemExit("pinned scanner archive has an unexpected layout")
+    extracted = bundle.extractfile(members[0])
+    if extracted is None:
+        raise SystemExit("could not extract pinned scanner")
+    binary = extracted.read()
+destination = checkout
+for component in (".context", "tools", "gitleaks", version):
+    candidate = destination / component
+    if os.path.lexists(candidate):
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise SystemExit("pinned scanner cache path is unsafe")
+    else:
+        candidate.mkdir()
+    destination = candidate
+if checkout not in destination.resolve().parents:
+    raise SystemExit("pinned scanner cache escaped disposable checkout")
+archive = destination / "gitleaks.tar.gz"
+target = destination / "gitleaks"
+for path in (archive, target):
+    if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+        raise SystemExit("pinned scanner cache file is unsafe")
+archive.write_bytes(archive_bytes)
+target.write_bytes(binary)
+target.chmod(0o755)
+PY
+}
+
 run_kit_checks_isolated() {
   local checkout="$1" home="$2" scratch="$3" workspace="$4" phase="$5"
   shift 5
@@ -1872,6 +1957,8 @@ cmd_install() {
     die "could not create disposable candidate clone"
   git -C "$checkout" remote set-url origin "$origin"
   git -C "$checkout" checkout -q --detach "$sha"
+  prepare_pinned_scanner "$source_top" "$checkout" "$workspace/tmp" ||
+    die "could not stage the pinned scanner for isolated checks"
   run_kit_checks_isolated "$checkout" "$workspace/home" "$workspace/tmp" \
     "$workspace" "install" "$source_top" ||
     die "kit checks failed in disposable checkout"
