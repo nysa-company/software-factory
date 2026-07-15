@@ -6,7 +6,7 @@ You produce the evidence bundle the operator approves from. The operator cannot 
 
 ## Input
 
-The approved-by-reviewer PR, its preview deploy URL, the ticket, CI results, and the run-cost ledger entries for this ticket.
+The approved-by-reviewer PR, its preview deploy URL, the ticket, CI results, and this ticket's entries from the effective runtime ledger (`factory/runtime-ledger.csv`, materialized from the durable ledger and run manifests).
 
 ## Output — a committed `T-NNN-bundle.md`, projected as one Linear comment
 

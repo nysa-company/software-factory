@@ -331,6 +331,16 @@ def ledger_stats(path):
     return stats
 
 
+def effective_ledger(factory_dir):
+    helper = Path(__file__).resolve().parent / "ledger-view.py"
+    subprocess.run(
+        [sys.executable, str(helper), "refresh", "--factory-root", str(factory_dir.parent)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    return factory_dir / "runtime-ledger.csv"
+
+
 def build_description(ticket, stats):
     item = stats.get(ticket["id"], {})
     facts = [f"**State:** {STATES[ticket['state']][0]}"]
@@ -681,7 +691,7 @@ def post_comment(key, issue_id, body, dry):
 
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
     config = mapping["_config"]
-    stats = ledger_stats(factory_dir / "ledger.csv")
+    stats = ledger_stats(effective_ledger(factory_dir))
     project_ids = {
         initiative_id: entry.get("project_id")
         for initiative_id, entry in mapping["initiatives"].items()

@@ -37,6 +37,7 @@ write_envelope() {
     'PER_RUN_MAX_TURNS=5' \
     'PER_RUN_TIMEOUT_MIN=1' \
     'DAILY_CAP_USD=50.00' > "$1/factory/ENVELOPE.env"
+  echo "factory/runtime-ledger.csv" > "$1/.gitignore"
   printf '%s\n' "$KIT_SHA" > "$1/factory/KIT_PIN"
   [[ "$git_mode" == "no-git" ]] || init_product_git "$1"
 }
@@ -386,18 +387,18 @@ GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com \
 git -C "$MAIN" worktree add -q -b ticket-worktree "$WT"
 
 if run_mock "$WT/conformance" planner T-200 >/dev/null &&
-   [[ "$(awk -F, '$3=="T-200" {n++} END {print n+0}' "$MAIN/conformance/factory/ledger.csv")" == "1" ]] &&
-   [[ ! -f "$WT/conformance/factory/ledger.csv" ]]; then
-  pass "linked worktree writes canonical main ledger"
+   [[ "$(awk -F, '$3=="T-200" {n++} END {print n+0}' "$MAIN/conformance/factory/runtime-ledger.csv")" == "1" ]] &&
+   [[ ! -f "$WT/conformance/factory/runtime-ledger.csv" ]]; then
+  pass "linked worktree writes canonical main runtime ledger"
 else
-  fail "linked worktree writes canonical main ledger"
+  fail "linked worktree writes canonical main runtime ledger"
 fi
 
 # Main-clone subdirectory root: canonical ledger must resolve to itself
 # (regression: relative --git-common-dir was resolved against the wrong base,
 # producing a nonexistent path and an empty LEDGER).
 if run_mock "$MAIN/conformance" planner T-202 >/dev/null 2>"$TMP/mainclone.err" &&
-   [[ "$(awk -F, '$3=="T-202" {n++} END {print n+0}' "$MAIN/conformance/factory/ledger.csv")" == "1" ]] &&
+   [[ "$(awk -F, '$3=="T-202" {n++} END {print n+0}' "$MAIN/conformance/factory/runtime-ledger.csv")" == "1" ]] &&
    ! grep -q "No such file or directory" "$TMP/mainclone.err"; then
   pass "main-clone subdirectory root writes its own ledger"
 else
@@ -423,7 +424,7 @@ if FACTORY_ROOT="$WT/conformance" FACTORY_LEDGER="$OVERRIDE" \
      FACTORY_ADAPTER_OVERRIDE=mock \
      "$RUN_AGENT" --role planner --ticket T-201 -- "override" >/dev/null &&
    [[ "$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$OVERRIDE")" == "1" ]] &&
-   [[ "$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$MAIN/conformance/factory/ledger.csv")" == "0" ]]; then
+   [[ "$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$MAIN/conformance/factory/runtime-ledger.csv")" == "0" ]]; then
   pass "FACTORY_LEDGER override wins"
 else
   fail "FACTORY_LEDGER override wins"
@@ -438,9 +439,9 @@ printf '%s\n' \
 echo '2026-07-12,01:00:00,T-OLD,planner,codex,v1,1,0.10,0,old-run,openai' \
   >> "$PARTIAL/factory/ledger.csv"
 if run_mock "$PARTIAL" planner T-203 >/dev/null &&
-   [[ "$(awk 'NR==1 {print; exit}' "$PARTIAL/factory/ledger.csv")" == \
+   [[ "$(awk 'NR==1 {print; exit}' "$PARTIAL/factory/runtime-ledger.csv")" == \
       "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" ]] &&
-   [[ "$(awk -F, '$3=="T-OLD" {print $9}' "$PARTIAL/factory/ledger.csv")" == "0" ]]; then
+   [[ "$(awk -F, '$3=="T-OLD" {print $9}' "$PARTIAL/factory/runtime-ledger.csv")" == "0" ]]; then
   pass "partial ledger header migrates to complete schema"
 else
   fail "partial ledger header migrates to complete schema"
@@ -516,9 +517,9 @@ PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PRIMARY" \
   "$RUN_AGENT" --role planner --ticket T-210 -- "primary route" \
   > "$PRIMARY_OUT" 2>&1 || PRIMARY_STATUS=$?
 if [[ "$PRIMARY_STATUS" -eq 0 ]] &&
-   [[ "$(awk -F, '$3=="T-210" {print $5}' "$PRIMARY/factory/ledger.csv")" == "codex" ]] &&
-   [[ "$(awk -F, '$3=="T-210" {print $11}' "$PRIMARY/factory/ledger.csv")" == "openai" ]] &&
-   [[ "$(awk -F, '$3=="T-210" {print $13}' "$PRIMARY/factory/ledger.csv")" == "primary_ready" ]] &&
+   [[ "$(awk -F, '$3=="T-210" {print $5}' "$PRIMARY/factory/runtime-ledger.csv")" == "codex" ]] &&
+   [[ "$(awk -F, '$3=="T-210" {print $11}' "$PRIMARY/factory/runtime-ledger.csv")" == "openai" ]] &&
+   [[ "$(awk -F, '$3=="T-210" {print $13}' "$PRIMARY/factory/runtime-ledger.csv")" == "primary_ready" ]] &&
    [[ "$(wc -l < "$PRIMARY_TRACE" | tr -d ' ')" == "1" ]] &&
    grep -q '^codex-task$' "$PRIMARY_TRACE"; then
   pass "ready primary submits exactly one primary task"
@@ -540,10 +541,10 @@ FALLBACK_TRACE="$TMP/fallback.trace"
 if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      FACTORY_GLOBAL_ENV="$FALLBACK_GLOBAL" FACTORY_TEST_TRACE="$FALLBACK_TRACE" \
      "$LINKED_RUN_AGENT" --role planner --ticket T-211 -- "fallback route" >/dev/null &&
-   [[ "$(awk -F, '$3=="T-211" {print $5}' "$FALLBACK/factory/ledger.csv")" == "cursor-openai" ]] &&
-   [[ "$(awk -F, '$3=="T-211" {print $12}' "$FALLBACK/factory/ledger.csv")" == "gpt-5.6-sol-high" ]] &&
-   [[ "$(awk -F, '$3=="T-211" {print $14}' "$FALLBACK/factory/ledger.csv")" == "conservative_reservation" ]] &&
-   [[ "$(awk -F, '$3=="T-211" {print $8}' "$FALLBACK/factory/ledger.csv")" == "1.00" ]] &&
+   [[ "$(awk -F, '$3=="T-211" {print $5}' "$FALLBACK/factory/runtime-ledger.csv")" == "cursor-openai" ]] &&
+   [[ "$(awk -F, '$3=="T-211" {print $12}' "$FALLBACK/factory/runtime-ledger.csv")" == "gpt-5.6-sol-high" ]] &&
+   [[ "$(awk -F, '$3=="T-211" {print $14}' "$FALLBACK/factory/runtime-ledger.csv")" == "conservative_reservation" ]] &&
+   [[ "$(awk -F, '$3=="T-211" {print $8}' "$FALLBACK/factory/runtime-ledger.csv")" == "1.00" ]] &&
    [[ "$(wc -l < "$FALLBACK_TRACE" | tr -d ' ')" == "1" ]] &&
    grep -q '^cursor-task$' "$FALLBACK_TRACE"; then
   FALLBACK_OUT="$(ls "$FALLBACK/factory/runs/"*.out)"
@@ -583,9 +584,9 @@ ANTHROPIC_TRACE="$TMP/anthropic.trace"
 if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$ANTHROPIC_FALLBACK" \
      FACTORY_GLOBAL_ENV="$ANTHROPIC_GLOBAL" FACTORY_TEST_TRACE="$ANTHROPIC_TRACE" \
      "$RUN_AGENT" --role spec-linter --ticket T-214 -- "checking fallback" >/dev/null &&
-   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $5}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "cursor-anthropic" ]] &&
-   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $11}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "anthropic" ]] &&
-   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $12}' "$ANTHROPIC_FALLBACK/factory/ledger.csv")" == "claude-sonnet-5-thinking-high" ]] &&
+   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $5}' "$ANTHROPIC_FALLBACK/factory/runtime-ledger.csv")" == "cursor-anthropic" ]] &&
+   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $11}' "$ANTHROPIC_FALLBACK/factory/runtime-ledger.csv")" == "anthropic" ]] &&
+   [[ "$(awk -F, '$3=="T-214" && $4=="spec-linter" {print $12}' "$ANTHROPIC_FALLBACK/factory/runtime-ledger.csv")" == "claude-sonnet-5-thinking-high" ]] &&
    [[ "$(wc -l < "$ANTHROPIC_TRACE" | tr -d ' ')" == "1" ]]; then
   pass "checking fallback preserves Anthropic family"
 else
@@ -609,7 +610,7 @@ PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$MALFORMED" \
   MALFORMED_STATUS=$?
 if [[ "$MALFORMED_STATUS" -eq 9 &&
       "$(wc -l < "$MALFORMED_TRACE" | tr -d ' ')" == "1" ]] &&
-   [[ "$(awk -F, '$3=="T-215" {print $9}' "$MALFORMED/factory/ledger.csv")" == "9" ]]; then
+   [[ "$(awk -F, '$3=="T-215" {print $9}' "$MALFORMED/factory/runtime-ledger.csv")" == "9" ]]; then
   pass "malformed Cursor output fails without another task"
 else
   fail "malformed Cursor output fails without another task" "status $MALFORMED_STATUS"
@@ -629,7 +630,7 @@ PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$MODEL_DRIFT" \
   "$RUN_AGENT" --role planner --ticket T-217 -- "model drift" >/dev/null 2>&1 ||
   MODEL_DRIFT_STATUS=$?
 if [[ "$MODEL_DRIFT_STATUS" -eq 9 &&
-      "$(awk -F, '$3=="T-217" {print $9}' "$MODEL_DRIFT/factory/ledger.csv")" == "9" ]]; then
+      "$(awk -F, '$3=="T-217" {print $9}' "$MODEL_DRIFT/factory/runtime-ledger.csv")" == "9" ]]; then
   pass "reported cross-family Cursor model fails closed"
 else
   fail "reported cross-family Cursor model fails closed" "status $MODEL_DRIFT_STATUS"
@@ -848,7 +849,7 @@ if [[ "$LEASE_STATUS" -eq 3 &&
    grep -q '^Kit-SHA: 0000000000000000000000000000000000000000$' \
      "$LEASE_ROOT/factory/tickets/T-219.md" &&
    [[ "$(grep -c '^Kit-SHA:' "$LEASE_ROOT/factory/tickets/T-219.md")" == "1" ]] &&
-   [[ "$(awk -F, '$3=="T-219" {n++} END {print n+0}' "$LEASE_ROOT/factory/ledger.csv")" == "1" ]]; then
+   [[ "$(awk -F, '$3=="T-219" {n++} END {print n+0}' "$LEASE_ROOT/factory/runtime-ledger.csv")" == "1" ]]; then
   pass "blocked-ticket lease mismatch refuses without overwrite"
 else
   fail "blocked-ticket lease mismatch refuses without overwrite" \

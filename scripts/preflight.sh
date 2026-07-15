@@ -21,7 +21,7 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
 CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
-LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/ledger.csv}"
+LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/runtime-ledger.csv}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 PROJECTED_TICKET_USD="${PROJECTED_TICKET_USD:-5.00}"
 TICKET_SOURCE="$CONTENT_ROOT/factory/tickets/$TICKET.md"
@@ -162,8 +162,17 @@ else
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   TODAY="$(date +%F)"
-  [[ -f "$LEDGER" ]] || echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$LEDGER"
-  SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
+  LEDGER_READY=1
+  if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+     ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh --factory-root "$REPO_ROOT" >/dev/null; then
+    fail "effective ledger could not be reduced"
+    LEDGER_READY=0
+  fi
+  if [[ "$LEDGER_READY" -eq 1 ]]; then
+    SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
+  else
+    SPENT_TODAY="0.0000"
+  fi
   if awk -v s="$SPENT_TODAY" -v r="$PROJECTED_TICKET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
     fail "repo daily cap insufficient (spent \$$SPENT_TODAY + reserve \$$PROJECTED_TICKET_USD > \$$DAILY_CAP_USD)"
   else

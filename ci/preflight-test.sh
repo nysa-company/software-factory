@@ -97,6 +97,7 @@ PER_RUN_TIMEOUT_MIN=5
 DAILY_CAP_USD=$daily_cap
 ENV
   echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$dir/factory/ledger.csv"
+  echo "factory/runtime-ledger.csv" > "$dir/.gitignore"
   printf '%s\n' "$KIT_HEAD_NOW" > "$dir/factory/KIT_PIN"
 }
 

@@ -50,8 +50,8 @@ if ! factory_validate_runtime_overrides; then
   exit 1
 fi
 
-canonical_ledger() {
-  local root="$1" root_abs worktree_root common_dir main_root relative
+canonical_factory_file() {
+  local root="$1" name="$2" root_abs worktree_root common_dir main_root relative
   root_abs="$(cd "$root" 2>/dev/null && pwd -P || printf '%s' "$root")"
   if worktree_root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" &&
      common_dir="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)"; then
@@ -64,7 +64,7 @@ canonical_ledger() {
       *) common_dir="$root_abs/$common_dir" ;;
     esac
     if ! main_root="$(cd "$common_dir/.." 2>/dev/null && pwd -P)"; then
-      printf '%s/factory/ledger.csv\n' "$root_abs"
+      printf '%s/factory/%s\n' "$root_abs" "$name"
       return
     fi
     if [[ "$root_abs" == "$worktree_root" ]]; then
@@ -72,16 +72,17 @@ canonical_ledger() {
     elif [[ "$root_abs" == "$worktree_root/"* ]]; then
       relative="${root_abs#"$worktree_root/"}"
     else
-      printf '%s/factory/ledger.csv\n' "$root_abs"
+      printf '%s/factory/%s\n' "$root_abs" "$name"
       return
     fi
-    printf '%s%s/factory/ledger.csv\n' "$main_root" "${relative:+/$relative}"
+    printf '%s%s/factory/%s\n' "$main_root" "${relative:+/$relative}" "$name"
   else
-    printf '%s/factory/ledger.csv\n' "$root_abs"
+    printf '%s/factory/%s\n' "$root_abs" "$name"
   fi
 }
 
-LEDGER="${FACTORY_LEDGER:-$(canonical_ledger "$REPO_ROOT")}"
+LEDGER="${FACTORY_LEDGER:-$(canonical_factory_file "$REPO_ROOT" runtime-ledger.csv)}"
+DURABLE_LEDGER="${FACTORY_DURABLE_LEDGER:-$(canonical_factory_file "$REPO_ROOT" ledger.csv)}"
 TICKETS_DIR="$CONTENT_ROOT/factory/tickets"
 
 TICKET_FILE="$TICKETS_DIR/$TICKET.md"
@@ -109,6 +110,14 @@ if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
 fi
 if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   echo "REFUSE $FACTORY_DISPATCH_LEASE_ERROR"
+  exit 1
+fi
+if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+   ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh \
+     --factory-root "$REPO_ROOT" \
+     --durable-ledger "$DURABLE_LEDGER" \
+     --runtime-ledger "$LEDGER" >/dev/null; then
+  echo "REFUSE effective ledger could not be reduced"
   exit 1
 fi
 

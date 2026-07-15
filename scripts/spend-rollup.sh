@@ -2,12 +2,20 @@
 # spend-rollup.sh — daily cost summary from the ledger, posted to Linear
 # (or printed if no Linear config). Schedule via launchd as com.factory.spend-rollup.
 #
-# Env: FACTORY_LEDGER (default ./factory/ledger.csv)
+# Env: FACTORY_LEDGER (optional effective-ledger override)
 #      LINEAR_API_KEY + LINEAR_ROLLUP_ISSUE_ID — optional; posts a comment when both set.
 set -euo pipefail
 
-LEDGER="${FACTORY_LEDGER:-$PWD/factory/ledger.csv}"
+ROOT="${FACTORY_ROOT:-$PWD}"
+LEDGER="${FACTORY_LEDGER:-$ROOT/factory/runtime-ledger.csv}"
 DAY="${1:-$(date +%F)}"
+if [[ -z "${FACTORY_LEDGER:-}" ]]; then
+  KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+  python3 "$KIT_DIR/scripts/ledger-view.py" refresh --factory-root "$ROOT" >/dev/null || {
+    echo "effective ledger could not be reduced" >&2
+    exit 1
+  }
+fi
 [[ -f "$LEDGER" ]] || { echo "no ledger at $LEDGER"; exit 0; }
 
 SUMMARY="$(awk -F, -v d="$DAY" '

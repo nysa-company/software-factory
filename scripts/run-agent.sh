@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # run-agent.sh — the only sanctioned way to start a factory agent run.
 # Enforces per-run, per-ticket, and daily budgets; serializes cap checks with a
-# lock; anchors run artifacts to the caller's product root while routing the
-# ledger to the main working tree; logs every run to the cost ledger; enforces
+# lock; anchors run artifacts to the caller's product root; records each run
+# atomically and materializes an ignored runtime ledger; enforces
 # the cross-family role→adapter mapping; rejects overlapping ticket+role runs.
 #
 # Usage:
@@ -43,11 +43,10 @@ REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "
 [[ "$WORKDIR_SET" -eq 1 ]] || WORKDIR="$REPO_ROOT"
 FACTORY_DIR="$REPO_ROOT/factory"
 
-# A linked worktree has its own copy of factory/, but costs must have one
-# source of truth. Map the caller's FACTORY_ROOT to the same relative path
-# under the main working tree. An explicit FACTORY_LEDGER always wins.
-canonical_ledger() {
-  local root="$1" root_abs worktree_root common_dir main_root relative
+# Direct callers may anchor FACTORY_ROOT inside a linked worktree. Runtime
+# accounting still belongs beside the same product path in the main checkout.
+canonical_factory_file() {
+  local root="$1" name="$2" root_abs worktree_root common_dir main_root relative
   root_abs="$(cd "$root" 2>/dev/null && pwd -P || printf '%s' "$root")"
   if worktree_root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" &&
      common_dir="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)"; then
@@ -60,7 +59,7 @@ canonical_ledger() {
       *) common_dir="$root_abs/$common_dir" ;;
     esac
     if ! main_root="$(cd "$common_dir/.." 2>/dev/null && pwd -P)"; then
-      printf '%s/factory/ledger.csv\n' "$root_abs"
+      printf '%s/factory/%s\n' "$root_abs" "$name"
       return
     fi
     if [[ "$root_abs" == "$worktree_root" ]]; then
@@ -68,16 +67,17 @@ canonical_ledger() {
     elif [[ "$root_abs" == "$worktree_root/"* ]]; then
       relative="${root_abs#"$worktree_root/"}"
     else
-      printf '%s/factory/ledger.csv\n' "$root_abs"
+      printf '%s/factory/%s\n' "$root_abs" "$name"
       return
     fi
-    printf '%s%s/factory/ledger.csv\n' "$main_root" "${relative:+/$relative}"
+    printf '%s%s/factory/%s\n' "$main_root" "${relative:+/$relative}" "$name"
   else
-    printf '%s/factory/ledger.csv\n' "$root_abs"
+    printf '%s/factory/%s\n' "$root_abs" "$name"
   fi
 }
 
-LEDGER="${FACTORY_LEDGER:-$(canonical_ledger "$REPO_ROOT")}"
+LEDGER="${FACTORY_LEDGER:-$(canonical_factory_file "$REPO_ROOT" runtime-ledger.csv)}"
+DURABLE_LEDGER="${FACTORY_DURABLE_LEDGER:-$(canonical_factory_file "$REPO_ROOT" ledger.csv)}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 LEDGER_DIR="$(dirname "$LEDGER")"
 LOCK_DIR="$LEDGER_DIR/.ledger.lock"
@@ -102,6 +102,17 @@ MANIFEST_PHASE=""
 ROLE_EXIT_STATUS=""
 ROLE_HEAD_BEFORE=""
 ROLE_BRANCH_BEFORE=""
+ACCOUNTING_SCHEMA=""
+ACCOUNTING_STATE=""
+GO_ISSUED=0
+RUN_STARTED_AT=""
+TERMINAL_AT=""
+RESERVED_USD=""
+EFFECTIVE_COST=""
+EXIT_STATUS=""
+COST_BASIS=""
+TURNS=0
+PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 SEQUENCER_ERROR=""
 
@@ -146,6 +157,17 @@ write_manifest() {
   {
     echo "run_id=$(meta_value "${RUN_ID:-}")"
     echo "phase=$(meta_value "$phase")"
+    echo "accounting_schema=$(meta_value "$ACCOUNTING_SCHEMA")"
+    echo "accounting_state=$(meta_value "$ACCOUNTING_STATE")"
+    echo "reserved_usd=$(meta_value "$RESERVED_USD")"
+    echo "go_issued=$(meta_value "$GO_ISSUED")"
+    echo "started_at=$(meta_value "$RUN_STARTED_AT")"
+    echo "terminal_at=$(meta_value "$TERMINAL_AT")"
+    echo "prompt_version=$(meta_value "$PROMPT_VERSION")"
+    echo "turns=$(meta_value "$TURNS")"
+    echo "effective_cost=$(meta_value "$EFFECTIVE_COST")"
+    echo "exit_status=$(meta_value "$EXIT_STATUS")"
+    echo "cost_basis=$(meta_value "$COST_BASIS")"
     echo "ticket=$(meta_value "$TICKET")"
     echo "role=$(meta_value "$ROLE")"
     echo "adapter=$(meta_value "${ADAPTER:-}")"
@@ -171,6 +193,50 @@ write_manifest() {
   MANIFEST_PHASE="$phase"
 }
 
+finalize_accounting() {
+  ACCOUNTING_STATE="$1"
+  EFFECTIVE_COST="$2"
+  TURNS="$3"
+  EXIT_STATUS="$4"
+  COST_BASIS="$5"
+  TERMINAL_AT="$(date -u +%FT%TZ)"
+  write_manifest "${6:-$ACCOUNTING_STATE}"
+}
+
+refresh_runtime_ledger() {
+  python3 "$KIT_DIR/scripts/ledger-view.py" refresh \
+    --factory-root "$REPO_ROOT" \
+    --durable-ledger "$DURABLE_LEDGER" \
+    --runtime-ledger "$LEDGER" \
+    --runs-dir "$RUNS_DIR" >/dev/null
+}
+
+finalize_global_ledger() {
+  local acquired=0 tmp_global
+  [[ -n "$GLOBAL_LEDGER" && -f "$GLOBAL_LEDGER" ]] || return 0
+  if [[ "$HELD_GLOBAL_LOCK" -ne 1 ]]; then
+    for _global_try in $(seq 1 50); do
+      if mkdir "$GLOBAL_LOCK" 2>/dev/null; then
+        HELD_GLOBAL_LOCK=1
+        acquired=1
+        break
+      fi
+      sleep 0.2
+    done
+  fi
+  if [[ "$HELD_GLOBAL_LOCK" -ne 1 ]]; then
+    echo "WARNING: global ledger lock stuck while finalizing run $RUN_ID — conservative reservation retained" >&2
+    return 0
+  fi
+  tmp_global="$GLOBAL_LEDGER.tmp.$$"
+  awk -F, -v reserved="reserved-$RUN_ID" '$10 != reserved' "$GLOBAL_LEDGER" > "$tmp_global"
+  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$EFFECTIVE_COST,$EXIT_STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$tmp_global"
+  mv "$tmp_global" "$GLOBAL_LEDGER"
+  rmdir "$GLOBAL_LOCK" 2>/dev/null || true
+  HELD_GLOBAL_LOCK=0
+  : "$acquired"
+}
+
 terminate_run_group() {
   [[ "$RUN_GROUP_ACTIVE" -eq 1 && "$RUN_PGID" =~ ^[0-9]+$ ]] || return 0
   if ! kill -0 -- "-$RUN_PGID" 2>/dev/null; then
@@ -191,6 +257,7 @@ terminate_run_group() {
 }
 
 cleanup() {
+  local status=$?
   terminate_run_group || true
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
@@ -201,7 +268,15 @@ cleanup() {
   fi
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
-  if [[ -n "$MANIFEST" && "$MANIFEST_PHASE" != "completed" && "$MANIFEST_PHASE" != "abandoned" ]]; then
+  if [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
+    [[ "$status" -ne 0 ]] || status=125
+    if [[ "$GO_ISSUED" -eq 1 ]]; then
+      finalize_accounting "abandoned_conservative" "$RESERVED_USD" "${TURNS:-0}" "$status" "conservative_reservation" "abandoned"
+    else
+      finalize_accounting "launch_void" "0" "0" "$status" "launch_void" "abandoned"
+    fi
+    finalize_global_ledger || true
+  elif [[ -n "$MANIFEST" && -z "$ACCOUNTING_STATE" && "$MANIFEST_PHASE" != "abandoned" ]]; then
     write_manifest "abandoned"
   fi
   [[ "$HELD_GLOBAL_LOCK" -eq 0 ]] || rmdir "$GLOBAL_LOCK" 2>/dev/null || true
@@ -286,6 +361,10 @@ if [[ -z "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
   TICKET_AFFINITY_WAS_MISSING=1
   FACTORY_TICKET_KIT_SHA="$FACTORY_KIT_SHA"
 fi
+if [[ -z "${FACTORY_LEDGER:-}" ]] && ! refresh_runtime_ledger; then
+  echo "effective ledger could not be reduced; no task was submitted" >&2
+  exit 3
+fi
 if ! sequencer_allows_role; then
   echo "$SEQUENCER_ERROR; no task was submitted" >&2
   exit 10
@@ -328,15 +407,15 @@ ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
 
 mkdir -p "$FACTORY_DIR" "$RUNS_DIR" "$LEDGER_DIR"
-REPO_LEDGER_HEADER="date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
 GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
-LEGACY_REPO_HEADER="date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
-PARTIAL_REPO_HEADER="$LEGACY_REPO_HEADER,run_id,provider_family"
 LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
 PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
 TODAY="$(date +%F)"
 RUN_ID="$(date +%s)-$$"
 MANIFEST="$RUNS_DIR/$RUN_ID.meta"
+RUN_STARTED_AT="$(date -u +%FT%TZ)"
+RESERVED_USD="$PER_RUN_BUDGET_USD"
+[[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
 write_manifest "resolved"
 
 # Serialize task registration with kill-switch KILL creation + PID scanning.
@@ -401,22 +480,9 @@ fi
 # mkdir is atomic: it is the lock. Reservation counts this run's full per-run
 # budget against the caps, so N concurrent runs cannot all squeeze past.
 for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "ledger lock stuck — see runbook" >&2; exit 8; }; done
-if [[ ! -f "$LEDGER" ]]; then
-  echo "$REPO_LEDGER_HEADER" > "$LEDGER"
-else
-  CURRENT_HEADER="$(awk 'NR==1 {print; exit}' "$LEDGER")"
-  case "$CURRENT_HEADER" in
-    "$REPO_LEDGER_HEADER") ;;
-    "$LEGACY_REPO_HEADER"|"$PARTIAL_REPO_HEADER")
-      TMP_HEADER="$LEDGER.header.$$"
-      { echo "$REPO_LEDGER_HEADER"; awk 'NR>1' "$LEDGER"; } > "$TMP_HEADER"
-      mv "$TMP_HEADER" "$LEDGER"
-      ;;
-    *)
-      echo "unsupported ledger schema; refusing automatic rewrite: $CURRENT_HEADER" >&2
-      exit 3
-      ;;
-  esac
+if ! refresh_runtime_ledger; then
+  echo "effective ledger could not be reduced; refusing launch" >&2
+  exit 3
 fi
 
 # --- one live run per ticket+role across all linked worktrees ---
@@ -451,12 +517,12 @@ if awk -v s="$SPENT_TICKET" -v r="$PER_RUN_BUDGET_USD" -v cap="$PER_TICKET_BUDGE
 fi
 # Global cap check + reservation (own lock, taken while holding the repo
 # lock — lock order is always repo → global, so no deadlock is possible).
-PROMPT_VERSION="unversioned"
-[[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
 LEDGER_FAMILY="$(meta_value "$SELECTED_FAMILY")"
 LEDGER_MODEL="$(meta_value "$SELECTED_MODEL")"
 LEDGER_REASON="$(meta_value "$SELECTION_REASON")"
 LEDGER_VERSION="$(meta_value "$SELECTED_VERSION")"
+ACCOUNTING_SCHEMA=1
+ACCOUNTING_STATE="reserved"
 if [[ -n "$GLOBAL_LEDGER" ]]; then
   mkdir -p "$(dirname "$GLOBAL_LEDGER")"
   for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "global ledger lock stuck — see runbook" >&2; rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0; exit 8; }; done
@@ -487,11 +553,14 @@ if [[ -n "$GLOBAL_LEDGER" ]]; then
   HELD_GLOBAL_LOCK=0
 fi
 
-# Reserve: write a provisional ledger row at full per-run budget; replaced with
-# the real cost after the run. A crash leaves the conservative row in place.
-echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION" >> "$LEDGER"
-rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
+# Reserve in the per-run manifest, then materialize the ignored runtime view.
+# A crash after GO leaves the full conservative reservation in force.
 write_manifest "reserved"
+if ! refresh_runtime_ledger; then
+  echo "effective ledger could not be materialized; refusing launch" >&2
+  exit 3
+fi
+rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 
 # --- run one task-bearing process in an isolated process group ---
 set +e
@@ -578,8 +647,9 @@ else
       wait "$RUN_PID" 2>/dev/null
       STATUS=10
     else
-      : > "$RUN_GO_FILE"
+      GO_ISSUED=1
       write_manifest "spawned"
+      : > "$RUN_GO_FILE"
       rmdir "$LAUNCH_LOCK"
       HELD_LAUNCH_LOCK=0
       wait "$RUN_PID"
@@ -649,13 +719,18 @@ METRICS_LINE="$(printf '%s\n' "$RESULT" | tail -n1)"
 TURNS="$(sed -n 's/.*turns=\([0-9][0-9]*\).*/\1/p' <<<"$METRICS_LINE")"
 COST="$(sed -n 's/.*cost_usd=\([0-9.][0-9.]*\).*/\1/p' <<<"$METRICS_LINE")"
 COST_BASIS="$(sed -n 's/.*cost_basis=\([A-Za-z0-9_-]*\).*/\1/p' <<<"$METRICS_LINE")"
-# Unparsable cost: keep the conservative full-budget reservation and say so
-# loudly — never silently log $0 against the caps.
-if [[ -z "$COST" ]]; then
+[[ -z "$COST" || "$COST" =~ ^[0-9]+([.][0-9]+)?$ ]] || COST=""
+if [[ "$GO_ISSUED" -eq 0 ]]; then
+  COST="0"
+  TURNS="0"
+  COST_BASIS="launch_void"
+  FINAL_ACCOUNTING_STATE="launch_void"
+elif [[ -z "$COST" ]]; then
   echo "WARNING: run cost unparsable — ledger keeps conservative reservation of \$$PER_RUN_BUDGET_USD for this run. Reconcile with the provider console." >&2
   COST="$PER_RUN_BUDGET_USD"
   TURNS="${TURNS:-0}"
   COST_BASIS="conservative_reservation"
+  FINAL_ACCOUNTING_STATE="abandoned_conservative"
 elif [[ -z "$COST_BASIS" ]]; then
   case "$ADAPTER" in
     claude-code) COST_BASIS="provider_reported" ;;
@@ -663,40 +738,28 @@ elif [[ -z "$COST_BASIS" ]]; then
     mock) COST_BASIS="test_fixture" ;;
     *) COST_BASIS="estimated_tokens" ;;
   esac
+  FINAL_ACCOUNTING_STATE="completed"
+else
+  FINAL_ACCOUNTING_STATE="completed"
 fi
 
-# Replace the reservation row with the real result (under lock).
+finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" "$STATUS" "$COST_BASIS" "completed"
+
+# Refresh the materialized view under the same lock used by budget checks.
 for i in $(seq 1 50); do
   mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }
   sleep 0.2
 done
 if [[ "$HELD_LEDGER_LOCK" -ne 1 ]]; then
-  echo "ledger lock stuck while finalizing run $RUN_ID — conservative reservation retained" >&2
-  exit 8
-fi
-TMP_LEDGER="$LEDGER.tmp.$$"
-awk -F, -v reserved="reserved-$RUN_ID" '$9 != reserved' "$LEDGER" > "$TMP_LEDGER"
-echo "$TODAY,$(date +%T),$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$TMP_LEDGER"
-mv "$TMP_LEDGER" "$LEDGER"
-rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
-
-# Same replacement in the machine-global ledger, if configured.
-if [[ -n "$GLOBAL_LEDGER" && -f "$GLOBAL_LEDGER" ]]; then
-  for i in $(seq 1 50); do
-    mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }
-    sleep 0.2
-  done
-  if [[ "$HELD_GLOBAL_LOCK" -ne 1 ]]; then
-    echo "global ledger lock stuck while finalizing run $RUN_ID — conservative reservation retained" >&2
-    exit 8
+  echo "WARNING: ledger lock stuck while materializing run $RUN_ID; manifest remains authoritative" >&2
+else
+  if ! refresh_runtime_ledger; then
+    echo "WARNING: effective ledger materialization failed for run $RUN_ID; manifest remains authoritative" >&2
   fi
-  TMP_GLOBAL="$GLOBAL_LEDGER.tmp.$$"
-  awk -F, -v reserved="reserved-$RUN_ID" '$10 != reserved' "$GLOBAL_LEDGER" > "$TMP_GLOBAL"
-  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$COST,$STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$TMP_GLOBAL"
-  mv "$TMP_GLOBAL" "$GLOBAL_LEDGER"
-  rmdir "$GLOBAL_LOCK"; HELD_GLOBAL_LOCK=0
+  rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 fi
 
-write_manifest "completed"
+finalize_global_ledger
+
 printf '%s\n' "$RESULT"
 exit "$STATUS"

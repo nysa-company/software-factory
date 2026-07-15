@@ -30,6 +30,7 @@ run_immutability() {
 }
 
 run_suite "Linear reconciler regression suite" python3 "$ROOT/ci/linear-sync-test.py"
+run_suite "runtime ledger regression suite" python3 "$ROOT/ci/ledger-view-test.py"
 run_suite "factory script regression suite" bash "$ROOT/ci/test-factory-scripts.sh"
 run_suite "dispatcher lease suite" bash "$ROOT/ci/dispatch-leases-test.sh"
 run_suite "reorder test-fixes suite" bash "$ROOT/ci/reorder-test-fixes-test.sh"
