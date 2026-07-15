@@ -124,12 +124,23 @@ sequencer_allows_role() {
     return 1
   fi
   if [[ -n "$DISPATCH_LEASE_ID" ]]; then
-    output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
-      bash "$SEQUENCER" --ticket "$TICKET" --lease "$DISPATCH_LEASE_ID" \
-        --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
+    if [[ -n "${FACTORY_LEDGER:-}" ]]; then
+      output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
+        bash "$SEQUENCER" --ticket "$TICKET" --lease "$DISPATCH_LEASE_ID" \
+          --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
+    else
+      output="$(FACTORY_ROOT="$REPO_ROOT" \
+        bash "$SEQUENCER" --ticket "$TICKET" --lease "$DISPATCH_LEASE_ID" \
+          --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
+    fi
   else
-    output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
-      bash "$SEQUENCER" --ticket "$TICKET" --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
+    if [[ -n "${FACTORY_LEDGER:-}" ]]; then
+      output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
+        bash "$SEQUENCER" --ticket "$TICKET" --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
+    else
+      output="$(FACTORY_ROOT="$REPO_ROOT" \
+        bash "$SEQUENCER" --ticket "$TICKET" --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
+    fi
   fi
   if [[ "$rc" -ne 0 ]]; then
     SEQUENCER_ERROR="sequencer refused the ticket state"
@@ -261,7 +272,7 @@ terminate_run_group() {
 }
 
 cleanup() {
-  local status=$?
+  local status=$? accounting_finalized=0
   terminate_run_group || true
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
@@ -279,9 +290,30 @@ cleanup() {
     else
       finalize_accounting "launch_void" "0" "0" "$status" "launch_void" "abandoned"
     fi
-    finalize_global_ledger || true
+    accounting_finalized=1
   elif [[ -n "$MANIFEST" && -z "$ACCOUNTING_STATE" && "$MANIFEST_PHASE" != "abandoned" ]]; then
-    write_manifest "abandoned"
+    [[ "$status" -ne 0 ]] || status=125
+    ACCOUNTING_SCHEMA=1
+    finalize_accounting "launch_void" "0" "0" "$status" "launch_void" "abandoned"
+    accounting_finalized=1
+  fi
+  if [[ "$accounting_finalized" -eq 1 ]]; then
+    if [[ "$HELD_LEDGER_LOCK" -eq 0 ]]; then
+      for _cleanup_try in $(seq 1 50); do
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+          HELD_LEDGER_LOCK=1
+          break
+        fi
+        sleep 0.2
+      done
+    fi
+    if [[ "$HELD_LEDGER_LOCK" -eq 1 ]]; then
+      refresh_runtime_ledger ||
+        echo "WARNING: cleanup could not refresh runtime accounting; terminal manifest remains authoritative" >&2
+    else
+      echo "WARNING: cleanup could not lock runtime accounting; terminal manifest remains authoritative" >&2
+    fi
+    finalize_global_ledger || true
   fi
   [[ "$HELD_GLOBAL_LOCK" -eq 0 ]] || rmdir "$GLOBAL_LOCK" 2>/dev/null || true
   [[ "$HELD_LEDGER_LOCK" -eq 0 ]] || rmdir "$LOCK_DIR" 2>/dev/null || true

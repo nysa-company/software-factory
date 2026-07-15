@@ -260,11 +260,11 @@ run_mock() {
 }
 
 ledger_header() {
-  printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status'
+  printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version'
 }
 
 ledger_row() {
-  printf '2026-07-13,06:00:00,%s,%s,mock,test,1,0.10,0\n' "$1" "$2"
+  printf '2026-07-13,06:00:00,%s,%s,mock,test,1,0.10,0,,,,,,\n' "$1" "$2"
 }
 
 expect_stage() {
@@ -739,7 +739,6 @@ printf 'reviewer round 1: REQUEST CHANGES — fix code\n' \
 FIX_GATE_STATUS=0
 run_mock "$FIX_GATE" builder T-226 >/dev/null 2>&1 || FIX_GATE_STATUS=$?
 FIX_GATE_NEXT="$(FACTORY_ROOT="$FIX_GATE" \
-  FACTORY_LEDGER="$FIX_GATE/factory/ledger.csv" \
   "$NEXT_STAGE" --ticket T-226 2>&1)"
 if [[ "$FIX_GATE_STATUS" -eq 0 && "$FIX_GATE_NEXT" == "RUN reviewer" ]]; then
   pass "sequencer permits builder for exact FIX action"
@@ -794,7 +793,14 @@ wait "$STATE_LOCK_PID"
 STATE_LOCK_STATUS=$?
 if [[ "$STATE_LOCK_STATUS" -eq 10 &&
       ! -f "$STATE_LOCK/factory/runs/"*.out ]] &&
-   grep -q 'after launch lock acquisition' "$TMP/sequence-after-lock.out"; then
+   grep -q 'after launch lock acquisition' "$TMP/sequence-after-lock.out" &&
+   grep -q '^accounting_schema=1$' "$STATE_LOCK/factory/runs/"*.meta &&
+   grep -q '^accounting_state=launch_void$' "$STATE_LOCK/factory/runs/"*.meta &&
+   grep -q '^go_issued=0$' "$STATE_LOCK/factory/runs/"*.meta &&
+   grep -q '^effective_cost=0$' "$STATE_LOCK/factory/runs/"*.meta &&
+   grep -q '^exit_status=10$' "$STATE_LOCK/factory/runs/"*.meta &&
+   awk -F, '$3=="T-224" && $8==0 && $9==10 && $14=="launch_void" {found=1} END {exit !found}' \
+     "$STATE_LOCK/factory/runtime-ledger.csv"; then
   pass "post-lock sequencer catches state-change race"
 else
   fail "post-lock sequencer catches state-change race" \
@@ -815,7 +821,10 @@ for _i in $(seq 1 100); do
   [[ -n "$(ls "$STATE_GO/factory/runs/".*.ready 2>/dev/null || true)" ]] && break
   sleep 0.02
 done
-ledger_row T-225 planner >> "$STATE_GO/factory/ledger.csv"
+{
+  ledger_header
+  ledger_row T-225 planner
+} > "$STATE_GO/factory/ledger.csv"
 wait "$STATE_GO_PID"
 STATE_GO_STATUS=$?
 if [[ "$STATE_GO_STATUS" -eq 10 ]] &&
