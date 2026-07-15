@@ -844,7 +844,6 @@ def main():
         log(f"no factory/ under {args.factory_root} — nothing to do")
         return 0
     map_path = factory_dir / "linear-map.json"
-    mapping = load_map(map_path)
     key = api_key()
     if not key:
         log(f"no API key (set LINEAR_API_KEY or create {KEY_FILE}) — skipping cycle")
@@ -852,14 +851,18 @@ def main():
 
     try:
         with sync_lock(factory_dir, args.dry_run):
-            reconcile(key, factory_dir, mapping, map_path, args.setup, args.dry_run)
+            mapping = load_map(map_path)
+            try:
+                reconcile(key, factory_dir, mapping, map_path, args.setup, args.dry_run)
+            except Exception as error:
+                log(f"sync error (will retry next cycle): {error}")
+                if not args.dry_run:
+                    try:
+                        record_failure(map_path, mapping, error)
+                    except OSError:
+                        pass
     except Exception as error:
         log(f"sync error (will retry next cycle): {error}")
-        if not args.dry_run:
-            try:
-                record_failure(map_path, mapping, error)
-            except OSError:
-                pass
     return 0
 
 

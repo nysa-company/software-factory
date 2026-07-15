@@ -24,20 +24,14 @@ TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
 [[ -z "$(git -C "$WORKDIR" status --porcelain)" ]] || { echo "ticket worktree is dirty" >&2; exit 1; }
 BRANCH="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 [[ -n "$BRANCH" ]] || { echo "ticket worktree is detached" >&2; exit 1; }
-OPERATOR_VERSION="$(python3 - "$MAP" "$TICKET" <<'PY'
-import hashlib, json, sys
-from pathlib import Path
-path, ticket = Path(sys.argv[1]), sys.argv[2]
-data = json.loads(path.read_text()) if path.is_file() else {}
-value = data.get("tickets", {}).get(ticket, {}).get("operator")
-print(hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest())
-PY
-)"
 
 TMP="$(mktemp "${TMPDIR:-/tmp}/ticket-state.XXXXXX")"
-trap 'rm -f "$TMP"' EXIT
+OPERATOR_VERSION_FILE="$(mktemp "${TMPDIR:-/tmp}/ticket-state-version.XXXXXX")"
+trap 'rm -f "$TMP" "$OPERATOR_VERSION_FILE"' EXIT
 python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
-  --ticket-file "$TICKET_FILE" --operator-map "$MAP" --ticket "$TICKET" > "$TMP"
+  --ticket-file "$TICKET_FILE" --operator-map "$MAP" --ticket "$TICKET" \
+  --operator-version-file "$OPERATOR_VERSION_FILE" > "$TMP"
+OPERATOR_VERSION="$(<"$OPERATOR_VERSION_FILE")"
 
 if [[ "$ACTION" == "transition" ]]; then
   python3 - "$TMP" "$STATE" <<'PY'
@@ -85,16 +79,18 @@ REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads origin \
   "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
 [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] || { echo "ticket-state remote verification failed" >&2; exit 1; }
 
-python3 - "$MAP" "$TICKET" "$OPERATOR_VERSION" <<'PY'
+python3 - "$KIT_DIR/scripts/lib" "$MAP" "$TICKET" "$OPERATOR_VERSION" <<'PY'
 import fcntl
-import hashlib
 import json
 import os
 import sys
 import tempfile
 from pathlib import Path
 
-path, ticket, expected = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+sys.path.insert(0, sys.argv[1])
+from effective_ticket import operator_version
+
+path, ticket, expected = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
 if not path.is_file():
     raise SystemExit(0)
 lock = path.parent / ".linear-sync.lock"
@@ -102,9 +98,7 @@ with lock.open("a") as handle:
     fcntl.flock(handle, fcntl.LOCK_EX)
     data = json.loads(path.read_text())
     entry = data.get("tickets", {}).get(ticket, {})
-    current = hashlib.sha256(
-        json.dumps(entry.get("operator"), sort_keys=True).encode()
-    ).hexdigest()
+    current = operator_version(entry.get("operator") or {})
     if current != expected:
         raise SystemExit(0)
     entry.pop("operator", None)

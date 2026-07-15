@@ -24,9 +24,26 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com commit -qm fi
 git init --bare -q "$REMOTE"
 git -C "$PRODUCT" remote add origin "$REMOTE"
 git -C "$PRODUCT" push -q -u origin ticket/T-700
+cat > "$REMOTE/hooks/pre-receive" <<EOF
+#!/usr/bin/env bash
+python3 - '$PRODUCT/factory/linear-map.json' '$TMP/volatile-refreshed' <<'PY'
+import json, sys
+from pathlib import Path
+path, marker = map(Path, sys.argv[1:])
+data = json.loads(path.read_text())
+operator = data["tickets"]["T-700"].get("operator")
+if operator:
+    operator["observed_at"] = "2026-07-15T00:01:00Z"
+    operator["linear_updated_at"] = "2026-07-15T00:01:00Z"
+    path.write_text(json.dumps(data, sort_keys=True) + "\n")
+    marker.touch()
+PY
+EOF
+chmod +x "$REMOTE/hooks/pre-receive"
 
 FACTORY_ROOT="$PRODUCT" "$ROOT/scripts/ticket-state.sh" \
   --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
+[[ -f "$TMP/volatile-refreshed" ]]
 grep -q '^State: Ready$' "$PRODUCT/factory/tickets/T-700.md"
 grep -q '^Priority: high$' "$PRODUCT/factory/tickets/T-700.md"
 python3 - "$PRODUCT/factory/linear-map.json" <<'PY'

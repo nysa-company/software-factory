@@ -2,8 +2,11 @@
 """Dependency-free regression tests for scripts/linear-sync.py."""
 
 import importlib.util
+import fcntl
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -333,6 +336,24 @@ class LinearSyncTest(unittest.TestCase):
         self.assertEqual((self.factory / "tickets" / "T-001.md").read_text(), before_ticket)
         self.assertEqual(json.dumps(self.mapping, sort_keys=True), before_map)
         self.assertFalse(self.map_path.exists())
+
+    def test_lock_contender_does_not_overwrite_map(self):
+        self.mapping["tickets"]["T-001"] = {
+            "operator": {"state": "Ready", "observed_at": "fresh"}
+        }
+        LINEAR.save_map(self.map_path, self.mapping)
+        before = self.map_path.read_bytes()
+        with (self.factory / ".linear-sync.lock").open("w") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/linear-sync.py"),
+                 "--factory-root", str(self.root)],
+                env={**os.environ, "LINEAR_API_KEY": "test"},
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.map_path.read_bytes(), before)
 
     def test_setup_creates_all_states_and_labels(self):
         mapping = LINEAR.load_map(self.map_path)

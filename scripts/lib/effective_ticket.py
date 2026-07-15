@@ -2,10 +2,13 @@
 """Read committed ticket content with Linear-owned operator fields overlaid."""
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
 from pathlib import Path
+
+MATERIALIZED_OPERATOR_FIELDS = ("priority", "initiative", "state", "approval")
 
 
 def replace_field(text, name, value):
@@ -22,7 +25,18 @@ def replace_field(text, name, value):
 
 
 def operator_fields(mapping, ticket_id):
-    return mapping.get("tickets", {}).get(ticket_id, {}).get("operator", {})
+    return mapping.get("tickets", {}).get(ticket_id, {}).get("operator") or {}
+
+
+def operator_version(operator):
+    values = {
+        key: operator[key]
+        for key in MATERIALIZED_OPERATOR_FIELDS
+        if operator.get(key)
+    }
+    return hashlib.sha256(
+        json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def apply_operator_fields(text, operator):
@@ -105,12 +119,16 @@ def main():
     parser.add_argument("--ticket-file", required=True)
     parser.add_argument("--operator-map", required=True)
     parser.add_argument("--ticket", required=True)
+    parser.add_argument("--operator-version-file")
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
     text = Path(args.ticket_file).read_text()
     mapping = load_mapping(Path(args.operator_map))
-    print(apply_operator_fields(text, operator_fields(mapping, args.ticket)), end="")
+    operator = operator_fields(mapping, args.ticket)
+    if args.operator_version_file:
+        Path(args.operator_version_file).write_text(operator_version(operator) + "\n")
+    print(apply_operator_fields(text, operator), end="")
 
 
 if __name__ == "__main__":
