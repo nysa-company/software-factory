@@ -956,6 +956,29 @@ else
     "status $BEFORE_GO_STATUS"
 fi
 
+# The adapter gate never opens unless go_issued=1 reached durable storage.
+GO_WRITE_FAIL="$TMP/go-marker-write-failure"
+write_envelope "$GO_WRITE_FAIL"
+write_ticket "$GO_WRITE_FAIL" T-227
+GO_WRITE_STATUS=0
+FACTORY_ROOT="$GO_WRITE_FAIL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_FAIL_GO_MANIFEST_WRITE=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-227 -- "go marker failure" \
+  > "$TMP/go-marker-write-failure.out" 2>&1 || GO_WRITE_STATUS=$?
+GO_WRITE_META="$(ls "$GO_WRITE_FAIL/factory/runs/"*.meta)"
+if [[ "$GO_WRITE_STATUS" -eq 125 ]] &&
+   grep -q 'could not persist GO marker' "$TMP/go-marker-write-failure.out" &&
+   ! grep -q 'mock adapter ran task' "$GO_WRITE_FAIL/factory/runs/"*.out &&
+   grep -q '^go_issued=0$' "$GO_WRITE_META" &&
+   grep -q '^accounting_state=launch_void$' "$GO_WRITE_META" &&
+   grep -q '^effective_cost=0$' "$GO_WRITE_META"; then
+  pass "GO marker persistence failure keeps adapter gate closed"
+else
+  fail "GO marker persistence failure keeps adapter gate closed" \
+    "status $GO_WRITE_STATUS"
+fi
+
 # Semantic round numbering with one explicitly voided duplicate row.
 ROUNDS="$TMP/rounds"
 mkdir -p "$ROUNDS/factory/tickets"

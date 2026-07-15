@@ -154,6 +154,10 @@ write_manifest() {
   local phase="$1" tmp
   [[ -n "$MANIFEST" ]] || return 0
   tmp="$MANIFEST.tmp.$$"
+  if [[ "$phase" == "spawned" && "${FACTORY_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_TEST_FAIL_GO_MANIFEST_WRITE:-0}" == "1" ]]; then
+    return 1
+  fi
   {
     echo "run_id=$(meta_value "${RUN_ID:-}")"
     echo "phase=$(meta_value "$phase")"
@@ -188,8 +192,8 @@ write_manifest() {
     echo "process_start=$(meta_value "${RUN_START_ID:-}")"
     echo "role_exit=$(meta_value "${ROLE_EXIT_STATUS:-}")"
     echo "updated_at=$(date -u +%FT%TZ)"
-  } > "$tmp"
-  mv "$tmp" "$MANIFEST"
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$MANIFEST" || { rm -f "$tmp"; return 1; }
   MANIFEST_PHASE="$phase"
 }
 
@@ -648,12 +652,19 @@ else
       STATUS=10
     else
       GO_ISSUED=1
-      write_manifest "spawned"
-      : > "$RUN_GO_FILE"
-      rmdir "$LAUNCH_LOCK"
-      HELD_LAUNCH_LOCK=0
-      wait "$RUN_PID"
-      STATUS=$?
+      if ! write_manifest "spawned"; then
+        GO_ISSUED=0
+        echo "could not persist GO marker; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=125
+      else
+        : > "$RUN_GO_FILE"
+        rmdir "$LAUNCH_LOCK"
+        HELD_LAUNCH_LOCK=0
+        wait "$RUN_PID"
+        STATUS=$?
+      fi
     fi
   fi
 fi
