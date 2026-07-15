@@ -420,6 +420,10 @@ command -v git > "${FACTORY_KIT_SANDBOX_CAPTURE}.git"
 readlink "$(command -v git)" > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-target" 2>/dev/null ||
   : > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-target"
 command -v python3 > "${FACTORY_KIT_SANDBOX_CAPTURE}.python"
+command -v ps > "${FACTORY_KIT_SANDBOX_CAPTURE}.ps"
+printf '%s\n' "${DEVELOPER_DIR:-}" > "${FACTORY_KIT_SANDBOX_CAPTURE}.developer-dir"
+printf '%s\n' "${GIT_EXEC_PATH:-}" > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-exec-path"
+printf '%s\n' "${GIT_TEMPLATE_DIR:-}" > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-template-dir"
 shift 2
 exec "$@"
 EOF
@@ -441,9 +445,17 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     SANDBOX_GIT="$(<"${SANDBOX_CAPTURE}.git")"
     SANDBOX_GIT_TARGET="$(<"${SANDBOX_CAPTURE}.git-target")"
     SANDBOX_PYTHON="$(<"${SANDBOX_CAPTURE}.python")"
+    SANDBOX_PS="$(<"${SANDBOX_CAPTURE}.ps")"
+    SANDBOX_DEVELOPER_DIR="$(<"${SANDBOX_CAPTURE}.developer-dir")"
+    SANDBOX_GIT_EXEC_PATH="$(<"${SANDBOX_CAPTURE}.git-exec-path")"
+    SANDBOX_GIT_TEMPLATE_DIR="$(<"${SANDBOX_CAPTURE}.git-template-dir")"
     if [[ "$SANDBOX_GIT" != */factory-tools/git ||
           "$SANDBOX_GIT_TARGET" != "$DEVELOPER_ROOT/usr/bin/git" ||
-          "$SANDBOX_PYTHON" == "$DEVELOPER_ROOT/usr/bin/python3" ]]; then
+          "$SANDBOX_PYTHON" == "$DEVELOPER_ROOT/usr/bin/python3" ||
+          "$SANDBOX_PS" != */factory-tools/ps ||
+          "$SANDBOX_DEVELOPER_DIR" != "$DEVELOPER_ROOT" ||
+          "$SANDBOX_GIT_EXEC_PATH" != "$DEVELOPER_ROOT/usr/libexec/git-core" ||
+          "$SANDBOX_GIT_TEMPLATE_DIR" != "$DEVELOPER_ROOT/usr/share/git-core/templates" ]]; then
       DEVELOPER_PATH_OK=0
     fi
   fi

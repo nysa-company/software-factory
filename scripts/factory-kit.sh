@@ -942,22 +942,56 @@ import os, pathlib, subprocess, sys
 root = pathlib.Path(checkout)
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
+tool_environment = {}
 if os.path.isfile("/usr/bin/xcode-select"):
     selected = subprocess.run(
         ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
     )
     if selected.returncode == 0:
-        developer_git = os.path.join(selected.stdout.strip(), "usr", "bin", "git")
+        developer_root = selected.stdout.strip()
+        developer_bin = os.path.join(developer_root, "usr", "bin")
+        developer_git = os.path.join(developer_bin, "git")
         if os.path.isfile(developer_git):
             override_bin = os.path.join(scratch, "factory-tools")
             os.makedirs(override_bin, exist_ok=True)
-            git_link = os.path.join(override_bin, "git")
-            if os.path.lexists(git_link):
-                if not os.path.islink(git_link) or os.readlink(git_link) != developer_git:
-                    raise SystemExit("sandbox Git override path is unsafe")
+            for name in ("git", "git-receive-pack", "git-upload-pack"):
+                target = os.path.join(developer_bin, name)
+                link = os.path.join(override_bin, name)
+                if not os.path.isfile(target):
+                    raise SystemExit("selected developer Git helper is missing")
+                if os.path.lexists(link):
+                    if not os.path.islink(link) or os.readlink(link) != target:
+                        raise SystemExit("sandbox Git override path is unsafe")
+                else:
+                    os.symlink(target, link)
+            ps_wrapper = """#!/usr/bin/env python3
+import os, sys
+try:
+    output = sys.argv[sys.argv.index("-o") + 1]
+    pid = int(sys.argv[sys.argv.index("-p") + 1])
+except (ValueError, IndexError):
+    raise SystemExit(2)
+if output == "pgid=":
+    print(os.getpgid(pid))
+elif output == "lstart=":
+    os.kill(pid, 0)
+    print("sandbox-start-" + str(pid))
+else:
+    raise SystemExit(2)
+"""
+            ps_path = os.path.join(override_bin, "ps")
+            if os.path.exists(ps_path):
+                if os.path.islink(ps_path) or pathlib.Path(ps_path).read_text() != ps_wrapper:
+                    raise SystemExit("sandbox ps override path is unsafe")
             else:
-                os.symlink(developer_git, git_link)
+                pathlib.Path(ps_path).write_text(ps_wrapper)
+            os.chmod(ps_path, 0o755)
             path_value = override_bin + os.pathsep + path_value
+            tool_environment = {
+                "DEVELOPER_DIR": developer_root,
+                "GIT_EXEC_PATH": os.path.join(developer_root, "usr", "libexec", "git-core"),
+                "GIT_TEMPLATE_DIR": os.path.join(developer_root, "usr", "share", "git-core", "templates"),
+            }
 environment = {
     "PATH": path_value,
     "HOME": home,
@@ -965,6 +999,7 @@ environment = {
     "XDG_CACHE_HOME": os.path.join(scratch, "cache"),
     "npm_config_cache": os.path.join(scratch, "npm"),
 }
+environment.update(tool_environment)
 if dirty == "1":
     environment["FACTORY_FIXTURE_DIRTY"] = "1"
 if capture:
@@ -1258,7 +1293,7 @@ run_product_certification() {
     "${FACTORY_KIT_SANDBOX_CAPTURE:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" <<'PY' || status=$?
-import os, subprocess, sys
+import os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
 profile = sys.argv[9]
 sandbox_exec = sys.argv[10]
@@ -1267,22 +1302,56 @@ deny_sibling = sys.argv[12]
 deny_home = sys.argv[13]
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
+tool_environment = {}
 if os.path.isfile("/usr/bin/xcode-select"):
     selected = subprocess.run(
         ["/usr/bin/xcode-select", "-p"], text=True, capture_output=True
     )
     if selected.returncode == 0:
-        developer_git = os.path.join(selected.stdout.strip(), "usr", "bin", "git")
+        developer_root = selected.stdout.strip()
+        developer_bin = os.path.join(developer_root, "usr", "bin")
+        developer_git = os.path.join(developer_bin, "git")
         if os.path.isfile(developer_git):
             override_bin = os.path.join(scratch, "factory-tools")
             os.makedirs(override_bin, exist_ok=True)
-            git_link = os.path.join(override_bin, "git")
-            if os.path.lexists(git_link):
-                if not os.path.islink(git_link) or os.readlink(git_link) != developer_git:
-                    raise SystemExit("sandbox Git override path is unsafe")
+            for name in ("git", "git-receive-pack", "git-upload-pack"):
+                target = os.path.join(developer_bin, name)
+                link = os.path.join(override_bin, name)
+                if not os.path.isfile(target):
+                    raise SystemExit("selected developer Git helper is missing")
+                if os.path.lexists(link):
+                    if not os.path.islink(link) or os.readlink(link) != target:
+                        raise SystemExit("sandbox Git override path is unsafe")
+                else:
+                    os.symlink(target, link)
+            ps_wrapper = """#!/usr/bin/env python3
+import os, sys
+try:
+    output = sys.argv[sys.argv.index("-o") + 1]
+    pid = int(sys.argv[sys.argv.index("-p") + 1])
+except (ValueError, IndexError):
+    raise SystemExit(2)
+if output == "pgid=":
+    print(os.getpgid(pid))
+elif output == "lstart=":
+    os.kill(pid, 0)
+    print("sandbox-start-" + str(pid))
+else:
+    raise SystemExit(2)
+"""
+            ps_path = os.path.join(override_bin, "ps")
+            if os.path.exists(ps_path):
+                if os.path.islink(ps_path) or pathlib.Path(ps_path).read_text() != ps_wrapper:
+                    raise SystemExit("sandbox ps override path is unsafe")
             else:
-                os.symlink(developer_git, git_link)
+                pathlib.Path(ps_path).write_text(ps_wrapper)
+            os.chmod(ps_path, 0o755)
             path_value = override_bin + os.pathsep + path_value
+            tool_environment = {
+                "DEVELOPER_DIR": developer_root,
+                "GIT_EXEC_PATH": os.path.join(developer_root, "usr", "libexec", "git-core"),
+                "GIT_TEMPLATE_DIR": os.path.join(developer_root, "usr", "share", "git-core", "templates"),
+            }
 environment = {
     "PATH": path_value,
     "HOME": home,
@@ -1293,6 +1362,7 @@ environment = {
     "FACTORY_KIT_RELEASE": release,
     "FACTORY_PRODUCT_ROOT": product,
 }
+environment.update(tool_environment)
 if capture:
     environment["FACTORY_KIT_SANDBOX_CAPTURE"] = capture
 if deny_sibling:
