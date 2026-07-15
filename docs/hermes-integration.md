@@ -62,7 +62,7 @@ manifest.
 
 ## Public Hermes contract
 
-Contract version `1.0.0` certifies Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` and `1.1.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
@@ -71,6 +71,18 @@ Contract version `1.0.0` certifies Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> doctor --json
 ~/.factory/bin/factory-launch <project> preflight --ticket T-123 --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --json
+```
+
+Contract `1.1.0` keeps one-ticket behavior by default. A product may set
+`MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
+`release`, and supplies the matching `--lease` to preflight, next-stage, and
+run. Leases expire after 15 minutes unless renewed, but expiration never makes
+them available to another dispatcher. Under maintenance, recover a stale
+record explicitly with:
+
+```bash
+bash scripts/factory-kit.sh recover-lease \
+  --project "$PROJECT" --product "$PRODUCT_REPO" --ticket T-123
 ```
 
 `contract` returns the manifest. `doctor` returns
@@ -159,8 +171,8 @@ Before cutover:
    flow and confirm the merged product tree is the certified tree.
 5. Create `factory/MAINTENANCE`. This blocks preflight, sequencing, launches,
    and release-sensitive reordering.
-6. Wait for existing role processes to drain. Do not delete PID records to
-   make the check pass.
+6. Wait for existing role processes and dispatcher leases to drain. Do not
+   delete PID or lease records to make the check pass.
 
 Validate without mutation:
 

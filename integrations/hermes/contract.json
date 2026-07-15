@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.0.0",
+  "contract_version": "1.1.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -41,6 +41,31 @@
       "[command arguments]"
     ],
     "commands": {
+      "claim": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>"
+        ],
+        "output": "one opaque ticket lease record; available only when MAX_CONCURRENT_TICKETS=2"
+      },
+      "renew": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--lease",
+          "<opaque-lease-id>"
+        ],
+        "output": "the renewed ticket lease record"
+      },
+      "release": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--lease",
+          "<opaque-lease-id>"
+        ],
+        "output": "ticket lease release confirmation"
+      },
       "contract": {
         "arguments": [
           "--json"
@@ -57,6 +82,7 @@
         "arguments": [
           "--ticket",
           "<T-NNN>",
+          "[--lease <opaque-lease-id>]",
           "--json"
         ],
         "output_schema": "nysa.software-factory.next-stage/v1",
@@ -78,6 +104,7 @@
         "arguments": [
           "--ticket",
           "<T-NNN>",
+          "[--lease <opaque-lease-id>]",
           "--json"
         ],
         "output_schema": "nysa.software-factory.preflight/v1",
@@ -125,6 +152,7 @@
           "<role>",
           "--ticket",
           "<T-NNN>",
+          "[--lease <opaque-lease-id>]",
           "--prompt-file",
           "$FACTORY_RELEASE_PATH/roles/<role>.md",
           "--workdir",
@@ -153,7 +181,8 @@
       "FACTORY_RELEASE_SHA": "active record kit_sha",
       "FACTORY_RELEASE_TREE": "active record kit_tree",
       "FACTORY_RELEASE_PATH": "resolved physical release path",
-      "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version"
+      "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+      "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher"
     },
     "helper_environment_allowlist": [
       "HOME",
@@ -164,6 +193,7 @@
       "FACTORY_RELEASE_TREE",
       "FACTORY_RELEASE_PATH",
       "FACTORY_RELEASE_CONTRACT_VERSION",
+      "FACTORY_DISPATCH_LEASE_ID",
       "GH_TOKEN"
     ],
     "helper_optional_credentials": {
@@ -190,6 +220,16 @@
     },
     "managed_path_policy": "reject every symlink component before physical resolution"
   },
+  "concurrency": {
+    "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
+    "key": "MAX_CONCURRENT_TICKETS",
+    "default": 1,
+    "maximum": 2,
+    "enabled_value": 2,
+    "state": "PRODUCT_ROOT/factory/.dispatch-leases/<T-NNN>.json",
+    "lease_ttl_seconds": 900,
+    "stale_policy": "never reassigned automatically; recover explicitly through factory-kit under maintenance after active-run validation"
+  },
   "status_categories": [
     "ok",
     "warning",
@@ -213,6 +253,10 @@
     "scripts/preflight.sh",
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
+    "scripts/dispatch-lease.sh",
+    "scripts/lib/dispatch-leases.sh",
+    "scripts/factory-kit.sh",
+    "scripts/kill-switch.sh",
     "scripts/reorder-test-fixes.sh"
   ],
   "launch_agents": {

@@ -300,7 +300,7 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.1.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_RUN_STATUS=0
 env \
@@ -311,7 +311,7 @@ env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.1.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -320,7 +320,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.1.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -331,7 +331,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.0.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.1.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
@@ -347,7 +347,7 @@ FORGED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$TMP" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.0.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.1.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)" ||
   FORGED_STAGE_STATUS=$?
 if [[ "$FORGED_STAGE_STATUS" -eq 1 &&
@@ -557,7 +557,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.0.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.1.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else

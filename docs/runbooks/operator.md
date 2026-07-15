@@ -130,7 +130,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 5. Merge the product's candidate `KIT_PIN` through the protected PR and verify
    the merged product tree still matches the receipt.
 6. Create `factory/MAINTENANCE` before touching `.launch.lock`. Wait for
-   existing runs to drain. The run wrapper checks maintenance before taking
+   existing runs and dispatcher leases to drain. The run wrapper checks maintenance before taking
    the lock, after taking it, and before GO.
 7. Run `factory-kit.sh plan`. It must report `No files were changed.`
 8. Stop only the product factory profile and reconciler. Leave the dashboard
@@ -139,6 +139,11 @@ What to do when something breaks, written for a non-technical operator. Each ent
    doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
    probes.
 10. Remove `MAINTENANCE` only after every acceptance check passes.
+
+If a dispatcher lease is stale, keep maintenance published and run
+`factory-kit.sh recover-lease --project <project> --product <path> --ticket
+<T-NNN>`. Recovery refuses while any role run is recorded. Never delete or
+replace the lease by hand.
 
 The planned control-plane outage starts when maintenance is created and ends
 when maintenance is removed. Target: 5 minutes or less. Candidate preparation,

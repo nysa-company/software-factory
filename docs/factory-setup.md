@@ -10,6 +10,9 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN`, an executable certification script, and empty `initiatives/` and `tickets/` directories.
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
+- Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Set it to
+  `2` only after contract 1.1 is active and a bounded concurrency pilot is
+  approved; no other value is valid.
 - Copy exactly two CI files (GitHub requires workflows to live in the repo they run on): `ci/test-immutability-check.sh` → `.github/scripts/` and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`, with `TEST_PATHS` set from `PROJECT.env`.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. The validator checks the two files agree.
 - Product docs the factory needs (written per product, not in the kit):

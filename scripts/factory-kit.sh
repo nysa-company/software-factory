@@ -18,6 +18,9 @@ INSTALL_MANIFEST_SCHEMA=1
 CERTIFICATION_TOOL_VERSION=1
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
 
+# shellcheck disable=SC1091
+source "$SCRIPT_ROOT/scripts/lib/dispatch-leases.sh"
+
 HELD_LOCKS=""
 TEMP_PATHS=""
 PREPARED_COPY=""
@@ -175,6 +178,7 @@ Usage:
   $PROGRAM status    --project SLUG [--product PRODUCT_REPO] [--json]
   $PROGRAM reconcile --project SLUG [--product PRODUCT_REPO]
   $PROGRAM rollback  --project SLUG [--product PRODUCT_REPO]
+  $PROGRAM recover-lease --project SLUG --product PRODUCT_REPO --ticket T-NNN
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -1766,6 +1770,12 @@ has_active_runs() {
   return 1
 }
 
+require_dispatch_drained() {
+  factory_dispatch_has_leases "$1" &&
+    die "product has dispatcher leases; release them before maintenance operations"
+  return 0
+}
+
 maintenance_file_for() { printf '%s/factory/MAINTENANCE\n' "$1"; }
 
 write_maintenance_marker() {
@@ -1847,6 +1857,7 @@ cmd_pause() {
   if has_active_runs "$product_top"; then
     die "product has active runs; MAINTENANCE remains published"
   fi
+  require_dispatch_drained "$product_top"
   if [[ "${FACTORY_KIT_TEST_HOLD_LAUNCH_LOCK_SECONDS:-0}" != "0" ]]; then
     sleep "$FACTORY_KIT_TEST_HOLD_LAUNCH_LOCK_SECONDS"
   fi
@@ -2337,6 +2348,7 @@ cmd_activate() {
   if has_active_runs "$product_top"; then
     die "product acquired launch lock with active runs"
   fi
+  require_dispatch_drained "$product_top"
   validate_ticket_leases "$product_top" "$sha"
   validate_receipt_snapshot "$snapshot" "$slug" "$product_top" "$sha" "$previous" "$receipt_id"
   transaction="$(printf '%020d-%s-%s' "$generation" "$sha" "$receipt_id")"
@@ -2436,6 +2448,7 @@ cmd_reconcile() {
   if has_active_runs "$product_top"; then
     die "product has active runs"
   fi
+  require_dispatch_drained "$product_top"
   phase="$(json_get "$journal" phase)"
   sha="$(json_get "$journal" candidate_record.kit_sha)"
   receipt_id="$(json_get "$journal" candidate_record.receipt_id)"
@@ -2550,6 +2563,7 @@ cmd_rollback() {
   if has_active_runs "$product_top"; then
     die "product has active runs"
   fi
+  require_dispatch_drained "$product_top"
   [[ "$(strict_product_pin "$product_top")" == "$previous_sha" ]] ||
     die "rollback requires product KIT_PIN already restored to previous SHA"
   require_clean_product "$product_top"
@@ -2561,6 +2575,36 @@ cmd_rollback() {
   release_lock "$launch_lock"
   release_lock "$project_lock"
   say "ROLLBACK OK: project=$slug restored_sha=$previous_sha; MAINTENANCE remains"
+}
+
+cmd_recover_lease() {
+  local slug="$1" product="$2" ticket="$3" product_top launch_lock lease_lock lease_file
+  validate_slug "$slug"
+  [[ "$ticket" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+  validate_managed_layout "$slug"
+  product_top="$(absolute_dir "$product")"
+  launch_lock="$product_top/factory/.launch.lock"
+  acquire_lock "$launch_lock" "product launch"
+  require_maintenance_after_lock "$slug" "$product_top"
+  # ponytail: block recovery on any run; narrow to ticket identity only if recovery throughput matters.
+  has_active_runs "$product_top" && die "product has active runs"
+  lease_lock="$(factory_dispatch_lock_dir "$product_top")"
+  acquire_lock "$lease_lock" "dispatcher lease"
+  lease_file="$(factory_dispatch_lease_file "$product_top" "$ticket")"
+  python3 - "$lease_file" "$ticket" <<'PY' || die "dispatcher lease is missing or unsafe"
+import json, pathlib, stat, sys
+path, ticket = pathlib.Path(sys.argv[1]), sys.argv[2]
+value = path.lstat()
+if path.is_symlink() or not stat.S_ISREG(value.st_mode):
+    raise SystemExit(1)
+record = json.loads(path.read_text())
+if record.get("schema_version") != 1 or record.get("ticket") != ticket:
+    raise SystemExit(1)
+path.unlink()
+PY
+  release_lock "$lease_lock"
+  release_lock "$launch_lock"
+  say "RECOVER LEASE OK: project=$slug ticket=$ticket; MAINTENANCE remains"
 }
 
 cmd_status() {
@@ -2638,6 +2682,7 @@ ORIGIN_OVERRIDE=""
 PROJECT=""
 PRODUCT=""
 RECEIPT=""
+TICKET=""
 JSON=0
 POSITIONALS=()
 
@@ -2649,6 +2694,7 @@ while [[ $# -gt 0 ]]; do
     --project|--slug) [[ $# -ge 2 ]] || die "$1 requires a value"; PROJECT="$2"; shift 2 ;;
     --product|--product-repo) [[ $# -ge 2 ]] || die "$1 requires a value"; PRODUCT="$2"; shift 2 ;;
     --receipt) [[ $# -ge 2 ]] || die "$1 requires a value"; RECEIPT="$2"; shift 2 ;;
+    --ticket) [[ $# -ge 2 ]] || die "$1 requires a value"; TICKET="$2"; shift 2 ;;
     --json) JSON=1; shift ;;
     --help|-h) usage; exit 0 ;;
     --*) die "unknown option: $1" ;;
@@ -2707,6 +2753,13 @@ case "$COMMAND" in
     [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[1]:-}"
     [[ -n "$PROJECT" ]] || { usage >&2; exit 2; }
     cmd_rollback "$PROJECT" "$PRODUCT"
+    ;;
+  recover-lease)
+    [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"
+    [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[1]:-}"
+    [[ -n "$TICKET" ]] || TICKET="${POSITIONALS[2]:-}"
+    [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$TICKET" ]] || { usage >&2; exit 2; }
+    cmd_recover_lease "$PROJECT" "$PRODUCT" "$TICKET"
     ;;
   prune) die "automatic prune is intentionally not implemented" ;;
   *) usage >&2; die "unknown command: $COMMAND" ;;

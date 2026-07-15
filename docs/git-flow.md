@@ -74,6 +74,10 @@ wrapper, or reorder helper are compatibility-sensitive. Preserve contract
 `1.0.0` behavior or bump the contract and include an explicit bootstrap/profile
 migration plus retained rollback support.
 
+Contract `1.1.0` preserves 1.0 behavior when `MAX_CONCURRENT_TICKETS` is absent
+or `1`; the opt-in value `2` requires the 1.1 launcher, profile skill, and
+dispatcher role contract to move together.
+
 **Use a repository ruleset, not classic branch protection.** Verified by live probe (2026-07-12, dispatcher trial setup): a write deploy key pushed straight through classic branch protection to `main`, and also through a ruleset whose bypass list included the repository-admin *role* (deploy keys inherit it). Deploy keys — how agent machines authenticate — are only blocked by a ruleset whose bypass list contains **no repository roles**. Probes to run after any change to these settings: agent key pushes to `main` (must be rejected), agent key pushes a ticket branch (must succeed).
 
 ## Ruleset for `main` (Settings → Rules → Rulesets, or CLI below)

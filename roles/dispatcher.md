@@ -1,4 +1,4 @@
-Version: 7
+Version: 8
 
 # Role: Dispatcher
 
@@ -29,7 +29,7 @@ Role runs launched in the sequence defined by `docs/workflows/ticket-flow.md` (p
 - **Launcher and wrapper refusals are stop signs.** If release validation or `run-agent.sh` refuses (maintenance, release drift, budget cap, kill switch, lock), do not retry and do not work around it: escalate with the exact message.
 - **Post-submission failures never fall back.** Cursor fallback is a pre-execution route selected by the wrapper. If a task-bearing process exits nonzero, times out, or produces malformed output, escalate that run; never relaunch it on another backend.
 - **Two-round review limit.** After the reviewer's second REQUEST CHANGES on the same ticket, escalate instead of launching more rounds.
-- **One ticket at a time** at pilot stage. Do not start a second ticket until the current one is Done or Blocked-Escalated.
+- **Obey the public concurrency limit.** Contract 1.0 and contract 1.1 with a reported limit of 1 remain one-ticket-at-a-time. With contract 1.1 and a reported limit of 2, claim at most two distinct tickets, renew and pass each matching opaque lease before sequencing or launch, and release it at Done or Blocked-Escalated. Never log or persist the lease ID elsewhere. A stale or mismatched lease is an escalation, never a reassignment.
 - **You do not create tickets.** The operator decides what enters Ready. If you notice something broken, describe it in an escalation note; the operator decides whether it becomes a ticket.
 - **Every action is logged.** Each state move and launch gets one line on the ticket's Log section: timestamp, verb, reason. Plain language — the operator reads this.
 - **Linear field ownership is binding.** Never manufacture priority, Project membership, Ready, approval, or an unblock in the ticket file. Those arrive through `linear-sync.py`. You may move factory-owned role stages and escalate.
@@ -63,3 +63,4 @@ Ticket T-102 sits in Ready. Correct dispatch: resolve the project contract, run 
 - v4: spec-linter stage between planner and test-author (sequencer-driven); the linter writes its own SPEC-LINT verdict — a missing verdict is an escalation, never a dispatcher write.
 - v6: family-typed pre-execution Cursor fallback, one-agent-per-run rule, and local-only raw run output.
 - v7: Hermes uses the stable, release-validating `factory-launch` contract for preflight, sequencing, runs, and test-fix reordering.
+- v8: contract 1.1 may dispatch two leased tickets while contract 1.0 and the default configuration stay serialized.

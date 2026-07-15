@@ -5,10 +5,11 @@
 # FACTORY_ROOT semantics match run-agent.sh (anchors factory/ under the repo root).
 set -euo pipefail
 
-TICKET=""
+TICKET="" LEASE_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2;;
+    --lease) LEASE_ID="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -32,6 +33,8 @@ warn() { echo "WARN: $*"; }
 # are hard gates. None may fall through to backend probes.
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   fail "MAINTENANCE file present ($FACTORY_DIR/MAINTENANCE) — factory control plane is paused"
   echo "PREFLIGHT FAIL"
@@ -57,6 +60,11 @@ if [[ -f "$TICKET_FILE" ]] &&
 fi
 if [[ -n "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
   pass "ticket Kit-SHA affinity matches selected kit SHA"
+fi
+if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
+  fail "$FACTORY_DISPATCH_LEASE_ERROR"
+  echo "PREFLIGHT FAIL"
+  exit 1
 fi
 
 # --- optional machine-level cap (same anchor as run-agent.sh) ---
