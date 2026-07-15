@@ -62,7 +62,7 @@ manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` and `1.1.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0`, `1.1.0`, and `1.2.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 

@@ -507,6 +507,9 @@ validate_ticket_command() {
   fi
   [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
   TICKET="$2"
+  if [[ "$CONTRACT_VERSION" == "1.2.0" && -z "$TICKET_WORKDIR" ]]; then
+    die "contract 1.2.0 requires a ticket workdir"
+  fi
   if [[ -n "$TICKET_WORKDIR" ]]; then
     resolve_product_workdir "$TICKET_WORKDIR"
     validate_ticket_worktree "$TICKET"
@@ -822,6 +825,8 @@ PY
     exit "$rc"
     ;;
   ticket-state)
+    [[ "$CONTRACT_VERSION" == "1.2.0" ]] ||
+      die "ticket-state requires contract 1.2.0"
     if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
           "$5" == "--action" && "$7" == "--json" ]]; then
       TICKET_STATE_VALUE=""

@@ -5,6 +5,17 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.2.0 — 2026-07-15
+
+- Adds validated ticket-worktree selection to `preflight` and `next-stage`.
+- Adds `ticket-state` as the trusted path from ignored Linear operator state to
+  committed ticket state.
+- Adds deterministic `project-ledger` projection from atomic run manifests in
+  a dedicated close-out worktree.
+- Requires mutating roles to commit, non-force pushes and verifies their exact
+  tips, and requires Reviewer to leave Git unchanged.
+- Keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
+
 ## 1.1.0 — 2026-07-15
 
 - Adds opt-in two-ticket dispatch through `MAX_CONCURRENT_TICKETS=2`.

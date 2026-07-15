@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.1.0",
+  "contract_version": "1.2.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -83,6 +83,8 @@
           "--ticket",
           "<T-NNN>",
           "[--lease <opaque-lease-id>]",
+          "--workdir",
+          "<absolute-product-worktree>",
           "--json"
         ],
         "output_schema": "nysa.software-factory.next-stage/v1",
@@ -105,6 +107,8 @@
           "--ticket",
           "<T-NNN>",
           "[--lease <opaque-lease-id>]",
+          "--workdir",
+          "<absolute-product-worktree>",
           "--json"
         ],
         "output_schema": "nysa.software-factory.preflight/v1",
@@ -118,6 +122,24 @@
           "status",
           "exit_code",
           "output"
+        ]
+      },
+      "ticket-state": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--workdir",
+          "<absolute-product-worktree>",
+          "--action",
+          "<materialize|transition>",
+          "[--state <ticket-state>]",
+          "--json"
+        ],
+        "output": "the committed ticket state after applying the ignored operator overlay or requested transition",
+        "validation": [
+          "absolute physical non-symlink distinct linked Git worktree root",
+          "same Git common directory as registered PRODUCT_ROOT",
+          "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket"
         ]
       },
       "project-ledger": {
@@ -269,6 +291,8 @@
     "scripts/preflight.sh",
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
+    "scripts/ticket-state.sh",
+    "scripts/lib/effective_ticket.py",
     "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",
     "scripts/lib/dispatch-leases.sh",

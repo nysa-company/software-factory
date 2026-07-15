@@ -175,7 +175,7 @@ run_launcher() {
 }
 
 create_test_release() {
-  local release="$1" label="$2" action="$3" contract="${4:-1.1.0}"
+  local release="$1" label="$2" action="$3" contract="${4:-1.2.0}"
   mkdir -p "$release/integrations/hermes" "$release/scripts/lib" "$release/roles"
   printf '*.out\n' > "$release/.gitignore"
   printf 'tracked ignored release evidence\n' > "$release/tracked.out"
@@ -188,13 +188,11 @@ value["contract_version"] = contract
 path.write_text(json.dumps(value, indent=2) + "\n")
 PY
   cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
-  if [[ "$contract" == "1.0.0" ]]; then
-    python3 - "$release/scripts/factory-doctor-real.sh" <<'PY'
+  python3 - "$release/scripts/factory-doctor-real.sh" "$contract" <<'PY'
 import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-path.write_text(path.read_text().replace("1.1.0", "1.0.0"))
+path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
+path.write_text(path.read_text().replace("1.2.0", contract))
 PY
-  fi
   cp "$ROOT/scripts/dispatch-lease.sh" "$release/scripts/dispatch-lease.sh"
   cp "$ROOT/scripts/lib/dispatch-leases.sh" "$release/scripts/lib/dispatch-leases.sh"
   for role in planner spec-linter test-author builder reviewer narrator; do
@@ -406,7 +404,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.1.0"
+assert data["contract_version"] == "1.2.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -476,13 +474,17 @@ PY
 # Stable launcher: two physically separate releases and one mutable active record.
 SHA_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 SHA_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+SHA_V11="dddddddddddddddddddddddddddddddddddddddd"
 RELEASE_A="$KITS_ROOT/releases/$SHA_A"
 RELEASE_B="$KITS_ROOT/releases/$SHA_B"
+RELEASE_V11="$KITS_ROOT/releases/$SHA_V11"
 mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
 create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner" "1.0.0"
-create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR"
+create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR" "1.1.0"
+create_test_release "$RELEASE_V11" "RELEASE-V11" "RUN planner" "1.1.0"
 TREE_A="$(tree_for_directory "$RELEASE_A")"
 TREE_B="$(tree_for_directory "$RELEASE_B")"
+TREE_V11="$(tree_for_directory "$RELEASE_V11")"
 printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 REGISTRY_SENTINEL="$TMP/registry-was-sourced"
 cat > "$PROFILE/projects/launchtest.env" <<EOF
@@ -505,6 +507,10 @@ PY
 CLAIM_V1_RC=0
 run_launcher launchtest claim --ticket T-123 > "$TMP/claim-v1.out" 2>&1 || CLAIM_V1_RC=$?
 [[ "$CLAIM_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed dispatcher leases"
+TICKET_STATE_V1_RC=0
+run_launcher launchtest ticket-state --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
+  --action materialize --json > "$TMP/ticket-state-v1.out" 2>&1 || TICKET_STATE_V1_RC=$?
+[[ "$TICKET_STATE_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed ticket-state"
 [[ ! -e "$REGISTRY_SENTINEL" ]] || fail "launcher sourced arbitrary registry content"
 
 run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-a.json"
@@ -637,6 +643,21 @@ assert_no_secret "$TMP/launcher-doctor.json"
 DOCTOR_HELPER_ENV="$LAUNCH_PRODUCT/factory/doctor-helper.env"
 assert_release_metadata "$DOCTOR_HELPER_ENV" "$SHA_A" "$TREE_A" "$RELEASE_A"
 assert_helper_confinement "$DOCTOR_HELPER_ENV"
+
+# The upgraded standalone launcher must continue selecting an inherited 1.1
+# release without rewriting its public contract.
+printf '%s\n' "$SHA_V11" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_V11" "$TREE_V11" "$RELEASE_V11"
+run_launcher launchtest contract --json > "$TMP/launcher-contract-v11.json"
+run_launcher launchtest doctor --json > "$TMP/launcher-doctor-v11.json"
+run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-v11.json"
+run_launcher launchtest next-stage --ticket T-123 --json > "$TMP/next-v11.json"
+python3 - "$TMP/launcher-contract-v11.json" "$TMP/launcher-doctor-v11.json" \
+  "$TMP/preflight-v11.json" "$TMP/next-v11.json" <<'PY'
+import json, sys
+for path in sys.argv[1:]:
+    assert json.load(open(path, encoding="utf-8"))["contract_version"] == "1.1.0"
+PY
 
 printf '%s\n' "$SHA_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 write_active "$SHA_B" "$TREE_B" "$RELEASE_B"
@@ -834,6 +855,10 @@ printf 'launcher worktree fixture\n' > "$LAUNCH_PRODUCT/README.md"
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add -A
 git -C "$LAUNCH_PRODUCT" commit -qm "seed launcher worktree"
+LAUNCH_PRODUCT_REMOTE="$TMP/launch-product.git"
+git init --bare -q "$LAUNCH_PRODUCT_REMOTE"
+git -C "$LAUNCH_PRODUCT" remote add origin "$LAUNCH_PRODUCT_REMOTE"
+git -C "$LAUNCH_PRODUCT" push -q -u origin main
 REORDER_WORKTREE="$TMP/reorder-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-456 "$REORDER_WORKTREE"
 REORDER_WORKTREE_PHYS="$(cd "$REORDER_WORKTREE" && pwd -P)"
@@ -844,7 +869,21 @@ WRONG_TICKET_WORKTREE="$TMP/wrong-ticket-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-999 "$WRONG_TICKET_WORKTREE"
 WRONG_TICKET_WORKTREE_PHYS="$(cd "$WRONG_TICKET_WORKTREE" && pwd -P)"
 RELEASE_B_PHYS="$(cd "$RELEASE_B" && pwd -P)"
+RELEASE_A_PHYS="$(cd "$RELEASE_A" && pwd -P)"
 LAUNCH_PRODUCT_PHYS="$(cd "$LAUNCH_PRODUCT" && pwd -P)"
+# Compatibility smoke: the new launcher can still run a mock role selected
+# from an active 1.0 release.
+printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_A" "$TREE_A" "$RELEASE_A"
+run_launcher launchtest run \
+  --role builder \
+  --ticket T-123 \
+  --prompt-file "$RELEASE_A_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" \
+  -- "1.0 compatibility smoke" > "$TMP/run-v1.txt"
+grep -qF "RUN RELEASE-A" "$TMP/run-v1.txt" || fail "active contract 1.0 mock role failed"
+printf '%s\n' "$SHA_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_B" "$TREE_B" "$RELEASE_B"
 run_launcher launchtest run \
   --role builder \
   --ticket T-123 \
@@ -1035,7 +1074,7 @@ cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh reorder-test-fixes.sh dispatch-lease.sh; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py reorder-test-fixes.sh dispatch-lease.sh; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 [[ ! -e "$RELEASE_C/.git" ]] || fail "real sealed fixture unexpectedly has Git metadata"
@@ -1073,25 +1112,34 @@ printf '%s\n' \
   > "$LAUNCH_PRODUCT/factory/ledger.csv"
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'MAX_CONCURRENT_TICKETS=2' \
   > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+git -C "$LAUNCH_PRODUCT" add factory/tickets/T-777.md factory/initiatives/I-777.md \
+  factory/ENVELOPE.env factory/ledger.csv factory/PROJECT.env factory/KIT_PIN
+git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
+git -C "$LAUNCH_PRODUCT" push -q origin main
 write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
-run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
-REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
-run_launcher launchtest next-stage --ticket T-777 --lease "$REAL_LEASE_ID" --json > "$TMP/real-next-stage.json"
-python3 - "$TMP/real-next-stage.json" <<'PY'
-import json
-import sys
-
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data["status"] == "ok"
-assert data["action"] == "RUN"
-assert data["detail"] == "planner"
-assert data["output"] == "RUN planner\n"
-PY
-
 RELEASE_C_PHYS="$(cd "$RELEASE_C" && pwd -P)"
 REAL_RUN_WORKTREE="$TMP/real-run-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-777 "$REAL_RUN_WORKTREE"
 REAL_RUN_WORKTREE_PHYS="$(cd "$REAL_RUN_WORKTREE" && pwd -P)"
+run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
+  --action transition --state Planning --json > "$TMP/real-ticket-state.json"
+run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
+REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
+run_launcher launchtest preflight --ticket T-777 --lease "$REAL_LEASE_ID" \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-preflight.json"
+run_launcher launchtest next-stage --ticket T-777 --lease "$REAL_LEASE_ID" \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-next-stage.json"
+python3 - "$TMP/real-ticket-state.json" "$TMP/real-preflight.json" \
+  "$TMP/real-next-stage.json" <<'PY'
+import json, sys
+state, preflight, stage = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
+assert state["ticket"] == "T-777" and state["state"] == "Planning"
+assert preflight["status"] == "ok"
+assert stage["status"] == "ok"
+assert stage["action"] == "RUN"
+assert stage["detail"] == "planner"
+assert stage["output"] == "RUN planner\n"
+PY
 mkdir -p "$TEST_HOME/.factory/bin"
 cat > "$TEST_HOME/.factory/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
@@ -1134,7 +1182,7 @@ grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted release SHA"
 grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted release tree"
-grep -qF "contract_version=1.1.0" "$REAL_MANIFEST" ||
+grep -qF "contract_version=1.2.0" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted release contract"
 grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted physical release path"
@@ -1144,6 +1192,29 @@ grep -qF "adapter=mock" "$REAL_MANIFEST" ||
   fail "isolated launcher did not enforce the mock adapter"
 assert_no_secret "$TMP/real-run.txt"
 run_launcher launchtest release --ticket T-777 --lease "$REAL_LEASE_ID" >/dev/null
+REAL_CLOSEOUT_WORKTREE="$TMP/real-closeout-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b chore/t777-closeout \
+  "$REAL_CLOSEOUT_WORKTREE" origin/main
+REAL_CLOSEOUT_WORKTREE_PHYS="$(cd "$REAL_CLOSEOUT_WORKTREE" && pwd -P)"
+run_launcher launchtest project-ledger --ticket T-777 \
+  --workdir "$REAL_CLOSEOUT_WORKTREE_PHYS" --json > "$TMP/real-project-ledger.json"
+python3 - "$TMP/real-project-ledger.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["schema"] == "nysa.software-factory.ledger-projection/v1"
+assert data["status"] == "ok" and data["ticket"] == "T-777"
+assert data["row_count"] >= 1
+PY
+PROJECT_WRONG_BRANCH_RC=0
+run_launcher launchtest project-ledger --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json \
+  > "$TMP/project-ledger-wrong-branch.out" 2>&1 || PROJECT_WRONG_BRANCH_RC=$?
+[[ "$PROJECT_WRONG_BRANCH_RC" -eq 1 ]] || fail "project-ledger accepted a ticket branch"
+PROJECT_DIRTY_RC=0
+run_launcher launchtest project-ledger --ticket T-777 \
+  --workdir "$REAL_CLOSEOUT_WORKTREE_PHYS" --json \
+  > "$TMP/project-ledger-dirty.out" 2>&1 || PROJECT_DIRTY_RC=$?
+[[ "$PROJECT_DIRTY_RC" -eq 1 ]] || fail "project-ledger accepted a dirty close-out worktree"
 [[ "$(cksum "$TMP/bypass-envelope.env")" == "$BYPASS_ENVELOPE_BEFORE" ]] ||
   fail "caller FACTORY_ENVELOPE bypass was consumed or modified"
 [[ "$(cksum "$TMP/bypass-global.env")" == "$BYPASS_GLOBAL_BEFORE" ]] ||
@@ -1163,7 +1234,7 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.1.0"
+assert contract["contract_version"] == "1.2.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
@@ -1185,6 +1256,16 @@ assert commands["contract"]["arguments"] == ["--json"]
 assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
 assert commands["preflight"]["arguments"][-1] == "--json"
 assert commands["next-stage"]["arguments"][-1] == "--json"
+assert commands["preflight"]["arguments"][-3:] == [
+    "--workdir", "<absolute-product-worktree>", "--json"
+]
+assert commands["next-stage"]["arguments"][-3:] == [
+    "--workdir", "<absolute-product-worktree>", "--json"
+]
+assert commands["ticket-state"]["arguments"] == [
+    "--ticket", "<T-NNN>", "--workdir", "<absolute-product-worktree>",
+    "--action", "<materialize|transition>", "[--state <ticket-state>]", "--json"
+]
 assert commands["project-ledger"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-closeout-worktree>", "--json"
 ]
@@ -1284,7 +1365,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.1.0" in changelog and "## 1.0.0" in changelog
+assert "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [

@@ -3,7 +3,7 @@
 # Public interface: factory-doctor.sh [--json] [--project <slug>]
 set -u
 
-CONTRACT_VERSION="1.1.0"
+CONTRACT_VERSION="1.2.0"
 DOCTOR_SCHEMA="nysa.software-factory.hermes-doctor/v1"
 SUPPORTED_HERMES_AGENT="0.18.2"
 SUPPORTED_HERMES_BUILD="2026.7.7.2"
@@ -84,7 +84,7 @@ fi
 PYTHON_BIN="$(command -v python3 2>/dev/null || true)"
 if [[ -z "$PYTHON_BIN" ]]; then
   if [[ "$JSON_MODE" -eq 1 ]]; then
-    printf '%s\n' '{"schema":"nysa.software-factory.hermes-doctor/v1","schema_version":1,"contract_version":"1.1.0","overall_status":"error","error":"python3 unavailable"}'
+    printf '%s\n' '{"schema":"nysa.software-factory.hermes-doctor/v1","schema_version":1,"contract_version":"1.2.0","overall_status":"error","error":"python3 unavailable"}'
   else
     echo "Factory doctor: ERROR"
     echo "python3 unavailable; safe JSON and timeout handling require python3"
