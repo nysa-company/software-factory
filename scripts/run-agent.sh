@@ -658,8 +658,13 @@ else
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
+      elif ! : > "$RUN_GO_FILE"; then
+        GO_ISSUED=0
+        echo "could not open adapter GO gate; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=125
       else
-        : > "$RUN_GO_FILE"
         rmdir "$LAUNCH_LOCK"
         HELD_LAUNCH_LOCK=0
         wait "$RUN_PID"
