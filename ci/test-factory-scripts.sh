@@ -1101,7 +1101,8 @@ fi
 SEQUENTIAL_STATUS=0
 run_mock "$GUARD" planner T-400 >/dev/null 2>&1 || SEQUENTIAL_STATUS=$?
 if [[ "$SEQUENTIAL_STATUS" -eq 10 &&
-      "$(awk -F, '$3=="T-400" && $4=="planner" {n++} END {print n+0}' "$GUARD_LEDGER")" == "1" ]]; then
+      "$(awk -F, '$3=="T-400" && $4=="planner" && $14!="launch_void" {n++} END {print n+0}' "$GUARD_LEDGER")" == "1" &&
+      "$(awk -F, '$3=="T-400" && $4=="planner" && $14=="launch_void" {n++} END {print n+0}' "$GUARD_LEDGER")" == "1" ]]; then
   pass "sequencer refuses obsolete sequential role"
 else
   fail "sequencer refuses obsolete sequential role" "status $SEQUENTIAL_STATUS"
