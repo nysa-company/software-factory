@@ -816,7 +816,7 @@ PY
       RUN_PROMPT="$6" RUN_WORKDIR="$8" RUN_SHIFT=9
     elif [[ $# -ge 12 && "$1" == "--role" && "$3" == "--ticket" &&
             "$5" == "--lease" && "$7" == "--prompt-file" &&
-            "$9" == "--workdir" && "$11" == "--" ]]; then
+            "$9" == "--workdir" && "${11}" == "--" ]]; then
       LEASE_ID="$6"
       [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
       RUN_PROMPT="$8" RUN_WORKDIR="${10}" RUN_SHIFT=11
