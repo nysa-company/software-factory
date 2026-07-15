@@ -55,11 +55,14 @@ MAXIMUM="$(factory_dispatch_max_tickets "$ROOT" 2>/dev/null)" || {
   exit 3
 }
 
+acquire "$LAUNCH_LOCK" "launch" || exit 8
+HELD_LAUNCH=1
 if [[ "$OPERATION" != "release" ]]; then
-  acquire "$LAUNCH_LOCK" "launch" || exit 8
-  HELD_LAUNCH=1
   [[ ! -e "$FACTORY_DIR/KILL" ]] || { echo "KILL file present; lease refused" >&2; exit 4; }
   [[ ! -e "$FACTORY_DIR/MAINTENANCE" ]] || { echo "MAINTENANCE file present; lease refused" >&2; exit 4; }
+elif factory_dispatch_has_ticket_run "$ROOT" "$TICKET"; then
+  echo "ticket has an active run; lease release refused" >&2
+  exit 7
 fi
 mkdir -p "$LEASE_DIR"
 [[ ! -L "$LEASE_DIR" && ! -L "$LEASE_LOCK" ]] || { echo "dispatcher lease state is unsafe" >&2; exit 3; }

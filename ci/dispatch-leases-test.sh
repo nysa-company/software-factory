@@ -79,12 +79,28 @@ else
   fail "sequencing requires the matching lease" "wrong=$WRONG_STAGE right=$RIGHT_STAGE"
 fi
 
-RUN_RC=0
-FACTORY_DISPATCH_LEASE_ID="$FIRST_ID" FACTORY_ROOT="$PRODUCT" \
+MOCK_SLEEP=2 FACTORY_DISPATCH_LEASE_ID="$FIRST_ID" FACTORY_ROOT="$PRODUCT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_TRUSTED_TEST_HARNESS=1 FACTORY_ADAPTER_OVERRIDE=mock \
-  "$RUN" --role planner --ticket "$FIRST_TICKET" -- "bounded run" >/dev/null 2>&1 || RUN_RC=$?
-[[ "$RUN_RC" -eq 0 ]] && pass "role launch accepts the matching lease" || fail "role launch accepts the matching lease" "status=$RUN_RC"
+  "$RUN" --role planner --ticket "$FIRST_TICKET" -- "bounded run" > "$TMP/bounded-run.out" 2>&1 &
+RUN_PID=$!
+for _try in $(seq 1 200); do
+  compgen -G "$PRODUCT/factory/.active-runs/$FIRST_TICKET.*.pid" >/dev/null && break
+  sleep 0.02
+done
+LIVE_RELEASE_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
+  > "$TMP/live-release.out" 2>&1 || LIVE_RELEASE_RC=$?
+RUN_RC=0
+wait "$RUN_PID" || RUN_RC=$?
+if [[ "$RUN_RC" -eq 0 && "$LIVE_RELEASE_RC" -eq 7 ]] &&
+   grep -q "mock adapter ran task" "$TMP/bounded-run.out" &&
+   ! grep -q "lease leaked" "$TMP/bounded-run.out"; then
+  pass "live role keeps its lease while the task adapter receives no lease capability"
+else
+  fail "live role keeps its lease while the task adapter receives no lease capability" \
+    "run=$RUN_RC release=$LIVE_RELEASE_RC"
+fi
 
 python3 - "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json" <<'PY'
 import json, pathlib, time, sys

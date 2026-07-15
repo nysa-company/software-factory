@@ -35,6 +35,8 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
+DISPATCH_LEASE_ID="${FACTORY_DISPATCH_LEASE_ID:-}"
+unset FACTORY_DISPATCH_LEASE_ID
 
 # --- anchor factory state to the repo root, never to $PWD ---
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
@@ -106,9 +108,9 @@ sequencer_allows_role() {
     SEQUENCER_ERROR="selected release sequencer is missing or unsafe"
     return 1
   fi
-  if [[ -n "${FACTORY_DISPATCH_LEASE_ID:-}" ]]; then
+  if [[ -n "$DISPATCH_LEASE_ID" ]]; then
     output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
-      bash "$SEQUENCER" --ticket "$TICKET" --lease "$FACTORY_DISPATCH_LEASE_ID" 2>/dev/null)" || rc=$?
+      bash "$SEQUENCER" --ticket "$TICKET" --lease "$DISPATCH_LEASE_ID" 2>/dev/null)" || rc=$?
   else
     output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
       bash "$SEQUENCER" --ticket "$TICKET" 2>/dev/null)" || rc=$?
@@ -248,7 +250,7 @@ if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
 fi
-if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "${FACTORY_DISPATCH_LEASE_ID:-}"; then
+if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID"; then
   echo "$FACTORY_DISPATCH_LEASE_ERROR; no task was submitted" >&2
   exit 7
 fi
@@ -340,7 +342,7 @@ if ! factory_record_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
 fi
-if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "${FACTORY_DISPATCH_LEASE_ID:-}"; then
+if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID"; then
   echo "$FACTORY_DISPATCH_LEASE_ERROR after launch lock acquisition; no task was submitted" >&2
   exit 7
 fi
@@ -519,7 +521,7 @@ else
       terminate_run_group
       wait "$RUN_PID" 2>/dev/null
       STATUS=3
-    elif ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "${FACTORY_DISPATCH_LEASE_ID:-}"; then
+    elif ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID"; then
       echo "$FACTORY_DISPATCH_LEASE_ERROR before GO; no task was submitted" >&2
       terminate_run_group
       wait "$RUN_PID" 2>/dev/null
