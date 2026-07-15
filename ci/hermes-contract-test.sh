@@ -107,7 +107,7 @@ tree_for_directory() {
   GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" read-tree --empty
   GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
-    --work-tree="$directory" add -A -- .
+    --work-tree="$directory" add -f -A -- .
   tree="$(GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" write-tree)"
   rm -rf "$object_dir"
@@ -170,6 +170,8 @@ run_launcher() {
 create_test_release() {
   local release="$1" label="$2" action="$3"
   mkdir -p "$release/integrations/hermes" "$release/scripts" "$release/roles"
+  printf '*.out\n' > "$release/.gitignore"
+  printf 'tracked ignored release evidence\n' > "$release/tracked.out"
   cp "$CONTRACT" "$release/integrations/hermes/contract.json"
   cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
   for role in planner spec-linter test-author builder reviewer narrator; do
