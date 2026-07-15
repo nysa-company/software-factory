@@ -38,6 +38,12 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   `integrations/hermes/bin/factory-launch` at
   `~/.factory/bin/factory-launch` only through an explicit bootstrap or
   contract migration.
+- The launcher intentionally replaces caller `PATH` with its contract
+  allowlist, which includes `~/.factory/bin` but not `~/.local/bin`. If
+  provider CLIs are installed outside the allowlist, bootstrap version-pinned
+  links for `claude` and `agent` into `~/.factory/bin`; do not widen the
+  launcher to an entire user-writable bin directory. Verify the physical link
+  targets, pinned versions, and `contract-test.sh --routes` before dispatch.
 - Create the dedicated factory profile at
   `~/.hermes/profiles/factory`. Install the canonical `SOUL.md` and
   `skills/factory-dispatch/SKILL.md` from `integrations/hermes/templates/`.
@@ -81,7 +87,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Product repo exists, sibling location, `factory/initiatives/` and `factory/tickets/` created (no kit code copied; only the two CI files)
 - [ ] `factory/KIT_PIN` contains exactly one lowercase full SHA; `factory/PROJECT.env` names an executable, repository-contained `CERTIFY_SCRIPT`
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
-- [ ] `~/.factory/bin/factory-launch` is installed; `contract --json` returns the expected version and `doctor --json` has no error category
+- [ ] `~/.factory/bin/factory-launch` and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
 - [ ] Factory Hermes profile, project registry, and factory gateway LaunchAgent are separate from the dashboard and primary Hermes profile
 - [ ] Real-Hermes canary uses a separate profile/product and no copied production secrets; redacted evidence is recorded
 - [ ] `ENVELOPE.md` has no unfilled blanks

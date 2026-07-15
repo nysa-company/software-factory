@@ -71,6 +71,23 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: ensure `scripts/reorder-test-fixes.sh` is present (branch `kit/reorder-test-fixes` in the kit repo). The dispatcher runs it at AWAIT-OPERATOR before opening the PR. If the script is missing, merge or cherry-pick it from that branch first.
 - Don't: waive the immutability gate or ask the builder to edit tests post-implementation.
 
+## Parallel kit work while production is running
+
+- Notice: several kit features are being developed while a product remains on
+  an older active release. This is expected; branches and merged candidate SHAs
+  are inert.
+- Do: give each feature its own short-lived branch, linked worktree, protected
+  PR, and full verification result. Install and certify each merged SHA
+  independently. Canary compatibility-sensitive candidates.
+- Do: serialize every product `KIT_PIN` change, activation, and rollback. Begin
+  only at a ticket boundary with no active run, no conflicting nonterminal
+  lease, no maintenance anomaly, and no incomplete activation journal.
+- Do: leave the current dispatcher at one live ticket per product. Parallel
+  development does not authorize simultaneous dispatcher tickets.
+- Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
+  combine unrelated candidates into one unreviewed release, or overlap two
+  activation/rollback operations.
+
 ## Upgrading the kit when multiple products run on it
 
 - Notice: kit `main` moved while products remain on older immutable releases.

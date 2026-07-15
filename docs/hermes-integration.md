@@ -298,6 +298,14 @@ The first real-Hermes canary and Relay cutover were accepted on 2026-07-15:
   candidate recutover health at `05:45:58Z`. This accepts the documented
   first-migration exception only; formal release-manager rollback RTO remains
   unaccepted until generation 2 has a previous `active.json`.
+- Relay generation 2 recertified the T-107-ready product against the same
+  release and retained generation 1 as its formal previous activation. T-107
+  then completed planner, spec-linter, test-author, builder, reviewer,
+  Narrator, operator approval, protected PR #13, production `result=SAFE`,
+  and Done closeout PR #14 with every run manifest on `3b63cc7`. The temporary
+  setup PR #12 check override was removed immediately and is not protected-CI
+  evidence; implementation and closeout checks passed under the restored
+  no-bypass Ruleset.
 
 ## Rollback and retention
 
