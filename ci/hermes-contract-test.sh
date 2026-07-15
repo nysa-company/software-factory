@@ -652,6 +652,14 @@ run_launcher launchtest contract --json > "$TMP/launcher-contract-v11.json"
 run_launcher launchtest doctor --json > "$TMP/launcher-doctor-v11.json"
 run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-v11.json"
 run_launcher launchtest next-stage --ticket T-123 --json > "$TMP/next-v11.json"
+TICKET_STATE_V11_RC=0
+run_launcher launchtest ticket-state --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
+  --action materialize --json > "$TMP/ticket-state-v11.out" 2>&1 || TICKET_STATE_V11_RC=$?
+[[ "$TICKET_STATE_V11_RC" -eq 1 ]] || fail "contract 1.1 unexpectedly exposed ticket-state"
+PROJECT_LEDGER_V11_RC=0
+run_launcher launchtest project-ledger --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
+  --json > "$TMP/project-ledger-v11.out" 2>&1 || PROJECT_LEDGER_V11_RC=$?
+[[ "$PROJECT_LEDGER_V11_RC" -eq 1 ]] || fail "contract 1.1 unexpectedly exposed project-ledger"
 python3 - "$TMP/launcher-contract-v11.json" "$TMP/launcher-doctor-v11.json" \
   "$TMP/preflight-v11.json" "$TMP/next-v11.json" <<'PY'
 import json, sys
@@ -1117,6 +1125,10 @@ git -C "$LAUNCH_PRODUCT" add factory/tickets/T-777.md factory/initiatives/I-777.
 git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
 git -C "$LAUNCH_PRODUCT" push -q origin main
 write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
+NO_WORKDIR_V12_RC=0
+run_launcher launchtest next-stage --ticket T-777 --json \
+  > "$TMP/next-stage-v12-no-workdir.out" 2>&1 || NO_WORKDIR_V12_RC=$?
+[[ "$NO_WORKDIR_V12_RC" -eq 1 ]] || fail "contract 1.2 accepted next-stage without workdir"
 RELEASE_C_PHYS="$(cd "$RELEASE_C" && pwd -P)"
 REAL_RUN_WORKTREE="$TMP/real-run-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-777 "$REAL_RUN_WORKTREE"

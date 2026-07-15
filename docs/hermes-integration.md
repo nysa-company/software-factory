@@ -69,12 +69,13 @@ Contract versions `1.0.0`, `1.1.0`, and `1.2.0` certify Hermes Agent `0.18.2`, b
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
-~/.factory/bin/factory-launch <project> preflight --ticket T-123 --json
-~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --json
+~/.factory/bin/factory-launch <project> preflight --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> ticket-state --ticket T-123 --workdir /absolute/ticket-worktree --action materialize --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Contract `1.1.0` keeps one-ticket behavior by default. A product may set
+Contracts `1.1.0` and `1.2.0` keep one-ticket behavior by default. A product may set
 `MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
 `release`, and supplies the matching `--lease` to preflight, next-stage, and
 run. Leases expire after 15 minutes unless renewed, but expiration never makes
@@ -90,7 +91,11 @@ bash scripts/factory-kit.sh recover-lease \
 `nysa.software-factory.hermes-doctor/v1`. `preflight` and `next-stage` preserve
 the selected helper's exit code and wrap its redacted text in versioned JSON.
 `next-stage` also returns `action` and `detail`.
-Contract 1.2 adds `project-ledger`, the only public path that projects effective runtime accounting into the tracked durable ledger.
+Contract 1.2 requires the exact ticket worktree for preflight and sequencing,
+adds `ticket-state` as the only path that materializes reconciled operator
+fields or commits factory transitions, and adds `project-ledger` as the only
+path that projects effective runtime accounting into the tracked durable
+ledger.
 
 `run` and `reorder-test-fixes` are process boundaries rather than JSON
 commands. Their arguments and behavior are still compatibility-sensitive and
