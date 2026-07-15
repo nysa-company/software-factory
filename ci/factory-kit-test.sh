@@ -232,6 +232,9 @@ EOF
   cat > "$path/factory/tickets/T-004.md" <<'EOF'
 State: Planning
 EOF
+  cat > "$path/factory/tickets/T-005.md" <<'EOF'
+State: Blocked-Escalated
+EOF
   cat > "$path/factory/tickets/T-101-bundle.md" <<'EOF'
 # Evidence bundle
 
