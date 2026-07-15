@@ -17,16 +17,30 @@ directly. Begin each session by selecting the named project and running:
 ~/.factory/bin/factory-launch <project> doctor --json
 ```
 
-Use the launcher's public JSON commands for decisions:
+Contract `1.2.0` requires the exact ticket worktree for every decision:
 
 ```text
-~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --json
-~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --json
+~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --workdir <ticket-worktree> --json
+~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json
 ```
 
-If contract `1.1.0` reports a concurrency limit of two, use its claim, renew,
-and release commands and pass the matching opaque lease to every preflight,
-next-stage, and run command. Never persist or disclose a lease ID.
+Contract `1.2.0` inherits contract `1.1.0` lease behavior unchanged. If either
+reports a concurrency limit of two, use its claim, renew, and release commands
+and pass the matching opaque lease to every preflight, next-stage, and run
+command. Never persist or disclose a lease ID.
+
+Under contract `1.2.0`, invoke only the launcher's trusted mutation commands:
+
+```text
+~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action materialize --json
+~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action transition --state <factory-state> --json
+~/.factory/bin/factory-launch <project> project-ledger --ticket <T-NNN> --workdir <closeout-worktree> --json
+```
+
+Use `ticket-state` only for reconciled operator fields or sequencer-directed
+factory transitions. Use `project-ledger` only in the dedicated clean closeout
+worktree. These commands own their artifacts; never hand-edit ticket state or
+ledger rows.
 
 Launch a role only when those commands authorize it, and only with
 `factory-launch <project> run ...`. Do not infer readiness from prose or from

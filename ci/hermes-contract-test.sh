@@ -1301,8 +1301,23 @@ skill = open(
     encoding="utf-8",
 ).read()
 assert "factory-launch <project> reorder-test-fixes" in skill
+assert "version: 1.2.0" in skill
+assert "Contract `1.2.0` inherits `1.1.0` lease behavior unchanged" in skill
+assert "factory-launch <project> ticket-state" in skill
+assert "factory-launch <project> project-ledger" in skill
+assert "copy, reconstruct, reorder, or hand-edit ledger rows" in skill
 assert "--ticket <T-NNN>" in skill
 assert "--workdir <absolute-product-worktree>" in skill
+
+soul = open(
+    os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
+).read()
+assert "Contract `1.2.0` inherits contract `1.1.0` lease behavior unchanged" in soul
+assert "preflight --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
+assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
+assert "factory-launch <project> ticket-state" in soul
+assert "factory-launch <project> project-ledger" in soul
+assert "never hand-edit ticket state or" in soul
 
 fixture = json.load(open(os.path.join(integration, "fixtures/factory-profile.json"), encoding="utf-8"))
 assert fixture["redacted"] is True
