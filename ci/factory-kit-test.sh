@@ -11,6 +11,7 @@ STATE="$TMP/kits"
 CANONICAL="$TMP/canonical.git"
 KIT_REPO="$TMP/kit-source"
 STUB_BIN="$TMP/bin"
+PINNED_SCANNER_STUB="$STUB_BIN/gitleaks"
 GH_TRACE="$TMP/gh.trace"
 FAILURES=0
 LAST_OUTPUT=""
@@ -18,6 +19,11 @@ FIRST_PID=""
 REAL_HOME_SANDBOX_SECRET=""
 
 mkdir -p "$TEST_TMP" "$STUB_BIN"
+cat > "$PINNED_SCANNER_STUB" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$PINNED_SCANNER_STUB"
 
 cleanup() {
   if [[ -n "$FIRST_PID" ]] && kill -0 "$FIRST_PID" 2>/dev/null; then
@@ -50,6 +56,7 @@ run_kit() {
   TMPDIR="$TEST_TMP" \
   FACTORY_KITS_ROOT="$STATE" \
   FACTORY_KIT_TEST_MODE=1 \
+  FACTORY_KIT_TEST_PINNED_SCANNER="$PINNED_SCANNER_STUB" \
   FACTORY_KIT_CANONICAL_ORIGIN="$CANONICAL" \
   FACTORY_KIT_GH_TRACE="$GH_TRACE" \
   FACTORY_KIT_LOCK_ATTEMPTS="${FACTORY_KIT_LOCK_ATTEMPTS:-20}" \
@@ -63,6 +70,7 @@ run_kit_with_state() {
   TMPDIR="$TEST_TMP" \
   FACTORY_KITS_ROOT="$state" \
   FACTORY_KIT_TEST_MODE=1 \
+  FACTORY_KIT_TEST_PINNED_SCANNER="$PINNED_SCANNER_STUB" \
   FACTORY_KIT_CANONICAL_ORIGIN="$CANONICAL" \
   FACTORY_KIT_GH_TRACE="$GH_TRACE" \
   FACTORY_KIT_LOCK_ATTEMPTS="${FACTORY_KIT_LOCK_ATTEMPTS:-20}" \
@@ -318,6 +326,7 @@ EOF
 cat > "$KIT_REPO/scripts/secret-scan" <<'EOF'
 #!/usr/bin/env bash
 set -eu
+test -x .context/tools/gitleaks/8.30.1/gitleaks
 exit 0
 EOF
 chmod +x "$KIT_REPO/ci/test-all.sh" "$KIT_REPO/scripts/repo-check" \
