@@ -105,7 +105,7 @@ class LedgerViewTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting manifest records", result.stderr)
 
-    def test_projection_is_deterministic_and_refuses_reservations(self):
+    def test_projection_is_deterministic_and_refuses_unsettled_runs(self):
         origin = Path(self.temp.name) / "origin.git"
         subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
         git(self.root, "init", "-q", "-b", "main")
@@ -142,7 +142,17 @@ class LedgerViewTest(unittest.TestCase):
             "--ticket", "T-123", check=False,
         )
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("live or ambiguous run", refused.stderr)
+        self.assertIn("live or ambiguous manifest: run-1.meta", refused.stderr)
+
+        path.write_text(
+            "run_id=run-1\nphase=resolved\naccounting_schema=\nticket=T-123\n"
+        )
+        unresolved = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", check=False,
+        )
+        self.assertNotEqual(unresolved.returncode, 0)
+        self.assertIn("live or ambiguous manifest: run-1.meta", unresolved.stderr)
 
 
 if __name__ == "__main__":

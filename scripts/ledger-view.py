@@ -266,6 +266,23 @@ def validate_projection(source, workdir, ticket):
         fail("projection branch is not based on current origin/main")
 
 
+def unsettled_ticket_manifest(factory_root, ticket):
+    runs = factory_root / "factory" / "runs"
+    if not runs.is_dir():
+        return None
+    for path in sorted(runs.glob("*.meta")):
+        values = read_meta(path)
+        if values.get("ticket") != ticket:
+            continue
+        if values.get("accounting_schema") == "1":
+            settled = values.get("accounting_state") in TERMINAL_STATES
+        else:
+            settled = values.get("phase") in {"completed", "abandoned"}
+        if not settled:
+            return path
+    return None
+
+
 def paths(args):
     root = Path(args.factory_root).resolve()
     durable = Path(args.durable_ledger).resolve() if args.durable_ledger else None
@@ -304,6 +321,9 @@ def main():
     root = Path(args.factory_root).resolve()
     workdir = Path(args.workdir).resolve()
     validate_projection(root, workdir, args.ticket)
+    unsettled = unsettled_ticket_manifest(root, args.ticket)
+    if unsettled:
+        fail(f"ticket {args.ticket} has a live or ambiguous manifest: {unsettled.name}")
     rows = effective_rows(root)
     if any(row["ticket"] == args.ticket and is_reservation(row) for row in rows):
         fail(f"ticket {args.ticket} has a live or ambiguous run")
