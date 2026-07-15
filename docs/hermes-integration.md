@@ -309,7 +309,18 @@ The first real-Hermes canary and Relay cutover were accepted on 2026-07-15:
 
 ## Rollback and retention
 
-On failed activation health:
+On failed activation health, keep `factory/MAINTENANCE` published and:
+
+1. stop only the product's factory services;
+2. run `reconcile` first if the activation transaction is interrupted and
+   follow its terminal result;
+3. merge the protected product revert that restores the previous full
+   `KIT_PIN` and product tree, then update and verify the clean checkout; and
+4. run rollback only if the candidate generation is committed and still
+   active. If reconcile restored the previous generation or the candidate
+   never committed, do not call rollback.
+
+For a committed candidate after the protected pin/tree revert:
 
 ```bash
 bash "$KIT_REPO/scripts/factory-kit.sh" rollback \
@@ -317,10 +328,11 @@ bash "$KIT_REPO/scripts/factory-kit.sh" rollback \
   --product "$PRODUCT_REPO"
 ```
 
-Rollback atomically restores the previous activation record and verifies that
-the previous sealed tree is present. It deliberately keeps
-`factory/MAINTENANCE`. It does not revert the product's `KIT_PIN`, restart
-services, or prove old-code compatibility with candidate-written state.
+Rollback requires the previous pin and product tree to be restored already. It
+atomically restores the previous activation record, verifies that the previous
+sealed tree is present, and deliberately keeps `factory/MAINTENANCE`. It does
+not restart services or prove old-code compatibility with candidate-written
+state.
 
 Relay generation 1 is a one-time exception because the legacy runtime had no
 previous activation record. Its drill restores the hashed legacy
@@ -330,9 +342,9 @@ candidate integration bundle. Do not invoke `factory-kit rollback` for this
 case. Generation 2 and later must use the formal rollback command and protected
 pin-revert flow.
 
-Revert `KIT_PIN` through the protected product PR flow, revalidate the
-resulting tree against the previous release, restart the factory-only services,
-run doctor and sandbox smoke, and only then remove maintenance.
+After the previous activation record is restored, prove the previous release
+can read candidate-written state, restart the factory-only services, run doctor
+and sandbox smoke, and only then remove maintenance.
 
 Automatic pruning is intentionally unavailable. Retain every release that is:
 
