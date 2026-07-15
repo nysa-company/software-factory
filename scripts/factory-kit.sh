@@ -978,6 +978,18 @@ prepare_pinned_scanner() {
   local source="$1" checkout="$2" scratch="$3"
   local scanner="$checkout/scripts/secret-scan"
   [[ -f "$scanner" ]] || return 0
+  if [[ -n "${FACTORY_KIT_TEST_PINNED_SCANNER:-}" ]]; then
+    [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+      die "pinned scanner test override requires test mode"
+    [[ -f "$FACTORY_KIT_TEST_PINNED_SCANNER" &&
+       ! -L "$FACTORY_KIT_TEST_PINNED_SCANNER" &&
+       -x "$FACTORY_KIT_TEST_PINNED_SCANNER" ]] ||
+      die "pinned scanner test fixture is unsafe"
+    mkdir -p "$checkout/.context/tools/gitleaks/8.30.1"
+    cp "$FACTORY_KIT_TEST_PINNED_SCANNER" \
+      "$checkout/.context/tools/gitleaks/8.30.1/gitleaks"
+    return 0
+  fi
   grep -Fq 'VERSION = "8.30.1"' "$scanner" || return 0
   python3 - "$source" "$checkout" "$scratch" <<'PY'
 import hashlib
@@ -2083,6 +2095,8 @@ cmd_certify() {
   ISOLATED_HOME="$workspace/home"
   prepare_writable_release_copy "$release" "$workspace"
   writable="$PREPARED_COPY"
+  prepare_pinned_scanner "$release" "$writable" "$workspace/tmp" ||
+    die "could not stage the pinned scanner for isolated certification"
   prepare_writable_product_copy "$product_top" "$workspace"
   script="$(certify_script_path "$PREPARED_PRODUCT")" ||
     die "invalid product certification contract"
