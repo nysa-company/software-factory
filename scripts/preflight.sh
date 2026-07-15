@@ -73,46 +73,62 @@ if ! factory_validate_runtime_overrides; then
   exit 1
 fi
 
-# (a) backend routes — resolve without submitting any task.
+# (a) backend routes — resolve without submitting any task. The authenticated
+# isolated harness fixes the mock adapter before this script starts, so it must
+# not probe credential-bearing production CLIs.
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
-if CONTRACT_OUT="$(FACTORY_GLOBAL_ENV="$GLOBAL_ENV" "$KIT_DIR/scripts/adapters/contract-test.sh" --routes 2>&1)"; then
-  pass "backend route contract test passed"
+if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+      "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" &&
+      "${FACTORY_ADAPTER_OVERRIDE:-}" == "mock" ]]; then
+  if [[ -x "$KIT_DIR/scripts/adapters/mock.sh" ]] &&
+     command -v timeout >/dev/null 2>&1 &&
+     command -v python3 >/dev/null 2>&1; then
+    pass "authenticated isolated mock route contract passed"
+    pass "reasoning route fixed to mock by the trusted test harness"
+    pass "execution route fixed to mock by the trusted test harness"
+  else
+    fail "isolated mock route is missing required runtime tools"
+  fi
 else
-  fail "backend route contract test failed — output follows"
-  printf '%s\n' "$CONTRACT_OUT" | sed 's/^/  | /'
-fi
+  if CONTRACT_OUT="$(FACTORY_GLOBAL_ENV="$GLOBAL_ENV" "$KIT_DIR/scripts/adapters/contract-test.sh" --routes 2>&1)"; then
+    pass "backend route contract test passed"
+  else
+    fail "backend route contract test failed — output follows"
+    printf '%s\n' "$CONTRACT_OUT" | sed 's/^/  | /'
+  fi
 
-# Report both role-group routes. This is kickoff visibility only;
-# run-agent.sh resolves again immediately before every role launch.
-for ROLE_SAMPLE in planner spec-linter; do
-  GROUP="$(factory_role_group "$ROLE_SAMPLE")"
-  PRIMARY="$(factory_group_primary "$GROUP")"
-  FALLBACK="$(factory_group_fallback "$GROUP")"
-  factory_probe_adapter "$PRIMARY"
-  PRIMARY_STATE="$PROBE_STATE"
-  PRIMARY_REASON="$PROBE_REASON"
-  if [[ "$PRIMARY_STATE" == "READY" ]]; then
-    pass "$GROUP primary route ready ($PRIMARY)"
-    if [[ "${FACTORY_CURSOR_FALLBACK_ENABLED:-0}" == "1" ]]; then
-      factory_probe_adapter "$FALLBACK"
-      if [[ "$PROBE_STATE" == "READY" ]]; then
-        pass "$GROUP Cursor fallback ready ($FALLBACK)"
+  # Report both role-group routes. This is kickoff visibility only;
+  # run-agent.sh resolves again immediately before every role launch.
+  for ROLE_SAMPLE in planner spec-linter; do
+    GROUP="$(factory_role_group "$ROLE_SAMPLE")"
+    PRIMARY="$(factory_group_primary "$GROUP")"
+    FALLBACK="$(factory_group_fallback "$GROUP")"
+    factory_probe_adapter "$PRIMARY"
+    PRIMARY_STATE="$PROBE_STATE"
+    PRIMARY_REASON="$PROBE_REASON"
+    if [[ "$PRIMARY_STATE" == "READY" ]]; then
+      pass "$GROUP primary route ready ($PRIMARY)"
+      if [[ "${FACTORY_CURSOR_FALLBACK_ENABLED:-0}" == "1" ]]; then
+        factory_probe_adapter "$FALLBACK"
+        if [[ "$PROBE_STATE" == "READY" ]]; then
+          pass "$GROUP Cursor fallback ready ($FALLBACK)"
+        else
+          warn "$GROUP Cursor fallback not ready: $PROBE_STATE ($PROBE_REASON)"
+        fi
       else
-        warn "$GROUP Cursor fallback not ready: $PROBE_STATE ($PROBE_REASON)"
+        pass "$GROUP Cursor fallback disabled (primary-only compatibility mode)"
       fi
     else
-      pass "$GROUP Cursor fallback disabled (primary-only compatibility mode)"
+      factory_probe_adapter "$FALLBACK"
+      if [[ "$PRIMARY_STATE" == "UNAVAILABLE" && "$PROBE_STATE" == "READY" ]]; then
+        warn "$GROUP primary unavailable ($PRIMARY_REASON); pre-execution route selects $FALLBACK"
+      else
+        fail "$GROUP has no safe route: primary=$PRIMARY_STATE/$PRIMARY_REASON fallback=$PROBE_STATE/$PROBE_REASON"
+      fi
     fi
-  else
-    factory_probe_adapter "$FALLBACK"
-    if [[ "$PRIMARY_STATE" == "UNAVAILABLE" && "$PROBE_STATE" == "READY" ]]; then
-      warn "$GROUP primary unavailable ($PRIMARY_REASON); pre-execution route selects $FALLBACK"
-    else
-      fail "$GROUP has no safe route: primary=$PRIMARY_STATE/$PRIMARY_REASON fallback=$PROBE_STATE/$PROBE_REASON"
-    fi
-  fi
-done
+  done
+fi
 
 # (b) daily budget — same spend computation as run-agent.sh, reserve = PROJECTED_TICKET_USD
 if [[ ! -f "$ENV_FILE" ]]; then
