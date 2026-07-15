@@ -1805,7 +1805,9 @@ import pathlib, re, sys
 tickets, candidate = pathlib.Path(sys.argv[1]), sys.argv[2]
 if not tickets.is_dir():
     raise SystemExit(0)
-for path in sorted(tickets.glob("*.md")):
+for path in sorted(tickets.glob("T-*.md")):
+    if not re.fullmatch(r"T-[0-9]+\.md", path.name):
+        continue
     if path.is_symlink():
         raise SystemExit("ticket path is a symlink: %s" % path)
     text = path.read_text(errors="replace")

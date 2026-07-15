@@ -148,7 +148,7 @@ set_pin() {
 
 set_ticket_lease() {
   local product="$1" sha="$2" file
-  file="$product/factory/tickets/T-PLANNING.md"
+  file="$product/factory/tickets/T-004.md"
   python3 - "$file" "$sha" <<'PY'
 import pathlib, re, sys
 path, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
@@ -219,18 +219,23 @@ factory/.launch.lock/
 factory/.active-runs/
 factory/runs/
 EOF
-  cat > "$path/factory/tickets/T-READY.md" <<'EOF'
+  cat > "$path/factory/tickets/T-001.md" <<'EOF'
 State: Ready
 EOF
-  cat > "$path/factory/tickets/T-BACKLOG.md" <<'EOF'
+  cat > "$path/factory/tickets/T-002.md" <<'EOF'
 State: Backlog
 EOF
-  cat > "$path/factory/tickets/T-DONE.md" <<'EOF'
+  cat > "$path/factory/tickets/T-003.md" <<'EOF'
 State: Done
 Kit-SHA: 0000000000000000000000000000000000000000
 EOF
-  cat > "$path/factory/tickets/T-PLANNING.md" <<'EOF'
+  cat > "$path/factory/tickets/T-004.md" <<'EOF'
 State: Planning
+EOF
+  cat > "$path/factory/tickets/T-101-bundle.md" <<'EOF'
+# Evidence bundle
+
+This is supporting evidence, not a canonical ticket record.
 EOF
   printf '%s\n' "placeholder" > "$path/factory/KIT_PIN"
   commit_all "$path" "product fixture"
@@ -826,7 +831,7 @@ expect_failure "activate rejects KIT_PIN blank-line extras" \
   --receipt "$RECEIPT_A"
 printf '%s\n' "$SHA_A" > "$PRODUCT_ONE/factory/KIT_PIN"
 
-printf '%s\n' 'State: Ready' >> "$PRODUCT_ONE/factory/tickets/T-READY.md"
+printf '%s\n' 'State: Ready' >> "$PRODUCT_ONE/factory/tickets/T-001.md"
 commit_all "$PRODUCT_ONE" "add duplicate ticket state fixture"
 push_main "$PRODUCT_ONE"
 expect_success "duplicate-state product tuple can certify" \
@@ -835,7 +840,7 @@ RECEIPT_DUPLICATE_STATE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} 
 expect_failure "duplicate ticket State fields block activation" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
   --receipt "$RECEIPT_DUPLICATE_STATE"
-python3 - "$PRODUCT_ONE/factory/tickets/T-READY.md" <<'PY'
+python3 - "$PRODUCT_ONE/factory/tickets/T-001.md" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 lines = path.read_text().splitlines()
@@ -845,7 +850,7 @@ PY
 commit_all "$PRODUCT_ONE" "remove duplicate ticket state fixture"
 push_main "$PRODUCT_ONE"
 
-printf 'Kit-SHA: %s\n' "$SHA_A" >> "$PRODUCT_ONE/factory/tickets/T-PLANNING.md"
+printf 'Kit-SHA: %s\n' "$SHA_A" >> "$PRODUCT_ONE/factory/tickets/T-004.md"
 commit_all "$PRODUCT_ONE" "add duplicate ticket lease fixture"
 push_main "$PRODUCT_ONE"
 expect_success "duplicate-lease product tuple can certify" \
@@ -854,7 +859,7 @@ RECEIPT_DUPLICATE_LEASE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} 
 expect_failure "duplicate ticket Kit-SHA fields block activation" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
   --receipt "$RECEIPT_DUPLICATE_LEASE"
-python3 - "$PRODUCT_ONE/factory/tickets/T-PLANNING.md" <<'PY'
+python3 - "$PRODUCT_ONE/factory/tickets/T-004.md" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 lines = path.read_text().splitlines()
@@ -866,7 +871,7 @@ commit_all "$PRODUCT_ONE" "remove duplicate ticket lease fixture"
 push_main "$PRODUCT_ONE"
 
 printf '%s\n' 'State: Done' 'Kit-SHA: not-a-canonical-sha' \
-  > "$PRODUCT_ONE/factory/tickets/T-DONE.md"
+  > "$PRODUCT_ONE/factory/tickets/T-003.md"
 commit_all "$PRODUCT_ONE" "add invalid terminal lease fixture"
 push_main "$PRODUCT_ONE"
 expect_success "invalid-terminal-lease tuple can certify" \
@@ -877,7 +882,7 @@ expect_failure "terminal ticket lease is validated before state decision" \
   --receipt "$RECEIPT_INVALID_DONE"
 printf '%s\n' 'State: Done' \
   'Kit-SHA: 0000000000000000000000000000000000000000' \
-  > "$PRODUCT_ONE/factory/tickets/T-DONE.md"
+  > "$PRODUCT_ONE/factory/tickets/T-003.md"
 commit_all "$PRODUCT_ONE" "restore canonical terminal lease"
 push_main "$PRODUCT_ONE"
 expect_success "clean ticket tuple recertifies" \
