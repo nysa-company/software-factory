@@ -306,6 +306,14 @@ The first real-Hermes canary and Relay cutover were accepted on 2026-07-15:
   setup PR #12 check override was removed immediately and is not protected-CI
   evidence; implementation and closeout checks passed under the restored
   no-bypass Ruleset.
+- Relay generation 3 established current product tree `395918c` on retained
+  release `3b63cc7` as the tested rollback baseline. Generation 4 then
+  activated documentation-only successor `35c2e10` against protected Relay
+  tree `b2f868f`; contract, doctor, readiness, product tests, services, Linear,
+  and repeated probes passed. Green draft revert PR #16 reproduces `395918c`
+  before rollback. The maintenance interval was 21m59s, so the five-minute
+  target remains unaccepted. See
+  `docs/operations/sofia-relay-upgrade-2026-07-15.md`.
 
 ## Rollback and retention
 
