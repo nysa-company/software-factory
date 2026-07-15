@@ -278,7 +278,26 @@ Acceptance requires a redacted, timestamped record of:
 - protected pin PR/revert PR and proof that the previous release reads any
   state written by the candidate.
 
-No live canary, cutover, outage target, or rollback RTO has been accepted yet.
+The first real-Hermes canary and Relay cutover were accepted on 2026-07-15:
+
+- Hermes Agent `0.18.2` loaded the isolated `factory-canary` profile and
+  LaunchAgent without production credentials. Contract, doctor, preflight,
+  sequencing, and a mock planner run passed against release `45008d5`; its
+  completed manifest bound contract `1.0.0`, kit tree `eff78c6`, product tree
+  `272b741`, ticket lease, and the physical sealed path.
+- Relay generation 1 activated release `3b63cc7` (kit tree `dbc9aff`) after
+  protected follow-up fixes for certification and migrated ticket evidence.
+  The production profile, registry, gateway, and reconciler then passed
+  contract and doctor checks with a fresh Linear pull.
+- The five-minute planned-outage target was not met. Activation at
+  `05:38:18Z` reached post-clear doctor at `05:44:08Z` (5m50s), and the full
+  maintenance/drain interval was longer because several fail-closed defects
+  required new protected releases. Treat this as measured rollout evidence,
+  not an accepted outage SLO.
+- The first-generation legacy restore proof completed at `05:45:22Z` and
+  candidate recutover health at `05:45:58Z`. This accepts the documented
+  first-migration exception only; formal release-manager rollback RTO remains
+  unaccepted until generation 2 has a previous `active.json`.
 
 ## Rollback and retention
 
@@ -294,6 +313,14 @@ Rollback atomically restores the previous activation record and verifies that
 the previous sealed tree is present. It deliberately keeps
 `factory/MAINTENANCE`. It does not revert the product's `KIT_PIN`, restart
 services, or prove old-code compatibility with candidate-written state.
+
+Relay generation 1 is a one-time exception because the legacy runtime had no
+previous activation record. Its drill restores the hashed legacy
+profile/registry/LaunchAgent bundle while maintenance remains published,
+proves the preserved legacy product state is readable, and then reapplies the
+candidate integration bundle. Do not invoke `factory-kit rollback` for this
+case. Generation 2 and later must use the formal rollback command and protected
+pin-revert flow.
 
 Revert `KIT_PIN` through the protected product PR flow, revalidate the
 resulting tree against the previous release, restart the factory-only services,
