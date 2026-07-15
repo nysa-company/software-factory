@@ -1074,7 +1074,7 @@ fi
 GUARD="$TMP/guard"
 write_envelope "$GUARD"
 write_ticket "$GUARD" T-400
-GUARD_LEDGER="$GUARD/factory/ledger.csv"
+GUARD_LEDGER="$GUARD/factory/runtime-ledger.csv"
 MOCK_SLEEP=5 FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
