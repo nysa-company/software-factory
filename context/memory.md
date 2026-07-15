@@ -12,7 +12,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Rollback restores the previous generation while keeping `MAINTENANCE`; automatic pruning is intentionally unavailable.
-- Linux and macOS system-Bash verification both feed the required aggregate `ci` status. The real Hermes canary, live cutover, outage target, and rollback RTO have not yet been accepted.
+- Linux and macOS system-Bash verification both feed the required aggregate `ci` status. The first real Hermes canary, Relay generation-1 cutover, and legacy restore/recutover exception passed on 2026-07-15; the five-minute outage target and formal generation-2 rollback RTO remain unaccepted.
 
 ## Log
 
@@ -50,10 +50,16 @@ Hermes uses the bootstrap-managed `~/.factory/bin/factory-launch` contract inste
 
 Category: Decision
 
-Activation requires maintenance before the shared launch lock, an unexpired exact-tuple receipt, and a recoverable journal; rollback restores retained previous bits but keeps execution stopped until the protected product pin is reverted and revalidated. The acceptance targets are a control-plane outage of at most 5 minutes and full rollback RTO of at most 30 minutes. No automatic prune is allowed until real-ticket retention and rollback evidence exists; the first real Hermes canary and live cutover remain pending.
+Activation requires maintenance before the shared launch lock, an unexpired exact-tuple receipt, and a recoverable journal; rollback restores retained previous bits but keeps execution stopped until the protected product pin is reverted and revalidated. The acceptance targets are a control-plane outage of at most 5 minutes and full rollback RTO of at most 30 minutes. No automatic prune is allowed until real-ticket retention and rollback evidence exists.
 
 ## 2026-07-14 — Decision 7: Release checks have no bypass identity
 
 Category: System change
 
 The active `main` Ruleset has an empty bypass list and binds the required `ci` and `test-immutability` contexts to the GitHub Actions app (`integration_id` 15368). Release installation rejects bypass actors, unbound contexts, missing PR enforcement, or checks reported by another app.
+
+## 2026-07-15 — Decision 8: Relay first migration accepted with measured exception
+
+Category: System change
+
+The isolated real-Hermes canary passed on release `45008d5`, and Relay generation 1 activated release `3b63cc7` before a hash-verified legacy restore and candidate recutover drill. The activation-to-clear interval was 5m50s, so the five-minute outage target remains unmet; formal `factory-kit rollback` begins with generation 2 because the legacy runtime had no previous activation record.

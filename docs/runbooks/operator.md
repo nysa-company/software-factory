@@ -126,7 +126,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 The planned control-plane outage starts when maintenance is created and ends
 when maintenance is removed. Target: 5 minutes or less. Candidate preparation,
 certification, and canarying happen before maintenance and should cause no
-outage. No live canary or cutover has yet established this target.
+outage. Relay generation 1 did not establish this target; its activation-to-clear
+interval alone was 5m50s and its full maintenance interval was longer.
 
 ## Interrupted activation
 
@@ -169,6 +170,21 @@ outage. No live canary or cutover has yet established this target.
   verified, health passes, and maintenance is cleared.
 - Don't: edit the pin locally, add a bypass, clear maintenance after pointer
   rollback alone, or claim the drill passed without timestamps and evidence.
+
+### Relay generation-1 exception
+
+Relay's legacy runtime had no previous `active.json`, so its 2026-07-15 drill
+did not call `factory-kit rollback`. With candidate maintenance still
+published, the operator stopped only the Relay candidate gateway/reconciler,
+restored the hash-verified legacy profile, registry, and reconciler definition,
+removed the legacy kill barrier, and proved the preserved Blocked-Escalated
+T-106 state and Linear map were readable. The legacy proof was recorded at
+`05:45:22Z`; candidate recutover doctor passed at `05:45:58Z`.
+
+This exception is exhausted. For generation 2 onward, use the normal rollback
+command, protected `KIT_PIN` revert, recertification, and health sequence above.
+The first cutover's activation-to-clear interval was 5m50s, so the five-minute
+outage target was missed and must not be reported as accepted.
 
 ## Release retention
 
