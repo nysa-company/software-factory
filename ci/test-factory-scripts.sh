@@ -1290,24 +1290,54 @@ if expect_stage "ESCALATE spec-lint failed twice" "$WALK" T-503; then
 fi
 
 # Successful mutating roles must commit cleanly; the wrapper owns the push.
-ROLE_EXIT_ROOT="$TMP/role-exit"
-ROLE_EXIT_WORKTREE="$TMP/role-exit-worktree"
-ROLE_EXIT_REMOTE="$TMP/role-exit.git"
-write_envelope "$ROLE_EXIT_ROOT"
-write_ticket "$ROLE_EXIT_ROOT" T-600
-git -C "$ROLE_EXIT_ROOT" add factory/tickets/T-600.md
-git -C "$ROLE_EXIT_ROOT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "ticket fixture"
-git init --bare -q "$ROLE_EXIT_REMOTE"
-git -C "$ROLE_EXIT_ROOT" remote add origin "$ROLE_EXIT_REMOTE"
-git -C "$ROLE_EXIT_ROOT" branch -M main
-git -C "$ROLE_EXIT_ROOT" push -q -u origin main
-git -C "$ROLE_EXIT_ROOT" worktree add -q -b ticket/T-600 "$ROLE_EXIT_WORKTREE" main
-printf '\nKit-SHA: %s\n' "$KIT_SHA" >> "$ROLE_EXIT_WORKTREE/factory/tickets/T-600.md"
-git -C "$ROLE_EXIT_WORKTREE" add factory/tickets/T-600.md
-git -C "$ROLE_EXIT_WORKTREE" -c user.name=test -c user.email=test@example.com \
-  commit -qm "ticket affinity"
-git -C "$ROLE_EXIT_WORKTREE" push -q -u origin ticket/T-600
+setup_role_exit_fixture() {
+  local ticket="$1"
+  ROLE_EXIT_ROOT="$TMP/role-exit-$ticket"
+  ROLE_EXIT_WORKTREE="$TMP/role-exit-$ticket-worktree"
+  ROLE_EXIT_REMOTE="$TMP/role-exit-$ticket.git"
+  write_envelope "$ROLE_EXIT_ROOT"
+  write_ticket "$ROLE_EXIT_ROOT" "$ticket"
+  git -C "$ROLE_EXIT_ROOT" add "factory/tickets/$ticket.md"
+  git -C "$ROLE_EXIT_ROOT" -c user.name=test -c user.email=test@example.com \
+    commit -qm "ticket fixture"
+  git init --bare -q "$ROLE_EXIT_REMOTE"
+  git -C "$ROLE_EXIT_ROOT" remote add origin "$ROLE_EXIT_REMOTE"
+  git -C "$ROLE_EXIT_ROOT" branch -M main
+  git -C "$ROLE_EXIT_ROOT" push -q -u origin main
+  git -C "$ROLE_EXIT_ROOT" worktree add -q -b "ticket/$ticket" \
+    "$ROLE_EXIT_WORKTREE" main
+  printf '\nKit-SHA: %s\n' "$KIT_SHA" >> "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+  git -C "$ROLE_EXIT_WORKTREE" add "factory/tickets/$ticket.md"
+  git -C "$ROLE_EXIT_WORKTREE" -c user.name=test -c user.email=test@example.com \
+    commit -qm "ticket affinity"
+  git -C "$ROLE_EXIT_WORKTREE" push -q -u origin "ticket/$ticket"
+}
+
+setup_role_exit_fixture T-607
+REMOTE_DRIFT_TREE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse 'HEAD^{tree}')"
+REMOTE_DRIFT_COMMIT="$(printf '%s\n' 'remote drift' | git -C "$ROLE_EXIT_WORKTREE" \
+  -c user.name=test -c user.email=test@example.com \
+  commit-tree "$REMOTE_DRIFT_TREE" -p HEAD)"
+git -C "$ROLE_EXIT_WORKTREE" push -q origin \
+  "${REMOTE_DRIFT_COMMIT}:refs/heads/ticket/T-607"
+ROLE_REMOTE_STATUS=0
+FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-607 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "remote drift" > "$TMP/role-remote.out" 2>&1 || ROLE_REMOTE_STATUS=$?
+if [[ "$ROLE_REMOTE_STATUS" -eq 11 &&
+      ! -f "$ROLE_EXIT_ROOT/factory/runs/"*.out ]] &&
+   grep -q 'role_exit_remote_mismatch' "$TMP/role-remote.out" &&
+   grep -q '^accounting_schema=1$' "$ROLE_EXIT_ROOT/factory/runs/"*.meta &&
+   grep -q '^accounting_state=launch_void$' "$ROLE_EXIT_ROOT/factory/runs/"*.meta &&
+   grep -q '^go_issued=0$' "$ROLE_EXIT_ROOT/factory/runs/"*.meta; then
+  pass "stale remote ticket branch refuses before GO"
+else
+  fail "stale remote ticket branch refuses before GO" "status=$ROLE_REMOTE_STATUS"
+fi
+
+setup_role_exit_fixture T-600
 ROLE_NO_COMMIT=0
 FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
