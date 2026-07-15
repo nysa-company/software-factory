@@ -998,6 +998,7 @@ environment = {
     "TMPDIR": scratch,
     "XDG_CACHE_HOME": os.path.join(scratch, "cache"),
     "npm_config_cache": os.path.join(scratch, "npm"),
+    "FACTORY_KIT_OUTER_SANDBOX": "1",
 }
 environment.update(tool_environment)
 if dirty == "1":
@@ -1361,6 +1362,7 @@ environment = {
     "FACTORY_KIT_SHA": sha,
     "FACTORY_KIT_RELEASE": release,
     "FACTORY_PRODUCT_ROOT": product,
+    "FACTORY_KIT_OUTER_SANDBOX": "1",
 }
 environment.update(tool_environment)
 if capture:
