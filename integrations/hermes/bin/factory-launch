@@ -54,6 +54,7 @@ print(path)
 PY
 )" || die "launcher self path cannot be resolved"
 INSTALLED_LAUNCHER_PATH="$ACCOUNT_HOME/.factory/bin/factory-launch"
+ISOLATED_TEST_LAUNCHER=0
 
 if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
   if [[ ${FACTORY_LAUNCH_TEST_MODE+x} == x ||
@@ -69,6 +70,7 @@ if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
 else
   [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
     die "launcher must execute from the installed trust-root path"
+  ISOLATED_TEST_LAUNCHER=1
   if [[ -n "${FACTORY_LAUNCH_TEST_ACCOUNT_HOME:-}" ]]; then
     case "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" in
       /*) ;;
@@ -445,58 +447,34 @@ export FACTORY_RELEASE_TREE="$KIT_TREE"
 export FACTORY_RELEASE_PATH="$RELEASE_PATH"
 export FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT"
 
+HELPER_ENV=(
+  /usr/bin/env -i
+  "HOME=$HOME"
+  "PATH=$SAFE_PATH"
+  "TMPDIR=$SAFE_TMPDIR"
+  "FACTORY_ROOT=$PRODUCT_ROOT"
+  "FACTORY_RELEASE_SHA=$KIT_SHA"
+  "FACTORY_RELEASE_TREE=$KIT_TREE"
+  "FACTORY_RELEASE_PATH=$RELEASE_PATH"
+  "FACTORY_RELEASE_CONTRACT_VERSION=$ACTIVE_CONTRACT"
+)
+if [[ -n "$PROFILE_GH_TOKEN" ]]; then
+  HELPER_ENV+=("GH_TOKEN=$PROFILE_GH_TOKEN")
+fi
+if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+  HELPER_ENV+=(
+    "FACTORY_TEST_MODE=1"
+    "FACTORY_TRUSTED_TEST_HARNESS=1"
+    "FACTORY_ADAPTER_OVERRIDE=mock"
+  )
+fi
+
 run_selected_helper() {
-  if [[ -n "$PROFILE_GH_TOKEN" ]]; then
-    /usr/bin/env -i \
-      HOME="$HOME" \
-      PATH="$SAFE_PATH" \
-      TMPDIR="$SAFE_TMPDIR" \
-      FACTORY_ROOT="$PRODUCT_ROOT" \
-      FACTORY_RELEASE_SHA="$KIT_SHA" \
-      FACTORY_RELEASE_TREE="$KIT_TREE" \
-      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
-      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
-      GH_TOKEN="$PROFILE_GH_TOKEN" \
-      /bin/bash "$@"
-  else
-    /usr/bin/env -i \
-      HOME="$HOME" \
-      PATH="$SAFE_PATH" \
-      TMPDIR="$SAFE_TMPDIR" \
-      FACTORY_ROOT="$PRODUCT_ROOT" \
-      FACTORY_RELEASE_SHA="$KIT_SHA" \
-      FACTORY_RELEASE_TREE="$KIT_TREE" \
-      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
-      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
-      /bin/bash "$@"
-  fi
+  "${HELPER_ENV[@]}" /bin/bash "$@"
 }
 
 exec_selected_helper() {
-  if [[ -n "$PROFILE_GH_TOKEN" ]]; then
-    exec /usr/bin/env -i \
-      HOME="$HOME" \
-      PATH="$SAFE_PATH" \
-      TMPDIR="$SAFE_TMPDIR" \
-      FACTORY_ROOT="$PRODUCT_ROOT" \
-      FACTORY_RELEASE_SHA="$KIT_SHA" \
-      FACTORY_RELEASE_TREE="$KIT_TREE" \
-      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
-      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
-      GH_TOKEN="$PROFILE_GH_TOKEN" \
-      /bin/bash "$@"
-  else
-    exec /usr/bin/env -i \
-      HOME="$HOME" \
-      PATH="$SAFE_PATH" \
-      TMPDIR="$SAFE_TMPDIR" \
-      FACTORY_ROOT="$PRODUCT_ROOT" \
-      FACTORY_RELEASE_SHA="$KIT_SHA" \
-      FACTORY_RELEASE_TREE="$KIT_TREE" \
-      FACTORY_RELEASE_PATH="$RELEASE_PATH" \
-      FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT" \
-      /bin/bash "$@"
-  fi
+  exec "${HELPER_ENV[@]}" /bin/bash "$@"
 }
 
 require_exact() {

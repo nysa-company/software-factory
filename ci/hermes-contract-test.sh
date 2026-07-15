@@ -59,6 +59,12 @@ assert_helper_confinement() {
   grep -qF "PATH=$safe_home/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     "$file" || fail "helper PATH was not the fixed safe path"
   grep -qF "TMPDIR=$safe_tmp" "$file" || fail "helper TMPDIR was not physical"
+  grep -qFx "FACTORY_TEST_MODE=1" "$file" ||
+    fail "isolated launcher did not fix test mode"
+  grep -qFx "FACTORY_ADAPTER_OVERRIDE=mock" "$file" ||
+    fail "isolated launcher did not fix the mock adapter"
+  grep -qFx "FACTORY_TRUSTED_TEST_HARNESS=1" "$file" ||
+    fail "isolated launcher did not authenticate its test harness"
   grep -qF "FACTORY_ROOT=$(cd "$LAUNCH_PRODUCT" && pwd -P)" "$file" ||
     fail "helper FACTORY_ROOT was not canonical"
   if grep -Fq "$GH_SECRET" "$file" || grep -Fq "$CALLER_GH_SECRET" "$file"; then
@@ -79,8 +85,8 @@ assert_helper_confinement() {
   for variable in \
     FACTORY_LAUNCH_TEST_MODE FACTORY_LAUNCH_TEST_HOME \
     FACTORY_LAUNCH_TEST_ACCOUNT_HOME FACTORY_KITS_ROOT HERMES_FACTORY_PROFILE \
-    FACTORY_ENVELOPE FACTORY_LEDGER FACTORY_GLOBAL_ENV FACTORY_TEST_MODE \
-    FACTORY_ADAPTER_OVERRIDE FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
+    FACTORY_ENVELOPE FACTORY_LEDGER FACTORY_GLOBAL_ENV \
+    FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
     FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
     PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
     GIT_INDEX_FILE GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT \
@@ -147,7 +153,7 @@ run_launcher() {
     FACTORY_ENVELOPE="$TMP/bypass-envelope.env" \
     FACTORY_LEDGER="$TMP/bypass-ledger.csv" \
     FACTORY_GLOBAL_ENV="$TMP/bypass-global.env" \
-    FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    FACTORY_TEST_MODE=caller-bypass FACTORY_ADAPTER_OVERRIDE=caller-bypass \
     FACTORY_PROBE_CODEX=INVALID:bypass \
     FACTORY_PROBE_CLAUDE_CODE=INVALID:bypass \
     FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_BIN="$TMP/agent-bypass" \
@@ -1064,7 +1070,7 @@ run_launcher launchtest run \
   --prompt-file "$RELEASE_C_PHYS/roles/planner.md" \
   --workdir "$REAL_RUN_WORKTREE_PHYS" \
   -- "sealed runtime task" > "$TMP/real-run.txt"
-grep -qF "trusted sealed test stub" "$TMP/real-run.txt" ||
+grep -qF "mock adapter ran task: sealed runtime task" "$TMP/real-run.txt" ||
   fail "real sealed run-agent smoke did not complete"
 REAL_MANIFEST="$(ls -t "$LAUNCH_PRODUCT/factory/runs/"*.meta | awk 'NR==1 {print; exit}')"
 grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" ||
@@ -1077,8 +1083,8 @@ grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted physical release path"
 grep -qF "role=planner" "$REAL_MANIFEST" ||
   fail "real sealed run did not use the sequencer-authorized role"
-grep -qF "adapter=codex" "$REAL_MANIFEST" ||
-  fail "caller adapter override bypassed the safe backend route"
+grep -qF "adapter=mock" "$REAL_MANIFEST" ||
+  fail "isolated launcher did not enforce the mock adapter"
 assert_no_secret "$TMP/real-run.txt"
 [[ "$(cksum "$TMP/bypass-envelope.env")" == "$BYPASS_ENVELOPE_BEFORE" ]] ||
   fail "caller FACTORY_ENVELOPE bypass was consumed or modified"
