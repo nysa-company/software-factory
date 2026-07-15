@@ -29,6 +29,8 @@ case "\${1:-}" in
     echo "--max-budget-usd"
     echo "--output-format"
     echo "--append-system-prompt"
+    echo "--model"
+    echo "--effort"
     exit 0 ;;
   auth) [[ "\${2:-}" == "status" ]] && exit 0 ;;
 esac
@@ -46,7 +48,7 @@ case "\${1:-}" in
   --version) echo "codex-cli $ver"; exit 0 ;;
   login) [[ "\${2:-}" == "status" ]] && exit 0 ;;
   exec)
-    if [[ "\${2:-}" == "--help" ]]; then echo "--json"; fi
+    if [[ "\${2:-}" == "--help" ]]; then printf '%s\\n' --json --model; fi
     exit 0
     ;;
 esac

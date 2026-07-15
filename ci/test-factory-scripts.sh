@@ -75,8 +75,9 @@ case "${1:-}" in
     ;;
   login) [[ "${2:-}" == "status" ]] && exit 0 ;;
   exec)
-    if [[ "${2:-}" == "--help" ]]; then echo "--json"; exit 0; fi
+    if [[ "${2:-}" == "--help" ]]; then printf '%s\n' --json --model; exit 0; fi
     [[ -z "${FACTORY_TEST_TRACE:-}" ]] || echo "codex-task" >> "$FACTORY_TEST_TRACE"
+    [[ -z "${FACTORY_TEST_ARGS:-}" ]] || printf '%s\n' "$*" >> "$FACTORY_TEST_ARGS"
     echo '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}'
     exit "${STUB_CODEX_STATUS:-0}"
     ;;
@@ -93,7 +94,7 @@ case "${1:-}" in
     exit "${STUB_CLAUDE_VERSION_STATUS:-0}"
     ;;
   --help)
-    printf '%s\n' --max-budget-usd --output-format --append-system-prompt
+    printf '%s\n' --max-budget-usd --output-format --append-system-prompt --model --effort
     exit 0 ;;
   auth) [[ "${2:-}" == "status" ]] && exit 0 ;;
   -p)
@@ -187,6 +188,18 @@ if [[ "$IMPLICIT_PIN" == "1:$KIT_SHA" &&
 else
   fail "only in-repo conformance receives implicit kit pin" \
     "implicit=$IMPLICIT_PIN root=$ROOT_PIN_ERROR"
+fi
+
+ROLE_MODELS="$(bash -c '
+  source "$1"
+  for role in planner spec-linter test-author builder reviewer narrator; do
+    printf "%s:%s:%s\\n" "$role" "$(factory_role_model "$role")" "$(factory_role_effort "$role")"
+  done
+' _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$ROLE_MODELS" == $'planner:gpt-5.6-sol:high\nspec-linter:fable:medium\ntest-author:fable:medium\nbuilder:gpt-5.6-terra:medium\nreviewer:sonnet:medium\nnarrator:gpt-5.6-terra:medium' ]]; then
+  pass "role model and effort policy is explicit"
+else
+  fail "role model and effort policy is explicit" "$ROLE_MODELS"
 fi
 
 AUTO_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
@@ -508,18 +521,22 @@ write_ticket "$PRIMARY" T-210
 PRIMARY_GLOBAL="$TMP/primary-global/global.env"
 write_backend_global "$PRIMARY_GLOBAL"
 PRIMARY_TRACE="$TMP/primary.trace"
+PRIMARY_ARGS="$TMP/primary.args"
 PRIMARY_OUT="$TMP/primary.out"
 PRIMARY_STATUS=0
 : > "$PRIMARY_TRACE"
+: > "$PRIMARY_ARGS"
 PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PRIMARY" \
-  FACTORY_GLOBAL_ENV="$PRIMARY_GLOBAL" FACTORY_TEST_TRACE="$PRIMARY_TRACE" \
+  FACTORY_GLOBAL_ENV="$PRIMARY_GLOBAL" FACTORY_TEST_TRACE="$PRIMARY_TRACE" FACTORY_TEST_ARGS="$PRIMARY_ARGS" \
   "$RUN_AGENT" --role planner --ticket T-210 -- "primary route" \
   > "$PRIMARY_OUT" 2>&1 || PRIMARY_STATUS=$?
 if [[ "$PRIMARY_STATUS" -eq 0 ]] &&
    [[ "$(awk -F, '$3=="T-210" {print $5}' "$PRIMARY/factory/ledger.csv")" == "codex" ]] &&
    [[ "$(awk -F, '$3=="T-210" {print $11}' "$PRIMARY/factory/ledger.csv")" == "openai" ]] &&
+   [[ "$(awk -F, '$3=="T-210" {print $12}' "$PRIMARY/factory/ledger.csv")" == "gpt-5.6-sol" ]] &&
    [[ "$(awk -F, '$3=="T-210" {print $13}' "$PRIMARY/factory/ledger.csv")" == "primary_ready" ]] &&
    [[ "$(wc -l < "$PRIMARY_TRACE" | tr -d ' ')" == "1" ]] &&
+   grep -q -- '-m gpt-5.6-sol -c model_reasoning_effort=high' "$PRIMARY_ARGS" &&
    grep -q '^codex-task$' "$PRIMARY_TRACE"; then
   pass "ready primary submits exactly one primary task"
 else

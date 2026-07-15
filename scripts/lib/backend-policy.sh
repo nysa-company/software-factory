@@ -40,6 +40,24 @@ factory_group_fallback() {
   esac
 }
 
+factory_role_model() {
+  case "$1" in
+    planner) printf '%s\n' gpt-5.6-sol ;;
+    builder|narrator) printf '%s\n' gpt-5.6-terra ;;
+    spec-linter|test-author) printf '%s\n' fable ;;
+    reviewer) printf '%s\n' sonnet ;;
+    *) return 1 ;;
+  esac
+}
+
+factory_role_effort() {
+  case "$1" in
+    planner) printf '%s\n' high ;;
+    builder|narrator|spec-linter|test-author|reviewer) printf '%s\n' medium ;;
+    *) return 1 ;;
+  esac
+}
+
 factory_adapter_family() {
   case "$1" in
     codex|cursor-openai) printf '%s\n' openai ;;
@@ -130,7 +148,7 @@ factory_probe_adapter() {
         PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
       fi
       help="$(timeout "$probe_timeout" codex exec --help 2>/dev/null || true)"
-      if [[ "$help" != *"--json"* ]]; then
+      if [[ "$help" != *"--json"* || "$help" != *"--model"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
       fi
       if ! timeout "$probe_timeout" codex login status >/dev/null 2>&1; then
@@ -153,7 +171,8 @@ factory_probe_adapter() {
       help="$(timeout "$probe_timeout" claude --help 2>/dev/null || true)"
       if [[ "$help" != *"--max-budget-usd"* ||
             "$help" != *"--output-format"* ||
-            "$help" != *"--append-system-prompt"* ]]; then
+            "$help" != *"--append-system-prompt"* ||
+            "$help" != *"--model"* || "$help" != *"--effort"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
       fi
       if ! timeout "$probe_timeout" claude auth status >/dev/null 2>&1; then
@@ -221,7 +240,7 @@ factory_probe_adapter() {
 }
 
 factory_resolve_role() {
-  local role="$1" group required primary fallback
+  local role="$1" group required primary fallback model effort
   group="$(factory_role_group "$role")" || {
     FACTORY_RESOLVE_ERROR="unknown_role"
     return 2
@@ -229,6 +248,14 @@ factory_resolve_role() {
   required="$(factory_group_family "$group")"
   primary="$(factory_group_primary "$group")"
   fallback="$(factory_group_fallback "$group")"
+  model="$(factory_role_model "$role")" || {
+    FACTORY_RESOLVE_ERROR="unknown_role_model"
+    return 2
+  }
+  effort="$(factory_role_effort "$role")" || {
+    FACTORY_RESOLVE_ERROR="unknown_role_effort"
+    return 2
+  }
 
   factory_probe_adapter "$primary"
   FACTORY_PRIMARY_STATE="$PROBE_STATE"
@@ -239,7 +266,8 @@ factory_resolve_role() {
     READY)
       FACTORY_SELECTED_ADAPTER="$primary"
       FACTORY_SELECTED_FAMILY="$required"
-      FACTORY_SELECTED_MODEL=""
+      FACTORY_SELECTED_MODEL="$model"
+      FACTORY_SELECTED_EFFORT="$effort"
       FACTORY_SELECTED_VERSION="$PROBE_VERSION"
       FACTORY_SELECTION_REASON="primary_ready"
       return 0
@@ -266,6 +294,7 @@ factory_resolve_role() {
   FACTORY_SELECTED_ADAPTER="$fallback"
   FACTORY_SELECTED_FAMILY="$required"
   FACTORY_SELECTED_MODEL="$PROBE_MODEL"
+  FACTORY_SELECTED_EFFORT="$effort"
   FACTORY_SELECTED_VERSION="$PROBE_VERSION"
   FACTORY_SELECTION_REASON="primary_${FACTORY_PRIMARY_REASON}"
   return 0

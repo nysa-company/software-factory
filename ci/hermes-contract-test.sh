@@ -1055,7 +1055,7 @@ case "${1:-}" in
     ;;
   exec)
     if [[ "${2:-}" == "--help" ]]; then
-      echo "usage: codex exec --json"
+      echo "usage: codex exec --json --model"
     else
       echo '{"type":"turn.completed","input_tokens":10,"output_tokens":5,"message":"trusted sealed test stub"}'
     fi

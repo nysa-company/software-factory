@@ -137,6 +137,7 @@ write_manifest() {
     echo "adapter=$(meta_value "${ADAPTER:-}")"
     echo "provider_family=$(meta_value "${SELECTED_FAMILY:-}")"
     echo "model_id=$(meta_value "${SELECTED_MODEL:-}")"
+    echo "effort=$(meta_value "${SELECTED_EFFORT:-}")"
     echo "selection_reason=$(meta_value "${SELECTION_REASON:-}")"
     echo "adapter_version=$(meta_value "${SELECTED_VERSION:-}")"
     echo "primary_probe=$(meta_value "${PRIMARY_PROBE_SUMMARY:-}")"
@@ -271,6 +272,7 @@ elif factory_resolve_role "$ROLE"; then
   SELECTED_FAMILY="$FACTORY_SELECTED_FAMILY"
   SELECTED_MODEL="${FACTORY_SELECTED_MODEL:-cli-default}"
   [[ -n "$SELECTED_MODEL" ]] || SELECTED_MODEL="cli-default"
+  SELECTED_EFFORT="${FACTORY_SELECTED_EFFORT:-}"
   SELECTED_VERSION="$FACTORY_SELECTED_VERSION"
   SELECTION_REASON="$FACTORY_SELECTION_REASON"
   PRIMARY_PROBE_SUMMARY="${FACTORY_PRIMARY_STATE}:${FACTORY_PRIMARY_REASON}"
@@ -435,13 +437,21 @@ set +e
 RUN_READY_FILE="$RUNS_DIR/.$RUN_ID.ready"
 RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
 rm -f "$RUN_READY_FILE" "$RUN_GO_FILE"
+ADAPTER_ARGS=(
+  --budget "$PER_RUN_BUDGET_USD"
+  --max-turns "$PER_RUN_MAX_TURNS"
+  --timeout-min "$PER_RUN_TIMEOUT_MIN"
+  --prompt-file "${PROMPT_FILE:-/dev/null}"
+  --workdir "$WORKDIR"
+)
+case "$ADAPTER" in
+  codex|claude-code)
+    ADAPTER_ARGS+=(--model "$SELECTED_MODEL" --effort "$SELECTED_EFFORT")
+    ;;
+esac
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
   "$RUN_READY_FILE" "$RUN_GO_FILE" "$ADAPTER_SH" \
-  --budget "$PER_RUN_BUDGET_USD" \
-  --max-turns "$PER_RUN_MAX_TURNS" \
-  --timeout-min "$PER_RUN_TIMEOUT_MIN" \
-  --prompt-file "${PROMPT_FILE:-/dev/null}" \
-  --workdir "$WORKDIR" \
+  "${ADAPTER_ARGS[@]}" \
   -- "$TASK" > "$RUNS_DIR/$RUN_ID.out" 2>&1 &
 RUN_PID=$!
 RUN_PGID="$RUN_PID"
