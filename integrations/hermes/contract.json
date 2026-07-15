@@ -120,6 +120,22 @@
           "output"
         ]
       },
+      "project-ledger": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--workdir",
+          "<absolute-closeout-worktree>",
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.ledger-projection/v1",
+        "validation": [
+          "absolute physical non-symlink distinct linked Git worktree root",
+          "same Git common directory as registered PRODUCT_ROOT",
+          "branch exactly chore/tNNN-closeout and based on origin/main",
+          "clean worktree with no live or ambiguous ticket run"
+        ]
+      },
       "reorder-test-fixes": {
         "arguments": [
           "--ticket",
@@ -253,6 +269,7 @@
     "scripts/preflight.sh",
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
+    "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",
     "scripts/lib/dispatch-leases.sh",
     "scripts/factory-kit.sh",

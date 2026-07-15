@@ -1,4 +1,4 @@
-Version: 8
+Version: 9
 
 # Role: Dispatcher
 
@@ -36,11 +36,11 @@ Role runs launched in the sequence defined by `docs/workflows/ticket-flow.md` (p
 
 ## Close-out ledger flow
 
-During a ticket, ledger rows and redacted run manifests accumulate — you do not edit `factory/ledger.csv` mid-pipeline. Redacted `factory/runs/*.out` streams remain local and ignored; unredacted Cursor output is never persisted. At **ticket close-out** (after the narrator posts the bundle and before or as part of moving the ticket to Review), the **one sanctioned ledger write path** is:
+During a ticket, atomic run manifests accumulate and the factory materializes their effective cost view in ignored `factory/runtime-ledger.csv` — you do not edit `factory/ledger.csv`. Redacted `factory/runs/*.out` streams remain local and ignored; unredacted Cursor output is never persisted. At **ticket close-out** (after the narrator posts the bundle and before or as part of moving the ticket to Review), the **one sanctioned ledger write path** is:
 
-1. Commit the new ledger rows and redacted metadata/evidence summaries to a short-lived bookkeeping branch (e.g. `bookkeeping/T-NNN-closeout`).
-2. Open a PR from that branch to `main` with a one-line title naming the ticket.
-3. Log the PR URL on the ticket.
+1. Create the clean linked worktree branch `chore/tNNN-closeout` from current `origin/main`.
+2. Run `~/.factory/bin/factory-launch <project> project-ledger --ticket <T-NNN> --workdir <closeout-worktree> --json`. A refusal is an escalation; never copy or reconstruct rows yourself.
+3. Commit the projected `factory/ledger.csv` and redacted metadata/evidence summaries, open its PR to `main`, and log the PR URL on the ticket.
 
 This is not a contract violation — it is how factory bookkeeping lands in the repo. Direct ledger edits on `main`, on ticket branches, or anywhere else remain forbidden.
 
@@ -64,3 +64,4 @@ Ticket T-102 sits in Ready. Correct dispatch: resolve the project contract, run 
 - v6: family-typed pre-execution Cursor fallback, one-agent-per-run rule, and local-only raw run output.
 - v7: Hermes uses the stable, release-validating `factory-launch` contract for preflight, sequencing, runs, and test-fix reordering.
 - v8: contract 1.1 may dispatch two leased tickets while contract 1.0 and the default configuration stay serialized.
+- v9: runtime accounting moved to atomic manifests and an ignored effective ledger; only `project-ledger` may update the durable ledger on a close-out branch.

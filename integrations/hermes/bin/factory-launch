@@ -27,7 +27,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|ticket-state|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|ticket-state|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -334,7 +334,7 @@ EOF
 [[ "$KIT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
   die "active kit tree is not a lowercase full object ID"
 case "$ACTIVE_CONTRACT" in
-  1.0.0|1.1.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
+  1.0.0|1.1.0|1.2.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
   *) die "active Hermes contract is incompatible" ;;
 esac
 
@@ -479,6 +479,10 @@ exec_selected_helper() {
   exec "${HELPER_ENV[@]}" /bin/bash "$@"
 }
 
+run_selected_python() {
+  "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$@"
+}
+
 require_exact() {
   local expected="$1"
   shift
@@ -512,13 +516,15 @@ validate_ticket_command() {
 
 add_dispatch_lease_env() {
   if [[ -n "${1:-}" ]]; then
-    [[ "$CONTRACT_VERSION" == "1.1.0" ]] || die "dispatcher leases require contract 1.1.0"
+    [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ]] ||
+      die "dispatcher leases require contract 1.1.0 or newer"
     HELPER_ENV+=("FACTORY_DISPATCH_LEASE_ID=$1")
   fi
 }
 
 validate_lease_command() {
-  [[ "$CONTRACT_VERSION" == "1.1.0" ]] || die "dispatcher leases require contract 1.1.0"
+  [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ]] ||
+    die "dispatcher leases require contract 1.1.0 or newer"
   LEASE_ID=""
   if [[ "$1" == "claim" ]]; then
     [[ $# -eq 3 && "$2" == "--ticket" ]] || usage
@@ -846,6 +852,22 @@ PY
       exec_selected_helper "$TICKET_STATE_HELPER" --ticket "$TICKET" \
         --workdir "$RESOLVED_WORKDIR" --action "$TICKET_ACTION"
     fi
+    ;;
+  project-ledger)
+    [[ "$CONTRACT_VERSION" == "1.2.0" ]] ||
+      die "project-ledger requires contract 1.2.0"
+    [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--workdir" && "$5" == "--json" ]] || usage
+    PROJECT_TICKET="$2"
+    [[ "$PROJECT_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    resolve_product_workdir "$4"
+    PROJECT_HELPER="$RELEASE_PATH/scripts/ledger-view.py"
+    require_managed_file "$PROJECT_HELPER" "active release ledger projection helper"
+    run_selected_python "$PROJECT_HELPER" project \
+      --factory-root "$PRODUCT_ROOT" \
+      --workdir "$RESOLVED_WORKDIR" \
+      --ticket "$PROJECT_TICKET"
+    rc=$?
+    exit "$rc"
     ;;
   reorder-test-fixes)
     [[ $# -ge 5 &&

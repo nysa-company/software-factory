@@ -67,9 +67,9 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Close-out ledger PR
 
-- Notice: at ticket close-out the dispatcher opens a short-lived bookkeeping PR (e.g. `bookkeeping/T-NNN-closeout`) carrying new ledger rows and redacted run metadata/evidence. Redacted `factory/runs/*.out` streams remain local and ignored; unredacted Cursor output is never persisted.
-- Do: review and merge it like any factory bookkeeping change — this is the sanctioned ledger write path, not a controls violation. Check `run_id`, family, exact Cursor model, selection reason, and cost basis for fallback runs.
-- Don't: ask the dispatcher to commit ledger rows directly to `main` or to a ticket branch outside this flow.
+- Notice: at ticket close-out the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes launcher command `project-ledger` to materialize the effective runtime accounting into tracked `factory/ledger.csv`.
+- Do: verify the command's row count, ticket total, and SHA-256, then review and merge the close-out PR like any factory bookkeeping change. Check `run_id`, family, exact model, selection reason, and cost basis.
+- Don't: edit rows by hand, project while the ticket has a reserved run, or commit the runtime ledger itself.
 
 ## Test commit order before operator review
 

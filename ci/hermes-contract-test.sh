@@ -1185,6 +1185,11 @@ assert commands["contract"]["arguments"] == ["--json"]
 assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
 assert commands["preflight"]["arguments"][-1] == "--json"
 assert commands["next-stage"]["arguments"][-1] == "--json"
+assert commands["project-ledger"]["arguments"] == [
+    "--ticket", "<T-NNN>", "--workdir", "<absolute-closeout-worktree>", "--json"
+]
+assert commands["project-ledger"]["output_schema"] == \
+    "nysa.software-factory.ledger-projection/v1"
 assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]

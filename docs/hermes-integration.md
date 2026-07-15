@@ -71,6 +71,7 @@ Contract versions `1.0.0` and `1.1.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> doctor --json
 ~/.factory/bin/factory-launch <project> preflight --ticket T-123 --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --json
+~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
 Contract `1.1.0` keeps one-ticket behavior by default. A product may set
@@ -89,6 +90,7 @@ bash scripts/factory-kit.sh recover-lease \
 `nysa.software-factory.hermes-doctor/v1`. `preflight` and `next-stage` preserve
 the selected helper's exit code and wrap its redacted text in versioned JSON.
 `next-stage` also returns `action` and `detail`.
+Contract 1.2 adds `project-ledger`, the only public path that projects effective runtime accounting into the tracked durable ledger.
 
 `run` and `reorder-test-fixes` are process boundaries rather than JSON
 commands. Their arguments and behavior are still compatibility-sensitive and
