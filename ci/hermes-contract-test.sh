@@ -41,13 +41,18 @@ if [[ "${FACTORY_KIT_OUTER_SANDBOX:-0}" == "1" ]]; then
 fi
 
 assert_release_metadata() {
-  local file="$1" sha="$2" tree="$3" release="$4" physical
+  local file="$1" sha="$2" tree="$3" release="$4" physical contract
   physical="$(cd "$release" && pwd -P)"
+  contract="$(python3 - "$release/integrations/hermes/contract.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["contract_version"])
+PY
+)"
   grep -qF "FACTORY_RELEASE_SHA=$sha" "$file" || fail "helper did not receive release SHA"
   grep -qF "FACTORY_RELEASE_TREE=$tree" "$file" || fail "helper did not receive release tree"
   grep -qF "FACTORY_RELEASE_PATH=$physical" "$file" ||
     fail "helper did not receive physical release path"
-  grep -qF "FACTORY_RELEASE_CONTRACT_VERSION=1.0.0" "$file" ||
+  grep -qF "FACTORY_RELEASE_CONTRACT_VERSION=$contract" "$file" ||
     fail "helper did not receive release contract"
 }
 
@@ -86,6 +91,7 @@ assert_helper_confinement() {
     FACTORY_LAUNCH_TEST_MODE FACTORY_LAUNCH_TEST_HOME \
     FACTORY_LAUNCH_TEST_ACCOUNT_HOME FACTORY_KITS_ROOT HERMES_FACTORY_PROFILE \
     FACTORY_ENVELOPE FACTORY_LEDGER FACTORY_GLOBAL_ENV \
+    FACTORY_DISPATCH_LEASE_ID \
     FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
     FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
     PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
@@ -125,12 +131,13 @@ import json
 import sys
 
 path, sha, tree, release, product = sys.argv[1:]
+contract = json.load(open(release + "/integrations/hermes/contract.json"))["contract_version"]
 value = {
     "generation": 1,
     "project": "launchtest",
     "kit_sha": sha,
     "kit_tree": tree,
-    "contract_version": "1.0.0",
+    "contract_version": contract,
     "product_path": product,
     "release_path": release,
 }
@@ -168,12 +175,28 @@ run_launcher() {
 }
 
 create_test_release() {
-  local release="$1" label="$2" action="$3"
-  mkdir -p "$release/integrations/hermes" "$release/scripts" "$release/roles"
+  local release="$1" label="$2" action="$3" contract="${4:-1.1.0}"
+  mkdir -p "$release/integrations/hermes" "$release/scripts/lib" "$release/roles"
   printf '*.out\n' > "$release/.gitignore"
   printf 'tracked ignored release evidence\n' > "$release/tracked.out"
   cp "$CONTRACT" "$release/integrations/hermes/contract.json"
+  python3 - "$release/integrations/hermes/contract.json" "$contract" <<'PY'
+import json, pathlib, sys
+path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
+value = json.loads(path.read_text())
+value["contract_version"] = contract
+path.write_text(json.dumps(value, indent=2) + "\n")
+PY
   cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
+  if [[ "$contract" == "1.0.0" ]]; then
+    python3 - "$release/scripts/factory-doctor-real.sh" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace("1.1.0", "1.0.0"))
+PY
+  fi
+  cp "$ROOT/scripts/dispatch-lease.sh" "$release/scripts/dispatch-lease.sh"
+  cp "$ROOT/scripts/lib/dispatch-leases.sh" "$release/scripts/lib/dispatch-leases.sh"
   for role in planner spec-linter test-author builder reviewer narrator; do
     printf '# %s prompt\n' "$role" > "$release/roles/$role.md"
   done
@@ -255,7 +278,7 @@ EOF
   chmod +x "$release/scripts/factory-doctor.sh" "$release/scripts/factory-doctor-real.sh" \
     "$release/scripts/preflight.sh" \
     "$release/scripts/next-stage.sh" "$release/scripts/run-agent.sh" \
-    "$release/scripts/reorder-test-fixes.sh"
+    "$release/scripts/reorder-test-fixes.sh" "$release/scripts/dispatch-lease.sh"
 }
 
 mkdir -p "$PROFILE/projects" "$TEST_HOME/.hermes/secrets" "$TEST_HOME/.factory/.ledger.lock"
@@ -383,7 +406,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.0.0"
+assert data["contract_version"] == "1.1.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -456,7 +479,7 @@ SHA_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 RELEASE_A="$KITS_ROOT/releases/$SHA_A"
 RELEASE_B="$KITS_ROOT/releases/$SHA_B"
 mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
-create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner"
+create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner" "1.0.0"
 create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR"
 TREE_A="$(tree_for_directory "$RELEASE_A")"
 TREE_B="$(tree_for_directory "$RELEASE_B")"
@@ -479,6 +502,9 @@ assert data["contract"] == "nysa.software-factory.hermes"
 assert data["contract_version"] == "1.0.0"
 assert data["launcher"]["source"] == "integrations/hermes/bin/factory-launch", data["launcher"]
 PY
+CLAIM_V1_RC=0
+run_launcher launchtest claim --ticket T-123 > "$TMP/claim-v1.out" 2>&1 || CLAIM_V1_RC=$?
+[[ "$CLAIM_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed dispatcher leases"
 [[ ! -e "$REGISTRY_SENTINEL" ]] || fail "launcher sourced arbitrary registry content"
 
 run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-a.json"
@@ -624,6 +650,30 @@ assert data["action"] == "AWAIT-OPERATOR"
 assert data["detail"] is None
 assert data["output"] == "AWAIT-OPERATOR\n"
 PY
+
+# Contract 1.1 exposes bounded, opaque ticket-lease operations through the
+# same release-selected launcher. Contract 1.0 above remained usable without them.
+mkdir -p "$LAUNCH_PRODUCT/factory/tickets"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=2' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+for ticket in T-201 T-202 T-203; do
+  printf '# %s\n\nState: Ready\n' "$ticket" > "$LAUNCH_PRODUCT/factory/tickets/$ticket.md"
+done
+run_launcher launchtest claim --ticket T-201 > "$TMP/claim-201.json"
+run_launcher launchtest claim --ticket T-202 > "$TMP/claim-202.json"
+CLAIM_201_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-201.json")"
+CLAIM_202_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-202.json")"
+CLAIM_203_RC=0
+run_launcher launchtest claim --ticket T-203 > "$TMP/claim-203.out" 2>&1 || CLAIM_203_RC=$?
+[[ "$CLAIM_203_RC" -eq 1 ]] || fail "launcher accepted a third concurrent ticket"
+run_launcher launchtest renew --ticket T-201 --lease "$CLAIM_201_ID" > "$TMP/renew-201.json"
+run_launcher launchtest release --ticket T-201 --lease "$CLAIM_201_ID" > "$TMP/release-201.json"
+run_launcher launchtest release --ticket T-202 --lease "$CLAIM_202_ID" > "$TMP/release-202.json"
+[[ ! -n "$(find "$LAUNCH_PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]] ||
+  fail "launcher lease release left state behind"
+rm -f "$LAUNCH_PRODUCT/factory/tickets/T-201.md" \
+  "$LAUNCH_PRODUCT/factory/tickets/T-202.md" "$LAUNCH_PRODUCT/factory/tickets/T-203.md"
+rm -rf "$LAUNCH_PRODUCT/factory/.dispatch-leases"
+printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 
 KITS_ROOT_PHYS="$(cd "$KITS_ROOT" && pwd -P)"
 PROFILE_PHYS="$(cd "$PROFILE" && pwd -P)"
@@ -985,7 +1035,7 @@ cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh reorder-test-fixes.sh; do
+for helper in preflight.sh next-stage.sh run-agent.sh reorder-test-fixes.sh dispatch-lease.sh; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 [[ ! -e "$RELEASE_C/.git" ]] || fail "real sealed fixture unexpectedly has Git metadata"
@@ -1021,8 +1071,12 @@ ENVELOPE
 printf '%s\n' \
   "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" \
   > "$LAUNCH_PRODUCT/factory/ledger.csv"
+printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'MAX_CONCURRENT_TICKETS=2' \
+  > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
-run_launcher launchtest next-stage --ticket T-777 --json > "$TMP/real-next-stage.json"
+run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
+REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
+run_launcher launchtest next-stage --ticket T-777 --lease "$REAL_LEASE_ID" --json > "$TMP/real-next-stage.json"
 python3 - "$TMP/real-next-stage.json" <<'PY'
 import json
 import sys
@@ -1069,6 +1123,7 @@ chmod +x "$TEST_HOME/.factory/bin/timeout" "$TEST_HOME/.factory/bin/codex"
 run_launcher launchtest run \
   --role planner \
   --ticket T-777 \
+  --lease "$REAL_LEASE_ID" \
   --prompt-file "$RELEASE_C_PHYS/roles/planner.md" \
   --workdir "$REAL_RUN_WORKTREE_PHYS" \
   -- "sealed runtime task" > "$TMP/real-run.txt"
@@ -1079,7 +1134,7 @@ grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted release SHA"
 grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted release tree"
-grep -qF "contract_version=1.0.0" "$REAL_MANIFEST" ||
+grep -qF "contract_version=1.1.0" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted release contract"
 grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" ||
   fail "real sealed run manifest omitted physical release path"
@@ -1088,6 +1143,7 @@ grep -qF "role=planner" "$REAL_MANIFEST" ||
 grep -qF "adapter=mock" "$REAL_MANIFEST" ||
   fail "isolated launcher did not enforce the mock adapter"
 assert_no_secret "$TMP/real-run.txt"
+run_launcher launchtest release --ticket T-777 --lease "$REAL_LEASE_ID" >/dev/null
 [[ "$(cksum "$TMP/bypass-envelope.env")" == "$BYPASS_ENVELOPE_BEFORE" ]] ||
   fail "caller FACTORY_ENVELOPE bypass was consumed or modified"
 [[ "$(cksum "$TMP/bypass-global.env")" == "$BYPASS_GLOBAL_BEFORE" ]] ||
@@ -1107,7 +1163,7 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.0.0"
+assert contract["contract_version"] == "1.1.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
@@ -1129,6 +1185,11 @@ assert commands["contract"]["arguments"] == ["--json"]
 assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
 assert commands["preflight"]["arguments"][-1] == "--json"
 assert commands["next-stage"]["arguments"][-1] == "--json"
+assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
+assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
+assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
+assert contract["concurrency"]["default"] == 1
+assert contract["concurrency"]["maximum"] == 2
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
     "<T-NNN>",
@@ -1166,6 +1227,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_RELEASE_TREE": "active record kit_tree",
     "FACTORY_RELEASE_PATH": "resolved physical release path",
     "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+    "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
 }
 assert contract["launcher"]["helper_environment_allowlist"] == [
     "HOME",
@@ -1176,6 +1238,7 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_RELEASE_TREE",
     "FACTORY_RELEASE_PATH",
     "FACTORY_RELEASE_CONTRACT_VERSION",
+    "FACTORY_DISPATCH_LEASE_ID",
     "GH_TOKEN",
 ]
 assert contract["launcher"]["helper_optional_credentials"]["GH_TOKEN"] == {
@@ -1216,7 +1279,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.0.0" in changelog
+assert "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [

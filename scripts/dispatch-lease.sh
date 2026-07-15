@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Claim, renew, or release one bounded dispatcher ticket lease.
+set -euo pipefail
+
+OPERATION="${1:-}"
+shift || true
+TICKET="" LEASE_ID=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ticket) TICKET="$2"; shift 2 ;;
+    --lease) LEASE_ID="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[[ "$OPERATION" == "claim" || "$OPERATION" == "renew" || "$OPERATION" == "release" ]] || {
+  echo "usage: dispatch-lease.sh <claim|renew|release> --ticket T-NNN [--lease ID]" >&2
+  exit 2
+}
+[[ "$TICKET" =~ ^T-[0-9]+$ ]] || { echo "invalid ticket identifier" >&2; exit 2; }
+
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
+ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
+FACTORY_DIR="$ROOT/factory"
+LEASE_DIR="$(factory_dispatch_lease_dir "$ROOT")"
+LEASE_LOCK="$(factory_dispatch_lock_dir "$ROOT")"
+LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
+LEASE_FILE="$(factory_dispatch_lease_file "$ROOT" "$TICKET")"
+HELD_LAUNCH=0 HELD_LEASE=0
+
+cleanup() {
+  [[ "$HELD_LEASE" -eq 0 ]] || rmdir "$LEASE_LOCK" 2>/dev/null || true
+  [[ "$HELD_LAUNCH" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
+}
+trap cleanup EXIT HUP INT TERM
+
+acquire() {
+  local path="$1" label="$2" i
+  for i in $(seq 1 100); do
+    mkdir "$path" 2>/dev/null && return 0
+    sleep 0.1
+  done
+  echo "$label lock stuck" >&2
+  return 1
+}
+
+MAXIMUM="$(factory_dispatch_max_tickets "$ROOT" 2>/dev/null)" || {
+  echo "MAX_CONCURRENT_TICKETS must be defined at most once as 1 or 2" >&2
+  exit 3
+}
+[[ "$MAXIMUM" == "2" ]] || { echo "bounded dispatcher concurrency is not enabled" >&2; exit 3; }
+[[ -f "$FACTORY_DIR/tickets/$TICKET.md" && ! -L "$FACTORY_DIR/tickets/$TICKET.md" ]] || {
+  echo "ticket file is missing or unsafe" >&2
+  exit 3
+}
+
+if [[ "$OPERATION" != "release" ]]; then
+  acquire "$LAUNCH_LOCK" "launch" || exit 8
+  HELD_LAUNCH=1
+  [[ ! -e "$FACTORY_DIR/KILL" ]] || { echo "KILL file present; lease refused" >&2; exit 4; }
+  [[ ! -e "$FACTORY_DIR/MAINTENANCE" ]] || { echo "MAINTENANCE file present; lease refused" >&2; exit 4; }
+fi
+mkdir -p "$LEASE_DIR"
+[[ ! -L "$LEASE_DIR" && ! -L "$LEASE_LOCK" ]] || { echo "dispatcher lease state is unsafe" >&2; exit 3; }
+acquire "$LEASE_LOCK" "dispatcher lease" || exit 8
+HELD_LEASE=1
+
+case "$OPERATION" in
+  claim)
+    [[ -z "$LEASE_ID" ]] || { echo "claim does not accept --lease" >&2; exit 2; }
+    python3 - "$LEASE_DIR" "$LEASE_FILE" "$TICKET" "$MAXIMUM" <<'PY'
+import json, os, pathlib, re, secrets, stat, sys, tempfile, time
+
+root, destination = map(pathlib.Path, sys.argv[1:3])
+ticket, maximum = sys.argv[3], int(sys.argv[4])
+entries = list(root.iterdir())
+for path in entries:
+    value = path.lstat()
+    if not stat.S_ISREG(value.st_mode) or path.is_symlink() or not re.fullmatch(r"T-[0-9]+\.json", path.name):
+        raise SystemExit("dispatcher lease state is unsafe")
+if destination.exists():
+    raise SystemExit("ticket already has a dispatcher lease")
+if len(entries) >= maximum:
+    raise SystemExit("dispatcher capacity is full")
+now = int(time.time())
+record = {
+    "schema_version": 1,
+    "ticket": ticket,
+    "lease_id": secrets.token_hex(32),
+    "claimed_epoch": now,
+    "expires_epoch": now + 900,
+}
+fd, temporary = tempfile.mkstemp(prefix=".lease-", dir=str(root))
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(record, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.link(temporary, destination)
+finally:
+    pathlib.Path(temporary).unlink(missing_ok=True)
+print(json.dumps(record, sort_keys=True))
+PY
+    ;;
+  renew)
+    [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || { echo "renew requires a canonical --lease" >&2; exit 2; }
+    python3 - "$LEASE_FILE" "$TICKET" "$LEASE_ID" <<'PY'
+import json, os, pathlib, stat, sys, tempfile, time
+
+path, ticket, lease_id = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+value = path.lstat()
+if not stat.S_ISREG(value.st_mode) or path.is_symlink():
+    raise SystemExit("dispatcher lease is unsafe")
+record = json.loads(path.read_text())
+if record.get("schema_version") != 1 or record.get("ticket") != ticket or record.get("lease_id") != lease_id:
+    raise SystemExit("dispatcher lease does not match")
+record["expires_epoch"] = int(time.time()) + 900
+fd, temporary = tempfile.mkstemp(prefix=".lease-", dir=str(path.parent))
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(record, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+finally:
+    pathlib.Path(temporary).unlink(missing_ok=True)
+print(json.dumps(record, sort_keys=True))
+PY
+    ;;
+  release)
+    [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || { echo "release requires a canonical --lease" >&2; exit 2; }
+    python3 - "$LEASE_FILE" "$TICKET" "$LEASE_ID" <<'PY'
+import json, pathlib, stat, sys
+
+path, ticket, lease_id = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+value = path.lstat()
+if not stat.S_ISREG(value.st_mode) or path.is_symlink():
+    raise SystemExit("dispatcher lease is unsafe")
+record = json.loads(path.read_text())
+if record.get("schema_version") != 1 or record.get("ticket") != ticket or record.get("lease_id") != lease_id:
+    raise SystemExit("dispatcher lease does not match")
+path.unlink()
+print('{"released":true,"ticket":%s}' % json.dumps(ticket))
+PY
+    ;;
+esac

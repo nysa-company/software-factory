@@ -24,6 +24,10 @@ Use the launcher's public JSON commands for decisions:
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --json
 ```
 
+If contract `1.1.0` reports a concurrency limit of two, use its claim, renew,
+and release commands and pass the matching opaque lease to every preflight,
+next-stage, and run command. Never persist or disclose a lease ID.
+
 Launch a role only when those commands authorize it, and only with
 `factory-launch <project> run ...`. Do not infer readiness from prose or from
 private helper output.

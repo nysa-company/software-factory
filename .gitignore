@@ -8,6 +8,8 @@ factory/KILL
 **/factory/.launch.lock/
 **/factory/.ledger.lock/
 **/factory/.active-runs/
+**/factory/.dispatch-leases/
+**/factory/.dispatch-leases.lock/
 *.log
 .env
 .env.local

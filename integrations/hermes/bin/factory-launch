@@ -4,7 +4,7 @@
 # then uses only helpers from that physical release for the entire invocation.
 set -u
 
-CONTRACT_VERSION="1.0.0"
+CONTRACT_VERSION=""
 PREFLIGHT_SCHEMA="nysa.software-factory.preflight/v1"
 NEXT_STAGE_SCHEMA="nysa.software-factory.next-stage/v1"
 
@@ -27,7 +27,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|preflight|next-stage|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -333,8 +333,10 @@ EOF
   die "active kit SHA is not a lowercase full SHA"
 [[ "$KIT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
   die "active kit tree is not a lowercase full object ID"
-[[ "$ACTIVE_CONTRACT" == "$CONTRACT_VERSION" ]] ||
-  die "active Hermes contract is incompatible"
+case "$ACTIVE_CONTRACT" in
+  1.0.0|1.1.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
+  *) die "active Hermes contract is incompatible" ;;
+esac
 
 ACTIVE_PRODUCT_PATH="$(expand_absolute_path "$ACTIVE_PRODUCT_PATH" 2>/dev/null || true)"
 ACTIVE_RELEASE_PATH="$(expand_absolute_path "$ACTIVE_RELEASE_PATH" 2>/dev/null || true)"
@@ -484,9 +486,38 @@ require_exact() {
 }
 
 validate_ticket_command() {
-  [[ $# -eq 3 && "$1" == "--ticket" && "$3" == "--json" ]] || usage
+  LEASE_ID=""
+  if [[ $# -eq 3 && "$1" == "--ticket" && "$3" == "--json" ]]; then
+    :
+  elif [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--lease" && "$5" == "--json" ]]; then
+    LEASE_ID="$4"
+    [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+  else
+    usage
+  fi
   [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
   TICKET="$2"
+}
+
+add_dispatch_lease_env() {
+  if [[ -n "${1:-}" ]]; then
+    [[ "$CONTRACT_VERSION" == "1.1.0" ]] || die "dispatcher leases require contract 1.1.0"
+    HELPER_ENV+=("FACTORY_DISPATCH_LEASE_ID=$1")
+  fi
+}
+
+validate_lease_command() {
+  [[ "$CONTRACT_VERSION" == "1.1.0" ]] || die "dispatcher leases require contract 1.1.0"
+  LEASE_ID=""
+  if [[ "$1" == "claim" ]]; then
+    [[ $# -eq 3 && "$2" == "--ticket" ]] || usage
+  else
+    [[ $# -eq 5 && "$2" == "--ticket" && "$4" == "--lease" ]] || usage
+    LEASE_ID="$5"
+    [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+  fi
+  [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+  TICKET="$3"
 }
 
 git_common_directory() {
@@ -735,15 +766,27 @@ PY
     ;;
   preflight)
     validate_ticket_command "$@"
-    wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
-      "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET"
+    add_dispatch_lease_env "$LEASE_ID"
+    if [[ -n "$LEASE_ID" ]]; then
+      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
+        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET" --lease "$LEASE_ID"
+    else
+      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
+        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET"
+    fi
     rc=$?
     exit "$rc"
     ;;
   next-stage)
     validate_ticket_command "$@"
-    wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
-      "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET"
+    add_dispatch_lease_env "$LEASE_ID"
+    if [[ -n "$LEASE_ID" ]]; then
+      wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
+        "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET" --lease "$LEASE_ID"
+    else
+      wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
+        "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET"
+    fi
     rc=$?
     exit "$rc"
     ;;
@@ -767,22 +810,27 @@ PY
     exec_selected_helper "$REORDER_HELPER" "$@"
     ;;
   run)
-    [[ $# -ge 10 &&
-       "$1" == "--role" &&
-       "$3" == "--ticket" &&
-       "$5" == "--prompt-file" &&
-       "$7" == "--workdir" &&
-       "$9" == "--" ]] || usage
+    LEASE_ID=""
+    if [[ $# -ge 10 && "$1" == "--role" && "$3" == "--ticket" &&
+          "$5" == "--prompt-file" && "$7" == "--workdir" && "$9" == "--" ]]; then
+      RUN_PROMPT="$6" RUN_WORKDIR="$8" RUN_SHIFT=9
+    elif [[ $# -ge 12 && "$1" == "--role" && "$3" == "--ticket" &&
+            "$5" == "--lease" && "$7" == "--prompt-file" &&
+            "$9" == "--workdir" && "$11" == "--" ]]; then
+      LEASE_ID="$6"
+      [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+      RUN_PROMPT="$8" RUN_WORKDIR="${10}" RUN_SHIFT=11
+    else
+      usage
+    fi
     RUN_ROLE="$2"
     RUN_TICKET="$4"
-    RUN_PROMPT="$6"
-    RUN_WORKDIR="$8"
     role_is_allowed "$RUN_ROLE" || die "run role is not allowed by the active contract"
     [[ "$RUN_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
     resolve_prompt_path "$RUN_PROMPT" "$RUN_ROLE"
     resolve_product_workdir "$RUN_WORKDIR"
     validate_ticket_worktree "$RUN_TICKET"
-    shift 9
+    shift "$RUN_SHIFT"
     TASK_NONEMPTY=0
     for task_part in "$@"; do
       [[ -z "$task_part" ]] || TASK_NONEMPTY=1
@@ -792,6 +840,7 @@ PY
       die "product is in maintenance; run refused"
     RUNNER="$RELEASE_PATH/scripts/run-agent.sh"
     require_managed_file "$RUNNER" "active release run helper"
+    add_dispatch_lease_env "$LEASE_ID"
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec_selected_helper "$RUNNER" \
@@ -800,6 +849,18 @@ PY
       --prompt-file "$RESOLVED_PROMPT" \
       --workdir "$RESOLVED_WORKDIR" \
       -- "$@"
+    ;;
+  claim|renew|release)
+    validate_lease_command "$COMMAND" "$@"
+    LEASE_HELPER="$RELEASE_PATH/scripts/dispatch-lease.sh"
+    require_managed_file "$LEASE_HELPER" "active release dispatcher lease helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    if [[ "$COMMAND" == "claim" ]]; then
+      exec_selected_helper "$LEASE_HELPER" claim --ticket "$TICKET"
+    else
+      exec_selected_helper "$LEASE_HELPER" "$COMMAND" --ticket "$TICKET" --lease "$LEASE_ID"
+    fi
     ;;
   *)
     usage

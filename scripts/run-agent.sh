@@ -33,6 +33,8 @@ TASK="${*:-}"
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 
 # --- anchor factory state to the repo root, never to $PWD ---
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
@@ -104,8 +106,13 @@ sequencer_allows_role() {
     SEQUENCER_ERROR="selected release sequencer is missing or unsafe"
     return 1
   fi
-  output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
-    bash "$SEQUENCER" --ticket "$TICKET" 2>/dev/null)" || rc=$?
+  if [[ -n "${FACTORY_DISPATCH_LEASE_ID:-}" ]]; then
+    output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
+      bash "$SEQUENCER" --ticket "$TICKET" --lease "$FACTORY_DISPATCH_LEASE_ID" 2>/dev/null)" || rc=$?
+  else
+    output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
+      bash "$SEQUENCER" --ticket "$TICKET" 2>/dev/null)" || rc=$?
+  fi
   if [[ "$rc" -ne 0 ]]; then
     SEQUENCER_ERROR="sequencer refused the ticket state"
     return 1
@@ -241,6 +248,10 @@ if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
 fi
+if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "${FACTORY_DISPATCH_LEASE_ID:-}"; then
+  echo "$FACTORY_DISPATCH_LEASE_ERROR; no task was submitted" >&2
+  exit 7
+fi
 # The first manifest phase still records the release affinity that will be
 # persisted under the launch lock. factory_record_ticket_kit_sha revalidates
 # and writes it before any reservation or task submission.
@@ -328,6 +339,10 @@ fi
 if ! factory_record_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
+fi
+if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "${FACTORY_DISPATCH_LEASE_ID:-}"; then
+  echo "$FACTORY_DISPATCH_LEASE_ERROR after launch lock acquisition; no task was submitted" >&2
+  exit 7
 fi
 if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
       "${FACTORY_TEST_BEFORE_REGISTER_SLEEP:-0}" != "0" ]]; then
@@ -504,6 +519,11 @@ else
       terminate_run_group
       wait "$RUN_PID" 2>/dev/null
       STATUS=3
+    elif ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "${FACTORY_DISPATCH_LEASE_ID:-}"; then
+      echo "$FACTORY_DISPATCH_LEASE_ERROR before GO; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=7
     elif ! sequencer_allows_role; then
       echo "$SEQUENCER_ERROR before GO; no task was submitted" >&2
       terminate_run_group

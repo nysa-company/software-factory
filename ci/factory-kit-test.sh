@@ -974,6 +974,27 @@ rmdir "$PRODUCT_ONE/factory/.active-runs"
 expect_success "pause is idempotent after drain" \
   pause --project alpha --product "$PRODUCT_ONE"
 
+mkdir -p "$PRODUCT_ONE/factory/.dispatch-leases"
+python3 - "$PRODUCT_ONE/factory/.dispatch-leases/T-004.json" <<'PY'
+import json, pathlib, time, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "schema_version": 1,
+    "ticket": "T-004",
+    "lease_id": "a" * 64,
+    "claimed_epoch": int(time.time()) - 1000,
+    "expires_epoch": int(time.time()) - 100,
+}) + "\n")
+PY
+expect_failure "pause refuses an undrained dispatcher lease" \
+  pause --project alpha --product "$PRODUCT_ONE"
+expect_success "operator recovers stale lease only under maintenance" \
+  recover-lease --project alpha --product "$PRODUCT_ONE" --ticket T-004
+[[ ! -e "$PRODUCT_ONE/factory/.dispatch-leases/T-004.json" ]] &&
+  pass "stale lease recovery removes only the named ticket" ||
+  fail "stale lease recovery removes only the named ticket"
+rm -rf "$PRODUCT_ONE/factory/.dispatch-leases"
+
 # First activation holds the project lock; a concurrent replay cannot read/advance state.
 export FACTORY_KIT_TEST_HOLD_PROJECT_LOCK_SECONDS=1
 run_kit activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
