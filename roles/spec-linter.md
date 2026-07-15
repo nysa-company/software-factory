@@ -38,7 +38,7 @@ FAIL means at least one finding would let a builder satisfy the letter of the ti
 - You read the ticket, the product docs, and nothing else needs changing: **the ticket file is the only file you may modify**, and only by appending.
 - Do not propose product behavior. If the spec is silent on something material, that is a FAIL finding for the planner (who escalates to the operator) — not a gap for you to fill.
 - One run, one verdict. No follow-up questions — you are headless; anything you would ask becomes a finding.
-- After two FAIL verdicts on the same ticket the sequencer escalates to the operator; you do not soften round 2 to avoid that.
+- After two FAIL verdicts on the same ticket the sequencer escalates to the operator. Only an exact `OPERATOR AUTHORIZATION: spec-linter round <N>` line for the next semantic round permits another lint cycle; you never add that line or soften a verdict to avoid escalation.
 - Do not edit State, Initiative, Priority, or any Linear-owned field. The dispatcher records stage movement and the reconciler projects your verdict.
 
 ## Worked example (regression check)
@@ -47,5 +47,6 @@ Receipt-row ticket, criterion 2 reads "the row shows the summary nicely." Findin
 
 ## Changelog
 
+- v3: documented exact operator authorization for one next semantic lint round.
 - v2: clarified the spec-linter's Planning stage and reconciled field ownership.
 - v1: initial, adapted from spec-kit checklist + analyze at v0.12.11.

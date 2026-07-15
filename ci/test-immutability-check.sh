@@ -17,23 +17,29 @@
 # Factory bookkeeping (ticket logs, ledgers) is neither test nor
 # implementation: dispatcher log commits interleave with every stage and must
 # not trip the ordering rule. EXEMPT_PATHS names those pathspecs; files under
-# them are ignored entirely by both rules.
+# them are ignored entirely by both rules. Entries ending in `/` name
+# directory prefixes; other entries name exact files.
 #
 # Env: BASE_REF (default origin/main), TEST_PATHS (space-separated pathspecs,
-# default "tests/"), EXEMPT_PATHS (default "factory/ conformance/factory/").
+# default "tests/"), EXEMPT_PATHS (default
+# "factory/ conformance/factory/ .gitignore context/memory.md").
 # Wire as a required GitHub Actions status on every PR.
 set -euo pipefail
 
 BASE_REF="${BASE_REF:-origin/main}"
 TEST_PATHS="${TEST_PATHS:-tests/}"
-EXEMPT_PATHS="${EXEMPT_PATHS:-factory/ conformance/factory/}"
+EXEMPT_PATHS="${EXEMPT_PATHS:-factory/ conformance/factory/ .gitignore context/memory.md}"
 FAIL=0
 SEEN_IMPL=0
 
 is_exempt() { # path -> 0 if under any exempt prefix
   local f="$1" p
   for p in $EXEMPT_PATHS; do
-    [[ "$f" == "$p"* ]] && return 0
+    if [[ "$p" == */ ]]; then
+      [[ "$f" == "$p"* ]] && return 0
+    else
+      [[ "$f" == "$p" ]] && return 0
+    fi
   done
   return 1
 }

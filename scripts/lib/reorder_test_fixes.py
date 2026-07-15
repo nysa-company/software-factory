@@ -19,7 +19,7 @@ order and leaving every other commit (implementation, bookkeeping, or
 rule-1-violating "mixed" commits) exactly where it was.
 
 Classification mirrors ci/test-immutability-check.sh exactly (same
-TEST_PATHS/EXEMPT_PATHS semantics, same prefix-match, same precedence of
+TEST_PATHS/EXEMPT_PATHS semantics, same directory-prefix/exact-file match, same precedence of
 "mixed over test over impl") so that "first implementation commit" here is
 the same commit that flips the gate's SEEN_IMPL flag.
 
@@ -86,7 +86,7 @@ class Commit:
 
 
 def is_exempt(path, exempt_paths):
-    return any(path.startswith(p) for p in exempt_paths)
+    return any(path.startswith(p) if p.endswith("/") else path == p for p in exempt_paths)
 
 
 def diff_tree_files(repo, sha, pathspecs=None):
@@ -322,8 +322,11 @@ def main(argv):
     )
     parser.add_argument(
         "--exempt-paths",
-        default="factory/ conformance/factory/",
-        help='space-separated exempt pathspecs (default "factory/ conformance/factory/")',
+        default="factory/ conformance/factory/ .gitignore context/memory.md",
+        help=(
+            "space-separated exempt directory prefixes (ending /) or exact files "
+            '(default "factory/ conformance/factory/ .gitignore context/memory.md")'
+        ),
     )
     args = parser.parse_args(argv)
 

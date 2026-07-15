@@ -985,6 +985,51 @@ if expect_stage "RUN reviewer" "$ROUNDS" T-300; then
   pass "semantic round authorization matches"
 fi
 
+# Spec-linter uses the same exact, next-semantic-round authorization. One
+# authorization permits the replan + lint cycle, not a stale fourth round.
+SPEC_ROUNDS="$TMP/spec-rounds"
+mkdir -p "$SPEC_ROUNDS/factory/tickets"
+{
+  ledger_header
+  ledger_row T-301 planner
+  ledger_row T-301 spec-linter
+  ledger_row T-301 planner
+  ledger_row T-301 spec-linter
+} > "$SPEC_ROUNDS/factory/ledger.csv"
+cat > "$SPEC_ROUNDS/factory/tickets/T-301.md" <<'EOF'
+# T-301
+SPEC-LINT: FAIL — first
+SPEC-LINT: FAIL — second
+OPERATOR AUTHORIZATION: spec-linter round 2
+OPERATOR AUTHORIZATION: spec-linter round 3 because the operator said so
+EOF
+
+if expect_stage "ESCALATE" "$SPEC_ROUNDS" T-301; then
+  pass "stale or inexact spec-linter authorization is ignored"
+fi
+
+printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 3' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
+if expect_stage "RUN planner" "$SPEC_ROUNDS" T-301; then
+  pass "spec-linter authorization starts the next planning cycle"
+fi
+
+ledger_row T-301 planner >> "$SPEC_ROUNDS/factory/ledger.csv"
+if expect_stage "RUN spec-linter" "$SPEC_ROUNDS" T-301; then
+  pass "spec-linter authorization permits the exact lint round"
+fi
+
+ledger_row T-301 spec-linter >> "$SPEC_ROUNDS/factory/ledger.csv"
+printf '%s\n' 'SPEC-LINT: FAIL — third' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
+if expect_stage "ESCALATE" "$SPEC_ROUNDS" T-301; then
+  pass "spent spec-linter authorization does not permit a later round"
+fi
+
+sed -i.bak 's/SPEC-LINT: FAIL — third/SPEC-LINT: PASS/' "$SPEC_ROUNDS/factory/tickets/T-301.md"
+rm -f "$SPEC_ROUNDS/factory/tickets/T-301.md.bak"
+if expect_stage "RUN test-author" "$SPEC_ROUNDS" T-301; then
+  pass "authorized spec-linter pass advances to tests"
+fi
+
 # Missing verdict still refuses unless the extra row has a void note.
 grep -v 'OPERATOR NOTE' "$ROUNDS/factory/tickets/T-300.md" > "$ROUNDS/factory/tickets/T-300.tmp"
 mv "$ROUNDS/factory/tickets/T-300.tmp" "$ROUNDS/factory/tickets/T-300.md"

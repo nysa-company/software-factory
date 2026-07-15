@@ -38,6 +38,12 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: count successful reviewer rows for that ticket from oldest to newest. Add `OPERATOR NOTE: reviewer run <N> void — duplicate` to the ticket, using the duplicate row's one-based number. Run `next-stage.sh` again. The next reviewer round number comes from recorded verdicts, so the void row does not renumber it.
 - Don't: invent a verdict for the duplicate row or delete ledger history.
 
+## Spec-linter or reviewer reached the two-round limit
+
+- Notice: `next-stage.sh` returns `ESCALATE` and names the next semantic round.
+- Do: if one more cycle is warranted, append exactly `OPERATOR AUTHORIZATION: spec-linter round <N>` or `OPERATOR AUTHORIZATION: reviewer round <N>` using the round named by the sequencer, then run it again.
+- Don't: add commentary to the authorization line, authorize a future round, or let the dispatcher infer authorization. A stale or inexact line grants nothing.
+
 ## Linear, GitHub, or Railway down
 
 - Do: if Linear is down, in-flight factory work continues from the ticket files, but do not expect a new priority, Ready, approval, or unblock action to take effect until sync recovers. Check `_sync.last_success_at` and `_sync.last_error` in `factory/linear-map.json`. GitHub or Railway outages still pause the stages that depend on them.
@@ -182,7 +188,7 @@ interval alone was 5m50s and its full maintenance interval was longer.
 - Do: leave `MAINTENANCE` present and stop only the product's factory profile
   and reconciler. If the activation transaction is interrupted, run
   `factory-kit.sh reconcile` first and follow its terminal result.
-- Do: merge the normal protected revert that restores both the previous full
+- Do: merge the normal protected revert from a `chore/<slug>-revert` branch that restores both the previous full
   `KIT_PIN` and product tree, then update and verify the clean product checkout.
   If the candidate generation is committed and still active, run
   `factory-kit.sh rollback`; if reconcile restored the previous generation or

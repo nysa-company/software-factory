@@ -6,7 +6,7 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 
 1. **Operator** moves a ticket from Backlog to Ready in Linear. The reconciler records that transition in the ticket file; no live API call is made by preflight.
 2. **Planner** (production/OpenAI family; Codex primary, family-matched Cursor fallback) starts at Planning, posts the spec'd description, acceptance criteria, and frozen contract on the ticket, and creates the ticket branch. If the product docs cannot answer a question, ticket → Blocked-Escalated with the question instead.
-3. **Spec-linter** (checking/Anthropic family; Claude Code primary, family-matched Cursor fallback) remains in Planning, checks criteria quality, contract coverage, consistency, and edge coverage, and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator.
+3. **Spec-linter** (checking/Anthropic family; Claude Code primary, family-matched Cursor fallback) remains in Planning, checks criteria quality, contract coverage, consistency, and edge coverage, and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator. The operator may authorize only the next semantic lint round with the exact ticket line `OPERATOR AUTHORIZATION: spec-linter round <N>`; the dispatcher never writes it on its own.
 4. **Test-author** (checking/Anthropic family) starts Building and commits failing tests as the first commits on the ticket branch, asserting the frozen contract. Confirms they fail for the right reason.
 5. **Builder** (production/OpenAI family, fresh git worktree on the same branch) runs in Building and implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
 6. **CI** runs: lint, typecheck, tests, build, self-referential snapshots, test-immutability check.
@@ -19,7 +19,7 @@ Backend fallback is selected by `run-agent.sh` before it submits the role task. 
 ## Failure routes
 
 - Contract wrong mid-build → ticket back to Planning; planner re-plans; contract change is a new version, never a silent edit.
-- Reviewer deadlock after 2 rounds → Blocked-Escalated; operator picks an outcome from the Narrator's plain-language options.
+- Spec-lint or Reviewer deadlock after 2 rounds → Blocked-Escalated; the operator may authorize only the next semantic round with the exact role-specific ticket line, or pick another outcome.
 - Budget cap hit → the wrapper refuses to start (or the adapter's hard budget stop ends the run); whoever launched the run moves the ticket to Blocked-Escalated with the wrapper's message. At pilot stage that's the operator; a dispatcher automates it later.
 - Preview deploy broken → bundle not produced; ticket back to builder.
 - Defect found after Done → new bug ticket linked to the original (escaped defect); one reopen allowed, second → Blocked-Escalated.

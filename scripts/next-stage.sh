@@ -104,6 +104,9 @@ fi
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
 # (cat the ledger defensively: a missing ledger means zero runs, not an error.)
 count_ok() { { cat "$LEDGER" 2>/dev/null || true; } | awk -F, -v t="$TICKET" -v r="$1" 'NR>1 && $3==t && $4==r && $9=="0"' | wc -l | tr -d ' '; }
+count_authorization() { # role semantic-round
+  grep -ciE "^[[:space:]]*OPERATOR AUTHORIZATION:[[:space:]]*$1 round[[:space:]]*$2[[:space:]]*$" "$TICKET_FILE" || true
+}
 P="$(count_ok planner)"; SL="$(count_ok spec-linter)"; TA="$(count_ok test-author)"
 B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"
 
@@ -156,9 +159,14 @@ if [[ "$TA" -eq 0 ]]; then
     echo "REFUSE ticket logs $((SLP + SLF)) SPEC-LINT verdict(s) but the ledger has only $SL successful spec-linter run(s) — correct the ticket bookkeeping"
     exit 1
   fi
-  if [[ "$SLF" -ge 2 ]]; then
-    echo "ESCALATE spec-lint failed twice — the spec keeps failing its own checklist; operator decides how to unblock planning"
-    exit 0
+  SPEC_VERDICTS=$((SLP + SLF))
+  if [[ "$SLF" -ge 2 && "$SLF" -eq "$SPEC_VERDICTS" ]]; then
+    NEXT_SPEC_ROUND=$((SPEC_VERDICTS + 1))
+    SPEC_AUTH="$(count_authorization spec-linter "$NEXT_SPEC_ROUND")"; SPEC_AUTH="${SPEC_AUTH:-0}"
+    if [[ "$SPEC_AUTH" -eq 0 ]]; then
+      echo "ESCALATE spec-lint failed twice — the spec keeps failing its own checklist; operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: spec-linter round $NEXT_SPEC_ROUND' line on the ticket, written on explicit operator instruction)"
+      exit 0
+    fi
   fi
   if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
   if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
@@ -197,7 +205,7 @@ if [[ "$RC" -ge 2 ]]; then
   # operator instruction, which the escalation that got the operator here
   # provides the audit trail for.
   NEXT_ROUND=$((VERDICTS + 1))
-  AUTH="$(grep -ciE "^[[:space:]]*OPERATOR AUTHORIZATION:[[:space:]]*reviewer round[[:space:]]*$NEXT_ROUND([[:space:]]|$)" "$TICKET_FILE" || true)"; AUTH="${AUTH:-0}"
+  AUTH="$(count_authorization reviewer "$NEXT_ROUND")"; AUTH="${AUTH:-0}"
   if [[ "$AUTH" -ge 1 ]]; then
     echo "RUN reviewer"
     exit 0

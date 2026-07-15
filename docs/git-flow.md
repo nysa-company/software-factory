@@ -118,7 +118,8 @@ Requires a paid plan for private repos (GitHub Team or the repo being public).
 
 Merge itself is triggered by the operator's approval on the Narrator bundle (manually at pilot stage: operator clicks merge after approving; automated later).
 
-Release rollback also uses protected Git. Keep `MAINTENANCE`, stop the product's
+Release rollback also uses protected Git. Use `chore/<slug>-revert` as the
+canonical revert branch name. Keep `MAINTENANCE`, stop the product's
 factory services, and reconcile any interrupted activation first. Then merge a
 normal protected revert restoring the previous `KIT_PIN` and product tree. Run
 `factory-kit rollback` only if the candidate generation is committed and still
