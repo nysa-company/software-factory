@@ -167,6 +167,7 @@ run_preflight() {
       --gh-token) env_args+=(GH_TOKEN="$2"); shift 2;;
       --projected) env_args+=(PROJECTED_TICKET_USD="$2"); shift 2;;
       --probe-trace) env_args+=(FACTORY_TEST_PROBE_TRACE="$2"); shift 2;;
+      --adapter-override) env_args+=(FACTORY_ADAPTER_OVERRIDE="$2"); shift 2;;
       *) echo "unknown run_preflight opt: $1" >&2; return 2;;
     esac
   done
@@ -235,6 +236,9 @@ CODEX_PINNED=0.144.1
 ENV
 echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$GLOBAL_LEDGER"
 assert_preflight "all-pass" 0 "PREFLIGHT PASS" "$ALLPASS" "T-001" --global-env "$GLOBAL_ENV"
+assert_preflight "authenticated isolated mock route" 0 \
+  "PASS: authenticated isolated mock route contract passed" \
+  "$ALLPASS" "T-001" --global-env "$GLOBAL_ENV" --adapter-override mock
 
 UNTRUSTED_TRACE="$TMP/untrusted-probes"
 : > "$UNTRUSTED_TRACE"
