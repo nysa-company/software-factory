@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import csv
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -9,6 +10,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "ledger-view.py"
+SPEC = importlib.util.spec_from_file_location("ledger_view", HELPER)
+LEDGER_VIEW = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(LEDGER_VIEW)
 HEADER = "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version\n"
 
 
@@ -95,6 +99,13 @@ class LedgerViewTest(unittest.TestCase):
         row = self.refresh()[-1]
         self.assertEqual((row["cost_usd"], row["turns"], row["cost_basis"]), ("0", "0", "launch_void"))
 
+    def test_projection_uses_existing_launch_and_ledger_locks(self):
+        with LEDGER_VIEW.projection_locks(self.root):
+            self.assertTrue((self.root / "factory" / ".launch.lock").is_dir())
+            self.assertTrue((self.root / "factory" / ".ledger.lock").is_dir())
+        self.assertFalse((self.root / "factory" / ".launch.lock").exists())
+        self.assertFalse((self.root / "factory" / ".ledger.lock").exists())
+
     def test_conflicting_terminal_rows_fail_closed(self):
         path = self.root / "factory" / "runs" / "old.meta"
         manifest(
@@ -153,6 +164,33 @@ class LedgerViewTest(unittest.TestCase):
         )
         self.assertNotEqual(unresolved.returncode, 0)
         self.assertIn("live or ambiguous manifest: run-1.meta", unresolved.stderr)
+
+        path.unlink()
+        legacy = self.root / "factory" / "runs" / "legacy-1.meta"
+        legacy.write_text(
+            "run_id=legacy-1\nphase=completed\naccounting_schema=\nticket=T-123\n"
+        )
+        unaccounted = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", check=False,
+        )
+        self.assertNotEqual(unaccounted.returncode, 0)
+        self.assertIn("unaccounted legacy manifest: legacy-1.meta", unaccounted.stderr)
+
+        legacy.unlink()
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        git(worktree, "rm", "-qr", "factory")
+        (worktree / "factory").symlink_to(outside, target_is_directory=True)
+        git(worktree, "add", "factory")
+        git(worktree, "commit", "-qm", "replace factory with symlink")
+        escaped = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", check=False,
+        )
+        self.assertNotEqual(escaped.returncode, 0)
+        self.assertIn("factory directory must be a real directory", escaped.stderr)
+        self.assertFalse((outside / "ledger.csv").exists())
 
 
 if __name__ == "__main__":

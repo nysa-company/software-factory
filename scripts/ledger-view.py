@@ -3,6 +3,7 @@
 
 import argparse
 from collections import Counter
+from contextlib import contextmanager
 import csv
 import hashlib
 import json
@@ -11,9 +12,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 
 
 FIELDS = (
@@ -211,6 +214,32 @@ def atomic_write(path, content):
             os.unlink(temp)
 
 
+def atomic_write_in_directory(directory, name, content):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    directory_fd = os.open(directory, flags)
+    temp = f".{name}.{os.getpid()}.{secrets.token_hex(8)}"
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory_fd,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temp, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
+
+
 def effective_rows(factory_root, durable=None, runtime=None, runs=None):
     factory = factory_root / "factory"
     durable = durable or factory / "ledger.csv"
@@ -266,6 +295,42 @@ def validate_projection(source, workdir, ticket):
         fail("projection branch is not based on current origin/main")
 
 
+def validate_projection_target(workdir):
+    factory = workdir / "factory"
+    ledger = factory / "ledger.csv"
+    if factory.is_symlink() or not factory.is_dir():
+        fail("projection factory directory must be a real directory")
+    try:
+        factory.resolve().relative_to(workdir.resolve())
+    except ValueError:
+        fail("projection factory directory escapes the worktree")
+    if ledger.is_symlink() or (ledger.exists() and not ledger.is_file()):
+        fail("projection ledger must be a regular non-symlink file")
+
+
+@contextmanager
+def projection_locks(factory_root):
+    acquired = []
+    try:
+        for lock in (factory_root / "factory" / ".launch.lock", factory_root / "factory" / ".ledger.lock"):
+            for _ in range(50):
+                try:
+                    lock.mkdir()
+                    acquired.append(lock)
+                    break
+                except FileExistsError:
+                    time.sleep(0.2)
+            else:
+                fail(f"projection lock is stuck: {lock.name}")
+        yield
+    finally:
+        for lock in reversed(acquired):
+            try:
+                lock.rmdir()
+            except FileNotFoundError:
+                pass
+
+
 def unsettled_ticket_manifest(factory_root, ticket):
     runs = factory_root / "factory" / "runs"
     if not runs.is_dir():
@@ -281,6 +346,37 @@ def unsettled_ticket_manifest(factory_root, ticket):
         if not settled:
             return path
     return None
+
+
+def unmatched_legacy_terminal_manifest(factory_root, ticket, rows):
+    accounted = {
+        row["run_id"] for row in rows
+        if row["ticket"] == ticket and row["run_id"] and not is_reservation(row)
+    }
+    runs = factory_root / "factory" / "runs"
+    if not runs.is_dir():
+        return None
+    for path in sorted(runs.glob("*.meta")):
+        values = read_meta(path)
+        if (values.get("ticket") == ticket and
+                values.get("accounting_schema") != "1" and
+                values.get("phase") in {"completed", "abandoned"} and
+                values.get("run_id") not in accounted):
+            return path
+    return None
+
+
+def ensure_projectable(factory_root, ticket, rows=None):
+    unsettled = unsettled_ticket_manifest(factory_root, ticket)
+    if unsettled:
+        fail(f"ticket {ticket} has a live or ambiguous manifest: {unsettled.name}")
+    if rows is None:
+        return
+    if any(row["ticket"] == ticket and is_reservation(row) for row in rows):
+        fail(f"ticket {ticket} has a live or ambiguous run")
+    unmatched = unmatched_legacy_terminal_manifest(factory_root, ticket, rows)
+    if unmatched:
+        fail(f"ticket {ticket} has an unaccounted legacy manifest: {unmatched.name}")
 
 
 def paths(args):
@@ -321,15 +417,17 @@ def main():
     root = Path(args.factory_root).resolve()
     workdir = Path(args.workdir).resolve()
     validate_projection(root, workdir, args.ticket)
-    unsettled = unsettled_ticket_manifest(root, args.ticket)
-    if unsettled:
-        fail(f"ticket {args.ticket} has a live or ambiguous manifest: {unsettled.name}")
-    rows = effective_rows(root)
-    if any(row["ticket"] == args.ticket and is_reservation(row) for row in rows):
-        fail(f"ticket {args.ticket} has a live or ambiguous run")
-    content = csv_bytes(rows)
-    target = workdir / "factory" / "ledger.csv"
-    atomic_write(target, content)
+    validate_projection_target(workdir)
+    with projection_locks(root):
+        ensure_projectable(root, args.ticket)
+        rows = effective_rows(root)
+        ensure_projectable(root, args.ticket, rows)
+        content = csv_bytes(rows)
+        # Recheck immediately before the atomic write while launch and
+        # reservation remain blocked by their existing locks.
+        ensure_projectable(root, args.ticket, rows)
+        validate_projection_target(workdir)
+        atomic_write_in_directory(workdir / "factory", "ledger.csv", content)
     ticket_cost = sum(float(row["cost_usd"] or 0) for row in rows if row["ticket"] == args.ticket)
     print(json.dumps({
         "schema": "nysa.software-factory.ledger-projection/v1",
