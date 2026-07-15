@@ -225,8 +225,8 @@ elif grep -qE '^State: Ready' "$TICKET_FILE"; then
   INITIATIVE="$(sed -n 's/^Initiative:[[:space:]]*//p' "$TICKET_FILE" | head -n1)"
   if [[ -z "$INITIATIVE" ]]; then
     fail "ticket has no Initiative field"
-  elif [[ ! -f "$FACTORY_DIR/initiatives/$INITIATIVE.md" ]]; then
-    fail "ticket initiative not found: $FACTORY_DIR/initiatives/$INITIATIVE.md"
+  elif [[ ! -f "$CONTENT_ROOT/factory/initiatives/$INITIATIVE.md" ]]; then
+    fail "ticket initiative not found: $CONTENT_ROOT/factory/initiatives/$INITIATIVE.md"
   else
     pass "ticket belongs to initiative $INITIATIVE"
   fi
