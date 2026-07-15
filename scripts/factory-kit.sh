@@ -678,7 +678,7 @@ git_tree_for_directory() {
   GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" read-tree --empty
   GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
-    --work-tree="$directory" add -A -- .
+    --work-tree="$directory" add -f -A -- .
   tree="$(GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" write-tree)"
   rm -rf "$object_dir"

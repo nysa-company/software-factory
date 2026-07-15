@@ -323,7 +323,9 @@ EOF
 chmod +x "$KIT_REPO/ci/test-all.sh" "$KIT_REPO/scripts/repo-check" \
   "$KIT_REPO/scripts/secret-scan"
 printf '*.out export-ignore\n' > "$KIT_REPO/.gitattributes"
+printf '*.out\n' > "$KIT_REPO/.gitignore"
 printf 'tracked release evidence\n' > "$KIT_REPO/tracked.out"
+git -C "$KIT_REPO" add -f tracked.out
 printf 'release-a\n' > "$KIT_REPO/payload.txt"
 commit_all "$KIT_REPO" "release a"
 SHA_A="$(git -C "$KIT_REPO" rev-parse HEAD)"
