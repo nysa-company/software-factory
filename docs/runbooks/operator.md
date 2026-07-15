@@ -11,7 +11,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Runaway spend
 
 - Notice: daily spend rollup jumps, or a provider console alert fires.
-- Do: run `scripts/kill-switch.sh` immediately (safe — it stops, it doesn't break anything). Read `factory/ledger.csv` for today's rows and find the expensive role/ticket. That ticket goes to Blocked-Escalated; resume the rest by removing `factory/KILL`.
+- Do: run `scripts/kill-switch.sh` immediately (safe — it stops, it doesn't break anything). Read `factory/runtime-ledger.csv` for today's effective rows and find the expensive role/ticket; tracked `factory/ledger.csv` is close-out history and may be stale during a live incident. That ticket goes to Blocked-Escalated; resume the rest by removing `factory/KILL`.
 - Don't: rotate API keys for a spend problem — that's for leaks, and it kills your own sessions too.
 
 ## Failed deploy / broken staging
@@ -69,7 +69,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 - Notice: at ticket close-out the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes launcher command `project-ledger` to materialize the effective runtime accounting into tracked `factory/ledger.csv`.
 - Do: verify the command's row count, ticket total, and SHA-256, then review and merge the close-out PR like any factory bookkeeping change. Check `run_id`, family, exact model, selection reason, and cost basis.
-- Don't: edit rows by hand, project while the ticket has a reserved run, or commit the runtime ledger itself.
+- Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
 
 ## Test commit order before operator review
 

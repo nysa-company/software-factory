@@ -155,7 +155,7 @@
           "absolute physical non-symlink distinct linked Git worktree root",
           "same Git common directory as registered PRODUCT_ROOT",
           "branch exactly chore/tNNN-closeout and based on origin/main",
-          "clean worktree with no live or ambiguous ticket run"
+          "clean worktree with no live or ambiguous product run"
         ]
       },
       "reorder-test-fixes": {

@@ -226,15 +226,13 @@ if [[ "$RC" -ge 2 ]]; then
   # provides the audit trail for.
   NEXT_ROUND=$((VERDICTS + 1))
   AUTH="$(count_authorization reviewer "$NEXT_ROUND")"; AUTH="${AUTH:-0}"
-  if [[ "$AUTH" -ge 1 ]]; then
-    echo "RUN reviewer"
+  if [[ "$AUTH" -lt 1 ]]; then
+    echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: reviewer round $NEXT_ROUND' line on the ticket, written on explicit operator instruction)"
     exit 0
   fi
-  echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: reviewer round $NEXT_ROUND' line on the ticket, written on explicit operator instruction)"
-  exit 0
 fi
 
-# One rejection round: was a fix (test-author or builder success) completed
+# After the latest rejection, was a fix (test-author or builder success) completed
 # after the last successful reviewer run? Ledger order = completion order.
 FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
   BEGIN { voids="," void_list ","; reviewer_run=0 }

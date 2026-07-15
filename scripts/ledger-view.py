@@ -331,52 +331,52 @@ def projection_locks(factory_root):
                 pass
 
 
-def unsettled_ticket_manifest(factory_root, ticket):
+def unsettled_manifest(factory_root):
     runs = factory_root / "factory" / "runs"
     if not runs.is_dir():
         return None
     for path in sorted(runs.glob("*.meta")):
         values = read_meta(path)
-        if values.get("ticket") != ticket:
-            continue
         if values.get("accounting_schema") == "1":
             settled = values.get("accounting_state") in TERMINAL_STATES
         else:
             settled = values.get("phase") in {"completed", "abandoned"}
         if not settled:
-            return path
+            return path, values.get("ticket", "unknown")
     return None
 
 
-def unmatched_legacy_terminal_manifest(factory_root, ticket, rows):
+def unmatched_legacy_terminal_manifest(factory_root, rows):
     accounted = {
-        row["run_id"] for row in rows
-        if row["ticket"] == ticket and row["run_id"] and not is_reservation(row)
+        (row["ticket"], row["run_id"])
+        for row in rows if row["run_id"] and not is_reservation(row)
     }
     runs = factory_root / "factory" / "runs"
     if not runs.is_dir():
         return None
     for path in sorted(runs.glob("*.meta")):
         values = read_meta(path)
-        if (values.get("ticket") == ticket and
-                values.get("accounting_schema") != "1" and
+        if (values.get("accounting_schema") != "1" and
                 values.get("phase") in {"completed", "abandoned"} and
-                values.get("run_id") not in accounted):
-            return path
+                (values.get("ticket"), values.get("run_id")) not in accounted):
+            return path, values.get("ticket", "unknown")
     return None
 
 
-def ensure_projectable(factory_root, ticket, rows=None):
-    unsettled = unsettled_ticket_manifest(factory_root, ticket)
+def ensure_projectable(factory_root, rows=None):
+    unsettled = unsettled_manifest(factory_root)
     if unsettled:
-        fail(f"ticket {ticket} has a live or ambiguous manifest: {unsettled.name}")
+        path, ticket = unsettled
+        fail(f"product has a live or ambiguous manifest for {ticket}: {path.name}")
     if rows is None:
         return
-    if any(row["ticket"] == ticket and is_reservation(row) for row in rows):
-        fail(f"ticket {ticket} has a live or ambiguous run")
-    unmatched = unmatched_legacy_terminal_manifest(factory_root, ticket, rows)
+    reservation = next((row for row in rows if is_reservation(row)), None)
+    if reservation:
+        fail(f"product has a live or ambiguous run for {reservation['ticket']}")
+    unmatched = unmatched_legacy_terminal_manifest(factory_root, rows)
     if unmatched:
-        fail(f"ticket {ticket} has an unaccounted legacy manifest: {unmatched.name}")
+        path, ticket = unmatched
+        fail(f"product has an unaccounted legacy manifest for {ticket}: {path.name}")
 
 
 def paths(args):
@@ -419,13 +419,13 @@ def main():
     validate_projection(root, workdir, args.ticket)
     validate_projection_target(workdir)
     with projection_locks(root):
-        ensure_projectable(root, args.ticket)
+        ensure_projectable(root)
         rows = effective_rows(root)
-        ensure_projectable(root, args.ticket, rows)
+        ensure_projectable(root, rows)
         content = csv_bytes(rows)
         # Recheck immediately before the atomic write while launch and
         # reservation remain blocked by their existing locks.
-        ensure_projectable(root, args.ticket, rows)
+        ensure_projectable(root, rows)
         validate_projection_target(workdir)
         atomic_write_in_directory(workdir / "factory", "ledger.csv", content)
     ticket_cost = sum(float(row["cost_usd"] or 0) for row in rows if row["ticket"] == args.ticket)

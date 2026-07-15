@@ -27,7 +27,7 @@ def git(path, *args):
     subprocess.run(["git", "-C", str(path), *args], check=True, stdout=subprocess.DEVNULL)
 
 
-def manifest(path, *, state="reserved", go="0", cost="", status="", terminal=""):
+def manifest(path, *, state="reserved", go="0", cost="", status="", terminal="", ticket="T-123"):
     values = {
         "run_id": path.stem,
         "phase": "reserved" if state == "reserved" else "completed",
@@ -42,7 +42,7 @@ def manifest(path, *, state="reserved", go="0", cost="", status="", terminal="")
         "effective_cost": cost,
         "exit_status": status,
         "cost_basis": "provider_reported" if cost else "",
-        "ticket": "T-123",
+        "ticket": ticket,
         "role": "planner",
         "adapter": "codex",
         "provider_family": "openai",
@@ -147,13 +147,26 @@ class LedgerViewTest(unittest.TestCase):
         self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), content)
 
         git(worktree, "checkout", "--", "factory/ledger.csv")
+        other = self.root / "factory" / "runs" / "other-live.meta"
+        manifest(other, ticket="T-999")
+        before = (worktree / "factory" / "ledger.csv").read_bytes()
+        refused = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", check=False,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("T-999: other-live.meta", refused.stderr)
+        self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), before)
+        other.unlink()
+
+        git(worktree, "checkout", "--", "factory/ledger.csv")
         manifest(path)
         refused = run(
             "project", "--factory-root", self.root, "--workdir", worktree,
             "--ticket", "T-123", check=False,
         )
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("live or ambiguous manifest: run-1.meta", refused.stderr)
+        self.assertIn("T-123: run-1.meta", refused.stderr)
 
         path.write_text(
             "run_id=run-1\nphase=resolved\naccounting_schema=\nticket=T-123\n"
@@ -163,7 +176,7 @@ class LedgerViewTest(unittest.TestCase):
             "--ticket", "T-123", check=False,
         )
         self.assertNotEqual(unresolved.returncode, 0)
-        self.assertIn("live or ambiguous manifest: run-1.meta", unresolved.stderr)
+        self.assertIn("T-123: run-1.meta", unresolved.stderr)
 
         path.unlink()
         legacy = self.root / "factory" / "runs" / "legacy-1.meta"
@@ -175,7 +188,17 @@ class LedgerViewTest(unittest.TestCase):
             "--ticket", "T-123", check=False,
         )
         self.assertNotEqual(unaccounted.returncode, 0)
-        self.assertIn("unaccounted legacy manifest: legacy-1.meta", unaccounted.stderr)
+        self.assertIn("T-123: legacy-1.meta", unaccounted.stderr)
+
+        legacy.write_text(
+            "run_id=old\nphase=completed\naccounting_schema=\nticket=T-999\n"
+        )
+        cross_ticket = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", check=False,
+        )
+        self.assertNotEqual(cross_ticket.returncode, 0)
+        self.assertIn("T-999: legacy-1.meta", cross_ticket.stderr)
 
         legacy.unlink()
         outside = Path(self.temp.name) / "outside"

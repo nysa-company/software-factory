@@ -1014,8 +1014,11 @@ if expect_stage "ESCALATE" "$ROUNDS" T-300 &&
 fi
 
 printf '%s\n' 'OPERATOR AUTHORIZATION: reviewer round 3' >> "$ROUNDS/factory/tickets/T-300.md"
-if expect_stage "RUN reviewer" "$ROUNDS" T-300; then
-  pass "semantic round authorization matches"
+if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then
+  ledger_row T-300 builder >> "$ROUNDS/factory/ledger.csv"
+  if expect_stage "RUN reviewer" "$ROUNDS" T-300; then
+    pass "semantic round authorization preserves the fix gate"
+  fi
 fi
 
 # Spec-linter uses the same exact, next-semantic-round authorization. One
