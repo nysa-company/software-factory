@@ -79,8 +79,10 @@ leases remain required.
 be set only to `2`. At `2`, every sequencing and role launch requires the
 matching opaque record under `factory/.dispatch-leases/`. Claims are atomic,
 stale records are never reassigned automatically, and the global ledger lock
-continues to serialize budget reservations. Maintenance, activation, rollback,
-and the kill switch drain all dispatcher leases.
+continues to serialize budget reservations. Maintenance blocks claims and
+renewals while allowing matching owners to release; activation and rollback
+refuse until every lease drains. The kill switch clears only validated safe
+lease state after stopping recorded runs.
 
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,

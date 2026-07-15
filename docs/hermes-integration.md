@@ -55,10 +55,12 @@ must verify that no nonterminal ticket is leased to a different SHA. The
 current release manager rejects live run records but does not scan non-running
 ticket state, so this operator check is required.
 
-Run manifests record the kit SHA/tree, product tree, ticket lease, contract
-version, and physical kit path. The activated receipt ID is available from
-`active.json`; the current run-manifest format does not copy that ID into each
-manifest.
+Run manifests record the kit SHA/tree, product tree, durable ticket `Kit-SHA`,
+contract version, and physical kit path. The opaque dispatcher lease ID is a
+capability available only to trusted launcher and kit helpers: it never enters
+task text, model prompts, adapter environments, manifests, model output, or
+public artifacts. The activated receipt ID is available from `active.json`;
+the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
@@ -78,9 +80,11 @@ Contract versions `1.0.0`, `1.1.0`, and `1.2.0` certify Hermes Agent `0.18.2`, b
 Contracts `1.1.0` and `1.2.0` keep one-ticket behavior by default. A product may set
 `MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
 `release`, and supplies the matching `--lease` to preflight, next-stage, and
-run. Leases expire after 15 minutes unless renewed, but expiration never makes
-them available to another dispatcher. Under maintenance, recover a stale
-record explicitly with:
+run. Maintenance blocks claims and renewals but matching owners may still
+release leases so the product can drain. Activation and rollback refuse until
+all leases are gone. Leases expire after 15 minutes unless renewed, but
+expiration never makes them available to another dispatcher. Under
+maintenance, recover a stale record explicitly with:
 
 ```bash
 bash scripts/factory-kit.sh recover-lease \

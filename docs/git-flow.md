@@ -41,10 +41,10 @@ For every candidate that may reach production:
 
 Only one product activation or rollback may run at a time. Do not activate a
 second candidate while a ticket has a nonterminal lease, a run is active, or an
-activation journal is incomplete. The current dispatcher also remains
-single-ticket: parallel feature branches and candidate releases are supported,
-but simultaneous live dispatcher tickets require a separate concurrency
-milestone and contract change.
+activation journal is incomplete. Contract `1.1.0` remains single-ticket by
+default and permits an explicit two-ticket pilot only when the product sets
+`MAX_CONCURRENT_TICKETS=2`; each ticket keeps its own exact branch, linked
+worktree, opaque lease, and sequential role flow.
 
 ## Kit release lifecycle
 
@@ -94,7 +94,9 @@ sequencing.
   including organization admins, because the certified commit must be proven to
   have passed the same protected path as every other release.
 - Required approving reviews: 1 once the org has ≥2 humans. At single-operator stage set it to 0 — GitHub forbids approving your own PR, so a sole human with a 1-review rule can never merge anything. Merge-by-operator stays mechanical anyway: deploy keys cannot merge PRs (git-only credential), and `main` rejects their direct pushes.
-- No merge queue at single-builder stage — it queues nothing; add it only when concurrency arrives.
+- No merge queue for the initial two-ticket pilot. Merge the two PRs
+  sequentially and rebase/recheck the second; add a queue only after measured
+  merge contention justifies it.
 
 ## CLI
 
