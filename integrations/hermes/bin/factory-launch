@@ -27,7 +27,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|ticket-state|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -486,17 +486,28 @@ require_exact() {
 }
 
 validate_ticket_command() {
-  LEASE_ID=""
+  LEASE_ID="" TICKET_WORKDIR=""
   if [[ $# -eq 3 && "$1" == "--ticket" && "$3" == "--json" ]]; then
     :
+  elif [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--workdir" && "$5" == "--json" ]]; then
+    TICKET_WORKDIR="$4"
   elif [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--lease" && "$5" == "--json" ]]; then
     LEASE_ID="$4"
+    [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+  elif [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--lease" &&
+          "$5" == "--workdir" && "$7" == "--json" ]]; then
+    LEASE_ID="$4" TICKET_WORKDIR="$6"
     [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
   else
     usage
   fi
   [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
   TICKET="$2"
+  if [[ -n "$TICKET_WORKDIR" ]]; then
+    resolve_product_workdir "$TICKET_WORKDIR"
+    validate_ticket_worktree "$TICKET"
+    TICKET_WORKDIR="$RESOLVED_WORKDIR"
+  fi
 }
 
 add_dispatch_lease_env() {
@@ -767,9 +778,16 @@ PY
   preflight)
     validate_ticket_command "$@"
     add_dispatch_lease_env "$LEASE_ID"
-    if [[ -n "$LEASE_ID" ]]; then
+    if [[ -n "$LEASE_ID" && -n "$TICKET_WORKDIR" ]]; then
+      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
+        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET" --lease "$LEASE_ID" \
+        --workdir "$TICKET_WORKDIR"
+    elif [[ -n "$LEASE_ID" ]]; then
       wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
         "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET" --lease "$LEASE_ID"
+    elif [[ -n "$TICKET_WORKDIR" ]]; then
+      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
+        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET" --workdir "$TICKET_WORKDIR"
     else
       wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
         "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET"
@@ -780,15 +798,54 @@ PY
   next-stage)
     validate_ticket_command "$@"
     add_dispatch_lease_env "$LEASE_ID"
-    if [[ -n "$LEASE_ID" ]]; then
+    if [[ -n "$LEASE_ID" && -n "$TICKET_WORKDIR" ]]; then
+      wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
+        "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET" --lease "$LEASE_ID" \
+        --workdir "$TICKET_WORKDIR"
+    elif [[ -n "$LEASE_ID" ]]; then
       wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
         "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET" --lease "$LEASE_ID"
+    elif [[ -n "$TICKET_WORKDIR" ]]; then
+      wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
+        "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET" --workdir "$TICKET_WORKDIR"
     else
       wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
         "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET"
     fi
     rc=$?
     exit "$rc"
+    ;;
+  ticket-state)
+    if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
+          "$5" == "--action" && "$7" == "--json" ]]; then
+      TICKET_STATE_VALUE=""
+    elif [[ $# -eq 9 && "$1" == "--ticket" && "$3" == "--workdir" &&
+            "$5" == "--action" && "$7" == "--state" && "$9" == "--json" ]]; then
+      TICKET_STATE_VALUE="$8"
+    else
+      usage
+    fi
+    TICKET="$2" TICKET_ACTION="$6"
+    [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    [[ "$TICKET_ACTION" == "materialize" || "$TICKET_ACTION" == "transition" ]] ||
+      die "invalid ticket-state action"
+    [[ "$TICKET_ACTION" == "materialize" || -n "$TICKET_STATE_VALUE" ]] ||
+      die "transition requires a state"
+    resolve_product_workdir "$4"
+    validate_ticket_worktree "$TICKET"
+    [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
+      die "product is in maintenance; ticket-state refused"
+    TICKET_STATE_HELPER="$RELEASE_PATH/scripts/ticket-state.sh"
+    require_managed_file "$TICKET_STATE_HELPER" "active release ticket-state helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    if [[ -n "$TICKET_STATE_VALUE" ]]; then
+      exec_selected_helper "$TICKET_STATE_HELPER" --ticket "$TICKET" \
+        --workdir "$RESOLVED_WORKDIR" --action "$TICKET_ACTION" --state "$TICKET_STATE_VALUE"
+    else
+      exec_selected_helper "$TICKET_STATE_HELPER" --ticket "$TICKET" \
+        --workdir "$RESOLVED_WORKDIR" --action "$TICKET_ACTION"
+    fi
     ;;
   reorder-test-fixes)
     [[ $# -ge 5 &&

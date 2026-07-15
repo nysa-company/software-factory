@@ -14,14 +14,14 @@
 #   PER_RUN_TIMEOUT_MIN, DAILY_CAP_USD
 set -euo pipefail
 
-ROLE="" TICKET="" PROMPT_FILE="" ADAPTER="" WORKDIR="$PWD"
+ROLE="" TICKET="" PROMPT_FILE="" ADAPTER="" WORKDIR="" WORKDIR_SET=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --role) ROLE="$2"; shift 2;;
     --ticket) TICKET="$2"; shift 2;;
     --prompt-file) PROMPT_FILE="$2"; shift 2;;
     --adapter) ADAPTER="$2"; shift 2;;
-    --workdir) WORKDIR="$2"; shift 2;;
+    --workdir) WORKDIR="$2"; WORKDIR_SET=1; shift 2;;
     --) shift; break;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
@@ -40,6 +40,7 @@ unset FACTORY_DISPATCH_LEASE_ID
 
 # --- anchor factory state to the repo root, never to $PWD ---
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
+[[ "$WORKDIR_SET" -eq 1 ]] || WORKDIR="$REPO_ROOT"
 FACTORY_DIR="$REPO_ROOT/factory"
 
 # A linked worktree has its own copy of factory/, but costs must have one
@@ -98,6 +99,9 @@ RUN_GO_FILE=""
 RUN_START_ID=""
 MANIFEST=""
 MANIFEST_PHASE=""
+ROLE_EXIT_STATUS=""
+ROLE_HEAD_BEFORE=""
+ROLE_BRANCH_BEFORE=""
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 SEQUENCER_ERROR=""
 
@@ -110,10 +114,11 @@ sequencer_allows_role() {
   fi
   if [[ -n "$DISPATCH_LEASE_ID" ]]; then
     output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
-      bash "$SEQUENCER" --ticket "$TICKET" --lease "$DISPATCH_LEASE_ID" 2>/dev/null)" || rc=$?
+      bash "$SEQUENCER" --ticket "$TICKET" --lease "$DISPATCH_LEASE_ID" \
+        --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
   else
     output="$(FACTORY_ROOT="$REPO_ROOT" FACTORY_LEDGER="$LEDGER" \
-      bash "$SEQUENCER" --ticket "$TICKET" 2>/dev/null)" || rc=$?
+      bash "$SEQUENCER" --ticket "$TICKET" --workdir "$WORKDIR" 2>/dev/null)" || rc=$?
   fi
   if [[ "$rc" -ne 0 ]]; then
     SEQUENCER_ERROR="sequencer refused the ticket state"
@@ -159,6 +164,7 @@ write_manifest() {
     echo "pid=$(meta_value "${RUN_PID:-}")"
     echo "pgid=$(meta_value "${RUN_PGID:-}")"
     echo "process_start=$(meta_value "${RUN_START_ID:-}")"
+    echo "role_exit=$(meta_value "${ROLE_EXIT_STATUS:-}")"
     echo "updated_at=$(date -u +%FT%TZ)"
   } > "$tmp"
   mv "$tmp" "$MANIFEST"
@@ -209,7 +215,12 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM INT HUP
 
-TICKET_FILE="$FACTORY_DIR/tickets/$TICKET.md"
+TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
+ROLE_EXIT_ENFORCED=1
+if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+      "${FACTORY_TEST_ENFORCE_ROLE_EXIT:-0}" != "1" ]]; then
+  ROLE_EXIT_ENFORCED=0
+fi
 [[ -f "$ENV_FILE" ]] || { echo "envelope not found: $ENV_FILE — fill ENVELOPE.md and write ENVELOPE.env first" >&2; exit 3; }
 # shellcheck disable=SC1090
 source "$ENV_FILE"
@@ -242,6 +253,19 @@ if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   echo "MAINTENANCE file present ($FACTORY_DIR/MAINTENANCE) — factory control plane is paused; no task was submitted." >&2
   exit 4
 fi
+[[ -f "$TICKET_FILE" ]] || { echo "ticket file missing from worktree: $TICKET_FILE" >&2; exit 3; }
+if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+  ROLE_BRANCH_BEFORE="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  ROLE_HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$ROLE_BRANCH_BEFORE" && -n "$ROLE_HEAD_BEFORE" ]] || {
+    echo "role_exit_wrong_branch: ticket worktree must be on a branch" >&2
+    exit 11
+  }
+  [[ -z "$(git -C "$WORKDIR" status --porcelain)" ]] || {
+    echo "role_exit_dirty: ticket worktree must be clean before launch" >&2
+    exit 11
+  }
+fi
 if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "$FACTORY_KIT_PIN_ERROR; no task was submitted" >&2
   exit 3
@@ -250,6 +274,7 @@ if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
 fi
+TICKET_AFFINITY_WAS_MISSING=0
 if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID"; then
   echo "$FACTORY_DISPATCH_LEASE_ERROR; no task was submitted" >&2
   exit 7
@@ -258,6 +283,7 @@ fi
 # persisted under the launch lock. factory_record_ticket_kit_sha revalidates
 # and writes it before any reservation or task submission.
 if [[ -z "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
+  TICKET_AFFINITY_WAS_MISSING=1
   FACTORY_TICKET_KIT_SHA="$FACTORY_KIT_SHA"
 fi
 if ! sequencer_allows_role; then
@@ -341,6 +367,26 @@ fi
 if ! factory_record_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
+fi
+if [[ "$ROLE_EXIT_ENFORCED" -eq 1 && "$TICKET_AFFINITY_WAS_MISSING" -eq 1 ]]; then
+  TICKET_RELATIVE="${TICKET_FILE#"$WORKDIR/"}"
+  CHANGED_PATHS="$(git -C "$WORKDIR" status --porcelain | awk '{print $2}')"
+  if [[ "$CHANGED_PATHS" != "$TICKET_RELATIVE" ]]; then
+    echo "role_exit_dirty: Kit-SHA recording changed unexpected paths" >&2
+    exit 11
+  fi
+  git -C "$WORKDIR" add -- "$TICKET_RELATIVE"
+  git -C "$WORKDIR" -c user.name="Software Factory" -c user.email="factory@local" \
+    commit -m "Record $TICKET kit affinity" >/dev/null 2>&1 || {
+    echo "role_exit_no_commit: could not commit Kit-SHA affinity" >&2
+    exit 11
+  }
+  ROLE_HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD)"
+  git -C "$WORKDIR" push --no-force origin \
+    "HEAD:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1 || {
+    echo "role_exit_push_failed: could not push Kit-SHA affinity" >&2
+    exit 11
+  }
 fi
 if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID"; then
   echo "$FACTORY_DISPATCH_LEASE_ERROR after launch lock acquisition; no task was submitted" >&2
@@ -557,6 +603,47 @@ rm -f "$RUN_READY_FILE" "$RUN_GO_FILE"
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RESULT="$(cat "$RUNS_DIR/$RUN_ID.out")"
+
+PROVIDER_STATUS="$STATUS"
+if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+  ROLE_BRANCH_AFTER="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  ROLE_HEAD_AFTER="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
+  ROLE_DIRTY="$(git -C "$WORKDIR" status --porcelain 2>/dev/null || true)"
+  if [[ "$PROVIDER_STATUS" -eq 0 ]]; then
+    if [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" ]]; then
+      ROLE_EXIT_STATUS="role_exit_wrong_branch"
+    elif [[ "$ROLE" == "reviewer" &&
+            ( -n "$ROLE_DIRTY" || "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ) ]]; then
+      ROLE_EXIT_STATUS="reviewer_mutated_worktree"
+    elif [[ -n "$ROLE_DIRTY" ]]; then
+      ROLE_EXIT_STATUS="role_exit_dirty"
+    elif [[ "$ROLE" == "reviewer" ]]; then
+      ROLE_EXIT_STATUS="ok"
+    elif [[ "$ROLE_HEAD_AFTER" == "$ROLE_HEAD_BEFORE" ]]; then
+      ROLE_EXIT_STATUS="role_exit_no_commit"
+    elif ! git -C "$WORKDIR" push --no-force origin \
+      "HEAD:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1; then
+      ROLE_EXIT_STATUS="role_exit_push_failed"
+    else
+      REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads origin \
+        "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
+      if [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
+        ROLE_EXIT_STATUS="role_exit_remote_mismatch"
+      else
+        ROLE_EXIT_STATUS="ok"
+      fi
+    fi
+    if [[ "$ROLE_EXIT_STATUS" != "ok" ]]; then
+      echo "$ROLE_EXIT_STATUS: successful provider run did not leave durable role output" >&2
+      STATUS=11
+    fi
+  else
+    ROLE_EXIT_STATUS="provider_failed"
+    if [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" || -n "$ROLE_DIRTY" ]]; then
+      echo "WARNING: provider failed and left ticket worktree changes; preserving them for diagnosis" >&2
+    fi
+  fi
+fi
 
 METRICS_LINE="$(printf '%s\n' "$RESULT" | tail -n1)"
 TURNS="$(sed -n 's/.*turns=\([0-9][0-9]*\).*/\1/p' <<<"$METRICS_LINE")"

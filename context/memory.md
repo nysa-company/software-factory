@@ -15,6 +15,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Linux and macOS system-Bash verification both feed the required aggregate `ci` status. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contract 1.1 keeps live tickets serialized by default and permits an explicit two-ticket lease pilot. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
+- Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 
 ## Log
 
@@ -95,3 +96,9 @@ Relay generation 3 recertified current product tree `395918c` on retained releas
 Category: System change
 
 Hermes contract 1.1 preserves one-ticket behavior by default and adds an opt-in maximum of two. Atomic opaque ticket leases gate sequencing and launches; they are never automatically stolen, budget reservations retain the global ledger lock, maintenance operations require a full drain, and stale recovery is an explicit operator action under maintenance.
+
+## 2026-07-15 — Decision 13: Ticket worktrees are execution truth
+
+Category: System change
+
+Linear-owned priority, initiative, Ready, approval, and resume decisions live in the ignored sync overlay until the trusted `ticket-state` command materializes them. Preflight, sequencing, roles, and Linear projection use the exact ticket worktree or committed branch; successful mutating roles require a clean commit that the wrapper pushes and verifies, while Reviewer remains read-only.

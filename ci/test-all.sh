@@ -34,6 +34,7 @@ run_suite "factory script regression suite" bash "$ROOT/ci/test-factory-scripts.
 run_suite "dispatcher lease suite" bash "$ROOT/ci/dispatch-leases-test.sh"
 run_suite "reorder test-fixes suite" bash "$ROOT/ci/reorder-test-fixes-test.sh"
 run_suite "preflight suite" bash "$ROOT/ci/preflight-test.sh"
+run_suite "ticket-state suite" bash "$ROOT/ci/ticket-state-test.sh"
 run_suite "Hermes contract suite" bash "$ROOT/ci/hermes-contract-test.sh"
 run_suite "factory kit release suite" bash "$ROOT/ci/factory-kit-test.sh"
 run_suite "conformance app suite" run_conformance

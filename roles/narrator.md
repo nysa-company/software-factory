@@ -26,6 +26,7 @@ End with the single question the operator must answer: approve to merge, or send
 - The bundle for `external`-labeled tickets must name the exact destination (who receives what, when).
 - If the preview deploy is broken, the bundle is one line: preview broken, not approvable, and the ticket goes back to the builder.
 - The Narrator remains in Review; after the bundle exists, the dispatcher moves Review → Awaiting Approval. You never record operator approval or move the issue to Approved.
+- Commit the evidence bundle on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 
 ## Changelog
 

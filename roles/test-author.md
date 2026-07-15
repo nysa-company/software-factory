@@ -20,6 +20,7 @@ The reconciled Markdown ticket in Building with its acceptance criteria and froz
 - No trivially-passing tests: every test must assert observable behavior from the contract. A test that would pass against an empty implementation is a defect in your work.
 - If the contract is ambiguous or untestable as written, stop and flag it on the ticket — do not guess.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
+- Commit all test and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 
 ## Worked example (regression check)
 

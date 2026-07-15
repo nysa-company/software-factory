@@ -4,7 +4,7 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 
 ## Sequence
 
-1. **Operator** moves a ticket from Backlog to Ready in Linear. The reconciler records that transition in the ticket file; no live API call is made by preflight.
+1. **Operator** moves a ticket from Backlog to Ready in Linear. The reconciler records that transition in the ignored operator overlay; the dispatcher materializes it on the ticket branch and no live API call is made by preflight.
 2. **Planner** (production/OpenAI family; Codex primary, family-matched Cursor fallback) starts at Planning, posts the spec'd description, acceptance criteria, and frozen contract on the ticket, and creates the ticket branch. If the product docs cannot answer a question, ticket → Blocked-Escalated with the question instead.
 3. **Spec-linter** (checking/Anthropic family; Claude Code primary, family-matched Cursor fallback) remains in Planning, checks criteria quality, contract coverage, consistency, and edge coverage, and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator. The operator may authorize only the next semantic lint round with the exact ticket line `OPERATOR AUTHORIZATION: spec-linter round <N>`; the dispatcher never writes it on its own.
 4. **Test-author** (checking/Anthropic family) starts Building and commits failing tests as the first commits on the ticket branch, asserting the frozen contract. Confirms they fail for the right reason.
@@ -15,6 +15,10 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 9. **Operator** approves from the bundle by moving the Linear issue to Approved (or sends it back with what is wrong). The reconciler records the approval locally. After the PR is merged and staging is confirmed, factory close-out moves the ticket to Done.
 
 Backend fallback is selected by `run-agent.sh` before it submits the role task. Once any task-bearing CLI starts, every failure is terminal for that run; the dispatcher escalates instead of launching another backend.
+
+Every mutating role must finish with a new commit and a clean ticket worktree;
+the trusted wrapper non-force pushes that commit and verifies the remote tip.
+Reviewer is read-only and must leave the branch, HEAD, and worktree unchanged.
 
 ## Failure routes
 

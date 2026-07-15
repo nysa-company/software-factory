@@ -8,6 +8,7 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 
 - Create the product repo as a **sibling folder** (never nested inside another repo). Do NOT copy kit scripts into it — the engine model in `docs/architecture.md` is the contract.
 - Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN`, an executable certification script, and empty `initiatives/` and `tickets/` directories.
+- Ignore `factory/linear-map.json` and `factory/.linear-sync.lock`; they are runtime operator state and must never dirty the registered checkout.
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Set it to

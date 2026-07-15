@@ -40,6 +40,7 @@ FAIL means at least one finding would let a builder satisfy the letter of the ti
 - One run, one verdict. No follow-up questions — you are headless; anything you would ask becomes a finding.
 - After two FAIL verdicts on the same ticket the sequencer escalates to the operator. Only an exact `OPERATOR AUTHORIZATION: spec-linter round <N>` line for the next semantic round permits another lint cycle; you never add that line or soften a verdict to avoid escalation.
 - Do not edit State, Initiative, Priority, or any Linear-owned field. The dispatcher records stage movement and the reconciler projects your verdict.
+- Commit the ticket verdict on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 
 ## Worked example (regression check)
 

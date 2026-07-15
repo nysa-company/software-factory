@@ -61,6 +61,12 @@ also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
+Ticket content is read from the launcher's validated ticket worktree, while
+controls and the Linear operator overlay remain anchored to the registered
+product root. Linear projection reads the committed exact ticket branch rather
+than a dirty checkout. `ticket-state` is the only launcher path that
+materializes operator fields or commits a factory-owned stage transition.
+
 The first role launch records a `Kit-SHA:` lease on the canonical ticket while
 holding `factory/.launch.lock`. Every later preflight, sequencer call, and run
 refuses a different physical kit SHA. Activation does not migrate leases, so a

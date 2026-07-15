@@ -5,11 +5,12 @@
 # FACTORY_ROOT semantics match run-agent.sh (anchors factory/ under the repo root).
 set -euo pipefail
 
-TICKET="" LEASE_ID=""
+TICKET="" LEASE_ID="" WORKDIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2;;
     --lease) LEASE_ID="$2"; shift 2;;
+    --workdir) WORKDIR="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -19,10 +20,12 @@ done
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
+CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/ledger.csv}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 PROJECTED_TICKET_USD="${PROJECTED_TICKET_USD:-5.00}"
-TICKET_FILE="$FACTORY_DIR/tickets/$TICKET.md"
+TICKET_SOURCE="$CONTENT_ROOT/factory/tickets/$TICKET.md"
+TICKET_FILE="$TICKET_SOURCE"
 
 FAIL=0
 pass() { echo "PASS: $*"; }
@@ -57,6 +60,20 @@ if [[ -f "$TICKET_FILE" ]] &&
   fail "$FACTORY_TICKET_KIT_ERROR"
   echo "PREFLIGHT FAIL"
   exit 1
+fi
+
+if [[ -f "$TICKET_SOURCE" ]]; then
+  EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
+  trap 'rm -f "$EFFECTIVE_TICKET"' EXIT
+  if python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
+    --ticket-file "$TICKET_SOURCE" --operator-map "$FACTORY_DIR/linear-map.json" \
+    --ticket "$TICKET" > "$EFFECTIVE_TICKET"; then
+    TICKET_FILE="$EFFECTIVE_TICKET"
+  else
+    fail "effective ticket state could not be resolved"
+    echo "PREFLIGHT FAIL"
+    exit 1
+  fi
 fi
 if [[ -n "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
   pass "ticket Kit-SHA affinity matches selected kit SHA"

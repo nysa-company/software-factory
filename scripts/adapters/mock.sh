@@ -2,17 +2,25 @@
 # Adapter: mock — for testing run-agent.sh mechanics without spending money.
 # Env: MOCK_COST (default 0.42), MOCK_STATUS (default 0).
 set -euo pipefail
+WORKDIR=""
 [[ ${FACTORY_DISPATCH_LEASE_ID+x} != x ]] || {
   echo "dispatcher lease leaked into task adapter" >&2
   exit 97
 }
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --budget|--max-turns|--timeout-min|--prompt-file|--workdir) shift 2;;
+    --workdir) WORKDIR="$2"; shift 2;;
+    --budget|--max-turns|--timeout-min|--prompt-file) shift 2;;
     --) shift; break;;
     *) shift;;
   esac
 done
+if [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ]]; then
+  printf 'mock role output\n' >> "$WORKDIR/mock-role-output.txt"
+  git -C "$WORKDIR" add mock-role-output.txt
+  git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \
+    commit -m "Mock role output" >/dev/null
+fi
 if [[ "${MOCK_SLEEP:-0}" != "0" ]]; then
   if [[ -n "${MOCK_DESCENDANT_PID_FILE:-}" ]]; then
     bash -c 'sleep "$1" & wait' -- "$MOCK_SLEEP" &

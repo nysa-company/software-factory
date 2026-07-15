@@ -3,9 +3,10 @@
 Linear is the factory's visual and operator-facing board. Git remains the
 durable execution record: ticket contracts, machine-readable verdicts, logs,
 evidence bundles, and the cost ledger live under `factory/`. The reconciler
-polls Linear and updates local operator-owned fields before projecting factory
-output back to Linear. `preflight.sh` and `next-stage.sh` never call a network
-API.
+polls Linear and records operator-owned fields in the ignored
+`factory/linear-map.json` overlay before projecting factory output back to
+Linear. It never rewrites tracked ticket or initiative files. `preflight.sh`
+and `next-stage.sh` never call a network API.
 
 One shared **Software Factory** team contains every product. Each factory
 initiative is one Linear Project; each `factory/tickets/T-NNN.md` is one issue.
@@ -24,7 +25,10 @@ frozen contract, branch/PR facts, role-stage movement, escalation into
 Blocked-Escalated, evidence, cost, and Approved → Done after merge/deploy
 confirmation. Unsupported Linear edits are restored from the ticket file.
 
-An API outage never stops an in-flight ticket. The local sync map and logs show
+Preflight, sequencing, and projection combine the overlay with the exact ticket
+worktree or committed ticket branch. The launcher-managed `ticket-state`
+command materializes accepted operator fields and commits factory-owned stage
+moves on the ticket branch. An API outage never stops an in-flight ticket. The local sync map and logs show
 stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 
@@ -83,7 +87,7 @@ Linear Project, stores its UUID in `linear-map.json`, and assigns every issue.
 `View: factory` also creates a shared Project-filtered Factory Pipeline view
 and stores its UUID with the initiative mapping.
 Project status, target date, and issue membership may be edited in Linear and
-are ingested locally; the initiative summary remains Git-owned.
+are ingested into the operator overlay; the initiative summary remains Git-owned.
 
 ## Ticket template
 

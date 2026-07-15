@@ -45,13 +45,13 @@ may recover it under maintenance through `factory-kit recover-lease`.
 For the first launch of a ticket:
 
 ```text
-~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> [--lease <opaque-lease-id>] --json
+~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
 
 Before every role launch:
 
 ```text
-~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> [--lease <opaque-lease-id>] --json
+~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
 
 The launcher wraps the existing scripts' text and exit code; those scripts do

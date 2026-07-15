@@ -823,7 +823,7 @@ if [[ "$STATE_GO_STATUS" -eq 10 ]] &&
   pass "pre-GO sequencer catches state-change race"
 else
   fail "pre-GO sequencer catches state-change race" \
-    "status $STATE_GO_STATUS"
+    "status $STATE_GO_STATUS: $(tr '\n' ' ' < "$TMP/sequence-before-go.out")"
 fi
 
 # The first role run writes one durable lease, even for a blocked ticket.
@@ -1254,6 +1254,48 @@ printf '# T-503\n' > "$WALK/factory/tickets/T-503.md"
 printf 'SPEC-LINT: FAIL — round 1\nSPEC-LINT: FAIL — round 2\n' >> "$WALK/factory/tickets/T-503.md"
 if expect_stage "ESCALATE spec-lint failed twice" "$WALK" T-503; then
   pass "spec-lint two-fail escalation"
+fi
+
+# Successful mutating roles must commit cleanly; the wrapper owns the push.
+ROLE_EXIT_ROOT="$TMP/role-exit"
+ROLE_EXIT_WORKTREE="$TMP/role-exit-worktree"
+ROLE_EXIT_REMOTE="$TMP/role-exit.git"
+write_envelope "$ROLE_EXIT_ROOT"
+write_ticket "$ROLE_EXIT_ROOT" T-600
+git -C "$ROLE_EXIT_ROOT" add factory/tickets/T-600.md
+git -C "$ROLE_EXIT_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "ticket fixture"
+git init --bare -q "$ROLE_EXIT_REMOTE"
+git -C "$ROLE_EXIT_ROOT" remote add origin "$ROLE_EXIT_REMOTE"
+git -C "$ROLE_EXIT_ROOT" branch -M main
+git -C "$ROLE_EXIT_ROOT" push -q -u origin main
+git -C "$ROLE_EXIT_ROOT" worktree add -q -b ticket/T-600 "$ROLE_EXIT_WORKTREE" main
+printf '\nKit-SHA: %s\n' "$KIT_SHA" >> "$ROLE_EXIT_WORKTREE/factory/tickets/T-600.md"
+git -C "$ROLE_EXIT_WORKTREE" add factory/tickets/T-600.md
+git -C "$ROLE_EXIT_WORKTREE" -c user.name=test -c user.email=test@example.com \
+  commit -qm "ticket affinity"
+git -C "$ROLE_EXIT_WORKTREE" push -q -u origin ticket/T-600
+ROLE_NO_COMMIT=0
+FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-600 --workdir "$ROLE_EXIT_WORKTREE" -- "no commit" \
+  > "$TMP/role-no-commit.out" 2>&1 || ROLE_NO_COMMIT=$?
+ROLE_COMMIT=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-600 --workdir "$ROLE_EXIT_WORKTREE" -- "commit" \
+  > "$TMP/role-commit.out" 2>&1 || ROLE_COMMIT=$?
+ROLE_LOCAL_HEAD="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_REMOTE_HEAD="$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-600)"
+if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
+      "$ROLE_LOCAL_HEAD" == "$ROLE_REMOTE_HEAD" ]] &&
+   grep -q 'role_exit_no_commit' "$TMP/role-no-commit.out"; then
+  pass "role exit requires a clean commit and pushes it non-force"
+else
+  fail "role exit requires a clean commit and pushes it non-force" \
+    "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
 fi
 
 if [[ "$FAILURES" -gt 0 ]]; then

@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -202,14 +203,18 @@ class LinearSyncTest(unittest.TestCase):
 
     def test_allowed_operator_fields_are_ingested_before_push(self):
         self.reconcile()
+        before = (self.factory / "tickets" / "T-001.md").read_text()
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["priority"] = LINEAR.PRIORITIES["high"]
         issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
         self.reconcile()
-        text = (self.factory / "tickets" / "T-001.md").read_text()
-        self.assertIn("State: Ready", text)
-        self.assertIn("Priority: high", text)
+        self.assertEqual((self.factory / "tickets" / "T-001.md").read_text(), before)
+        operator = self.mapping["tickets"]["T-001"]["operator"]
+        self.assertEqual(operator["state"], "Ready")
+        self.assertEqual(operator["priority"], "high")
         self.assertEqual(issue["state"]["name"], "Ready")
+        self.reconcile()
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Ready")
 
     def test_legacy_issue_bootstraps_operator_fields_before_pull(self):
         self.reconcile()
@@ -238,9 +243,10 @@ class LinearSyncTest(unittest.TestCase):
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["state"] = {"id": config()["states"]["approved"], "name": "Approved"}
         self.reconcile()
-        text = path.read_text()
-        self.assertIn("State: Approved", text)
-        self.assertIn("Operator-Approval: Linear", text)
+        self.assertIn("State: Awaiting Approval", path.read_text())
+        operator = self.mapping["tickets"]["T-001"]["operator"]
+        self.assertEqual(operator["state"], "Approved")
+        self.assertEqual(operator["approval"], "Linear")
 
     def test_blocked_ticket_resumes_only_to_declared_state(self):
         self.reconcile()
@@ -253,7 +259,8 @@ class LinearSyncTest(unittest.TestCase):
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
         self.reconcile()
-        self.assertIn("State: Building", path.read_text())
+        self.assertIn("State: Blocked-Escalated", path.read_text())
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
     def test_linear_project_membership_is_ingested(self):
         self.reconcile()
@@ -265,7 +272,8 @@ class LinearSyncTest(unittest.TestCase):
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["project"] = {"id": second_project}
         self.reconcile()
-        self.assertIn("Initiative: I-002", (self.factory / "tickets" / "T-001.md").read_text())
+        self.assertIn("Initiative: I-001", (self.factory / "tickets" / "T-001.md").read_text())
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["initiative"], "I-002")
 
     def test_factory_view_is_created_and_mapped(self):
         path = self.factory / "initiatives" / "I-001.md"
@@ -351,6 +359,22 @@ class LinearSyncTest(unittest.TestCase):
         migrated = LINEAR.load_map(self.map_path)
         self.assertEqual(migrated["initiatives"], {})
         self.assertEqual(migrated["_sync"], {})
+
+    def test_committed_ticket_branch_is_projected_without_checkout(self):
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "factory"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "main ticket"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "switch", "-qc", "ticket/T-001"], check=True)
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("Build it.", "Branch-authored contract."))
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qam", "ticket contract"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Branch-authored contract.", text)
+        self.assertEqual(source, "refs/heads/ticket/T-001")
+        self.assertIn("Build it.", path.read_text())
 
     def test_failure_health_preserves_last_success(self):
         self.mapping["_sync"] = {"last_success_at": "2026-07-13T12:00:00+00:00"}

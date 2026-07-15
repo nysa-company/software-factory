@@ -25,11 +25,12 @@
 # Usage: next-stage.sh --ticket T-NNN   (FACTORY_ROOT anchors the factory dir)
 set -euo pipefail
 
-TICKET="" LEASE_ID=""
+TICKET="" LEASE_ID="" WORKDIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2;;
     --lease) LEASE_ID="$2"; shift 2;;
+    --workdir) WORKDIR="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -43,6 +44,7 @@ source "$KIT_DIR/scripts/lib/kit-pin.sh"
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
+CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 if ! factory_validate_runtime_overrides; then
   echo "REFUSE $FACTORY_RUNTIME_OVERRIDE_ERROR"
   exit 1
@@ -80,10 +82,19 @@ canonical_ledger() {
 }
 
 LEDGER="${FACTORY_LEDGER:-$(canonical_ledger "$REPO_ROOT")}"
-TICKETS_DIR="$FACTORY_DIR/tickets"
+TICKETS_DIR="$CONTENT_ROOT/factory/tickets"
 
 TICKET_FILE="$TICKETS_DIR/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "REFUSE no ticket file at $TICKET_FILE"; exit 1; }
+EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
+trap 'rm -f "$EFFECTIVE_TICKET"' EXIT
+python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
+  --ticket-file "$TICKET_FILE" --operator-map "$FACTORY_DIR/linear-map.json" \
+  --ticket "$TICKET" > "$EFFECTIVE_TICKET" || {
+    echo "REFUSE effective ticket state could not be resolved"
+    exit 1
+  }
+TICKET_FILE="$EFFECTIVE_TICKET"
 if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   echo "REFUSE MAINTENANCE file present — factory control plane is paused"
   exit 1
