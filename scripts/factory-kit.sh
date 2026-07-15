@@ -685,6 +685,57 @@ git_tree_for_directory() {
   printf '%s\n' "$tree"
 }
 
+materialize_git_tree() {
+  local source="$1" sha="$2" destination="$3"
+  python3 - "$source" "$sha" "$destination" <<'PY'
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+source, sha, destination = sys.argv[1:]
+root = pathlib.Path(destination).resolve()
+listing = subprocess.run(
+    ["git", "-C", source, "ls-tree", "-rz", "--full-tree", sha],
+    check=True,
+    stdout=subprocess.PIPE,
+).stdout
+for record in listing.split(b"\0"):
+    if not record:
+        continue
+    try:
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, kind, object_id = metadata.decode("ascii").split(" ")
+    except (ValueError, UnicodeDecodeError):
+        raise SystemExit("invalid Git tree entry")
+    if kind != "blob" or not re.fullmatch(r"[0-9a-f]{40,64}", object_id):
+        raise SystemExit("unsupported Git tree entry")
+    path = pathlib.PurePosixPath(os.fsdecode(raw_path))
+    if path.is_absolute() or not path.parts or any(part in ("", ".", "..") for part in path.parts):
+        raise SystemExit("unsafe path in Git tree")
+    target = root.joinpath(*path.parts)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink() or target.exists():
+        raise SystemExit("duplicate or unsafe path in Git tree")
+    content = subprocess.run(
+        ["git", "-C", source, "cat-file", "blob", object_id],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    if mode == "120000":
+        os.symlink(os.fsdecode(content), target)
+    elif mode in ("100644", "100755"):
+        target.write_bytes(content)
+        target.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        if mode == "100755":
+            target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    else:
+        raise SystemExit("unsupported mode in Git tree")
+PY
+}
+
 verify_symlinks_contained() {
   python3 - "$1" <<'PY'
 import os
@@ -1976,7 +2027,8 @@ cmd_install() {
   [[ ! -e "$temp" && ! -L "$temp" ]] || die "partial temporary install already exists"
   mkdir "$temp"
   remember_temp "$temp"
-  git -C "$source_top" archive --format=tar "$sha" | (cd "$temp" && tar -xf -)
+  materialize_git_tree "$source_top" "$sha" "$temp" ||
+    die "failed to materialize exact candidate tree"
   verify_symlinks_contained "$temp" || die "candidate contains an escaping symlink"
   [[ "$(git_tree_for_directory "$temp")" == "$kit_tree" ]] ||
     die "materialized release does not match Git tree"
