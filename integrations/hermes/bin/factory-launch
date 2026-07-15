@@ -399,7 +399,7 @@ GIT_INDEX_FILE="$TREE_TMP/index" git --git-dir="$TREE_TMP/repo.git" \
   --work-tree="$RELEASE_PATH" read-tree --empty ||
   die "cannot initialize release tree"
 GIT_INDEX_FILE="$TREE_TMP/index" git --git-dir="$TREE_TMP/repo.git" \
-  --work-tree="$RELEASE_PATH" add -A -- . ||
+  --work-tree="$RELEASE_PATH" add -f -A -- . ||
   die "cannot inspect release tree"
 ACTUAL_TREE="$(GIT_INDEX_FILE="$TREE_TMP/index" git --git-dir="$TREE_TMP/repo.git" \
   --work-tree="$RELEASE_PATH" write-tree)" ||
