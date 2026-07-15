@@ -860,6 +860,13 @@ git -C "$LAUNCH_PRODUCT" init -b main >/dev/null 2>&1
 git -C "$LAUNCH_PRODUCT" config user.email "hermes-contract@test.local"
 git -C "$LAUNCH_PRODUCT" config user.name "hermes-contract-test"
 printf 'launcher worktree fixture\n' > "$LAUNCH_PRODUCT/README.md"
+cat > "$LAUNCH_PRODUCT/.gitignore" <<'EOF'
+factory/*-helper.env
+factory/runs/
+factory/runtime-ledger.csv
+factory/.active-runs/
+factory/.dispatch-leases/
+EOF
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add -A
 git -C "$LAUNCH_PRODUCT" commit -qm "seed launcher worktree"
@@ -944,6 +951,7 @@ expect_bad_run prompt-secret-file \
   --role builder --ticket T-123 \
   --prompt-file "$LAUNCH_PRODUCT_PHYS/secret-prompt.txt" \
   --workdir "$RUN_WORKTREE_PHYS" -- task
+rm -f "$LAUNCH_PRODUCT_PHYS/secret-prompt.txt"
 expect_bad_run empty-task \
   --role builder --ticket T-123 \
   --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
@@ -1134,14 +1142,21 @@ REAL_RUN_WORKTREE="$TMP/real-run-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-777 "$REAL_RUN_WORKTREE"
 REAL_RUN_WORKTREE_PHYS="$(cd "$REAL_RUN_WORKTREE" && pwd -P)"
 run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
-  --action transition --state Planning --json > "$TMP/real-ticket-state.json"
+  --action materialize --json > "$TMP/real-ticket-state.json"
 run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
 REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
-run_launcher launchtest preflight --ticket T-777 --lease "$REAL_LEASE_ID" \
-  --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-preflight.json"
+if ! run_launcher launchtest preflight --ticket T-777 --lease "$REAL_LEASE_ID" \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-preflight.json"; then
+  awk '{print}' "$TMP/real-preflight.json" >&2
+  git -C "$LAUNCH_PRODUCT" status --short >&2
+  git -C "$REAL_RUN_WORKTREE_PHYS" status --short >&2
+  fail "contract 1.2 sealed preflight failed"
+fi
+run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
+  --action transition --state Planning --json > "$TMP/real-ticket-transition.json"
 run_launcher launchtest next-stage --ticket T-777 --lease "$REAL_LEASE_ID" \
   --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-next-stage.json"
-python3 - "$TMP/real-ticket-state.json" "$TMP/real-preflight.json" \
+python3 - "$TMP/real-ticket-transition.json" "$TMP/real-preflight.json" \
   "$TMP/real-next-stage.json" <<'PY'
 import json, sys
 state, preflight, stage = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
