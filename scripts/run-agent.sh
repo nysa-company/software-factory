@@ -102,6 +102,7 @@ MANIFEST_PHASE=""
 ROLE_EXIT_STATUS=""
 ROLE_HEAD_BEFORE=""
 ROLE_BRANCH_BEFORE=""
+ROLE_REMOTE_BEFORE=""
 ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
@@ -202,6 +203,9 @@ write_manifest() {
     echo "pgid=$(meta_value "${RUN_PGID:-}")"
     echo "process_start=$(meta_value "${RUN_START_ID:-}")"
     echo "role_exit=$(meta_value "${ROLE_EXIT_STATUS:-}")"
+    echo "role_branch_before=$(meta_value "${ROLE_BRANCH_BEFORE:-}")"
+    echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
+    echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
     echo "updated_at=$(date -u +%FT%TZ)"
   } > "$tmp" || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$MANIFEST" || { rm -f "$tmp"; return 1; }
@@ -269,6 +273,11 @@ terminate_run_group() {
     return 1
   fi
   RUN_GROUP_TERMINATED=1
+}
+
+role_remote_head() {
+  git -C "$WORKDIR" ls-remote --heads origin \
+    "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}'
 }
 
 cleanup() {
@@ -503,6 +512,13 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 && "$TICKET_AFFINITY_WAS_MISSING" -eq 1 ]]; th
     exit 11
   }
 fi
+if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+  ROLE_REMOTE_BEFORE="$(role_remote_head || true)"
+  [[ "$ROLE_REMOTE_BEFORE" == "$ROLE_HEAD_BEFORE" ]] || {
+    echo "role_exit_remote_mismatch: origin/$ROLE_BRANCH_BEFORE does not match the ticket worktree" >&2
+    exit 11
+  }
+fi
 if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID"; then
   echo "$FACTORY_DISPATCH_LEASE_ERROR after launch lock acquisition; no task was submitted" >&2
   exit 7
@@ -682,6 +698,12 @@ else
       terminate_run_group
       wait "$RUN_PID" 2>/dev/null
       STATUS=10
+    elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 &&
+            "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
+      echo "role_exit_remote_mismatch: ticket branch changed before GO; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=11
     else
       GO_ISSUED=1
       if ! write_manifest "spawned"; then
@@ -733,12 +755,17 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     elif [[ "$ROLE" == "reviewer" &&
             ( -n "$ROLE_DIRTY" || "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ) ]]; then
       ROLE_EXIT_STATUS="reviewer_mutated_worktree"
+    elif [[ "$ROLE" == "reviewer" &&
+            "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
+      ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     elif [[ -n "$ROLE_DIRTY" ]]; then
       ROLE_EXIT_STATUS="role_exit_dirty"
     elif [[ "$ROLE" == "reviewer" ]]; then
       ROLE_EXIT_STATUS="ok"
     elif [[ "$ROLE_HEAD_AFTER" == "$ROLE_HEAD_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_no_commit"
+    elif [[ "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
+      ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     elif ! git -C "$WORKDIR" push --no-force origin \
       "HEAD:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1; then
       ROLE_EXIT_STATUS="role_exit_push_failed"
@@ -757,7 +784,8 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     fi
   else
     ROLE_EXIT_STATUS="provider_failed"
-    if [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" || -n "$ROLE_DIRTY" ]]; then
+    if [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" || -n "$ROLE_DIRTY" ||
+          "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
       echo "WARNING: provider failed and left ticket worktree changes; preserving them for diagnosis" >&2
     fi
   fi
