@@ -322,6 +322,8 @@ exit 0
 EOF
 chmod +x "$KIT_REPO/ci/test-all.sh" "$KIT_REPO/scripts/repo-check" \
   "$KIT_REPO/scripts/secret-scan"
+printf '*.out export-ignore\n' > "$KIT_REPO/.gitattributes"
+printf 'tracked release evidence\n' > "$KIT_REPO/tracked.out"
 printf 'release-a\n' > "$KIT_REPO/payload.txt"
 commit_all "$KIT_REPO" "release a"
 SHA_A="$(git -C "$KIT_REPO" rev-parse HEAD)"
@@ -507,6 +509,11 @@ unset FACTORY_KIT_SANDBOX_EXEC
 
 expect_success "exact ancestor installs with policy discovery" \
   install --repo "$KIT_REPO" --sha "$SHA_A"
+if [[ "$(<"$STATE/releases/$SHA_A/tracked.out")" == "tracked release evidence" ]]; then
+  pass "tracked export-ignored files remain in exact release tree"
+else
+  fail "tracked export-ignored files remain in exact release tree"
+fi
 if grep -q -- '--paginate --slurp repos/nysa-company/software-factory/rulesets' "$GH_TRACE" &&
    grep -q 'branches/main/protection/required_status_checks' "$GH_TRACE" &&
    grep -q 'rulesets/101' "$GH_TRACE" &&
