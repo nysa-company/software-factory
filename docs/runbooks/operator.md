@@ -174,19 +174,24 @@ interval alone was 5m50s and its full maintenance interval was longer.
 - Notice: doctor returns an error, the factory profile does not stay healthy,
   Linear freshness fails to recover, or the sandbox smoke does not execute
   through the expected release.
-- Do: leave `MAINTENANCE` present and run `factory-kit.sh rollback` for the
-  project. This restores the previous `active.json` and sealed bits. Restart
-  the factory-only profile, but do not resume execution yet.
-- Do: revert the product `KIT_PIN` through its normal protected PR workflow,
-  revalidate the resulting product tree and previous release, prove the
-  previous release can read candidate-written state, rerun doctor and sandbox
-  smoke, then remove maintenance.
+- Do: leave `MAINTENANCE` present and stop only the product's factory profile
+  and reconciler. If the activation transaction is interrupted, run
+  `factory-kit.sh reconcile` first and follow its terminal result.
+- Do: merge the normal protected revert that restores both the previous full
+  `KIT_PIN` and product tree, then update and verify the clean product checkout.
+  If the candidate generation is committed and still active, run
+  `factory-kit.sh rollback`; if reconcile restored the previous generation or
+  the candidate never committed, do not call rollback.
+- Do: prove the previous release can read candidate-written state, restart the
+  factory-only services, rerun doctor and sandbox smoke, then remove
+  maintenance.
 - Target: restore known bits within 5 minutes and complete the full rollback
   within 30 minutes of the failed-health decision. Full rollback ends only
   after the pin revert is merged, previous tuple and state compatibility are
   verified, health passes, and maintenance is cleared.
-- Don't: edit the pin locally, add a bypass, clear maintenance after pointer
-  rollback alone, or claim the drill passed without timestamps and evidence.
+- Don't: run rollback before the protected pin/tree revert, edit the pin
+  locally, add a bypass, clear maintenance after pointer rollback alone, or
+  claim the drill passed without timestamps and evidence.
 
 ### Relay generation-1 exception
 
@@ -198,8 +203,9 @@ removed the legacy kill barrier, and proved the preserved Blocked-Escalated
 T-106 state and Linear map were readable. The legacy proof was recorded at
 `05:45:22Z`; candidate recutover doctor passed at `05:45:58Z`.
 
-This exception is exhausted. For generation 2 onward, use the normal rollback
-command, protected `KIT_PIN` revert, recertification, and health sequence above.
+This exception is exhausted. For generation 2 onward, use the protected
+pin/tree revert before the normal rollback command, recertification, and health
+sequence above.
 The first cutover's activation-to-clear interval was 5m50s, so the five-minute
 outage target was missed and must not be reported as accepted.
 
