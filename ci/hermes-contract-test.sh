@@ -27,6 +27,19 @@ fail() {
   exit 1
 }
 
+if [[ "${FACTORY_KIT_OUTER_SANDBOX:-0}" == "1" ]]; then
+  # The launcher deliberately replaces PATH with its fixed production value.
+  # Preserve only the tools selected by the enclosing release sandbox so
+  # contract tests do not fall back to macOS xcrun shims or system ps.
+  mkdir -p "$TEST_HOME/.factory/bin"
+  for tool in git python3 ps; do
+    tool_path="$(command -v "$tool")"
+    [[ "$tool_path" == /* && -x "$tool_path" ]] ||
+      fail "outer sandbox did not provide $tool"
+    ln -s "$tool_path" "$TEST_HOME/.factory/bin/$tool"
+  done
+fi
+
 assert_release_metadata() {
   local file="$1" sha="$2" tree="$3" release="$4" physical
   physical="$(cd "$release" && pwd -P)"

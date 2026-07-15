@@ -380,7 +380,9 @@ git -C "$OTHER_REPO" push -qu origin main
 expect_failure "wrong canonical origin is rejected" \
   install --repo "$OTHER_REPO" --sha "$OTHER_SHA"
 
-if [[ "$(uname -s)" == "Darwin" && -x /usr/bin/sandbox-exec ]]; then
+if [[ "${FACTORY_KIT_OUTER_SANDBOX:-0}" == "1" ]]; then
+  pass "real Seatbelt denial probe is covered by the enclosing release sandbox"
+elif [[ "$(uname -s)" == "Darwin" && -x /usr/bin/sandbox-exec ]]; then
   SIBLING_SANDBOX_SECRET="$TMP/sibling-sandbox-secret"
   REAL_HOME_SANDBOX_SECRET="$HOME/.factory-kit-sandbox-secret.$$"
   printf 'sibling-secret-must-not-be-readable\n' > "$SIBLING_SANDBOX_SECRET"
