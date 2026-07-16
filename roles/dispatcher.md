@@ -49,7 +49,7 @@ This is not a contract violation — it is how factory bookkeeping lands in the 
 
 When the launcher returns `AWAIT-OPERATOR`, the operator approval is next — but first, on the ticket branch, run `~/.factory/bin/factory-launch <project> reorder-test-fixes --ticket <T-NNN> --workdir <ticket-worktree> -- --base origin/main`. The selected release's helper reorders test commits before implementation commits so the test-immutability gate passes. If the command refuses, escalate — do not hand-rebase. Then open the PR if it is not already open and stop. Contract 1.2 does not yet expose the dedicated bundle-attestation command needed to move to Awaiting Approval; report that boundary instead of using the generic transition.
 
-When a future evidence gate allows the operator to move the Linear issue to Approved, the reconciler adds `Operator-Approval: Linear` and the launcher returns `AWAIT-MERGE`. The dispatcher still never merges. Contract 1.2 also withholds Done until a dedicated merge-and-staging attestation command exists.
+When a future evidence gate allows the operator to move the Linear issue to Approved, the reconciler records the ignored overlay, but `AWAIT-MERGE` remains blocked until the trusted `ticket-state materialize` route commits both `State: Approved` and `Operator-Approval: Linear` to the exact ticket branch. The dispatcher still never merges. Contract 1.2 also withholds Done until a dedicated merge-and-staging attestation command exists.
 
 ## Worked example (regression check)
 

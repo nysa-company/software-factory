@@ -106,9 +106,12 @@ the installed job is a reconciler, not an autonomous dispatcher.
 
 After the Ready transition is visible locally, a dispatcher session must:
 
-1. run `scripts/preflight.sh --ticket T-NNN`;
-2. follow `scripts/next-stage.sh --ticket T-NNN`;
-3. launch each role through `scripts/run-agent.sh`.
+1. resolve the active contract with
+   `~/.factory/bin/factory-launch <project> contract --json`;
+2. run the launcher's `preflight` and `next-stage` routes with the exact ticket
+   worktree required by that contract;
+3. launch each role only through
+   `~/.factory/bin/factory-launch <project> run`.
 
 If a standing dispatcher is added later, Ready can become its kickoff signal.
 Until then, Ready means **authorized and eligible to start**, not **already

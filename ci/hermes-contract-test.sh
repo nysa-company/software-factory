@@ -1752,6 +1752,16 @@ for relative in [
     assert " contract --json" in text
     assert " doctor --json" in text
     assert not re.search(r"(?:^|\s)(?:~/[^ ]*/)?scripts/(?:run-agent|preflight|next-stage)\.sh", text)
+for relative in (
+    "README.md",
+    "docs/runbooks/operator.md",
+    "conformance/SHAKEDOWN-REPORT.md",
+):
+    text = open(os.path.join(root, relative), encoding="utf-8").read()
+    assert "~/.factory/bin/factory-launch" in text
+    assert not re.search(
+        r"`(?:scripts/)?(?:run-agent|preflight|next-stage)\.sh(?:`|\s)", text,
+    )
 skill = open(
     os.path.join(integration, "templates/profile/skills/factory-dispatch/SKILL.md"),
     encoding="utf-8",

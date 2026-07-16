@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # preflight.sh — kickoff checks before a ticket's first launch.
-# The dispatcher runs this once per ticket before the first run-agent.sh call.
+# The factory-launch preflight route runs this once per ticket before launch.
 # Usage: preflight.sh --ticket T-NNN
 # FACTORY_ROOT semantics match run-agent.sh (anchors factory/ under the repo root).
 set -euo pipefail

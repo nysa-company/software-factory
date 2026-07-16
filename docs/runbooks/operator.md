@@ -5,7 +5,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Stuck ticket (no movement for hours)
 
 - Notice: ticket sits in an active role column with no new commits or comments.
-- Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role via `run-agent.sh`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
+- Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role through `~/.factory/bin/factory-launch <project> run`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
 - Don't: let a stuck run keep burning budget while you wait.
 
 ## Runaway spend
@@ -34,8 +34,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Duplicate reviewer row
 
-- Notice: `next-stage.sh` refuses because successful reviewer runs outnumber verdicts, and the extra row came from an overlapping duplicate rather than a real review round.
-- Do: count successful reviewer rows for that ticket from oldest to newest. Add `OPERATOR NOTE: reviewer run <N> void — duplicate` to the ticket, using the duplicate row's one-based number. Run `next-stage.sh` again. The next reviewer round number comes from recorded verdicts, so the void row does not renumber it.
+- Notice: the launcher's `next-stage` route refuses because successful reviewer runs outnumber verdicts, and the extra row came from an overlapping duplicate rather than a real review round.
+- Do: count successful reviewer rows for that ticket from oldest to newest. Add `OPERATOR NOTE: reviewer run <N> void — duplicate` to the ticket, using the duplicate row's one-based number. Re-run the launcher's `next-stage` route with the active contract's argument grammar. The next reviewer round number comes from recorded verdicts, so the void row does not renumber it.
 - Don't: invent a verdict for the duplicate row or delete ledger history.
 
 ## Live or unreconciled run claim
@@ -53,7 +53,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Spec-linter or reviewer reached the two-round limit
 
-- Notice: `next-stage.sh` returns `ESCALATE` and names the next semantic round.
+- Notice: the launcher's `next-stage` route returns `ESCALATE` and names the next semantic round.
 - Do: if one more cycle is warranted, append exactly `OPERATOR AUTHORIZATION: spec-linter round <N>` or `OPERATOR AUTHORIZATION: reviewer round <N>` using the round named by the sequencer, then run it again.
 - Don't: add commentary to the authorization line, authorize a future round, or let the dispatcher infer authorization. A stale or inexact line grants nothing.
 
@@ -74,8 +74,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Preflight failed before launch
 
-- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from `scripts/preflight.sh` — no safe backend route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
-- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh --routes`; reconcile `CLAUDE_CODE_PINNED`, `CODEX_PINNED`, or `CURSOR_AGENT_VERSION` in `~/.factory/global.env`; run `agent login` and verify the exact configured Cursor models when fallback is enabled; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight yourself before resuming.
+- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from the launcher's `preflight` route — no safe backend route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
+- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh --routes`; reconcile `CLAUDE_CODE_PINNED`, `CODEX_PINNED`, or `CURSOR_AGENT_VERSION` in `~/.factory/global.env`; run `agent login` and verify the exact configured Cursor models when fallback is enabled; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight through `~/.factory/bin/factory-launch <project> preflight` before resuming.
 - Don't: tell the dispatcher to launch anyway — every FAIL is predictable at kickoff and will block mid-pipeline.
 
 ## Close-out ledger PR

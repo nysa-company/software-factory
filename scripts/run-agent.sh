@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# run-agent.sh — the only sanctioned way to start a factory agent run.
+# run-agent.sh — internal sealed-release role runner. Live dispatch enters it
+# only through ~/.factory/bin/factory-launch <project> run.
 # Enforces per-run, per-ticket, and daily budgets; serializes cap checks with a
 # lock; anchors run artifacts to the caller's product root; records each run
 # atomically and materializes an ignored runtime ledger; enforces

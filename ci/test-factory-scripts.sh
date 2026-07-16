@@ -1685,6 +1685,12 @@ printf 'reviewer round 1: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 narrator >> "$WALK/factory/ledger.csv"
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
+printf '%s\n' \
+  '{"tickets":{"T-500":{"operator":{"state":"Approved","approval":"Linear","state_base":"awaiting approval"}}}}' \
+  > "$WALK/factory/linear-map.json"
+expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+  "$WALK" T-500 || WALK_OK=0
+rm "$WALK/factory/linear-map.json"
 printf 'Operator-Approval: Linear because the operator said so\n' >> \
   "$WALK/factory/tickets/T-500.md"
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
@@ -1692,8 +1698,56 @@ grep -v '^Operator-Approval:' "$WALK/factory/tickets/T-500.md" > \
   "$WALK/factory/tickets/T-500.tmp"
 mv "$WALK/factory/tickets/T-500.tmp" "$WALK/factory/tickets/T-500.md"
 printf 'Operator-Approval: Linear\n' >> "$WALK/factory/tickets/T-500.md"
-expect_stage "AWAIT-MERGE" "$WALK" T-500 || WALK_OK=0
+expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+  "$WALK" T-500 || WALK_OK=0
+printf 'State: Approved\n' >> "$WALK/factory/tickets/T-500.md"
+expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+  "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
+
+COMMITTED_APPROVAL_ROOT="$TMP/committed-approval"
+write_envelope "$COMMITTED_APPROVAL_ROOT"
+git -C "$COMMITTED_APPROVAL_ROOT" branch -M ticket/T-242
+cat > "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md" <<'TICKET'
+# T-242
+State: Awaiting Approval
+SPEC-LINT: PASS
+reviewer round 1: APPROVE
+TICKET
+git -C "$COMMITTED_APPROVAL_ROOT" add factory/tickets/T-242.md
+git -C "$COMMITTED_APPROVAL_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "approval fixture"
+{
+  ledger_header
+  ledger_row T-242 planner
+  ledger_row T-242 spec-linter
+  ledger_row T-242 test-author
+  ledger_row T-242 builder
+  ledger_row T-242 reviewer
+  ledger_row T-242 narrator
+} > "$COMMITTED_APPROVAL_ROOT/factory/ledger.csv"
+printf '%s\n' \
+  '{"tickets":{"T-242":{"operator":{"state":"Approved","approval":"Linear","state_base":"awaiting approval"}}}}' \
+  > "$COMMITTED_APPROVAL_ROOT/factory/linear-map.json"
+COMMITTED_APPROVAL_OK=1
+expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+  "$COMMITTED_APPROVAL_ROOT" T-242 || COMMITTED_APPROVAL_OK=0
+sed 's/^State: Awaiting Approval$/State: Approved/' \
+  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md" > \
+  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.tmp"
+mv "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.tmp" \
+  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md"
+printf 'Operator-Approval: Linear\n' >> \
+  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md"
+expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+  "$COMMITTED_APPROVAL_ROOT" T-242 || COMMITTED_APPROVAL_OK=0
+git -C "$COMMITTED_APPROVAL_ROOT" add factory/tickets/T-242.md
+git -C "$COMMITTED_APPROVAL_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "materialize approval"
+expect_stage "AWAIT-MERGE" "$COMMITTED_APPROVAL_ROOT" T-242 || \
+  COMMITTED_APPROVAL_OK=0
+[[ "$COMMITTED_APPROVAL_OK" -eq 1 ]] && \
+  pass "sequencer trusts only committed approval evidence"
 
 # One rejection, a fix, and a successful second review.
 printf '# T-501\n' > "$WALK/factory/tickets/T-501.md"

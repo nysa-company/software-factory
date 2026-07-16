@@ -7,7 +7,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 ```bash
 ~/.factory/bin/factory-launch <project> run \
   --role <role> --ticket <T-NNN> \
-  --prompt-file <release-role-path> [--workdir <worktree>] -- "task text"
+  --prompt-file <release-role-path> --workdir <ticket-worktree> -- "task text"
 ```
 
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.

@@ -4,11 +4,11 @@
 # ticket file (recorded reviewer verdicts). The dispatcher calls this instead
 # of reasoning about pipeline order: transition legality is mechanism, not
 # prompt. Prints one of:
-#   RUN <role>            — launch this role via run-agent.sh
+#   RUN <role>            — launch this role via the factory-launch run route
 #   FIX <builder|test-author> — reviewer requested changes; dispatcher picks
 #                           which role per the feedback, then reviewer rerun
 #   AWAIT-OPERATOR        — bundle posted; operator approval/merge is next
-#   AWAIT-MERGE           — Linear approval ingested; merge/deploy is next
+#   AWAIT-MERGE           — Linear approval materialized; merge/deploy is next
 #   ESCALATE <reason>     — stop; a human decision is required
 #   REFUSE <reason>       — bookkeeping incomplete; fix the record first
 #
@@ -87,10 +87,28 @@ TICKETS_DIR="$CONTENT_ROOT/factory/tickets"
 
 TICKET_FILE="$TICKETS_DIR/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "REFUSE no ticket file at $TICKET_FILE"; exit 1; }
+SOURCE_TICKET_FILE="$(cd "$(dirname "$TICKET_FILE")" && pwd -P)/$(basename "$TICKET_FILE")"
+COMMITTED_TICKET_FILE="$(mktemp "${TMPDIR:-/tmp}/committed-ticket.XXXXXX")"
 EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
-trap 'rm -f "$EFFECTIVE_TICKET"' EXIT
+trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET"' EXIT
+if WORKTREE_ROOT="$(git -C "$CONTENT_ROOT" rev-parse --show-toplevel 2>/dev/null)"; then
+  WORKTREE_ROOT="$(cd "$WORKTREE_ROOT" && pwd -P)"
+  case "$SOURCE_TICKET_FILE" in
+    "$WORKTREE_ROOT"/*) TICKET_RELATIVE="${SOURCE_TICKET_FILE#"$WORKTREE_ROOT/"}" ;;
+    *) TICKET_RELATIVE="" ;;
+  esac
+  if [[ -z "$TICKET_RELATIVE" ]] ||
+     ! git -C "$WORKTREE_ROOT" show "HEAD:$TICKET_RELATIVE" \
+       > "$COMMITTED_TICKET_FILE" 2>/dev/null; then
+    : > "$COMMITTED_TICKET_FILE"
+  fi
+else
+  # Non-Git roots are retained for sealed conformance fixtures only; they have
+  # no durable branch evidence and therefore can never authorize AWAIT-MERGE.
+  : > "$COMMITTED_TICKET_FILE"
+fi
 python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
-  --ticket-file "$TICKET_FILE" --operator-map "$FACTORY_DIR/linear-map.json" \
+  --ticket-file "$SOURCE_TICKET_FILE" --operator-map "$FACTORY_DIR/linear-map.json" \
   --ticket "$TICKET" > "$EFFECTIVE_TICKET" || {
     echo "REFUSE effective ticket state could not be resolved"
     exit 1
@@ -207,9 +225,18 @@ fi
 
 if [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
+  # Approval is evidence-sensitive: an ignored Linear overlay may inform the
+  # materializer, but sequencing advances only after the trusted command has
+  # committed the marker to the exact ticket branch.
   if grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
-    echo "AWAIT-MERGE operator approval ingested from Linear; merge and staging confirmation are next"
-    exit 0
+    if grep -qiE '^State:[[:space:]]*Approved[[:space:]]*$' "$COMMITTED_TICKET_FILE" &&
+       grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' \
+         "$COMMITTED_TICKET_FILE"; then
+      echo "AWAIT-MERGE operator approval materialized on the ticket branch; merge and staging confirmation are next"
+      exit 0
+    fi
+    echo "REFUSE operator approval exists only outside the committed Approved ticket; run the dedicated attestation and trusted ticket-state materialization path"
+    exit 1
   fi
   echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
   exit 0
