@@ -20,14 +20,27 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 stops in Review: transition and materialization refuse Awaiting Approval, Approved, and Done until dedicated trusted bundle and merge/deploy attestation paths exist, and sequencing does not authorize `AWAIT-MERGE`.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection, which refuses every active or ambiguous claim and `factory/runs/*.pid` record.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
-- Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and manifests are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. Persistent claim, manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
+- Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and records are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. A product-level control lock serializes provider intervals; any new or changed sibling manifest, persistent claim, owned manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
 - Hermes contract 1.2 requires exact ticket worktrees for preflight and sequencing, exposes trusted ticket-state and ledger projection, and keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 - Fresh ticket worktrees are created from protected main and pass through trusted materialization before preflight so their exact remote branch exists. Linear Project removal is represented explicitly in the ignored overlay and clears the effective initiative until reassignment.
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
 - Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require supported pending operator fields to materialize first; approval overlays are unsupported stop conditions until a trusted bundle-attestation path exists.
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
+- Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch never reclaims stale or unsafe ownership; only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 
 ## Log
+
+## 2026-07-16 — Decision 30: Provider-lock recovery is explicit and evidence preserving
+
+Category: Decision
+
+Ordinary launch never reclaims a stale, malformed, or ambiguous product-level provider lock. After publishing KILL and draining recorded processes while holding the launch lock, the kill switch may atomically quarantine only an unchanged, structurally safe lock whose PID/start identity proves stale; every unsafe case remains for operator reconciliation.
+
+## 2026-07-16 — Decision 29: Provider intervals serialize until OS isolation
+
+Category: Decision
+
+Contract 1.2 may retain two independent ticket leases, but a product-level control lock serializes provider intervals from before manifest creation through provider exit and integrity verification. During that interval every new or changed sibling manifest fails closed; parallel provider execution remains deferred until a separate UID or enforced sandbox prevents providers from authoring launcher control state.
 
 ## 2026-07-16 — Decision 28: Contract 1.2 stops at Review (supersedes Decision 23 and the approval portion of Decision 26)
 

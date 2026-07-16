@@ -207,6 +207,31 @@ class LinearSyncTest(unittest.TestCase):
         self.assertTrue(self.mapping["tickets"]["T-001"]["identifier"].startswith("SF-"))
         self.assertIsNone(self.mapping["_sync"]["last_error"])
 
+    def test_first_reconciliation_initializes_missing_runs_root(self):
+        (self.factory / "runs").rmdir()
+        self.reconcile()
+        self.assertTrue((self.factory / "runs").is_dir())
+        self.assertFalse((self.factory / "runs").is_symlink())
+
+    def test_first_reconciliation_rejects_non_directory_runs_root(self):
+        (self.factory / "runs").rmdir()
+        (self.factory / "runs").write_text("not a directory\n")
+        with self.assertRaisesRegex(RuntimeError, "must be a real directory"):
+            self.reconcile()
+
+    def test_first_reconciliation_rejects_symlinked_runs_root(self):
+        (self.factory / "runs").rmdir()
+        target = self.root / "outside-runs"
+        target.mkdir()
+        (self.factory / "runs").symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, "must be a real directory"):
+            self.reconcile()
+
+    def test_dry_reconciliation_does_not_initialize_missing_runs_root(self):
+        (self.factory / "runs").rmdir()
+        self.reconcile(dry=True)
+        self.assertFalse((self.factory / "runs").exists())
+
     def test_allowed_operator_fields_are_ingested_before_push(self):
         self.reconcile()
         before = (self.factory / "tickets" / "T-001.md").read_text()

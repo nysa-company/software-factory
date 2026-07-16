@@ -42,11 +42,15 @@ write_envelope() {
     'factory/runs/' \
     'factory/.active-runs/' \
     'factory/.launch.lock/' \
+    'factory/.provider.lock/' \
     'factory/.ledger.lock/' > "$1/.gitignore"
   printf '%s\n' "$KIT_SHA" > "$1/factory/KIT_PIN"
   printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' \
     > "$1/factory/ledger.csv"
   [[ "$git_mode" == "no-git" ]] || init_product_git "$1"
+  [[ "$git_mode" == "no-git" ]] ||
+    git -C "$1" check-ignore -q factory/.provider.lock/owner ||
+    fail "product fixture ignores provider lock"
 }
 
 write_ticket() {
@@ -1384,6 +1388,27 @@ else
     "status=$STALE_CLAIM_STATUS"
 fi
 
+STALE_PROVIDER_ROOT="$TMP/stale-provider-lock"
+write_envelope "$STALE_PROVIDER_ROOT"
+write_ticket "$STALE_PROVIDER_ROOT" T-242
+mkdir "$STALE_PROVIDER_ROOT/factory/.provider.lock"
+printf 'pid=99999999\nprocess_start=stale\ntoken=00000000000000000000000000000000\n' > \
+  "$STALE_PROVIDER_ROOT/factory/.provider.lock/owner"
+STALE_PROVIDER_STATUS=0
+FACTORY_ROOT="$STALE_PROVIDER_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-242 -- "stale provider lock" \
+  > "$TMP/stale-provider-lock.out" 2>&1 || STALE_PROVIDER_STATUS=$?
+if [[ "$STALE_PROVIDER_STATUS" -eq 8 &&
+      -f "$STALE_PROVIDER_ROOT/factory/.provider.lock/owner" &&
+      -z "$(find "$STALE_PROVIDER_ROOT/factory/runs" -name '*.meta' -print -quit)" &&
+      "$(cat "$TMP/stale-provider-lock.out")" == *"stale provider lock requires operator reconciliation"* ]]; then
+  pass "ordinary launch refuses stale provider lock before manifest creation"
+else
+  fail "ordinary launch refuses stale provider lock before manifest creation" \
+    "status=$STALE_PROVIDER_STATUS"
+fi
+
 GLOBAL_MUTATION_ROOT="$TMP/global-ledger-mutation"
 write_envelope "$GLOBAL_MUTATION_ROOT"
 write_ticket "$GLOBAL_MUTATION_ROOT" T-235
@@ -1563,6 +1588,18 @@ for _i in $(seq 1 50); do
   [[ -n "$(ls "$GUARD/factory/.active-runs/"*.lock/owner 2>/dev/null || true)" ]] && break
   sleep 0.05
 done
+GUARD_CLAIM_OWNER="$(find "$GUARD/factory/.active-runs" -name owner -print -quit)"
+for _i in $(seq 1 50); do
+  [[ -f "$GUARD/factory/.provider.lock/owner" ]] && break
+  sleep 0.05
+done
+if [[ -f "$GUARD_CLAIM_OWNER" &&
+      "$(cat "$GUARD_CLAIM_OWNER")" == "$(cat "$GUARD/factory/.provider.lock/owner" 2>/dev/null)" &&
+      "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$GUARD/factory/.provider.lock/owner")" == "600" ]]; then
+  pass "provider lock binds to the live wrapper identity"
+else
+  fail "provider lock binds to the live wrapper identity"
+fi
 SECOND_OUTPUT="$(FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
@@ -1691,6 +1728,23 @@ else
 fi
 kill -TERM -- "-$STALE_PROC_PID" 2>/dev/null || true
 wait "$STALE_PROC_PID" 2>/dev/null || true
+
+STALE_PROVIDER_KILL_ROOT="$TMP/stale-provider-kill"
+mkdir -p "$STALE_PROVIDER_KILL_ROOT/factory/runs" \
+  "$STALE_PROVIDER_KILL_ROOT/factory/.provider.lock"
+printf 'pid=99999999\nprocess_start=stale\ntoken=00000000000000000000000000000000\n' > \
+  "$STALE_PROVIDER_KILL_ROOT/factory/.provider.lock/owner"
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL_SWITCH" "$STALE_PROVIDER_KILL_ROOT" \
+  > "$TMP/stale-provider-kill.out" 2>&1
+STALE_PROVIDER_QUARANTINE="$(find "$STALE_PROVIDER_KILL_ROOT/factory/runs" -maxdepth 1 \
+  -type d -name '.provider-lock-stale-*' -print -quit)"
+if [[ ! -e "$STALE_PROVIDER_KILL_ROOT/factory/.provider.lock" &&
+      -f "$STALE_PROVIDER_QUARANTINE/owner" &&
+      "$(cat "$TMP/stale-provider-kill.out")" == *"quarantined stale provider lock"* ]]; then
+  pass "kill switch quarantines a proven stale provider lock"
+else
+  fail "kill switch quarantines a proven stale provider lock"
+fi
 
 # Full sequencer walkthrough: happy path.
 WALK="$TMP/walk"

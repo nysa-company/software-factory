@@ -33,6 +33,7 @@ printf '%s\n' \
   'factory/runs/' \
   'factory/.active-runs/' \
   'factory/.launch.lock/' \
+  'factory/.provider.lock/' \
   'factory/.ledger.lock/' \
   'factory/.dispatch-leases/' \
   'factory/.dispatch-leases.lock/' > "$PRODUCT/.gitignore"

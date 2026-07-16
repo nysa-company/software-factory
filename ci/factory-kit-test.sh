@@ -216,6 +216,7 @@ EOF
   cat > "$path/.gitignore" <<'EOF'
 factory/MAINTENANCE
 factory/.launch.lock/
+factory/.provider.lock/
 factory/.active-runs/
 factory/runs/
 EOF

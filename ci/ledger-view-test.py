@@ -79,10 +79,8 @@ class LedgerViewTest(unittest.TestCase):
         with (self.root / "factory" / "runtime-ledger.csv").open() as handle:
             return list(csv.DictReader(handle))
 
-    def integrity_snapshot(self, check=True, owned=None):
+    def integrity_snapshot(self, check=True):
         command = [str(INTEGRITY_HELPER), "snapshot", str(self.root / "factory" / "runs")]
-        if owned:
-            command.append(owned)
         return subprocess.run(
             command,
             check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -291,13 +289,13 @@ class LedgerViewTest(unittest.TestCase):
         self.assertEqual(len(quarantined), 1)
         self.assertEqual((quarantined[0] / "forged.meta").read_bytes(), b"forged\n")
 
-    def test_integrity_allows_valid_new_terminal_sibling(self):
+    def test_integrity_rejects_valid_new_terminal_sibling(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         sibling = runs / "sibling.meta"
         manifest(owned)
         owned.write_text(owned.read_text().replace("phase=reserved", "phase=spawned").replace("go_issued=0", "go_issued=1"))
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        snapshot = self.integrity_snapshot().stdout
 
         manifest(
             sibling, state="completed", phase="completed", go="1", cost="0.40",
@@ -305,14 +303,15 @@ class LedgerViewTest(unittest.TestCase):
         )
         result = self.integrity_check(snapshot)
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(sibling.exists())
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(sibling.exists())
+        self.assertEqual(len(list(runs.glob("sibling.meta.rejected-role-mutation-*"))), 1)
 
     def test_integrity_quarantines_malformed_new_sibling(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         manifest(owned, phase="spawned", go="1")
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        snapshot = self.integrity_snapshot().stdout
         (runs / "malformed.meta").write_bytes(b"not-a-manifest\n")
 
         result = self.integrity_check(snapshot)
@@ -328,7 +327,7 @@ class LedgerViewTest(unittest.TestCase):
         manifest(owned, phase="spawned", go="1")
         manifest(sibling)
         original = sibling.read_bytes()
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        snapshot = self.integrity_snapshot().stdout
         sibling.write_bytes(b"not-a-manifest\n")
 
         result = self.integrity_check(snapshot)
@@ -339,50 +338,43 @@ class LedgerViewTest(unittest.TestCase):
         self.assertEqual(len(rejected), 1)
         self.assertEqual(rejected[0].read_bytes(), b"not-a-manifest\n")
 
-    def test_integrity_restores_owned_manifest_without_reverting_valid_sibling(self):
+    def test_integrity_restores_every_changed_manifest(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         sibling = runs / "sibling.meta"
         manifest(owned, phase="spawned", go="1")
         owned_original = owned.read_bytes()
         manifest(sibling, phase="spawned", go="1")
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        sibling_original = sibling.read_bytes()
+        snapshot = self.integrity_snapshot().stdout
         owned.write_bytes(b"provider mutation\n")
         manifest(
             sibling, state="completed", phase="completed", go="1", cost="0.40",
             status="0", terminal="2026-07-15T12:01:00Z",
         )
-        sibling_terminal = sibling.read_bytes()
-
         result = self.integrity_check(snapshot)
 
         self.assertEqual(result.returncode, 1)
         self.assertEqual(owned.read_bytes(), owned_original)
-        self.assertEqual(sibling.read_bytes(), sibling_terminal)
+        self.assertEqual(sibling.read_bytes(), sibling_original)
         self.assertEqual(len(list(runs.glob("owned.meta.rejected-role-mutation-*"))), 1)
+        self.assertEqual(len(list(runs.glob("sibling.meta.rejected-role-mutation-*"))), 1)
 
-    def test_integrity_allows_new_inflight_sibling_phases(self):
+    def test_integrity_rejects_valid_new_inflight_sibling(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         manifest(owned, phase="spawned", go="1")
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        snapshot = self.integrity_snapshot().stdout
 
-        resolved = runs / "new-resolved.meta"
-        manifest(resolved)
-        resolved.write_text(
-            resolved.read_text()
-            .replace("phase=reserved", "phase=resolved")
-            .replace("accounting_schema=1", "accounting_schema=")
-            .replace("accounting_state=reserved", "accounting_state=")
-        )
-        manifest(runs / "new-reserved.meta")
-        manifest(runs / "new-prepared.meta", phase="prepared")
-        manifest(runs / "new-spawned.meta", phase="spawned", go="1")
+        sibling = runs / "sibling.meta"
+        manifest(sibling, phase="spawned", go="1")
 
         result = self.integrity_check(snapshot)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(sibling.exists())
+        self.assertEqual(len(list(runs.glob("sibling.meta.rejected-role-mutation-*"))), 1)
 
-    def test_integrity_allows_existing_sibling_lifecycle_progress(self):
+    def test_integrity_rejects_existing_sibling_lifecycle_progress(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         manifest(owned, phase="spawned", go="1")
@@ -397,7 +389,11 @@ class LedgerViewTest(unittest.TestCase):
         manifest(runs / "from-reserved.meta")
         manifest(runs / "from-prepared.meta", phase="prepared")
         manifest(runs / "from-spawned.meta", phase="spawned", go="1")
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        originals = {
+            path.name: path.read_bytes()
+            for path in runs.glob("from-*.meta")
+        }
+        snapshot = self.integrity_snapshot().stdout
 
         manifest(resolved, phase="prepared")
         manifest(runs / "from-reserved.meta", phase="spawned", go="1")
@@ -412,7 +408,12 @@ class LedgerViewTest(unittest.TestCase):
         )
 
         result = self.integrity_check(snapshot)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1)
+        for name, content in originals.items():
+            self.assertEqual((runs / name).read_bytes(), content)
+            self.assertEqual(
+                len(list(runs.glob(f"{name}.rejected-role-mutation-*"))), 1,
+            )
 
     def test_integrity_rejects_regressive_or_identity_changing_siblings(self):
         runs = self.root / "factory" / "runs"
@@ -421,7 +422,7 @@ class LedgerViewTest(unittest.TestCase):
         regressive = runs / "sibling-regressive.meta"
         manifest(regressive, phase="prepared", go="0")
         regressive_original = regressive.read_bytes()
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        snapshot = self.integrity_snapshot().stdout
         regressive.write_text(regressive.read_text().replace("phase=prepared", "phase=reserved"))
         result = self.integrity_check(snapshot)
         self.assertEqual(result.returncode, 1)
@@ -439,7 +440,7 @@ class LedgerViewTest(unittest.TestCase):
                 manifest(sibling, phase="spawned", go="1")
                 sibling.write_text(sibling.read_text() + "pid=100\n")
                 original = sibling.read_bytes()
-                snapshot = self.integrity_snapshot(owned=owned.name).stdout
+                snapshot = self.integrity_snapshot().stdout
                 sibling.write_text(mutate(sibling.read_text()))
 
                 result = self.integrity_check(snapshot)
@@ -450,7 +451,7 @@ class LedgerViewTest(unittest.TestCase):
                     len(list(runs.glob(f"{sibling.name}.rejected-role-mutation-*"))), 1,
                 )
 
-    def test_integrity_allows_sibling_resolved_to_launch_void(self):
+    def test_integrity_rejects_sibling_resolved_to_launch_void(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         sibling = runs / "sibling.meta"
@@ -462,13 +463,16 @@ class LedgerViewTest(unittest.TestCase):
             .replace("accounting_schema=1", "accounting_schema=")
             .replace("accounting_state=reserved", "accounting_state=")
         )
-        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        original = sibling.read_bytes()
+        snapshot = self.integrity_snapshot().stdout
 
         manifest(sibling, state="launch_void", status="5", terminal="2026-07-15T12:01:00Z")
         sibling.write_text(sibling.read_text().replace("phase=launch_void", "phase=abandoned"))
         result = self.integrity_check(snapshot)
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(sibling.read_bytes(), original)
+        self.assertEqual(len(list(runs.glob("sibling.meta.rejected-role-mutation-*"))), 1)
 
     def test_integrity_refuses_replaced_parent_without_writing_through_symlink(self):
         runs = self.root / "factory" / "runs"

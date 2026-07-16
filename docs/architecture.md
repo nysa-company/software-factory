@@ -17,7 +17,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
-Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight durably initializes the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
+Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight and the first normal Linear reconciliation durably initialize the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
 
 Each ticket-and-role run takes an atomic `mkdir` claim under
 `factory/.active-runs/` before it creates a manifest. A conflicting or
@@ -29,13 +29,23 @@ artifact. Missing, malformed, or oversized telemetry cannot reduce spend: a
 post-GO run keeps the full reservation and zero turns when its cost data is not
 usable.
 
-When a machine-wide cap is configured, its global ledger lock covers the full
-provider interval, not just reservation. The wrapper validates the ledger,
+Before creating a manifest, every run acquires a product-level control lock and
+holds it through provider exit and integrity verification. This temporarily
+serializes all provider intervals even when two dispatcher ticket leases are
+active. Any new or changed sibling manifest during that interval fails the role
+and prevents sequencer advancement; only after verification may the wrapper
+terminalize its own manifest. The lock owner records the wrapper PID, process
+start identity, and a private ownership token. Ordinary launch waits only for a
+validated live owner and never reclaims stale or malformed state; the kill
+switch is the sole automated recovery path and quarantines only a provably
+stale, unchanged lock after recorded processes drain.
+
+When a machine-wide cap is configured, its global ledger lock also covers the
+full provider interval, not just reservation. The wrapper validates the ledger,
 persists a reservation, snapshots it, and verifies it before terminalization.
 If the ledger changes while the wrapper still owns the exact lock, the wrapper
-restores the snapshot; any persistent ledger, lock, claim, manifest, or
-registered-checkout mutation fails the role and prevents sequencer advancement.
-This intentionally serializes globally capped provider intervals.
+restores the snapshot; any persistent ledger, lock, claim, owned or sibling
+manifest, or registered-checkout mutation fails the role.
 
 These controls provide portable crash/race handling and detect mutations that
 remain at the post-run check. They are not hostile-process isolation: the
@@ -121,8 +131,9 @@ conflicting nonterminal leases remain required.
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and may
 be set only to `2`. At `2`, every sequencing and role launch requires the
 matching opaque record under `factory/.dispatch-leases/`. Claims are atomic,
-stale records are never reassigned automatically, and the global ledger lock
-serializes complete provider intervals when a machine cap is configured.
+stale records are never reassigned automatically, and the product-level control
+lock serializes complete provider intervals. The global ledger lock remains an
+additional serialization and accounting boundary when a machine cap is configured.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
