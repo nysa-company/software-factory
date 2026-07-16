@@ -41,6 +41,8 @@ source "$KIT_DIR/scripts/lib/kit-pin.sh"
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/product-remote.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/plain-config.sh"
 FACTORY_TRUSTED_GIT_BIN="$(type -P git 2>/dev/null || true)"
 [[ "$FACTORY_TRUSTED_GIT_BIN" == /* && -x "$FACTORY_TRUSTED_GIT_BIN" ]] || {
   echo "trusted Git executable is unavailable" >&2
@@ -120,6 +122,7 @@ ROLE_EXIT_STATUS=""
 ROLE_HEAD_BEFORE=""
 ROLE_BRANCH_BEFORE=""
 ROLE_REMOTE_BEFORE=""
+ROLE_PROTECTED_BEFORE=""
 PRODUCT_REMOTE=""
 ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
@@ -299,62 +302,82 @@ role_remote_head() {
     "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}'
 }
 
-load_plain_config() {
-  local path="$1" kind="$2" raw line key value seen=" "
-  while IFS= read -r raw || [[ -n "$raw" ]]; do
-    [[ "$raw" != *$'\r'* && "$raw" != *$'\n'* && "$raw" != *$'\t'* ]] || {
-      echo "$kind config contains control characters" >&2
-      return 1
-    }
-    line="$raw"
-    [[ -n "$line" && "$line" != \#* ]] || continue
-    case "$line" in export\ *) line="${line#export }" ;; esac
-    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] || {
-      echo "$kind config must contain plain KEY=value lines" >&2
-      return 1
-    }
-    key="${BASH_REMATCH[1]}"
-    value="${BASH_REMATCH[2]}"
-    case "$value" in
-      \"*\") value="${value#\"}"; value="${value%\"}" ;;
-      \'*\') value="${value#\'}"; value="${value%\'}" ;;
-      *\"*|*\'*)
-        echo "$kind config contains malformed quoting" >&2
-        return 1
-        ;;
-    esac
-    [[ "$value" =~ ^[A-Za-z0-9._:/+@%~-]*$ ]] || {
-      echo "$kind config contains an unsafe value" >&2
-      return 1
-    }
-    case "$seen" in *" $key "*) echo "$kind config repeats $key" >&2; return 1 ;; esac
-    seen="$seen$key "
-    if [[ "$kind" == "envelope" ]]; then
-      case "$key" in
-        PER_RUN_BUDGET_USD|PER_TICKET_BUDGET_USD|PER_RUN_MAX_TURNS|PER_RUN_TIMEOUT_MIN|DAILY_CAP_USD)
-          printf -v "$key" '%s' "$value"
-          ;;
-        *) echo "envelope config contains unsupported key $key" >&2; return 1 ;;
-      esac
-    else
-      case "$key" in
-        GLOBAL_DAILY_CAP_USD|GLOBAL_LEDGER|CLAUDE_CODE_PINNED|CODEX_PINNED|CODEX_USD_PER_MTOK_IN|CODEX_USD_PER_MTOK_OUT|FACTORY_CURSOR_FALLBACK_ENABLED|CURSOR_AGENT_BIN|CURSOR_AGENT_VERSION|CURSOR_OPENAI_MODEL|CURSOR_ANTHROPIC_MODEL|CURSOR_PRICING_SNAPSHOT_DATE|CURSOR_OPENAI_USD_PER_MTOK_IN|CURSOR_OPENAI_USD_PER_MTOK_OUT|CURSOR_OPENAI_USD_PER_MTOK_CACHE|CURSOR_ANTHROPIC_USD_PER_MTOK_IN|CURSOR_ANTHROPIC_USD_PER_MTOK_OUT|CURSOR_ANTHROPIC_USD_PER_MTOK_CACHE|FACTORY_PROBE_CODEX|FACTORY_PROBE_CLAUDE_CODE|FACTORY_PROBE_CURSOR_OPENAI|FACTORY_PROBE_CURSOR_ANTHROPIC|FACTORY_PROBE_TIMEOUT_SEC|FACTORY_OVERRIDE_MODEL)
-          export "$key=$value"
-          ;;
-        *) echo "global config contains unsupported key $key" >&2; return 1 ;;
-      esac
-    fi
-  done < "$path"
-  if [[ "$kind" == "envelope" ]]; then
-    local required
-    for required in PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD \
-      PER_RUN_MAX_TURNS PER_RUN_TIMEOUT_MIN DAILY_CAP_USD; do
-      case "$seen" in
-        *" $required "*) ;;
-        *) echo "envelope config is missing $required" >&2; return 1 ;;
-      esac
-    done
-  fi
+ticket_evidence_snapshot() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+names = (
+    "State", "Operator-Approval", "Priority", "Initiative", "Kit-SHA", "Resume-State"
+)
+snapshot = {
+    "fields": {name: [] for name in names},
+    "authorizations": [],
+    "reviewer_verdicts": [],
+    "reviewer_voids": [],
+    "spec_lint": [],
+}
+patterns = {}
+for name in names:
+    prefix = r"\s*" if name == "Kit-SHA" else ""
+    patterns[name] = re.compile(
+        rf"^{prefix}{re.escape(name)}:\s*.*$", re.IGNORECASE
+    )
+authorization = re.compile(
+    r"^\s*OPERATOR AUTHORIZATION:\s*(?:spec-linter|reviewer) round\s*\d+\s*$",
+    re.IGNORECASE,
+)
+reviewer_verdict = re.compile(
+    r"^\s*reviewer round\s+\d+:\s*(?:APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+    re.IGNORECASE,
+)
+reviewer_void = re.compile(
+    r"^\s*OPERATOR NOTE:\s*reviewer run\s+\d+\s+void[^a-z0-9]*duplicate\s*$",
+    re.IGNORECASE,
+)
+spec_lint = re.compile(
+    r"^\s*SPEC-LINT:\s*(?:PASS|FAIL(?:\s+—\s+.*)?)\s*$",
+    re.IGNORECASE,
+)
+for line in path.read_text().splitlines():
+    for name, pattern in patterns.items():
+        if pattern.fullmatch(line):
+            snapshot["fields"][name].append(line)
+            break
+    if authorization.fullmatch(line):
+        snapshot["authorizations"].append(line)
+    if reviewer_verdict.fullmatch(line):
+        snapshot["reviewer_verdicts"].append(line)
+    if reviewer_void.fullmatch(line):
+        snapshot["reviewer_voids"].append(line)
+    if spec_lint.fullmatch(line):
+        snapshot["spec_lint"].append(line)
+print(json.dumps(snapshot, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+ticket_evidence_is_legal() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import json
+import sys
+
+before, after = (json.loads(value) for value in sys.argv[1:3])
+role = sys.argv[3]
+for key in ("fields", "authorizations", "reviewer_verdicts", "reviewer_voids"):
+    if before[key] != after[key]:
+        raise SystemExit(1)
+if role == "spec-linter":
+    if (len(after["spec_lint"]) != len(before["spec_lint"]) + 1 or
+            after["spec_lint"][:-1] != before["spec_lint"]):
+        raise SystemExit(1)
+elif before["spec_lint"] != after["spec_lint"]:
+    raise SystemExit(1)
+PY
 }
 
 cleanup() {
@@ -421,7 +444,8 @@ fi
 [[ -f "$ENV_FILE" ]] || { echo "envelope not found: $ENV_FILE — fill ENVELOPE.md and write ENVELOPE.env first" >&2; exit 3; }
 unset PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS \
   PER_RUN_TIMEOUT_MIN DAILY_CAP_USD
-load_plain_config "$ENV_FILE" envelope || exit 3
+factory_load_plain_config "$ENV_FILE" envelope \
+  "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_CONFIG_KEYS" || exit 3
 PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
 
 # --- optional machine-level cap across all factories on this machine ---
@@ -431,7 +455,8 @@ PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
 GLOBAL_LEDGER="" GLOBAL_LOCK=""
 if [[ -f "$GLOBAL_ENV" ]]; then
-  load_plain_config "$GLOBAL_ENV" global || exit 3
+  factory_load_plain_config "$GLOBAL_ENV" global \
+    "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1 || exit 3
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
   GLOBAL_LOCK="$(dirname "$GLOBAL_ENV")/.ledger.lock"
   [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
@@ -718,6 +743,12 @@ fi
 rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 
 # --- run one task-bearing process in an isolated process group ---
+if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+  ROLE_PROTECTED_BEFORE="$(ticket_evidence_snapshot "$TICKET_FILE")" || {
+    echo "role_exit_protected_ticket_mutation: protected ticket fields could not be captured" >&2
+    exit 11
+  }
+fi
 set +e
 RUN_READY_FILE="$RUNS_DIR/.$RUN_ID.ready"
 RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
@@ -860,12 +891,18 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
   ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain 2>/dev/null || true)"
+  ROLE_PROTECTED_AFTER="$(ticket_evidence_snapshot "$TICKET_FILE" 2>/dev/null)" ||
+    ROLE_PROTECTED_AFTER="__invalid__"
   if [[ "$PROVIDER_STATUS" -eq 0 ]]; then
     if [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_wrong_branch"
     elif [[ "$ROLE" == "reviewer" &&
             ( -n "$ROLE_DIRTY" || "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ) ]]; then
       ROLE_EXIT_STATUS="reviewer_mutated_worktree"
+    elif [[ "$ROLE_PROTECTED_AFTER" == "__invalid__" ]] ||
+         ! ticket_evidence_is_legal "$ROLE_PROTECTED_BEFORE" \
+           "$ROLE_PROTECTED_AFTER" "$ROLE"; then
+      ROLE_EXIT_STATUS="role_exit_protected_ticket_mutation"
     elif ! factory_product_remote_matches "$REPO_ROOT" "$PRODUCT_REMOTE"; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     elif [[ "$ROLE" == "reviewer" &&

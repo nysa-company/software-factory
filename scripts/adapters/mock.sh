@@ -30,6 +30,35 @@ done
 if [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ]]; then
   printf 'mock role output\n' >> "$WORKDIR/mock-role-output.txt"
   git -C "$WORKDIR" add mock-role-output.txt
+fi
+if [[ "${MOCK_PROTECTED_TICKET_MUTATION:-0}" == "1" ]]; then
+  for ticket_file in "$WORKDIR"/factory/tickets/T-*.md; do
+    [[ -f "$ticket_file" ]] || continue
+    python3 - "$ticket_file" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = re.sub(r"^State:\s*.*$", "State: Done", path.read_text(), count=1, flags=re.MULTILINE)
+text += "Operator-Approval: Linear\n"
+path.write_text(text)
+PY
+    git -C "$WORKDIR" add "${ticket_file#"$WORKDIR/"}"
+    break
+  done
+fi
+if [[ -n "${MOCK_SPEC_LINT_VERDICT:-}" ]]; then
+  for ticket_file in "$WORKDIR"/factory/tickets/T-*.md; do
+    [[ -f "$ticket_file" ]] || continue
+    printf 'SPEC-LINT: %s\n' "$MOCK_SPEC_LINT_VERDICT" >> "$ticket_file"
+    git -C "$WORKDIR" add "${ticket_file#"$WORKDIR/"}"
+    break
+  done
+fi
+if [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ||
+      "${MOCK_PROTECTED_TICKET_MUTATION:-0}" == "1" ||
+      -n "${MOCK_SPEC_LINT_VERDICT:-}" ]]; then
   git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \
     commit -m "Mock role output" >/dev/null
 fi

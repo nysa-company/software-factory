@@ -29,6 +29,7 @@ Backend policy is kit-owned and certified by the same `KIT_PIN`. Production role
 ```bash
 # ~/.factory/global.env — no credentials in this file
 export FACTORY_CURSOR_FALLBACK_ENABLED=0
+export AGENT_CLI_CREDENTIAL_STORE="EXACT_STORE_TOKEN"
 export CURSOR_AGENT_VERSION="EXACT_VERSION_TOKEN"
 export CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
 export CURSOR_ANTHROPIC_MODEL=claude-sonnet-5-thinking-high

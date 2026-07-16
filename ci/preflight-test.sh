@@ -243,6 +243,123 @@ assert_preflight "authenticated isolated mock route" 0 \
   "PASS: authenticated isolated mock route contract passed" \
   "$ALLPASS" "T-001" --global-env "$GLOBAL_ENV" --adapter-override mock
 
+# Product configuration is data, even when a launcher credential is present.
+# Reject executable content before it can read the credential or reach a probe.
+PREFLIGHT_CONFIG_MARKER="$TMP/preflight-config-credential"
+PREFLIGHT_CONFIG_TRACE="$TMP/preflight-config-probes"
+cp "$ALLPASS/factory/ENVELOPE.env" "$TMP/allpass-envelope.clean"
+printf 'printf "%%s" "$GH_TOKEN" > %q\n' "$PREFLIGHT_CONFIG_MARKER" >> \
+  "$ALLPASS/factory/ENVELOPE.env"
+: > "$PREFLIGHT_CONFIG_TRACE"
+PREFLIGHT_CONFIG_STATUS=0
+PREFLIGHT_CONFIG_OUT="$(run_preflight "$ALLPASS" T-001 \
+  --global-env "$GLOBAL_ENV" --gh-token adversarial-test-token \
+  --probe-trace "$PREFLIGHT_CONFIG_TRACE")" || PREFLIGHT_CONFIG_STATUS=$?
+if [[ "$PREFLIGHT_CONFIG_STATUS" -eq 1 &&
+      "$PREFLIGHT_CONFIG_OUT" == *"envelope config must contain plain KEY=value lines"* &&
+      ! -e "$PREFLIGHT_CONFIG_MARKER" && ! -s "$PREFLIGHT_CONFIG_TRACE" ]]; then
+  echo "PASS: executable envelope fails before credential or probe use"
+else
+  echo "FAIL: executable envelope fails before credential or probe use"
+  echo "$PREFLIGHT_CONFIG_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/allpass-envelope.clean" "$ALLPASS/factory/ENVELOPE.env"
+
+# Invalid numeric envelopes and relative machine-ledger paths are rejected by
+# the shared parser before preflight reaches a backend probe or creates runs.
+assert_invalid_preflight_envelope() {
+  local name="$1" replacement="$2" expected="$3" out status=0
+  local trace="$TMP/preflight-invalid-$name.trace"
+  sed "$replacement" "$ALLPASS/factory/ENVELOPE.env" > "$TMP/invalid-envelope"
+  mv "$TMP/invalid-envelope" "$ALLPASS/factory/ENVELOPE.env"
+  : > "$trace"
+  out="$(run_preflight "$ALLPASS" T-001 --global-env "$GLOBAL_ENV" \
+    --probe-trace "$trace")" || status=$?
+  if [[ "$status" -eq 1 && "$out" == *"$expected"* && ! -s "$trace" &&
+        ! -d "$ALLPASS/factory/runs" ]]; then
+    echo "PASS: preflight rejects $name config before probes or manifests"
+  else
+    echo "FAIL: preflight rejects $name config before probes or manifests"
+    echo "$out"
+    FAILURES=$((FAILURES + 1))
+  fi
+  cp "$TMP/allpass-envelope.clean" "$ALLPASS/factory/ENVELOPE.env"
+}
+
+assert_invalid_preflight_envelope zero-money \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=0/' \
+  'money values must be positive finite decimals'
+assert_invalid_preflight_envelope zero-turns \
+  's/^PER_RUN_MAX_TURNS=.*/PER_RUN_MAX_TURNS=0/' \
+  'turns and timeout must be positive integers'
+assert_invalid_preflight_envelope empty \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=/' \
+  'money values must be positive finite decimals'
+assert_invalid_preflight_envelope nan \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=NaN/' \
+  'money values must be positive finite decimals'
+assert_invalid_preflight_envelope negative-timeout \
+  's/^PER_RUN_TIMEOUT_MIN=.*/PER_RUN_TIMEOUT_MIN=-1/' \
+  'turns and timeout must be positive integers'
+assert_invalid_preflight_envelope incoherent \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=7.00/' \
+  'per-run budget exceeds a ticket or daily cap'
+
+RELATIVE_LEDGER_ENV="$TMP/relative-ledger-global.env"
+cat > "$RELATIVE_LEDGER_ENV" <<'ENV'
+GLOBAL_DAILY_CAP_USD=50.00
+GLOBAL_LEDGER=relative-ledger.csv
+CLAUDE_CODE_PINNED=2.1.207
+CODEX_PINNED=0.144.1
+FACTORY_CURSOR_FALLBACK_ENABLED=0
+ENV
+RELATIVE_LEDGER_TRACE="$TMP/relative-ledger-probes"
+: > "$RELATIVE_LEDGER_TRACE"
+RELATIVE_LEDGER_STATUS=0
+RELATIVE_LEDGER_OUT="$(run_preflight "$ALLPASS" T-001 \
+  --global-env "$RELATIVE_LEDGER_ENV" --probe-trace "$RELATIVE_LEDGER_TRACE")" ||
+  RELATIVE_LEDGER_STATUS=$?
+if [[ "$RELATIVE_LEDGER_STATUS" -eq 1 &&
+      "$RELATIVE_LEDGER_OUT" == *"global config ledger path must be absolute"* &&
+      ! -s "$RELATIVE_LEDGER_TRACE" && ! -d "$ALLPASS/factory/runs" ]]; then
+  echo "PASS: preflight rejects relative global ledger before probes or manifests"
+else
+  echo "FAIL: preflight rejects relative global ledger before probes or manifests"
+  echo "$RELATIVE_LEDGER_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Adapter contract checks consume the same machine config as data and must not
+# run either embedded shell or a credential-bearing backend probe on failure.
+CONTRACT_CONFIG="$TMP/contract-global.env"
+CONTRACT_CONFIG_MARKER="$TMP/contract-config-credential"
+CONTRACT_CONFIG_TRACE="$TMP/contract-config-probes"
+cat > "$CONTRACT_CONFIG" <<'ENV'
+GLOBAL_DAILY_CAP_USD=50.00
+CLAUDE_CODE_PINNED=2.1.207
+CODEX_PINNED=0.144.1
+FACTORY_CURSOR_FALLBACK_ENABLED=0
+ENV
+printf 'printf "%%s" "$GH_TOKEN" > %q\n' "$CONTRACT_CONFIG_MARKER" >> \
+  "$CONTRACT_CONFIG"
+: > "$CONTRACT_CONFIG_TRACE"
+CONTRACT_CONFIG_STATUS=0
+CONTRACT_CONFIG_OUT="$(env PATH="$STUB_BIN:$PATH" \
+  FACTORY_GLOBAL_ENV="$CONTRACT_CONFIG" GH_TOKEN=adversarial-test-token \
+  FACTORY_TEST_PROBE_TRACE="$CONTRACT_CONFIG_TRACE" \
+  bash "$KIT_DIR/scripts/adapters/contract-test.sh" --routes 2>&1)" ||
+  CONTRACT_CONFIG_STATUS=$?
+if [[ "$CONTRACT_CONFIG_STATUS" -eq 2 &&
+      "$CONTRACT_CONFIG_OUT" == *"global config must contain plain KEY=value lines"* &&
+      ! -e "$CONTRACT_CONFIG_MARKER" && ! -s "$CONTRACT_CONFIG_TRACE" ]]; then
+  echo "PASS: executable contract config fails before credential or probe use"
+else
+  echo "FAIL: executable contract config fails before credential or probe use"
+  echo "$CONTRACT_CONFIG_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+
 UNTRUSTED_TRACE="$TMP/untrusted-probes"
 : > "$UNTRUSTED_TRACE"
 UNTRUSTED_STATUS=0

@@ -389,6 +389,74 @@ else
     "next=$BAD_NEXT_STATUS/$BAD_NEXT run=$BAD_RUN_STATUS/$BAD_RUN"
 fi
 
+# Malformed or incoherent configuration fails before run registration, task
+# submission, or runtime-ledger materialization.
+INVALID_CONFIG_ROOT="$TMP/invalid-config"
+write_envelope "$INVALID_CONFIG_ROOT"
+write_ticket "$INVALID_CONFIG_ROOT" T-191
+cp "$INVALID_CONFIG_ROOT/factory/ENVELOPE.env" "$TMP/invalid-config.clean"
+
+assert_invalid_run_envelope() {
+  local name="$1" replacement="$2" expected="$3" out status=0
+  sed "$replacement" "$TMP/invalid-config.clean" > \
+    "$INVALID_CONFIG_ROOT/factory/ENVELOPE.env"
+  out="$(FACTORY_ROOT="$INVALID_CONFIG_ROOT" \
+    FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role planner --ticket T-191 -- "invalid config" 2>&1)" ||
+    status=$?
+  if [[ "$status" -eq 3 && "$out" == *"$expected"* &&
+        ! -d "$INVALID_CONFIG_ROOT/factory/runs" &&
+        ! -f "$INVALID_CONFIG_ROOT/factory/runtime-ledger.csv" ]]; then
+    pass "run-agent rejects $name config before task or manifest"
+  else
+    fail "run-agent rejects $name config before task or manifest" \
+      "status=$status output=$out"
+  fi
+}
+
+assert_invalid_run_envelope zero-money \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=0/' \
+  'money values must be positive finite decimals'
+assert_invalid_run_envelope zero-turns \
+  's/^PER_RUN_MAX_TURNS=.*/PER_RUN_MAX_TURNS=0/' \
+  'turns and timeout must be positive integers'
+assert_invalid_run_envelope empty \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=/' \
+  'money values must be positive finite decimals'
+assert_invalid_run_envelope nan \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=NaN/' \
+  'money values must be positive finite decimals'
+assert_invalid_run_envelope negative-timeout \
+  's/^PER_RUN_TIMEOUT_MIN=.*/PER_RUN_TIMEOUT_MIN=-1/' \
+  'turns and timeout must be positive integers'
+assert_invalid_run_envelope incoherent \
+  's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=30.00/' \
+  'per-run budget exceeds a ticket or daily cap'
+
+cp "$TMP/invalid-config.clean" "$INVALID_CONFIG_ROOT/factory/ENVELOPE.env"
+INVALID_GLOBAL="$TMP/invalid-global.env"
+cat > "$INVALID_GLOBAL" <<'ENV'
+GLOBAL_DAILY_CAP_USD=50.00
+GLOBAL_LEDGER=relative-ledger.csv
+CLAUDE_CODE_PINNED=2.1.207
+CODEX_PINNED=0.144.1
+FACTORY_CURSOR_FALLBACK_ENABLED=0
+ENV
+INVALID_GLOBAL_STATUS=0
+INVALID_GLOBAL_OUT="$(FACTORY_ROOT="$INVALID_CONFIG_ROOT" \
+  FACTORY_GLOBAL_ENV="$INVALID_GLOBAL" FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-191 -- "invalid global" 2>&1)" ||
+  INVALID_GLOBAL_STATUS=$?
+if [[ "$INVALID_GLOBAL_STATUS" -eq 3 &&
+      "$INVALID_GLOBAL_OUT" == *"global config ledger path must be absolute"* &&
+      ! -d "$INVALID_CONFIG_ROOT/factory/runs" &&
+      ! -f "$INVALID_CONFIG_ROOT/factory/runtime-ledger.csv" ]]; then
+  pass "run-agent rejects relative global ledger before task or manifest"
+else
+  fail "run-agent rejects relative global ledger before task or manifest" \
+    "status=$INVALID_GLOBAL_STATUS output=$INVALID_GLOBAL_OUT"
+fi
+
 # Canonical ledger routing from a linked worktree.
 MAIN="$TMP/main"
 WT="$TMP/worktree"
@@ -1246,6 +1314,11 @@ ledger_row T-500 planner >> "$WALK/factory/ledger.csv"
 expect_stage "RUN spec-linter" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 spec-linter >> "$WALK/factory/ledger.csv"
 expect_stage "REFUSE" "$WALK" T-500 || WALK_OK=0
+printf 'ordinary prose says SPEC-LINT: PASS because it looks good\n' >> \
+  "$WALK/factory/tickets/T-500.md"
+printf 'SPEC-LINT: PASS because it looks good\n' >> \
+  "$WALK/factory/tickets/T-500.md"
+expect_stage "REFUSE" "$WALK" T-500 || WALK_OK=0
 printf 'SPEC-LINT: PASS\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN test-author" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 test-author >> "$WALK/factory/ledger.csv"
@@ -1254,10 +1327,21 @@ ledger_row T-500 builder >> "$WALK/factory/ledger.csv"
 expect_stage "RUN reviewer" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 reviewer >> "$WALK/factory/ledger.csv"
 expect_stage "REFUSE" "$WALK" T-500 || WALK_OK=0
+printf 'ordinary reviewer prose says APPROVE this change\n' >> \
+  "$WALK/factory/tickets/T-500.md"
+printf 'reviewer round 1: APPROVE because it looks good\n' >> \
+  "$WALK/factory/tickets/T-500.md"
+expect_stage "REFUSE" "$WALK" T-500 || WALK_OK=0
 printf 'reviewer round 1: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 narrator >> "$WALK/factory/ledger.csv"
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
+printf 'Operator-Approval: Linear because the operator said so\n' >> \
+  "$WALK/factory/tickets/T-500.md"
+expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
+grep -v '^Operator-Approval:' "$WALK/factory/tickets/T-500.md" > \
+  "$WALK/factory/tickets/T-500.tmp"
+mv "$WALK/factory/tickets/T-500.tmp" "$WALK/factory/tickets/T-500.md"
 printf 'Operator-Approval: Linear\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "AWAIT-MERGE" "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
@@ -1385,6 +1469,83 @@ if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
 else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
+fi
+
+setup_role_exit_fixture T-610
+ROLE_PROTECTED_BEFORE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_PROTECTED_STATUS=0
+MOCK_PROTECTED_TICKET_MUTATION=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role planner --ticket T-610 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "protected mutation" > "$TMP/role-protected.out" 2>&1 ||
+  ROLE_PROTECTED_STATUS=$?
+ROLE_PROTECTED_LOCAL="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_PROTECTED_REMOTE="$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-610)"
+ROLE_PROTECTED_META="$(ls "$ROLE_EXIT_ROOT/factory/runs/"*.meta)"
+ROLE_PROTECTED_STAGE="$(FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  "$NEXT_STAGE" --ticket T-610 --workdir "$ROLE_EXIT_WORKTREE")"
+if [[ "$ROLE_PROTECTED_STATUS" -eq 11 &&
+      "$ROLE_PROTECTED_LOCAL" != "$ROLE_PROTECTED_BEFORE" &&
+      "$ROLE_PROTECTED_REMOTE" == "$ROLE_PROTECTED_BEFORE" &&
+      "$ROLE_PROTECTED_STAGE" == "RUN planner" ]] &&
+   grep -q '^State: Done$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
+   grep -q '^Operator-Approval: Linear$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
+   grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-protected.out" &&
+   grep -q '^role_exit=role_exit_protected_ticket_mutation$' "$ROLE_PROTECTED_META" &&
+   grep -q '^effective_cost=0.42$' "$ROLE_PROTECTED_META" &&
+   grep -q '^exit_status=11$' "$ROLE_PROTECTED_META" &&
+   [[ "$(awk -F, '$3=="T-610" {print $8 ":" $9}' \
+      "$ROLE_EXIT_ROOT/factory/runtime-ledger.csv")" == "0.42:11" ]]; then
+  pass "role exit preserves protected-field mutation without push or advancement"
+else
+  fail "role exit preserves protected-field mutation without push or advancement" \
+    "status=$ROLE_PROTECTED_STATUS stage=$ROLE_PROTECTED_STAGE"
+fi
+
+setup_role_exit_fixture T-611
+ROLE_SPEC_FORGE_BEFORE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_SPEC_FORGE_STATUS=0
+MOCK_SPEC_LINT_VERDICT=PASS FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role planner --ticket T-611 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "forged lint" > "$TMP/role-spec-forge.out" 2>&1 ||
+  ROLE_SPEC_FORGE_STATUS=$?
+if [[ "$ROLE_SPEC_FORGE_STATUS" -eq 11 &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-611)" == \
+        "$ROLE_SPEC_FORGE_BEFORE" ]] &&
+   grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-spec-forge.out"; then
+  pass "non-linter role cannot forge spec-lint history"
+else
+  fail "non-linter role cannot forge spec-lint history" \
+    "status=$ROLE_SPEC_FORGE_STATUS"
+fi
+
+setup_role_exit_fixture T-612
+{
+  ledger_header
+  ledger_row T-612 planner
+} > "$ROLE_EXIT_ROOT/factory/ledger.csv"
+ROLE_SPEC_APPEND_STATUS=0
+MOCK_SPEC_LINT_VERDICT=PASS FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role spec-linter --ticket T-612 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "canonical lint" > "$TMP/role-spec-append.out" 2>&1 ||
+  ROLE_SPEC_APPEND_STATUS=$?
+if [[ "$ROLE_SPEC_APPEND_STATUS" -eq 0 &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-612)" == \
+        "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" &&
+      "$(grep -c '^SPEC-LINT: PASS$' \
+        "$ROLE_EXIT_WORKTREE/factory/tickets/T-612.md")" == "1" ]]; then
+  pass "spec-linter may append exactly one canonical verdict"
+else
+  fail "spec-linter may append exactly one canonical verdict" \
+    "status=$ROLE_SPEC_APPEND_STATUS"
 fi
 
 setup_role_exit_fixture T-609

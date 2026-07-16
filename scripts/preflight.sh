@@ -38,6 +38,8 @@ warn() { echo "WARN: $*"; }
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/plain-config.sh"
 if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   fail "MAINTENANCE file present ($FACTORY_DIR/MAINTENANCE) — factory control plane is paused"
   echo "PREFLIGHT FAIL"
@@ -84,12 +86,32 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 
+# Product and machine configuration are data-only trust boundaries. Validate
+# both before any backend probe can touch a credential-bearing CLI.
+[[ -f "$ENV_FILE" ]] || {
+  fail "envelope not found: $ENV_FILE"
+  echo "PREFLIGHT FAIL"
+  exit 1
+}
+unset PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS \
+  PER_RUN_TIMEOUT_MIN DAILY_CAP_USD
+if ! factory_load_plain_config "$ENV_FILE" envelope \
+  "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_CONFIG_KEYS"; then
+  fail "envelope config is unsafe or malformed"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
+
 # --- optional machine-level cap (same anchor as run-agent.sh) ---
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
 GLOBAL_LEDGER=""
 if [[ -f "$GLOBAL_ENV" ]]; then
-  # shellcheck disable=SC1090
-  source "$GLOBAL_ENV"
+  if ! factory_load_plain_config "$GLOBAL_ENV" global \
+    "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1; then
+    fail "global config is unsafe or malformed"
+    echo "PREFLIGHT FAIL"
+    exit 1
+  fi
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
 fi
 if ! factory_validate_runtime_overrides; then
@@ -156,40 +178,34 @@ else
 fi
 
 # (b) daily budget — same spend computation as run-agent.sh, reserve = PROJECTED_TICKET_USD
-if [[ ! -f "$ENV_FILE" ]]; then
-  fail "envelope not found: $ENV_FILE"
+TODAY="$(date +%F)"
+LEDGER_READY=1
+if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+   ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh --factory-root "$REPO_ROOT" >/dev/null; then
+  fail "effective ledger could not be reduced"
+  LEDGER_READY=0
+fi
+if [[ "$LEDGER_READY" -eq 1 ]]; then
+  SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
 else
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  TODAY="$(date +%F)"
-  LEDGER_READY=1
-  if [[ -z "${FACTORY_LEDGER:-}" ]] &&
-     ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh --factory-root "$REPO_ROOT" >/dev/null; then
-    fail "effective ledger could not be reduced"
-    LEDGER_READY=0
-  fi
-  if [[ "$LEDGER_READY" -eq 1 ]]; then
-    SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
+  SPENT_TODAY="0.0000"
+fi
+if awk -v s="$SPENT_TODAY" -v r="$PROJECTED_TICKET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+  fail "repo daily cap insufficient (spent \$$SPENT_TODAY + reserve \$$PROJECTED_TICKET_USD > \$$DAILY_CAP_USD)"
+else
+  pass "repo daily budget covers projected ticket (\$$SPENT_TODAY spent + \$$PROJECTED_TICKET_USD reserve <= \$$DAILY_CAP_USD)"
+fi
+if [[ -n "$GLOBAL_LEDGER" && -n "${GLOBAL_DAILY_CAP_USD:-}" ]]; then
+  mkdir -p "$(dirname "$GLOBAL_LEDGER")"
+  [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$GLOBAL_LEDGER"
+  SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
+  if awk -v s="$SPENT_GLOBAL" -v r="$PROJECTED_TICKET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+    fail "machine daily cap insufficient (spent \$$SPENT_GLOBAL + reserve \$$PROJECTED_TICKET_USD > \$$GLOBAL_DAILY_CAP_USD)"
   else
-    SPENT_TODAY="0.0000"
+    pass "machine daily budget covers projected ticket (\$$SPENT_GLOBAL spent + \$$PROJECTED_TICKET_USD reserve <= \$$GLOBAL_DAILY_CAP_USD)"
   fi
-  if awk -v s="$SPENT_TODAY" -v r="$PROJECTED_TICKET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-    fail "repo daily cap insufficient (spent \$$SPENT_TODAY + reserve \$$PROJECTED_TICKET_USD > \$$DAILY_CAP_USD)"
-  else
-    pass "repo daily budget covers projected ticket (\$$SPENT_TODAY spent + \$$PROJECTED_TICKET_USD reserve <= \$$DAILY_CAP_USD)"
-  fi
-  if [[ -n "$GLOBAL_LEDGER" && -n "${GLOBAL_DAILY_CAP_USD:-}" ]]; then
-    mkdir -p "$(dirname "$GLOBAL_LEDGER")"
-    [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$GLOBAL_LEDGER"
-    SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
-    if awk -v s="$SPENT_GLOBAL" -v r="$PROJECTED_TICKET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-      fail "machine daily cap insufficient (spent \$$SPENT_GLOBAL + reserve \$$PROJECTED_TICKET_USD > \$$GLOBAL_DAILY_CAP_USD)"
-    else
-      pass "machine daily budget covers projected ticket (\$$SPENT_GLOBAL spent + \$$PROJECTED_TICKET_USD reserve <= \$$GLOBAL_DAILY_CAP_USD)"
-    fi
-  else
-    pass "no machine-level daily cap configured"
-  fi
+else
+  pass "no machine-level daily cap configured"
 fi
 
 # (d) repo clone on main, clean, up to date with origin/main

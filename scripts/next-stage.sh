@@ -132,8 +132,8 @@ B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"
 
 # Reviewer verdicts must be recorded on the ticket file by the dispatcher.
 # Count them; they are the only stage input outside the ledger.
-A="$(grep -ciE 'reviewer.*(: *|verdict *:? *)APPROVE' "$TICKET_FILE" || true)"; A="${A:-0}"
-RC="$(grep -ciE 'reviewer.*REQUEST CHANGES' "$TICKET_FILE" || true)"; RC="${RC:-0}"
+A="$(grep -ciE '^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*APPROVE[[:space:]]*$' "$TICKET_FILE" || true)"; A="${A:-0}"
+RC="$(grep -ciE '^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*REQUEST CHANGES([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; RC="${RC:-0}"
 VERDICTS=$((A + RC))
 
 # A void note names the one-based ordinal among successful reviewer rows.
@@ -169,8 +169,8 @@ if [[ "$P" -eq 0 ]]; then echo "RUN planner"; exit 0; fi
 # replan. The gate applies only before the test-author has run, so tickets
 # already past planning (including all pre-gate tickets) are unaffected.
 if [[ "$TA" -eq 0 ]]; then
-  SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
-  SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
+  SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS[[:space:]]*$' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
+  SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
   if [[ "$SL" -gt $((SLP + SLF)) ]]; then
     echo "REFUSE spec-linter has $SL successful run(s) but only $((SLP + SLF)) SPEC-LINT verdict(s) on $TICKET_FILE — the lint run must end with a 'SPEC-LINT: PASS' or 'SPEC-LINT: FAIL' line"
     exit 1
@@ -207,7 +207,7 @@ fi
 
 if [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
-  if grep -qiE '^Operator-Approval:[[:space:]]*Linear([[:space:]]|$)' "$TICKET_FILE"; then
+  if grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
     echo "AWAIT-MERGE operator approval ingested from Linear; merge and staging confirmation are next"
     exit 0
   fi
