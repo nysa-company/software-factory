@@ -20,6 +20,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 stops in Review: transition and materialization refuse Awaiting Approval, Approved, and Done until dedicated trusted bundle and merge/deploy attestation paths exist, and sequencing does not authorize `AWAIT-MERGE`.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection, which refuses every active or ambiguous claim and `factory/runs/*.pid` record.
+- Backward-compatible ledger reduction collapses a legacy durable reservation followed by its identity-matching terminal row; every other conflicting duplicate run ID fails closed.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
 - Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and records are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. A product-level control lock serializes provider intervals; any new or changed sibling manifest, persistent claim, owned manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
 - Hermes contract 1.2 requires exact ticket worktrees for preflight and sequencing, exposes trusted ticket-state and ledger projection, and keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
@@ -30,6 +31,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch debounces transient owner-liveness misses but never reclaims stale or unsafe ownership; normal release atomically renames an owned lock before cleanup, and only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 
 ## Log
+
+## 2026-07-16 — Decision 34: Legacy ledger lifecycle pairs remain readable
+
+Category: System change
+
+Pre-manifest products may retain a durable reservation row followed by its terminal row under one run ID. The effective reducer collapses only that ordered pair when stable run identity matches exactly; reversed, repeated, or identity-conflicting duplicates still fail closed.
 
 ## 2026-07-16 — Decision 33: Spec-linter returns to Fable
 

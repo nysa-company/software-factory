@@ -192,6 +192,30 @@ class LedgerViewTest(unittest.TestCase):
         row = self.refresh()[0]
         self.assertEqual((row["run_id"], row["exit_status"]), ("live-1", "reserved-live-1"))
 
+    def test_legacy_durable_terminal_replaces_its_reservation(self):
+        (self.root / "factory" / "ledger.csv").write_text(
+            HEADER
+            + "2026-07-14,15:00:35,T-003,test-author,claude-code,reserved,0,5.00,reserved-1784062835-82366,1784062835-82366,anthropic,cli-default,primary_ready,conservative_reservation,2.1.209 (Claude Code)\n"
+            + "2026-07-14,15:10:37,T-003,test-author,claude-code,2,39,3.0331159999999997,0,1784062835-82366,anthropic,cli-default,primary_ready,provider_reported,2.1.209 (Claude Code)\n"
+        )
+        rows = self.refresh()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            (rows[0]["run_id"], rows[0]["prompt_version"], rows[0]["turns"],
+             rows[0]["cost_usd"], rows[0]["exit_status"], rows[0]["cost_basis"]),
+            ("1784062835-82366", "2", "39", "3.0331159999999997", "0", "provider_reported"),
+        )
+
+    def test_legacy_durable_terminal_requires_matching_identity(self):
+        (self.root / "factory" / "ledger.csv").write_text(
+            HEADER
+            + "2026-07-14,09:00:00,T-100,planner,codex,reserved,0,1.00,reserved-old,old,openai,gpt-test,primary_ready,conservative_reservation,test\n"
+            + "2026-07-14,09:05:00,T-999,planner,codex,1,1,0.25,0,old,openai,gpt-test,primary_ready,provider_reported,test\n"
+        )
+        result = run("refresh", "--factory-root", self.root, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflicting durable records for run_id old", result.stderr)
+
     def test_symlink_manifest_fails_closed(self):
         path = self.root / "factory" / "runs" / "linked.meta"
         path.symlink_to(self.root / "factory" / "ledger.csv")

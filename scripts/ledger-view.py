@@ -254,6 +254,14 @@ def merge_rows(durable, manifests):
         if current == row:
             return
         current_source = sources[run_id]
+        if (current_source == "durable" and source == "durable" and
+                is_reservation(current) and not is_reservation(row) and
+                all(current[field] == row[field] for field in (
+                    "ticket", "role", "adapter", "provider_family", "model_id",
+                    "selection_reason", "adapter_version",
+                ))):
+            rows[index] = row
+            return
         if (current_source == "durable" and source == "manifest" and
                 is_reservation(current) and not is_reservation(row)):
             rows[index] = row
