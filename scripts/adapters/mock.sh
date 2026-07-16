@@ -15,6 +15,10 @@ WORKDIR=""
   echo "trusted product origin leaked into task adapter" >&2
   exit 97
 }
+[[ ${PRODUCT_REMOTE+x} != x ]] || {
+  echo "captured product origin leaked into task adapter" >&2
+  exit 97
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workdir) WORKDIR="$2"; shift 2;;

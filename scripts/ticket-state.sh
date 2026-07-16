@@ -49,17 +49,33 @@ import sys
 from pathlib import Path
 
 current_path, effective_path = map(Path, sys.argv[1:])
-pattern = re.compile(r"^State:\s*(.+)$", re.MULTILINE | re.IGNORECASE)
-current = pattern.search(current_path.read_text())
-effective = pattern.search(effective_path.read_text())
-if not current or not effective:
+current_text = current_path.read_text()
+effective_text = effective_path.read_text()
+
+def field(text, name):
+    match = re.search(rf"^{re.escape(name)}:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+current_state = field(current_text, "State").lower()
+effective_state = field(effective_text, "State").lower()
+if not current_state or not effective_state:
     raise SystemExit("ticket has no State field")
-current_state = current.group(1).strip().lower()
-effective_state = effective.group(1).strip().lower()
 if current_state != effective_state and effective_state in {"awaiting approval", "done"}:
     raise SystemExit(
         f"evidence-sensitive state requires a dedicated attestation: {effective_state}"
     )
+legal_approval = current_state == "awaiting approval" and effective_state == "approved"
+if current_state != effective_state and effective_state == "approved" and not legal_approval:
+    raise SystemExit("operator approval requires committed Awaiting Approval state")
+current_approval = field(current_text, "Operator-Approval")
+effective_approval = field(effective_text, "Operator-Approval")
+approval_changed = effective_approval != current_approval
+if approval_changed and effective_approval != "Linear":
+    raise SystemExit("operator approval marker must be Linear")
+if approval_changed and not legal_approval:
+    raise SystemExit("operator approval marker requires Awaiting Approval -> Approved")
+if current_state != effective_state and effective_state == "approved" and effective_approval != "Linear":
+    raise SystemExit("Approved requires Operator-Approval: Linear")
 PY
 elif [[ "$ACTION" == "transition" ]]; then
   python3 - "$TMP" "$STATE" <<'PY'

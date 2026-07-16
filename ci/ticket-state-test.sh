@@ -107,6 +107,61 @@ for target in "Awaiting Approval" Done; do
   [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
   [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 done
+
+printf '{"tickets":{"T-700":{"operator":{"approval":"Linear"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
+  >/dev/null 2>&1; then
+  echo "FAIL: approval-only overlay was materialized" >&2
+  exit 1
+fi
+grep -q '^State: Review$' "$PRODUCT/factory/tickets/T-700.md"
+! grep -q '^Operator-Approval:' "$PRODUCT/factory/tickets/T-700.md"
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+[[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+
+printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Linear"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
+  >/dev/null 2>&1; then
+  echo "FAIL: Review -> Approved overlay was materialized" >&2
+  exit 1
+fi
+grep -q '^State: Review$' "$PRODUCT/factory/tickets/T-700.md"
+! grep -q '^Operator-Approval:' "$PRODUCT/factory/tickets/T-700.md"
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+[[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+
+sed -E 's/^State: .*/State: Awaiting Approval/' \
+  "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
+mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "operator approval fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
+BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
+for operator in \
+  '{"state":"Approved"}' \
+  '{"state":"Approved","approval":"linear"}' \
+  '{"state":"Approved","approval":"Manual"}'; do
+  printf '{"tickets":{"T-700":{"operator":%s}}}\n' "$operator" \
+    > "$PRODUCT/factory/linear-map.json"
+  if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
+    >/dev/null 2>&1; then
+    echo "FAIL: Approved overlay without exact Linear marker was materialized" >&2
+    exit 1
+  fi
+  grep -q '^State: Awaiting Approval$' "$PRODUCT/factory/tickets/T-700.md"
+  ! grep -q '^Operator-Approval:' "$PRODUCT/factory/tickets/T-700.md"
+  [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+  [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+done
+printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Linear"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
+grep -q '^State: Approved$' "$PRODUCT/factory/tickets/T-700.md"
+grep -q '^Operator-Approval: Linear$' "$PRODUCT/factory/tickets/T-700.md"
+
 printf '{"tickets":{"T-700":{}}}\n' > "$PRODUCT/factory/linear-map.json"
 
 DECOY="$TMP/decoy.git"

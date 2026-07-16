@@ -93,6 +93,11 @@ The factory needs you at four points:
    or send it back with a concrete reason. Done is recorded after merge and
    staging confirmation.
 
+That fourth step describes the target lifecycle. Contract 1.2 currently stops
+in Review after the Narrator posts the bundle: its generic ticket-state command
+cannot move a ticket to Awaiting Approval or Done. Wait for the dedicated
+bundle and merge/staging attestation paths before using the approval close-out.
+
 ## Does moving a ticket to Ready start the factory?
 
 **Not by itself in the current installation.** Moving a mapped Linear issue to

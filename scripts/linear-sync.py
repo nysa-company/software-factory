@@ -659,7 +659,7 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
         local_state == "blocked-escalated"
         and remote_state == effective["resume_state"]
         and remote_state in STATES
-        and remote_state not in {"awaiting approval", "done"}
+        and remote_state not in {"awaiting approval", "approved", "done"}
     ):
         allowed = True
     if allowed:

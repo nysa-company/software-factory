@@ -1389,9 +1389,20 @@ fi
 
 setup_role_exit_fixture T-609
 ROLE_ENV_DECOY="$TMP/role-env-decoy.git"
+ROLE_ENV_GIT_MARKER="$TMP/role-env-git-invoked"
 git init --bare -q "$ROLE_ENV_DECOY"
-printf 'export FACTORY_CERTIFIED_PRODUCT_ORIGIN=%q\n' "$ROLE_ENV_DECOY" >> \
-  "$ROLE_EXIT_ROOT/factory/ENVELOPE.env"
+ROLE_ENV_BEFORE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+{
+  printf 'export FACTORY_CERTIFIED_PRODUCT_ORIGIN=%q\n' "$ROLE_ENV_DECOY"
+  printf 'export FACTORY_TRUSTED_PRODUCT_ORIGIN PRODUCT_REMOTE FACTORY_TRUSTED_GIT_BIN\n'
+  printf 'PRODUCT_REMOTE=%q\n' "$ROLE_ENV_DECOY"
+  printf 'git() { printf invoked > %q; return 99; }; export -f git\n' "$ROLE_ENV_GIT_MARKER"
+  printf 'factory_capture_product_remote() { printf "%%s\\n" %q; } 2>/dev/null || true\n' \
+    "$ROLE_ENV_DECOY"
+  printf 'factory_product_remote_matches() { return 0; } 2>/dev/null || true\n'
+  printf 'factory_update_tracking_ref() { return 0; } 2>/dev/null || true\n'
+  printf 'set -a\n'
+} >> "$ROLE_EXIT_ROOT/factory/ENVELOPE.env"
 ROLE_ENV_STATUS=0
 MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
@@ -1400,14 +1411,17 @@ MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
   "$RUN_AGENT" --role planner --ticket T-609 --workdir "$ROLE_EXIT_WORKTREE" -- \
     "sealed origin" > "$TMP/role-env.out" 2>&1 || ROLE_ENV_STATUS=$?
-if [[ "$ROLE_ENV_STATUS" -eq 0 &&
+if [[ "$ROLE_ENV_STATUS" -eq 3 &&
       "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-609)" == \
-        "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" ]] &&
+        "$ROLE_ENV_BEFORE" &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == "$ROLE_ENV_BEFORE" &&
+      ! -f "$ROLE_EXIT_ROOT/factory/runs/"*.out ]] &&
    ! git --git-dir="$ROLE_ENV_DECOY" show-ref --verify --quiet \
-     refs/heads/ticket/T-609; then
-  pass "sealed product origin cannot be overwritten or exposed to the adapter"
+     refs/heads/ticket/T-609 &&
+   [[ ! -e "$ROLE_ENV_GIT_MARKER" ]]; then
+  pass "executable envelope content fails closed before trusted Git or adapter use"
 else
-  fail "sealed product origin cannot be overwritten or exposed to the adapter" \
+  fail "executable envelope content fails closed before trusted Git or adapter use" \
     "status=$ROLE_ENV_STATUS"
 fi
 

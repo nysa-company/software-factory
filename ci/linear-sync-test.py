@@ -275,7 +275,7 @@ class LinearSyncTest(unittest.TestCase):
         )
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         previous = "Awaiting Approval"
-        for target in ("Awaiting Approval", "Done"):
+        for target in ("Awaiting Approval", "Approved", "Done"):
             with self.subTest(target=target):
                 path.write_text(
                     path.read_text().replace(

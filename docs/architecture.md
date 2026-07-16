@@ -40,6 +40,9 @@ export CURSOR_ANTHROPIC_USD_PER_MTOK_IN="RATE"
 export CURSOR_ANTHROPIC_USD_PER_MTOK_OUT="RATE"
 ```
 
+`run-agent.sh` parses both configuration files as whitelisted `KEY=value`
+data. Shell commands, substitutions, and unsupported keys are rejected.
+
 Enable fallback only after `agent status --format json`, `agent models`, `scripts/adapters/contract-test.sh --routes`, and both conformance smokes pass. Cursor output is redacted while streaming; the redacted `.out` artifact remains local and ignored, while the manifest and ledger carry durable provenance.
 
 ## Release and activation model

@@ -31,12 +31,24 @@ TASK="${*:-}"
 [[ "$TICKET" =~ ^T-[0-9]+$ ]] || { echo "invalid ticket identifier" >&2; exit 2; }
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+[[ -z "$(declare -F)" ]] || {
+  echo "inherited shell functions are forbidden" >&2
+  exit 2
+}
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/product-remote.sh"
+FACTORY_TRUSTED_GIT_BIN="$(type -P git 2>/dev/null || true)"
+[[ "$FACTORY_TRUSTED_GIT_BIN" == /* && -x "$FACTORY_TRUSTED_GIT_BIN" ]] || {
+  echo "trusted Git executable is unavailable" >&2
+  exit 2
+}
+readonly FACTORY_TRUSTED_GIT_BIN
+readonly -f factory_capture_product_remote factory_product_remote_matches \
+  factory_remote_tracking_tip factory_update_tracking_ref
 unset FACTORY_TRUSTED_PRODUCT_ORIGIN
 readonly FACTORY_TRUSTED_PRODUCT_ORIGIN="${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}"
 unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
@@ -44,7 +56,7 @@ DISPATCH_LEASE_ID="${FACTORY_DISPATCH_LEASE_ID:-}"
 unset FACTORY_DISPATCH_LEASE_ID
 
 # --- anchor factory state to the repo root, never to $PWD ---
-REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
+REPO_ROOT="${FACTORY_ROOT:-$("$FACTORY_TRUSTED_GIT_BIN" rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 [[ "$WORKDIR_SET" -eq 1 ]] || WORKDIR="$REPO_ROOT"
 FACTORY_DIR="$REPO_ROOT/factory"
 
@@ -53,8 +65,8 @@ FACTORY_DIR="$REPO_ROOT/factory"
 canonical_factory_file() {
   local root="$1" name="$2" root_abs worktree_root common_dir main_root relative
   root_abs="$(cd "$root" 2>/dev/null && pwd -P || printf '%s' "$root")"
-  if worktree_root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" &&
-     common_dir="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)"; then
+  if worktree_root="$("$FACTORY_TRUSTED_GIT_BIN" -C "$root" rev-parse --show-toplevel 2>/dev/null)" &&
+     common_dir="$("$FACTORY_TRUSTED_GIT_BIN" -C "$root" rev-parse --git-common-dir 2>/dev/null)"; then
     worktree_root="$(cd "$worktree_root" && pwd -P)"
     # A relative --git-common-dir is relative to git's cwd ($root), NOT the
     # worktree root — resolving against the wrong base broke main-clone
@@ -283,8 +295,66 @@ terminate_run_group() {
 }
 
 role_remote_head() {
-  git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
     "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}'
+}
+
+load_plain_config() {
+  local path="$1" kind="$2" raw line key value seen=" "
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    [[ "$raw" != *$'\r'* && "$raw" != *$'\n'* && "$raw" != *$'\t'* ]] || {
+      echo "$kind config contains control characters" >&2
+      return 1
+    }
+    line="$raw"
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    case "$line" in export\ *) line="${line#export }" ;; esac
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] || {
+      echo "$kind config must contain plain KEY=value lines" >&2
+      return 1
+    }
+    key="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    case "$value" in
+      \"*\") value="${value#\"}"; value="${value%\"}" ;;
+      \'*\') value="${value#\'}"; value="${value%\'}" ;;
+      *\"*|*\'*)
+        echo "$kind config contains malformed quoting" >&2
+        return 1
+        ;;
+    esac
+    [[ "$value" =~ ^[A-Za-z0-9._:/+@%~-]*$ ]] || {
+      echo "$kind config contains an unsafe value" >&2
+      return 1
+    }
+    case "$seen" in *" $key "*) echo "$kind config repeats $key" >&2; return 1 ;; esac
+    seen="$seen$key "
+    if [[ "$kind" == "envelope" ]]; then
+      case "$key" in
+        PER_RUN_BUDGET_USD|PER_TICKET_BUDGET_USD|PER_RUN_MAX_TURNS|PER_RUN_TIMEOUT_MIN|DAILY_CAP_USD)
+          printf -v "$key" '%s' "$value"
+          ;;
+        *) echo "envelope config contains unsupported key $key" >&2; return 1 ;;
+      esac
+    else
+      case "$key" in
+        GLOBAL_DAILY_CAP_USD|GLOBAL_LEDGER|CLAUDE_CODE_PINNED|CODEX_PINNED|CODEX_USD_PER_MTOK_IN|CODEX_USD_PER_MTOK_OUT|FACTORY_CURSOR_FALLBACK_ENABLED|CURSOR_AGENT_BIN|CURSOR_AGENT_VERSION|CURSOR_OPENAI_MODEL|CURSOR_ANTHROPIC_MODEL|CURSOR_PRICING_SNAPSHOT_DATE|CURSOR_OPENAI_USD_PER_MTOK_IN|CURSOR_OPENAI_USD_PER_MTOK_OUT|CURSOR_OPENAI_USD_PER_MTOK_CACHE|CURSOR_ANTHROPIC_USD_PER_MTOK_IN|CURSOR_ANTHROPIC_USD_PER_MTOK_OUT|CURSOR_ANTHROPIC_USD_PER_MTOK_CACHE|FACTORY_PROBE_CODEX|FACTORY_PROBE_CLAUDE_CODE|FACTORY_PROBE_CURSOR_OPENAI|FACTORY_PROBE_CURSOR_ANTHROPIC|FACTORY_PROBE_TIMEOUT_SEC|FACTORY_OVERRIDE_MODEL)
+          export "$key=$value"
+          ;;
+        *) echo "global config contains unsupported key $key" >&2; return 1 ;;
+      esac
+    fi
+  done < "$path"
+  if [[ "$kind" == "envelope" ]]; then
+    local required
+    for required in PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD \
+      PER_RUN_MAX_TURNS PER_RUN_TIMEOUT_MIN DAILY_CAP_USD; do
+      case "$seen" in
+        *" $required "*) ;;
+        *) echo "envelope config is missing $required" >&2; return 1 ;;
+      esac
+    done
+  fi
 }
 
 cleanup() {
@@ -349,8 +419,9 @@ if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
   ROLE_EXIT_ENFORCED=0
 fi
 [[ -f "$ENV_FILE" ]] || { echo "envelope not found: $ENV_FILE — fill ENVELOPE.md and write ENVELOPE.env first" >&2; exit 3; }
-# shellcheck disable=SC1090
-source "$ENV_FILE"
+unset PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS \
+  PER_RUN_TIMEOUT_MIN DAILY_CAP_USD
+load_plain_config "$ENV_FILE" envelope || exit 3
 PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
 
 # --- optional machine-level cap across all factories on this machine ---
@@ -360,15 +431,21 @@ PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
 GLOBAL_LEDGER="" GLOBAL_LOCK=""
 if [[ -f "$GLOBAL_ENV" ]]; then
-  # shellcheck disable=SC1090
-  source "$GLOBAL_ENV"
+  load_plain_config "$GLOBAL_ENV" global || exit 3
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
   GLOBAL_LOCK="$(dirname "$GLOBAL_ENV")/.ledger.lock"
   [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
 fi
 # Product and machine configuration are not trusted to supply launcher-only
 # authority, and adapters must never inherit it.
+set +a
+unset -f git 2>/dev/null || true
+if declare -F git >/dev/null; then
+  echo "Git shell function is forbidden" >&2
+  exit 2
+fi
 unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
+export -n FACTORY_TRUSTED_PRODUCT_ORIGIN FACTORY_TRUSTED_GIT_BIN PRODUCT_REMOTE 2>/dev/null || true
 if ! factory_validate_runtime_overrides; then
   echo "$FACTORY_RUNTIME_OVERRIDE_ERROR; no task was submitted" >&2
   exit 2
@@ -389,13 +466,13 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     echo "role_exit_remote_mismatch: certified product push destination validation failed" >&2
     exit 11
   }
-  ROLE_BRANCH_BEFORE="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  ROLE_HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
+  ROLE_BRANCH_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  ROLE_HEAD_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
   [[ -n "$ROLE_BRANCH_BEFORE" && -n "$ROLE_HEAD_BEFORE" ]] || {
     echo "role_exit_wrong_branch: ticket worktree must be on a branch" >&2
     exit 11
   }
-  [[ -z "$(git -C "$WORKDIR" status --porcelain)" ]] || {
+  [[ -z "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain)" ]] || {
     echo "role_exit_dirty: ticket worktree must be clean before launch" >&2
     exit 11
   }
@@ -510,24 +587,24 @@ if ! factory_record_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
 fi
 if [[ "$ROLE_EXIT_ENFORCED" -eq 1 && "$TICKET_AFFINITY_WAS_MISSING" -eq 1 ]]; then
   TICKET_RELATIVE="${TICKET_FILE#"$WORKDIR/"}"
-  CHANGED_PATHS="$(git -C "$WORKDIR" status --porcelain | awk '{print $2}')"
+  CHANGED_PATHS="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain | awk '{print $2}')"
   if [[ "$CHANGED_PATHS" != "$TICKET_RELATIVE" ]]; then
     echo "role_exit_dirty: Kit-SHA recording changed unexpected paths" >&2
     exit 11
   fi
-  git -C "$WORKDIR" add -- "$TICKET_RELATIVE"
-  git -C "$WORKDIR" -c user.name="Software Factory" -c user.email="factory@local" \
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" add -- "$TICKET_RELATIVE"
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" -c user.name="Software Factory" -c user.email="factory@local" \
     commit -m "Record $TICKET kit affinity" >/dev/null 2>&1 || {
     echo "role_exit_no_commit: could not commit Kit-SHA affinity" >&2
     exit 11
   }
-  ROLE_HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD)"
+  ROLE_HEAD_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD)"
   factory_product_remote_matches "$REPO_ROOT" "$PRODUCT_REMOTE" || {
     echo "role_exit_remote_mismatch: $FACTORY_PRODUCT_REMOTE_ERROR" >&2
     exit 11
   }
   ROLE_TRACKING_BEFORE="$(factory_remote_tracking_tip "$WORKDIR" "$ROLE_BRANCH_BEFORE")"
-  git -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
     "$ROLE_HEAD_BEFORE:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1 || {
     echo "role_exit_push_failed: could not push Kit-SHA affinity" >&2
     exit 11
@@ -780,9 +857,9 @@ RESULT="$(cat "$RUNS_DIR/$RUN_ID.out")"
 
 PROVIDER_STATUS="$STATUS"
 if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
-  ROLE_BRANCH_AFTER="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  ROLE_HEAD_AFTER="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
-  ROLE_DIRTY="$(git -C "$WORKDIR" status --porcelain 2>/dev/null || true)"
+  ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
+  ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain 2>/dev/null || true)"
   if [[ "$PROVIDER_STATUS" -eq 0 ]]; then
     if [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_wrong_branch"
@@ -804,11 +881,11 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     else
       ROLE_TRACKING_BEFORE="$(factory_remote_tracking_tip "$WORKDIR" "$ROLE_BRANCH_BEFORE")"
-      if ! git -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
+      if ! "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
         "$ROLE_HEAD_AFTER:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1; then
         ROLE_EXIT_STATUS="role_exit_push_failed"
       else
-        REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
+        REMOTE_HEAD="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
           "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
         if [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
           ROLE_EXIT_STATUS="role_exit_remote_mismatch"
