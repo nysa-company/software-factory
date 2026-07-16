@@ -113,7 +113,7 @@ HELD_LEDGER_LOCK=0
 HELD_GLOBAL_LOCK=0
 HELD_LAUNCH_LOCK=0
 HELD_PROVIDER_LOCK=0
-PROVIDER_LOCK_TOKEN=""
+PROVIDER_LOCK_EXPECTED=""
 RUN_PID=""
 RUN_PGID=""
 RUN_GROUP_ACTIVE=0
@@ -340,7 +340,42 @@ release_global_lock() {
 provider_lock_is_owned() {
   [[ "$HELD_PROVIDER_LOCK" -eq 1 && -d "$PROVIDER_LOCK" && ! -L "$PROVIDER_LOCK" &&
       -f "$PROVIDER_LOCK/owner" && ! -L "$PROVIDER_LOCK/owner" &&
-      "$(cat "$PROVIDER_LOCK/owner" 2>/dev/null)" == "$PROVIDER_LOCK_TOKEN" ]]
+      "$(cat "$PROVIDER_LOCK/owner" 2>/dev/null)" == "$PROVIDER_LOCK_EXPECTED" ]] &&
+    provider_lock_owner_is_live
+}
+
+provider_lock_owner_is_live() {
+  local identity pid started
+  identity="$(python3 - "$PROVIDER_LOCK" <<'PY'
+import re
+import stat
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1])
+owner = directory / "owner"
+try:
+    directory_stat = directory.lstat()
+    owner_stat = owner.lstat()
+except FileNotFoundError:
+    raise SystemExit(3)
+if (not stat.S_ISDIR(directory_stat.st_mode) or directory.is_symlink() or
+        not stat.S_ISREG(owner_stat.st_mode) or owner.is_symlink() or
+        owner_stat.st_nlink != 1 or
+        sorted(entry.name for entry in directory.iterdir()) != ["owner"]):
+    raise SystemExit(2)
+lines = owner.read_text(encoding="utf-8").splitlines()
+if (len(lines) != 3 or not re.fullmatch(r"pid=[1-9][0-9]*", lines[0]) or
+        not lines[1].startswith("process_start=") or len(lines[1]) == 14 or
+        not re.fullmatch(r"token=[0-9a-f]{32}", lines[2])):
+    raise SystemExit(2)
+print(lines[0][4:])
+print(lines[1][14:])
+PY
+  )" || return 2
+  pid="${identity%%$'\n'*}"
+  started="${identity#*$'\n'}"
+  [[ "$(process_start_identity "$pid")" == "$started" ]]
 }
 
 release_provider_lock() {
@@ -834,11 +869,13 @@ ACTIVE_RUN_EXPECTED="$(cat "$ACTIVE_RUN_FILE/owner")"
 # ponytail: serialize providers until an OS-enforced writer boundary can keep
 # provider processes out of factory/runs while preserving parallel execution.
 PROVIDER_LOCK_ATTEMPTS=$((PER_RUN_TIMEOUT_MIN * 600 + 100))
+PROVIDER_LOCK_TRANSIENTS=0
 for i in $(seq 1 "$PROVIDER_LOCK_ATTEMPTS"); do
   if mkdir "$PROVIDER_LOCK" 2>/dev/null; then
     HELD_PROVIDER_LOCK=1
-    PROVIDER_LOCK_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
-    printf '%s\n' "$PROVIDER_LOCK_TOKEN" > "$PROVIDER_LOCK/owner" || exit 8
+    PROVIDER_LOCK_EXPECTED="$ACTIVE_RUN_EXPECTED"
+    printf '%s\n' "$PROVIDER_LOCK_EXPECTED" |
+      python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$PROVIDER_LOCK/owner" || exit 8
     break
   fi
   if [[ -f "$FACTORY_DIR/KILL" ]]; then
@@ -848,6 +885,21 @@ for i in $(seq 1 "$PROVIDER_LOCK_ATTEMPTS"); do
   if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
     echo "MAINTENANCE file appeared while waiting for provider lock; no task was submitted" >&2
     exit 4
+  fi
+  if provider_lock_owner_is_live; then
+    PROVIDER_LOCK_TRANSIENTS=0
+  else
+    owner_status=$?
+    if [[ "$owner_status" -eq 1 ]]; then
+      echo "stale provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
+    elif [[ "$owner_status" -ne 1 && "$PROVIDER_LOCK_TRANSIENTS" -lt 10 ]]; then
+      PROVIDER_LOCK_TRANSIENTS=$((PROVIDER_LOCK_TRANSIENTS + 1))
+      sleep 0.01
+      continue
+    else
+      echo "unsafe provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
+    fi
+    exit 8
   fi
   sleep 0.1
 done

@@ -9,6 +9,7 @@ factory/KILL
 **/factory/.linear-sync.lock
 **/factory/MAINTENANCE
 **/factory/.launch.lock/
+**/factory/.provider.lock/
 **/factory/.ledger.lock/
 **/factory/.active-runs/
 **/factory/.dispatch-leases/

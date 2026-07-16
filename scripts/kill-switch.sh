@@ -17,6 +17,7 @@ REPO_ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
 RUNS_DIR="$FACTORY_DIR/runs"
 LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
+PROVIDER_LOCK="$FACTORY_DIR/.provider.lock"
 HELD_LAUNCH_LOCK=0
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
@@ -102,6 +103,110 @@ fi
 
 if [[ "$HELD_LAUNCH_LOCK" -eq 1 ]]; then
   if ! compgen -G "$RUNS_DIR/*.pid" >/dev/null; then
+    PROVIDER_RECOVERY="$(python3 - "$PROVIDER_LOCK" "$RUNS_DIR" <<'PY'
+import hashlib
+import os
+import pathlib
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import time
+
+lock, runs = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+if not lock.exists() and not lock.is_symlink():
+    print("absent")
+    raise SystemExit
+try:
+    lock_stat = lock.lstat()
+    runs_stat = runs.lstat()
+    if (stat.S_ISLNK(lock_stat.st_mode) or not stat.S_ISDIR(lock_stat.st_mode) or
+            stat.S_ISLNK(runs_stat.st_mode) or not stat.S_ISDIR(runs_stat.st_mode)):
+        raise ValueError
+    owner = lock / "owner"
+    owner_stat = owner.lstat()
+    if (stat.S_ISLNK(owner_stat.st_mode) or
+            not stat.S_ISREG(owner_stat.st_mode) or owner_stat.st_nlink != 1):
+        raise ValueError
+    owner_bytes = owner.read_bytes()
+    if sorted(entry.name for entry in lock.iterdir()) != ["owner"]:
+        raise ValueError
+    lines = owner_bytes.decode("utf-8").splitlines()
+    if (len(lines) != 3 or not re.fullmatch(r"pid=[1-9][0-9]*", lines[0]) or
+            not lines[1].startswith("process_start=") or len(lines[1]) == 14 or
+            not re.fullmatch(r"token=[0-9a-f]{32}", lines[2])):
+        raise ValueError
+    pid = int(lines[0][4:])
+    process_start = lines[1][14:]
+    try:
+        os.kill(pid, 0)
+        live = True
+    except ProcessLookupError:
+        live = False
+    except PermissionError:
+        print("ambiguous")
+        raise SystemExit
+    if live:
+        try:
+            current = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                check=False, capture_output=True, text=True,
+            ).stdout
+            current = " ".join(current.split())
+        except OSError:
+            current = ""
+        if not current:
+            print("ambiguous")
+            raise SystemExit
+        if current == process_start:
+            print("live")
+            raise SystemExit
+    expected = (
+        lock_stat.st_dev, lock_stat.st_ino,
+        owner_stat.st_dev, owner_stat.st_ino,
+        hashlib.sha256(owner_bytes).digest(),
+    )
+    lock_now, owner_now = lock.lstat(), owner.lstat()
+    actual = (
+        lock_now.st_dev, lock_now.st_ino,
+        owner_now.st_dev, owner_now.st_ino,
+        hashlib.sha256(owner.read_bytes()).digest(),
+    )
+    if actual != expected:
+        print("changed")
+        raise SystemExit
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    destination = runs / f".provider-lock-stale-{stamp}-{secrets.token_hex(8)}"
+    os.rename(lock, destination)
+    moved_owner = destination / "owner"
+    moved_lock_stat, moved_owner_stat = destination.lstat(), moved_owner.lstat()
+    moved = (
+        moved_lock_stat.st_dev, moved_lock_stat.st_ino,
+        moved_owner_stat.st_dev, moved_owner_stat.st_ino,
+        hashlib.sha256(moved_owner.read_bytes()).digest(),
+    )
+    if moved != expected:
+        if not lock.exists() and not lock.is_symlink():
+            os.rename(destination, lock)
+        print("changed")
+        raise SystemExit
+    runs_fd = os.open(runs, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(runs_fd)
+    finally:
+        os.close(runs_fd)
+    print("quarantined")
+except (OSError, UnicodeError, ValueError):
+    print("malformed")
+PY
+)"
+    case "$PROVIDER_RECOVERY" in
+      absent) ;;
+      quarantined) echo "quarantined stale provider lock under $RUNS_DIR" ;;
+      live) echo "WARNING: live provider lock retained" >&2 ;;
+      *) echo "WARNING: $PROVIDER_RECOVERY provider lock retained for operator reconciliation" >&2 ;;
+    esac
     for _lease_lock_try in $(seq 1 100); do
       mkdir "$DISPATCH_LOCK" 2>/dev/null && { HELD_DISPATCH_LOCK=1; break; }
       sleep 0.1

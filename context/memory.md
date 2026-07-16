@@ -26,8 +26,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
 - Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require supported pending operator fields to materialize first; approval overlays are unsupported stop conditions until a trusted bundle-attestation path exists.
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
+- Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch never reclaims stale or unsafe ownership; only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 
 ## Log
+
+## 2026-07-16 — Decision 30: Provider-lock recovery is explicit and evidence preserving
+
+Category: Decision
+
+Ordinary launch never reclaims a stale, malformed, or ambiguous product-level provider lock. After publishing KILL and draining recorded processes while holding the launch lock, the kill switch may atomically quarantine only an unchanged, structurally safe lock whose PID/start identity proves stale; every unsafe case remains for operator reconciliation.
 
 ## 2026-07-16 — Decision 29: Provider intervals serialize until OS isolation
 

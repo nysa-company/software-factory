@@ -34,7 +34,11 @@ holds it through provider exit and integrity verification. This temporarily
 serializes all provider intervals even when two dispatcher ticket leases are
 active. Any new or changed sibling manifest during that interval fails the role
 and prevents sequencer advancement; only after verification may the wrapper
-terminalize its own manifest.
+terminalize its own manifest. The lock owner records the wrapper PID, process
+start identity, and a private ownership token. Ordinary launch waits only for a
+validated live owner and never reclaims stale or malformed state; the kill
+switch is the sole automated recovery path and quarantines only a provably
+stale, unchanged lock after recorded processes drain.
 
 When a machine-wide cap is configured, its global ledger lock also covers the
 full provider interval, not just reservation. The wrapper validates the ledger,

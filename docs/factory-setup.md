@@ -9,7 +9,7 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Create the product repo as a **sibling folder** (never nested inside another repo). Do NOT copy kit scripts into it — the engine model in `docs/architecture.md` is the contract.
 - Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN`, an executable certification script, and empty `initiatives/` and `tickets/` directories.
 - Ignore `factory/linear-map.json` and `factory/.linear-sync.lock`; they are runtime operator state and must never dirty the registered checkout.
-- Ignore `factory/runs/`, `factory/.active-runs/`, and `factory/runtime-ledger.csv`; preflight or the first normal Linear reconciliation durably initializes the real, no-follow runs root, manifests are atomic local run truth, claims are runtime exclusion state, and the CSV is their rebuildable view over the tracked durable ledger.
+- Ignore `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv`; preflight or the first normal Linear reconciliation durably initializes the real, no-follow runs root, manifests are atomic local run truth, claims and the provider lock are runtime exclusion state, and the CSV is their rebuildable view over the tracked durable ledger.
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
@@ -110,7 +110,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Walking skeleton merged; operator has clicked the staging URL
 - [ ] Kill switch tested: `scripts/kill-switch.sh` stops a live run
 - [ ] Metrics ledger file exists and the run wrapper writes to it
-- [ ] `factory/runs/`, `factory/.active-runs/`, and `factory/runtime-ledger.csv` are ignored; preflight or the first normal Linear reconciliation creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree only after every active or ambiguous claim and `factory/runs/*.pid` record is reconciled
+- [ ] `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv` are ignored; preflight or the first normal Linear reconciliation creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree only after every active or ambiguous claim and `factory/runs/*.pid` record is reconciled
 - [ ] A duplicate ticket-and-role launch refuses an existing claim without creating a manifest, and malformed telemetry retains the full reservation
 - [ ] Provider intervals serialize under the product-level control lock, and any new or changed sibling manifest during an interval fails closed
 - [ ] If a machine cap is configured, its global ledger is a regular non-symlink file in a real directory and a mutation drill fails closed without deleting ledger history

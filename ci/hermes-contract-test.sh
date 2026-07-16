@@ -346,6 +346,11 @@ KIT_SHA="$(git -C "$ROOT" rev-parse --verify HEAD)"
 printf '%s\n' "$KIT_SHA" > "$PRODUCT/factory/KIT_PIN"
 touch "$PRODUCT/factory/MAINTENANCE"
 printf 'pid=%s\n' "$$" > "$PRODUCT/factory/runs/run-active.pid"
+PROVIDER_OWNER_TOKEN="00000000000000000000000000000000"
+mkdir "$PRODUCT/factory/.provider.lock"
+printf 'pid=%s\nprocess_start=%s\ntoken=%s\n' "$$" \
+  "$(ps -o lstart= -p "$$" | awk '{$1=$1; print; exit}')" "$PROVIDER_OWNER_TOKEN" > \
+  "$PRODUCT/factory/.provider.lock/owner"
 
 cat > "$PROFILE/projects/relay.env" <<EOF
 KIT_DIR=$ROOT
@@ -420,7 +425,7 @@ assert_no_secret() {
   local output="$1"
   local secret
   for secret in "$GH_SECRET" "$CALLER_GH_SECRET" "$LINEAR_SECRET" "$URL_SECRET" "$CLI_SECRET" \
-                "$AUTH_SECRET" "$JSON_SECRET" "$MULTILINE_SECRET" "also-secret" \
+                "$AUTH_SECRET" "$JSON_SECRET" "$MULTILINE_SECRET" "$PROVIDER_OWNER_TOKEN" "also-secret" \
                 "authorization-secret-value" "json secret value with spaces" \
                 "multiline-secret-one" "multiline-secret-two" "url-secret-value" \
                 "signal-secret-value"; do
@@ -470,6 +475,8 @@ assert checks["runtime"]["status"] == "warning"
 assert checks["runtime"]["maintenance"] is True
 assert checks["runtime"]["locks"]["launch"] is True
 assert checks["runtime"]["locks"]["global_ledger"] is True
+assert checks["runtime"]["locks"]["provider"] is True
+assert checks["runtime"]["provider_lock_state"] == "active"
 assert checks["runtime"]["active_runs"] == 1
 assert checks["runtime"]["runs"] == [{"run_id": "run-active", "state": "active"}], checks["runtime"]
 assert checks["hermes"]["status"] == "ok"
@@ -485,6 +492,29 @@ allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(check["status"] in allowed for check in checks.values())
 PY
+
+sed -i.bak 's/^process_start=.*/process_start=stale/' "$PRODUCT/factory/.provider.lock/owner"
+rm -f "$PRODUCT/factory/.provider.lock/owner.bak"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" bash "$DOCTOR" --json --project relay > "$TMP/provider-stale.json"
+python3 - "$TMP/provider-stale.json" <<'PY'
+import json, sys
+runtime = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["runtime"]
+assert runtime["provider_lock_state"] == "stale"
+assert runtime["status"] == "warning"
+PY
+rm "$PRODUCT/factory/.provider.lock/owner"
+ln -s "$TMP/missing-provider-owner" "$PRODUCT/factory/.provider.lock/owner"
+MALFORMED_PROVIDER_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" bash "$DOCTOR" --json --project relay \
+  > "$TMP/provider-malformed.json" || MALFORMED_PROVIDER_RC=$?
+[[ "$MALFORMED_PROVIDER_RC" -eq 1 ]] || fail "malformed provider lock did not fail doctor"
+python3 - "$TMP/provider-malformed.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["overall_status"] == "error"
+assert data["checks"]["runtime"]["provider_lock_state"] == "malformed"
+PY
+rm -rf "$PRODUCT/factory/.provider.lock"
 
 printf '%s\n' "0123456789abcdef0123456789abcdef0123456" > "$PRODUCT/factory/KIT_PIN"
 BAD_PIN_RC=0
@@ -919,6 +949,7 @@ factory/*-helper.env
 factory/runs/
 factory/runtime-ledger.csv
 factory/.active-runs/
+factory/.provider.lock/
 factory/.dispatch-leases/
 factory/test-adapter-gate
 EOF

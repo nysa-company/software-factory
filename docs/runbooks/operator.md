@@ -51,6 +51,12 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Don't: hand-edit or delete ledger history, remove an unknown-owner lock, or treat a reconstructed `.out` artifact as accounting authority. Provider output is captured by the wrapper and telemetry is only accepted when bounded and parseable.
 - Important: persistent mutation is detected and blocks advancement, but an unsandboxed provider shares the launcher's OS user. Preventing a hostile same-UID process from changing and restoring user-owned state requires OS isolation such as a separate UID or enforced sandbox; file snapshots and `mkdir` locks are not that boundary.
 
+## Stale provider lock
+
+- Notice: launch refuses with `stale provider lock requires operator reconciliation`, or doctor reports `provider_lock_state=stale` or `malformed`.
+- Do: keep KILL published and run `scripts/kill-switch.sh`. After recorded process groups drain, it quarantines only a safe, unchanged owner whose PID is absent or has a different process start identity. Re-run doctor and preflight, reconcile manifests and active claims, then remove KILL only when accounting and control state agree.
+- Don't: delete or rename `factory/.provider.lock` by hand. A live, malformed, changed, symlinked, hard-linked, or otherwise ambiguous lock is deliberately retained for inspection; ordinary launch never steals it and the ownership token must not be printed.
+
 ## Spec-linter or reviewer reached the two-round limit
 
 - Notice: the launcher's `next-stage` route returns `ESCALATE` and names the next semantic round.

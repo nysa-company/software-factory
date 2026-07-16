@@ -281,6 +281,8 @@ LAUNCH_LOCK="false"
 LEDGER_LOCK="false"
 LINEAR_LOCK="false"
 GLOBAL_LEDGER_LOCK="false"
+PROVIDER_LOCK="false"
+PROVIDER_LOCK_STATE="absent"
 ACTIVE_RECORDS=0
 ACTIVE_RUNS=0
 STALE_RUNS=0
@@ -296,6 +298,49 @@ if [[ -n "$PRODUCT_ROOT" ]]; then
   [[ -e "$FACTORY_DIR/.ledger.lock" ]] && LEDGER_LOCK="true"
   [[ -e "$FACTORY_DIR/.linear-sync.lock" ]] && LINEAR_LOCK="true"
   [[ -e "$HOME/.factory/.ledger.lock" ]] && GLOBAL_LEDGER_LOCK="true"
+  if [[ -e "$FACTORY_DIR/.provider.lock" || -L "$FACTORY_DIR/.provider.lock" ]]; then
+    PROVIDER_LOCK="true"
+    PROVIDER_LOCK_STATE="$("$PYTHON_BIN" - "$FACTORY_DIR/.provider.lock" <<'PY'
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+lock = pathlib.Path(sys.argv[1])
+try:
+    lock_stat = lock.lstat()
+    if stat.S_ISLNK(lock_stat.st_mode) or not stat.S_ISDIR(lock_stat.st_mode):
+        raise ValueError
+    owner = lock / "owner"
+    owner_stat = owner.lstat()
+    if (stat.S_ISLNK(owner_stat.st_mode) or
+            not stat.S_ISREG(owner_stat.st_mode) or owner_stat.st_nlink != 1):
+        raise ValueError
+    if sorted(entry.name for entry in lock.iterdir()) != ["owner"]:
+        raise ValueError
+    lines = owner.read_text(encoding="utf-8").splitlines()
+    if (len(lines) != 3 or not re.fullmatch(r"pid=[1-9][0-9]*", lines[0]) or
+            not lines[1].startswith("process_start=") or len(lines[1]) == 14 or
+            not re.fullmatch(r"token=[0-9a-f]{32}", lines[2])):
+        raise ValueError
+    pid = int(lines[0][4:])
+    process_start = lines[1][14:]
+    try:
+        current = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            check=False, capture_output=True, text=True,
+        ).stdout
+        current = " ".join(current.split())
+    except OSError:
+        current = ""
+    print("active" if current and current == process_start else "stale")
+except (OSError, UnicodeError, ValueError):
+    print("malformed")
+PY
+)"
+  fi
   if [[ -d "$FACTORY_DIR/runs" ]]; then
     for pid_file in "$FACTORY_DIR"/runs/*.pid; do
       [[ -e "$pid_file" ]] || continue
@@ -367,11 +412,13 @@ RUNTIME_STATUS="${RUNTIME_STATUS:-ok}"
 if [[ "$RUNTIME_STATUS" != "error" ]] &&
    [[ "$MAINTENANCE" == "true" || "$LAUNCH_LOCK" == "true" ||
       "$LEDGER_LOCK" == "true" || "$LINEAR_LOCK" == "true" ||
-      "$GLOBAL_LEDGER_LOCK" == "true" || "$ACTIVE_RECORDS" -gt 0 ||
+      "$GLOBAL_LEDGER_LOCK" == "true" || "$PROVIDER_LOCK" == "true" ||
+      "$ACTIVE_RECORDS" -gt 0 ||
       "$DISPATCH_LEASES" -gt 0 ]]; then
   RUNTIME_STATUS="warning"
 fi
 [[ "$MALFORMED_DISPATCH_LEASES" -eq 0 ]] || RUNTIME_STATUS="error"
+[[ "$PROVIDER_LOCK_STATE" != "malformed" ]] || RUNTIME_STATUS="error"
 
 HERMES_PATH="$(command -v hermes 2>/dev/null || true)"
 HERMES_VERSION=""
@@ -523,6 +570,7 @@ export CONTRACT_VERSION DOCTOR_SCHEMA PROJECT REGISTRY_STATUS
 export OUTPUT_PROFILE_DIR OUTPUT_REGISTRY OUTPUT_KIT_DIR OUTPUT_PRODUCT_ROOT
 export KIT_STATUS KIT_SHA PIN_STATUS OUTPUT_PIN_FILE PIN_SHA PIN_VALID PIN_MATCHES
 export RUNTIME_STATUS OUTPUT_FACTORY_DIR MAINTENANCE LAUNCH_LOCK LEDGER_LOCK LINEAR_LOCK GLOBAL_LEDGER_LOCK
+export PROVIDER_LOCK PROVIDER_LOCK_STATE
 export ACTIVE_RECORDS ACTIVE_RUNS STALE_RUNS MALFORMED_RUNS
 export MAX_CONCURRENT_TICKETS DISPATCH_LEASES STALE_DISPATCH_LEASES MALFORMED_DISPATCH_LEASES LEASE_FILE
 export HERMES_STATUS HERMES_PATH HERMES_VERSION CLI_STATUS CLI_FILE
@@ -603,7 +651,9 @@ document = {
                 "ledger": boolean("LEDGER_LOCK"),
                 "linear_sync": boolean("LINEAR_LOCK"),
                 "global_ledger": boolean("GLOBAL_LEDGER_LOCK"),
+                "provider": boolean("PROVIDER_LOCK"),
             },
+            "provider_lock_state": os.environ["PROVIDER_LOCK_STATE"],
             "run_records": number("ACTIVE_RECORDS"),
             "active_runs": number("ACTIVE_RUNS"),
             "stale_runs": number("STALE_RUNS"),
@@ -651,7 +701,7 @@ else
   echo "Kit [$KIT_STATUS]: ${KIT_SHA:-unavailable}"
   echo "KIT_PIN [$PIN_STATUS]: ${PIN_SHA:-missing or invalid}"
   echo "Runtime [$RUNTIME_STATUS]: maintenance=$MAINTENANCE active=$ACTIVE_RUNS stale=$STALE_RUNS malformed=$MALFORMED_RUNS concurrency=$MAX_CONCURRENT_TICKETS leases=$DISPATCH_LEASES"
-  echo "Locks: launch=$LAUNCH_LOCK ledger=$LEDGER_LOCK linear_sync=$LINEAR_LOCK global_ledger=$GLOBAL_LEDGER_LOCK"
+  echo "Locks: launch=$LAUNCH_LOCK ledger=$LEDGER_LOCK linear_sync=$LINEAR_LOCK global_ledger=$GLOBAL_LEDGER_LOCK provider=$PROVIDER_LOCK provider_state=$PROVIDER_LOCK_STATE"
   echo "Hermes [$HERMES_STATUS]: ${HERMES_VERSION:-unavailable} (${HERMES_PATH:-not found})"
   while IFS="$(printf '\t')" read -r cli_name cli_item_status cli_path cli_version; do
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
