@@ -1434,6 +1434,9 @@ BACKGROUND_PIDS=""
 rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
 if [[ ! ( "$BUDGET_779_RC" -eq 0 && "$BUDGET_780_RC" -eq 5 ) &&
       ! ( "$BUDGET_779_RC" -eq 5 && "$BUDGET_780_RC" -eq 0 ) ]]; then
+  printf 'near-cap statuses: T-779=%s T-780=%s\n' "$BUDGET_779_RC" "$BUDGET_780_RC" >&2
+  sed 's/^/T-779: /' "$TMP/budget-779.out" >&2
+  sed 's/^/T-780: /' "$TMP/budget-780.out" >&2
   fail "concurrent near-cap reservations were not atomic"
 fi
 python3 - "$LAUNCH_PRODUCT/factory/runs" <<'PY'

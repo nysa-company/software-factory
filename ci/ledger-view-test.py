@@ -39,7 +39,7 @@ def git(path, *args):
 def manifest(path, *, state="reserved", go="0", cost="", status="", terminal="", ticket="T-123"):
     values = {
         "run_id": path.stem,
-        "phase": "reserved" if state == "reserved" else "completed",
+        "phase": "reserved" if state == "reserved" else state,
         "accounting_schema": "1",
         "accounting_state": state,
         "reserved_usd": "2.00",
@@ -79,9 +79,12 @@ class LedgerViewTest(unittest.TestCase):
         with (self.root / "factory" / "runtime-ledger.csv").open() as handle:
             return list(csv.DictReader(handle))
 
-    def integrity_snapshot(self, check=True):
+    def integrity_snapshot(self, check=True, owned=None):
+        command = [str(INTEGRITY_HELPER), "snapshot", str(self.root / "factory" / "runs")]
+        if owned:
+            command.append(owned)
         return subprocess.run(
-            [str(INTEGRITY_HELPER), "snapshot", str(self.root / "factory" / "runs")],
+            command,
             check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
@@ -259,6 +262,41 @@ class LedgerViewTest(unittest.TestCase):
         quarantined = list((self.root / "factory").glob("runs.rejected-role-mutation-*"))
         self.assertEqual(len(quarantined), 1)
         self.assertEqual((quarantined[0] / "forged.meta").read_bytes(), b"forged\n")
+
+    def test_integrity_allows_valid_concurrent_sibling_terminalization(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        sibling = runs / "sibling.meta"
+        manifest(owned)
+        owned.write_text(owned.read_text().replace("phase=reserved", "phase=spawned").replace("go_issued=0", "go_issued=1"))
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+
+        manifest(sibling, state="launch_void", status="5", terminal="2026-07-15T12:01:00Z")
+        sibling.write_text(sibling.read_text().replace("phase=launch_void", "phase=abandoned"))
+        result = self.integrity_check(snapshot)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(sibling.exists())
+
+    def test_integrity_allows_sibling_resolved_to_launch_void(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        sibling = runs / "sibling.meta"
+        manifest(owned)
+        manifest(sibling)
+        sibling.write_text(
+            sibling.read_text()
+            .replace("phase=reserved", "phase=resolved")
+            .replace("accounting_schema=1", "accounting_schema=")
+            .replace("accounting_state=reserved", "accounting_state=")
+        )
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+
+        manifest(sibling, state="launch_void", status="5", terminal="2026-07-15T12:01:00Z")
+        sibling.write_text(sibling.read_text().replace("phase=launch_void", "phase=abandoned"))
+        result = self.integrity_check(snapshot)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_integrity_refuses_replaced_parent_without_writing_through_symlink(self):
         runs = self.root / "factory" / "runs"

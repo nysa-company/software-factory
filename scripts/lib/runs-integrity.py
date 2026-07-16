@@ -2,6 +2,7 @@
 """Snapshot and restore launcher-owned run manifests around an agent process."""
 
 import base64
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import stat
 import sys
 
 
-SNAPSHOT_SCHEMA = 1
+SNAPSHOT_SCHEMA = 2
 DIRECTORY_FLAGS = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
                    getattr(os, "O_NOFOLLOW", 0))
 FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -71,7 +72,7 @@ def manifests(descriptor):
     return {name: read_manifest(descriptor, name) for name in manifest_names(descriptor)}
 
 
-def snapshot(directory):
+def snapshot(directory, owned=None):
     directory = Path(os.path.abspath(directory))
     parent_descriptor, parent_stat = open_real_directory(directory.parent, "runs parent")
     try:
@@ -93,6 +94,7 @@ def snapshot(directory):
                 "parent": identity(parent_stat),
                 "directory": identity(opened),
                 "manifests": manifests(descriptor),
+                "owned": owned,
             }
         finally:
             os.close(descriptor)
@@ -183,8 +185,57 @@ def validate_snapshot(expected):
     if (not isinstance(expected, dict) or expected.get("schema") != SNAPSHOT_SCHEMA or
             not isinstance(expected.get("parent"), dict) or
             not isinstance(expected.get("directory"), dict) or
-            not isinstance(expected.get("manifests"), dict)):
+            not isinstance(expected.get("manifests"), dict) or
+            not isinstance(expected.get("owned"), (str, type(None)))):
         raise ValueError("invalid runs snapshot")
+
+
+def valid_sibling_transition(name, before, after):
+    # ponytail: semantic validation preserves inherited overlap; use a
+    # privileged manifest writer if hostile same-UID isolation is required.
+    helper = Path(__file__).resolve().parents[1] / "ledger-view.py"
+    spec = importlib.util.spec_from_file_location("ledger_view", helper)
+    ledger_view = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ledger_view)
+
+    def values(encoded, accounting=True):
+        content = base64.b64decode(encoded, validate=True).decode("utf-8")
+        parsed = ledger_view.parse_meta(content, Path(name))
+        if accounting and ledger_view.manifest_row(Path(name), parsed) is None:
+            raise ValueError(f"invalid accounting manifest: {name}")
+        return parsed
+
+    current = values(after)
+    if before is None:
+        state = current.get("accounting_state")
+        phase = current.get("phase")
+        return ((state == "reserved" and phase == "spawned") or
+                (state in ledger_view.TERMINAL_STATES and
+                 phase in {state, "completed", "abandoned"}))
+
+    original = values(before, accounting=False)
+    if original == current:
+        return True
+    mutable = {
+        "phase", "accounting_schema", "accounting_state", "terminal_at", "turns", "effective_cost",
+        "exit_status", "cost_basis", "role_exit", "updated_at",
+    }
+    if any(original.get(key) != current.get(key)
+           for key in set(original) | set(current) if key not in mutable):
+        return False
+    if original.get("accounting_schema") != "1":
+        return (
+            original.get("phase") == "resolved" and
+            current.get("accounting_schema") == "1" and
+            current.get("phase") in {"launch_void", "abandoned"} and
+            current.get("accounting_state") == "launch_void"
+        )
+    return (
+        original.get("phase") == "spawned" and
+        original.get("accounting_state") == "reserved" and
+        current.get("accounting_state") in ledger_view.TERMINAL_STATES and
+        current.get("phase") in {"completed", "abandoned"}
+    )
 
 
 def check(directory, expected):
@@ -211,6 +262,23 @@ def check(directory, expected):
                 actual = None
             if identity_matches and actual == expected["manifests"]:
                 return True
+            owned = expected["owned"]
+            if identity_matches and actual is not None and owned:
+                missing = set(expected["manifests"]) - set(actual)
+                owned_changed = actual.get(owned) != expected["manifests"].get(owned)
+                invalid = [
+                    name for name, content in actual.items()
+                    if name != owned and not valid_sibling_transition(
+                        name, expected["manifests"].get(name), content,
+                    )
+                ]
+                if not missing and not owned_changed and not invalid:
+                    return True
+                if not missing and not owned_changed:
+                    for name in invalid:
+                        quarantine(descriptor, name)
+                    os.fsync(descriptor)
+                    return False
             restore_manifests(descriptor, expected["manifests"])
             return False
         finally:
@@ -220,11 +288,12 @@ def check(directory, expected):
 
 
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in {"snapshot", "check"}:
-        raise SystemExit("usage: runs-integrity.py {snapshot|check} RUNS_DIR")
+    if len(sys.argv) not in {3, 4} or sys.argv[1] not in {"snapshot", "check"}:
+        raise SystemExit("usage: runs-integrity.py {snapshot|check} RUNS_DIR [OWNED_MANIFEST]")
     directory = Path(sys.argv[2])
     if sys.argv[1] == "snapshot":
-        print(json.dumps(snapshot(directory), sort_keys=True, separators=(",", ":")))
+        owned = sys.argv[3] if len(sys.argv) == 4 else None
+        print(json.dumps(snapshot(directory, owned), sort_keys=True, separators=(",", ":")))
         return
     expected = json.load(sys.stdin)
     if not check(directory, expected):

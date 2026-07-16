@@ -1101,7 +1101,7 @@ else
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
       elif ! RUNS_META_SNAPSHOT="$(python3 "$KIT_DIR/scripts/lib/runs-integrity.py" \
-          snapshot "$RUNS_DIR")"; then
+          snapshot "$RUNS_DIR" "$(basename "$MANIFEST")")"; then
         GO_ISSUED=0
         echo "could not snapshot run manifests; no task was submitted" >&2
         terminate_run_group
