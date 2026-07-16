@@ -7,6 +7,9 @@ helper output are not compatibility promises.
 
 ## 1.2.0 — 2026-07-15
 
+- Uses the fixed Command Line Tools Python binary when available so macOS
+  Seatbelt runs do not invoke the `/usr/bin/python3` xcrun shim or write its
+  cache outside the certified sandbox.
 - Adds validated ticket-worktree selection to `preflight` and `next-stage`.
 - Adds `ticket-state` as the trusted path from ignored Linear operator state to
   committed ticket state.

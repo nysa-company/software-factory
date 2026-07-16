@@ -33,6 +33,8 @@ usage() {
 }
 
 BOOTSTRAP_PYTHON="/usr/bin/python3"
+[[ ! -x /Library/Developer/CommandLineTools/usr/bin/python3 ]] ||
+  BOOTSTRAP_PYTHON="/Library/Developer/CommandLineTools/usr/bin/python3"
 [[ -x "$BOOTSTRAP_PYTHON" ]] || die "fixed system python3 is required"
 ACCOUNT_HOME="$("$BOOTSTRAP_PYTHON" -I -S - <<'PY'
 import os

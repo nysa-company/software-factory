@@ -13,6 +13,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - Linux and macOS system-Bash verification both feed the required aggregate `ci` status. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
+- On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - Primary role routing is explicit: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/medium; Spec-linter and Test-author use Claude Fable 5/medium; Reviewer uses Claude Sonnet 5/medium. Cursor remains the family-matched fallback.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contract 1.1 keeps live tickets serialized by default and permits an explicit two-ticket lease pilot with exact worktree isolation, atomic budget reservations, and opaque leases confined to trusted helpers. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
@@ -155,6 +156,10 @@ Hermes contract 1.1 preserves one-ticket behavior by default and adds an opt-in 
 Category: Decision
 
 The initial two-ticket pilot keeps one dispatcher, exact per-ticket branches and linked worktrees, sequential roles within each ticket, and sequential PR merges. Missing, stale, or mismatched leases fail before task submission; opaque lease IDs remain confined to trusted helpers; maintenance blocks claims and renewals while matching lease release remains available for drain; activation and rollback refuse until every lease is gone. A merge queue remains deferred until measured merge contention justifies it.
+
+## 2026-07-16 — Decision 13: Fixed Python inside macOS release sandboxes
+
+Release `71c17f2` passed protected CI but local production installation exposed a host-specific incompatibility: `/usr/bin/python3` invoked xcrun, whose cache write was correctly denied outside the Seatbelt workspace. The launcher now selects the fixed Command Line Tools Python binary when present, and install/certification sandboxes expose that same fixed interpreter through their trusted tool directory. Filesystem permissions remain default-deny; no external cache path is allowlisted.
 
 ## 2026-07-15 — Decision 14: Explicit primary role model routing
 

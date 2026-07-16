@@ -1106,11 +1106,11 @@ if os.path.isfile("/usr/bin/xcode-select"):
         if os.path.isfile(developer_git):
             override_bin = os.path.join(scratch, "factory-tools")
             os.makedirs(override_bin, exist_ok=True)
-            for name in ("git", "git-receive-pack", "git-upload-pack"):
+            for name in ("git", "git-receive-pack", "git-upload-pack", "python3"):
                 target = os.path.join(developer_bin, name)
                 link = os.path.join(override_bin, name)
                 if not os.path.isfile(target):
-                    raise SystemExit("selected developer Git helper is missing")
+                    raise SystemExit("selected developer tool is missing")
                 if os.path.lexists(link):
                     if not os.path.islink(link) or os.readlink(link) != target:
                         raise SystemExit("sandbox Git override path is unsafe")
@@ -1496,11 +1496,11 @@ if os.path.isfile("/usr/bin/xcode-select"):
         if os.path.isfile(developer_git):
             override_bin = os.path.join(scratch, "factory-tools")
             os.makedirs(override_bin, exist_ok=True)
-            for name in ("git", "git-receive-pack", "git-upload-pack"):
+            for name in ("git", "git-receive-pack", "git-upload-pack", "python3"):
                 target = os.path.join(developer_bin, name)
                 link = os.path.join(override_bin, name)
                 if not os.path.isfile(target):
-                    raise SystemExit("selected developer Git helper is missing")
+                    raise SystemExit("selected developer tool is missing")
                 if os.path.lexists(link):
                     if not os.path.islink(link) or os.readlink(link) != target:
                         raise SystemExit("sandbox Git override path is unsafe")
