@@ -379,10 +379,14 @@ PY
 }
 
 release_provider_lock() {
+  local quarantine
   provider_lock_is_owned || return 1
-  rm -f "$PROVIDER_LOCK/owner" || return 1
-  rmdir "$PROVIDER_LOCK" || return 1
+  quarantine="$RUNS_DIR/.provider-lock-release-$CLAIM_TOKEN"
+  [[ ! -e "$quarantine" && ! -L "$quarantine" ]] || return 1
+  mv "$PROVIDER_LOCK" "$quarantine" || return 1
   HELD_PROVIDER_LOCK=0
+  rm -f "$quarantine/owner" || return 1
+  rmdir "$quarantine" || return 1
 }
 
 restore_global_if_changed() {
@@ -832,7 +836,8 @@ ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 # Serialize claim creation with kill-switch publication. Claims are mkdir
 # locks and are never reclaimed automatically; operator recovery must inspect
 # an abandoned owner record rather than guessing from a reusable PID.
-for i in $(seq 1 100); do
+LOCK_ATTEMPTS=$((PER_RUN_TIMEOUT_MIN * 600 + 100))
+for i in $(seq 1 "$LOCK_ATTEMPTS"); do
   mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
   sleep 0.1
 done
@@ -868,9 +873,8 @@ ACTIVE_RUN_EXPECTED="$(cat "$ACTIVE_RUN_FILE/owner")"
 
 # ponytail: serialize providers until an OS-enforced writer boundary can keep
 # provider processes out of factory/runs while preserving parallel execution.
-PROVIDER_LOCK_ATTEMPTS=$((PER_RUN_TIMEOUT_MIN * 600 + 100))
 PROVIDER_LOCK_TRANSIENTS=0
-for i in $(seq 1 "$PROVIDER_LOCK_ATTEMPTS"); do
+for i in $(seq 1 "$LOCK_ATTEMPTS"); do
   if mkdir "$PROVIDER_LOCK" 2>/dev/null; then
     HELD_PROVIDER_LOCK=1
     PROVIDER_LOCK_EXPECTED="$ACTIVE_RUN_EXPECTED"
@@ -890,12 +894,12 @@ for i in $(seq 1 "$PROVIDER_LOCK_ATTEMPTS"); do
     PROVIDER_LOCK_TRANSIENTS=0
   else
     owner_status=$?
-    if [[ "$owner_status" -eq 1 ]]; then
-      echo "stale provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
-    elif [[ "$owner_status" -ne 1 && "$PROVIDER_LOCK_TRANSIENTS" -lt 10 ]]; then
+    if [[ "$PROVIDER_LOCK_TRANSIENTS" -lt 10 ]]; then
       PROVIDER_LOCK_TRANSIENTS=$((PROVIDER_LOCK_TRANSIENTS + 1))
-      sleep 0.01
+      sleep 0.1
       continue
+    elif [[ "$owner_status" -eq 1 ]]; then
+      echo "stale provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
     else
       echo "unsafe provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
     fi

@@ -27,9 +27,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
 - Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require supported pending operator fields to materialize first; approval overlays are unsupported stop conditions until a trusted bundle-attestation path exists.
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
-- Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch never reclaims stale or unsafe ownership; only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
+- Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch debounces transient owner-liveness misses but never reclaims stale or unsafe ownership; normal release atomically renames an owned lock before cleanup, and only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 
 ## Log
+
+## 2026-07-16 — Decision 32: Provider-lock handoff is atomic
+
+Category: System change
+
+Concurrent launch certification exposed transient false-stale observations and an ownerless teardown window at the serialized provider lock. Launch now debounces bounded owner-liveness misses, atomically renames its owned provider lock before cleanup, and uses the configured run timeout for both launch- and provider-lock waits; stale or unsafe locks still require operator recovery.
 
 ## 2026-07-16 — Decision 31: Escalation-latency and reservation improvements
 

@@ -29,6 +29,9 @@ helper output are not compatibility promises.
   validates and restores owned ledger state after mutation, and fails role
   advancement when control state remains changed. This hardening changes no
   public launcher command, schema, or compatibility category.
+- Makes provider-lock handoff atomic, debounces bounded transient liveness
+  misses, and derives launch/provider lock waits from the configured run
+  timeout. Stale and unsafe locks remain operator-recovery conditions.
 - Keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 
 ## 1.1.0 — 2026-07-15
