@@ -10,7 +10,7 @@ set -euo pipefail
 
 PINNED_VERSION="${CLAUDE_CODE_PINNED:-2.1.207}"  # pinned at shakedown 2026-07-11
 
-BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
+BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD" MODEL="" EFFORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --budget) BUDGET="$2"; shift 2;;
@@ -18,6 +18,8 @@ while [[ $# -gt 0 ]]; do
     --timeout-min) TIMEOUT_MIN="$2"; shift 2;;
     --prompt-file) PROMPT_FILE="$2"; shift 2;;
     --workdir) WORKDIR="$2"; shift 2;;
+    --model) MODEL="$2"; shift 2;;
+    --effort) EFFORT="$2"; shift 2;;
     --) shift; break;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
@@ -43,12 +45,12 @@ esac
 # the worktree, and CI gates — not from interactive permission prompts.
 if [[ -s "$PROMPT_FILE" ]]; then
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
+    claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
     --dangerously-skip-permissions \
     --append-system-prompt "$(cat "$PROMPT_FILE")" 2>&1)" || STATUS=$?
 else
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-    claude -p "$TASK" --output-format json --max-budget-usd "$BUDGET" \
+    claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
     --dangerously-skip-permissions 2>&1)" || STATUS=$?
 fi
 STATUS="${STATUS:-0}"

@@ -11,7 +11,7 @@ set -euo pipefail
 
 PINNED_VERSION="${CODEX_PINNED:-0.144.1}"  # pinned at shakedown 2026-07-11
 
-BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
+BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD" MODEL="" EFFORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --budget) BUDGET="$2"; shift 2;;
@@ -19,6 +19,8 @@ while [[ $# -gt 0 ]]; do
     --timeout-min) TIMEOUT_MIN="$2"; shift 2;;
     --prompt-file) PROMPT_FILE="$2"; shift 2;;
     --workdir) WORKDIR="$2"; shift 2;;
+    --model) MODEL="$2"; shift 2;;
+    --effort) EFFORT="$2"; shift 2;;
     --) shift; break;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
@@ -43,7 +45,8 @@ $TASK"
 # Same call as the claude adapter: bypass the CLI sandbox; containment comes
 # from the envelope (budget, timeout), the worktree, and CI gates.
 OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
-  codex exec --json --dangerously-bypass-approvals-and-sandbox "$FULL_TASK" 2>&1)" || STATUS=$?
+  codex exec --json --dangerously-bypass-approvals-and-sandbox \
+    -m "$MODEL" -c "model_reasoning_effort=$EFFORT" "$FULL_TASK" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"
 
 # Cost estimation from token counts. If tokens are missing, emit NO cost token
