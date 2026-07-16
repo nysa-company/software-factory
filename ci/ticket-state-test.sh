@@ -72,6 +72,17 @@ import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
+printf '{"tickets":{"T-700":{"operator":{"state":"Building","state_base":"ready"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
+if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
+  >/dev/null 2>&1; then
+  echo "FAIL: operator overlay materialized a factory-owned state" >&2
+  exit 1
+fi
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+[[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+
 printf '{"tickets":{"T-700":{"operator":{"priority":"low"}}}}\n' \
   > "$PRODUCT/factory/linear-map.json"
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
@@ -275,6 +286,34 @@ git --git-dir="$REMOTE" show \
   "Software Factory <factory@local>" ]]
 [[ "$(git -C "$PRODUCT" log -1 --format='%cn <%ce>')" == \
   "Software Factory <factory@local>" ]]
+
+grep -vE '^(Operator-Approval|Operator-Approval-Attestation|Resume-State):' \
+  "$PRODUCT/factory/tickets/T-700.md" | \
+  sed 's/^State: Approved$/State: Blocked-Escalated/' > "$TMP/ticket"
+printf 'Resume-State: Building\n' >> "$TMP/ticket"
+mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "blocked resume fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
+printf '{"tickets":{"T-700":{"operator":{"state":"Planning","state_base":"blocked-escalated"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
+if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
+  >/dev/null 2>&1; then
+  echo "FAIL: mismatched blocked resume was materialized" >&2
+  exit 1
+fi
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+[[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+printf '{"tickets":{"T-700":{"operator":{"state":"Building","state_base":"blocked-escalated"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
+grep -q '^State: Building$' "$PRODUCT/factory/tickets/T-700.md"
+python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+import json, sys
+assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
+PY
 
 printf '{"tickets":{"T-700":{}}}\n' > "$PRODUCT/factory/linear-map.json"
 

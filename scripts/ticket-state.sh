@@ -70,6 +70,15 @@ if current_state != effective_state and effective_state in {"awaiting approval",
         f"evidence-sensitive state requires a dedicated attestation: {effective_state}"
     )
 legal_approval = current_state == "awaiting approval" and effective_state == "approved"
+resume_state = field(current_text, "Resume-State").lower()
+legal_resume = (
+    current_state == "blocked-escalated"
+    and effective_state == resume_state
+    and effective_state in {"backlog", "ready", "planning", "building", "review"}
+)
+legal_ready = current_state == "backlog" and effective_state == "ready"
+if current_state != effective_state and not (legal_ready or legal_resume or legal_approval):
+    raise SystemExit("operator overlay cannot materialize a factory-owned state transition")
 if current_state != effective_state and effective_state == "approved" and not legal_approval:
     raise SystemExit("operator approval requires committed Awaiting Approval state")
 current_approval = field(current_text, "Operator-Approval")

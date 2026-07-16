@@ -211,8 +211,13 @@ def committed_factory_file(factory_dir, ticket_id, filename):
         )
         if result.returncode == 0:
             return result.stdout, ref
-    if fallback.is_file():
-        return fallback.read_text(), "main-worktree"
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", f"HEAD:{relative}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout, "HEAD"
     return None, None
 
 

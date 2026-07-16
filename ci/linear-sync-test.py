@@ -458,10 +458,40 @@ class LinearSyncTest(unittest.TestCase):
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "config", "user.name", "test"], check=True)
         subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.com"], check=True)
+        bundle = self.factory / "tickets" / "T-001-bundle.md"
+        bundle.write_text("Committed bundle.\n")
         subprocess.run(["git", "-C", str(self.root), "add", "factory"], check=True)
         subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "main ticket"], check=True)
-        subprocess.run(["git", "-C", str(self.root), "switch", "-qc", "ticket/T-001"], check=True)
         path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("Build it.", "Dirty checkout contract."))
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Build it.", text)
+        self.assertNotIn("Dirty checkout contract.", text)
+        self.assertEqual(source, "HEAD")
+        bundle.write_text("Dirty bundle.\n")
+        bundle_text, bundle_source = LINEAR.committed_factory_file(
+            self.factory, "T-001", "T-001-bundle.md"
+        )
+        self.assertEqual(bundle_text, "Committed bundle.\n")
+        self.assertEqual(bundle_source, "HEAD")
+        subprocess.run(["git", "-C", str(self.root), "restore", str(path)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "restore", str(bundle)], check=True)
+        untracked = self.factory / "tickets" / "T-999.md"
+        untracked.write_text("# Untracked\n\nState: Ready\n")
+        self.assertEqual(LINEAR.committed_ticket(self.factory, "T-999"), (None, None))
+        self.reconcile()
+        self.assertNotIn("T-999", self.mapping["tickets"])
+        untracked.unlink()
+        untracked_bundle = self.factory / "tickets" / "T-999-bundle.md"
+        untracked_bundle.write_text("Untracked bundle.\n")
+        self.assertEqual(
+            LINEAR.committed_factory_file(
+                self.factory, "T-999", "T-999-bundle.md"
+            ),
+            (None, None),
+        )
+        untracked_bundle.unlink()
+        subprocess.run(["git", "-C", str(self.root), "switch", "-qc", "ticket/T-001"], check=True)
         path.write_text(path.read_text().replace("Build it.", "Branch-authored contract."))
         subprocess.run(["git", "-C", str(self.root), "commit", "-qam", "ticket contract"], check=True)
         subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)

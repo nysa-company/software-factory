@@ -108,6 +108,10 @@ accepts that evidence only at the verified remote tip with the expected
 single-ticket commit shape. Every automatic helper push is bound to the exact product
 origin in the active generation's owner-only certification receipt; mutable
 Git remote configuration cannot redirect it.
+Overlay-driven state materialization is limited to Backlog-to-Ready, the exact
+declared non-sensitive resume from Blocked-Escalated, and attested approval;
+factory-owned phases use the transition action. Projection falls back to
+committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
 
 The first role launch records a `Kit-SHA:` lease on the canonical ticket while
 holding `factory/.launch.lock`. Every later preflight, sequencer call, and run

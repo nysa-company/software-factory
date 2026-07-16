@@ -25,8 +25,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Fresh ticket worktrees are created from protected main and pass through trusted materialization before preflight so their exact remote branch exists. Linear Project removal is represented explicitly in the ignored overlay and clears the effective initiative until reassignment.
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
 - Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require pending operator fields to materialize first, and approval readiness verifies the actual certified remote tip as well as HEAD and tracking.
+- Operator overlays may materialize only kickoff, declared non-sensitive resume, and attested approval state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
 
 ## Log
+
+## 2026-07-16 — Decision 27: State ownership and projection are committed
+
+Category: System change
+
+Operator state materialization is restricted to Backlog-to-Ready, the declared non-sensitive Blocked resume, and attested approval. Linear projection reads the exact ticket ref or committed HEAD and skips files with no committed source.
 
 ## 2026-07-16 — Decision 26: Ticket evidence must be clean and remotely current
 

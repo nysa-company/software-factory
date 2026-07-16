@@ -721,6 +721,9 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
     )
     for path in ticket_paths:
         text, source_ref = committed_ticket(factory_dir, path.stem)
+        if text is None:
+            log(f"{path.stem}: no committed ticket source, skipping")
+            continue
         ticket = parse_ticket_text(path.stem, path, text)
         if ticket["state"] not in STATES:
             log(f"{ticket['id']}: unknown state '{ticket['state']}', skipping")
