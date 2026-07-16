@@ -190,6 +190,18 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "operator approval fixture"
 git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
+printf '{"tickets":{"T-700":{"operator":{"priority":"normal"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
+  >/dev/null 2>&1; then
+  echo "FAIL: already-Awaiting ticket accepted unrelated materialization" >&2
+  exit 1
+fi
+grep -q '^State: Awaiting Approval$' "$PRODUCT/factory/tickets/T-700.md"
+grep -q '^Priority: low$' "$PRODUCT/factory/tickets/T-700.md"
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+[[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+
 printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Linear"}}}}\n' \
   > "$PRODUCT/factory/linear-map.json"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \

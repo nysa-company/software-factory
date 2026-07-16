@@ -69,7 +69,12 @@ if current_state != effective_state and effective_state in {"awaiting approval",
     )
 current_approval = field(current_text, "Operator-Approval")
 effective_approval = field(effective_text, "Operator-Approval")
-if effective_state == "approved" or effective_approval != current_approval:
+if (
+    current_state in {"awaiting approval", "approved"}
+    or effective_state in {"awaiting approval", "approved"}
+    or current_approval
+    or effective_approval
+):
     raise SystemExit(
         "approval materialization requires the unavailable dedicated bundle-attestation path"
     )

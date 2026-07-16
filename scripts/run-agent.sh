@@ -650,6 +650,10 @@ PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
 # then also reserves against ~/.factory/global-ledger.csv, so N projects can't
 # multiply the daily budget silently. Absent file = single-project behavior.
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
+if ! factory_validate_runtime_overrides; then
+  echo "$FACTORY_RUNTIME_OVERRIDE_ERROR; no task was submitted" >&2
+  exit 2
+fi
 factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 GLOBAL_LEDGER="" GLOBAL_LOCK=""
 if [[ -f "$GLOBAL_ENV" ]]; then
@@ -674,7 +678,6 @@ if ! factory_validate_runtime_overrides; then
   echo "$FACTORY_RUNTIME_OVERRIDE_ERROR; no task was submitted" >&2
   exit 2
 fi
-
 # --- kill switch check (anchored) ---
 if [[ -f "$FACTORY_DIR/KILL" ]]; then
   echo "KILL file present ($FACTORY_DIR/KILL) — factory is stopped. Remove it to resume." >&2

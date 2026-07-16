@@ -117,6 +117,11 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     exit 1
   }
 TICKET_FILE="$EFFECTIVE_TICKET"
+if grep -qiE '^State:[[:space:]]*(Awaiting Approval|Approved)[[:space:]]*$' "$TICKET_FILE" ||
+   grep -qiE '^Operator-Approval:' "$TICKET_FILE"; then
+  echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
+  exit 1
+fi
 if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   echo "REFUSE MAINTENANCE file present — factory control plane is paused"
   exit 1

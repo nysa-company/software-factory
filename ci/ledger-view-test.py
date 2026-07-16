@@ -158,6 +158,34 @@ class LedgerViewTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(f"invalid durable ledger {field.split('_')[0]}", result.stderr)
 
+    def test_effective_view_requires_a_real_durable_ledger(self):
+        ledger = self.root / "factory" / "ledger.csv"
+        original = ledger.read_bytes()
+        outside = Path(self.temp.name) / "outside-ledger.csv"
+        outside.write_bytes(original)
+        for replacement in ("missing", "directory", "symlink"):
+            if ledger.is_symlink() or ledger.is_file():
+                ledger.unlink()
+            elif ledger.exists():
+                ledger.rmdir()
+            if replacement == "directory":
+                ledger.mkdir()
+            elif replacement == "symlink":
+                ledger.symlink_to(outside)
+
+            reduced = run("refresh", "--factory-root", self.root, check=False)
+            budget = subprocess.run(
+                [str(SPEND_ROLLUP), "2026-07-14"], check=False, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env={**os.environ, "FACTORY_ROOT": str(self.root)},
+            )
+            self.assertNotEqual(reduced.returncode, 0, replacement)
+            self.assertNotEqual(budget.returncode, 0, replacement)
+            self.assertIn("durable ledger", reduced.stderr)
+
+        ledger.unlink()
+        ledger.write_bytes(original)
+
     def test_unresolved_durable_reservation_is_retained(self):
         (self.root / "factory" / "ledger.csv").write_text(
             HEADER
@@ -569,6 +597,28 @@ class LedgerViewTest(unittest.TestCase):
 
         git(worktree, "checkout", "--", "factory/ledger.csv")
         before = (worktree / "factory" / "ledger.csv").read_bytes()
+        durable = self.root / "factory" / "ledger.csv"
+        saved = self.root / "factory" / "ledger.saved"
+        durable.rename(saved)
+        for replacement in ("missing", "directory", "symlink"):
+            if durable.is_symlink():
+                durable.unlink()
+            elif durable.is_dir():
+                durable.rmdir()
+            if replacement == "directory":
+                durable.mkdir()
+            elif replacement == "symlink":
+                durable.symlink_to(saved)
+            refused = run(
+                "project", "--factory-root", self.root, "--workdir", worktree,
+                "--ticket", "T-123", check=False,
+            )
+            self.assertNotEqual(refused.returncode, 0, replacement)
+            self.assertIn("durable ledger", refused.stderr)
+            self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), before)
+        durable.unlink()
+        saved.rename(durable)
+
         claim = self.root / "factory" / ".active-runs" / "T-123.planner.lock"
         claim.mkdir(parents=True)
         refused = run(

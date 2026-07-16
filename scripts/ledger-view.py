@@ -57,9 +57,19 @@ def validate_ledger_row(row, number, path):
 
 
 def read_csv(path):
-    if not path.is_file():
-        return []
-    with path.open(newline="", encoding="utf-8") as handle:
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        fail(f"durable ledger is missing: {path}")
+    if not stat.S_ISREG(before.st_mode):
+        fail(f"durable ledger must be a regular non-symlink file: {path}")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    opened = os.fstat(descriptor)
+    if ((before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode)) !=
+            (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode))):
+        os.close(descriptor)
+        fail(f"durable ledger changed while opening: {path}")
+    with os.fdopen(descriptor, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if tuple(reader.fieldnames or ()) not in HEADERS:
             fail(f"unsupported ledger schema: {','.join(reader.fieldnames or ())}")

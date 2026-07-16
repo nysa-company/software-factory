@@ -104,6 +104,11 @@ fi
 
 # --- optional machine-level cap (same anchor as run-agent.sh) ---
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
+if ! factory_validate_runtime_overrides; then
+  fail "$FACTORY_RUNTIME_OVERRIDE_ERROR"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
 factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 GLOBAL_LEDGER=""
 if [[ -f "$GLOBAL_ENV" ]]; then
@@ -120,7 +125,6 @@ if ! factory_validate_runtime_overrides; then
   echo "PREFLIGHT FAIL"
   exit 1
 fi
-
 # (a) backend routes — resolve without submitting any task. The authenticated
 # isolated harness fixes the mock adapter before this script starts, so it must
 # not probe credential-bearing production CLIs.

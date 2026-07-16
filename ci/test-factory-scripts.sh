@@ -44,6 +44,8 @@ write_envelope() {
     'factory/.launch.lock/' \
     'factory/.ledger.lock/' > "$1/.gitignore"
   printf '%s\n' "$KIT_SHA" > "$1/factory/KIT_PIN"
+  printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' \
+    > "$1/factory/ledger.csv"
   [[ "$git_mode" == "no-git" ]] || init_product_git "$1"
 }
 
@@ -641,22 +643,26 @@ env -u FACTORY_TEST_MODE -u FACTORY_TRUSTED_TEST_HARNESS \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-204 -- "forbidden mock" >/dev/null 2>&1 ||
   MOCK_GUARD_STATUS=$?
-if [[ "$MOCK_GUARD_STATUS" -eq 2 && ! -f "$MOCK_GUARD/factory/ledger.csv" ]]; then
+if [[ "$MOCK_GUARD_STATUS" -eq 2 &&
+      "$(wc -l < "$MOCK_GUARD/factory/ledger.csv")" -eq 1 ]]; then
   pass "mock override requires trusted test harness"
 else
   fail "mock override requires trusted test harness" "status $MOCK_GUARD_STATUS"
 fi
 
 PROBE_GUARD_STATUS=0
-env -u FACTORY_TRUSTED_TEST_HARNESS \
-  FACTORY_TEST_MODE=1 FACTORY_PROBE_CODEX=UNAVAILABLE:test \
+PROBE_GUARD_OUT="$(env -u FACTORY_TEST_MODE -u FACTORY_TRUSTED_TEST_HARNESS \
+  FACTORY_PROBE_CODEX=UNAVAILABLE:test \
   FACTORY_ROOT="$MOCK_GUARD" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
-  "$RUN_AGENT" --role planner --ticket T-204 -- "forbidden probe" >/dev/null 2>&1 ||
+  "$RUN_AGENT" --role planner --ticket T-204 -- "forbidden probe" 2>&1)" ||
   PROBE_GUARD_STATUS=$?
-if [[ "$PROBE_GUARD_STATUS" -eq 2 && ! -f "$MOCK_GUARD/factory/ledger.csv" ]]; then
+if [[ "$PROBE_GUARD_STATUS" -eq 2 &&
+      "$PROBE_GUARD_OUT" == *"trusted internal test harness"* &&
+      "$(wc -l < "$MOCK_GUARD/factory/ledger.csv")" -eq 1 ]]; then
   pass "probe override requires trusted test harness"
 else
-  fail "probe override requires trusted test harness" "status $PROBE_GUARD_STATUS"
+  fail "probe override requires trusted test harness" \
+    "status $PROBE_GUARD_STATUS: $PROBE_GUARD_OUT"
 fi
 
 NEXT_OVERRIDE_STATUS=0
@@ -851,7 +857,7 @@ PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$INVALID" \
   "$RUN_AGENT" --role planner --ticket T-213 -- "invalid route" >/dev/null 2>&1 ||
   INVALID_STATUS=$?
 if [[ "$INVALID_STATUS" -eq 6 && ! -s "$INVALID_TRACE" &&
-      ! -f "$INVALID/factory/ledger.csv" ]]; then
+      "$(wc -l < "$INVALID/factory/ledger.csv")" -eq 1 ]]; then
   pass "invalid primary fails closed before task submission"
 else
   fail "invalid primary fails closed before task submission" "status $INVALID_STATUS"
@@ -889,7 +895,7 @@ PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$WRONG_ROLE" \
   "$RUN_AGENT" --role builder --ticket T-218 -- "wrong role" >/dev/null 2>&1 ||
   WRONG_ROLE_STATUS=$?
 if [[ "$WRONG_ROLE_STATUS" -eq 10 &&
-      ! -f "$WRONG_ROLE/factory/ledger.csv" &&
+      "$(wc -l < "$WRONG_ROLE/factory/ledger.csv")" -eq 1 &&
       -d "$WRONG_ROLE/factory/runs" &&
       -z "$(find "$WRONG_ROLE/factory/runs" -name '*.meta' -print -quit)" ]] &&
    ! grep -q '^Kit-SHA:' "$WRONG_ROLE/factory/tickets/T-218.md"; then
@@ -937,7 +943,8 @@ for PIN_CASE in missing abbreviated mismatch; do
     FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
     "$RUN_AGENT" --role planner --ticket T-218 -- "strict pin" >/dev/null 2>&1 ||
     PIN_STATUS=$?
-  if [[ "$PIN_STATUS" -eq 3 && ! -f "$PIN_ROOT/factory/ledger.csv" &&
+  if [[ "$PIN_STATUS" -eq 3 &&
+        "$(wc -l < "$PIN_ROOT/factory/ledger.csv")" -eq 1 &&
         ! -d "$PIN_ROOT/factory/runs" ]]; then
     pass "run-agent refuses $PIN_CASE kit pin before mutation"
   else
@@ -1054,7 +1061,8 @@ FACTORY_ROOT="$MAINT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   "$RUN_AGENT" --role planner --ticket T-220 -- "maintenance" >/dev/null 2>&1 ||
   MAINT_STATUS=$?
 MAINT_STAGE="$(FACTORY_ROOT="$MAINT_ROOT" "$NEXT_STAGE" --ticket T-220 2>&1)"
-if [[ "$MAINT_STATUS" -eq 4 && ! -f "$MAINT_ROOT/factory/ledger.csv" &&
+if [[ "$MAINT_STATUS" -eq 4 &&
+      "$(wc -l < "$MAINT_ROOT/factory/ledger.csv")" -eq 1 &&
       "$MAINT_STAGE" == "REFUSE MAINTENANCE file present"* ]]; then
   pass "maintenance blocks initial launch and sequencing"
 else
@@ -1081,7 +1089,7 @@ rmdir "$AFTER_LOCK/factory/.launch.lock"
 wait "$AFTER_LOCK_PID"
 AFTER_LOCK_STATUS=$?
 if [[ "$AFTER_LOCK_STATUS" -eq 4 &&
-      ! -f "$AFTER_LOCK/factory/ledger.csv" ]] &&
+      "$(wc -l < "$AFTER_LOCK/factory/ledger.csv")" -eq 1 ]] &&
    grep -q 'appeared after launch lock acquisition' "$TMP/after-lock.out"; then
   pass "maintenance publication wins after launch-lock race"
 else
@@ -1108,7 +1116,8 @@ printf '%s\n' "0000000000000000000000000000000000000000" \
 rmdir "$PIN_RACE/factory/.launch.lock"
 wait "$PIN_RACE_PID"
 PIN_RACE_STATUS=$?
-if [[ "$PIN_RACE_STATUS" -eq 3 && ! -f "$PIN_RACE/factory/ledger.csv" ]] &&
+if [[ "$PIN_RACE_STATUS" -eq 3 &&
+      "$(wc -l < "$PIN_RACE/factory/ledger.csv")" -eq 1 ]] &&
    grep -q 'does not match the selected kit SHA after launch lock acquisition' \
      "$TMP/pin-race.out"; then
   pass "post-lock pin recheck blocks activation-path drift"
@@ -1689,6 +1698,19 @@ mkdir -p "$WALK/factory/tickets"
 printf '# T-500\n' > "$WALK/factory/tickets/T-500.md"
 ledger_header > "$WALK/factory/ledger.csv"
 WALK_OK=1
+cat > "$WALK/factory/tickets/T-499.md" <<'TICKET'
+# T-499
+State: Review
+Operator-Approval: Linear
+TICKET
+expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
+  "$WALK" T-499 || WALK_OK=0
+cat > "$WALK/factory/tickets/T-499.md" <<'TICKET'
+# T-499
+State: Approved
+TICKET
+expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
+  "$WALK" T-499 || WALK_OK=0
 expect_stage "RUN planner" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 planner >> "$WALK/factory/ledger.csv"
 expect_stage "RUN spec-linter" "$WALK" T-500 || WALK_OK=0
@@ -1724,7 +1746,8 @@ expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for app
 rm "$WALK/factory/linear-map.json"
 printf 'Operator-Approval: Linear because the operator said so\n' >> \
   "$WALK/factory/tickets/T-500.md"
-expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
+expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
+  "$WALK" T-500 || WALK_OK=0
 grep -v '^Operator-Approval:' "$WALK/factory/tickets/T-500.md" > \
   "$WALK/factory/tickets/T-500.tmp"
 mv "$WALK/factory/tickets/T-500.tmp" "$WALK/factory/tickets/T-500.md"
@@ -1920,7 +1943,8 @@ ROLE_PROTECTED_STAGE="$(FACTORY_ROOT="$ROLE_EXIT_ROOT" \
 if [[ "$ROLE_PROTECTED_STATUS" -eq 11 &&
       "$ROLE_PROTECTED_LOCAL" != "$ROLE_PROTECTED_BEFORE" &&
       "$ROLE_PROTECTED_REMOTE" == "$ROLE_PROTECTED_BEFORE" &&
-      "$ROLE_PROTECTED_STAGE" == "RUN planner" ]] &&
+      "$ROLE_PROTECTED_STAGE" == \
+        "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" ]] &&
    grep -q '^State: Done$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
    grep -q '^Operator-Approval: Linear$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
    grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-protected.out" &&

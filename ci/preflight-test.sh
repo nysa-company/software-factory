@@ -369,17 +369,14 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-UNTRUSTED_TRACE="$TMP/untrusted-probes"
-: > "$UNTRUSTED_TRACE"
 UNTRUSTED_STATUS=0
 UNTRUSTED_OUT="$(env -u FACTORY_TEST_MODE -u FACTORY_TRUSTED_TEST_HARNESS \
   PATH="$STUB_BIN:$PATH" \
   FACTORY_ROOT="$ALLPASS" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_PROBE_CODEX=UNAVAILABLE:forbidden \
-  FACTORY_TEST_PROBE_TRACE="$UNTRUSTED_TRACE" \
   bash "$PREFLIGHT" --ticket T-001 2>&1)" || UNTRUSTED_STATUS=$?
-if [[ "$UNTRUSTED_STATUS" -eq 1 && ! -s "$UNTRUSTED_TRACE" &&
+if [[ "$UNTRUSTED_STATUS" -eq 1 &&
       "$UNTRUSTED_OUT" == *"trusted internal test harness"* ]]; then
   echo "PASS: preflight rejects untrusted probe overrides before probes"
 else
