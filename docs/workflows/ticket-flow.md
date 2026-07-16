@@ -31,6 +31,6 @@ Reviewer is read-only and must leave the branch, HEAD, and worktree unchanged.
 
 ## Branch mechanics
 
-- Branch per ticket: `ticket/<id>-<slug>`.
+- Branch per ticket: exactly `<TICKET_BRANCH_PREFIX><T-NNN>` (default `ticket/T-NNN`), with no slug or suffix.
 - Commit order is load-bearing: test commits (author: test-author) first, implementation commits (author: builder) after. The reviewer verifies authorship; CI verifies the builder's commits touch no test paths.
 - One PR per ticket, merged only via the operator's approval on the bundle. Protected branch; no direct pushes to main.

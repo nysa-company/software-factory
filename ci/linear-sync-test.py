@@ -397,6 +397,57 @@ class LinearSyncTest(unittest.TestCase):
         self.assertEqual(source, "refs/heads/ticket/T-001")
         self.assertIn("Build it.", path.read_text())
 
+    def test_pushed_ticket_branch_projects_without_fetch(self):
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "factory"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "main ticket"], check=True)
+        remote = self.root / ".git" / "test-origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "remote", "add", "origin", str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "switch", "-qc", "ticket/T-001"], check=True)
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("Build it.", "Pushed branch contract."))
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qam", "ticket contract"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "push", "-q", "origin", "HEAD:refs/heads/ticket/T-001"],
+            check=True,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.root), "rev-parse", "refs/remotes/origin/ticket/T-001"],
+                text=True,
+            ).strip(),
+            subprocess.check_output(
+                ["git", "-C", str(self.root), "rev-parse", "refs/heads/ticket/T-001"],
+                text=True,
+            ).strip(),
+        )
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Pushed branch contract.", text)
+        self.assertEqual(source, "refs/remotes/origin/ticket/T-001")
+
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "ticket/T-001"], check=True)
+        path.write_text(path.read_text().replace("Pushed branch contract.", "Updated branch contract."))
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qam", "updated contract"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Pushed branch contract.", text)
+        self.assertNotIn("Updated branch contract.", text)
+        self.assertEqual(source, "refs/remotes/origin/ticket/T-001")
+
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "ticket/T-001"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "push", "-q", "origin", "HEAD:refs/heads/ticket/T-001"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Updated branch contract.", text)
+        self.assertEqual(source, "refs/remotes/origin/ticket/T-001")
+
     def test_failure_health_preserves_last_success(self):
         self.mapping["_sync"] = {"last_success_at": "2026-07-13T12:00:00+00:00"}
         LINEAR.record_failure(self.map_path, self.mapping, RuntimeError("offline"))
