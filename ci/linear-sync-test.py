@@ -164,6 +164,7 @@ class LinearSyncTest(unittest.TestCase):
         self.factory = self.root / "factory"
         (self.factory / "initiatives").mkdir(parents=True)
         (self.factory / "tickets").mkdir()
+        (self.factory / "runs").mkdir()
         (self.factory / "initiatives" / "I-001.md").write_text(
             "# First initiative\n\nStatus: planned\nTarget-Date: 2026-09-30\n\n"
             "## Summary\n\nDeliver the first outcome.\n"
