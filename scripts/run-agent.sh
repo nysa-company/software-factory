@@ -35,6 +35,11 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/product-remote.sh"
+unset FACTORY_TRUSTED_PRODUCT_ORIGIN
+readonly FACTORY_TRUSTED_PRODUCT_ORIGIN="${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}"
+unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
 DISPATCH_LEASE_ID="${FACTORY_DISPATCH_LEASE_ID:-}"
 unset FACTORY_DISPATCH_LEASE_ID
 
@@ -103,6 +108,7 @@ ROLE_EXIT_STATUS=""
 ROLE_HEAD_BEFORE=""
 ROLE_BRANCH_BEFORE=""
 ROLE_REMOTE_BEFORE=""
+PRODUCT_REMOTE=""
 ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
@@ -277,7 +283,7 @@ terminate_run_group() {
 }
 
 role_remote_head() {
-  git -C "$WORKDIR" ls-remote --heads origin \
+  git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
     "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}'
 }
 
@@ -360,6 +366,9 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   GLOBAL_LOCK="$(dirname "$GLOBAL_ENV")/.ledger.lock"
   [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
 fi
+# Product and machine configuration are not trusted to supply launcher-only
+# authority, and adapters must never inherit it.
+unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
 if ! factory_validate_runtime_overrides; then
   echo "$FACTORY_RUNTIME_OVERRIDE_ERROR; no task was submitted" >&2
   exit 2
@@ -376,6 +385,10 @@ if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
 fi
 [[ -f "$TICKET_FILE" ]] || { echo "ticket file missing from worktree: $TICKET_FILE" >&2; exit 3; }
 if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+  PRODUCT_REMOTE="$(factory_capture_product_remote "$REPO_ROOT" "$FACTORY_TRUSTED_PRODUCT_ORIGIN")" || {
+    echo "role_exit_remote_mismatch: certified product push destination validation failed" >&2
+    exit 11
+  }
   ROLE_BRANCH_BEFORE="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
   [[ -n "$ROLE_BRANCH_BEFORE" && -n "$ROLE_HEAD_BEFORE" ]] || {
@@ -509,9 +522,19 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 && "$TICKET_AFFINITY_WAS_MISSING" -eq 1 ]]; th
     exit 11
   }
   ROLE_HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD)"
-  git -C "$WORKDIR" push --no-force origin \
-    "HEAD:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1 || {
+  factory_product_remote_matches "$REPO_ROOT" "$PRODUCT_REMOTE" || {
+    echo "role_exit_remote_mismatch: $FACTORY_PRODUCT_REMOTE_ERROR" >&2
+    exit 11
+  }
+  ROLE_TRACKING_BEFORE="$(factory_remote_tracking_tip "$WORKDIR" "$ROLE_BRANCH_BEFORE")"
+  git -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
+    "$ROLE_HEAD_BEFORE:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1 || {
     echo "role_exit_push_failed: could not push Kit-SHA affinity" >&2
+    exit 11
+  }
+  factory_update_tracking_ref "$WORKDIR" "$ROLE_BRANCH_BEFORE" \
+    "$ROLE_HEAD_BEFORE" "$ROLE_TRACKING_BEFORE" || {
+    echo "role_exit_remote_mismatch: could not update the verified tracking ref" >&2
     exit 11
   }
 fi
@@ -766,6 +789,8 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     elif [[ "$ROLE" == "reviewer" &&
             ( -n "$ROLE_DIRTY" || "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ) ]]; then
       ROLE_EXIT_STATUS="reviewer_mutated_worktree"
+    elif ! factory_product_remote_matches "$REPO_ROOT" "$PRODUCT_REMOTE"; then
+      ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     elif [[ "$ROLE" == "reviewer" &&
             "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
@@ -777,16 +802,22 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       ROLE_EXIT_STATUS="role_exit_no_commit"
     elif [[ "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
-    elif ! git -C "$WORKDIR" push --no-force origin \
-      "HEAD:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1; then
-      ROLE_EXIT_STATUS="role_exit_push_failed"
     else
-      REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads origin \
-        "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
-      if [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
-        ROLE_EXIT_STATUS="role_exit_remote_mismatch"
+      ROLE_TRACKING_BEFORE="$(factory_remote_tracking_tip "$WORKDIR" "$ROLE_BRANCH_BEFORE")"
+      if ! git -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
+        "$ROLE_HEAD_AFTER:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1; then
+        ROLE_EXIT_STATUS="role_exit_push_failed"
       else
-        ROLE_EXIT_STATUS="ok"
+        REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
+          "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
+        if [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
+          ROLE_EXIT_STATUS="role_exit_remote_mismatch"
+        elif ! factory_update_tracking_ref "$WORKDIR" "$ROLE_BRANCH_BEFORE" \
+          "$ROLE_HEAD_AFTER" "$ROLE_TRACKING_BEFORE"; then
+          ROLE_EXIT_STATUS="role_exit_remote_mismatch"
+        else
+          ROLE_EXIT_STATUS="ok"
+        fi
       fi
     fi
     if [[ "$ROLE_EXIT_STATUS" != "ok" ]]; then

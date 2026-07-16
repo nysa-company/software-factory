@@ -108,6 +108,7 @@ assert_helper_confinement() {
     FACTORY_DISPATCH_LEASE_ID \
     FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
     FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN \
     PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
     GIT_INDEX_FILE GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT \
     GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
@@ -136,16 +137,47 @@ tree_for_directory() {
 
 write_active() {
   local sha="$1" tree="$2" release="$3" product="${4:-$LAUNCH_PRODUCT}"
-  local active="$KITS_ROOT/projects/launchtest/active.json" temporary
+  local active="$KITS_ROOT/projects/launchtest/active.json" temporary contract
+  local origin="" product_tree="" receipt_id=""
   release="$(cd "$release" && pwd -P)"
   product="$(cd "$product" && pwd -P)"
+  contract="$(python3 - "$release/integrations/hermes/contract.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["contract_version"])
+PY
+)"
+  if [[ "$contract" == "1.2.0" ]]; then
+    origin="$(git -C "$product" remote get-url --push origin)"
+    product_tree="$(git -C "$product" rev-parse 'HEAD^{tree}')"
+    receipt_id="$(printf '%s' "$sha|$tree|$product|$origin" | shasum -a 256 | awk '{print $1}')"
+    mkdir -p "$KITS_ROOT/receipts"
+    python3 - "$KITS_ROOT/receipts/$receipt_id.json" "$receipt_id" "$sha" \
+      "$tree" "$product" "$product_tree" "$origin" "$contract" <<'PY'
+import json, sys
+path, receipt_id, sha, tree, product, product_tree, origin, contract = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "receipt_id": receipt_id,
+        "status": "pass",
+        "project": "launchtest",
+        "kit_sha": sha,
+        "kit_tree": tree,
+        "product_path": product,
+        "product_origin": origin,
+        "product_tree": product_tree,
+        "contract_version": contract,
+    }, handle)
+    handle.write("\n")
+PY
+    chmod 600 "$KITS_ROOT/receipts/$receipt_id.json"
+  fi
   temporary="$active.tmp"
-  python3 - "$temporary" "$sha" "$tree" "$release" "$product" <<'PY'
+  python3 - "$temporary" "$sha" "$tree" "$release" "$product" \
+    "$contract" "$receipt_id" "$product_tree" <<'PY'
 import json
 import sys
 
-path, sha, tree, release, product = sys.argv[1:]
-contract = json.load(open(release + "/integrations/hermes/contract.json"))["contract_version"]
+path, sha, tree, release, product, contract, receipt_id, product_tree = sys.argv[1:]
 value = {
     "generation": 1,
     "project": "launchtest",
@@ -155,6 +187,9 @@ value = {
     "product_path": product,
     "release_path": release,
 }
+if receipt_id:
+    value["receipt_id"] = receipt_id
+    value["product_tree"] = product_tree
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(value, handle)
     handle.write("\n")
@@ -178,6 +213,7 @@ run_launcher() {
     FACTORY_PROBE_CODEX=INVALID:bypass \
     FACTORY_PROBE_CLAUDE_CODE=INVALID:bypass \
     FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_BIN="$TMP/agent-bypass" \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$TMP/caller-origin-bypass.git" \
     CODEX_PINNED=bypass MOCK_STATUS=0 PROJECTED_TICKET_USD=999999 \
     PYTHONHOME="$TMP/python-home-bypass" PYTHONPATH="$TMP/python-path-bypass" \
     PYTHONWARNINGS=error GIT_DIR="$TMP/git-dir-bypass" \
@@ -1187,6 +1223,71 @@ git -C "$LAUNCH_PRODUCT" add factory/tickets/T-77{7,8,9}.md \
 git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
 git -C "$LAUNCH_PRODUCT" push -q origin main
 write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
+ACTIVE_SNAPSHOT_TMP="$(cd "$TMP/launcher-tmp" && pwd -P)"
+ACTIVE_SNAPSHOT_MARKER="$ACTIVE_SNAPSHOT_TMP/active-parsed.marker"
+ACTIVE_SNAPSHOT_GATE="$ACTIVE_SNAPSHOT_TMP/active-parsed.gate"
+export FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER="$ACTIVE_SNAPSHOT_MARKER"
+export FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE="$ACTIVE_SNAPSHOT_GATE"
+run_launcher launchtest contract --json > "$TMP/active-snapshot.json" &
+ACTIVE_SNAPSHOT_PID=$!
+BACKGROUND_PIDS="$BACKGROUND_PIDS $ACTIVE_SNAPSHOT_PID"
+for _try in $(seq 1 200); do
+  [[ -e "$ACTIVE_SNAPSHOT_MARKER" ]] && break
+  sleep 0.02
+done
+[[ -e "$ACTIVE_SNAPSHOT_MARKER" ]] || fail "active snapshot race never reached the parse gate"
+python3 - "$KITS_ROOT/projects/launchtest/active.json" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["receipt_id"] = "0" * 64
+value["product_tree"] = "0" * 40
+temporary = path.with_suffix(".race")
+temporary.write_text(json.dumps(value) + "\n")
+os.replace(temporary, path)
+PY
+touch "$ACTIVE_SNAPSHOT_GATE"
+ACTIVE_SNAPSHOT_RC=0
+wait "$ACTIVE_SNAPSHOT_PID" || ACTIVE_SNAPSHOT_RC=$?
+BACKGROUND_PIDS=""
+unset FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE
+rm -f "$ACTIVE_SNAPSHOT_MARKER" "$ACTIVE_SNAPSHOT_GATE"
+[[ "$ACTIVE_SNAPSHOT_RC" -eq 0 ]] || fail "active snapshot changed after its single parse"
+write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
+ACTIVE_RECEIPT_ID="$(python3 - "$KITS_ROOT/projects/launchtest/active.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["receipt_id"])
+PY
+)"
+ACTIVE_RECEIPT="$KITS_ROOT/receipts/$ACTIVE_RECEIPT_ID.json"
+cp "$ACTIVE_RECEIPT" "$ACTIVE_RECEIPT.saved"
+python3 - "$ACTIVE_RECEIPT" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["project"] = "tampered-project"
+path.write_text(json.dumps(value) + "\n")
+PY
+chmod 600 "$ACTIVE_RECEIPT"
+TAMPERED_RECEIPT_RC=0
+run_launcher launchtest contract --json > "$TMP/tampered-receipt.out" 2>&1 ||
+  TAMPERED_RECEIPT_RC=$?
+[[ "$TAMPERED_RECEIPT_RC" -eq 1 ]] || fail "launcher accepted a mismatched active receipt binding"
+mv "$ACTIVE_RECEIPT.saved" "$ACTIVE_RECEIPT"
+cp "$ACTIVE_RECEIPT" "$ACTIVE_RECEIPT.saved"
+python3 - "$ACTIVE_RECEIPT" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["product_tree"] = "0" * 40
+path.write_text(json.dumps(value) + "\n")
+PY
+chmod 600 "$ACTIVE_RECEIPT"
+TAMPERED_PRODUCT_TREE_RC=0
+run_launcher launchtest contract --json > "$TMP/tampered-product-tree.out" 2>&1 ||
+  TAMPERED_PRODUCT_TREE_RC=$?
+[[ "$TAMPERED_PRODUCT_TREE_RC" -eq 1 ]] || fail "launcher accepted a receipt for a different product tree"
+mv "$ACTIVE_RECEIPT.saved" "$ACTIVE_RECEIPT"
 NO_WORKDIR_V12_RC=0
 run_launcher launchtest next-stage --ticket T-777 --json \
   > "$TMP/next-stage-v12-no-workdir.out" 2>&1 || NO_WORKDIR_V12_RC=$?
@@ -1525,6 +1626,9 @@ assert commands["ticket-state"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-product-worktree>",
     "--action", "<materialize|transition>", "[--state <ticket-state>]", "--json"
 ]
+assert commands["ticket-state"]["transition_states"] == [
+    "Planning", "Building", "Review", "Blocked-Escalated"
+]
 assert commands["project-ledger"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-closeout-worktree>", "--json"
 ]
@@ -1572,6 +1676,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_RELEASE_TREE": "active record kit_tree",
     "FACTORY_RELEASE_PATH": "resolved physical release path",
     "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+    "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2 certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
 }
 assert contract["launcher"]["helper_environment_allowlist"] == [
@@ -1583,6 +1688,7 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_RELEASE_TREE",
     "FACTORY_RELEASE_PATH",
     "FACTORY_RELEASE_CONTRACT_VERSION",
+    "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
     "GH_TOKEN",
 ]
@@ -1606,6 +1712,10 @@ assert contract["launcher"]["active_record"]["required_fields"] == [
     "product_path",
     "release_path",
 ]
+assert contract["launcher"]["active_record"]["contract_1_2_required_fields"] == [
+    "receipt_id"
+]
+assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 
 integration = os.path.join(root, "integrations", "hermes")
 required = [

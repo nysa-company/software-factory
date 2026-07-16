@@ -136,10 +136,18 @@
           "--json"
         ],
         "output": "the committed ticket state after applying the ignored operator overlay or requested transition",
+        "transition_states": [
+          "Planning",
+          "Building",
+          "Review",
+          "Blocked-Escalated"
+        ],
         "validation": [
           "absolute physical non-symlink distinct linked Git worktree root",
           "same Git common directory as registered PRODUCT_ROOT",
-          "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket"
+          "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket",
+          "automatic pushes match the active certification receipt product origin",
+          "generic transitions exclude Awaiting Approval and Done until dedicated evidence gates exist"
         ]
       },
       "project-ledger": {
@@ -205,7 +213,8 @@
           "absolute physical non-symlink distinct linked Git worktree root",
           "same Git common directory as registered PRODUCT_ROOT",
           "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket",
-          "nonempty task"
+          "nonempty task",
+          "automatic pushes match the active certification receipt product origin"
         ],
         "ticket_branch": {
           "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
@@ -220,6 +229,7 @@
       "FACTORY_RELEASE_TREE": "active record kit_tree",
       "FACTORY_RELEASE_PATH": "resolved physical release path",
       "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+      "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2 certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
       "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher"
     },
     "helper_environment_allowlist": [
@@ -231,6 +241,7 @@
       "FACTORY_RELEASE_TREE",
       "FACTORY_RELEASE_PATH",
       "FACTORY_RELEASE_CONTRACT_VERSION",
+      "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
       "FACTORY_DISPATCH_LEASE_ID",
       "GH_TOKEN"
     ],
@@ -253,6 +264,10 @@
         "product_path",
         "release_path"
       ],
+      "contract_1_2_required_fields": [
+        "receipt_id"
+      ],
+      "contract_1_2_receipt_binding": "receipt_id selects an owner-only mode-0600 receipt whose project, kit SHA/tree, product path, contract, and product origin bind trusted writes",
       "release_location": "$FACTORY_KITS_ROOT/releases/<kit_sha>",
       "selection": "resolved and validated once per invocation"
     },
@@ -293,6 +308,7 @@
     "scripts/run-agent.sh",
     "scripts/ticket-state.sh",
     "scripts/lib/effective_ticket.py",
+    "scripts/lib/product-remote.sh",
     "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",
     "scripts/lib/dispatch-leases.sh",

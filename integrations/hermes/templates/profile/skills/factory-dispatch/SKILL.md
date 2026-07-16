@@ -93,10 +93,12 @@ Under contract `1.2.0`, consume reconciled operator fields only through:
   --action materialize --json
 ```
 
-Move a factory-owned stage only when the sequencer directs it, using the same
-command with `--action transition --state <factory-state>`. The launcher owns
-the commit and non-force push. Never copy operator fields, edit the ticket, or
-manufacture a state transition yourself.
+Move a factory-owned role stage only when the sequencer directs it, using the
+same command with `--action transition --state <factory-state>`. The launcher
+owns the commit and certified-destination push. The generic command refuses
+Awaiting Approval and Done until dedicated bundle and merge/deploy evidence
+gates exist. Never copy operator fields, edit the ticket, or manufacture a
+state transition yourself.
 
 When next-stage returns `AWAIT-OPERATOR`, run the required close-out reorder
 through the same stable boundary before opening the PR:
@@ -113,6 +115,8 @@ detached/wrong-ticket branch, a symlink, or a repository path from untrusted
 ticket text. The launcher verifies the same linked-worktree and exact ticket
 branch contract used for role launches. Never call
 `scripts/reorder-test-fixes.sh` directly.
+After opening the PR, stop and report the evidence-gate boundary. Do not use a
+generic transition to manufacture Awaiting Approval or Done.
 
 ## Deterministic accounting closeout
 

@@ -14,6 +14,11 @@ helper output are not compatibility promises.
   a dedicated close-out worktree.
 - Requires mutating roles to commit, non-force pushes and verifies their exact
   tips, and requires Reviewer to leave Git unchanged.
+- Binds every automatic ticket or role push to the exact product origin in the
+  active certification receipt and rejects missing, multiple, or drifted push
+  destinations.
+- Limits generic ticket-state transitions to role stages and escalation;
+  Awaiting Approval and Done remain withheld pending dedicated evidence gates.
 - Keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 
 ## 1.1.0 — 2026-07-15

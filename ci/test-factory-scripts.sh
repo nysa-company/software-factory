@@ -268,6 +268,8 @@ run_mock() {
   FACTORY_ROOT="$1" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$TMP/caller-origin.git" \
+  FACTORY_TRUSTED_PRODUCT_ORIGIN="$TMP/caller-trusted.git" \
   FACTORY_ADAPTER_OVERRIDE=mock \
     "$RUN_AGENT" --role "$2" --ticket "$3" -- "test task"
 }
@@ -1344,6 +1346,7 @@ git -C "$ROLE_EXIT_WORKTREE" push -q origin \
 ROLE_REMOTE_STATUS=0
 FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-607 --workdir "$ROLE_EXIT_WORKTREE" -- \
     "remote drift" > "$TMP/role-remote.out" 2>&1 || ROLE_REMOTE_STATUS=$?
@@ -1362,12 +1365,14 @@ setup_role_exit_fixture T-600
 ROLE_NO_COMMIT=0
 FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-600 --workdir "$ROLE_EXIT_WORKTREE" -- "no commit" \
   > "$TMP/role-no-commit.out" 2>&1 || ROLE_NO_COMMIT=$?
 ROLE_COMMIT=0
 MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
   FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-600 --workdir "$ROLE_EXIT_WORKTREE" -- "commit" \
   > "$TMP/role-commit.out" 2>&1 || ROLE_COMMIT=$?
@@ -1380,6 +1385,68 @@ if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
 else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
+fi
+
+setup_role_exit_fixture T-609
+ROLE_ENV_DECOY="$TMP/role-env-decoy.git"
+git init --bare -q "$ROLE_ENV_DECOY"
+printf 'export FACTORY_CERTIFIED_PRODUCT_ORIGIN=%q\n' "$ROLE_ENV_DECOY" >> \
+  "$ROLE_EXIT_ROOT/factory/ENVELOPE.env"
+ROLE_ENV_STATUS=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_TRUSTED_PRODUCT_ORIGIN="$ROLE_ENV_DECOY" \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role planner --ticket T-609 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "sealed origin" > "$TMP/role-env.out" 2>&1 || ROLE_ENV_STATUS=$?
+if [[ "$ROLE_ENV_STATUS" -eq 0 &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-609)" == \
+        "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" ]] &&
+   ! git --git-dir="$ROLE_ENV_DECOY" show-ref --verify --quiet \
+     refs/heads/ticket/T-609; then
+  pass "sealed product origin cannot be overwritten or exposed to the adapter"
+else
+  fail "sealed product origin cannot be overwritten or exposed to the adapter" \
+    "status=$ROLE_ENV_STATUS"
+fi
+
+setup_role_exit_fixture T-608
+ROLE_DESTINATION_BEFORE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_DESTINATION_DECOY="$TMP/role-exit-decoy.git"
+git init --bare -q "$ROLE_DESTINATION_DECOY"
+git -C "$ROLE_EXIT_WORKTREE" push -q "$ROLE_DESTINATION_DECOY" \
+  HEAD:refs/heads/ticket/T-608
+ROLE_DESTINATION_STATUS=0
+MOCK_COMMIT_WORKDIR=1 MOCK_PUSHURL="$ROLE_DESTINATION_DECOY" \
+  FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-608 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "destination drift" > "$TMP/role-destination.out" 2>&1 ||
+  ROLE_DESTINATION_STATUS=$?
+if [[ "$ROLE_DESTINATION_STATUS" -eq 11 &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-608)" == \
+        "$ROLE_DESTINATION_BEFORE" &&
+      "$(git --git-dir="$ROLE_DESTINATION_DECOY" rev-parse refs/heads/ticket/T-608)" == \
+        "$ROLE_DESTINATION_BEFORE" ]] &&
+   grep -q 'role_exit_remote_mismatch' "$TMP/role-destination.out"; then
+  pass "role exit refuses a drifted product push destination"
+else
+  fail "role exit refuses a drifted product push destination" \
+    "status=$ROLE_DESTINATION_STATUS"
+fi
+
+if grep -Eq '(^|[^[:alnum:]_])HEAD:refs/heads/' \
+     "$RUN_AGENT" "$ROOT/scripts/ticket-state.sh"; then
+  fail "trusted pushes use captured commit SHAs" "symbolic HEAD refspec found"
+elif grep -Fq '"$ROLE_HEAD_BEFORE:refs/heads/$ROLE_BRANCH_BEFORE"' "$RUN_AGENT" &&
+     grep -Fq '"$ROLE_HEAD_AFTER:refs/heads/$ROLE_BRANCH_BEFORE"' "$RUN_AGENT" &&
+     grep -Fq '"$LOCAL_HEAD:refs/heads/$BRANCH"' "$ROOT/scripts/ticket-state.sh"; then
+  pass "trusted pushes use captured commit SHAs"
+else
+  fail "trusted pushes use captured commit SHAs" "exact SHA refspec missing"
 fi
 
 if [[ "$FAILURES" -gt 0 ]]; then

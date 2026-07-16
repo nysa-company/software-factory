@@ -7,6 +7,14 @@ WORKDIR=""
   echo "dispatcher lease leaked into task adapter" >&2
   exit 97
 }
+[[ ${FACTORY_CERTIFIED_PRODUCT_ORIGIN+x} != x ]] || {
+  echo "certified product origin leaked into task adapter" >&2
+  exit 97
+}
+[[ ${FACTORY_TRUSTED_PRODUCT_ORIGIN+x} != x ]] || {
+  echo "trusted product origin leaked into task adapter" >&2
+  exit 97
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workdir) WORKDIR="$2"; shift 2;;
@@ -20,6 +28,9 @@ if [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ]]; then
   git -C "$WORKDIR" add mock-role-output.txt
   git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \
     commit -m "Mock role output" >/dev/null
+fi
+if [[ -n "${MOCK_PUSHURL:-}" ]]; then
+  git -C "$WORKDIR" config remote.origin.pushurl "$MOCK_PUSHURL"
 fi
 if [[ "${MOCK_SLEEP:-0}" != "0" ]]; then
   if [[ -n "${MOCK_DESCENDANT_PID_FILE:-}" ]]; then

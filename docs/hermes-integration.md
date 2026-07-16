@@ -97,9 +97,11 @@ the selected helper's exit code and wrap its redacted text in versioned JSON.
 `next-stage` also returns `action` and `detail`.
 Contract 1.2 requires the exact ticket worktree for preflight and sequencing,
 adds `ticket-state` as the only path that materializes reconciled operator
-fields or commits factory transitions, and adds `project-ledger` as the only
+fields or commits role-stage transitions, and adds `project-ledger` as the only
 path that projects effective runtime accounting into the tracked durable
-ledger.
+ledger. Trusted write helpers accept only the exact product origin from the
+active certification receipt. The generic ticket-state transition refuses
+Awaiting Approval and Done until dedicated evidence attestations are added.
 
 `run` and `reorder-test-fixes` are process boundaries rather than JSON
 commands. Their arguments and behavior are still compatibility-sensitive and

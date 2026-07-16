@@ -17,6 +17,11 @@ done
 [[ "$ACTION" == "materialize" || -n "$STATE" ]] || { echo "transition requires --state" >&2; exit 2; }
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/product-remote.sh"
+unset FACTORY_TRUSTED_PRODUCT_ORIGIN
+readonly FACTORY_TRUSTED_PRODUCT_ORIGIN="${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}"
+unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
 PRODUCT_ROOT="${FACTORY_ROOT:-$WORKDIR}"
 MAP="$PRODUCT_ROOT/factory/linear-map.json"
 TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
@@ -24,6 +29,10 @@ TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
 [[ -z "$(git -C "$WORKDIR" status --porcelain)" ]] || { echo "ticket worktree is dirty" >&2; exit 1; }
 BRANCH="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 [[ -n "$BRANCH" ]] || { echo "ticket worktree is detached" >&2; exit 1; }
+PRODUCT_REMOTE="$(factory_capture_product_remote "$PRODUCT_ROOT" "$FACTORY_TRUSTED_PRODUCT_ORIGIN")" || {
+  echo "certified product push destination validation failed" >&2
+  exit 1
+}
 
 TMP="$(mktemp "${TMPDIR:-/tmp}/ticket-state.XXXXXX")"
 OPERATOR_VERSION_FILE="$(mktemp "${TMPDIR:-/tmp}/ticket-state-version.XXXXXX")"
@@ -53,7 +62,7 @@ states = {
 }
 allowed = {
     ("ready", "planning"), ("planning", "building"), ("building", "review"),
-    ("review", "building"), ("review", "awaiting approval"), ("approved", "done"),
+    ("review", "building"),
 }
 if target_key == "blocked-escalated" and current in {
     "ready", "planning", "building", "review", "awaiting approval", "approved"
@@ -73,11 +82,21 @@ if ! cmp -s "$TMP" "$TICKET_FILE"; then
   git -C "$WORKDIR" -c user.name="Software Factory" -c user.email="factory@local" \
     commit -m "$TICKET: ${ACTION//-/ } ticket state" >/dev/null
 fi
-git -C "$WORKDIR" push --no-force origin "HEAD:refs/heads/$BRANCH" >/dev/null 2>&1
+factory_product_remote_matches "$PRODUCT_ROOT" "$PRODUCT_REMOTE" || {
+  echo "$FACTORY_PRODUCT_REMOTE_ERROR" >&2
+  exit 1
+}
 LOCAL_HEAD="$(git -C "$WORKDIR" rev-parse HEAD)"
-REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads origin \
+TRACKING_HEAD="$(factory_remote_tracking_tip "$WORKDIR" "$BRANCH")"
+git -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
+  "$LOCAL_HEAD:refs/heads/$BRANCH" >/dev/null 2>&1
+REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
   "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
 [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] || { echo "ticket-state remote verification failed" >&2; exit 1; }
+factory_update_tracking_ref "$WORKDIR" "$BRANCH" "$LOCAL_HEAD" "$TRACKING_HEAD" || {
+  echo "ticket-state remote tracking update failed" >&2
+  exit 1
+}
 
 python3 - "$KIT_DIR/scripts/lib" "$MAP" "$TICKET" "$OPERATOR_VERSION" <<'PY'
 import fcntl

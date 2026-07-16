@@ -28,7 +28,9 @@ confirmation. Unsupported Linear edits are restored from the ticket file.
 Preflight, sequencing, and projection combine the overlay with the exact ticket
 worktree or committed ticket branch. The launcher-managed `ticket-state`
 command materializes accepted operator fields and commits factory-owned stage
-moves on the ticket branch. An API outage never stops an in-flight ticket. The local sync map and logs show
+moves on the ticket branch. Its generic transition surface is limited to role
+stages and escalation; Awaiting Approval and Done remain refused until trusted
+bundle and merge/deploy attestations exist. An API outage never stops an in-flight ticket. The local sync map and logs show
 stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 
@@ -56,6 +58,10 @@ territory.
 Legal happy-path transitions are:
 
 `Backlog → Ready → Planning → Building → Review → Awaiting Approval → Approved → Done`.
+
+This is the target lifecycle, not permission for the generic transition API.
+The current 1.2 candidate stops at Review after bundle creation and cannot
+autonomously claim Awaiting Approval or Done.
 
 Spec-lint failure stays in Planning. Review changes return to Building. A
 broken preview returns to Building. Any active stage may enter

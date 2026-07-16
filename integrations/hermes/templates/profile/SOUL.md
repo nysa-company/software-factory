@@ -38,7 +38,8 @@ Under contract `1.2.0`, invoke only the launcher's trusted mutation commands:
 ```
 
 Use `ticket-state` only for reconciled operator fields or sequencer-directed
-factory transitions. Use `project-ledger` only in the dedicated clean closeout
+role-stage transitions; it intentionally refuses Awaiting Approval and Done
+until dedicated evidence gates exist. Use `project-ledger` only in the dedicated clean closeout
 worktree. These commands own their artifacts; never hand-edit ticket state or
 ledger rows.
 

@@ -67,7 +67,11 @@ Ticket content is read from the launcher's validated ticket worktree, while
 controls and the Linear operator overlay remain anchored to the registered
 product root. Linear projection reads the committed exact ticket branch rather
 than a dirty checkout. `ticket-state` is the only launcher path that
-materializes operator fields or commits a factory-owned stage transition.
+materializes operator fields or commits a factory-owned role-stage transition.
+It refuses Awaiting Approval and Done until dedicated bundle and merge/deploy
+attestations exist. Every automatic helper push is bound to the exact product
+origin in the active generation's owner-only certification receipt; mutable
+Git remote configuration cannot redirect it.
 
 The first role launch records a `Kit-SHA:` lease on the canonical ticket while
 holding `factory/.launch.lock`. Every later preflight, sequencer call, and run
@@ -88,6 +92,9 @@ Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
 previous generation, and expiry. The default receipt lifetime is 24 hours.
 Activation reruns those bindings and refuses stale or drifted receipts.
+An activated contract 1.2 keeps that receipt as the runtime destination
+binding for trusted ticket and role pushes. Its `product_origin` is the sole
+certified `origin` push URL, which may differ from the fetch URL.
 
 Activation uses `factory/MAINTENANCE` and the same launch lock as role startup.
 Launch checks occur before locking, after locking, and before the task GO

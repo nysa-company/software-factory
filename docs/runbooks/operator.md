@@ -248,7 +248,7 @@ These run in your interactive session — never inside the loop. The factory's o
 - Create the durable initiative record first at `factory/initiatives/I-NNN.md`; the reconciler creates the Linear Project. Set its status and target date in Linear.
 - Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates `Initiative:` in the ticket file.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
-- Approve only from Awaiting Approval by moving the issue to Approved. This records authorization; it does not claim the PR is merged. Factory close-out moves Approved → Done only after merge and staging confirmation.
+- Approve only from Awaiting Approval by moving the issue to Approved. This records authorization; it does not claim the PR is merged. Contract 1.2 currently stops before this boundary: its generic ticket-state command refuses both Awaiting Approval and Done until dedicated bundle and merge/staging attestations exist.
 - Resume an escalated ticket by setting `Resume-State:` locally to the agreed stage, then move the Linear issue out of Blocked-Escalated to that same stage. Mismatched or otherwise illegal transitions are rejected and reported in sync health.
 
 ## The general rule

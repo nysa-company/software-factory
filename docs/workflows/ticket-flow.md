@@ -11,8 +11,8 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 5. **Builder** (production/OpenAI family, fresh git worktree on the same branch) runs in Building and implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
 6. **CI** runs: lint, typecheck, tests, build, self-referential snapshots, test-immutability check.
 7. **Reviewer** runs in Review and checks test adequacy and spec conformance. Approve, or request changes back to Building (max 2 rounds → Blocked-Escalated with a plain-language note).
-8. **Narrator** remains in Review and posts the bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note. Ticket → Awaiting Approval.
-9. **Operator** approves from the bundle by moving the Linear issue to Approved (or sends it back with what is wrong). The reconciler records the approval locally. After the PR is merged and staging is confirmed, factory close-out moves the ticket to Done.
+8. **Narrator** remains in Review and posts the bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note. The current contract stops here until a dedicated bundle attestation can move the ticket to Awaiting Approval.
+9. **Operator** approval and Done remain the intended handoff, but the generic ticket-state command cannot claim either the bundle publication or merge-and-staging evidence. Those transitions stay refused until dedicated attestations exist.
 
 Backend fallback is selected by `run-agent.sh` before it submits the role task. Once any task-bearing CLI starts, every failure is terminal for that run; the dispatcher escalates instead of launching another backend.
 

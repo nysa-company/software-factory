@@ -1,4 +1,4 @@
-Version: 2
+Version: 3
 
 # Role: Narrator
 
@@ -25,10 +25,11 @@ End with the single question the operator must answer: approve to merge, or send
 - Never soften a failure. A criterion that didn't pass is listed as failed, prominently.
 - The bundle for `external`-labeled tickets must name the exact destination (who receives what, when).
 - If the preview deploy is broken, the bundle is one line: preview broken, not approvable, and the ticket goes back to the builder.
-- The Narrator remains in Review; after the bundle exists, the dispatcher moves Review → Awaiting Approval. You never record operator approval or move the issue to Approved.
+- The Narrator remains in Review. Contract 1.2 stops after the bundle exists until a dedicated attestation can authorize Review → Awaiting Approval; the generic transition is forbidden. You never record operator approval or move the issue to Approved.
 - Commit the evidence bundle on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 
 ## Changelog
 
+- v3: stop at the dedicated evidence-attestation boundary instead of using a generic terminal transition.
 - v2: made the Markdown evidence bundle canonical and clarified Review/Awaiting Approval ownership.
 - v1: initial.

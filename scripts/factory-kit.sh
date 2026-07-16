@@ -1209,9 +1209,33 @@ product_tree() {
 }
 
 product_origin() {
-  local origin
-  origin="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
-  [[ -n "$origin" ]] || die "product repository has no origin remote"
+  local origin count scheme authority
+  origin="$(git -C "$1" remote get-url --push --all origin 2>/dev/null || true)"
+  count="$(printf '%s\n' "$origin" | awk 'NF {count++} END {print count+0}')"
+  [[ "$count" == "1" ]] || die "product repository must have one push destination"
+  [[ "$origin" != *$'\n'* && "$origin" != *$'\r'* && "$origin" != *$'\t'* ]] ||
+    die "product push destination is unsafe"
+  case "$origin" in
+    /*) ;;
+    *://*)
+      [[ "$origin" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] ||
+        die "product push destination is unsafe"
+      scheme="$(printf '%s' "${origin%%://*}" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$scheme" == "http" || "$scheme" == "https" ]]; then
+        authority="${origin#*://}"
+        authority="${authority%%/*}"
+        authority="${authority%%\?*}"
+        authority="${authority%%\#*}"
+        [[ "$authority" != *@* ]] ||
+          die "product HTTP push destination must not contain credentials"
+      fi
+      ;;
+    *:*)
+      [[ "$origin" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._/~+-]+$ ]] ||
+        die "product push destination must be absolute, URL, or scp-like"
+      ;;
+    *) die "product push destination must be absolute, URL, or scp-like" ;;
+  esac
   printf '%s\n' "$origin"
 }
 

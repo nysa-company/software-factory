@@ -20,6 +20,7 @@ unset CDPATH ENV BASH_ENV GH_TOKEN PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONUSE
   GIT_NAMESPACE GIT_PREFIX GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
   GIT_NO_REPLACE_OBJECTS GIT_CEILING_DIRECTORIES \
   GIT_DISCOVERY_ACROSS_FILESYSTEM 2>/dev/null || true
+unset FACTORY_CERTIFIED_PRODUCT_ORIGIN 2>/dev/null || true
 
 die() {
   echo "factory-launch: $*" >&2
@@ -320,12 +321,38 @@ for key in required:
     item = value[key]
     if not isinstance(item, str) or not item or "\n" in item or "\r" in item or "\t" in item:
         raise SystemExit(1)
-print("\t".join(value[key] for key in required))
+optional = (value.get("receipt_id", ""), value.get("product_tree", ""))
+if value["contract_version"] == "1.2.0":
+    for item in optional:
+        if not isinstance(item, str) or not item or any(ch in item for ch in "\n\r\t"):
+            raise SystemExit(1)
+else:
+    optional = ("", "")
+print("\t".join((*[value[key] for key in required], *optional)))
 PY
 )" || die "project active record is invalid"
 
+# Deterministic repository-test hook for proving that the parsed active record
+# remains authoritative if active.json is atomically replaced afterward.
+if [[ "$ISOLATED_TEST_LAUNCHER" -eq 1 &&
+      -n "${FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER:-}${FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE:-}" ]]; then
+  ACTIVE_PARSED_MARKER="${FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER:-}"
+  ACTIVE_PARSED_GATE="${FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE:-}"
+  case "$ACTIVE_PARSED_MARKER" in "$TMPDIR"/*) ;; *) die "active parse marker must be under test TMPDIR" ;; esac
+  case "$ACTIVE_PARSED_GATE" in "$TMPDIR"/*) ;; *) die "active parse gate must be under test TMPDIR" ;; esac
+  : > "$ACTIVE_PARSED_MARKER" || die "active parse marker could not be created"
+  ACTIVE_PARSED_TRIES=0
+  while [[ ! -e "$ACTIVE_PARSED_GATE" ]]; do
+    ACTIVE_PARSED_TRIES=$((ACTIVE_PARSED_TRIES + 1))
+    [[ "$ACTIVE_PARSED_TRIES" -le 500 ]] || die "active parse gate timed out"
+    sleep 0.01
+  done
+fi
+unset FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE \
+  ACTIVE_PARSED_MARKER ACTIVE_PARSED_GATE ACTIVE_PARSED_TRIES 2>/dev/null || true
+
 IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
-  ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH <<EOF
+  ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH RECEIPT_ID ACTIVE_PRODUCT_TREE <<EOF
 $ACTIVE_DATA
 EOF
 
@@ -337,6 +364,57 @@ case "$ACTIVE_CONTRACT" in
   1.0.0|1.1.0|1.2.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
   *) die "active Hermes contract is incompatible" ;;
 esac
+
+CERTIFIED_PRODUCT_ORIGIN=""
+if [[ "$CONTRACT_VERSION" == "1.2.0" ]]; then
+  [[ "$RECEIPT_ID" =~ ^[0-9a-f]{64}$ ]] ||
+    die "contract 1.2 active record lacks a valid receipt binding"
+  [[ "$ACTIVE_PRODUCT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
+    die "contract 1.2 active record lacks a valid product tree binding"
+  require_managed_directory "$KITS_ROOT/receipts" "factory certification receipts directory"
+  RECEIPT_FILE="$KITS_ROOT/receipts/$RECEIPT_ID.json"
+  require_managed_file "$RECEIPT_FILE" "active certification receipt"
+  CERTIFIED_PRODUCT_ORIGIN="$("$PYTHON_BIN" -I -S - "$RECEIPT_FILE" \
+    "$RECEIPT_ID" "$PROJECT" "$KIT_SHA" "$KIT_TREE" "$PRODUCT_ROOT" \
+    "$ACTIVE_PRODUCT_TREE" "$CONTRACT_VERSION" <<'PY'
+import json, os, stat, sys
+
+path, receipt_id, project, kit_sha, kit_tree, product_path, product_tree, contract = sys.argv[1:]
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+try:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(1)
+    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise SystemExit(1)
+    if metadata.st_size > 131072:
+        raise SystemExit(1)
+    with os.fdopen(descriptor, "r", encoding="utf-8", errors="strict") as handle:
+        descriptor = -1
+        value = json.load(handle)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+expected = {
+    "receipt_id": receipt_id,
+    "project": project,
+    "kit_sha": kit_sha,
+    "kit_tree": kit_tree,
+    "product_path": product_path,
+    "product_tree": product_tree,
+    "contract_version": contract,
+    "status": "pass",
+}
+if any(value.get(key) != item for key, item in expected.items()):
+    raise SystemExit(1)
+origin = value.get("product_origin")
+if not isinstance(origin, str) or not origin or any(ch in origin for ch in "\r\n\t"):
+    raise SystemExit(1)
+print(origin)
+PY
+)" || die "active certification receipt does not match the selected product release"
+fi
 
 ACTIVE_PRODUCT_PATH="$(expand_absolute_path "$ACTIVE_PRODUCT_PATH" 2>/dev/null || true)"
 ACTIVE_RELEASE_PATH="$(expand_absolute_path "$ACTIVE_RELEASE_PATH" 2>/dev/null || true)"
@@ -523,6 +601,13 @@ add_dispatch_lease_env() {
       die "dispatcher leases require contract 1.1.0 or newer"
     HELPER_ENV+=("FACTORY_DISPATCH_LEASE_ID=$1")
   fi
+}
+
+add_certified_origin_env() {
+  [[ "$CONTRACT_VERSION" == "1.2.0" ]] || return 0
+  [[ -n "$CERTIFIED_PRODUCT_ORIGIN" ]] ||
+    die "certified product origin is unavailable"
+  HELPER_ENV+=("FACTORY_CERTIFIED_PRODUCT_ORIGIN=$CERTIFIED_PRODUCT_ORIGIN")
 }
 
 validate_lease_command() {
@@ -848,6 +933,7 @@ PY
       die "product is in maintenance; ticket-state refused"
     TICKET_STATE_HELPER="$RELEASE_PATH/scripts/ticket-state.sh"
     require_managed_file "$TICKET_STATE_HELPER" "active release ticket-state helper"
+    add_certified_origin_env
     cleanup_runtime
     trap - EXIT HUP INT TERM
     if [[ -n "$TICKET_STATE_VALUE" ]]; then
@@ -925,6 +1011,7 @@ PY
     RUNNER="$RELEASE_PATH/scripts/run-agent.sh"
     require_managed_file "$RUNNER" "active release run helper"
     add_dispatch_lease_env "$LEASE_ID"
+    add_certified_origin_env
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec_selected_helper "$RUNNER" \
