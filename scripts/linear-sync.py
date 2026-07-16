@@ -14,6 +14,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -342,6 +343,8 @@ def ledger_stats(path):
 
 
 def effective_ledger(factory_dir, dry=False):
+    if not dry:
+        ensure_runs_root(factory_dir)
     helper = Path(__file__).resolve().parent / "ledger-view.py"
     command = "print" if dry else "refresh"
     result = subprocess.run(
@@ -353,6 +356,27 @@ def effective_ledger(factory_dir, dry=False):
     if dry:
         return result.stdout.splitlines()
     return factory_dir / "runtime-ledger.csv"
+
+
+def ensure_runs_root(factory_dir):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    factory = os.open(factory_dir, flags)
+    try:
+        try:
+            value = os.stat("runs", dir_fd=factory, follow_symlinks=False)
+        except FileNotFoundError:
+            os.mkdir("runs", 0o700, dir_fd=factory)
+            os.fsync(factory)
+            value = os.stat("runs", dir_fd=factory, follow_symlinks=False)
+        if not stat.S_ISDIR(value.st_mode):
+            raise RuntimeError("factory/runs must be a real directory")
+        runs = os.open("runs", flags, dir_fd=factory)
+        try:
+            os.fsync(runs)
+        finally:
+            os.close(runs)
+    finally:
+        os.close(factory)
 
 
 def build_description(ticket, stats):

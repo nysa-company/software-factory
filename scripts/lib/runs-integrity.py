@@ -11,7 +11,7 @@ import stat
 import sys
 
 
-SNAPSHOT_SCHEMA = 2
+SNAPSHOT_SCHEMA = 3
 DIRECTORY_FLAGS = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
                    getattr(os, "O_NOFOLLOW", 0))
 FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -72,6 +72,14 @@ def manifests(descriptor):
     return {name: read_manifest(descriptor, name) for name in manifest_names(descriptor)}
 
 
+def ownership_names(descriptor):
+    return sorted(name for name in os.listdir(descriptor) if name.endswith(".owner"))
+
+
+def ownerships(descriptor):
+    return {name: read_manifest(descriptor, name) for name in ownership_names(descriptor)}
+
+
 def snapshot(directory, owned=None):
     directory = Path(os.path.abspath(directory))
     parent_descriptor, parent_stat = open_real_directory(directory.parent, "runs parent")
@@ -94,6 +102,7 @@ def snapshot(directory, owned=None):
                 "parent": identity(parent_stat),
                 "directory": identity(opened),
                 "manifests": manifests(descriptor),
+                "ownerships": ownerships(descriptor),
                 "owned": owned,
             }
         finally:
@@ -171,12 +180,18 @@ def recover_directory(parent_descriptor, runs_name, expected):
     os.fsync(parent_descriptor)
 
 
-def restore_manifests(descriptor, expected):
+def restore_manifests(descriptor, expected, expected_ownerships):
     for name in manifest_names(descriptor):
+        quarantine(descriptor, name)
+    for name in ownership_names(descriptor):
         quarantine(descriptor, name)
     for name, encoded in expected.items():
         if not name.endswith(".meta") or "/" in name or name in {".", ".."}:
             raise ValueError(f"invalid manifest name in snapshot: {name}")
+        durable_write(descriptor, name, base64.b64decode(encoded, validate=True))
+    for name, encoded in expected_ownerships.items():
+        if not name.endswith(".owner") or "/" in name or name in {".", ".."}:
+            raise ValueError(f"invalid ownership name in snapshot: {name}")
         durable_write(descriptor, name, base64.b64decode(encoded, validate=True))
     os.fsync(descriptor)
 
@@ -186,11 +201,44 @@ def validate_snapshot(expected):
             not isinstance(expected.get("parent"), dict) or
             not isinstance(expected.get("directory"), dict) or
             not isinstance(expected.get("manifests"), dict) or
+            not isinstance(expected.get("ownerships"), dict) or
             not isinstance(expected.get("owned"), (str, type(None)))):
         raise ValueError("invalid runs snapshot")
 
 
-def valid_sibling_transition(name, before, after):
+def valid_new_owner(name, encoded, manifest):
+    try:
+        content = base64.b64decode(encoded, validate=True).decode("utf-8")
+        values = {}
+        for line in content.splitlines():
+            key, value = line.split("=", 1)
+            if key in values:
+                return False
+            values[key] = value
+        run_id = name.removesuffix(".owner")
+        return (
+            set(values) == {
+                "schema", "run_id", "ticket", "role", "launcher_pid",
+                "launcher_start", "ownership_token",
+            }
+            and values["schema"] == "1"
+            and values["run_id"] == run_id == manifest.get("run_id")
+            and values["ticket"] == manifest.get("ticket")
+            and values["role"] == manifest.get("role")
+            and values["launcher_pid"] == manifest.get("launcher_pid")
+            and values["launcher_start"] == manifest.get("launcher_start")
+            and values["ownership_token"] == manifest.get("ownership_token")
+            and run_id.endswith(f"-{values['launcher_pid']}")
+            and values["launcher_pid"].isdigit()
+            and bool(values["launcher_start"])
+            and len(values["ownership_token"]) == 32
+            and all(value in "0123456789abcdef" for value in values["ownership_token"])
+        )
+    except (KeyError, UnicodeError, ValueError):
+        return False
+
+
+def valid_sibling_transition(name, before, after, current_ownerships):
     # ponytail: semantic validation preserves inherited overlap; use a
     # privileged manifest writer if hostile same-UID isolation is required.
     helper = Path(__file__).resolve().parents[1] / "ledger-view.py"
@@ -231,11 +279,12 @@ def valid_sibling_transition(name, before, after):
     try:
         current = values(after)
         current_stage = lifecycle(current)
-        # A sibling may start and finish entirely after this run's snapshot.
-        # Semantic validation preserves inherited overlap; hostile same-UID
-        # isolation requires the privileged writer described above.
         if before is None:
-            return True
+            return valid_new_owner(
+                name.removesuffix(".meta") + ".owner",
+                current_ownerships.get(name.removesuffix(".meta") + ".owner", ""),
+                current,
+            )
 
         original = values(before)
         if original == current:
@@ -281,26 +330,47 @@ def check(directory, expected):
         try:
             try:
                 actual = manifests(descriptor)
+                actual_ownerships = ownerships(descriptor)
             except (OSError, ValueError):
                 actual = None
-            if identity_matches and actual == expected["manifests"]:
+                actual_ownerships = None
+            if (identity_matches and actual == expected["manifests"] and
+                    actual_ownerships == expected["ownerships"]):
                 return True
             owned = expected["owned"]
-            if identity_matches and actual is not None and owned:
+            if (identity_matches and actual is not None and
+                    actual_ownerships is not None and owned):
                 missing = set(expected["manifests"]) - set(actual)
                 owned_changed = actual.get(owned) != expected["manifests"].get(owned)
                 invalid = [
                     name for name, content in actual.items()
                     if name != owned and not valid_sibling_transition(
                         name, expected["manifests"].get(name), content,
+                        actual_ownerships,
                     )
                 ]
-                if not missing and not owned_changed and not invalid:
+                new_manifests = set(actual) - set(expected["manifests"])
+                allowed_new_owners = {
+                    name.removesuffix(".meta") + ".owner" for name in new_manifests
+                }
+                invalid_owners = (
+                    set(expected["ownerships"]) - set(actual_ownerships)
+                    | {
+                        name for name, content in actual_ownerships.items()
+                        if name in expected["ownerships"] and
+                        content != expected["ownerships"][name]
+                    }
+                    | (set(actual_ownerships) - set(expected["ownerships"]) - allowed_new_owners)
+                )
+                if not missing and not owned_changed and not invalid and not invalid_owners:
                     return True
                 if owned_changed and owned in actual:
                     quarantine(descriptor, owned)
                 for name in invalid:
                     quarantine(descriptor, name)
+                for name in invalid_owners:
+                    if name in actual_ownerships:
+                        quarantine(descriptor, name)
                 restore = set(missing)
                 restore.update(name for name in invalid if name in expected["manifests"])
                 if owned_changed and owned in expected["manifests"]:
@@ -310,9 +380,16 @@ def check(directory, expected):
                         descriptor, name,
                         base64.b64decode(expected["manifests"][name], validate=True),
                     )
+                for name in invalid_owners & set(expected["ownerships"]):
+                    durable_write(
+                        descriptor, name,
+                        base64.b64decode(expected["ownerships"][name], validate=True),
+                    )
                 os.fsync(descriptor)
                 return False
-            restore_manifests(descriptor, expected["manifests"])
+            restore_manifests(
+                descriptor, expected["manifests"], expected["ownerships"],
+            )
             return False
         finally:
             os.close(descriptor)

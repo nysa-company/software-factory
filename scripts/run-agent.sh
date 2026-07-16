@@ -121,6 +121,7 @@ RUN_GO_FILE=""
 RUN_GATE_FILE=""
 RUN_OUTPUT_TEMP=""
 RUNS_META_SNAPSHOT=""
+RUN_OWNER=""
 CONTROL_PLANE_MUTATION=0
 REGISTERED_BRANCH_BEFORE=""
 REGISTERED_HEAD_BEFORE=""
@@ -390,6 +391,9 @@ write_manifest() {
     echo "role_branch_before=$(meta_value "${ROLE_BRANCH_BEFORE:-}")"
     echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
+    echo "launcher_pid=$(meta_value "$$")"
+    echo "launcher_start=$(meta_value "${CLAIM_START:-}")"
+    echo "ownership_token=$(meta_value "${CLAIM_TOKEN:-}")"
     echo "updated_at=$(date -u +%FT%TZ)"
   } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$MANIFEST"; then
     return 1
@@ -816,11 +820,24 @@ LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,co
 PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
 RUN_ID="$(date +%s)-$$"
 MANIFEST="$RUNS_DIR/$RUN_ID.meta"
+RUN_OWNER="$RUNS_DIR/$RUN_ID.owner"
 RUN_STARTED_AT="$(date -u +%FT%TZ)"
 TODAY="${RUN_STARTED_AT%%T*}"
 RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
 RESERVED_USD="$PER_RUN_BUDGET_USD"
 [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
+{
+  echo "schema=1"
+  echo "run_id=$RUN_ID"
+  echo "ticket=$(meta_value "$TICKET")"
+  echo "role=$(meta_value "$ROLE")"
+  echo "launcher_pid=$$"
+  echo "launcher_start=$(meta_value "$CLAIM_START")"
+  echo "ownership_token=$CLAIM_TOKEN"
+} | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUN_OWNER" || {
+  echo "run ownership record could not be persisted; no task was submitted" >&2
+  exit 3
+}
 write_manifest "resolved"
 if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "$FACTORY_KIT_PIN_ERROR after launch lock acquisition; no task was submitted" >&2

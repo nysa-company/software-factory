@@ -207,6 +207,12 @@ class LinearSyncTest(unittest.TestCase):
         self.assertTrue(self.mapping["tickets"]["T-001"]["identifier"].startswith("SF-"))
         self.assertIsNone(self.mapping["_sync"]["last_error"])
 
+    def test_first_reconciliation_initializes_missing_runs_root(self):
+        (self.factory / "runs").rmdir()
+        self.reconcile()
+        self.assertTrue((self.factory / "runs").is_dir())
+        self.assertFalse((self.factory / "runs").is_symlink())
+
     def test_allowed_operator_fields_are_ingested_before_push(self):
         self.reconcile()
         before = (self.factory / "tickets" / "T-001.md").read_text()

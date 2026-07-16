@@ -62,6 +62,27 @@ def manifest(path, *, state="reserved", phase=None, go="0", cost="", status="", 
     path.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 
 
+def ownership(path, ticket="T-123", role="planner", pid="12345"):
+    token = "a" * 32
+    meta = path.with_suffix(".meta")
+    text = meta.read_text()
+    meta.write_text(
+        text
+        + f"launcher_pid={pid}\n"
+        + "launcher_start=Wed Jul 16 12:00:00 2026\n"
+        + f"ownership_token={token}\n"
+    )
+    path.write_text(
+        "schema=1\n"
+        f"run_id={path.stem}\n"
+        f"ticket={ticket}\n"
+        f"role={role}\n"
+        f"launcher_pid={pid}\n"
+        "launcher_start=Wed Jul 16 12:00:00 2026\n"
+        f"ownership_token={token}\n"
+    )
+
+
 class LedgerViewTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -291,7 +312,7 @@ class LedgerViewTest(unittest.TestCase):
         self.assertEqual(len(quarantined), 1)
         self.assertEqual((quarantined[0] / "forged.meta").read_bytes(), b"forged\n")
 
-    def test_integrity_allows_valid_new_terminal_sibling(self):
+    def test_integrity_requires_provenance_for_valid_new_terminal_sibling(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         sibling = runs / "sibling.meta"
@@ -303,6 +324,17 @@ class LedgerViewTest(unittest.TestCase):
             sibling, state="completed", phase="completed", go="1", cost="0.40",
             status="0", terminal="2026-07-15T12:01:00Z",
         )
+        result = self.integrity_check(snapshot)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(sibling.exists())
+
+        sibling = runs / "1784190000-12345.meta"
+        manifest(
+            sibling, state="completed", phase="completed", go="1", cost="0.40",
+            status="0", terminal="2026-07-15T12:01:00Z",
+        )
+        ownership(sibling.with_suffix(".owner"))
         result = self.integrity_check(snapshot)
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -367,7 +399,7 @@ class LedgerViewTest(unittest.TestCase):
         manifest(owned, phase="spawned", go="1")
         snapshot = self.integrity_snapshot(owned=owned.name).stdout
 
-        resolved = runs / "new-resolved.meta"
+        resolved = runs / "1784190001-12345.meta"
         manifest(resolved)
         resolved.write_text(
             resolved.read_text()
@@ -375,9 +407,15 @@ class LedgerViewTest(unittest.TestCase):
             .replace("accounting_schema=1", "accounting_schema=")
             .replace("accounting_state=reserved", "accounting_state=")
         )
-        manifest(runs / "new-reserved.meta")
-        manifest(runs / "new-prepared.meta", phase="prepared")
-        manifest(runs / "new-spawned.meta", phase="spawned", go="1")
+        ownership(resolved.with_suffix(".owner"))
+        reserved = runs / "1784190002-12345.meta"
+        prepared = runs / "1784190003-12345.meta"
+        spawned = runs / "1784190004-12345.meta"
+        manifest(reserved)
+        manifest(prepared, phase="prepared")
+        manifest(spawned, phase="spawned", go="1")
+        for path in (reserved, prepared, spawned):
+            ownership(path.with_suffix(".owner"))
 
         result = self.integrity_check(snapshot)
         self.assertEqual(result.returncode, 0, result.stderr)

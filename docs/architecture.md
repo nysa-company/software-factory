@@ -17,7 +17,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
-Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight durably initializes the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
+Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis, while `<run_id>.owner` binds new manifests to a launcher-created claim identity. Preflight and the first normal Linear reconciliation durably initialize the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
 
 Each ticket-and-role run takes an atomic `mkdir` claim under
 `factory/.active-runs/` before it creates a manifest. A conflicting or
@@ -33,8 +33,10 @@ When a machine-wide cap is configured, its global ledger lock covers the full
 provider interval, not just reservation. The wrapper validates the ledger,
 persists a reservation, snapshots it, and verifies it before terminalization.
 If the ledger changes while the wrapper still owns the exact lock, the wrapper
-restores the snapshot; any persistent ledger, lock, claim, manifest, or
-registered-checkout mutation fails the role and prevents sequencer advancement.
+restores the snapshot; any persistent ledger, lock, claim, owned manifest,
+unprovenanced sibling manifest, or registered-checkout mutation fails the role
+and prevents sequencer advancement. Valid concurrent sibling transitions must
+carry their matching launcher ownership record.
 This intentionally serializes globally capped provider intervals.
 
 These controls provide portable crash/race handling and detect mutations that
