@@ -14,7 +14,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - Linux and macOS system-Bash verification both feed the required aggregate `ci` status. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
-- Primary role routing is explicit: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/medium; Spec-linter and Test-author use Claude Fable 5/medium; Reviewer uses Claude Sonnet 5/medium. Cursor remains the family-matched fallback.
+- Primary role routing is explicit: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/medium; Spec-linter uses Claude Haiku 4.5/medium; Test-author uses Claude Fable 5/medium; Reviewer uses Claude Sonnet 5/medium. Cursor remains the family-matched fallback.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contract 1.1 keeps live tickets serialized by default and permits an explicit two-ticket lease pilot with exact worktree isolation, atomic budget reservations, and opaque leases confined to trusted helpers. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
@@ -30,6 +30,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch never reclaims stale or unsafe ownership; only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 
 ## Log
+
+## 2026-07-16 — Decision 31: Escalation-latency and reservation improvements
+
+Category: System change
+
+Evidence from the first 12 Nysa tickets showed operator waits — not code review — dominate cycle time (50% Blocked-Escalated; 70% of stall minutes in a few multi-hour gaps). Planner v4 now consults and appends a durable `factory/rulings.md` (immutability-exempt path) before escalating, checks cross-ticket file boundaries and deploy topology pre-freeze, and the Linear reconciler assigns Blocked-Escalated issues to the API key's viewer for native push notification. The ticket reservation shrinks to the remaining ticket budget (adapter hard stop and telemetry fallback follow it), so a nearly finished ticket launches instead of stalling on flat-reserve arithmetic; daily/global cap checks keep the flat reserve. Spec-linter moves to Claude Haiku 4.5/medium as a cost pilot; Reviewer and Planner routing are unchanged. Railway runbook adds PR-environment reference variables and a project token for non-interactive redeploys.
 
 ## 2026-07-16 — Decision 30: Provider-lock recovery is explicit and evidence preserving
 

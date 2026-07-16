@@ -44,7 +44,8 @@ factory_role_model() {
   case "$1" in
     planner) printf '%s\n' gpt-5.6-sol ;;
     builder|narrator) printf '%s\n' gpt-5.6-terra ;;
-    spec-linter|test-author) printf '%s\n' fable ;;
+    spec-linter) printf '%s\n' haiku ;;
+    test-author) printf '%s\n' fable ;;
     reviewer) printf '%s\n' sonnet ;;
     *) return 1 ;;
   esac

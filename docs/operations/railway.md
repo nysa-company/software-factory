@@ -16,4 +16,16 @@ Railway hosts staging, PR preview deploys, and Postgres. Chosen over Fly.io for 
 - Postgres backups: Railway's daily backups on; restore procedure noted in the operator runbook. Staging data is disposable by policy — treat any needed data as re-seedable via fixtures.
 - Migrations run on deploy via the app's start command (e.g. `npm run migrate && npm start`); the serialized-migrations CI check prevents two tickets carrying conflicting migrations.
 
+## PR-environment variable overrides (root-cause fix for preview drift)
+
+One-time operator action per product, on the Railway PR-environments template: set the web service's API URL and the API service's web-origin URL as Railway *reference variables* instead of inheriting production's fixed custom-domain values — e.g. `VITE_API_URL=https://${{api.RAILWAY_PUBLIC_DOMAIN}}` on the web service, `WEB_APP_URL=https://${{web.RAILWAY_PUBLIC_DOMAIN}}` on the API service (adjust service names to whatever this product's services are called).
+
+Why: T-009's PR preview served a web bundle still pointing at the production API, which invalidated the Narrator evidence pass after review approval. A hardcoded production URL doesn't change per PR environment; a reference variable resolves to that PR environment's own sibling service, so every PR environment self-pairs automatically.
+
+## Non-interactive access (project token)
+
+Mint a least-privilege Railway project token once via the dashboard (Settings → Tokens), scoped to this product's services only. Store it at `~/.hermes/secrets/railway-token`, `chmod 600`, mirroring the existing `~/.hermes/secrets/linear-api-key` convention (see `scripts/linear-sync.py:35`).
+
+Usage: export it as `RAILWAY_TOKEN` for the `railway` CLI so redeploys and variable changes never wait on an operator browser session. Never commit it, never print it.
+
 This file gets extended during each product's shakedown with whatever reality required (exact start commands, health checks, quirks) — it is deliberately not exhaustive up front.
