@@ -316,14 +316,17 @@ ledger_row() {
 }
 
 expect_stage() {
-  local expected="$1" root="$2" ticket="$3" actual status
+  local expected="$1" root="$2" ticket="$3" actual status certified_origin
   mkdir -p "$root/factory/runs"
   [[ -f "$root/factory/KIT_PIN" ]] ||
     printf '%s\n' "$KIT_SHA" > "$root/factory/KIT_PIN"
   if ! git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
     init_product_git "$root"
   fi
-  actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
+  certified_origin="$(git -C "$root" remote get-url --push origin 2>/dev/null || true)"
+  actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
+    "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
   status=$?
   [[ "$actual" == "$expected"* ]] || {
     fail "$ticket expected '$expected'" "got '$actual' (status $status)"
@@ -1799,6 +1802,22 @@ FACTORY_CERTIFIED_PRODUCT_ORIGIN="$COMMITTED_APPROVAL_REMOTE" \
   "$ROOT/scripts/ticket-state.sh" --ticket T-242 \
     --workdir "$COMMITTED_APPROVAL_ROOT" --action materialize >/dev/null || \
   COMMITTED_APPROVAL_OK=0
+expect_stage "AWAIT-MERGE" "$COMMITTED_APPROVAL_ROOT" T-242 || \
+  COMMITTED_APPROVAL_OK=0
+APPROVAL_VERIFIED_HEAD="$(git -C "$COMMITTED_APPROVAL_ROOT" rev-parse HEAD)"
+APPROVAL_REMOTE_DRIFT="$(printf '%s\n' 'out-of-band approval drift' | \
+  git -C "$COMMITTED_APPROVAL_ROOT" -c user.name=test -c user.email=test@example.com \
+    commit-tree HEAD^{tree} -p HEAD)"
+git -C "$COMMITTED_APPROVAL_ROOT" push -q origin \
+  "$APPROVAL_REMOTE_DRIFT:refs/heads/factory-test-approval-drift"
+git --git-dir="$COMMITTED_APPROVAL_REMOTE" update-ref refs/heads/ticket/T-242 \
+  "$APPROVAL_REMOTE_DRIFT"
+git --git-dir="$COMMITTED_APPROVAL_REMOTE" update-ref -d \
+  refs/heads/factory-test-approval-drift
+expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+  "$COMMITTED_APPROVAL_ROOT" T-242 || COMMITTED_APPROVAL_OK=0
+git --git-dir="$COMMITTED_APPROVAL_REMOTE" update-ref refs/heads/ticket/T-242 \
+  "$APPROVAL_VERIFIED_HEAD"
 expect_stage "AWAIT-MERGE" "$COMMITTED_APPROVAL_ROOT" T-242 || \
   COMMITTED_APPROVAL_OK=0
 [[ "$COMMITTED_APPROVAL_OK" -eq 1 ]] && \

@@ -1309,6 +1309,41 @@ REAL_RUN_WORKTREE_780="$TMP/real-run-worktree-780"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-780 "$REAL_RUN_WORKTREE_780"
 REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
 
+printf '\nUncommitted-Evidence: forged\n' >> \
+  "$REAL_RUN_WORKTREE_PHYS/factory/tickets/T-777.md"
+DIRTY_PREFLIGHT_RC=0
+run_launcher launchtest preflight --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  DIRTY_PREFLIGHT_RC=$?
+DIRTY_NEXT_STAGE_RC=0
+run_launcher launchtest next-stage --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  DIRTY_NEXT_STAGE_RC=$?
+[[ "$DIRTY_PREFLIGHT_RC" -eq 1 && "$DIRTY_NEXT_STAGE_RC" -eq 1 ]] ||
+  fail "contract 1.2 accepted dirty tracked ticket evidence"
+git -C "$REAL_RUN_WORKTREE_PHYS" restore factory/tickets/T-777.md
+git -C "$REAL_RUN_WORKTREE_PHYS" config status.showUntrackedFiles no
+touch "$REAL_RUN_WORKTREE_PHYS/untracked-evidence.txt"
+DIRTY_UNTRACKED_RC=0
+run_launcher launchtest next-stage --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  DIRTY_UNTRACKED_RC=$?
+[[ "$DIRTY_UNTRACKED_RC" -eq 1 ]] ||
+  fail "contract 1.2 accepted hidden untracked ticket evidence"
+rm "$REAL_RUN_WORKTREE_PHYS/untracked-evidence.txt"
+git -C "$REAL_RUN_WORKTREE_PHYS" config --unset status.showUntrackedFiles
+WORKTREE_INDEX="$(git -C "$REAL_RUN_WORKTREE_PHYS" rev-parse --path-format=absolute \
+  --git-path index)"
+cp "$WORKTREE_INDEX" "$TMP/ticket-index.saved"
+printf 'corrupt index\n' > "$WORKTREE_INDEX"
+CORRUPT_INDEX_RC=0
+run_launcher launchtest next-stage --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  CORRUPT_INDEX_RC=$?
+[[ "$CORRUPT_INDEX_RC" -eq 1 ]] ||
+  fail "contract 1.2 accepted an uninspectable ticket worktree"
+mv "$TMP/ticket-index.saved" "$WORKTREE_INDEX"
+
 run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
   --action materialize --json > "$TMP/real-ticket-state.json"
 BOOTSTRAP_HEAD="$(git -C "$REAL_RUN_WORKTREE_PHYS" rev-parse HEAD)"

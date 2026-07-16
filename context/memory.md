@@ -24,8 +24,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Hermes contract 1.2 requires exact ticket worktrees for preflight and sequencing, exposes trusted ticket-state and ledger projection, and keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 - Fresh ticket worktrees are created from protected main and pass through trusted materialization before preflight so their exact remote branch exists. Linear Project removal is represented explicitly in the ignored overlay and clears the effective initiative until reassignment.
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
+- Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require pending operator fields to materialize first, and approval readiness verifies the actual certified remote tip as well as HEAD and tracking.
 
 ## Log
+
+## 2026-07-16 — Decision 26: Ticket evidence must be clean and remotely current
+
+Category: System change
+
+Contract 1.2 refuses tracked and untracked worktree dirt before ticket helpers. Pending operator fields must pass through materialization before factory-stage transitions, and approval readiness queries the certified origin so stale local tracking cannot authorize merge.
 
 ## 2026-07-16 — Decision 25: Cutover and config read authoritative sources
 

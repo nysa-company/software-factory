@@ -97,7 +97,8 @@ See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 Ticket content is read from the launcher's validated ticket worktree, while
 controls and the Linear operator overlay remain anchored to the registered
 product root. Linear projection reads the committed exact ticket branch rather
-than a dirty checkout. `ticket-state` is the only launcher path that
+than a dirty checkout. Contract 1.2 ticket routes reject tracked or untracked
+worktree dirt before any helper runs. `ticket-state` is the only launcher path that
 materializes operator fields or commits a factory-owned role-stage transition.
 Its generic transition surface refuses Awaiting Approval and Done until
 dedicated bundle and merge/deploy attestations exist. From an already committed
@@ -165,4 +166,5 @@ Planner, Builder, and Narrator use the production model family. Spec-linter, Tes
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
 - Approval commit shape and materialized operator-field attestations detect ordinary bypass inside the portable same-UID trust model; they are audit evidence, not a cryptographic signature against a deliberate host user.
+- Factory-owned state transitions refuse while operator-owned overlay fields are pending, and approval sequencing queries the certified origin rather than trusting only local tracking state.
 - Allowlisted machine configuration comes only from `global.env`; inherited values with the same names are cleared even when the file is absent.

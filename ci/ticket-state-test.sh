@@ -72,6 +72,29 @@ import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
+printf '{"tickets":{"T-700":{"operator":{"priority":"low"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
+if ticket_state --ticket T-700 --workdir "$PRODUCT" --action transition \
+  --state Planning >/dev/null 2>&1; then
+  echo "FAIL: factory transition consumed pending operator fields" >&2
+  exit 1
+fi
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+[[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1]))["tickets"]["T-700"]["operator"] == {
+    "priority": "low"
+}
+PY
+ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
+grep -q '^Priority: low$' "$PRODUCT/factory/tickets/T-700.md"
+python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+import json, sys
+assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
+PY
+
 ticket_state \
   --ticket T-700 --workdir "$PRODUCT" --action transition --state Planning >/dev/null
 grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"

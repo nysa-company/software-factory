@@ -26,7 +26,9 @@ PRODUCT_ROOT="${FACTORY_ROOT:-$WORKDIR}"
 MAP="$PRODUCT_ROOT/factory/linear-map.json"
 TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "ticket file missing from worktree" >&2; exit 1; }
-[[ -z "$(git -C "$WORKDIR" status --porcelain)" ]] || { echo "ticket worktree is dirty" >&2; exit 1; }
+WORKTREE_STATUS="$(git -C "$WORKDIR" status --porcelain --untracked-files=all \
+  --ignore-submodules=none)" || { echo "ticket worktree cannot be inspected" >&2; exit 1; }
+[[ -z "$WORKTREE_STATUS" ]] || { echo "ticket worktree is dirty" >&2; exit 1; }
 BRANCH="$(git -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 [[ -n "$BRANCH" ]] || { echo "ticket worktree is detached" >&2; exit 1; }
 PRODUCT_REMOTE="$(factory_capture_product_remote "$PRODUCT_ROOT" "$FACTORY_TRUSTED_PRODUCT_ORIGIN")" || {
@@ -96,6 +98,10 @@ if legal_approval:
     effective_path.write_text(effective_text)
 PY
 elif [[ "$ACTION" == "transition" ]]; then
+  cmp -s "$TMP" "$TICKET_FILE" || {
+    echo "pending operator fields require materialization before factory transition" >&2
+    exit 1
+  }
   python3 - "$TMP" "$STATE" <<'PY'
 import re
 import sys

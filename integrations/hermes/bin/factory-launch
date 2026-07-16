@@ -710,7 +710,7 @@ EOF
 }
 
 validate_ticket_worktree() {
-  local ticket="$1" product_top git_dir common branch expected
+  local ticket="$1" product_top git_dir common branch expected worktree_status
   ticket_branch_prefix
   expected="$TICKET_BRANCH_PREFIX$ticket"
   git check-ref-format --branch "$expected" >/dev/null 2>&1 ||
@@ -736,6 +736,13 @@ validate_ticket_worktree() {
     die "ticket worktree must be on a non-detached branch"
   [[ "$branch" == "$expected" ]] ||
     die "worktree branch does not match the requested ticket"
+  if [[ "$CONTRACT_VERSION" == "1.2.0" ]]; then
+    worktree_status="$(git -C "$RESOLVED_WORKDIR" status --porcelain \
+      --untracked-files=all --ignore-submodules=none)" ||
+      die "ticket worktree cannot be inspected"
+    [[ -z "$worktree_status" ]] ||
+      die "ticket worktree must be clean"
+  fi
 }
 
 role_is_allowed() {
@@ -892,6 +899,7 @@ PY
   next-stage)
     validate_ticket_command "$@"
     add_dispatch_lease_env "$LEASE_ID"
+    add_certified_origin_env
     if [[ -n "$LEASE_ID" && -n "$TICKET_WORKDIR" ]]; then
       wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
         "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET" --lease "$LEASE_ID" \
