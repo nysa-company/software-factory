@@ -20,6 +20,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Generic ticket-state transitions stop before Awaiting Approval and Done until dedicated evidence attestations exist.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
+- Provider processes cannot author launcher control state: durable GO precedes the adapter gate, run-manifest or registered-checkout mutation fails the role, and the ignored runtime ledger is always rebuilt from durable history plus authoritative manifests.
 - Hermes contract 1.2 requires exact ticket worktrees for preflight and sequencing, exposes trusted ticket-state and ledger projection, and keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 
 ## Log
@@ -143,3 +144,9 @@ Automatic ticket and role pushes bind to the active generation's certified produ
 Category: System change
 
 `factory/ENVELOPE.env` and `~/.factory/global.env` use one sealed, Bash-3.2-compatible whitelist parser across preflight, adapter contracts, and role launch. Executable content, invalid or incoherent limits, and relative global-ledger paths fail before backend probes, run manifests, or task submission.
+
+## 2026-07-15 — Decision 21: Provider output cannot become control-plane truth
+
+Category: System change
+
+The launcher durably publishes GO before opening the adapter gate, snapshots its manifests and registered checkout, and fails closed if the provider changes either. Runtime-ledger is output-only and is rebuilt from tracked durable history plus validated regular manifest files, so forged cost or success rows cannot influence budgets or sequencing.
