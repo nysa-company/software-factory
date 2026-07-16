@@ -2,6 +2,7 @@
 import csv
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "ledger-view.py"
+SPEND_ROLLUP = ROOT / "scripts" / "spend-rollup.sh"
 SPEC = importlib.util.spec_from_file_location("ledger_view", HELPER)
 LEDGER_VIEW = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(LEDGER_VIEW)
@@ -88,6 +90,25 @@ class LedgerViewTest(unittest.TestCase):
         ledger = self.root / "factory" / "ledger.csv"
         ledger.write_text(HEADER + "2026-07-14,09:00:00,T-100,planner,codex,1,1,0.25,0,,,,,,\n")
         self.assertEqual(len(self.refresh()), 1)
+
+    def test_runtime_projection_cannot_forge_cost_or_success(self):
+        runtime = self.root / "factory" / "runtime-ledger.csv"
+        runtime.write_text(
+            HEADER
+            + "2026-07-14,09:01:00,T-999,planner,codex,1,1,-1000,0,forged-cost,openai,gpt-test,primary_ready,provider_reported,test\n"
+            + "2026-07-14,09:02:00,T-123,planner,codex,1,1,0,0,forged-success,openai,gpt-test,primary_ready,provider_reported,test\n"
+        )
+
+        rows = self.refresh()
+        self.assertEqual([row["run_id"] for row in rows], ["old"])
+        self.assertEqual(sum(float(row["cost_usd"]) for row in rows), 0.25)
+
+        result = subprocess.run(
+            [str(SPEND_ROLLUP), "2026-07-14"], check=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={**os.environ, "FACTORY_ROOT": str(self.root)},
+        )
+        self.assertIn("$0.25 across 1 runs", result.stdout)
         self.assertEqual(len(self.refresh()), 1)
 
     def test_pre_go_failure_is_zero_cost(self):
@@ -98,6 +119,45 @@ class LedgerViewTest(unittest.TestCase):
         )
         row = self.refresh()[-1]
         self.assertEqual((row["cost_usd"], row["turns"], row["cost_basis"]), ("0", "0", "launch_void"))
+
+    def test_malformed_durable_values_fail_closed(self):
+        ledger = self.root / "factory" / "ledger.csv"
+        for field, value in (("cost_usd", "9" * 500), ("turns", "9" * 500)):
+            row = dict(zip(LEDGER_VIEW.FIELDS, next(csv.reader([
+                "2026-07-14,09:00:00,T-100,planner,codex,1,1,0.25,0,old,openai,gpt-test,primary_ready,estimated_tokens,test"
+            ]))))
+            row[field] = value
+            with ledger.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, LEDGER_VIEW.FIELDS, lineterminator="\n")
+                writer.writeheader()
+                writer.writerow(row)
+            result = run("refresh", "--factory-root", self.root, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"invalid durable ledger {field.split('_')[0]}", result.stderr)
+
+    def test_unresolved_durable_reservation_is_retained(self):
+        (self.root / "factory" / "ledger.csv").write_text(
+            HEADER
+            + "2026-07-14,09:00:00,T-100,planner,codex,reserved,0,1.00,reserved-live-1,live-1,openai,gpt-test,primary_ready,conservative_reservation,test\n"
+        )
+        row = self.refresh()[0]
+        self.assertEqual((row["run_id"], row["exit_status"]), ("live-1", "reserved-live-1"))
+
+    def test_symlink_manifest_fails_closed(self):
+        path = self.root / "factory" / "runs" / "linked.meta"
+        path.symlink_to(self.root / "factory" / "ledger.csv")
+        result = run("refresh", "--factory-root", self.root, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("regular non-symlink", result.stderr)
+
+    def test_oversized_manifest_numbers_fail_closed(self):
+        path = self.root / "factory" / "runs" / "huge.meta"
+        manifest(path)
+        text = path.read_text().replace("reserved_usd=2.00", f"reserved_usd={'9' * 500}")
+        path.write_text(text)
+        result = run("refresh", "--factory-root", self.root, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid reserved cost", result.stderr)
 
     def test_terminal_run_stays_in_its_utc_start_day(self):
         path = self.root / "factory" / "runs" / "midnight.meta"
@@ -124,6 +184,26 @@ class LedgerViewTest(unittest.TestCase):
         result = run("refresh", "--factory-root", self.root, check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting manifest records", result.stderr)
+
+    def test_manifest_reservation_cannot_be_hidden_by_durable_terminal(self):
+        path = self.root / "factory" / "runs" / "old.meta"
+        manifest(path)
+        result = run("refresh", "--factory-root", self.root, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflicting manifest records for run_id old", result.stderr)
+
+    def test_terminal_manifest_replaces_durable_reservation(self):
+        (self.root / "factory" / "ledger.csv").write_text(
+            HEADER
+            + "2026-07-14,09:00:00,T-123,planner,codex,reserved,0,2.00,reserved-run-1,run-1,openai,gpt-test,primary_ready,conservative_reservation,test\n"
+        )
+        path = self.root / "factory" / "runs" / "run-1.meta"
+        manifest(
+            path, state="completed", go="1", cost="0.40", status="0",
+            terminal="2026-07-15T12:05:00Z",
+        )
+        row = self.refresh()[0]
+        self.assertEqual((row["cost_usd"], row["exit_status"]), ("0.40", "0"))
 
     def test_projection_is_deterministic_and_refuses_unsettled_runs(self):
         origin = Path(self.temp.name) / "origin.git"

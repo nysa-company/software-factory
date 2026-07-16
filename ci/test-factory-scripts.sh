@@ -432,6 +432,13 @@ assert_invalid_run_envelope negative-timeout \
 assert_invalid_run_envelope incoherent \
   's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=30.00/' \
   'per-run budget exceeds a ticket or daily cap'
+HUGE_CONFIG_VALUE="$(awk 'BEGIN { for (i=0; i<500; i++) printf "9" }')"
+assert_invalid_run_envelope 500-digit-money \
+  "s/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=$HUGE_CONFIG_VALUE/" \
+  'money values must be positive finite decimals'
+assert_invalid_run_envelope 500-digit-timeout \
+  "s/^PER_RUN_TIMEOUT_MIN=.*/PER_RUN_TIMEOUT_MIN=$HUGE_CONFIG_VALUE/" \
+  'turns and timeout must be positive integers'
 
 cp "$TMP/invalid-config.clean" "$INVALID_CONFIG_ROOT/factory/ENVELOPE.env"
 INVALID_GLOBAL="$TMP/invalid-global.env"
@@ -455,6 +462,46 @@ if [[ "$INVALID_GLOBAL_STATUS" -eq 3 &&
 else
   fail "run-agent rejects relative global ledger before task or manifest" \
     "status=$INVALID_GLOBAL_STATUS output=$INVALID_GLOBAL_OUT"
+fi
+
+INVALID_PRICING="$TMP/invalid-pricing.env"
+cat > "$INVALID_PRICING" <<ENV
+GLOBAL_DAILY_CAP_USD=50.00
+CURSOR_PRICING_SNAPSHOT_DATE=YYYY-MM-DD
+CURSOR_OPENAI_USD_PER_MTOK_IN=$HUGE_CONFIG_VALUE
+ENV
+INVALID_PRICING_STATUS=0
+INVALID_PRICING_OUT="$(FACTORY_ROOT="$INVALID_CONFIG_ROOT" \
+  FACTORY_GLOBAL_ENV="$INVALID_PRICING" FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-191 -- "invalid pricing" 2>&1)" ||
+  INVALID_PRICING_STATUS=$?
+if [[ "$INVALID_PRICING_STATUS" -eq 3 &&
+      "$INVALID_PRICING_OUT" == *"Cursor pricing requires"* &&
+      ! -d "$INVALID_CONFIG_ROOT/factory/runs" ]]; then
+  pass "run-agent rejects incomplete placeholder and oversized pricing before task"
+else
+  fail "run-agent rejects incomplete placeholder and oversized pricing before task" \
+    "status=$INVALID_PRICING_STATUS output=$INVALID_PRICING_OUT"
+fi
+
+# The ignored projection is output-only: forged successes and negative costs
+# are replaced before the sequencer counts roles or spend.
+FORGED_VIEW="$TMP/forged-runtime-view"
+write_envelope "$FORGED_VIEW"
+write_ticket "$FORGED_VIEW" T-192
+ledger_header > "$FORGED_VIEW/factory/ledger.csv"
+{
+  ledger_header
+  printf '2026-07-15,01:00:00,T-192,planner,mock,test,1,-1000,0,forged-negative,,,,,,\n'
+  printf '2026-07-15,01:01:00,T-192,planner,mock,test,1,0,0,forged-success,,,,,,\n'
+} > "$FORGED_VIEW/factory/runtime-ledger.csv"
+FORGED_STAGE="$(FACTORY_ROOT="$FORGED_VIEW" "$NEXT_STAGE" --ticket T-192 2>&1)"
+if [[ "$FORGED_STAGE" == "RUN planner" &&
+      "$(wc -l < "$FORGED_VIEW/factory/runtime-ledger.csv" | tr -d ' ')" == "1" ]]; then
+  pass "sequencer overwrites forged runtime cost and success rows before counting"
+else
+  fail "sequencer overwrites forged runtime cost and success rows before counting" \
+    "output=$FORGED_STAGE"
 fi
 
 # Canonical ledger routing from a linked worktree.
@@ -622,7 +669,7 @@ write_ticket "$FALLBACK" T-211
 FALLBACK_PRODUCT_TREE="$(git -C "$FALLBACK" rev-parse 'HEAD^{tree}')"
 FALLBACK_GLOBAL="$TMP/fallback-global/global.env"
 write_backend_global "$FALLBACK_GLOBAL" \
-  "export FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down"
+  $'export FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down\nexport CURSOR_PRICING_SNAPSHOT_DATE=2026-07-15\nexport CURSOR_OPENAI_USD_PER_MTOK_IN=1.25\nexport CURSOR_OPENAI_USD_PER_MTOK_OUT=10\nexport CURSOR_ANTHROPIC_USD_PER_MTOK_IN=3\nexport CURSOR_ANTHROPIC_USD_PER_MTOK_OUT=15\nexport CURSOR_OPENAI_USD_PER_MTOK_CACHE=0\nexport CURSOR_ANTHROPIC_USD_PER_MTOK_CACHE=0'
 FALLBACK_TRACE="$TMP/fallback.trace"
 : > "$FALLBACK_TRACE"
 if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
@@ -1075,6 +1122,67 @@ else
     "status $GO_WRITE_STATUS"
 fi
 
+# Provider processes cannot add or replace launcher-owned accounting manifests.
+FORGED_META_ROOT="$TMP/forged-run-manifest"
+write_envelope "$FORGED_META_ROOT"
+write_ticket "$FORGED_META_ROOT" T-228
+FORGED_META_STATUS=0
+FACTORY_ROOT="$FORGED_META_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_REQUIRE_DURABLE_GO=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock MOCK_FORGE_MANIFEST=1 \
+  "$RUN_AGENT" --role planner --ticket T-228 -- "forge manifest" \
+  > "$TMP/forged-run-manifest.out" 2>&1 || FORGED_META_STATUS=$?
+FORGED_META_OWN="$(ls "$FORGED_META_ROOT/factory/runs/"*.meta)"
+if [[ "$FORGED_META_STATUS" -eq 11 &&
+      "$(awk -F, '$3=="T-228" {print $8":"$9}' "$FORGED_META_ROOT/factory/runtime-ledger.csv")" == "0.42:11" &&
+      ! -e "$FORGED_META_ROOT/factory/runs/forged.meta" &&
+      -n "$(find "$FORGED_META_ROOT/factory/runs" -name 'forged.meta.rejected-role-mutation-*' -print -quit)" &&
+      "$(sed -n 's/^role_exit=//p' "$FORGED_META_OWN")" == "role_exit_control_plane_mutation" ]]; then
+  pass "provider manifest forgery is quarantined and actual cost retained"
+else
+  fail "provider manifest forgery is quarantined and actual cost retained" \
+    "status=$FORGED_META_STATUS"
+fi
+
+REGISTERED_MUTATION_ROOT="$TMP/registered-main-mutation"
+write_envelope "$REGISTERED_MUTATION_ROOT"
+write_ticket "$REGISTERED_MUTATION_ROOT" T-229
+REGISTERED_MUTATION_STATUS=0
+FACTORY_ROOT="$REGISTERED_MUTATION_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  MOCK_MUTATE_REGISTERED_MAIN=1 \
+  "$RUN_AGENT" --role planner --ticket T-229 -- "mutate registered main" \
+  > "$TMP/registered-main-mutation.out" 2>&1 || REGISTERED_MUTATION_STATUS=$?
+REGISTERED_MUTATION_META="$(ls "$REGISTERED_MUTATION_ROOT/factory/runs/"*.meta)"
+if [[ "$REGISTERED_MUTATION_STATUS" -eq 11 &&
+      "$(awk -F, '$3=="T-229" {print $8":"$9}' "$REGISTERED_MUTATION_ROOT/factory/runtime-ledger.csv")" == "0.42:11" &&
+      "$(sed -n 's/^role_exit=//p' "$REGISTERED_MUTATION_META")" == "role_exit_control_plane_mutation" ]]; then
+  pass "registered checkout mutation blocks advancement and retains actual cost"
+else
+  fail "registered checkout mutation blocks advancement and retains actual cost" \
+    "status=$REGISTERED_MUTATION_STATUS"
+fi
+
+DIRTY_CONTENT_ROOT="$TMP/registered-dirty-content-mutation"
+write_envelope "$DIRTY_CONTENT_ROOT"
+write_ticket "$DIRTY_CONTENT_ROOT" T-230
+git -C "$DIRTY_CONTENT_ROOT" add factory/tickets/T-230.md
+git -C "$DIRTY_CONTENT_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "track ticket"
+DIRTY_CONTENT_STATUS=0
+FACTORY_ROOT="$DIRTY_CONTENT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  MOCK_MUTATE_DIRTY_TICKET=1 MOCK_DIRTY_TICKET_ID=T-230 \
+  "$RUN_AGENT" --role planner --ticket T-230 -- "mutate dirty ticket" \
+  > "$TMP/registered-dirty-content-mutation.out" 2>&1 || DIRTY_CONTENT_STATUS=$?
+if [[ "$DIRTY_CONTENT_STATUS" -eq 11 &&
+      "$(awk -F, '$3=="T-230" {print $8":"$9}' "$DIRTY_CONTENT_ROOT/factory/runtime-ledger.csv")" == "0.42:11" ]]; then
+  pass "same-status registered content replacement fails closed"
+else
+  fail "same-status registered content replacement fails closed" \
+    "status=$DIRTY_CONTENT_STATUS"
+fi
+
 # Semantic round numbering with one explicitly voided duplicate row.
 ROUNDS="$TMP/rounds"
 mkdir -p "$ROUNDS/factory/tickets"
@@ -1192,7 +1300,7 @@ SEQUENTIAL_STATUS=0
 run_mock "$GUARD" planner T-400 >/dev/null 2>&1 || SEQUENTIAL_STATUS=$?
 if [[ "$SEQUENTIAL_STATUS" -eq 10 &&
       "$(awk -F, '$3=="T-400" && $4=="planner" && $14!="launch_void" {n++} END {print n+0}' "$GUARD_LEDGER")" == "1" &&
-      "$(awk -F, '$3=="T-400" && $4=="planner" && $14=="launch_void" {n++} END {print n+0}' "$GUARD_LEDGER")" == "1" ]]; then
+      "$(awk -F, '$3=="T-400" && $4=="planner" && $14=="launch_void" {n++} END {print n+0}' "$GUARD_LEDGER")" == "0" ]]; then
   pass "sequencer refuses obsolete sequential role"
 else
   fail "sequencer refuses obsolete sequential role" "status $SEQUENTIAL_STATUS"

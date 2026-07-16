@@ -115,6 +115,13 @@ RUN_GROUP_TERMINATED=1
 RUN_PID_FILE=""
 RUN_READY_FILE=""
 RUN_GO_FILE=""
+RUN_GATE_FILE=""
+RUNS_META_SNAPSHOT=""
+CONTROL_PLANE_MUTATION=0
+REGISTERED_BRANCH_BEFORE=""
+REGISTERED_HEAD_BEFORE=""
+REGISTERED_STATUS_BEFORE=""
+REGISTERED_CONTENT_BEFORE=""
 RUN_START_ID=""
 MANIFEST=""
 MANIFEST_PHASE=""
@@ -183,15 +190,19 @@ meta_value() {
   printf '%s' "${1:-}" | tr '\n,' '__'
 }
 
+registered_tracked_content() {
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" diff --binary HEAD -- |
+    "$FACTORY_TRUSTED_GIT_BIN" hash-object --stdin
+}
+
 write_manifest() {
-  local phase="$1" tmp
+  local phase="$1"
   [[ -n "$MANIFEST" ]] || return 0
-  tmp="$MANIFEST.tmp.$$"
   if [[ "$phase" == "spawned" && "${FACTORY_TEST_MODE:-0}" == "1" &&
         "${FACTORY_TEST_FAIL_GO_MANIFEST_WRITE:-0}" == "1" ]]; then
     return 1
   fi
-  {
+  if ! {
     echo "run_id=$(meta_value "${RUN_ID:-}")"
     echo "phase=$(meta_value "$phase")"
     echo "accounting_schema=$(meta_value "$ACCOUNTING_SCHEMA")"
@@ -229,8 +240,9 @@ write_manifest() {
     echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
     echo "updated_at=$(date -u +%FT%TZ)"
-  } > "$tmp" || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$MANIFEST" || { rm -f "$tmp"; return 1; }
+  } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$MANIFEST"; then
+    return 1
+  fi
   MANIFEST_PHASE="$phase"
 }
 
@@ -392,6 +404,7 @@ cleanup() {
   fi
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
+  [[ -z "$RUN_GATE_FILE" ]] || rm -f "$RUN_GATE_FILE"
   if [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
     [[ "$status" -ne 0 ]] || status=125
     if [[ "$GO_ISSUED" -eq 1 ]]; then
@@ -569,6 +582,27 @@ ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
 
 mkdir -p "$FACTORY_DIR" "$RUNS_DIR" "$LEDGER_DIR"
+# Claim the ticket+role slot before creating a manifest. A refused duplicate is
+# not a registered run and therefore cannot alter a live provider's manifest
+# integrity snapshot.
+ACTIVE_RUNS_DIR="$LEDGER_DIR/.active-runs"
+GUARD_KEY="$(printf '%s.%s' "$TICKET" "$ROLE" | tr -c 'A-Za-z0-9._-' '_')"
+ACTIVE_RUN_FILE="$ACTIVE_RUNS_DIR/$GUARD_KEY.pid"
+ACTIVE_RUN_TEMP="$ACTIVE_RUNS_DIR/.$GUARD_KEY.$$.pid"
+mkdir -p "$ACTIVE_RUNS_DIR"
+echo "$$" > "$ACTIVE_RUN_TEMP"
+while ! ln "$ACTIVE_RUN_TEMP" "$ACTIVE_RUN_FILE" 2>/dev/null; do
+  EXISTING_PID="$(cat "$ACTIVE_RUN_FILE" 2>/dev/null || true)"
+  if [[ "$EXISTING_PID" =~ ^[0-9]+$ ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "live run already exists for $TICKET role $ROLE (wrapper pid $EXISTING_PID) — refusing duplicate launch" >&2
+    exit 7
+  fi
+  rm -f "$ACTIVE_RUN_FILE"
+done
+OWNS_ACTIVE_RUN=1
+rm -f "$ACTIVE_RUN_TEMP"
+ACTIVE_RUN_TEMP=""
+
 GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
 LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
 PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
@@ -665,26 +699,6 @@ if ! refresh_runtime_ledger; then
   exit 3
 fi
 
-# --- one live run per ticket+role across all linked worktrees ---
-# Acquisition is serialized by the ledger lock above, including stale cleanup.
-ACTIVE_RUNS_DIR="$LEDGER_DIR/.active-runs"
-GUARD_KEY="$(printf '%s.%s' "$TICKET" "$ROLE" | tr -c 'A-Za-z0-9._-' '_')"
-ACTIVE_RUN_FILE="$ACTIVE_RUNS_DIR/$GUARD_KEY.pid"
-ACTIVE_RUN_TEMP="$ACTIVE_RUNS_DIR/.$GUARD_KEY.$$.pid"
-mkdir -p "$ACTIVE_RUNS_DIR"
-echo "$$" > "$ACTIVE_RUN_TEMP"
-while ! ln "$ACTIVE_RUN_TEMP" "$ACTIVE_RUN_FILE" 2>/dev/null; do
-  EXISTING_PID="$(cat "$ACTIVE_RUN_FILE" 2>/dev/null || true)"
-  if [[ "$EXISTING_PID" =~ ^[0-9]+$ ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    echo "live run already exists for $TICKET role $ROLE (wrapper pid $EXISTING_PID) — refusing duplicate launch" >&2
-    exit 7
-  fi
-  rm -f "$ACTIVE_RUN_FILE"
-done
-OWNS_ACTIVE_RUN=1
-rm -f "$ACTIVE_RUN_TEMP"
-ACTIVE_RUN_TEMP=""
-
 SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
 SPENT_TICKET="$(awk -F, -v t="$TICKET" 'NR>1 && $3==t {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
 if awk -v s="$SPENT_TODAY" -v r="$PER_RUN_BUDGET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
@@ -752,7 +766,8 @@ fi
 set +e
 RUN_READY_FILE="$RUNS_DIR/.$RUN_ID.ready"
 RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
-rm -f "$RUN_READY_FILE" "$RUN_GO_FILE"
+RUN_GATE_FILE="$RUNS_DIR/.$RUN_ID.gate"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
 ADAPTER_ARGS=(
   --budget "$PER_RUN_BUDGET_USD"
   --max-turns "$PER_RUN_MAX_TURNS"
@@ -766,7 +781,7 @@ case "$ADAPTER" in
     ;;
 esac
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
-  "$RUN_READY_FILE" "$RUN_GO_FILE" "$ADAPTER_SH" \
+  "$RUN_READY_FILE" "$RUN_GATE_FILE" "$ADAPTER_SH" \
   "${ADAPTER_ARGS[@]}" \
   -- "$TASK" > "$RUNS_DIR/$RUN_ID.out" 2>&1 &
 RUN_PID=$!
@@ -854,7 +869,32 @@ else
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
-      elif ! : > "$RUN_GO_FILE"; then
+      elif ! python3 "$KIT_DIR/scripts/lib/durable-file.py" touch "$RUN_GO_FILE"; then
+        GO_ISSUED=0
+        echo "could not persist GO marker; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=125
+      elif ! RUNS_META_SNAPSHOT="$(python3 "$KIT_DIR/scripts/lib/runs-integrity.py" \
+          snapshot "$RUNS_DIR")"; then
+        GO_ISSUED=0
+        echo "could not snapshot run manifests; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=125
+      elif ! REGISTERED_BRANCH_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
+          symbolic-ref --quiet --short HEAD 2>/dev/null)" ||
+           ! REGISTERED_HEAD_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
+          rev-parse HEAD 2>/dev/null)" ||
+           ! REGISTERED_STATUS_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
+          status --porcelain --untracked-files=no 2>/dev/null)" ||
+           ! REGISTERED_CONTENT_BEFORE="$(registered_tracked_content 2>/dev/null)"; then
+        GO_ISSUED=0
+        echo "could not snapshot registered checkout; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=125
+      elif ! : > "$RUN_GATE_FILE"; then
         GO_ISSUED=0
         echo "could not open adapter GO gate; no task was submitted" >&2
         terminate_run_group
@@ -865,6 +905,19 @@ else
         HELD_LAUNCH_LOCK=0
         wait "$RUN_PID"
         STATUS=$?
+        if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
+            python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
+          CONTROL_PLANE_MUTATION=1
+          STATUS=11
+        fi
+        if [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
+              "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)" != "$REGISTERED_HEAD_BEFORE" ||
+              "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)" != "$REGISTERED_STATUS_BEFORE" ||
+              "$(registered_tracked_content 2>/dev/null || true)" != "$REGISTERED_CONTENT_BEFORE" ]]; then
+          echo "role_exit_control_plane_mutation: registered checkout changed during provider execution" >&2
+          CONTROL_PLANE_MUTATION=1
+          STATUS=11
+        fi
       fi
     fi
   fi
@@ -881,13 +934,16 @@ if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
 else
   echo "WARNING: process group $RUN_PGID survived; PID record retained for kill-switch" >&2
 fi
-rm -f "$RUN_READY_FILE" "$RUN_GO_FILE"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
 RUN_READY_FILE=""
 RUN_GO_FILE=""
+RUN_GATE_FILE=""
 RESULT="$(cat "$RUNS_DIR/$RUN_ID.out")"
 
 PROVIDER_STATUS="$STATUS"
-if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
+  ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
   ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain 2>/dev/null || true)"
@@ -949,7 +1005,7 @@ fi
 
 METRICS_LINE="$(printf '%s\n' "$RESULT" | tail -n1)"
 TURNS="$(sed -n 's/.*turns=\([0-9][0-9]*\).*/\1/p' <<<"$METRICS_LINE")"
-COST="$(sed -n 's/.*cost_usd=\([0-9.][0-9.]*\).*/\1/p' <<<"$METRICS_LINE")"
+COST="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_usd=/) { sub(/^cost_usd=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 COST_BASIS="$(sed -n 's/.*cost_basis=\([A-Za-z0-9_-]*\).*/\1/p' <<<"$METRICS_LINE")"
 [[ -z "$COST" || "$COST" =~ ^[0-9]+([.][0-9]+)?$ ]] || COST=""
 if [[ "$GO_ISSUED" -eq 0 ]]; then

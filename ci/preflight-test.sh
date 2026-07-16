@@ -305,6 +305,13 @@ assert_invalid_preflight_envelope negative-timeout \
 assert_invalid_preflight_envelope incoherent \
   's/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=7.00/' \
   'per-run budget exceeds a ticket or daily cap'
+HUGE_CONFIG_VALUE="$(awk 'BEGIN { for (i=0; i<500; i++) printf "9" }')"
+assert_invalid_preflight_envelope 500-digit-money \
+  "s/^PER_RUN_BUDGET_USD=.*/PER_RUN_BUDGET_USD=$HUGE_CONFIG_VALUE/" \
+  'money values must be positive finite decimals'
+assert_invalid_preflight_envelope 500-digit-timeout \
+  "s/^PER_RUN_TIMEOUT_MIN=.*/PER_RUN_TIMEOUT_MIN=$HUGE_CONFIG_VALUE/" \
+  'turns and timeout must be positive integers'
 
 RELATIVE_LEDGER_ENV="$TMP/relative-ledger-global.env"
 cat > "$RELATIVE_LEDGER_ENV" <<'ENV'

@@ -2,7 +2,6 @@
 """Build or project the effective factory ledger from durable rows and manifests."""
 
 import argparse
-from collections import Counter
 from contextlib import contextmanager
 import csv
 import hashlib
@@ -13,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,10 +30,30 @@ HEADERS = {
     FIELDS,
 }
 TERMINAL_STATES = {"completed", "launch_void", "abandoned_conservative"}
+MAX_COST_USD = 1_000_000
+MAX_TURNS = 1_000_000
 
 
 def fail(message):
     raise ValueError(message)
+
+
+def validate_ledger_row(row, number, path):
+    cost = row["cost_usd"]
+    if (not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,18})?", cost) or
+            float(cost) > MAX_COST_USD):
+        fail(f"invalid durable ledger cost at row {number} in {path}")
+    turns = row["turns"]
+    if (not re.fullmatch(r"[0-9]{1,7}", turns) or int(turns) > MAX_TURNS):
+        fail(f"invalid durable ledger turns at row {number} in {path}")
+    run_id = row["run_id"]
+    if run_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", run_id):
+        fail(f"invalid durable ledger run_id at row {number} in {path}")
+    status = row["exit_status"]
+    if not (re.fullmatch(r"[0-9]{1,3}", status) and int(status) <= 255):
+        expected = f"reserved-{run_id}" if run_id else ""
+        if not run_id or status != expected:
+            fail(f"invalid durable ledger exit status at row {number} in {path}")
 
 
 def read_csv(path):
@@ -47,7 +67,9 @@ def read_csv(path):
         for number, raw in enumerate(reader, 2):
             if None in raw:
                 fail(f"malformed ledger row {number} in {path}")
-            rows.append({field: (raw.get(field) or "") for field in FIELDS})
+            row = {field: (raw.get(field) or "") for field in FIELDS}
+            validate_ledger_row(row, number, path)
+            rows.append(row)
         return rows
 
 
@@ -64,11 +86,13 @@ def read_meta(path):
 
 
 def number(value, label):
+    if not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,18})?", value or ""):
+        fail(f"invalid {label}: {value!r}")
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         fail(f"invalid {label}: {value!r}")
-    if not math.isfinite(parsed) or parsed < 0:
+    if not math.isfinite(parsed) or parsed < 0 or parsed > MAX_COST_USD:
         fail(f"invalid {label}: {value!r}")
     return value
 
@@ -107,13 +131,13 @@ def manifest_row(path):
             fail(f"invalid terminal accounting timestamp: {path}")
 
     turns = values.get("turns", "0") or "0"
-    if not turns.isdigit():
+    if not re.fullmatch(r"[0-9]{1,7}", turns) or int(turns) > MAX_TURNS:
         fail(f"invalid turn count: {path}")
     if state == "reserved":
         cost, status, basis = reserved, f"reserved-{run_id}", "conservative_reservation"
     else:
         status = values.get("exit_status", "")
-        if not re.fullmatch(r"[0-9]+", status):
+        if not re.fullmatch(r"[0-9]{1,3}", status) or int(status) > 255:
             fail(f"invalid terminal exit status: {path}")
         if state == "launch_void":
             if values["go_issued"] != "0":
@@ -154,12 +178,10 @@ def is_reservation(row):
     return row["prompt_version"] == "reserved" or row["exit_status"].startswith("reserved-")
 
 
-def merge_rows(durable, runtime, manifests):
+def merge_rows(durable, manifests):
     rows = []
     indexes = {}
-    durable_legacy = Counter(
-        tuple(row[field] for field in FIELDS) for row in durable if not row["run_id"]
-    )
+    sources = {}
 
     def add(row, source):
         run_id = row["run_id"]
@@ -168,28 +190,23 @@ def merge_rows(durable, runtime, manifests):
             return
         if run_id not in indexes:
             indexes[run_id] = len(rows)
+            sources[run_id] = source
             rows.append(row)
             return
         index = indexes[run_id]
         current = rows[index]
         if current == row:
             return
-        if is_reservation(current) and not is_reservation(row):
+        current_source = sources[run_id]
+        if (current_source == "durable" and source == "manifest" and
+                is_reservation(current) and not is_reservation(row)):
             rows[index] = row
-            return
-        if not is_reservation(current) and is_reservation(row):
+            sources[run_id] = source
             return
         fail(f"conflicting {source} records for run_id {run_id}")
 
     for row in durable:
         add(row, "durable")
-    for row in runtime:
-        if not row["run_id"]:
-            key = tuple(row[field] for field in FIELDS)
-            if durable_legacy[key]:
-                durable_legacy[key] -= 1
-                continue
-        add(row, "runtime")
     for row in manifests:
         if row:
             add(row, "manifest")
@@ -248,12 +265,17 @@ def atomic_write_in_directory(directory, name, content):
 def effective_rows(factory_root, durable=None, runtime=None, runs=None):
     factory = factory_root / "factory"
     durable = durable or factory / "ledger.csv"
-    runtime = runtime or factory / "runtime-ledger.csv"
     runs = runs or factory / "runs"
     manifests = []
     if runs.is_dir():
-        manifests = [manifest_row(path) for path in sorted(runs.glob("*.meta"))]
-    return merge_rows(read_csv(durable), read_csv(runtime), manifests)
+        paths = sorted(runs.glob("*.meta"))
+        for path in paths:
+            if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+                fail(f"run manifest must be a regular non-symlink file: {path.name}")
+        manifests = [manifest_row(path) for path in paths]
+    # runtime is deliberately output-only. The effective view is reduced from
+    # committed durable history plus authoritative run manifests every time.
+    return merge_rows(read_csv(durable), manifests)
 
 
 def git(path, *arguments, check=True):

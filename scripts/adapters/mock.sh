@@ -19,6 +19,14 @@ WORKDIR=""
   echo "captured product origin leaked into task adapter" >&2
   exit 97
 }
+if [[ "${FACTORY_TEST_REQUIRE_DURABLE_GO:-0}" == "1" ]]; then
+  shopt -s nullglob
+  durable_go=("$FACTORY_ROOT"/factory/runs/.*.go)
+  [[ "${#durable_go[@]}" -eq 1 && -f "${durable_go[0]}" ]] || {
+    echo "adapter observed gate before durable GO marker" >&2
+    exit 97
+  }
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workdir) WORKDIR="$2"; shift 2;;
@@ -61,6 +69,20 @@ if [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ||
       -n "${MOCK_SPEC_LINT_VERDICT:-}" ]]; then
   git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \
     commit -m "Mock role output" >/dev/null
+fi
+if [[ "${MOCK_FORGE_MANIFEST:-0}" == "1" ]]; then
+  printf 'run_id=forged\naccounting_schema=1\n' > \
+    "$FACTORY_ROOT/factory/runs/forged.meta"
+fi
+if [[ "${MOCK_FORGE_MANIFEST_SYMLINK:-0}" == "1" ]]; then
+  ln -s /dev/null "$FACTORY_ROOT/factory/runs/forged.meta"
+fi
+if [[ "${MOCK_MUTATE_REGISTERED_MAIN:-0}" == "1" ]]; then
+  printf '\n# provider mutation\n' >> "$FACTORY_ROOT/factory/ENVELOPE.env"
+fi
+if [[ "${MOCK_MUTATE_DIRTY_TICKET:-0}" == "1" ]]; then
+  printf '\nprovider changed already-dirty ticket bytes\n' >> \
+    "$FACTORY_ROOT/factory/tickets/${MOCK_DIRTY_TICKET_ID}.md"
 fi
 if [[ -n "${MOCK_PUSHURL:-}" ]]; then
   git -C "$WORKDIR" config remote.origin.pushurl "$MOCK_PUSHURL"
