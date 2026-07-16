@@ -26,6 +26,8 @@ printf '%s\n' \
   'DAILY_CAP_USD=20.00' \
   > "$PRODUCT/factory/ENVELOPE.env"
 printf '%s\n' "$(git -C "$ROOT" rev-parse HEAD)" > "$PRODUCT/factory/KIT_PIN"
+printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' \
+  > "$PRODUCT/factory/ledger.csv"
 printf '%s\n' \
   'factory/runtime-ledger.csv' \
   'factory/runs/' \
