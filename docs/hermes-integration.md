@@ -100,10 +100,16 @@ adds `ticket-state` as the only path that materializes reconciled operator
 fields or commits role-stage transitions, and adds `project-ledger` as the only
 path that projects effective runtime accounting into the tracked durable
 ledger. Trusted write helpers accept only the exact product origin from the
-active certification receipt. The generic ticket-state transition refuses
-Awaiting Approval and Done until dedicated evidence attestations are added;
-materialization from an already committed Awaiting Approval ticket may record
-the reconciled Linear approval and its materialized operator-field version.
+active certification receipt. Contract 1.2 stops in Review after bundle
+creation. Both ticket-state transition and materialization refuse Awaiting
+Approval, Approved, and Done until dedicated trusted bundle and merge/deploy
+attestation paths are added; `next-stage` does not authorize `AWAIT-MERGE`
+under 1.2.
+
+`project-ledger` refuses any active or ambiguous entry under
+`factory/.active-runs/` and any `factory/runs/*.pid` record. Reconcile those
+records under maintenance before close-out; projection never guesses that a
+claim or PID is stale.
 
 `run` and `reorder-test-fixes` are process boundaries rather than JSON
 commands. Their arguments and behavior are still compatibility-sensitive and

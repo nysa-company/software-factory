@@ -190,61 +190,15 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "operator approval fixture"
 git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
-for operator in \
-  '{"state":"Approved"}' \
-  '{"state":"Approved","approval":"linear"}' \
-  '{"state":"Approved","approval":"Manual"}'; do
-  printf '{"tickets":{"T-700":{"operator":%s}}}\n' "$operator" \
-    > "$PRODUCT/factory/linear-map.json"
-  if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
-    >/dev/null 2>&1; then
-    echo "FAIL: Approved overlay without exact Linear marker was materialized" >&2
-    exit 1
-  fi
-  grep -q '^State: Awaiting Approval$' "$PRODUCT/factory/tickets/T-700.md"
-  ! grep -q '^Operator-Approval:' "$PRODUCT/factory/tickets/T-700.md"
-  [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
-  [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
-done
-printf 'Operator-Approval-Attestation:\n' >> \
-  "$PRODUCT/factory/tickets/T-700.md"
-git -C "$PRODUCT" add factory/tickets/T-700.md
-git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "empty approval attestation fixture"
-git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Linear"}}}}\n' \
   > "$PRODUCT/factory/linear-map.json"
-BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
   >/dev/null 2>&1; then
-  echo "FAIL: pre-existing empty approval attestation was accepted" >&2
+  echo "FAIL: approval was materialized without a dedicated bundle attestation" >&2
   exit 1
 fi
-[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
-[[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
-grep -v '^Operator-Approval-Attestation:' \
-  "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
-mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
-git -C "$PRODUCT" add factory/tickets/T-700.md
-git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "restore clean approval fixture"
-git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
-sed -E 's/^State: .*/State: Approved/' \
-  "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
-mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
-printf 'Operator-Approval: Linear\n' >> "$PRODUCT/factory/tickets/T-700.md"
-git -C "$PRODUCT" add factory/tickets/T-700.md
-git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "manual approval laundering fixture"
-git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
-printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Linear"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
-BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
-if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
-  >/dev/null 2>&1; then
-  echo "FAIL: manually committed approval consumed trusted operator evidence" >&2
-  exit 1
-fi
+grep -q '^State: Awaiting Approval$' "$PRODUCT/factory/tickets/T-700.md"
+! grep -q '^Operator-Approval:' "$PRODUCT/factory/tickets/T-700.md"
 [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
 [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
@@ -253,43 +207,10 @@ import json, sys
 operator = json.load(open(sys.argv[1]))["tickets"]["T-700"].get("operator")
 assert operator == {"state": "Approved", "approval": "Linear"}
 PY
-grep -v '^Operator-Approval:' "$PRODUCT/factory/tickets/T-700.md" | \
-  sed 's/^State: Approved$/State: Awaiting Approval/' > "$TMP/ticket"
-mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
-git -C "$PRODUCT" add factory/tickets/T-700.md
-git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "restore trusted approval transition"
-git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
-EXPECTED_APPROVAL_VERSION="$(python3 - "$ROOT/scripts/lib" \
-  "$PRODUCT/factory/tickets/T-700.md" <<'PY'
-import sys
 
-sys.path.insert(0, sys.argv[1])
-from effective_ticket import materialized_operator_version
-
-text = open(sys.argv[2]).read().replace("State: Awaiting Approval", "State: Approved")
-text += "Operator-Approval: Linear\n"
-print(materialized_operator_version(text))
-PY
-)"
-ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
-grep -q '^State: Approved$' "$PRODUCT/factory/tickets/T-700.md"
-grep -q '^Operator-Approval: Linear$' "$PRODUCT/factory/tickets/T-700.md"
-[[ "$(grep -c "^Operator-Approval-Attestation: sha256:$EXPECTED_APPROVAL_VERSION$" \
-  "$PRODUCT/factory/tickets/T-700.md")" -eq 1 ]]
-git --git-dir="$REMOTE" show \
-  "refs/heads/ticket/T-700:factory/tickets/T-700.md" | \
-  grep -q "^Operator-Approval-Attestation: sha256:$EXPECTED_APPROVAL_VERSION$"
-[[ "$(git -C "$PRODUCT" log -1 --format=%s)" == \
-  "T-700: materialize ticket state" ]]
-[[ "$(git -C "$PRODUCT" log -1 --format='%an <%ae>')" == \
-  "Software Factory <factory@local>" ]]
-[[ "$(git -C "$PRODUCT" log -1 --format='%cn <%ce>')" == \
-  "Software Factory <factory@local>" ]]
-
-grep -vE '^(Operator-Approval|Operator-Approval-Attestation|Resume-State):' \
+grep -vE '^(Operator-Approval|Resume-State):' \
   "$PRODUCT/factory/tickets/T-700.md" | \
-  sed 's/^State: Approved$/State: Blocked-Escalated/' > "$TMP/ticket"
+  sed 's/^State: Awaiting Approval$/State: Blocked-Escalated/' > "$TMP/ticket"
 printf 'Resume-State: Building\n' >> "$TMP/ticket"
 mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
 git -C "$PRODUCT" add factory/tickets/T-700.md

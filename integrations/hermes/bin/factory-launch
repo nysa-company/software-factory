@@ -899,7 +899,6 @@ PY
   next-stage)
     validate_ticket_command "$@"
     add_dispatch_lease_env "$LEASE_ID"
-    add_certified_origin_env
     if [[ -n "$LEASE_ID" && -n "$TICKET_WORKDIR" ]]; then
       wrap_json_command "$NEXT_STAGE_SCHEMA" "next-stage" "$TICKET" \
         "$RELEASE_PATH/scripts/next-stage.sh" --ticket "$TICKET" --lease "$LEASE_ID" \

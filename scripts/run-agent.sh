@@ -492,8 +492,8 @@ path = Path(sys.argv[1])
 if not path.is_file():
     raise SystemExit(1)
 names = (
-    "State", "Operator-Approval", "Operator-Approval-Attestation",
-    "Priority", "Initiative", "Kit-SHA", "Resume-State"
+    "State", "Operator-Approval", "Priority", "Initiative", "Kit-SHA",
+    "Resume-State"
 )
 snapshot = {
     "fields": {name: [] for name in names},

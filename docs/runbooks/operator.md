@@ -80,8 +80,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Close-out ledger PR
 
-- Notice: at ticket close-out the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes launcher command `project-ledger` to materialize the effective runtime accounting into tracked `factory/ledger.csv`.
-- Do: verify the command's row count, ticket total, and SHA-256, then review and merge the close-out PR like any factory bookkeeping change. Check `run_id`, family, exact model, selection reason, and cost basis.
+- Notice: at ticket close-out the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes launcher command `project-ledger` to materialize the effective runtime accounting into tracked `factory/ledger.csv`. Projection refuses any entry under `factory/.active-runs/` and any `factory/runs/*.pid` record because either may represent live or ambiguous work.
+- Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Then verify the command's row count, ticket total, and SHA-256, and review and merge the close-out PR like any factory bookkeeping change. Check `run_id`, family, exact model, selection reason, and cost basis.
 - Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
 
 ## Test commit order before operator review
@@ -261,7 +261,7 @@ These run in your interactive session — never inside the loop. The factory's o
 - Create the durable initiative record first at `factory/initiatives/I-NNN.md`; the reconciler creates the Linear Project. Set its status and target date in Linear.
 - Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
-- Approve only from Awaiting Approval by moving the issue to Approved. This records authorization; it does not claim the PR is merged. Contract 1.2 materializes that decision only when the ticket branch already commits Awaiting Approval, then records the exact Linear marker and materialized operator-field attestation at the verified remote tip. The generic command still cannot move a ticket into Awaiting Approval or Done until dedicated bundle and merge/staging attestations exist.
+- Contract 1.2 stops in Review after the Narrator bundle. Do not move the issue to Awaiting Approval or Approved: without a dedicated trusted bundle-attestation path, ticket-state refuses both transition and materialization and sequencing does not authorize `AWAIT-MERGE`. Done remains unavailable until a dedicated merge/staging attestation path also exists.
 - Resume an escalated ticket by setting `Resume-State:` locally to the agreed stage, then move the Linear issue out of Blocked-Escalated to that same stage. Mismatched or otherwise illegal transitions are rejected and reported in sync health.
 
 ## The general rule

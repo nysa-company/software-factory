@@ -103,8 +103,10 @@ Move a factory-owned role stage only when the sequencer directs it, using the
 same command with `--action transition --state <factory-state>`. The launcher
 owns the commit and certified-destination push. The generic command refuses
 Awaiting Approval and Done until dedicated bundle and merge/deploy evidence
-gates exist. Never copy operator fields, edit the ticket, or manufacture a
-state transition yourself.
+gates exist. Contract 1.2 also refuses materialization of Approved and never
+authorizes `AWAIT-MERGE`; it stops in Review after the Narrator bundle. Never
+copy operator fields, edit the ticket, or manufacture a state transition
+yourself.
 
 When next-stage returns `AWAIT-OPERATOR`, run the required close-out reorder
 through the same stable boundary before opening the PR:
@@ -136,8 +138,10 @@ For contract `1.2.0`, create the dedicated clean linked branch
 
 Accept only the documented successful projection result, then commit that
 projected ledger through the closeout PR defined by the dispatcher role. Never
-copy, reconstruct, reorder, or hand-edit ledger rows. A dirty, stale, live-run,
-or otherwise refused projection is an escalation.
+copy, reconstruct, reorder, or hand-edit ledger rows. Any entry under
+`factory/.active-runs/` or any `factory/runs/*.pid` record makes the work live
+or ambiguous and must refuse projection. A dirty, stale, live-run, or otherwise
+refused projection is an escalation.
 
 The launcher is the only door. Do not call a mutable checkout's scripts,
 worker CLIs, or private launcher helpers directly. Do not add adapter

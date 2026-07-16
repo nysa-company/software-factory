@@ -17,29 +17,35 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contract 1.1 keeps live tickets serialized by default and permits an explicit two-ticket lease pilot with exact worktree isolation, atomic budget reservations, and opaque leases confined to trusted helpers. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
-- Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Generic ticket-state transitions stop before Awaiting Approval and Done until dedicated evidence attestations exist; from committed Awaiting Approval, Linear approval materialization records a materialized operator-field attestation and must remain the verified remote-tip commit.
-- Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection.
+- Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 stops in Review: transition and materialization refuse Awaiting Approval, Approved, and Done until dedicated trusted bundle and merge/deploy attestation paths exist, and sequencing does not authorize `AWAIT-MERGE`.
+- Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection, which refuses every active or ambiguous claim and `factory/runs/*.pid` record.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
 - Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and manifests are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. Persistent claim, manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
 - Hermes contract 1.2 requires exact ticket worktrees for preflight and sequencing, exposes trusted ticket-state and ledger projection, and keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 - Fresh ticket worktrees are created from protected main and pass through trusted materialization before preflight so their exact remote branch exists. Linear Project removal is represented explicitly in the ignored overlay and clears the effective initiative until reassignment.
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
-- Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require pending operator fields to materialize first, and approval readiness verifies the actual certified remote tip as well as HEAD and tracking.
-- Operator overlays may materialize only kickoff, declared non-sensitive resume, and attested approval state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
+- Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require supported pending operator fields to materialize first; approval overlays are unsupported stop conditions until a trusted bundle-attestation path exists.
+- Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
 
 ## Log
+
+## 2026-07-16 — Decision 28: Contract 1.2 stops at Review (supersedes Decision 23 and the approval portion of Decision 26)
+
+Category: System change
+
+Contract 1.2 has no trusted bundle-attestation boundary. Ticket-state therefore refuses transition or materialization of Awaiting Approval and Approved, sequencing never authorizes `AWAIT-MERGE`, and Done remains unavailable pending a separate merge/deploy attestation path. Deterministic ledger projection also refuses every active or ambiguous claim and every `factory/runs/*.pid` record so close-out cannot omit potentially live work.
 
 ## 2026-07-16 — Decision 27: State ownership and projection are committed
 
 Category: System change
 
-Operator state materialization is restricted to Backlog-to-Ready, the declared non-sensitive Blocked resume, and attested approval. Linear projection reads the exact ticket ref or committed HEAD and skips files with no committed source.
+Operator state materialization is restricted to Backlog-to-Ready and the declared non-sensitive Blocked resume. Linear projection reads the exact ticket ref or committed HEAD and skips files with no committed source. Approval materialization described here is superseded by Decision 28.
 
 ## 2026-07-16 — Decision 26: Ticket evidence must be clean and remotely current
 
 Category: System change
 
-Contract 1.2 refuses tracked and untracked worktree dirt before ticket helpers. Pending operator fields must pass through materialization before factory-stage transitions, and approval readiness queries the certified origin so stale local tracking cannot authorize merge.
+Contract 1.2 refuses tracked and untracked worktree dirt before ticket helpers. Supported pending operator fields must pass through materialization before factory-stage transitions. The approval-readiness portion of this decision is superseded by Decision 28: approval overlays now refuse because contract 1.2 has no trusted bundle-attestation path.
 
 ## 2026-07-16 — Decision 25: Cutover and config read authoritative sources
 
@@ -53,7 +59,7 @@ Category: System change
 
 Dispatch creates an exact clean ticket worktree from protected main and uses trusted materialization to create and verify its remote ref before preflight. Removing every Linear Project writes an explicit initiative tombstone into the ignored overlay, preventing stale membership from being reattached and making the ticket ineligible until reassigned.
 
-## 2026-07-15 — Decision 23: Approval materialization is tip-bound
+## 2026-07-15 — Decision 23: Approval materialization is tip-bound (superseded by Decision 28)
 
 Category: System change
 

@@ -30,12 +30,10 @@ initiative; it cannot enter execution again until the operator assigns one.
 Preflight, sequencing, and projection combine the overlay with the exact ticket
 worktree or committed ticket branch. The launcher-managed `ticket-state`
 command materializes accepted operator fields and commits factory-owned stage
-moves on the ticket branch. Its generic transition surface is limited to role
-stages and escalation; Awaiting Approval and Done remain refused until trusted
-bundle and merge/deploy attestations exist. If the committed ticket is already
-Awaiting Approval, the command may materialize exact Linear approval with a
-tracked hash of the resulting protected operator fields; the sequencer also verifies the
-commit shape and remote tip before advancing. An API outage never stops an in-flight ticket. The local sync map and logs show
+moves on the ticket branch. Contract 1.2 stops in Review: transition and
+materialization both refuse Awaiting Approval, Approved, and Done until trusted
+bundle and merge/deploy attestation paths exist, and sequencing does not
+authorize `AWAIT-MERGE`. An API outage never stops an in-flight ticket. The local sync map and logs show
 stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 

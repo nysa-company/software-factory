@@ -17,7 +17,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
-Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight durably initializes the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted.
+Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight durably initializes the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
 
 Each ticket-and-role run takes an atomic `mkdir` claim under
 `factory/.active-runs/` before it creates a manifest. A conflicting or
@@ -100,16 +100,15 @@ product root. Linear projection reads the committed exact ticket branch rather
 than a dirty checkout. Contract 1.2 ticket routes reject tracked or untracked
 worktree dirt before any helper runs. `ticket-state` is the only launcher path that
 materializes operator fields or commits a factory-owned role-stage transition.
-Its generic transition surface refuses Awaiting Approval and Done until
-dedicated bundle and merge/deploy attestations exist. From an already committed
-Awaiting Approval state, operator materialization may commit Approved, the
-exact Linear marker, and a materialized operator-field attestation. Sequencing
-accepts that evidence only at the verified remote tip with the expected
-single-ticket commit shape. Every automatic helper push is bound to the exact product
+Contract 1.2 stops in Review after the Narrator posts the bundle. Both generic
+transition and operator materialization refuse Awaiting Approval, Approved, and
+Done until dedicated trusted bundle and merge/deploy attestation paths exist;
+`next-stage` therefore does not authorize `AWAIT-MERGE` under 1.2. Every
+automatic helper push is bound to the exact product
 origin in the active generation's owner-only certification receipt; mutable
 Git remote configuration cannot redirect it.
-Overlay-driven state materialization is limited to Backlog-to-Ready, the exact
-declared non-sensitive resume from Blocked-Escalated, and attested approval;
+Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
+declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to
 committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
 
@@ -169,6 +168,5 @@ Planner, Builder, and Narrator use the production model family. Spec-linter, Tes
 - Product credentials stay in GitHub or the hosting platform, never in repositories or agent output.
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
-- Approval commit shape and materialized operator-field attestations detect ordinary bypass inside the portable same-UID trust model; they are audit evidence, not a cryptographic signature against a deliberate host user.
-- Factory-owned state transitions refuse while operator-owned overlay fields are pending, and approval sequencing queries the certified origin rather than trusting only local tracking state.
+- Factory-owned state transitions refuse while operator-owned overlay fields are pending. Contract 1.2 has no trusted bundle-attestation path, so an approval overlay is a stop condition rather than authority to materialize Approved or authorize merge.
 - Allowlisted machine configuration comes only from `global.env`; inherited values with the same names are cleared even when the file is absent.

@@ -424,7 +424,27 @@ def unmatched_legacy_terminal_manifest(factory_root, rows):
     return None
 
 
+def ambiguous_run_record(factory_root):
+    active = factory_root / "factory" / ".active-runs"
+    if active.is_symlink() or (active.exists() and not active.is_dir()):
+        return active
+    if active.is_dir():
+        entries = sorted(active.iterdir(), key=lambda path: path.name)
+        if entries:
+            return entries[0]
+
+    runs = factory_root / "factory" / "runs"
+    if runs.is_dir():
+        pids = sorted(runs.glob("*.pid"), key=lambda path: path.name)
+        if pids:
+            return pids[0]
+    return None
+
+
 def ensure_projectable(factory_root, rows=None):
+    record = ambiguous_run_record(factory_root)
+    if record:
+        fail(f"product has a live or ambiguous run claim: {record.relative_to(factory_root)}")
     unsettled = unsettled_manifest(factory_root)
     if unsettled:
         path, ticket = unsettled

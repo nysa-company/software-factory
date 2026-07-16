@@ -1719,7 +1719,7 @@ expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
 printf '%s\n' \
   '{"tickets":{"T-500":{"operator":{"state":"Approved","approval":"Linear","state_base":"awaiting approval"}}}}' \
   > "$WALK/factory/linear-map.json"
-expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
   "$WALK" T-500 || WALK_OK=0
 rm "$WALK/factory/linear-map.json"
 printf 'Operator-Approval: Linear because the operator said so\n' >> \
@@ -1729,30 +1729,22 @@ grep -v '^Operator-Approval:' "$WALK/factory/tickets/T-500.md" > \
   "$WALK/factory/tickets/T-500.tmp"
 mv "$WALK/factory/tickets/T-500.tmp" "$WALK/factory/tickets/T-500.md"
 printf 'Operator-Approval: Linear\n' >> "$WALK/factory/tickets/T-500.md"
-expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
   "$WALK" T-500 || WALK_OK=0
 printf 'State: Approved\n' >> "$WALK/factory/tickets/T-500.md"
-expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
+expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
   "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
 
 COMMITTED_APPROVAL_ROOT="$TMP/committed-approval"
 write_envelope "$COMMITTED_APPROVAL_ROOT"
-git -C "$COMMITTED_APPROVAL_ROOT" branch -M ticket/T-242
-printf 'factory/linear-map.json\n' >> "$COMMITTED_APPROVAL_ROOT/.gitignore"
 cat > "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md" <<'TICKET'
 # T-242
-State: Awaiting Approval
+State: Approved
 SPEC-LINT: PASS
 reviewer round 1: APPROVE
+Operator-Approval: Linear
 TICKET
-git -C "$COMMITTED_APPROVAL_ROOT" add .gitignore factory/tickets/T-242.md
-git -C "$COMMITTED_APPROVAL_ROOT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "approval fixture"
-COMMITTED_APPROVAL_REMOTE="$TMP/committed-approval.git"
-git init --bare -q "$COMMITTED_APPROVAL_REMOTE"
-git -C "$COMMITTED_APPROVAL_ROOT" remote add origin "$COMMITTED_APPROVAL_REMOTE"
-git -C "$COMMITTED_APPROVAL_ROOT" push -q -u origin ticket/T-242
 {
   ledger_header
   ledger_row T-242 planner
@@ -1762,66 +1754,11 @@ git -C "$COMMITTED_APPROVAL_ROOT" push -q -u origin ticket/T-242
   ledger_row T-242 reviewer
   ledger_row T-242 narrator
 } > "$COMMITTED_APPROVAL_ROOT/factory/ledger.csv"
-printf '%s\n' \
-  '{"tickets":{"T-242":{"operator":{"state":"Approved","approval":"Linear","state_base":"awaiting approval"}}}}' \
-  > "$COMMITTED_APPROVAL_ROOT/factory/linear-map.json"
-COMMITTED_APPROVAL_OK=1
-expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
-  "$COMMITTED_APPROVAL_ROOT" T-242 || COMMITTED_APPROVAL_OK=0
-sed 's/^State: Awaiting Approval$/State: Approved/' \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md" > \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.tmp"
-mv "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.tmp" \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md"
-printf 'Operator-Approval: Linear\n' >> \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md"
-printf 'Operator-Approval-Attestation: sha256:%064d\n' 0 >> \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md"
-expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
-  "$COMMITTED_APPROVAL_ROOT" T-242 || COMMITTED_APPROVAL_OK=0
-git -C "$COMMITTED_APPROVAL_ROOT" add factory/tickets/T-242.md
-git -C "$COMMITTED_APPROVAL_ROOT" \
-  -c user.name="Software Factory" -c user.email=factory@local \
-  commit -qm "T-242: materialize ticket state"
-git -C "$COMMITTED_APPROVAL_ROOT" push -q origin ticket/T-242
-expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
-  "$COMMITTED_APPROVAL_ROOT" T-242 || \
-  COMMITTED_APPROVAL_OK=0
-grep -vE '^(Operator-Approval|Operator-Approval-Attestation):' \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md" | \
-  sed 's/^State: Approved$/State: Awaiting Approval/' > \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.tmp"
-mv "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.tmp" \
-  "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md"
-git -C "$COMMITTED_APPROVAL_ROOT" add factory/ledger.csv factory/tickets/T-242.md
-git -C "$COMMITTED_APPROVAL_ROOT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "restore approval boundary"
-git -C "$COMMITTED_APPROVAL_ROOT" push -q origin ticket/T-242
-FACTORY_CERTIFIED_PRODUCT_ORIGIN="$COMMITTED_APPROVAL_REMOTE" \
-  FACTORY_ROOT="$COMMITTED_APPROVAL_ROOT" \
-  "$ROOT/scripts/ticket-state.sh" --ticket T-242 \
-    --workdir "$COMMITTED_APPROVAL_ROOT" --action materialize >/dev/null || \
-  COMMITTED_APPROVAL_OK=0
-expect_stage "AWAIT-MERGE" "$COMMITTED_APPROVAL_ROOT" T-242 || \
-  COMMITTED_APPROVAL_OK=0
-APPROVAL_VERIFIED_HEAD="$(git -C "$COMMITTED_APPROVAL_ROOT" rev-parse HEAD)"
-APPROVAL_REMOTE_DRIFT="$(printf '%s\n' 'out-of-band approval drift' | \
-  git -C "$COMMITTED_APPROVAL_ROOT" -c user.name=test -c user.email=test@example.com \
-    commit-tree HEAD^{tree} -p HEAD)"
-git -C "$COMMITTED_APPROVAL_ROOT" push -q origin \
-  "$APPROVAL_REMOTE_DRIFT:refs/heads/factory-test-approval-drift"
-git --git-dir="$COMMITTED_APPROVAL_REMOTE" update-ref refs/heads/ticket/T-242 \
-  "$APPROVAL_REMOTE_DRIFT"
-git --git-dir="$COMMITTED_APPROVAL_REMOTE" update-ref -d \
-  refs/heads/factory-test-approval-drift
-expect_stage "REFUSE operator approval exists only outside the committed Approved ticket" \
-  "$COMMITTED_APPROVAL_ROOT" T-242 || COMMITTED_APPROVAL_OK=0
-git --git-dir="$COMMITTED_APPROVAL_REMOTE" update-ref refs/heads/ticket/T-242 \
-  "$APPROVAL_VERIFIED_HEAD"
-expect_stage "AWAIT-MERGE" "$COMMITTED_APPROVAL_ROOT" T-242 || \
-  COMMITTED_APPROVAL_OK=0
-[[ "$COMMITTED_APPROVAL_OK" -eq 1 ]] && \
-  pass "sequencer accepts only trusted-shaped approval materialization"
+if expect_stage \
+  "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
+  "$COMMITTED_APPROVAL_ROOT" T-242; then
+  pass "sequencer refuses approval until the bundle-attestation path exists"
+fi
 
 # One rejection, a fix, and a successful second review.
 printf '# T-501\n' > "$WALK/factory/tickets/T-501.md"
@@ -1986,8 +1923,6 @@ if [[ "$ROLE_PROTECTED_STATUS" -eq 11 &&
       "$ROLE_PROTECTED_STAGE" == "RUN planner" ]] &&
    grep -q '^State: Done$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
    grep -q '^Operator-Approval: Linear$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
-   grep -q '^Operator-Approval-Attestation: sha256:' \
-     "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
    grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-protected.out" &&
    grep -q '^role_exit=role_exit_protected_ticket_mutation$' "$ROLE_PROTECTED_META" &&
    grep -q '^effective_cost=0.42$' "$ROLE_PROTECTED_META" &&

@@ -568,6 +568,30 @@ class LedgerViewTest(unittest.TestCase):
         self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), content)
 
         git(worktree, "checkout", "--", "factory/ledger.csv")
+        before = (worktree / "factory" / "ledger.csv").read_bytes()
+        claim = self.root / "factory" / ".active-runs" / "T-123.planner.lock"
+        claim.mkdir(parents=True)
+        refused = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", check=False,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("factory/.active-runs/T-123.planner.lock", refused.stderr)
+        self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), before)
+        claim.rmdir()
+
+        pid = self.root / "factory" / "runs" / "orphan.pid"
+        pid.write_text("999999\n")
+        refused = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", check=False,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("factory/runs/orphan.pid", refused.stderr)
+        self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), before)
+        pid.unlink()
+
+        git(worktree, "checkout", "--", "factory/ledger.csv")
         other = self.root / "factory" / "runs" / "other-live.meta"
         manifest(other, ticket="T-999")
         before = (worktree / "factory" / "ledger.csv").read_bytes()

@@ -8,7 +8,7 @@
 #   FIX <builder|test-author> — reviewer requested changes; dispatcher picks
 #                           which role per the feedback, then reviewer rerun
 #   AWAIT-OPERATOR        — bundle posted; operator approval/merge is next
-#   AWAIT-MERGE           — Linear approval materialized; merge/deploy is next
+#   AWAIT-MERGE           — reserved for a future trusted approval boundary
 #   ESCALATE <reason>     — stop; a human decision is required
 #   REFUSE <reason>       — bookkeeping incomplete; fix the record first
 #
@@ -42,8 +42,6 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
-# shellcheck disable=SC1091
-source "$KIT_DIR/scripts/lib/product-remote.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
 CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
@@ -109,7 +107,7 @@ if WORKTREE_ROOT="$(git -C "$CONTENT_ROOT" rev-parse --show-toplevel 2>/dev/null
   fi
 else
   # Non-Git roots are retained for sealed conformance fixtures only; they have
-  # no durable branch evidence and therefore can never authorize AWAIT-MERGE.
+  # no durable branch evidence.
   : > "$COMMITTED_TICKET_FILE"
 fi
 python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
@@ -231,83 +229,9 @@ fi
 if [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
-  # materializer, but sequencing advances only after the trusted command has
-  # committed the marker to the exact ticket branch.
+  # future bundle-attestation path. Contract 1.2 stops before that boundary.
   if grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
-    APPROVAL_ATTESTATIONS="$(grep -ci '^Operator-Approval-Attestation:' \
-      "$COMMITTED_TICKET_FILE" 2>/dev/null || true)"
-    VALID_APPROVAL_ATTESTATIONS="$(grep -cE \
-      '^Operator-Approval-Attestation:[[:space:]]*sha256:[0-9a-f]{64}[[:space:]]*$' \
-      "$COMMITTED_TICKET_FILE" 2>/dev/null || true)"
-    MATERIALIZED_APPROVAL_VERSION="$(python3 - "$KIT_DIR/scripts/lib" \
-      "$COMMITTED_TICKET_FILE" <<'PY' 2>/dev/null || true
-import sys
-
-sys.path.insert(0, sys.argv[1])
-from effective_ticket import materialized_operator_version
-
-print(materialized_operator_version(open(sys.argv[2]).read()))
-PY
-)"
-    APPROVAL_BRANCH="$(git -C "$TICKET_WORKTREE_ROOT" symbolic-ref --quiet --short HEAD \
-      2>/dev/null || true)"
-    APPROVAL_HEAD="$COMMITTED_HEAD"
-    APPROVAL_CURRENT_HEAD="$(git -C "$TICKET_WORKTREE_ROOT" rev-parse HEAD \
-      2>/dev/null || true)"
-    APPROVAL_TRACKING="$(git -C "$TICKET_WORKTREE_ROOT" rev-parse \
-      "refs/remotes/origin/$APPROVAL_BRANCH" 2>/dev/null || true)"
-    APPROVAL_REMOTE="" PRODUCT_REMOTE=""
-    if [[ -n "${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}" ]]; then
-      PRODUCT_REMOTE="$(factory_capture_product_remote \
-        "$REPO_ROOT" "$FACTORY_CERTIFIED_PRODUCT_ORIGIN" 2>/dev/null || true)"
-      if [[ -n "$PRODUCT_REMOTE" ]]; then
-        APPROVAL_REMOTE="$(git -C "$TICKET_WORKTREE_ROOT" ls-remote --heads -- \
-          "$PRODUCT_REMOTE" "refs/heads/$APPROVAL_BRANCH" 2>/dev/null | \
-          awk 'NR==1 && $1 ~ /^[0-9a-f]{40}$/ {print $1}')"
-      fi
-    fi
-    APPROVAL_CHANGED="$(git -C "$TICKET_WORKTREE_ROOT" diff-tree --no-commit-id \
-      --name-only -r "$APPROVAL_HEAD" 2>/dev/null || true)"
-    APPROVAL_SUBJECT="$(git -C "$TICKET_WORKTREE_ROOT" log -1 --format=%s \
-      "$APPROVAL_HEAD" 2>/dev/null || true)"
-    APPROVAL_AUTHOR="$(git -C "$TICKET_WORKTREE_ROOT" log -1 --format='%an <%ae>' \
-      "$APPROVAL_HEAD" \
-      2>/dev/null || true)"
-    APPROVAL_COMMITTER="$(git -C "$TICKET_WORKTREE_ROOT" log -1 --format='%cn <%ce>' \
-      "$APPROVAL_HEAD" \
-      2>/dev/null || true)"
-    APPROVAL_PARENT="$(git -C "$TICKET_WORKTREE_ROOT" show \
-      "$APPROVAL_HEAD^:$TICKET_RELATIVE" 2>/dev/null || true)"
-    if grep -qiE '^State:[[:space:]]*Approved[[:space:]]*$' "$COMMITTED_TICKET_FILE" &&
-       grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' \
-         "$COMMITTED_TICKET_FILE" &&
-       [[ "$APPROVAL_ATTESTATIONS" -eq 1 && "$VALID_APPROVAL_ATTESTATIONS" -eq 1 &&
-          -n "$MATERIALIZED_APPROVAL_VERSION" &&
-          -n "$TICKET_WORKTREE_ROOT" && -n "$TICKET_RELATIVE" &&
-          "$APPROVAL_HEAD" == "$APPROVAL_CURRENT_HEAD" &&
-          "$APPROVAL_HEAD" == "$APPROVAL_TRACKING" &&
-          "$APPROVAL_HEAD" == "$APPROVAL_REMOTE" &&
-          "$APPROVAL_CHANGED" == "$TICKET_RELATIVE" &&
-          "$APPROVAL_SUBJECT" == "$TICKET: materialize ticket state" &&
-          "$APPROVAL_AUTHOR" == "Software Factory <factory@local>" &&
-          "$APPROVAL_COMMITTER" == "Software Factory <factory@local>" ]] &&
-       grep -qiE '^State:[[:space:]]*Awaiting Approval[[:space:]]*$' <<< "$APPROVAL_PARENT" &&
-       ! grep -qiE '^Operator-Approval(?:-Attestation)?:' <<< "$APPROVAL_PARENT" &&
-       grep -qE "^Operator-Approval-Attestation:[[:space:]]*sha256:${MATERIALIZED_APPROVAL_VERSION}[[:space:]]*$" \
-         "$COMMITTED_TICKET_FILE" &&
-       [[ "$(git -C "$TICKET_WORKTREE_ROOT" rev-parse HEAD 2>/dev/null || true)" == \
-            "$APPROVAL_HEAD" &&
-          "$(git -C "$TICKET_WORKTREE_ROOT" rev-parse \
-            "refs/remotes/origin/$APPROVAL_BRANCH" 2>/dev/null || true)" == \
-            "$APPROVAL_HEAD" &&
-          "$(git -C "$TICKET_WORKTREE_ROOT" ls-remote --heads -- \
-            "$PRODUCT_REMOTE" "refs/heads/$APPROVAL_BRANCH" 2>/dev/null | \
-            awk 'NR==1 && $1 ~ /^[0-9a-f]{40}$/ {print $1}')" == \
-            "$APPROVAL_HEAD" ]]; then
-      echo "AWAIT-MERGE operator approval materialized on the ticket branch; merge and staging confirmation are next"
-      exit 0
-    fi
-    echo "REFUSE operator approval exists only outside the committed Approved ticket; run the dedicated attestation and trusted ticket-state materialization path"
+    echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
     exit 1
   fi
   echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"

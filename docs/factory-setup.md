@@ -109,7 +109,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Walking skeleton merged; operator has clicked the staging URL
 - [ ] Kill switch tested: `scripts/kill-switch.sh` stops a live run
 - [ ] Metrics ledger file exists and the run wrapper writes to it
-- [ ] `factory/runs/`, `factory/.active-runs/`, and `factory/runtime-ledger.csv` are ignored; preflight creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree
+- [ ] `factory/runs/`, `factory/.active-runs/`, and `factory/runtime-ledger.csv` are ignored; preflight creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree only after every active or ambiguous claim and `factory/runs/*.pid` record is reconciled
 - [ ] A duplicate ticket-and-role launch refuses an existing claim without creating a manifest, and malformed telemetry retains the full reservation
 - [ ] If a machine cap is configured, its global ledger is a regular non-symlink file in a real directory and a mutation drill fails closed without deleting ledger history
 - [ ] Activation/reconcile interruption and fail-closed kit rollback drilled; `MAINTENANCE` remains after rollback

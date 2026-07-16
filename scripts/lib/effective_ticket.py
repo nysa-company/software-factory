@@ -26,7 +26,6 @@ STATES = {
 }
 PROTECTED_TICKET_FIELDS = (
     "Priority", "Initiative", "State", "Operator-Approval",
-    "Operator-Approval-Attestation",
 )
 
 
@@ -120,24 +119,6 @@ def operator_version(operator):
     return hashlib.sha256(
         json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-
-
-def materialized_operator_version(text):
-    """Hash the protected operator fields as they exist in ticket content."""
-    validate_protected_fields(text)
-    operator = {}
-    for key, name in (
-        ("priority", "Priority"),
-        ("initiative", "Initiative"),
-        ("state", "State"),
-        ("approval", "Operator-Approval"),
-    ):
-        match = re.search(
-            rf"^{re.escape(name)}:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE
-        )
-        if match:
-            operator[key] = match.group(1).strip()
-    return operator_version(operator)
 
 
 def apply_operator_fields(text, operator):
