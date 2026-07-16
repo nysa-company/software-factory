@@ -95,11 +95,16 @@ def manifest_row(path):
     if state not in {"reserved", *TERMINAL_STATES}:
         fail(f"invalid accounting state {state!r}: {path}")
     reserved = number(values["reserved_usd"], "reserved cost")
-    timestamp = values.get("terminal_at") if state in TERMINAL_STATES else values["started_at"]
+    timestamp = values["started_at"]
     try:
         stamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except (AttributeError, ValueError):
         fail(f"invalid accounting timestamp: {path}")
+    if state in TERMINAL_STATES:
+        try:
+            datetime.fromisoformat(values.get("terminal_at", "").replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            fail(f"invalid terminal accounting timestamp: {path}")
 
     turns = values.get("turns", "0") or "0"
     if not turns.isdigit():

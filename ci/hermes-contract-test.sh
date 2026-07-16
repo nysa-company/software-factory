@@ -1311,10 +1311,24 @@ for _try in $(seq 1 1000); do
   sleep 0.02
 done
 [[ "$started" -eq 1 ]] || fail "near-cap fixture did not reach exactly one task adapter"
-touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
 BUDGET_779_RC=0 BUDGET_780_RC=0
-wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
-wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
+if [[ -e "$REAL_RUN_WORKTREE_779_PHYS/.factory-test-adapter-started" ]]; then
+  wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
+  if [[ "$BUDGET_780_RC" -ne 5 ]]; then
+    awk '{print}' "$TMP/budget-780.out" >&2
+    fail "near-cap loser did not refuse reservation (status $BUDGET_780_RC)"
+  fi
+  touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+  wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
+else
+  wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
+  if [[ "$BUDGET_779_RC" -ne 5 ]]; then
+    awk '{print}' "$TMP/budget-779.out" >&2
+    fail "near-cap loser did not refuse reservation (status $BUDGET_779_RC)"
+  fi
+  touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+  wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
+fi
 BACKGROUND_PIDS=""
 rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
 if [[ ! ( "$BUDGET_779_RC" -eq 0 && "$BUDGET_780_RC" -eq 5 ) &&

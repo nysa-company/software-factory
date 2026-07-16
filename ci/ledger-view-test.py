@@ -99,6 +99,15 @@ class LedgerViewTest(unittest.TestCase):
         row = self.refresh()[-1]
         self.assertEqual((row["cost_usd"], row["turns"], row["cost_basis"]), ("0", "0", "launch_void"))
 
+    def test_terminal_run_stays_in_its_utc_start_day(self):
+        path = self.root / "factory" / "runs" / "midnight.meta"
+        manifest(
+            path, state="completed", go="1", cost="0.40", status="0",
+            terminal="2026-07-16T00:01:00Z",
+        )
+        row = self.refresh()[-1]
+        self.assertEqual((row["date"], row["time"]), ("2026-07-15", "12:00:00"))
+
     def test_projection_uses_existing_launch_and_ledger_locks(self):
         with LEDGER_VIEW.projection_locks(self.root):
             self.assertTrue((self.root / "factory" / ".launch.lock").is_dir())

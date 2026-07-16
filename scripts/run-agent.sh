@@ -249,7 +249,7 @@ finalize_global_ledger() {
   fi
   tmp_global="$GLOBAL_LEDGER.tmp.$$"
   awk -F, -v reserved="reserved-$RUN_ID" '$10 != reserved' "$GLOBAL_LEDGER" > "$tmp_global"
-  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$EFFECTIVE_COST,$EXIT_STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$tmp_global"
+  echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$EFFECTIVE_COST,$EXIT_STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$tmp_global"
   mv "$tmp_global" "$GLOBAL_LEDGER"
   rmdir "$GLOBAL_LOCK" 2>/dev/null || true
   HELD_GLOBAL_LOCK=0
@@ -455,10 +455,11 @@ mkdir -p "$FACTORY_DIR" "$RUNS_DIR" "$LEDGER_DIR"
 GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
 LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
 PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
-TODAY="$(date +%F)"
 RUN_ID="$(date +%s)-$$"
 MANIFEST="$RUNS_DIR/$RUN_ID.meta"
 RUN_STARTED_AT="$(date -u +%FT%TZ)"
+TODAY="${RUN_STARTED_AT%%T*}"
+RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
 RESERVED_USD="$PER_RUN_BUDGET_USD"
 [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
 write_manifest "resolved"
@@ -600,7 +601,7 @@ if [[ -n "$GLOBAL_LEDGER" ]]; then
     echo "MACHINE daily cap would be exceeded across all factories (spent \$$SPENT_GLOBAL + reserve \$$PER_RUN_BUDGET_USD > \$$GLOBAL_DAILY_CAP_USD) — refusing. See docs/runbooks/operator.md." >&2
     rmdir "$GLOBAL_LOCK" "$LOCK_DIR"; HELD_GLOBAL_LOCK=0; HELD_LEDGER_LOCK=0; exit 5
   fi
-  echo "$TODAY,$(date +%T),$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION" >> "$GLOBAL_LEDGER"
+  echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION" >> "$GLOBAL_LEDGER"
   rmdir "$GLOBAL_LOCK"
   HELD_GLOBAL_LOCK=0
 fi
