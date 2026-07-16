@@ -2,6 +2,10 @@
 # Adapter: mock — for testing run-agent.sh mechanics without spending money.
 # Env: MOCK_COST (default 0.42), MOCK_STATUS (default 0).
 set -euo pipefail
+[[ ${FACTORY_DISPATCH_LEASE_ID+x} != x ]] || {
+  echo "dispatcher lease leaked into task adapter" >&2
+  exit 97
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --budget|--max-turns|--timeout-min|--prompt-file|--workdir) shift 2;;

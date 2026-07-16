@@ -41,10 +41,10 @@ For every candidate that may reach production:
 
 Only one product activation or rollback may run at a time. Do not activate a
 second candidate while a ticket has a nonterminal lease, a run is active, or an
-activation journal is incomplete. The current dispatcher also remains
-single-ticket: parallel feature branches and candidate releases are supported,
-but simultaneous live dispatcher tickets require a separate concurrency
-milestone and contract change.
+activation journal is incomplete. Contract `1.1.0` remains single-ticket by
+default and permits an explicit two-ticket pilot only when the product sets
+`MAX_CONCURRENT_TICKETS=2`; each ticket keeps its own exact branch, linked
+worktree, opaque lease, and sequential role flow.
 
 ## Kit release lifecycle
 
@@ -74,6 +74,10 @@ wrapper, or reorder helper are compatibility-sensitive. Preserve contract
 `1.0.0` behavior or bump the contract and include an explicit bootstrap/profile
 migration plus retained rollback support.
 
+Contract `1.1.0` preserves 1.0 behavior when `MAX_CONCURRENT_TICKETS` is absent
+or `1`; the opt-in value `2` requires the 1.1 launcher, profile skill, and
+dispatcher role contract to move together.
+
 **Use a repository ruleset, not classic branch protection.** Verified by live probe (2026-07-12, dispatcher trial setup): a write deploy key pushed straight through classic branch protection to `main`, and also through a ruleset whose bypass list included the repository-admin *role* (deploy keys inherit it). Deploy keys — how agent machines authenticate — are only blocked by a ruleset whose bypass list contains **no repository roles**. Probes to run after any change to these settings: agent key pushes to `main` (must be rejected), agent key pushes a ticket branch (must succeed).
 
 ## Ruleset for `main` (Settings → Rules → Rulesets, or CLI below)
@@ -88,7 +92,9 @@ migration plus retained rollback support.
   including organization admins, because the certified commit must be proven to
   have passed the same protected path as every other release.
 - Required approving reviews: 1 once the org has ≥2 humans. At single-operator stage set it to 0 — GitHub forbids approving your own PR, so a sole human with a 1-review rule can never merge anything. Merge-by-operator stays mechanical anyway: deploy keys cannot merge PRs (git-only credential), and `main` rejects their direct pushes.
-- No merge queue at single-builder stage — it queues nothing; add it only when concurrency arrives.
+- No merge queue for the initial two-ticket pilot. Merge the two PRs
+  sequentially and rebase/recheck the second; add a queue only after measured
+  merge contention justifies it.
 
 ## CLI
 

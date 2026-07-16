@@ -25,10 +25,11 @@
 # Usage: next-stage.sh --ticket T-NNN   (FACTORY_ROOT anchors the factory dir)
 set -euo pipefail
 
-TICKET=""
+TICKET="" LEASE_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2;;
+    --lease) LEASE_ID="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -38,6 +39,8 @@ done
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
 if ! factory_validate_runtime_overrides; then
@@ -91,6 +94,10 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
 fi
 if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "REFUSE $FACTORY_TICKET_KIT_ERROR"
+  exit 1
+fi
+if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
+  echo "REFUSE $FACTORY_DISPATCH_LEASE_ERROR"
   exit 1
 fi
 

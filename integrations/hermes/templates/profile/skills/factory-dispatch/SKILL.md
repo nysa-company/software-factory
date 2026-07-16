@@ -1,19 +1,20 @@
 ---
 name: factory-dispatch
-version: 1.0.0
+version: 1.1.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
 # Factory dispatch
 
-This skill implements contract `nysa.software-factory.hermes` version `1.0.0`.
+This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
+and `1.1.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
 
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
-3. Require contract version `1.0.0` and a supported Hermes version.
+3. Require contract version `1.0.0` or `1.1.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
@@ -26,16 +27,31 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
+Contract `1.0.0`, and contract `1.1.0` with `max_concurrent_tickets: 1`,
+retain the original one-ticket flow below. When contract `1.1.0` reports
+`max_concurrent_tickets: 2`, claim each ticket before preflight:
+
+```text
+~/.factory/bin/factory-launch <project> claim --ticket <T-NNN>
+```
+
+Keep the opaque lease only in dispatcher memory. Renew it before every
+sequencing or role-launch decision, pass `--lease <opaque-lease-id>` to
+preflight, next-stage, and run, and release it when the ticket reaches Done or
+Blocked-Escalated. Never log, persist elsewhere, infer, retry, steal, or reuse
+a lease ID. A stale or mismatched lease is an escalation; only the operator
+may recover it under maintenance through `factory-kit recover-lease`.
+
 For the first launch of a ticket:
 
 ```text
-~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --json
+~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> [--lease <opaque-lease-id>] --json
 ```
 
 Before every role launch:
 
 ```text
-~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --json
+~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> [--lease <opaque-lease-id>] --json
 ```
 
 The launcher wraps the existing scripts' text and exit code; those scripts do
@@ -47,6 +63,7 @@ exactly the role authorized by that result:
 ~/.factory/bin/factory-launch <project> run \
   --role <role> \
   --ticket <T-NNN> \
+  [--lease <opaque-lease-id>] \
   --prompt-file <doctor-resolved-release>/roles/<role>.md \
   --workdir <absolute-product-worktree> \
   -- <task>

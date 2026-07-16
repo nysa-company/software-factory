@@ -18,8 +18,14 @@ FACTORY_DIR="$REPO_ROOT/factory"
 RUNS_DIR="$FACTORY_DIR/runs"
 LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
 HELD_LAUNCH_LOCK=0
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
+DISPATCH_LOCK="$(factory_dispatch_lock_dir "$REPO_ROOT")"
+HELD_DISPATCH_LOCK=0
 
 cleanup_launch_lock() {
+  [[ "$HELD_DISPATCH_LOCK" -eq 0 ]] || rmdir "$DISPATCH_LOCK" 2>/dev/null || true
   [[ "$HELD_LAUNCH_LOCK" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
 }
 trap cleanup_launch_lock EXIT
@@ -95,6 +101,20 @@ if [[ -d "$RUNS_DIR" ]]; then
 fi
 
 if [[ "$HELD_LAUNCH_LOCK" -eq 1 ]]; then
+  if ! compgen -G "$RUNS_DIR/*.pid" >/dev/null; then
+    for _lease_lock_try in $(seq 1 100); do
+      mkdir "$DISPATCH_LOCK" 2>/dev/null && { HELD_DISPATCH_LOCK=1; break; }
+      sleep 0.1
+    done
+    if [[ "$HELD_DISPATCH_LOCK" -eq 1 ]]; then
+      factory_dispatch_clear_leases "$REPO_ROOT" ||
+        echo "WARNING: dispatcher leases are unsafe and were retained" >&2
+      rmdir "$DISPATCH_LOCK"
+      HELD_DISPATCH_LOCK=0
+    else
+      echo "WARNING: dispatcher lease lock stuck; leases were retained" >&2
+    fi
+  fi
   rmdir "$LAUNCH_LOCK"
   HELD_LAUNCH_LOCK=0
 fi

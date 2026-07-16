@@ -55,8 +55,9 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contract `1.0.0` exposes machine-readable
-`contract`, `doctor`, `preflight`, and `next-stage` commands. `run` and
+release for the invocation. Contracts `1.0.0` and `1.1.0` expose machine-readable
+`contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
+also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
@@ -66,6 +67,15 @@ refuses a different physical kit SHA. Activation does not migrate leases, so a
 drained ticket boundary and an operator check for conflicting nonterminal
 leases remain required.
 
+`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and may
+be set only to `2`. At `2`, every sequencing and role launch requires the
+matching opaque record under `factory/.dispatch-leases/`. Claims are atomic,
+stale records are never reassigned automatically, and the global ledger lock
+continues to serialize budget reservations. Maintenance blocks claims and
+renewals while allowing matching owners to release; activation and rollback
+refuse until every lease drains. The kill switch clears only validated safe
+lease state after stopping recorded runs.
+
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
 previous generation, and expiry. The default receipt lifetime is 24 hours.
@@ -74,7 +84,7 @@ Activation reruns those bindings and refuses stale or drifted receipts.
 Activation uses `factory/MAINTENANCE` and the same launch lock as role startup.
 Launch checks occur before locking, after locking, and before the task GO
 signal. Maintenance must be published first; activation then waits for the
-launch lock and active-run drain. This ordering prevents a new task from
+launch lock, active-run drain, and dispatcher-lease drain. This ordering prevents a new task from
 crossing the release switch.
 
 The activation journal advances through `prepared`,

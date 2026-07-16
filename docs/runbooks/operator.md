@@ -82,8 +82,9 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: serialize every product `KIT_PIN` change, activation, and rollback. Begin
   only at a ticket boundary with no active run, no conflicting nonterminal
   lease, no maintenance anomaly, and no incomplete activation journal.
-- Do: leave the current dispatcher at one live ticket per product. Parallel
-  development does not authorize simultaneous dispatcher tickets.
+- Do: keep contract `1.0.0` and default contract `1.1.0` at one live ticket.
+  An explicit `MAX_CONCURRENT_TICKETS=2` pilot uses one dispatcher holding two
+  matching leases; parallel kit development alone does not enable it.
 - Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
   combine unrelated candidates into one unreviewed release, or overlap two
   activation/rollback operations.
@@ -129,9 +130,11 @@ What to do when something breaks, written for a non-technical operator. Each ent
    non-running ticket leases.
 5. Merge the product's candidate `KIT_PIN` through the protected PR and verify
    the merged product tree still matches the receipt.
-6. Create `factory/MAINTENANCE` before touching `.launch.lock`. Wait for
-   existing runs to drain. The run wrapper checks maintenance before taking
-   the lock, after taking it, and before GO.
+6. Publish managed maintenance with `factory-kit.sh pause` before touching
+   `.launch.lock`. New claims and renewals stop while matching owners may
+   release; wait for existing runs and every dispatcher lease to drain. The
+   run wrapper checks maintenance before taking the lock, after taking it, and
+   before GO.
 7. Run `factory-kit.sh plan`. It must report `No files were changed.`
 8. Stop only the product factory profile and reconciler. Leave the dashboard
    and primary Hermes profile alone.
@@ -139,6 +142,11 @@ What to do when something breaks, written for a non-technical operator. Each ent
    doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
    probes.
 10. Remove `MAINTENANCE` only after every acceptance check passes.
+
+If a dispatcher lease is stale, keep maintenance published and run
+`factory-kit.sh recover-lease --project <project> --product <path> --ticket
+<T-NNN>`. Recovery refuses while any role run is recorded. Never delete or
+replace the lease by hand.
 
 The planned control-plane outage starts when maintenance is created and ends
 when maintenance is removed. Target: 5 minutes or less. Candidate preparation,

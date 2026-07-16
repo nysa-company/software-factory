@@ -5,6 +5,14 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.1.0 — 2026-07-15
+
+- Adds opt-in two-ticket dispatch through `MAX_CONCURRENT_TICKETS=2`.
+- Adds atomic claim, renew, and release commands with opaque per-ticket leases.
+- Keeps contract 1.0 and the default contract 1.1 configuration serialized.
+- Blocks activation and rollback until dispatcher leases are drained; stale
+  leases require explicit operator recovery under maintenance.
+
 ## 1.0.0 — 2026-07-14
 
 - Certifies Hermes Agent 0.18.2 (build 2026.7.7.2).

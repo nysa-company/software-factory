@@ -14,7 +14,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - Linux and macOS system-Bash verification both feed the required aggregate `ci` status. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - Primary role routing is explicit: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/medium; Spec-linter and Test-author use Claude Fable 5/medium; Reviewer uses Claude Sonnet 5/medium. Cursor remains the family-matched fallback.
-- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported; product activation/rollback and live dispatcher tickets remain serialized. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contract 1.1 keeps live tickets serialized by default and permits an explicit two-ticket lease pilot with exact worktree isolation, atomic budget reservations, and opaque leases confined to trusted helpers. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
 
 ## Log
 
@@ -84,7 +84,19 @@ Category: System change
 
 Relay generation 3 recertified current product tree `395918c` on retained release `3b63cc7`, then generation 4 activated documentation-only successor `35c2e10` through protected pin PR #15. Green draft revert PR #16 reproduces the baseline tree before rollback; health passed, but the 21m59s maintenance interval missed the five-minute target.
 
-## 2026-07-15 — Decision 12: Explicit primary role model routing
+## 2026-07-15 — Decision 12: Bounded dispatcher concurrency candidate
+
+Category: System change
+
+Hermes contract 1.1 preserves one-ticket behavior by default and adds an opt-in maximum of two. Atomic opaque ticket leases gate sequencing and launches; they are never automatically stolen, budget reservations retain the global ledger lock, maintenance operations require a full drain, and stale recovery is an explicit operator action under maintenance.
+
+## 2026-07-15 — Decision 13: Concurrency acceptance boundary
+
+Category: Decision
+
+The initial two-ticket pilot keeps one dispatcher, exact per-ticket branches and linked worktrees, sequential roles within each ticket, and sequential PR merges. Missing, stale, or mismatched leases fail before task submission; opaque lease IDs remain confined to trusted helpers; maintenance blocks claims and renewals while matching lease release remains available for drain; activation and rollback refuse until every lease is gone. A merge queue remains deferred until measured merge contention justifies it.
+
+## 2026-07-15 — Decision 14: Explicit primary role model routing
 
 Category: System change
 

@@ -3,7 +3,7 @@
 # Public interface: factory-doctor.sh [--json] [--project <slug>]
 set -u
 
-CONTRACT_VERSION="1.0.0"
+CONTRACT_VERSION="1.1.0"
 DOCTOR_SCHEMA="nysa.software-factory.hermes-doctor/v1"
 SUPPORTED_HERMES_AGENT="0.18.2"
 SUPPORTED_HERMES_BUILD="2026.7.7.2"
@@ -84,7 +84,7 @@ fi
 PYTHON_BIN="$(command -v python3 2>/dev/null || true)"
 if [[ -z "$PYTHON_BIN" ]]; then
   if [[ "$JSON_MODE" -eq 1 ]]; then
-    printf '%s\n' '{"schema":"nysa.software-factory.hermes-doctor/v1","schema_version":1,"contract_version":"1.0.0","overall_status":"error","error":"python3 unavailable"}'
+    printf '%s\n' '{"schema":"nysa.software-factory.hermes-doctor/v1","schema_version":1,"contract_version":"1.1.0","overall_status":"error","error":"python3 unavailable"}'
   else
     echo "Factory doctor: ERROR"
     echo "python3 unavailable; safe JSON and timeout handling require python3"
@@ -99,8 +99,10 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 CLI_FILE="$TMP/clis.tsv"
 RUN_FILE="$TMP/runs.tsv"
+LEASE_FILE="$TMP/leases.tsv"
 : > "$CLI_FILE"
 : > "$RUN_FILE"
+: > "$LEASE_FILE"
 
 sanitize() {
   "$PYTHON_BIN" -c '
@@ -283,6 +285,10 @@ ACTIVE_RECORDS=0
 ACTIVE_RUNS=0
 STALE_RUNS=0
 MALFORMED_RUNS=0
+MAX_CONCURRENT_TICKETS=1
+DISPATCH_LEASES=0
+STALE_DISPATCH_LEASES=0
+MALFORMED_DISPATCH_LEASES=0
 if [[ -n "$PRODUCT_ROOT" ]]; then
   FACTORY_DIR="$PRODUCT_ROOT/factory"
   [[ -e "$FACTORY_DIR/MAINTENANCE" ]] && MAINTENANCE="true"
@@ -311,14 +317,61 @@ if [[ -n "$PRODUCT_ROOT" ]]; then
       printf '%s\t%s\n' "$run_id" "$state" >> "$RUN_FILE"
     done
   fi
+  # shellcheck disable=SC1091
+  if source "$KIT_DIR/scripts/lib/dispatch-leases.sh" 2>/dev/null &&
+     MAX_CONCURRENT_TICKETS="$(factory_dispatch_max_tickets "$PRODUCT_ROOT" 2>/dev/null)"; then
+    LEASE_DATA="$(python3 - "$FACTORY_DIR/.dispatch-leases" <<'PY'
+import json, pathlib, re, stat, sys, time
+
+root = pathlib.Path(sys.argv[1])
+if not root.exists():
+    raise SystemExit(0)
+if root.is_symlink() or not root.is_dir():
+    print("state\tmalformed")
+    raise SystemExit(0)
+for path in sorted(root.iterdir()):
+    ticket, state = path.name, "malformed"
+    try:
+        value = path.lstat()
+        if not stat.S_ISREG(value.st_mode) or path.is_symlink() or not re.fullmatch(r"T-[0-9]+\.json", path.name):
+            raise ValueError
+        record = json.loads(path.read_text())
+        ticket = record["ticket"]
+        if ticket + ".json" != path.name or record.get("schema_version") != 1:
+            raise ValueError
+        if not re.fullmatch(r"[0-9a-f]{64}", record.get("lease_id", "")):
+            raise ValueError
+        state = "active" if int(record["expires_epoch"]) > int(time.time()) else "stale"
+    except Exception:
+        pass
+    print(ticket.replace("\t", "_").replace("\n", "_") + "\t" + state)
+PY
+)"
+    if [[ -n "$LEASE_DATA" ]]; then
+      printf '%s\n' "$LEASE_DATA" > "$LEASE_FILE"
+      while IFS="$(printf '\t')" read -r _ticket state; do
+        case "$state" in
+          active) DISPATCH_LEASES=$((DISPATCH_LEASES + 1)) ;;
+          stale) DISPATCH_LEASES=$((DISPATCH_LEASES + 1)); STALE_DISPATCH_LEASES=$((STALE_DISPATCH_LEASES + 1)) ;;
+          *) MALFORMED_DISPATCH_LEASES=$((MALFORMED_DISPATCH_LEASES + 1)) ;;
+        esac
+      done < "$LEASE_FILE"
+    fi
+  else
+    RUNTIME_STATUS="error"
+    MAX_CONCURRENT_TICKETS=0
+  fi
 fi
 
-RUNTIME_STATUS="ok"
-if [[ "$MAINTENANCE" == "true" || "$LAUNCH_LOCK" == "true" ||
+RUNTIME_STATUS="${RUNTIME_STATUS:-ok}"
+if [[ "$RUNTIME_STATUS" != "error" ]] &&
+   [[ "$MAINTENANCE" == "true" || "$LAUNCH_LOCK" == "true" ||
       "$LEDGER_LOCK" == "true" || "$LINEAR_LOCK" == "true" ||
-      "$GLOBAL_LEDGER_LOCK" == "true" || "$ACTIVE_RECORDS" -gt 0 ]]; then
+      "$GLOBAL_LEDGER_LOCK" == "true" || "$ACTIVE_RECORDS" -gt 0 ||
+      "$DISPATCH_LEASES" -gt 0 ]]; then
   RUNTIME_STATUS="warning"
 fi
+[[ "$MALFORMED_DISPATCH_LEASES" -eq 0 ]] || RUNTIME_STATUS="error"
 
 HERMES_PATH="$(command -v hermes 2>/dev/null || true)"
 HERMES_VERSION=""
@@ -471,6 +524,7 @@ export OUTPUT_PROFILE_DIR OUTPUT_REGISTRY OUTPUT_KIT_DIR OUTPUT_PRODUCT_ROOT
 export KIT_STATUS KIT_SHA PIN_STATUS OUTPUT_PIN_FILE PIN_SHA PIN_VALID PIN_MATCHES
 export RUNTIME_STATUS OUTPUT_FACTORY_DIR MAINTENANCE LAUNCH_LOCK LEDGER_LOCK LINEAR_LOCK GLOBAL_LEDGER_LOCK
 export ACTIVE_RECORDS ACTIVE_RUNS STALE_RUNS MALFORMED_RUNS
+export MAX_CONCURRENT_TICKETS DISPATCH_LEASES STALE_DISPATCH_LEASES MALFORMED_DISPATCH_LEASES LEASE_FILE
 export HERMES_STATUS HERMES_PATH HERMES_VERSION CLI_STATUS CLI_FILE
 export CREDENTIAL_STATUS GH_PRESENT LINEAR_PRESENT
 export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAST_ERROR
@@ -508,6 +562,12 @@ with open(os.environ["RUN_FILE"], encoding="utf-8") as handle:
     for line in handle:
         run_id, state = line.rstrip("\n").split("\t", 1)
         runs.append({"run_id": run_id, "state": state})
+
+leases = []
+with open(os.environ["LEASE_FILE"], encoding="utf-8") as handle:
+    for line in handle:
+        ticket, state = line.rstrip("\n").split("\t", 1)
+        leases.append({"ticket": ticket, "state": state})
 
 document = {
     "schema": os.environ["DOCTOR_SCHEMA"],
@@ -549,6 +609,11 @@ document = {
             "stale_runs": number("STALE_RUNS"),
             "malformed_runs": number("MALFORMED_RUNS"),
             "runs": runs,
+            "max_concurrent_tickets": number("MAX_CONCURRENT_TICKETS"),
+            "dispatch_lease_records": number("DISPATCH_LEASES"),
+            "stale_dispatch_leases": number("STALE_DISPATCH_LEASES"),
+            "malformed_dispatch_leases": number("MALFORMED_DISPATCH_LEASES"),
+            "dispatch_leases": leases,
         },
         "hermes": {
             "status": os.environ["HERMES_STATUS"],
@@ -585,7 +650,7 @@ else
   echo "Registry [$REGISTRY_STATUS]: $OUTPUT_REGISTRY"
   echo "Kit [$KIT_STATUS]: ${KIT_SHA:-unavailable}"
   echo "KIT_PIN [$PIN_STATUS]: ${PIN_SHA:-missing or invalid}"
-  echo "Runtime [$RUNTIME_STATUS]: maintenance=$MAINTENANCE active=$ACTIVE_RUNS stale=$STALE_RUNS malformed=$MALFORMED_RUNS"
+  echo "Runtime [$RUNTIME_STATUS]: maintenance=$MAINTENANCE active=$ACTIVE_RUNS stale=$STALE_RUNS malformed=$MALFORMED_RUNS concurrency=$MAX_CONCURRENT_TICKETS leases=$DISPATCH_LEASES"
   echo "Locks: launch=$LAUNCH_LOCK ledger=$LEDGER_LOCK linear_sync=$LINEAR_LOCK global_ledger=$GLOBAL_LEDGER_LOCK"
   echo "Hermes [$HERMES_STATUS]: ${HERMES_VERSION:-unavailable} (${HERMES_PATH:-not found})"
   while IFS="$(printf '\t')" read -r cli_name cli_item_status cli_path cli_version; do
