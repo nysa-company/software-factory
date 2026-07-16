@@ -920,6 +920,7 @@ factory/runs/
 factory/runtime-ledger.csv
 factory/.active-runs/
 factory/.dispatch-leases/
+factory/test-adapter-gate
 EOF
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add -A

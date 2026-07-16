@@ -386,6 +386,42 @@ class LedgerViewTest(unittest.TestCase):
         result = self.integrity_check(snapshot)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_integrity_rejects_regressive_or_identity_changing_siblings(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        manifest(owned, phase="spawned", go="1")
+        regressive = runs / "sibling-regressive.meta"
+        manifest(regressive, phase="prepared", go="0")
+        regressive_original = regressive.read_bytes()
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        regressive.write_text(regressive.read_text().replace("phase=prepared", "phase=reserved"))
+        result = self.integrity_check(snapshot)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(regressive.read_bytes(), regressive_original)
+
+        cases = {
+            "go-regression": lambda text: text.replace("go_issued=1", "go_issued=0"),
+            "pid-change": lambda text: text.replace("pid=100", "pid=200"),
+            "ticket-change": lambda text: text.replace("ticket=T-123", "ticket=T-999"),
+            "role-change": lambda text: text.replace("role=planner", "role=builder"),
+        }
+        for index, (label, mutate) in enumerate(cases.items()):
+            with self.subTest(label=label):
+                sibling = runs / f"sibling-{index}.meta"
+                manifest(sibling, phase="spawned", go="1")
+                sibling.write_text(sibling.read_text() + "pid=100\n")
+                original = sibling.read_bytes()
+                snapshot = self.integrity_snapshot(owned=owned.name).stdout
+                sibling.write_text(mutate(sibling.read_text()))
+
+                result = self.integrity_check(snapshot)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(sibling.read_bytes(), original)
+                self.assertEqual(
+                    len(list(runs.glob(f"{sibling.name}.rejected-role-mutation-*"))), 1,
+                )
+
     def test_integrity_allows_sibling_resolved_to_launch_void(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
