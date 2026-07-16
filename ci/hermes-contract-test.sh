@@ -1297,6 +1297,8 @@ RELEASE_C_PHYS="$(cd "$RELEASE_C" && pwd -P)"
 REAL_RUN_WORKTREE="$TMP/real-run-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-777 "$REAL_RUN_WORKTREE"
 REAL_RUN_WORKTREE_PHYS="$(cd "$REAL_RUN_WORKTREE" && pwd -P)"
+[[ -z "$(git -C "$REAL_RUN_WORKTREE_PHYS" ls-remote --heads origin \
+  refs/heads/ticket/T-777)" ]] || fail "fresh ticket branch already existed remotely"
 REAL_RUN_WORKTREE_778="$TMP/real-run-worktree-778"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-778 "$REAL_RUN_WORKTREE_778"
 REAL_RUN_WORKTREE_778_PHYS="$(cd "$REAL_RUN_WORKTREE_778" && pwd -P)"
@@ -1309,6 +1311,12 @@ REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
 
 run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
   --action materialize --json > "$TMP/real-ticket-state.json"
+BOOTSTRAP_HEAD="$(git -C "$REAL_RUN_WORKTREE_PHYS" rev-parse HEAD)"
+[[ "$(git --git-dir="$LAUNCH_PRODUCT_REMOTE" rev-parse refs/heads/ticket/T-777)" == \
+     "$BOOTSTRAP_HEAD" &&
+   "$(git -C "$REAL_RUN_WORKTREE_PHYS" rev-parse \
+     refs/remotes/origin/ticket/T-777)" == "$BOOTSTRAP_HEAD" ]] ||
+  fail "ticket-state did not create and verify the fresh remote ticket branch"
 run_launcher launchtest ticket-state --ticket T-778 --workdir "$REAL_RUN_WORKTREE_778_PHYS" \
   --action materialize --json > "$TMP/real-ticket-state-778.json"
 run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTREE_779_PHYS" \

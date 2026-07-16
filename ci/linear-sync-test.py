@@ -310,6 +310,19 @@ class LinearSyncTest(unittest.TestCase):
         self.assertIn("Initiative: I-001", (self.factory / "tickets" / "T-001.md").read_text())
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["initiative"], "I-002")
 
+        issue["project"] = None
+        self.reconcile()
+        self.reconcile()
+        self.assertIsNone(self.mapping["tickets"]["T-001"]["operator"]["initiative"])
+        self.assertIsNone(issue["project"])
+        self.assertIn("Initiative: I-001", (self.factory / "tickets" / "T-001.md").read_text())
+
+        issue["project"] = {"id": "external-project"}
+        self.reconcile()
+        self.reconcile()
+        self.assertIsNone(self.mapping["tickets"]["T-001"]["operator"]["initiative"])
+        self.assertEqual(issue["project"], {"id": "external-project"})
+
     def test_factory_view_is_created_and_mapped(self):
         path = self.factory / "initiatives" / "I-001.md"
         path.write_text(path.read_text().replace("Target-Date:", "View: factory\nTarget-Date:"))

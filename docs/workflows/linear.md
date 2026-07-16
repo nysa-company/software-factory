@@ -24,6 +24,8 @@ The factory is authoritative for title, description, acceptance criteria,
 frozen contract, branch/PR facts, role-stage movement, escalation into
 Blocked-Escalated, evidence, cost, and Approved → Done after merge/deploy
 confirmation. Unsupported Linear edits are restored from the ticket file.
+Removing an issue from every Linear Project explicitly clears its effective
+initiative; it cannot enter execution again until the operator assigns one.
 
 Preflight, sequencing, and projection combine the overlay with the exact ticket
 worktree or committed ticket branch. The launcher-managed `ticket-state`

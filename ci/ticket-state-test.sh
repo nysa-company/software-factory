@@ -60,6 +60,18 @@ import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
+printf '{"tickets":{"T-700":{"operator":{"initiative":null}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
+! grep -q '^Initiative:' "$PRODUCT/factory/tickets/T-700.md"
+git --git-dir="$REMOTE" show \
+  "refs/heads/ticket/T-700:factory/tickets/T-700.md" | \
+  grep -qv '^Initiative:'
+python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+import json, sys
+assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
+PY
+
 ticket_state \
   --ticket T-700 --workdir "$PRODUCT" --action transition --state Planning >/dev/null
 grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"

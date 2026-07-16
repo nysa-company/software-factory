@@ -45,6 +45,12 @@ may recover it under maintenance through `factory-kit recover-lease`.
 
 For the first launch of a ticket:
 
+1. Create the exact clean `<TICKET_BRANCH_PREFIX><T-NNN>` linked worktree from
+   current protected `origin/main`.
+2. For contract `1.2.0`, run the trusted `ticket-state --action materialize`
+   command below. Its verified exact-SHA push creates the remote ticket ref.
+3. Run preflight:
+
 ```text
 ~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```

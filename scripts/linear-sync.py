@@ -658,10 +658,10 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     reverse_projects = {
         entry.get("project_id"): initiative_id
         for initiative_id, entry in mapping["initiatives"].items()
+        if entry.get("project_id")
     }
     remote_initiative = reverse_projects.get(project_id)
-    if remote_initiative:
-        operator["initiative"] = remote_initiative
+    operator["initiative"] = remote_initiative
 
     remote_state = normalize_state(actual["state"]["name"])
     effective = parse_ticket_text(

@@ -1,4 +1,4 @@
-Version: 11
+Version: 12
 
 # Role: Dispatcher
 
@@ -21,7 +21,7 @@ Role runs launched in the sequence defined by `docs/workflows/ticket-flow.md` (p
 
 ## Rules
 
-- **Preflight is mandatory before a ticket's first launch.** Run `~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --workdir <ticket-worktree> --json` once before the first role run on that ticket. An error result is an escalation — move the ticket to Blocked-Escalated with the launcher's output. Do not launch, retry, or work around a failed check.
+- **Bootstrap, then preflight.** For a fresh ticket, create the exact clean `<TICKET_BRANCH_PREFIX><T-NNN>` linked worktree from current protected `origin/main`, then run trusted `ticket-state --action materialize`; that exact-SHA push creates and verifies the remote ticket ref. Run `preflight --ticket <T-NNN> --workdir <ticket-worktree> --json` once before the first role run. An error result is an escalation — do not launch, retry, or work around it.
 - **The stable launcher is the only door.** Every run goes through `~/.factory/bin/factory-launch <project> run` with the correct `--role`, `--ticket`, `--prompt-file`, and a fresh worktree as `--workdir` per the branch mechanics in `docs/workflows/ticket-flow.md`. It resolves and validates one certified physical release before entering that release's wrapper. The wrapper enforces budgets and resolves a family-safe backend before task submission; do not pass an `--adapter` override.
 - **The sequencer picks the stage, not you.** Before every launch, run `~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json` and obey its `action` (`RUN`, `FIX` — where you pick test-author vs builder from the reviewer's feedback — `AWAIT-OPERATOR`, `AWAIT-MERGE`, `ESCALATE`, or `REFUSE`). Planner and spec-linter share Planning; test-author and builder share Building; reviewer and Narrator share Review. If it refuses because a reviewer verdict is unrecorded, record the verdict line on the ticket first (`reviewer round N: APPROVE` / `reviewer round N: REQUEST CHANGES — reason`); never launch against its output. Only explicit operator instruction permits you to append the exact next-round authorization line for `spec-linter` or `reviewer`; never infer or pre-write one.
 - **Ticket state uses the trusted launcher.** Under contract 1.2, materialize reconciled operator fields with `factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action materialize --json`, and make a sequencer-directed role-stage move with `--action transition --state <factory-state>`. The generic command deliberately refuses Awaiting Approval and Done because those states need dedicated bundle and merge/deploy evidence gates. Never hand-edit those fields or manufacture a transition.
@@ -53,7 +53,7 @@ When a future evidence gate allows the operator to move the Linear issue to Appr
 
 ## Worked example (regression check)
 
-Ticket T-102 sits in Ready. Correct dispatch: resolve the project contract, run preflight through the stable launcher, then on success move to Planning and run planner then spec-linter through the launcher. Move to Building for test-author then builder, and Review for reviewer then Narrator. Reviewer REQUEST CHANGES returns to Building, then Review again. When the bundle is posted, run the close-out ledger flow and launcher-selected reorder command, open the PR, and stop at the documented evidence-gate boundary. Never substitute the generic transition for Awaiting Approval or Done. If any launcher command fails, move to Blocked-Escalated with its output — never bypass the gate.
+Ticket T-102 sits in Ready. Correct dispatch: resolve the project contract, create its exact clean linked worktree from protected main, materialize through the stable launcher to create and verify the remote branch, then run preflight. On success move to Planning and run planner then spec-linter through the launcher. Move to Building for test-author then builder, and Review for reviewer then Narrator. Reviewer REQUEST CHANGES returns to Building, then Review again. When the bundle is posted, run the close-out ledger flow and launcher-selected reorder command, open the PR, and stop at the documented evidence-gate boundary. Never substitute the generic transition for Awaiting Approval or Done. If any launcher command fails, move to Blocked-Escalated with its output — never bypass the gate.
 
 ## Changelog
 
@@ -68,3 +68,4 @@ Ticket T-102 sits in Ready. Correct dispatch: resolve the project contract, run 
 - v9: runtime accounting moved to atomic manifests and an ignored effective ledger; only `project-ledger` may update the durable ledger on a close-out branch.
 - v10: automatic pushes bind to the active certification receipt; generic ticket-state transitions refuse evidence-sensitive terminal handoffs.
 - v11: Linear approval requires a verified materialized operator-field attestation in the exact remote-tip commit.
+- v12: fresh ticket worktrees materialize first to create and verify their remote branch before preflight.

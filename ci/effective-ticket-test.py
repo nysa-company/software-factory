@@ -59,6 +59,11 @@ class EffectiveTicketTests(unittest.TestCase):
         self.assertIn("State: Approved", rendered)
         self.assertIn("Operator-Approval: Linear", rendered)
 
+    def test_unassigned_initiative_is_an_explicit_versioned_tombstone(self):
+        rendered = apply_operator_fields(BASE_TICKET, {"initiative": None})
+        self.assertNotIn("Initiative:", rendered)
+        self.assertNotEqual(operator_version({}), operator_version({"initiative": None}))
+
     def test_operator_map_nesting_must_be_objects(self):
         malformed = (
             [],

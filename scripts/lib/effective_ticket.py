@@ -51,10 +51,16 @@ def validate_operator(operator):
     for name, value in operator.items():
         if name == "linear_updated_at" and value is None:
             continue
+        if name == "initiative" and value is None:
+            continue
         safe_operator_string(name, value)
     if "priority" in operator and operator["priority"] not in PRIORITIES:
         raise ValueError("operator priority is invalid")
-    if "initiative" in operator and not re.fullmatch(r"I-[0-9]+", operator["initiative"]):
+    if (
+        "initiative" in operator
+        and operator["initiative"] is not None
+        and not re.fullmatch(r"I-[0-9]+", operator["initiative"])
+    ):
         raise ValueError("operator initiative is invalid")
     if "state" in operator and operator["state"] not in STATES:
         raise ValueError("operator state is invalid")
@@ -109,7 +115,7 @@ def operator_version(operator):
     values = {
         key: operator[key]
         for key in MATERIALIZED_OPERATOR_FIELDS
-        if operator.get(key)
+        if key in operator
     }
     return hashlib.sha256(
         json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
@@ -137,6 +143,9 @@ def materialized_operator_version(text):
 def apply_operator_fields(text, operator):
     validate_operator(operator)
     validate_protected_fields(text)
+    if "initiative" in operator and operator["initiative"] is None:
+        text = re.sub(r"^Initiative:\s*.*\n?", "", text, count=1,
+                      flags=re.MULTILINE | re.IGNORECASE)
     for key, name in (("priority", "Priority"), ("initiative", "Initiative"), ("state", "State")):
         if operator.get(key):
             text = replace_field(text, name, operator[key])
