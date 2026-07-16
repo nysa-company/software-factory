@@ -88,6 +88,27 @@ for state in Review Approved; do
   [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 done
 
+sed -E 's/^State: .*/State: Review/' "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
+mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "materialization evidence fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
+BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
+for target in "Awaiting Approval" Done; do
+  printf '{"tickets":{"T-700":{"operator":{"state":"%s"}}}}\n' "$target" \
+    > "$PRODUCT/factory/linear-map.json"
+  if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
+    >/dev/null 2>&1; then
+    echo "FAIL: evidence-sensitive overlay state $target was materialized" >&2
+    exit 1
+  fi
+  grep -q '^State: Review$' "$PRODUCT/factory/tickets/T-700.md"
+  [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
+  [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
+done
+printf '{"tickets":{"T-700":{}}}\n' > "$PRODUCT/factory/linear-map.json"
+
 DECOY="$TMP/decoy.git"
 git init --bare -q "$DECOY"
 sed -E 's/^State: .*/State: Planning/' "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"

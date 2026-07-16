@@ -265,6 +265,35 @@ class LinearSyncTest(unittest.TestCase):
         self.assertIn("State: Blocked-Escalated", path.read_text())
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
+    def test_blocked_ticket_cannot_resume_to_evidence_sensitive_state(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Blocked-Escalated")
+            .replace("Initiative: I-001", "Resume-State: Awaiting Approval\nInitiative: I-001")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        previous = "Awaiting Approval"
+        for target in ("Awaiting Approval", "Done"):
+            with self.subTest(target=target):
+                path.write_text(
+                    path.read_text().replace(
+                        f"Resume-State: {previous}", f"Resume-State: {target}"
+                    )
+                )
+                issue["state"] = {
+                    "id": config()["states"][LINEAR.normalize_state(target)],
+                    "name": target,
+                }
+                self.reconcile()
+                self.assertEqual(issue["state"]["name"], "Blocked-Escalated")
+                self.assertNotEqual(
+                    self.mapping["tickets"]["T-001"].get("operator", {}).get("state"),
+                    target,
+                )
+                previous = target
+
     def test_linear_project_membership_is_ingested(self):
         self.reconcile()
         (self.factory / "initiatives" / "I-002.md").write_text(

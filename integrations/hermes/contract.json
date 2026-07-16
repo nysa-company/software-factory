@@ -265,9 +265,10 @@
         "release_path"
       ],
       "contract_1_2_required_fields": [
-        "receipt_id"
+        "receipt_id",
+        "product_tree"
       ],
-      "contract_1_2_receipt_binding": "receipt_id selects an owner-only mode-0600 receipt whose project, kit SHA/tree, product path, contract, and product origin bind trusted writes",
+      "contract_1_2_receipt_binding": "receipt_id selects an owner-only mode-0600 receipt whose project, kit SHA/tree, product path/tree, contract, and product origin bind trusted writes",
       "release_location": "$FACTORY_KITS_ROOT/releases/<kit_sha>",
       "selection": "resolved and validated once per invocation"
     },

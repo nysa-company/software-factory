@@ -1209,7 +1209,7 @@ product_tree() {
 }
 
 product_origin() {
-  local origin count scheme authority
+  local origin count scheme authority userinfo normalized_userinfo
   origin="$(git -C "$1" remote get-url --push --all origin 2>/dev/null || true)"
   count="$(printf '%s\n' "$origin" | awk 'NF {count++} END {print count+0}')"
   [[ "$count" == "1" ]] || die "product repository must have one push destination"
@@ -1221,13 +1221,18 @@ product_origin() {
       [[ "$origin" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] ||
         die "product push destination is unsafe"
       scheme="$(printf '%s' "${origin%%://*}" | tr '[:upper:]' '[:lower:]')"
+      authority="${origin#*://}"
+      authority="${authority%%/*}"
+      authority="${authority%%\?*}"
+      authority="${authority%%\#*}"
       if [[ "$scheme" == "http" || "$scheme" == "https" ]]; then
-        authority="${origin#*://}"
-        authority="${authority%%/*}"
-        authority="${authority%%\?*}"
-        authority="${authority%%\#*}"
         [[ "$authority" != *@* ]] ||
           die "product HTTP push destination must not contain credentials"
+      elif [[ "$authority" == *@* ]]; then
+        userinfo="${authority%@*}"
+        normalized_userinfo="$(printf '%s' "$userinfo" | tr '[:upper:]' '[:lower:]')"
+        [[ "$userinfo" != *:* && "$normalized_userinfo" != *%3a* ]] ||
+          die "product push destination must not contain password credentials"
       fi
       ;;
     *:*)

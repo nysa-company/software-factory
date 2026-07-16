@@ -1713,9 +1713,11 @@ assert contract["launcher"]["active_record"]["required_fields"] == [
     "release_path",
 ]
 assert contract["launcher"]["active_record"]["contract_1_2_required_fields"] == [
-    "receipt_id"
+    "receipt_id",
+    "product_tree",
 ]
 assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
+assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 
 integration = os.path.join(root, "integrations", "hermes")
 required = [

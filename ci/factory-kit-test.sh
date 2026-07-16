@@ -745,6 +745,26 @@ else
   fail "credential-bearing product push destination failure is redacted" "$LAST_OUTPUT"
 fi
 git -C "$PRODUCT_ONE" config remote.origin.pushurl \
+  'ssh://factory-user:factory-password@example.invalid/product.git'
+expect_failure "certification rejects password userinfo in a non-HTTP push destination" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if [[ "$LAST_OUTPUT" != *"factory-user"* &&
+      "$LAST_OUTPUT" != *"factory-password"* ]]; then
+  pass "non-HTTP credential failure is redacted"
+else
+  fail "non-HTTP credential failure is redacted" "$LAST_OUTPUT"
+fi
+git -C "$PRODUCT_ONE" config remote.origin.pushurl \
+  'ssh://factory-user%3Afactory-password@example.invalid/product.git'
+expect_failure "certification rejects encoded password userinfo in a push destination" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if [[ "$LAST_OUTPUT" != *"factory-user"* &&
+      "$LAST_OUTPUT" != *"factory-password"* ]]; then
+  pass "encoded credential failure is redacted"
+else
+  fail "encoded credential failure is redacted" "$LAST_OUTPUT"
+fi
+git -C "$PRODUCT_ONE" config remote.origin.pushurl \
   'git@github.com:org/repo with space.git'
 expect_failure "certification rejects whitespace in an scp-like push destination" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"

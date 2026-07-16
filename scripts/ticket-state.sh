@@ -42,7 +42,26 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
   --operator-version-file "$OPERATOR_VERSION_FILE" > "$TMP"
 OPERATOR_VERSION="$(<"$OPERATOR_VERSION_FILE")"
 
-if [[ "$ACTION" == "transition" ]]; then
+if [[ "$ACTION" == "materialize" ]]; then
+  python3 - "$TICKET_FILE" "$TMP" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+current_path, effective_path = map(Path, sys.argv[1:])
+pattern = re.compile(r"^State:\s*(.+)$", re.MULTILINE | re.IGNORECASE)
+current = pattern.search(current_path.read_text())
+effective = pattern.search(effective_path.read_text())
+if not current or not effective:
+    raise SystemExit("ticket has no State field")
+current_state = current.group(1).strip().lower()
+effective_state = effective.group(1).strip().lower()
+if current_state != effective_state and effective_state in {"awaiting approval", "done"}:
+    raise SystemExit(
+        f"evidence-sensitive state requires a dedicated attestation: {effective_state}"
+    )
+PY
+elif [[ "$ACTION" == "transition" ]]; then
   python3 - "$TMP" "$STATE" <<'PY'
 import re
 import sys

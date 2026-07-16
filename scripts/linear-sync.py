@@ -655,7 +655,12 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     )
     local_state = effective["state"]
     allowed = (local_state, remote_state) in OPERATOR_TRANSITIONS
-    if local_state == "blocked-escalated" and remote_state == effective["resume_state"] and remote_state in STATES:
+    if (
+        local_state == "blocked-escalated"
+        and remote_state == effective["resume_state"]
+        and remote_state in STATES
+        and remote_state not in {"awaiting approval", "done"}
+    ):
         allowed = True
     if allowed:
         operator["state"] = STATES[remote_state][0]
