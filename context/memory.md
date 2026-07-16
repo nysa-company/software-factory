@@ -20,7 +20,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Generic ticket-state transitions stop before Awaiting Approval and Done until dedicated evidence attestations exist.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
-- Provider processes cannot author launcher control state: durable GO precedes the adapter gate, run-manifest or registered-checkout mutation fails the role, and the ignored runtime ledger is always rebuilt from durable history plus authoritative manifests.
+- Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and manifests are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. Persistent claim, manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
 - Hermes contract 1.2 requires exact ticket worktrees for preflight and sequencing, exposes trusted ticket-state and ledger projection, and keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 
 ## Log
@@ -145,8 +145,14 @@ Category: System change
 
 `factory/ENVELOPE.env` and `~/.factory/global.env` use one sealed, Bash-3.2-compatible whitelist parser across preflight, adapter contracts, and role launch. Executable content, invalid or incoherent limits, and relative global-ledger paths fail before backend probes, run manifests, or task submission.
 
-## 2026-07-15 — Decision 21: Provider output cannot become control-plane truth
+## 2026-07-15 — Decision 21: Provider-writable output paths are not accounting truth
 
 Category: System change
 
-The launcher durably publishes GO before opening the adapter gate, snapshots its manifests and registered checkout, and fails closed if the provider changes either. Runtime-ledger is output-only and is rebuilt from tracked durable history plus validated regular manifest files, so forged cost or success rows cannot influence budgets or sequencing.
+The launcher durably publishes GO before opening the adapter gate, binds output to a wrapper-held descriptor, snapshots its manifests and registered checkout, and fails closed on persistent mutation. Runtime-ledger is output-only and is rebuilt from tracked durable history plus manifests read from a real no-follow root; missing or invalid telemetry retains the full reservation.
+
+## 2026-07-15 — Decision 22: Runtime exclusion and machine accounting fail closed
+
+Category: System change
+
+Preflight durably initializes the ignored runs root. Ticket-and-role `mkdir` claims are never reclaimed by launch and cleanup removes only its exact owner; a configured global cap holds and validates its ledger across the complete provider interval, serializing globally capped runs and restoring an owned snapshot after mutation. These are portable integrity checks, not hostile same-UID isolation, which requires an OS boundary.

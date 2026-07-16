@@ -99,7 +99,7 @@ PER_RUN_TIMEOUT_MIN=5
 DAILY_CAP_USD=$daily_cap
 ENV
   echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$dir/factory/ledger.csv"
-  echo "factory/runtime-ledger.csv" > "$dir/.gitignore"
+  printf '%s\n' "factory/runtime-ledger.csv" "factory/runs/" > "$dir/.gitignore"
   printf '%s\n' "$KIT_HEAD_NOW" > "$dir/factory/KIT_PIN"
 }
 
@@ -273,6 +273,7 @@ assert_invalid_preflight_envelope() {
   local trace="$TMP/preflight-invalid-$name.trace"
   sed "$replacement" "$ALLPASS/factory/ENVELOPE.env" > "$TMP/invalid-envelope"
   mv "$TMP/invalid-envelope" "$ALLPASS/factory/ENVELOPE.env"
+  rm -rf "$ALLPASS/factory/runs"
   : > "$trace"
   out="$(run_preflight "$ALLPASS" T-001 --global-env "$GLOBAL_ENV" \
     --probe-trace "$trace")" || status=$?
@@ -322,6 +323,7 @@ CODEX_PINNED=0.144.1
 FACTORY_CURSOR_FALLBACK_ENABLED=0
 ENV
 RELATIVE_LEDGER_TRACE="$TMP/relative-ledger-probes"
+rm -rf "$ALLPASS/factory/runs"
 : > "$RELATIVE_LEDGER_TRACE"
 RELATIVE_LEDGER_STATUS=0
 RELATIVE_LEDGER_OUT="$(run_preflight "$ALLPASS" T-001 \

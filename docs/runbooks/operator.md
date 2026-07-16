@@ -38,6 +38,19 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: count successful reviewer rows for that ticket from oldest to newest. Add `OPERATOR NOTE: reviewer run <N> void — duplicate` to the ticket, using the duplicate row's one-based number. Run `next-stage.sh` again. The next reviewer round number comes from recorded verdicts, so the void row does not renumber it.
 - Don't: invent a verdict for the duplicate row or delete ledger history.
 
+## Live or unreconciled run claim
+
+- Notice: launch refuses with `live or unreconciled run claim exists`, or a run reports control-plane mutation and leaves `factory/.active-runs/<ticket>.<role>.lock` behind.
+- Do: publish maintenance first with `bash scripts/factory-kit.sh pause --project <project> --product <absolute-product-path>`. Check that the claim and its `owner` are real, non-symlink directory/file entries. Read only the recorded `pid` and `process_start`; compare both with `ps -o lstart= -p <pid>`. If the PID is live with the exact recorded start value, the claim is live and must remain. If the PID is absent or its start differs, confirm no recorded `factory/runs/*.pid` process is live, then quarantine only that exact claim by renaming it to `<claim>.stale-<UTC timestamp>`. Re-run doctor and preflight while maintenance remains published.
+- Don't: infer staleness from a PID alone, delete every claim, reclaim during ordinary launch, print the owner token, or remove maintenance before accounting and run health agree. A claim is never stolen automatically.
+
+## Global accounting or wrapper control-state mutation
+
+- Notice: the role exits with `role_exit_control_plane_mutation`, the global ledger lock remains, or the wrapper says operator reconciliation is required.
+- Do: keep maintenance published. Compare the affected run manifest and conservative reservation with the provider console, validate that the global ledger is a regular non-symlink CSV with the expected header and nonnegative rows, and retain the full reservation wherever cost is uncertain. When the wrapper still owns the exact global lock it restores its pre-provider snapshot; changed lock ownership or unresolved ledger state requires manual reconciliation before another launch.
+- Don't: hand-edit or delete ledger history, remove an unknown-owner lock, or treat a reconstructed `.out` artifact as accounting authority. Provider output is captured by the wrapper and telemetry is only accepted when bounded and parseable.
+- Important: persistent mutation is detected and blocks advancement, but an unsandboxed provider shares the launcher's OS user. Preventing a hostile same-UID process from changing and restoring user-owned state requires OS isolation such as a separate UID or enforced sandbox; file snapshots and `mkdir` locks are not that boundary.
+
 ## Spec-linter or reviewer reached the two-round limit
 
 - Notice: `next-stage.sh` returns `ESCALATE` and names the next semantic round.

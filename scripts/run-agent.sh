@@ -1254,7 +1254,9 @@ TURNS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^turns=/) { sub(/^turns=/, "", $
 COST="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_usd=/) { sub(/^cost_usd=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 COST_BASIS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_basis=/) { sub(/^cost_basis=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 TELEMETRY_INVALID=0
-if [[ ! "$TURNS" =~ ^[0-9]{1,4}$ ]] ||
+if [[ -z "$TURNS" ]]; then
+  TURNS=0
+elif [[ ! "$TURNS" =~ ^[0-9]{1,4}$ ]] ||
    ! awk -v value="$TURNS" 'BEGIN { exit !(value >= 0 && value <= 1000) }'; then
   TELEMETRY_INVALID=1
 fi

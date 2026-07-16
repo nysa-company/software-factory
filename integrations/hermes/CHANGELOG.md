@@ -19,6 +19,13 @@ helper output are not compatibility promises.
   destinations.
 - Limits generic ticket-state transitions to role stages and escalation;
   Awaiting Approval and Done remain withheld pending dedicated evidence gates.
+- Durably initializes and validates the ignored run-manifest root, refuses
+  automatic ticket-and-role claim reclamation, binds output capture to the
+  wrapper, and retains the full reservation for unusable telemetry.
+- Holds a configured machine-cap ledger lock across the provider interval,
+  validates and restores owned ledger state after mutation, and fails role
+  advancement when control state remains changed. This hardening changes no
+  public launcher command, schema, or compatibility category.
 - Keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 
 ## 1.1.0 — 2026-07-15

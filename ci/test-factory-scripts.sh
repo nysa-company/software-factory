@@ -1227,6 +1227,23 @@ for metric_case in huge-cost huge-turns; do
   fi
 done
 
+MISSING_TURNS_ROOT="$TMP/missing-turns-telemetry"
+write_envelope "$MISSING_TURNS_ROOT"
+write_ticket "$MISSING_TURNS_ROOT" T-236
+MISSING_TURNS_STATUS=0
+FACTORY_ROOT="$MISSING_TURNS_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  MOCK_RAW_METRICS="cost_usd=0.21" \
+  "$RUN_AGENT" --role planner --ticket T-236 -- "missing turns" \
+  > "$TMP/missing-turns-telemetry.out" 2>&1 || MISSING_TURNS_STATUS=$?
+if [[ "$MISSING_TURNS_STATUS" -eq 0 &&
+      "$(awk -F, '$3=="T-236" {print $7":"$8}' "$MISSING_TURNS_ROOT/factory/runtime-ledger.csv")" == "0:0.21" ]]; then
+  pass "known cost is retained when optional turn telemetry is absent"
+else
+  fail "known cost is retained when optional turn telemetry is absent" \
+    "status=$MISSING_TURNS_STATUS"
+fi
+
 CLAIM_MUTATION_ROOT="$TMP/claim-replacement"
 write_envelope "$CLAIM_MUTATION_ROOT"
 write_ticket "$CLAIM_MUTATION_ROOT" T-233

@@ -17,7 +17,34 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
-Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted.
+Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight durably initializes the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted.
+
+Each ticket-and-role run takes an atomic `mkdir` claim under
+`factory/.active-runs/` before it creates a manifest. A conflicting or
+abandoned claim always refuses the launch; ordinary launch never guesses that
+a PID is stale or reclaims the directory. Cleanup removes only the exact owner
+record it created. The wrapper also keeps provider output on an unlinked open
+descriptor until the provider exits, then publishes the ignored `.out`
+artifact. Missing, malformed, or oversized telemetry cannot reduce spend: a
+post-GO run keeps the full reservation and zero turns when its cost data is not
+usable.
+
+When a machine-wide cap is configured, its global ledger lock covers the full
+provider interval, not just reservation. The wrapper validates the ledger,
+persists a reservation, snapshots it, and verifies it before terminalization.
+If the ledger changes while the wrapper still owns the exact lock, the wrapper
+restores the snapshot; any persistent ledger, lock, claim, manifest, or
+registered-checkout mutation fails the role and prevents sequencer advancement.
+This intentionally serializes globally capped provider intervals.
+
+These controls provide portable crash/race handling and detect mutations that
+remain at the post-run check. They are not hostile-process isolation: the
+provider CLIs run unsandboxed as the same OS user, which can alter user-owned
+paths, signal the wrapper, or restore bytes before inspection. Preventing a
+malicious same-UID process from authoring control state requires an OS boundary
+such as a separate UID or enforced sandbox. The current wrapper therefore
+claims fail-closed detection and conservative accounting, not literal
+prevention against that actor.
 
 The in-repository `conformance/` product is the only implicit-pin exception. It
 must share the kit repository, Git common directory, and HEAD. This exception
@@ -87,7 +114,8 @@ leases remain required.
 be set only to `2`. At `2`, every sequencing and role launch requires the
 matching opaque record under `factory/.dispatch-leases/`. Claims are atomic,
 stale records are never reassigned automatically, and the global ledger lock
-continues to serialize budget reservations. Maintenance blocks claims and
+serializes complete provider intervals when a machine cap is configured.
+Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
 lease state after stopping recorded runs.
