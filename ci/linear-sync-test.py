@@ -2,7 +2,11 @@
 """Dependency-free regression tests for scripts/linear-sync.py."""
 
 import importlib.util
+import fcntl
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -18,6 +22,7 @@ SPEC.loader.exec_module(LINEAR)
 class FakeLinear:
     def __init__(self):
         self.calls = []
+        self.comments = []
         self.issues = {}
         self.projects = {}
         self.views = {}
@@ -115,6 +120,7 @@ class FakeLinear:
                 issue["labels"] = {"nodes": [{"id": item, "name": item} for item in data["labelIds"]]}
             return {"issueUpdate": {"success": True}}
         if "commentCreate" in query:
+            self.comments.append(variables["input"]["body"])
             return {"commentCreate": {"success": True}}
         raise AssertionError(f"Unhandled GraphQL operation: {query}")
 
@@ -160,6 +166,7 @@ class LinearSyncTest(unittest.TestCase):
         self.factory = self.root / "factory"
         (self.factory / "initiatives").mkdir(parents=True)
         (self.factory / "tickets").mkdir()
+        (self.factory / "runs").mkdir()
         (self.factory / "initiatives" / "I-001.md").write_text(
             "# First initiative\n\nStatus: planned\nTarget-Date: 2026-09-30\n\n"
             "## Summary\n\nDeliver the first outcome.\n"
@@ -202,14 +209,18 @@ class LinearSyncTest(unittest.TestCase):
 
     def test_allowed_operator_fields_are_ingested_before_push(self):
         self.reconcile()
+        before = (self.factory / "tickets" / "T-001.md").read_text()
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["priority"] = LINEAR.PRIORITIES["high"]
         issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
         self.reconcile()
-        text = (self.factory / "tickets" / "T-001.md").read_text()
-        self.assertIn("State: Ready", text)
-        self.assertIn("Priority: high", text)
+        self.assertEqual((self.factory / "tickets" / "T-001.md").read_text(), before)
+        operator = self.mapping["tickets"]["T-001"]["operator"]
+        self.assertEqual(operator["state"], "Ready")
+        self.assertEqual(operator["priority"], "high")
         self.assertEqual(issue["state"]["name"], "Ready")
+        self.reconcile()
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Ready")
 
     def test_legacy_issue_bootstraps_operator_fields_before_pull(self):
         self.reconcile()
@@ -238,9 +249,10 @@ class LinearSyncTest(unittest.TestCase):
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["state"] = {"id": config()["states"]["approved"], "name": "Approved"}
         self.reconcile()
-        text = path.read_text()
-        self.assertIn("State: Approved", text)
-        self.assertIn("Operator-Approval: Linear", text)
+        self.assertIn("State: Awaiting Approval", path.read_text())
+        operator = self.mapping["tickets"]["T-001"]["operator"]
+        self.assertEqual(operator["state"], "Approved")
+        self.assertEqual(operator["approval"], "Linear")
 
     def test_blocked_ticket_resumes_only_to_declared_state(self):
         self.reconcile()
@@ -253,7 +265,37 @@ class LinearSyncTest(unittest.TestCase):
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
         self.reconcile()
-        self.assertIn("State: Building", path.read_text())
+        self.assertIn("State: Blocked-Escalated", path.read_text())
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
+
+    def test_blocked_ticket_cannot_resume_to_evidence_sensitive_state(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Blocked-Escalated")
+            .replace("Initiative: I-001", "Resume-State: Awaiting Approval\nInitiative: I-001")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        previous = "Awaiting Approval"
+        for target in ("Awaiting Approval", "Approved", "Done"):
+            with self.subTest(target=target):
+                path.write_text(
+                    path.read_text().replace(
+                        f"Resume-State: {previous}", f"Resume-State: {target}"
+                    )
+                )
+                issue["state"] = {
+                    "id": config()["states"][LINEAR.normalize_state(target)],
+                    "name": target,
+                }
+                self.reconcile()
+                self.assertEqual(issue["state"]["name"], "Blocked-Escalated")
+                self.assertNotEqual(
+                    self.mapping["tickets"]["T-001"].get("operator", {}).get("state"),
+                    target,
+                )
+                previous = target
 
     def test_linear_project_membership_is_ingested(self):
         self.reconcile()
@@ -265,7 +307,21 @@ class LinearSyncTest(unittest.TestCase):
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["project"] = {"id": second_project}
         self.reconcile()
-        self.assertIn("Initiative: I-002", (self.factory / "tickets" / "T-001.md").read_text())
+        self.assertIn("Initiative: I-001", (self.factory / "tickets" / "T-001.md").read_text())
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["initiative"], "I-002")
+
+        issue["project"] = None
+        self.reconcile()
+        self.reconcile()
+        self.assertIsNone(self.mapping["tickets"]["T-001"]["operator"]["initiative"])
+        self.assertIsNone(issue["project"])
+        self.assertIn("Initiative: I-001", (self.factory / "tickets" / "T-001.md").read_text())
+
+        issue["project"] = {"id": "external-project"}
+        self.reconcile()
+        self.reconcile()
+        self.assertIsNone(self.mapping["tickets"]["T-001"]["operator"]["initiative"])
+        self.assertEqual(issue["project"], {"id": "external-project"})
 
     def test_factory_view_is_created_and_mapped(self):
         path = self.factory / "initiatives" / "I-001.md"
@@ -311,6 +367,31 @@ class LinearSyncTest(unittest.TestCase):
         updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
         self.assertEqual(updates_before, updates_after)
 
+    def test_review_bundle_posts_once_after_successful_narrator(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("State: Backlog", "State: Review"))
+        (self.factory / "tickets" / "T-001-bundle.md").write_text("Verified bundle\n")
+
+        self.reconcile()
+        self.assertFalse(self.mapping["tickets"]["T-001"]["bundle_posted"])
+        self.assertFalse(any(body.startswith("**Evidence bundle**") for body in self.fake.comments))
+
+        with (self.factory / "ledger.csv").open("a") as handle:
+            handle.write("2026-07-15,12:00:00,T-001,narrator,codex,3,1,0.10,0\n")
+        self.reconcile()
+        evidence = [
+            body for body in self.fake.comments if body.startswith("**Evidence bundle**")
+        ]
+        self.assertEqual(evidence, ["**Evidence bundle**\n\nVerified bundle\n"])
+        self.assertTrue(self.mapping["tickets"]["T-001"]["bundle_posted"])
+
+        self.reconcile()
+        self.assertEqual(
+            len([body for body in self.fake.comments if body.startswith("**Evidence bundle**")]),
+            1,
+        )
+
     def test_non_factory_labels_are_preserved(self):
         self.reconcile()
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
@@ -321,10 +402,31 @@ class LinearSyncTest(unittest.TestCase):
     def test_dry_run_changes_neither_files_nor_map(self):
         before_ticket = (self.factory / "tickets" / "T-001.md").read_text()
         before_map = json.dumps(self.mapping, sort_keys=True)
+        runtime = self.factory / "runtime-ledger.csv"
+        runtime.write_bytes(b"dry-run sentinel\n")
         self.reconcile(dry=True)
         self.assertEqual((self.factory / "tickets" / "T-001.md").read_text(), before_ticket)
         self.assertEqual(json.dumps(self.mapping, sort_keys=True), before_map)
         self.assertFalse(self.map_path.exists())
+        self.assertEqual(runtime.read_bytes(), b"dry-run sentinel\n")
+
+    def test_lock_contender_does_not_overwrite_map(self):
+        self.mapping["tickets"]["T-001"] = {
+            "operator": {"state": "Ready", "observed_at": "fresh"}
+        }
+        LINEAR.save_map(self.map_path, self.mapping)
+        before = self.map_path.read_bytes()
+        with (self.factory / ".linear-sync.lock").open("w") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/linear-sync.py"),
+                 "--factory-root", str(self.root)],
+                env={**os.environ, "LINEAR_API_KEY": "test"},
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.map_path.read_bytes(), before)
 
     def test_setup_creates_all_states_and_labels(self):
         mapping = LINEAR.load_map(self.map_path)
@@ -351,6 +453,103 @@ class LinearSyncTest(unittest.TestCase):
         migrated = LINEAR.load_map(self.map_path)
         self.assertEqual(migrated["initiatives"], {})
         self.assertEqual(migrated["_sync"], {})
+
+    def test_committed_ticket_branch_is_projected_without_checkout(self):
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.com"], check=True)
+        bundle = self.factory / "tickets" / "T-001-bundle.md"
+        bundle.write_text("Committed bundle.\n")
+        subprocess.run(["git", "-C", str(self.root), "add", "factory"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "main ticket"], check=True)
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("Build it.", "Dirty checkout contract."))
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Build it.", text)
+        self.assertNotIn("Dirty checkout contract.", text)
+        self.assertEqual(source, "HEAD")
+        bundle.write_text("Dirty bundle.\n")
+        bundle_text, bundle_source = LINEAR.committed_factory_file(
+            self.factory, "T-001", "T-001-bundle.md"
+        )
+        self.assertEqual(bundle_text, "Committed bundle.\n")
+        self.assertEqual(bundle_source, "HEAD")
+        subprocess.run(["git", "-C", str(self.root), "restore", str(path)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "restore", str(bundle)], check=True)
+        untracked = self.factory / "tickets" / "T-999.md"
+        untracked.write_text("# Untracked\n\nState: Ready\n")
+        self.assertEqual(LINEAR.committed_ticket(self.factory, "T-999"), (None, None))
+        self.reconcile()
+        self.assertNotIn("T-999", self.mapping["tickets"])
+        untracked.unlink()
+        untracked_bundle = self.factory / "tickets" / "T-999-bundle.md"
+        untracked_bundle.write_text("Untracked bundle.\n")
+        self.assertEqual(
+            LINEAR.committed_factory_file(
+                self.factory, "T-999", "T-999-bundle.md"
+            ),
+            (None, None),
+        )
+        untracked_bundle.unlink()
+        subprocess.run(["git", "-C", str(self.root), "switch", "-qc", "ticket/T-001"], check=True)
+        path.write_text(path.read_text().replace("Build it.", "Branch-authored contract."))
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qam", "ticket contract"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Branch-authored contract.", text)
+        self.assertEqual(source, "refs/heads/ticket/T-001")
+        self.assertIn("Build it.", path.read_text())
+
+    def test_pushed_ticket_branch_projects_without_fetch(self):
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "factory"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "main ticket"], check=True)
+        remote = self.root / ".git" / "test-origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "remote", "add", "origin", str(remote)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "switch", "-qc", "ticket/T-001"], check=True)
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("Build it.", "Pushed branch contract."))
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qam", "ticket contract"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "push", "-q", "origin", "HEAD:refs/heads/ticket/T-001"],
+            check=True,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.root), "rev-parse", "refs/remotes/origin/ticket/T-001"],
+                text=True,
+            ).strip(),
+            subprocess.check_output(
+                ["git", "-C", str(self.root), "rev-parse", "refs/heads/ticket/T-001"],
+                text=True,
+            ).strip(),
+        )
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Pushed branch contract.", text)
+        self.assertEqual(source, "refs/remotes/origin/ticket/T-001")
+
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "ticket/T-001"], check=True)
+        path.write_text(path.read_text().replace("Pushed branch contract.", "Updated branch contract."))
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qam", "updated contract"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Pushed branch contract.", text)
+        self.assertNotIn("Updated branch contract.", text)
+        self.assertEqual(source, "refs/remotes/origin/ticket/T-001")
+
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "ticket/T-001"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "push", "-q", "origin", "HEAD:refs/heads/ticket/T-001"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.root), "switch", "-q", "main"], check=True)
+        text, source = LINEAR.committed_ticket(self.factory, "T-001")
+        self.assertIn("Updated branch contract.", text)
+        self.assertEqual(source, "refs/remotes/origin/ticket/T-001")
 
     def test_failure_health_preserves_last_success(self):
         self.mapping["_sync"] = {"last_success_at": "2026-07-13T12:00:00+00:00"}

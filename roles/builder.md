@@ -21,6 +21,7 @@ Implementation commits on the ticket branch, after the test commits, ending with
 - **Fix rounds: no fix without a root cause.** When you return after a reviewer REQUEST CHANGES or a failing run, first write one sentence on the ticket log naming the root cause of each item ("X fails because Y"), then fix that cause. Never pattern-match a symptom away (retry loops, broadened catches, widened types, sleep calls) without stating why the symptom existed. If you cannot determine the root cause within the run, say so on the ticket and stop — that is an escalation, not a failure.
 - Your PR description lists: what changed, files touched, any flagged concerns. Plain language — the operator may read it.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
+- Commit all implementation and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 
 ## Worked example (regression check)
 

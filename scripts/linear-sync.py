@@ -23,6 +23,13 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from effective_ticket import (  # noqa: E402
+    apply_operator_fields,
+    committed_factory_file,
+    committed_ticket,
+)
+
 API_URL = "https://api.linear.app/graphql"
 KEY_FILE = Path.home() / ".hermes" / "secrets" / "linear-api-key"
 TEAM_NAME = "Software Factory"
@@ -194,14 +201,17 @@ def section(text, name):
 
 
 def parse_ticket(path):
-    text = path.read_text()
+    return parse_ticket_text(path.stem, path, path.read_text())
+
+
+def parse_ticket_text(ticket_id, path, text):
     first = re.match(r"^#\s+(.+)$", text.split("\n", 1)[0])
     state = normalize_state(field(text, "State", "backlog"))
     return {
-        "id": path.stem,
+        "id": ticket_id,
         "path": path,
         "text": text,
-        "title": first.group(1).strip() if first else path.stem,
+        "title": first.group(1).strip() if first else ticket_id,
         "state": state,
         "resume_state": normalize_state(field(text, "Resume-State", "")),
         "initiative": field(text, "Initiative"),
@@ -302,23 +312,47 @@ def record_failure(map_path, mapping, error):
 
 
 def ledger_stats(path):
+    if not isinstance(path, Path):
+        reader = csv.DictReader(path)
+    elif not path.is_file():
+        return {}
+    else:
+        with path.open() as handle:
+            return ledger_stats(handle)
     stats = {}
-    if not path.is_file():
-        return stats
-    with path.open() as handle:
-        for row in csv.DictReader(handle):
-            ticket_id = row.get("ticket", "").strip()
-            if not ticket_id:
-                continue
-            item = stats.setdefault(ticket_id, {"cost": 0.0, "runs": 0, "last_role": None})
-            try:
-                item["cost"] += float(row.get("cost_usd") or 0)
-            except ValueError:
-                pass
-            if row.get("exit_status", "").strip() == "0":
-                item["runs"] += 1
-                item["last_role"] = row.get("role", "").strip() or item["last_role"]
+    for row in reader:
+        ticket_id = row.get("ticket", "").strip()
+        if not ticket_id:
+            continue
+        item = stats.setdefault(
+            ticket_id,
+            {"cost": 0.0, "runs": 0, "last_role": None, "narrator_runs": 0},
+        )
+        try:
+            item["cost"] += float(row.get("cost_usd") or 0)
+        except ValueError:
+            pass
+        if row.get("exit_status", "").strip() == "0":
+            role = row.get("role", "").strip()
+            item["runs"] += 1
+            item["last_role"] = role or item["last_role"]
+            if role == "narrator":
+                item["narrator_runs"] += 1
     return stats
+
+
+def effective_ledger(factory_dir, dry=False):
+    helper = Path(__file__).resolve().parent / "ledger-view.py"
+    command = "print" if dry else "refresh"
+    result = subprocess.run(
+        [sys.executable, str(helper), command, "--factory-root", str(factory_dir.parent)],
+        check=True,
+        stdout=subprocess.PIPE if dry else subprocess.DEVNULL,
+        text=True,
+    )
+    if dry:
+        return result.stdout.splitlines()
+    return factory_dir / "runtime-ledger.csv"
 
 
 def build_description(ticket, stats):
@@ -503,17 +537,16 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                 if project.get("url") and entry.get("project_url") != project["url"] and not dry:
                     entry["project_url"] = project["url"]
                     save_map(map_path, mapping)
-                updated = initiative["text"]
                 remote_target = project.get("targetDate") or ""
-                if remote_target != initiative["target_date"]:
-                    updated = replace_field(updated, "Target-Date", remote_target)
-                if project.get("status"):
-                    updated = replace_field(updated, "Status", project["status"]["name"].lower())
-                if updated != initiative["text"]:
-                    if dry:
-                        log(f"{initiative_id}: DRY would ingest Project status/target date")
-                    else:
-                        atomic_write(initiative["path"], updated)
+                operator = {
+                    "status": (project.get("status") or {}).get("name", "").lower(),
+                    "target_date": remote_target,
+                    "observed_at": utc_now(),
+                }
+                if dry:
+                    log(f"{initiative_id}: DRY would update Project operator overlay")
+                else:
+                    entry["operator"] = operator
             continue
         if dry:
             log(f"{initiative_id}: DRY would create Linear Project")
@@ -598,7 +631,7 @@ def fetch_issue(key, issue_id):
     return gql(
         key,
         """query($id: String!) { issue(id: $id) {
-             id identifier title description priority
+             id identifier title description priority updatedAt
              state { id name } project { id } labels { nodes { id name } }
            } }""",
         {"id": issue_id},
@@ -612,44 +645,54 @@ def desired_labels(ticket, config):
     return [config["labels"][name] for name in names if name in config.get("labels", {})]
 
 
-def ingest_operator_fields(ticket, actual, mapping, dry):
-    updated = ticket["text"]
+def ingest_operator_fields(ticket, actual, mapping, entry, dry):
+    operator = dict(entry.get("operator", {}))
+    if operator.get("state") and normalize_state(operator.get("state_base", "")) != ticket["state"]:
+        operator.pop("state", None)
+        operator.pop("state_base", None)
+        operator.pop("approval", None)
     remote_priority = PRIORITY_NAMES.get(actual.get("priority", 0), "none")
-    if remote_priority != ticket["priority"]:
-        updated = replace_field(updated, "Priority", remote_priority)
+    operator["priority"] = remote_priority
 
     project_id = (actual.get("project") or {}).get("id")
     reverse_projects = {
         entry.get("project_id"): initiative_id
         for initiative_id, entry in mapping["initiatives"].items()
+        if entry.get("project_id")
     }
     remote_initiative = reverse_projects.get(project_id)
-    if remote_initiative and remote_initiative != ticket["initiative"]:
-        updated = replace_field(updated, "Initiative", remote_initiative)
+    operator["initiative"] = remote_initiative
 
     remote_state = normalize_state(actual["state"]["name"])
-    local_state = ticket["state"]
+    effective = parse_ticket_text(
+        ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)
+    )
+    local_state = effective["state"]
     allowed = (local_state, remote_state) in OPERATOR_TRANSITIONS
-    if local_state == "blocked-escalated" and remote_state == ticket["resume_state"] and remote_state in STATES:
+    if (
+        local_state == "blocked-escalated"
+        and remote_state == effective["resume_state"]
+        and remote_state in STATES
+        and remote_state not in {"awaiting approval", "approved", "done"}
+    ):
         allowed = True
     if allowed:
-        updated = replace_field(updated, "State", STATES[remote_state][0])
+        operator["state"] = STATES[remote_state][0]
+        operator["state_base"] = ticket["state"]
         if remote_state == "approved":
-            updated = replace_field(updated, "Operator-Approval", "Linear")
+            operator["approval"] = "Linear"
     elif remote_state != local_state:
         log(f"{ticket['id']}: ignoring non-operator transition {local_state} -> {remote_state}")
 
-    if updated != ticket["text"]:
-        if dry:
-            log(f"{ticket['id']}: DRY would ingest operator fields")
-        else:
-            atomic_write(ticket["path"], updated)
-        ticket = parse_ticket(ticket["path"]) if not dry else {**ticket, "text": updated}
-        if dry:
-            ticket["priority"] = field(updated, "Priority", "none").lower()
-            ticket["initiative"] = field(updated, "Initiative")
-            ticket["state"] = normalize_state(field(updated, "State", local_state))
-    return ticket
+    operator["linear_updated_at"] = actual.get("updatedAt")
+    operator["observed_at"] = utc_now()
+    if dry:
+        log(f"{ticket['id']}: DRY would update operator overlay")
+    else:
+        entry["operator"] = operator
+    return parse_ticket_text(
+        ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)
+    )
 
 
 def post_comment(key, issue_id, body, dry):
@@ -667,7 +710,7 @@ def post_comment(key, issue_id, body, dry):
 
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
     config = mapping["_config"]
-    stats = ledger_stats(factory_dir / "ledger.csv")
+    stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
         for initiative_id, entry in mapping["initiatives"].items()
@@ -677,7 +720,11 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
         if re.fullmatch(r"T-\d+", path.stem)
     )
     for path in ticket_paths:
-        ticket = parse_ticket(path)
+        text, source_ref = committed_ticket(factory_dir, path.stem)
+        if text is None:
+            log(f"{path.stem}: no committed ticket source, skipping")
+            continue
+        ticket = parse_ticket_text(path.stem, path, text)
         if ticket["state"] not in STATES:
             log(f"{ticket['id']}: unknown state '{ticket['state']}', skipping")
             continue
@@ -701,9 +748,11 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 entry["identifier"] = actual["identifier"]
                 save_map(map_path, mapping)
             if entry.get("operator_fields_initialized"):
-                ticket = ingest_operator_fields(ticket, actual, mapping, dry)
+                ticket = ingest_operator_fields(ticket, actual, mapping, entry, dry)
             else:
                 log(f"{ticket['id']}: bootstrapping operator fields from Markdown")
+            if not dry:
+                entry["source_ref"] = source_ref
             project_id = project_ids.get(ticket["initiative"])
             desired_state_id = config["states"].get(ticket["state"])
         else:
@@ -777,13 +826,22 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 save_map(map_path, mapping)
 
         bundle = factory_dir / "tickets" / f"{ticket['id']}-bundle.md"
+        bundle_text, _bundle_ref = committed_factory_file(
+            factory_dir, ticket["id"], bundle.name
+        )
         if (
             not entry.get("bundle_posted")
             and entry.get("issue_id")
-            and ticket["state"] in ("awaiting approval", "approved", "done")
-            and bundle.is_file()
+            and (
+                ticket["state"] in ("awaiting approval", "approved", "done")
+                or (
+                    ticket["state"] == "review"
+                    and stats.get(ticket["id"], {}).get("narrator_runs", 0) > 0
+                )
+            )
+            and bundle_text is not None
         ):
-            post_comment(key, entry["issue_id"], "**Evidence bundle**\n\n" + bundle.read_text(), dry)
+            post_comment(key, entry["issue_id"], "**Evidence bundle**\n\n" + bundle_text, dry)
             if not dry:
                 entry["bundle_posted"] = True
                 save_map(map_path, mapping)
@@ -814,7 +872,6 @@ def main():
         log(f"no factory/ under {args.factory_root} — nothing to do")
         return 0
     map_path = factory_dir / "linear-map.json"
-    mapping = load_map(map_path)
     key = api_key()
     if not key:
         log(f"no API key (set LINEAR_API_KEY or create {KEY_FILE}) — skipping cycle")
@@ -822,14 +879,18 @@ def main():
 
     try:
         with sync_lock(factory_dir, args.dry_run):
-            reconcile(key, factory_dir, mapping, map_path, args.setup, args.dry_run)
+            mapping = load_map(map_path)
+            try:
+                reconcile(key, factory_dir, mapping, map_path, args.setup, args.dry_run)
+            except Exception as error:
+                log(f"sync error (will retry next cycle): {error}")
+                if not args.dry_run:
+                    try:
+                        record_failure(map_path, mapping, error)
+                    except OSError:
+                        pass
     except Exception as error:
         log(f"sync error (will retry next cycle): {error}")
-        if not args.dry_run:
-            try:
-                record_failure(map_path, mapping, error)
-            except OSError:
-                pass
     return 0
 
 

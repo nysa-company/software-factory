@@ -108,6 +108,7 @@ assert_helper_confinement() {
     FACTORY_DISPATCH_LEASE_ID \
     FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
     FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN \
     PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
     GIT_INDEX_FILE GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT \
     GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
@@ -136,16 +137,47 @@ tree_for_directory() {
 
 write_active() {
   local sha="$1" tree="$2" release="$3" product="${4:-$LAUNCH_PRODUCT}"
-  local active="$KITS_ROOT/projects/launchtest/active.json" temporary
+  local active="$KITS_ROOT/projects/launchtest/active.json" temporary contract
+  local origin="" product_tree="" receipt_id=""
   release="$(cd "$release" && pwd -P)"
   product="$(cd "$product" && pwd -P)"
+  contract="$(python3 - "$release/integrations/hermes/contract.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["contract_version"])
+PY
+)"
+  if [[ "$contract" == "1.2.0" ]]; then
+    origin="$(git -C "$product" remote get-url --push origin)"
+    product_tree="$(git -C "$product" rev-parse 'HEAD^{tree}')"
+    receipt_id="$(printf '%s' "$sha|$tree|$product|$origin" | shasum -a 256 | awk '{print $1}')"
+    mkdir -p "$KITS_ROOT/receipts"
+    python3 - "$KITS_ROOT/receipts/$receipt_id.json" "$receipt_id" "$sha" \
+      "$tree" "$product" "$product_tree" "$origin" "$contract" <<'PY'
+import json, sys
+path, receipt_id, sha, tree, product, product_tree, origin, contract = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "receipt_id": receipt_id,
+        "status": "pass",
+        "project": "launchtest",
+        "kit_sha": sha,
+        "kit_tree": tree,
+        "product_path": product,
+        "product_origin": origin,
+        "product_tree": product_tree,
+        "contract_version": contract,
+    }, handle)
+    handle.write("\n")
+PY
+    chmod 600 "$KITS_ROOT/receipts/$receipt_id.json"
+  fi
   temporary="$active.tmp"
-  python3 - "$temporary" "$sha" "$tree" "$release" "$product" <<'PY'
+  python3 - "$temporary" "$sha" "$tree" "$release" "$product" \
+    "$contract" "$receipt_id" "$product_tree" <<'PY'
 import json
 import sys
 
-path, sha, tree, release, product = sys.argv[1:]
-contract = json.load(open(release + "/integrations/hermes/contract.json"))["contract_version"]
+path, sha, tree, release, product, contract, receipt_id, product_tree = sys.argv[1:]
 value = {
     "generation": 1,
     "project": "launchtest",
@@ -155,6 +187,9 @@ value = {
     "product_path": product,
     "release_path": release,
 }
+if receipt_id:
+    value["receipt_id"] = receipt_id
+    value["product_tree"] = product_tree
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(value, handle)
     handle.write("\n")
@@ -178,6 +213,7 @@ run_launcher() {
     FACTORY_PROBE_CODEX=INVALID:bypass \
     FACTORY_PROBE_CLAUDE_CODE=INVALID:bypass \
     FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_BIN="$TMP/agent-bypass" \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$TMP/caller-origin-bypass.git" \
     CODEX_PINNED=bypass MOCK_STATUS=0 PROJECTED_TICKET_USD=999999 \
     PYTHONHOME="$TMP/python-home-bypass" PYTHONPATH="$TMP/python-path-bypass" \
     PYTHONWARNINGS=error GIT_DIR="$TMP/git-dir-bypass" \
@@ -189,7 +225,7 @@ run_launcher() {
 }
 
 create_test_release() {
-  local release="$1" label="$2" action="$3" contract="${4:-1.1.0}"
+  local release="$1" label="$2" action="$3" contract="${4:-1.2.0}"
   mkdir -p "$release/integrations/hermes" "$release/scripts/lib" "$release/roles"
   printf '*.out\n' > "$release/.gitignore"
   printf 'tracked ignored release evidence\n' > "$release/tracked.out"
@@ -202,13 +238,11 @@ value["contract_version"] = contract
 path.write_text(json.dumps(value, indent=2) + "\n")
 PY
   cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
-  if [[ "$contract" == "1.0.0" ]]; then
-    python3 - "$release/scripts/factory-doctor-real.sh" <<'PY'
+  python3 - "$release/scripts/factory-doctor-real.sh" "$contract" <<'PY'
 import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-path.write_text(path.read_text().replace("1.1.0", "1.0.0"))
+path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
+path.write_text(path.read_text().replace("1.2.0", contract))
 PY
-  fi
   cp "$ROOT/scripts/dispatch-lease.sh" "$release/scripts/dispatch-lease.sh"
   cp "$ROOT/scripts/lib/dispatch-leases.sh" "$release/scripts/lib/dispatch-leases.sh"
   for role in planner spec-linter test-author builder reviewer narrator; do
@@ -420,7 +454,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.1.0"
+assert data["contract_version"] == "1.2.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -490,13 +524,17 @@ PY
 # Stable launcher: two physically separate releases and one mutable active record.
 SHA_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 SHA_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+SHA_V11="dddddddddddddddddddddddddddddddddddddddd"
 RELEASE_A="$KITS_ROOT/releases/$SHA_A"
 RELEASE_B="$KITS_ROOT/releases/$SHA_B"
+RELEASE_V11="$KITS_ROOT/releases/$SHA_V11"
 mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
 create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner" "1.0.0"
-create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR"
+create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR" "1.1.0"
+create_test_release "$RELEASE_V11" "RELEASE-V11" "RUN planner" "1.1.0"
 TREE_A="$(tree_for_directory "$RELEASE_A")"
 TREE_B="$(tree_for_directory "$RELEASE_B")"
+TREE_V11="$(tree_for_directory "$RELEASE_V11")"
 printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 REGISTRY_SENTINEL="$TMP/registry-was-sourced"
 cat > "$PROFILE/projects/launchtest.env" <<EOF
@@ -519,6 +557,10 @@ PY
 CLAIM_V1_RC=0
 run_launcher launchtest claim --ticket T-123 > "$TMP/claim-v1.out" 2>&1 || CLAIM_V1_RC=$?
 [[ "$CLAIM_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed dispatcher leases"
+TICKET_STATE_V1_RC=0
+run_launcher launchtest ticket-state --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
+  --action materialize --json > "$TMP/ticket-state-v1.out" 2>&1 || TICKET_STATE_V1_RC=$?
+[[ "$TICKET_STATE_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed ticket-state"
 [[ ! -e "$REGISTRY_SENTINEL" ]] || fail "launcher sourced arbitrary registry content"
 
 run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-a.json"
@@ -653,6 +695,29 @@ assert_no_secret "$TMP/launcher-doctor.json"
 DOCTOR_HELPER_ENV="$LAUNCH_PRODUCT/factory/doctor-helper.env"
 assert_release_metadata "$DOCTOR_HELPER_ENV" "$SHA_A" "$TREE_A" "$RELEASE_A"
 assert_helper_confinement "$DOCTOR_HELPER_ENV"
+
+# The upgraded standalone launcher must continue selecting an inherited 1.1
+# release without rewriting its public contract.
+printf '%s\n' "$SHA_V11" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_V11" "$TREE_V11" "$RELEASE_V11"
+run_launcher launchtest contract --json > "$TMP/launcher-contract-v11.json"
+run_launcher launchtest doctor --json > "$TMP/launcher-doctor-v11.json"
+run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-v11.json"
+run_launcher launchtest next-stage --ticket T-123 --json > "$TMP/next-v11.json"
+TICKET_STATE_V11_RC=0
+run_launcher launchtest ticket-state --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
+  --action materialize --json > "$TMP/ticket-state-v11.out" 2>&1 || TICKET_STATE_V11_RC=$?
+[[ "$TICKET_STATE_V11_RC" -eq 1 ]] || fail "contract 1.1 unexpectedly exposed ticket-state"
+PROJECT_LEDGER_V11_RC=0
+run_launcher launchtest project-ledger --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
+  --json > "$TMP/project-ledger-v11.out" 2>&1 || PROJECT_LEDGER_V11_RC=$?
+[[ "$PROJECT_LEDGER_V11_RC" -eq 1 ]] || fail "contract 1.1 unexpectedly exposed project-ledger"
+python3 - "$TMP/launcher-contract-v11.json" "$TMP/launcher-doctor-v11.json" \
+  "$TMP/preflight-v11.json" "$TMP/next-v11.json" <<'PY'
+import json, sys
+for path in sys.argv[1:]:
+    assert json.load(open(path, encoding="utf-8"))["contract_version"] == "1.1.0"
+PY
 
 printf '%s\n' "$SHA_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 write_active "$SHA_B" "$TREE_B" "$RELEASE_B"
@@ -849,9 +914,21 @@ git -C "$LAUNCH_PRODUCT" init -b main >/dev/null 2>&1
 git -C "$LAUNCH_PRODUCT" config user.email "hermes-contract@test.local"
 git -C "$LAUNCH_PRODUCT" config user.name "hermes-contract-test"
 printf 'launcher worktree fixture\n' > "$LAUNCH_PRODUCT/README.md"
+cat > "$LAUNCH_PRODUCT/.gitignore" <<'EOF'
+factory/*-helper.env
+factory/runs/
+factory/runtime-ledger.csv
+factory/.active-runs/
+factory/.dispatch-leases/
+factory/test-adapter-gate
+EOF
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add -A
 git -C "$LAUNCH_PRODUCT" commit -qm "seed launcher worktree"
+LAUNCH_PRODUCT_REMOTE="$TMP/launch-product.git"
+git init --bare -q "$LAUNCH_PRODUCT_REMOTE"
+git -C "$LAUNCH_PRODUCT" remote add origin "$LAUNCH_PRODUCT_REMOTE"
+git -C "$LAUNCH_PRODUCT" push -q -u origin main
 REORDER_WORKTREE="$TMP/reorder-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-456 "$REORDER_WORKTREE"
 REORDER_WORKTREE_PHYS="$(cd "$REORDER_WORKTREE" && pwd -P)"
@@ -862,7 +939,21 @@ WRONG_TICKET_WORKTREE="$TMP/wrong-ticket-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-999 "$WRONG_TICKET_WORKTREE"
 WRONG_TICKET_WORKTREE_PHYS="$(cd "$WRONG_TICKET_WORKTREE" && pwd -P)"
 RELEASE_B_PHYS="$(cd "$RELEASE_B" && pwd -P)"
+RELEASE_A_PHYS="$(cd "$RELEASE_A" && pwd -P)"
 LAUNCH_PRODUCT_PHYS="$(cd "$LAUNCH_PRODUCT" && pwd -P)"
+# Compatibility smoke: the new launcher can still run a mock role selected
+# from an active 1.0 release.
+printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_A" "$TREE_A" "$RELEASE_A"
+run_launcher launchtest run \
+  --role builder \
+  --ticket T-123 \
+  --prompt-file "$RELEASE_A_PHYS/roles/builder.md" \
+  --workdir "$RUN_WORKTREE_PHYS" \
+  -- "1.0 compatibility smoke" > "$TMP/run-v1.txt"
+grep -qF "RUN RELEASE-A" "$TMP/run-v1.txt" || fail "active contract 1.0 mock role failed"
+printf '%s\n' "$SHA_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_B" "$TREE_B" "$RELEASE_B"
 run_launcher launchtest run \
   --role builder \
   --ticket T-123 \
@@ -915,6 +1006,7 @@ expect_bad_run prompt-secret-file \
   --role builder --ticket T-123 \
   --prompt-file "$LAUNCH_PRODUCT_PHYS/secret-prompt.txt" \
   --workdir "$RUN_WORKTREE_PHYS" -- task
+rm -f "$LAUNCH_PRODUCT_PHYS/secret-prompt.txt"
 expect_bad_run empty-task \
   --role builder --ticket T-123 \
   --prompt-file "$RELEASE_B_PHYS/roles/builder.md" \
@@ -1053,7 +1145,7 @@ cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh reorder-test-fixes.sh dispatch-lease.sh; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py reorder-test-fixes.sh dispatch-lease.sh; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 # Keep the production mock adapter's confidentiality assertion, but wrap it with
@@ -1126,16 +1218,152 @@ printf '%s\n' \
   > "$LAUNCH_PRODUCT/factory/ledger.csv"
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'MAX_CONCURRENT_TICKETS=2' \
   > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+git -C "$LAUNCH_PRODUCT" add factory/tickets/T-77{7,8,9}.md \
+  factory/tickets/T-780.md factory/initiatives/I-777.md \
+  factory/ENVELOPE.env factory/ledger.csv factory/PROJECT.env factory/KIT_PIN
+git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
+git -C "$LAUNCH_PRODUCT" push -q origin main
 write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
-run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
-REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
-run_launcher launchtest claim --ticket T-778 > "$TMP/real-claim-778.json"
-REAL_LEASE_778="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-778.json")"
+ACTIVE_SNAPSHOT_TMP="$(cd "$TMP/launcher-tmp" && pwd -P)"
+ACTIVE_SNAPSHOT_MARKER="$ACTIVE_SNAPSHOT_TMP/active-parsed.marker"
+ACTIVE_SNAPSHOT_GATE="$ACTIVE_SNAPSHOT_TMP/active-parsed.gate"
+export FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER="$ACTIVE_SNAPSHOT_MARKER"
+export FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE="$ACTIVE_SNAPSHOT_GATE"
+run_launcher launchtest contract --json > "$TMP/active-snapshot.json" &
+ACTIVE_SNAPSHOT_PID=$!
+BACKGROUND_PIDS="$BACKGROUND_PIDS $ACTIVE_SNAPSHOT_PID"
+for _try in $(seq 1 200); do
+  [[ -e "$ACTIVE_SNAPSHOT_MARKER" ]] && break
+  sleep 0.02
+done
+[[ -e "$ACTIVE_SNAPSHOT_MARKER" ]] || fail "active snapshot race never reached the parse gate"
+python3 - "$KITS_ROOT/projects/launchtest/active.json" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["receipt_id"] = "0" * 64
+value["product_tree"] = "0" * 40
+temporary = path.with_suffix(".race")
+temporary.write_text(json.dumps(value) + "\n")
+os.replace(temporary, path)
+PY
+touch "$ACTIVE_SNAPSHOT_GATE"
+ACTIVE_SNAPSHOT_RC=0
+wait "$ACTIVE_SNAPSHOT_PID" || ACTIVE_SNAPSHOT_RC=$?
+BACKGROUND_PIDS=""
+unset FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE
+rm -f "$ACTIVE_SNAPSHOT_MARKER" "$ACTIVE_SNAPSHOT_GATE"
+[[ "$ACTIVE_SNAPSHOT_RC" -eq 0 ]] || fail "active snapshot changed after its single parse"
+write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
+ACTIVE_RECEIPT_ID="$(python3 - "$KITS_ROOT/projects/launchtest/active.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["receipt_id"])
+PY
+)"
+ACTIVE_RECEIPT="$KITS_ROOT/receipts/$ACTIVE_RECEIPT_ID.json"
+cp "$ACTIVE_RECEIPT" "$ACTIVE_RECEIPT.saved"
+python3 - "$ACTIVE_RECEIPT" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["project"] = "tampered-project"
+path.write_text(json.dumps(value) + "\n")
+PY
+chmod 600 "$ACTIVE_RECEIPT"
+TAMPERED_RECEIPT_RC=0
+run_launcher launchtest contract --json > "$TMP/tampered-receipt.out" 2>&1 ||
+  TAMPERED_RECEIPT_RC=$?
+[[ "$TAMPERED_RECEIPT_RC" -eq 1 ]] || fail "launcher accepted a mismatched active receipt binding"
+mv "$ACTIVE_RECEIPT.saved" "$ACTIVE_RECEIPT"
+cp "$ACTIVE_RECEIPT" "$ACTIVE_RECEIPT.saved"
+python3 - "$ACTIVE_RECEIPT" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["product_tree"] = "0" * 40
+path.write_text(json.dumps(value) + "\n")
+PY
+chmod 600 "$ACTIVE_RECEIPT"
+TAMPERED_PRODUCT_TREE_RC=0
+run_launcher launchtest contract --json > "$TMP/tampered-product-tree.out" 2>&1 ||
+  TAMPERED_PRODUCT_TREE_RC=$?
+[[ "$TAMPERED_PRODUCT_TREE_RC" -eq 1 ]] || fail "launcher accepted a receipt for a different product tree"
+mv "$ACTIVE_RECEIPT.saved" "$ACTIVE_RECEIPT"
+NO_WORKDIR_V12_RC=0
+run_launcher launchtest next-stage --ticket T-777 --json \
+  > "$TMP/next-stage-v12-no-workdir.out" 2>&1 || NO_WORKDIR_V12_RC=$?
+[[ "$NO_WORKDIR_V12_RC" -eq 1 ]] || fail "contract 1.2 accepted next-stage without workdir"
+RELEASE_C_PHYS="$(cd "$RELEASE_C" && pwd -P)"
+REAL_RUN_WORKTREE="$TMP/real-run-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-777 "$REAL_RUN_WORKTREE"
+REAL_RUN_WORKTREE_PHYS="$(cd "$REAL_RUN_WORKTREE" && pwd -P)"
+[[ -z "$(git -C "$REAL_RUN_WORKTREE_PHYS" ls-remote --heads origin \
+  refs/heads/ticket/T-777)" ]] || fail "fresh ticket branch already existed remotely"
+REAL_RUN_WORKTREE_778="$TMP/real-run-worktree-778"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-778 "$REAL_RUN_WORKTREE_778"
+REAL_RUN_WORKTREE_778_PHYS="$(cd "$REAL_RUN_WORKTREE_778" && pwd -P)"
+REAL_RUN_WORKTREE_779="$TMP/real-run-worktree-779"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-779 "$REAL_RUN_WORKTREE_779"
+REAL_RUN_WORKTREE_779_PHYS="$(cd "$REAL_RUN_WORKTREE_779" && pwd -P)"
+REAL_RUN_WORKTREE_780="$TMP/real-run-worktree-780"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-780 "$REAL_RUN_WORKTREE_780"
+REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
+
+printf '\nUncommitted-Evidence: forged\n' >> \
+  "$REAL_RUN_WORKTREE_PHYS/factory/tickets/T-777.md"
+DIRTY_PREFLIGHT_RC=0
+run_launcher launchtest preflight --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  DIRTY_PREFLIGHT_RC=$?
+DIRTY_NEXT_STAGE_RC=0
+run_launcher launchtest next-stage --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  DIRTY_NEXT_STAGE_RC=$?
+[[ "$DIRTY_PREFLIGHT_RC" -eq 1 && "$DIRTY_NEXT_STAGE_RC" -eq 1 ]] ||
+  fail "contract 1.2 accepted dirty tracked ticket evidence"
+git -C "$REAL_RUN_WORKTREE_PHYS" restore factory/tickets/T-777.md
+git -C "$REAL_RUN_WORKTREE_PHYS" config status.showUntrackedFiles no
+touch "$REAL_RUN_WORKTREE_PHYS/untracked-evidence.txt"
+DIRTY_UNTRACKED_RC=0
+run_launcher launchtest next-stage --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  DIRTY_UNTRACKED_RC=$?
+[[ "$DIRTY_UNTRACKED_RC" -eq 1 ]] ||
+  fail "contract 1.2 accepted hidden untracked ticket evidence"
+rm "$REAL_RUN_WORKTREE_PHYS/untracked-evidence.txt"
+git -C "$REAL_RUN_WORKTREE_PHYS" config --unset status.showUntrackedFiles
+WORKTREE_INDEX="$(git -C "$REAL_RUN_WORKTREE_PHYS" rev-parse --path-format=absolute \
+  --git-path index)"
+cp "$WORKTREE_INDEX" "$TMP/ticket-index.saved"
+printf 'corrupt index\n' > "$WORKTREE_INDEX"
+CORRUPT_INDEX_RC=0
+run_launcher launchtest next-stage --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  CORRUPT_INDEX_RC=$?
+[[ "$CORRUPT_INDEX_RC" -eq 1 ]] ||
+  fail "contract 1.2 accepted an uninspectable ticket worktree"
+mv "$TMP/ticket-index.saved" "$WORKTREE_INDEX"
+
+run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state.json"
+BOOTSTRAP_HEAD="$(git -C "$REAL_RUN_WORKTREE_PHYS" rev-parse HEAD)"
+[[ "$(git --git-dir="$LAUNCH_PRODUCT_REMOTE" rev-parse refs/heads/ticket/T-777)" == \
+     "$BOOTSTRAP_HEAD" &&
+   "$(git -C "$REAL_RUN_WORKTREE_PHYS" rev-parse \
+     refs/remotes/origin/ticket/T-777)" == "$BOOTSTRAP_HEAD" ]] ||
+  fail "ticket-state did not create and verify the fresh remote ticket branch"
+run_launcher launchtest ticket-state --ticket T-778 --workdir "$REAL_RUN_WORKTREE_778_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state-778.json"
+run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTREE_779_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state-779.json"
+run_launcher launchtest ticket-state --ticket T-780 --workdir "$REAL_RUN_WORKTREE_780_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state-780.json"
 
 assert_bad_real_preflight() {
   local label="$1" rc=0
   shift
-  run_launcher launchtest preflight --ticket T-777 "$@" --json \
+  run_launcher launchtest preflight --ticket T-777 "$@" \
+    --workdir "$REAL_RUN_WORKTREE_PHYS" --json \
     > "$TMP/real-preflight-$label.json" || rc=$?
   [[ "$rc" -eq 1 ]] || fail "real preflight accepted $label dispatcher lease"
   python3 - "$TMP/real-preflight-$label.json" <<'PY'
@@ -1148,25 +1376,7 @@ PY
 assert_bad_real_preflight missing
 assert_bad_real_preflight wrong \
   --lease 0000000000000000000000000000000000000000000000000000000000000000
-run_launcher launchtest next-stage --ticket T-777 --lease "$REAL_LEASE_ID" --json > "$TMP/real-next-stage.json"
-python3 - "$TMP/real-next-stage.json" <<'PY'
-import json
-import sys
 
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data["status"] == "ok"
-assert data["action"] == "RUN"
-assert data["detail"] == "planner"
-assert data["output"] == "RUN planner\n"
-PY
-
-RELEASE_C_PHYS="$(cd "$RELEASE_C" && pwd -P)"
-REAL_RUN_WORKTREE="$TMP/real-run-worktree"
-git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-777 "$REAL_RUN_WORKTREE"
-REAL_RUN_WORKTREE_PHYS="$(cd "$REAL_RUN_WORKTREE" && pwd -P)"
-REAL_RUN_WORKTREE_778="$TMP/real-run-worktree-778"
-git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-778 "$REAL_RUN_WORKTREE_778"
-REAL_RUN_WORKTREE_778_PHYS="$(cd "$REAL_RUN_WORKTREE_778" && pwd -P)"
 mkdir -p "$TEST_HOME/.factory/bin"
 cat > "$TEST_HOME/.factory/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
@@ -1208,6 +1418,120 @@ assert_bad_real_run_lease() {
   ! grep -qF "mock adapter ran task" "$TMP/real-run-$label.out" ||
     fail "real run reached adapter with $label dispatcher lease"
 }
+
+# First prove that two concurrent reservations cannot exceed one dollar of
+# capacity. Runtime manifests, not the projection-only durable ledger, are the
+# authoritative evidence under contract 1.2.
+run_launcher launchtest claim --ticket T-779 > "$TMP/real-claim-779.json"
+run_launcher launchtest claim --ticket T-780 > "$TMP/real-claim-780.json"
+REAL_LEASE_779="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-779.json")"
+REAL_LEASE_780="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-780.json")"
+run_launcher launchtest preflight --ticket T-779 --lease "$REAL_LEASE_779" \
+  --workdir "$REAL_RUN_WORKTREE_779_PHYS" --json > "$TMP/real-preflight-779.json"
+run_launcher launchtest preflight --ticket T-780 --lease "$REAL_LEASE_780" \
+  --workdir "$REAL_RUN_WORKTREE_780_PHYS" --json > "$TMP/real-preflight-780.json"
+run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTREE_779_PHYS" \
+  --action transition --state Planning --json > "$TMP/real-ticket-transition-779.json"
+run_launcher launchtest ticket-state --ticket T-780 --workdir "$REAL_RUN_WORKTREE_780_PHYS" \
+  --action transition --state Planning --json > "$TMP/real-ticket-transition-780.json"
+cp "$LAUNCH_PRODUCT/factory/ENVELOPE.env" "$TMP/envelope-ten.env"
+sed 's/DAILY_CAP_USD=10.00/DAILY_CAP_USD=1.00/' \
+  "$TMP/envelope-ten.env" > "$LAUNCH_PRODUCT/factory/ENVELOPE.env"
+rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+run_launcher launchtest run --role planner --ticket T-779 --lease "$REAL_LEASE_779" \
+  --prompt-file "$RELEASE_C_PHYS/roles/planner.md" --workdir "$REAL_RUN_WORKTREE_779_PHYS" \
+  -- budget-779 > "$TMP/budget-779.out" 2>&1 &
+BUDGET_779_PID=$!
+BACKGROUND_PIDS="$BACKGROUND_PIDS $BUDGET_779_PID"
+run_launcher launchtest run --role planner --ticket T-780 --lease "$REAL_LEASE_780" \
+  --prompt-file "$RELEASE_C_PHYS/roles/planner.md" --workdir "$REAL_RUN_WORKTREE_780_PHYS" \
+  -- budget-780 > "$TMP/budget-780.out" 2>&1 &
+BUDGET_780_PID=$!
+BACKGROUND_PIDS="$BACKGROUND_PIDS $BUDGET_780_PID"
+for _try in $(seq 1 1000); do
+  started=0
+  [[ -e "$REAL_RUN_WORKTREE_779_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
+  [[ -e "$REAL_RUN_WORKTREE_780_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
+  [[ "$started" -eq 1 ]] && break
+  sleep 0.02
+done
+[[ "$started" -eq 1 ]] || fail "near-cap fixture did not reach exactly one task adapter"
+BUDGET_779_RC=0 BUDGET_780_RC=0
+if [[ -e "$REAL_RUN_WORKTREE_779_PHYS/.factory-test-adapter-started" ]]; then
+  wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
+  if [[ "$BUDGET_780_RC" -ne 5 ]]; then
+    awk '{print}' "$TMP/budget-780.out" >&2
+    fail "near-cap loser did not refuse reservation (status $BUDGET_780_RC)"
+  fi
+  touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+  wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
+else
+  wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
+  if [[ "$BUDGET_779_RC" -ne 5 ]]; then
+    awk '{print}' "$TMP/budget-779.out" >&2
+    fail "near-cap loser did not refuse reservation (status $BUDGET_779_RC)"
+  fi
+  touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+  wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
+fi
+BACKGROUND_PIDS=""
+rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+if [[ ! ( "$BUDGET_779_RC" -eq 0 && "$BUDGET_780_RC" -eq 5 ) &&
+      ! ( "$BUDGET_779_RC" -eq 5 && "$BUDGET_780_RC" -eq 0 ) ]]; then
+  printf 'near-cap statuses: T-779=%s T-780=%s\n' "$BUDGET_779_RC" "$BUDGET_780_RC" >&2
+  sed 's/^/T-779: /' "$TMP/budget-779.out" >&2
+  sed 's/^/T-780: /' "$TMP/budget-780.out" >&2
+  fail "concurrent near-cap reservations were not atomic"
+fi
+python3 - "$LAUNCH_PRODUCT/factory/runs" <<'PY'
+import sys
+from pathlib import Path
+
+records = []
+for path in Path(sys.argv[1]).glob("*.meta"):
+    values = dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+    if values.get("ticket") in {"T-779", "T-780"}:
+        records.append(values)
+assert len(records) == 2, records
+assert sum(value.get("go_issued") == "1" for value in records) == 1, records
+assert sorted(value.get("accounting_state") for value in records) == ["completed", "launch_void"], records
+PY
+run_launcher launchtest release --ticket T-779 --lease "$REAL_LEASE_779" >/dev/null
+run_launcher launchtest release --ticket T-780 --lease "$REAL_LEASE_780" >/dev/null
+cp "$TMP/envelope-ten.env" "$LAUNCH_PRODUCT/factory/ENVELOPE.env"
+
+# Then prove inherited two-ticket execution and failure isolation with the
+# normal cap restored and the exact contract 1.2 worktrees supplied.
+run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
+REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
+run_launcher launchtest claim --ticket T-778 > "$TMP/real-claim-778.json"
+REAL_LEASE_778="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-778.json")"
+if ! run_launcher launchtest preflight --ticket T-777 --lease "$REAL_LEASE_ID" \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-preflight.json"; then
+  awk '{print}' "$TMP/real-preflight.json" >&2
+  git -C "$LAUNCH_PRODUCT" status --short >&2
+  git -C "$REAL_RUN_WORKTREE_PHYS" status --short >&2
+  fail "contract 1.2 sealed preflight failed"
+fi
+run_launcher launchtest preflight --ticket T-778 --lease "$REAL_LEASE_778" \
+  --workdir "$REAL_RUN_WORKTREE_778_PHYS" --json > "$TMP/real-preflight-778.json"
+run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
+  --action transition --state Planning --json > "$TMP/real-ticket-transition.json"
+run_launcher launchtest ticket-state --ticket T-778 --workdir "$REAL_RUN_WORKTREE_778_PHYS" \
+  --action transition --state Planning --json > "$TMP/real-ticket-transition-778.json"
+run_launcher launchtest next-stage --ticket T-777 --lease "$REAL_LEASE_ID" \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-next-stage.json"
+python3 - "$TMP/real-ticket-transition.json" "$TMP/real-preflight.json" \
+  "$TMP/real-next-stage.json" <<'PY'
+import json, sys
+state, preflight, stage = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
+assert state["ticket"] == "T-777" and state["state"] == "Planning"
+assert preflight["status"] == "ok"
+assert stage["status"] == "ok"
+assert stage["action"] == "RUN"
+assert stage["detail"] == "planner"
+assert stage["output"] == "RUN planner\n"
+PY
 assert_bad_real_run_lease missing
 assert_bad_real_run_lease wrong \
   --lease 0000000000000000000000000000000000000000000000000000000000000000
@@ -1258,7 +1582,7 @@ REAL_MANIFEST="$(awk -F= '$1=="ticket" && $2=="T-777" {print FILENAME}' \
   "$LAUNCH_PRODUCT/factory/runs/"*.meta | tail -1)"
 grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release SHA"
 grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release tree"
-grep -qF "contract_version=1.1.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
+grep -qF "contract_version=1.2.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
 grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" || fail "real sealed run manifest omitted physical release path"
 grep -qF "role=planner" "$REAL_MANIFEST" || fail "real sealed run did not use the sequencer-authorized role"
 grep -qF "adapter=mock" "$REAL_MANIFEST" || fail "isolated launcher did not enforce the mock adapter"
@@ -1275,56 +1599,29 @@ fi
 run_launcher launchtest release --ticket T-777 --lease "$REAL_LEASE_ID" >/dev/null
 run_launcher launchtest release --ticket T-778 --lease "$REAL_LEASE_778" >/dev/null
 
-# With one dollar of daily capacity, two concurrent one-dollar reservations
-# must produce exactly one task submission even though two ticket leases exist.
-sed 's/DAILY_CAP_USD=10.00/DAILY_CAP_USD=1.00/' \
-  "$LAUNCH_PRODUCT/factory/ENVELOPE.env" > "$TMP/near-cap.env"
-mv "$TMP/near-cap.env" "$LAUNCH_PRODUCT/factory/ENVELOPE.env"
-head -1 "$LAUNCH_PRODUCT/factory/ledger.csv" > "$TMP/ledger.header"
-cp "$TMP/ledger.header" "$LAUNCH_PRODUCT/factory/ledger.csv"
-REAL_RUN_WORKTREE_779="$TMP/real-run-worktree-779"
-REAL_RUN_WORKTREE_780="$TMP/real-run-worktree-780"
-git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-779 "$REAL_RUN_WORKTREE_779"
-git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-780 "$REAL_RUN_WORKTREE_780"
-REAL_RUN_WORKTREE_779_PHYS="$(cd "$REAL_RUN_WORKTREE_779" && pwd -P)"
-REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
-run_launcher launchtest claim --ticket T-779 > "$TMP/real-claim-779.json"
-run_launcher launchtest claim --ticket T-780 > "$TMP/real-claim-780.json"
-REAL_LEASE_779="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-779.json")"
-REAL_LEASE_780="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-780.json")"
-rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
-run_launcher launchtest run --role planner --ticket T-779 --lease "$REAL_LEASE_779" \
-  --prompt-file "$RELEASE_C_PHYS/roles/planner.md" --workdir "$REAL_RUN_WORKTREE_779_PHYS" \
-  -- budget-779 > "$TMP/budget-779.out" 2>&1 &
-BUDGET_779_PID=$!
-BACKGROUND_PIDS="$BACKGROUND_PIDS $BUDGET_779_PID"
-run_launcher launchtest run --role planner --ticket T-780 --lease "$REAL_LEASE_780" \
-  --prompt-file "$RELEASE_C_PHYS/roles/planner.md" --workdir "$REAL_RUN_WORKTREE_780_PHYS" \
-  -- budget-780 > "$TMP/budget-780.out" 2>&1 &
-BUDGET_780_PID=$!
-BACKGROUND_PIDS="$BACKGROUND_PIDS $BUDGET_780_PID"
-for _try in $(seq 1 1000); do
-  started=0
-  [[ -e "$REAL_RUN_WORKTREE_779_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
-  [[ -e "$REAL_RUN_WORKTREE_780_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
-  [[ "$started" -eq 1 ]] && break
-  sleep 0.02
-done
-[[ "$started" -eq 1 ]] || fail "near-cap fixture did not reach exactly one task adapter"
-touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
-BUDGET_779_RC=0 BUDGET_780_RC=0
-wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
-wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
-BACKGROUND_PIDS=""
-rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
-if [[ ! ( "$BUDGET_779_RC" -eq 0 && "$BUDGET_780_RC" -eq 5 ) &&
-      ! ( "$BUDGET_779_RC" -eq 5 && "$BUDGET_780_RC" -eq 0 ) ]]; then
-  fail "concurrent near-cap reservations were not atomic"
-fi
-[[ "$(awk 'END {print NR}' "$LAUNCH_PRODUCT/factory/ledger.csv")" -eq 2 ]] ||
-  fail "near-cap concurrency submitted more than one task"
-run_launcher launchtest release --ticket T-779 --lease "$REAL_LEASE_779" >/dev/null
-run_launcher launchtest release --ticket T-780 --lease "$REAL_LEASE_780" >/dev/null
+REAL_CLOSEOUT_WORKTREE="$TMP/real-closeout-worktree"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b chore/t777-closeout \
+  "$REAL_CLOSEOUT_WORKTREE" origin/main
+REAL_CLOSEOUT_WORKTREE_PHYS="$(cd "$REAL_CLOSEOUT_WORKTREE" && pwd -P)"
+run_launcher launchtest project-ledger --ticket T-777 \
+  --workdir "$REAL_CLOSEOUT_WORKTREE_PHYS" --json > "$TMP/real-project-ledger.json"
+python3 - "$TMP/real-project-ledger.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["schema"] == "nysa.software-factory.ledger-projection/v1"
+assert data["status"] == "ok" and data["ticket"] == "T-777"
+assert data["row_count"] >= 1
+PY
+PROJECT_WRONG_BRANCH_RC=0
+run_launcher launchtest project-ledger --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json \
+  > "$TMP/project-ledger-wrong-branch.out" 2>&1 || PROJECT_WRONG_BRANCH_RC=$?
+[[ "$PROJECT_WRONG_BRANCH_RC" -eq 1 ]] || fail "project-ledger accepted a ticket branch"
+PROJECT_DIRTY_RC=0
+run_launcher launchtest project-ledger --ticket T-777 \
+  --workdir "$REAL_CLOSEOUT_WORKTREE_PHYS" --json \
+  > "$TMP/project-ledger-dirty.out" 2>&1 || PROJECT_DIRTY_RC=$?
+[[ "$PROJECT_DIRTY_RC" -eq 1 ]] || fail "project-ledger accepted a dirty close-out worktree"
 [[ "$(cksum "$TMP/bypass-envelope.env")" == "$BYPASS_ENVELOPE_BEFORE" ]] ||
   fail "caller FACTORY_ENVELOPE bypass was consumed or modified"
 [[ "$(cksum "$TMP/bypass-global.env")" == "$BYPASS_GLOBAL_BEFORE" ]] ||
@@ -1344,7 +1641,7 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.1.0"
+assert contract["contract_version"] == "1.2.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
@@ -1366,6 +1663,24 @@ assert commands["contract"]["arguments"] == ["--json"]
 assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
 assert commands["preflight"]["arguments"][-1] == "--json"
 assert commands["next-stage"]["arguments"][-1] == "--json"
+assert commands["preflight"]["arguments"][-3:] == [
+    "--workdir", "<absolute-product-worktree>", "--json"
+]
+assert commands["next-stage"]["arguments"][-3:] == [
+    "--workdir", "<absolute-product-worktree>", "--json"
+]
+assert commands["ticket-state"]["arguments"] == [
+    "--ticket", "<T-NNN>", "--workdir", "<absolute-product-worktree>",
+    "--action", "<materialize|transition>", "[--state <ticket-state>]", "--json"
+]
+assert commands["ticket-state"]["transition_states"] == [
+    "Planning", "Building", "Review", "Blocked-Escalated"
+]
+assert commands["project-ledger"]["arguments"] == [
+    "--ticket", "<T-NNN>", "--workdir", "<absolute-closeout-worktree>", "--json"
+]
+assert commands["project-ledger"]["output_schema"] == \
+    "nysa.software-factory.ledger-projection/v1"
 assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
@@ -1408,6 +1723,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_RELEASE_TREE": "active record kit_tree",
     "FACTORY_RELEASE_PATH": "resolved physical release path",
     "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+    "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2 certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
 }
 assert contract["launcher"]["helper_environment_allowlist"] == [
@@ -1419,6 +1735,7 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_RELEASE_TREE",
     "FACTORY_RELEASE_PATH",
     "FACTORY_RELEASE_CONTRACT_VERSION",
+    "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
     "GH_TOKEN",
 ]
@@ -1442,6 +1759,12 @@ assert contract["launcher"]["active_record"]["required_fields"] == [
     "product_path",
     "release_path",
 ]
+assert contract["launcher"]["active_record"]["contract_1_2_required_fields"] == [
+    "receipt_id",
+    "product_tree",
+]
+assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
+assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 
 integration = os.path.join(root, "integrations", "hermes")
 required = [
@@ -1460,7 +1783,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.1.0" in changelog and "## 1.0.0" in changelog
+assert "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [
@@ -1472,13 +1795,38 @@ for relative in [
     assert " contract --json" in text
     assert " doctor --json" in text
     assert not re.search(r"(?:^|\s)(?:~/[^ ]*/)?scripts/(?:run-agent|preflight|next-stage)\.sh", text)
+for relative in (
+    "README.md",
+    "docs/runbooks/operator.md",
+    "conformance/SHAKEDOWN-REPORT.md",
+):
+    text = open(os.path.join(root, relative), encoding="utf-8").read()
+    assert "~/.factory/bin/factory-launch" in text
+    assert not re.search(
+        r"`(?:scripts/)?(?:run-agent|preflight|next-stage)\.sh(?:`|\s)", text,
+    )
 skill = open(
     os.path.join(integration, "templates/profile/skills/factory-dispatch/SKILL.md"),
     encoding="utf-8",
 ).read()
 assert "factory-launch <project> reorder-test-fixes" in skill
+assert "version: 1.2.0" in skill
+assert "Contract `1.2.0` inherits `1.1.0` lease behavior unchanged" in skill
+assert "factory-launch <project> ticket-state" in skill
+assert "factory-launch <project> project-ledger" in skill
+assert "copy, reconstruct, reorder, or hand-edit ledger rows" in skill
 assert "--ticket <T-NNN>" in skill
 assert "--workdir <absolute-product-worktree>" in skill
+
+soul = open(
+    os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
+).read()
+assert "Contract `1.2.0` inherits contract `1.1.0` lease behavior unchanged" in soul
+assert "preflight --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
+assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
+assert "factory-launch <project> ticket-state" in soul
+assert "factory-launch <project> project-ledger" in soul
+assert "never hand-edit ticket state or" in soul
 
 fixture = json.load(open(os.path.join(integration, "fixtures/factory-profile.json"), encoding="utf-8"))
 assert fixture["redacted"] is True

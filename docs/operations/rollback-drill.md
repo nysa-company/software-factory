@@ -7,7 +7,7 @@ Rehearsed once at instantiation (required by the validator checklist) and availa
 ## The procedure
 
 1. Find the PR that shipped the problem (the Done ticket links it).
-2. `gh pr view N` to confirm, then revert: GitHub UI "Revert" button on the merged PR, or `gh api` / `git revert -m 1 <merge-sha>` on a branch + PR.
+2. `gh pr view N` to confirm, then revert on a canonical `chore/<slug>-revert` branch: use the GitHub UI "Revert" button, or `gh api` / `git revert -m 1 <merge-sha>` and open a PR.
 3. The revert PR goes through CI like any change (fast — no review rounds needed for a pure revert; the operator approves directly).
 4. Merge; staging redeploys; confirm the staging URL shows the old behavior.
 5. Reopen the original ticket as a linked bug ticket (this counts as an escaped defect in metrics).

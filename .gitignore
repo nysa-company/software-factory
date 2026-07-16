@@ -3,6 +3,9 @@ factory/ledger.csv
 factory/KILL
 **/factory/runs/*.out
 **/factory/runs/*.pid
+**/factory/runs/
+**/factory/runtime-ledger.csv
+**/factory/linear-map.json
 **/factory/.linear-sync.lock
 **/factory/MAINTENANCE
 **/factory/.launch.lock/

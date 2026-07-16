@@ -387,6 +387,64 @@ scenario_default_paths() {
   return 0
 }
 
+# ---------- scenario 7: narrow default bookkeeping exemptions ----------
+# Exact bookkeeping files may precede tests without starting implementation;
+# docs remain implementation and therefore force a later test fix to move.
+scenario_targeted_default_exemptions() {
+  local repo base orig_tree rc order
+  repo="$(new_repo)"
+
+  write_file "$repo" src/app.js "app v0"
+  commit_all "$repo" "base"
+  base="$(head_sha "$repo")"
+
+  write_file "$repo" .gitignore "*.out"
+  commit_all "$repo" "chore: ignore run output"
+
+  write_file "$repo" context/memory.md "durable bookkeeping"
+  commit_all "$repo" "docs: update memory"
+
+  write_file "$repo" tests/first.test.js "test('first', () => {});"
+  commit_all "$repo" "test: author initial contract"
+
+  write_file "$repo" docs/contract.md "contract change"
+  commit_all "$repo" "docs: change contract"
+
+  write_file "$repo" tests/late.test.js "test('late', () => {});"
+  commit_all "$repo" "test: late contract coverage"
+
+  orig_tree="$(head_tree "$repo")"
+  if ( cd "$repo" && BASE_REF="$base" bash "$GATE" ) >"$(gate_log "$repo")" 2>&1; then
+    echo "  [targeted-defaults] gate passed before reorder; docs may have been broadly exempted"
+    return 1
+  fi
+
+  rc=0
+  ( cd "$repo" && bash "$REORDER" --base "$base" ) >"$(reorder_log "$repo")" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "  [targeted-defaults] reorder exited $rc, expected 0"
+    cat "$(reorder_log "$repo")"
+    return 1
+  fi
+  if [ "$(head_tree "$repo")" != "$orig_tree" ]; then
+    echo "  [targeted-defaults] tree changed after reorder"
+    return 1
+  fi
+  if ! ( cd "$repo" && BASE_REF="$base" bash "$GATE" ) >"$(gate_log "$repo")" 2>&1; then
+    echo "  [targeted-defaults] gate failed after reorder"
+    cat "$(gate_log "$repo")"
+    return 1
+  fi
+
+  order="$(commit_order "$repo" "$base")"
+  if [ "$(printf '%s\n' "$order" | grep -n 'test: late contract coverage' | cut -d: -f1)" \
+     -ge "$(printf '%s\n' "$order" | grep -n 'docs: change contract' | cut -d: -f1)" ]; then
+    echo "  [targeted-defaults] late test did not move before non-exempt docs"
+    return 1
+  fi
+  return 0
+}
+
 # ---------- runner ----------
 
 run_scenario() { # run_scenario <name> <function>
@@ -414,6 +472,7 @@ run_scenario "scenario-3-genuine-test-file-conflict"  scenario_genuine_test_conf
 run_scenario "scenario-4-already-ordered"             scenario_already_ordered
 run_scenario "scenario-5-dirty-working-tree"          scenario_dirty_tree
 run_scenario "scenario-6-default-pathspecs-bonus"     scenario_default_paths
+run_scenario "scenario-7-targeted-default-exemptions" scenario_targeted_default_exemptions
 
 echo
 echo "== summary: $PASS_TOTAL passed, $FAIL_TOTAL failed =="

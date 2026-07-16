@@ -4,22 +4,26 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 
 ## Sequence
 
-1. **Operator** moves a ticket from Backlog to Ready in Linear. The reconciler records that transition in the ticket file; no live API call is made by preflight.
-2. **Planner** (production/OpenAI family; Codex primary, family-matched Cursor fallback) starts at Planning, posts the spec'd description, acceptance criteria, and frozen contract on the ticket, and creates the ticket branch. If the product docs cannot answer a question, ticket → Blocked-Escalated with the question instead.
-3. **Spec-linter** (checking/Anthropic family; Claude Code primary, family-matched Cursor fallback) remains in Planning, checks criteria quality, contract coverage, consistency, and edge coverage, and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator.
+1. **Operator** moves a ticket from Backlog to Ready in Linear. The reconciler records that transition in the ignored operator overlay; the dispatcher materializes it on the ticket branch and no live API call is made by preflight.
+2. **Dispatcher** creates the exact clean ticket branch/worktree from current protected `origin/main`, then runs trusted operator-field materialization to create and verify its remote ref before preflight. **Planner** (production/OpenAI family; Codex primary, family-matched Cursor fallback) starts at Planning in that prepared worktree and posts the spec'd description, acceptance criteria, and frozen contract. If the product docs cannot answer a question, ticket → Blocked-Escalated with the question instead.
+3. **Spec-linter** (checking/Anthropic family; Claude Code primary, family-matched Cursor fallback) remains in Planning, checks criteria quality, contract coverage, consistency, and edge coverage, and appends findings plus one `SPEC-LINT: PASS`/`FAIL` verdict line. FAIL sends the ticket back to the planner (one replan); a second FAIL escalates to the operator. The operator may authorize only the next semantic lint round with the exact ticket line `OPERATOR AUTHORIZATION: spec-linter round <N>`; the dispatcher never writes it on its own.
 4. **Test-author** (checking/Anthropic family) starts Building and commits failing tests as the first commits on the ticket branch, asserting the frozen contract. Confirms they fail for the right reason.
 5. **Builder** (production/OpenAI family, fresh git worktree on the same branch) runs in Building and implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
 6. **CI** runs: lint, typecheck, tests, build, self-referential snapshots, test-immutability check.
 7. **Reviewer** runs in Review and checks test adequacy and spec conformance. Approve, or request changes back to Building (max 2 rounds → Blocked-Escalated with a plain-language note).
-8. **Narrator** remains in Review and posts the bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note. Ticket → Awaiting Approval.
-9. **Operator** approves from the bundle by moving the Linear issue to Approved (or sends it back with what is wrong). The reconciler records the approval locally. After the PR is merged and staging is confirmed, factory close-out moves the ticket to Done.
+8. **Narrator** remains in Review and posts the bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note. The current contract stops here until a dedicated bundle attestation can move the ticket to Awaiting Approval.
+9. **Operator** approval remains outside the contract 1.2 execution path. Until a dedicated trusted bundle-attestation path exists, transition and materialization refuse Awaiting Approval and Approved, and the sequencer does not authorize `AWAIT-MERGE`. A separate merge-and-staging attestation path is also required before Done can be materialized.
 
 Backend fallback is selected by `run-agent.sh` before it submits the role task. Once any task-bearing CLI starts, every failure is terminal for that run; the dispatcher escalates instead of launching another backend.
+
+Every mutating role must finish with a new commit and a clean ticket worktree;
+the trusted wrapper non-force pushes that commit and verifies the remote tip.
+Reviewer is read-only and must leave the branch, HEAD, and worktree unchanged.
 
 ## Failure routes
 
 - Contract wrong mid-build → ticket back to Planning; planner re-plans; contract change is a new version, never a silent edit.
-- Reviewer deadlock after 2 rounds → Blocked-Escalated; operator picks an outcome from the Narrator's plain-language options.
+- Spec-lint or Reviewer deadlock after 2 rounds → Blocked-Escalated; the operator may authorize only the next semantic round with the exact role-specific ticket line, or pick another outcome.
 - Budget cap hit → the wrapper refuses to start (or the adapter's hard budget stop ends the run); whoever launched the run moves the ticket to Blocked-Escalated with the wrapper's message. At pilot stage that's the operator; a dispatcher automates it later.
 - Preview deploy broken → bundle not produced; ticket back to builder.
 - Defect found after Done → new bug ticket linked to the original (escaped defect); one reopen allowed, second → Blocked-Escalated.
@@ -27,6 +31,6 @@ Backend fallback is selected by `run-agent.sh` before it submits the role task. 
 
 ## Branch mechanics
 
-- Branch per ticket: `ticket/<id>-<slug>`.
+- Branch per ticket: exactly `<TICKET_BRANCH_PREFIX><T-NNN>` (default `ticket/T-NNN`), with no slug or suffix.
 - Commit order is load-bearing: test commits (author: test-author) first, implementation commits (author: builder) after. The reviewer verifies authorship; CI verifies the builder's commits touch no test paths.
 - One PR per ticket, merged only via the operator's approval on the bundle. Protected branch; no direct pushes to main.

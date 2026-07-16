@@ -64,18 +64,20 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` and `1.1.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0`, `1.1.0`, and `1.2.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
-~/.factory/bin/factory-launch <project> preflight --ticket T-123 --json
-~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --json
+~/.factory/bin/factory-launch <project> preflight --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> ticket-state --ticket T-123 --workdir /absolute/ticket-worktree --action materialize --json
+~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Contract `1.1.0` keeps one-ticket behavior by default. A product may set
+Contracts `1.1.0` and `1.2.0` keep one-ticket behavior by default. A product may set
 `MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
 `release`, and supplies the matching `--lease` to preflight, next-stage, and
 run. Maintenance blocks claims and renewals but matching owners may still
@@ -93,6 +95,21 @@ bash scripts/factory-kit.sh recover-lease \
 `nysa.software-factory.hermes-doctor/v1`. `preflight` and `next-stage` preserve
 the selected helper's exit code and wrap its redacted text in versioned JSON.
 `next-stage` also returns `action` and `detail`.
+Contract 1.2 requires the exact ticket worktree for preflight and sequencing,
+adds `ticket-state` as the only path that materializes reconciled operator
+fields or commits role-stage transitions, and adds `project-ledger` as the only
+path that projects effective runtime accounting into the tracked durable
+ledger. Trusted write helpers accept only the exact product origin from the
+active certification receipt. Contract 1.2 stops in Review after bundle
+creation. Both ticket-state transition and materialization refuse Awaiting
+Approval, Approved, and Done until dedicated trusted bundle and merge/deploy
+attestation paths are added; `next-stage` does not authorize `AWAIT-MERGE`
+under 1.2.
+
+`project-ledger` refuses any active or ambiguous entry under
+`factory/.active-runs/` and any `factory/runs/*.pid` record. Reconcile those
+records under maintenance before close-out; projection never guesses that a
+claim or PID is stale.
 
 `run` and `reorder-test-fixes` are process boundaries rather than JSON
 commands. Their arguments and behavior are still compatibility-sensitive and

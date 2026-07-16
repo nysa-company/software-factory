@@ -7,7 +7,7 @@ What gets measured per ticket, where it comes from, and what it gates. Weekly re
 | Field | Source |
 |---|---|
 | ticket id | Markdown filename; Linear identifier stored in `linear-map.json` |
-| cost_usd | sum of ledger rows for the ticket (`factory/ledger.csv`) |
+| cost_usd | sum of effective rows for the ticket (`factory/runtime-ledger.csv`) |
 | attempts | count of builder runs in the ledger |
 | review_rounds | reviewer comments on the PR (0–2) |
 | cycle_time | reconciled Linear Ready timestamp → factory Done log timestamp |
@@ -24,6 +24,7 @@ What gets measured per ticket, where it comes from, and what it gates. Weekly re
 
 - **Escaped defect** is mechanical: a bug ticket with a "caused by" link to a Done ticket. No link, no defect count — so linking bugs back is mandatory triage hygiene.
 - **Cost per merged ticket** includes failed attempts and review runs — the whole ticket's ledger sum, not just the winning run.
+- **Accounting state** comes from each atomic run manifest. Pre-GO failures are `launch_void` at $0; post-GO failures retain reported cost or the full reservation when cost is unknown.
 - **Cursor cost** keeps the full per-run reservation in the ledger. When the approved CLI emits token usage and a dated pricing snapshot is configured, an observational estimate is added to the local run output but never reduces the reservation; the Cursor dashboard is authoritative.
 - **Fallback provenance** is interpreted from the row itself, never from today's backend matrix. The first nine ledger columns remain stable for sequencer compatibility; provenance fields are append-only.
 - **Operator minutes** counts everything: reading the bundle, clicking the preview, deciding. It is the number that answers "is this factory actually saving me time."

@@ -4,11 +4,11 @@
 # ticket file (recorded reviewer verdicts). The dispatcher calls this instead
 # of reasoning about pipeline order: transition legality is mechanism, not
 # prompt. Prints one of:
-#   RUN <role>            — launch this role via run-agent.sh
+#   RUN <role>            — launch this role via the factory-launch run route
 #   FIX <builder|test-author> — reviewer requested changes; dispatcher picks
 #                           which role per the feedback, then reviewer rerun
 #   AWAIT-OPERATOR        — bundle posted; operator approval/merge is next
-#   AWAIT-MERGE           — Linear approval ingested; merge/deploy is next
+#   AWAIT-MERGE           — reserved for a future trusted approval boundary
 #   ESCALATE <reason>     — stop; a human decision is required
 #   REFUSE <reason>       — bookkeeping incomplete; fix the record first
 #
@@ -25,11 +25,12 @@
 # Usage: next-stage.sh --ticket T-NNN   (FACTORY_ROOT anchors the factory dir)
 set -euo pipefail
 
-TICKET="" LEASE_ID=""
+TICKET="" LEASE_ID="" WORKDIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2;;
     --lease) LEASE_ID="$2"; shift 2;;
+    --workdir) WORKDIR="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -43,13 +44,14 @@ source "$KIT_DIR/scripts/lib/kit-pin.sh"
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
+CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 if ! factory_validate_runtime_overrides; then
   echo "REFUSE $FACTORY_RUNTIME_OVERRIDE_ERROR"
   exit 1
 fi
 
-canonical_ledger() {
-  local root="$1" root_abs worktree_root common_dir main_root relative
+canonical_factory_file() {
+  local root="$1" name="$2" root_abs worktree_root common_dir main_root relative
   root_abs="$(cd "$root" 2>/dev/null && pwd -P || printf '%s' "$root")"
   if worktree_root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" &&
      common_dir="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)"; then
@@ -62,7 +64,7 @@ canonical_ledger() {
       *) common_dir="$root_abs/$common_dir" ;;
     esac
     if ! main_root="$(cd "$common_dir/.." 2>/dev/null && pwd -P)"; then
-      printf '%s/factory/ledger.csv\n' "$root_abs"
+      printf '%s/factory/%s\n' "$root_abs" "$name"
       return
     fi
     if [[ "$root_abs" == "$worktree_root" ]]; then
@@ -70,20 +72,56 @@ canonical_ledger() {
     elif [[ "$root_abs" == "$worktree_root/"* ]]; then
       relative="${root_abs#"$worktree_root/"}"
     else
-      printf '%s/factory/ledger.csv\n' "$root_abs"
+      printf '%s/factory/%s\n' "$root_abs" "$name"
       return
     fi
-    printf '%s%s/factory/ledger.csv\n' "$main_root" "${relative:+/$relative}"
+    printf '%s%s/factory/%s\n' "$main_root" "${relative:+/$relative}" "$name"
   else
-    printf '%s/factory/ledger.csv\n' "$root_abs"
+    printf '%s/factory/%s\n' "$root_abs" "$name"
   fi
 }
 
-LEDGER="${FACTORY_LEDGER:-$(canonical_ledger "$REPO_ROOT")}"
-TICKETS_DIR="$FACTORY_DIR/tickets"
+LEDGER="${FACTORY_LEDGER:-$(canonical_factory_file "$REPO_ROOT" runtime-ledger.csv)}"
+DURABLE_LEDGER="${FACTORY_DURABLE_LEDGER:-$(canonical_factory_file "$REPO_ROOT" ledger.csv)}"
+TICKETS_DIR="$CONTENT_ROOT/factory/tickets"
 
 TICKET_FILE="$TICKETS_DIR/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "REFUSE no ticket file at $TICKET_FILE"; exit 1; }
+SOURCE_TICKET_FILE="$(cd "$(dirname "$TICKET_FILE")" && pwd -P)/$(basename "$TICKET_FILE")"
+COMMITTED_TICKET_FILE="$(mktemp "${TMPDIR:-/tmp}/committed-ticket.XXXXXX")"
+EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
+trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET"' EXIT
+TICKET_WORKTREE_ROOT="" TICKET_RELATIVE="" COMMITTED_HEAD=""
+if WORKTREE_ROOT="$(git -C "$CONTENT_ROOT" rev-parse --show-toplevel 2>/dev/null)"; then
+  WORKTREE_ROOT="$(cd "$WORKTREE_ROOT" && pwd -P)"
+  TICKET_WORKTREE_ROOT="$WORKTREE_ROOT"
+  COMMITTED_HEAD="$(git -C "$WORKTREE_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  case "$SOURCE_TICKET_FILE" in
+    "$WORKTREE_ROOT"/*) TICKET_RELATIVE="${SOURCE_TICKET_FILE#"$WORKTREE_ROOT/"}" ;;
+    *) TICKET_RELATIVE="" ;;
+  esac
+  if [[ -z "$TICKET_RELATIVE" ]] ||
+     ! git -C "$WORKTREE_ROOT" show "$COMMITTED_HEAD:$TICKET_RELATIVE" \
+       > "$COMMITTED_TICKET_FILE" 2>/dev/null; then
+    : > "$COMMITTED_TICKET_FILE"
+  fi
+else
+  # Non-Git roots are retained for sealed conformance fixtures only; they have
+  # no durable branch evidence.
+  : > "$COMMITTED_TICKET_FILE"
+fi
+python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
+  --ticket-file "$SOURCE_TICKET_FILE" --operator-map "$FACTORY_DIR/linear-map.json" \
+  --ticket "$TICKET" > "$EFFECTIVE_TICKET" || {
+    echo "REFUSE effective ticket state could not be resolved"
+    exit 1
+  }
+TICKET_FILE="$EFFECTIVE_TICKET"
+if grep -qiE '^State:[[:space:]]*(Awaiting Approval|Approved)[[:space:]]*$' "$TICKET_FILE" ||
+   grep -qiE '^Operator-Approval:' "$TICKET_FILE"; then
+  echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
+  exit 1
+fi
 if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   echo "REFUSE MAINTENANCE file present — factory control plane is paused"
   exit 1
@@ -100,17 +138,28 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   echo "REFUSE $FACTORY_DISPATCH_LEASE_ERROR"
   exit 1
 fi
+if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+   ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh \
+     --factory-root "$REPO_ROOT" \
+     --durable-ledger "$DURABLE_LEDGER" \
+     --runtime-ledger "$LEDGER" >/dev/null; then
+  echo "REFUSE effective ledger could not be reduced"
+  exit 1
+fi
 
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
 # (cat the ledger defensively: a missing ledger means zero runs, not an error.)
 count_ok() { { cat "$LEDGER" 2>/dev/null || true; } | awk -F, -v t="$TICKET" -v r="$1" 'NR>1 && $3==t && $4==r && $9=="0"' | wc -l | tr -d ' '; }
+count_authorization() { # role semantic-round
+  grep -ciE "^[[:space:]]*OPERATOR AUTHORIZATION:[[:space:]]*$1 round[[:space:]]*$2[[:space:]]*$" "$TICKET_FILE" || true
+}
 P="$(count_ok planner)"; SL="$(count_ok spec-linter)"; TA="$(count_ok test-author)"
 B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"
 
 # Reviewer verdicts must be recorded on the ticket file by the dispatcher.
 # Count them; they are the only stage input outside the ledger.
-A="$(grep -ciE 'reviewer.*(: *|verdict *:? *)APPROVE' "$TICKET_FILE" || true)"; A="${A:-0}"
-RC="$(grep -ciE 'reviewer.*REQUEST CHANGES' "$TICKET_FILE" || true)"; RC="${RC:-0}"
+A="$(grep -ciE '^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*APPROVE[[:space:]]*$' "$TICKET_FILE" || true)"; A="${A:-0}"
+RC="$(grep -ciE '^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*REQUEST CHANGES([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; RC="${RC:-0}"
 VERDICTS=$((A + RC))
 
 # A void note names the one-based ordinal among successful reviewer rows.
@@ -146,8 +195,8 @@ if [[ "$P" -eq 0 ]]; then echo "RUN planner"; exit 0; fi
 # replan. The gate applies only before the test-author has run, so tickets
 # already past planning (including all pre-gate tickets) are unaffected.
 if [[ "$TA" -eq 0 ]]; then
-  SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
-  SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
+  SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS[[:space:]]*$' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
+  SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
   if [[ "$SL" -gt $((SLP + SLF)) ]]; then
     echo "REFUSE spec-linter has $SL successful run(s) but only $((SLP + SLF)) SPEC-LINT verdict(s) on $TICKET_FILE — the lint run must end with a 'SPEC-LINT: PASS' or 'SPEC-LINT: FAIL' line"
     exit 1
@@ -156,9 +205,14 @@ if [[ "$TA" -eq 0 ]]; then
     echo "REFUSE ticket logs $((SLP + SLF)) SPEC-LINT verdict(s) but the ledger has only $SL successful spec-linter run(s) — correct the ticket bookkeeping"
     exit 1
   fi
-  if [[ "$SLF" -ge 2 ]]; then
-    echo "ESCALATE spec-lint failed twice — the spec keeps failing its own checklist; operator decides how to unblock planning"
-    exit 0
+  SPEC_VERDICTS=$((SLP + SLF))
+  if [[ "$SLF" -ge 2 && "$SLF" -eq "$SPEC_VERDICTS" ]]; then
+    NEXT_SPEC_ROUND=$((SPEC_VERDICTS + 1))
+    SPEC_AUTH="$(count_authorization spec-linter "$NEXT_SPEC_ROUND")"; SPEC_AUTH="${SPEC_AUTH:-0}"
+    if [[ "$SPEC_AUTH" -eq 0 ]]; then
+      echo "ESCALATE spec-lint failed twice — the spec keeps failing its own checklist; operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: spec-linter round $NEXT_SPEC_ROUND' line on the ticket, written on explicit operator instruction)"
+      exit 0
+    fi
   fi
   if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
   if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
@@ -179,9 +233,11 @@ fi
 
 if [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
-  if grep -qiE '^Operator-Approval:[[:space:]]*Linear([[:space:]]|$)' "$TICKET_FILE"; then
-    echo "AWAIT-MERGE operator approval ingested from Linear; merge and staging confirmation are next"
-    exit 0
+  # Approval is evidence-sensitive: an ignored Linear overlay may inform the
+  # future bundle-attestation path. Contract 1.2 stops before that boundary.
+  if grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
+    echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
+    exit 1
   fi
   echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
   exit 0
@@ -197,16 +253,14 @@ if [[ "$RC" -ge 2 ]]; then
   # operator instruction, which the escalation that got the operator here
   # provides the audit trail for.
   NEXT_ROUND=$((VERDICTS + 1))
-  AUTH="$(grep -ciE "^[[:space:]]*OPERATOR AUTHORIZATION:[[:space:]]*reviewer round[[:space:]]*$NEXT_ROUND([[:space:]]|$)" "$TICKET_FILE" || true)"; AUTH="${AUTH:-0}"
-  if [[ "$AUTH" -ge 1 ]]; then
-    echo "RUN reviewer"
+  AUTH="$(count_authorization reviewer "$NEXT_ROUND")"; AUTH="${AUTH:-0}"
+  if [[ "$AUTH" -lt 1 ]]; then
+    echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: reviewer round $NEXT_ROUND' line on the ticket, written on explicit operator instruction)"
     exit 0
   fi
-  echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: reviewer round $NEXT_ROUND' line on the ticket, written on explicit operator instruction)"
-  exit 0
 fi
 
-# One rejection round: was a fix (test-author or builder success) completed
+# After the latest rejection, was a fix (test-author or builder success) completed
 # after the last successful reviewer run? Ledger order = completion order.
 FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
   BEGIN { voids="," void_list ","; reviewer_run=0 }

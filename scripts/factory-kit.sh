@@ -1209,9 +1209,38 @@ product_tree() {
 }
 
 product_origin() {
-  local origin
-  origin="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
-  [[ -n "$origin" ]] || die "product repository has no origin remote"
+  local origin count scheme authority userinfo normalized_userinfo
+  origin="$(git -C "$1" remote get-url --push --all origin 2>/dev/null || true)"
+  count="$(printf '%s\n' "$origin" | awk 'NF {count++} END {print count+0}')"
+  [[ "$count" == "1" ]] || die "product repository must have one push destination"
+  [[ "$origin" != *$'\n'* && "$origin" != *$'\r'* && "$origin" != *$'\t'* ]] ||
+    die "product push destination is unsafe"
+  case "$origin" in
+    /*) ;;
+    *://*)
+      [[ "$origin" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] ||
+        die "product push destination is unsafe"
+      scheme="$(printf '%s' "${origin%%://*}" | tr '[:upper:]' '[:lower:]')"
+      authority="${origin#*://}"
+      authority="${authority%%/*}"
+      authority="${authority%%\?*}"
+      authority="${authority%%\#*}"
+      if [[ "$scheme" == "http" || "$scheme" == "https" ]]; then
+        [[ "$authority" != *@* ]] ||
+          die "product HTTP push destination must not contain credentials"
+      elif [[ "$authority" == *@* ]]; then
+        userinfo="${authority%@*}"
+        normalized_userinfo="$(printf '%s' "$userinfo" | tr '[:upper:]' '[:lower:]')"
+        [[ "$userinfo" != *:* && "$normalized_userinfo" != *%3a* ]] ||
+          die "product push destination must not contain password credentials"
+      fi
+      ;;
+    *:*)
+      [[ "$origin" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._/~+-]+$ ]] ||
+        die "product push destination must be absolute, URL, or scp-like"
+      ;;
+    *) die "product push destination must be absolute, URL, or scp-like" ;;
+  esac
   printf '%s\n' "$origin"
 }
 
@@ -1764,8 +1793,9 @@ PY
 
 has_active_runs() {
   local product="$1" file
-  for file in "$product/factory/.active-runs/"*.pid "$product/factory/runs/"*.pid; do
-    [[ -e "$file" ]] && return 0
+  for file in "$product/factory/.active-runs/"*.pid \
+    "$product/factory/.active-runs/"*.lock "$product/factory/runs/"*.pid; do
+    [[ -e "$file" || -L "$file" ]] && return 0
   done
   return 1
 }
@@ -1809,35 +1839,115 @@ require_maintenance_after_lock() {
 }
 
 validate_ticket_leases() {
-  local product="$1" sha="$2"
-  python3 - "$product/factory/tickets" "$sha" <<'PY'
-import pathlib, re, sys
-tickets, candidate = pathlib.Path(sys.argv[1]), sys.argv[2]
-if not tickets.is_dir():
-    raise SystemExit(0)
-for path in sorted(tickets.glob("T-*.md")):
-    if not re.fullmatch(r"T-[0-9]+\.md", path.name):
-        continue
-    if path.is_symlink():
-        raise SystemExit("ticket path is a symlink: %s" % path)
-    text = path.read_text(errors="replace")
+  local product="$1" sha="$2" origin="$3"
+  python3 - "$product/factory" "$sha" "$SCRIPT_ROOT/scripts/lib" "$origin" <<'PY'
+import pathlib, re, subprocess, sys
+factory, candidate, lib, origin = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, sys.argv[3])
+from effective_ticket import ticket_branch_prefix
+
+tickets = factory / "tickets"
+repo = factory.parent
+prefix = ticket_branch_prefix(factory)
+ticket_ids = set()
+if tickets.is_dir():
+    for path in tickets.glob("T-*.md"):
+        if re.fullmatch(r"T-[0-9]+\.md", path.name):
+            if path.is_symlink():
+                raise SystemExit("ticket path is a symlink: %s" % path)
+            ticket_ids.add(path.stem)
+refs = subprocess.check_output([
+    "git", "-C", str(repo), "for-each-ref", "--format=%(refname)",
+    "refs/remotes/origin/" + prefix, "refs/heads/" + prefix,
+], text=True).splitlines()
+remote_tips = {}
+remote_lines = subprocess.check_output([
+    "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
+    "refs/heads/" + prefix + "T-*",
+], text=True).splitlines()
+for line in remote_lines:
+    tip, ref = line.split()
+    match = re.fullmatch(r"refs/heads/" + re.escape(prefix) + r"(T-[0-9]+)", ref)
+    if not match or not re.fullmatch(r"[0-9a-f]{40}", tip):
+        raise SystemExit("remote ticket ref is malformed")
+    ticket_id = match.group(1)
+    if ticket_id in remote_tips:
+        raise SystemExit("remote ticket ref is duplicated: %s" % ticket_id)
+    remote_tips[ticket_id] = tip
+    ticket_ids.add(ticket_id)
+for ref in refs:
+    branch = re.sub(r"^refs/(?:remotes/origin|heads)/", "", ref)
+    match = re.fullmatch(re.escape(prefix) + r"(T-[0-9]+)", branch)
+    if match:
+        ticket_ids.add(match.group(1))
+for ticket_id in sorted(ticket_ids):
+    branch = prefix + ticket_id
+    remote_ref = "refs/remotes/origin/" + branch
+    local_ref = "refs/heads/" + branch
+    remote_tip = remote_tips.get(ticket_id, "")
+    tracking = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", remote_ref],
+        text=True, capture_output=True,
+    )
+    tracking_tip = tracking.stdout.strip() if tracking.returncode == 0 else ""
+    if tracking_tip and remote_tip != tracking_tip:
+        raise SystemExit("%s remote ticket ref is stale or unverified" % ticket_id)
+    audit_ref = ""
+    if remote_tip:
+        if tracking_tip:
+            source_ref = remote_ref
+        else:
+            audit_ref = "refs/factory/lease-audit/" + ticket_id
+            fetched = subprocess.run([
+                "git", "-C", str(repo), "fetch", "--quiet", "--no-tags", origin,
+                "refs/heads/" + branch + ":" + audit_ref,
+            ])
+            fetched_tip = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--verify", audit_ref],
+                text=True, capture_output=True,
+            )
+            if fetched.returncode != 0 or fetched_tip.stdout.strip() != remote_tip:
+                subprocess.run(
+                    ["git", "-C", str(repo), "update-ref", "-d", audit_ref],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                raise SystemExit("%s remote ticket ref could not be verified" % ticket_id)
+            source_ref = audit_ref
+    elif subprocess.run(
+        ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", local_ref]
+    ).returncode == 0:
+        raise SystemExit("%s has an unverified local-only ticket branch" % ticket_id)
+    else:
+        source_ref = "HEAD"
+    relative = "factory/tickets/%s.md" % ticket_id
+    content = subprocess.run(
+        ["git", "-C", str(repo), "show", source_ref + ":" + relative],
+        text=True, capture_output=True,
+    )
+    if audit_ref:
+        subprocess.run(
+            ["git", "-C", str(repo), "update-ref", "-d", audit_ref], check=True
+        )
+    if content.returncode != 0:
+        raise SystemExit("%s is missing from its committed ticket source" % ticket_id)
+    text = content.stdout
     states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", text)
     leases = re.findall(r"(?mi)^Kit-SHA:\s*(.*?)\s*$", text)
     if len(states) != 1:
-        raise SystemExit("%s must contain exactly one State field" % path.name)
+        raise SystemExit("%s must contain exactly one State field" % ticket_id)
     if len(leases) > 1:
-        raise SystemExit("%s contains duplicate Kit-SHA fields" % path.name)
+        raise SystemExit("%s contains duplicate Kit-SHA fields" % ticket_id)
     state = states[0].strip()
     lease = leases[0].strip() if leases else ""
     if lease and not re.fullmatch(r"[0-9a-f]{40}", lease):
-        raise SystemExit("%s has a noncanonical Kit-SHA" % path.name)
+        raise SystemExit("%s has a noncanonical Kit-SHA" % ticket_id)
     if state.lower() == "done":
         continue
     if lease:
         if lease != candidate:
-            raise SystemExit("%s is nonterminal and leased to a different kit" % path.name)
+            raise SystemExit("%s from %s is nonterminal and leased to a different kit" % (ticket_id, source_ref))
     elif state.lower() not in ("ready", "backlog", "blocked-escalated"):
-        raise SystemExit("%s is in progress without a Kit-SHA lease" % path.name)
+        raise SystemExit("%s from %s is in progress without a Kit-SHA lease" % (ticket_id, source_ref))
 PY
 }
 
@@ -2349,7 +2459,7 @@ cmd_activate() {
     die "product acquired launch lock with active runs"
   fi
   require_dispatch_drained "$product_top"
-  validate_ticket_leases "$product_top" "$sha"
+  validate_ticket_leases "$product_top" "$sha" "$(json_get "$snapshot" product_origin)"
   validate_receipt_snapshot "$snapshot" "$slug" "$product_top" "$sha" "$previous" "$receipt_id"
   transaction="$(printf '%020d-%s-%s' "$generation" "$sha" "$receipt_id")"
   journal="$journal_dir/$(printf '%020d' "$generation")-$sha.json"
@@ -2469,7 +2579,8 @@ cmd_reconcile() {
   if (trap - EXIT; HELD_LOCKS=""; \
       validate_receipt_snapshot "$snapshot" "$slug" "$product_top" "$sha" \
         "$previous" "$receipt_id" &&
-      validate_ticket_leases "$product_top" "$sha" &&
+      validate_ticket_leases "$product_top" "$sha" \
+        "$(json_get "$snapshot" product_origin)" &&
       { [[ "$pre_pointer" == "0" ]] ||
         active_matches_journal_record "$journal" "$active" previous_record; } &&
       { [[ "$pre_pointer" == "1" ]] ||
@@ -2569,7 +2680,8 @@ cmd_rollback() {
   require_clean_product "$product_top"
   [[ "$(product_tree "$product_top")" == "$previous_product_tree" ]] ||
     die "rollback requires product Git tree already restored to previous tree"
-  validate_ticket_leases "$product_top" "$previous_sha"
+  validate_ticket_leases "$product_top" "$previous_sha" \
+    "$(json_get "$journal" receipt_snapshot.product_origin)"
   switch_active_from_journal "$journal" "$active" previous_record
   set_journal_phase "$journal" rolled_back
   release_lock "$launch_lock"

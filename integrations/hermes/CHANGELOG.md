@@ -5,6 +5,29 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.2.0 — 2026-07-15
+
+- Adds validated ticket-worktree selection to `preflight` and `next-stage`.
+- Adds `ticket-state` as the trusted path from ignored Linear operator state to
+  committed ticket state.
+- Adds deterministic `project-ledger` projection from atomic run manifests in
+  a dedicated close-out worktree.
+- Requires mutating roles to commit, non-force pushes and verifies their exact
+  tips, and requires Reviewer to leave Git unchanged.
+- Binds every automatic ticket or role push to the exact product origin in the
+  active certification receipt and rejects missing, multiple, or drifted push
+  destinations.
+- Limits generic ticket-state transitions to role stages and escalation;
+  Awaiting Approval and Done remain withheld pending dedicated evidence gates.
+- Durably initializes and validates the ignored run-manifest root, refuses
+  automatic ticket-and-role claim reclamation, binds output capture to the
+  wrapper, and retains the full reservation for unusable telemetry.
+- Holds a configured machine-cap ledger lock across the provider interval,
+  validates and restores owned ledger state after mutation, and fails role
+  advancement when control state remains changed. This hardening changes no
+  public launcher command, schema, or compatibility category.
+- Keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
+
 ## 1.1.0 — 2026-07-15
 
 - Adds opt-in two-ticket dispatch through `MAX_CONCURRENT_TICKETS=2`.

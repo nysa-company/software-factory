@@ -6,10 +6,13 @@ note() { echo "[contract-test] $*"; }
 bad() { echo "[contract-test] FAIL: $*" >&2; FAIL=1; }
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/plain-config.sh"
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
+factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 if [[ -f "$GLOBAL_ENV" ]]; then
-  # shellcheck disable=SC1090
-  source "$GLOBAL_ENV"
+  factory_load_plain_config "$GLOBAL_ENV" global \
+    "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1 || exit 2
 fi
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"

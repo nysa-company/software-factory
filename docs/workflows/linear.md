@@ -3,9 +3,10 @@
 Linear is the factory's visual and operator-facing board. Git remains the
 durable execution record: ticket contracts, machine-readable verdicts, logs,
 evidence bundles, and the cost ledger live under `factory/`. The reconciler
-polls Linear and updates local operator-owned fields before projecting factory
-output back to Linear. `preflight.sh` and `next-stage.sh` never call a network
-API.
+polls Linear and records operator-owned fields in the ignored
+`factory/linear-map.json` overlay before projecting factory output back to
+Linear. It never rewrites tracked ticket or initiative files. `preflight.sh`
+and `next-stage.sh` never call a network API.
 
 One shared **Software Factory** team contains every product. Each factory
 initiative is one Linear Project; each `factory/tickets/T-NNN.md` is one issue.
@@ -23,8 +24,16 @@ The factory is authoritative for title, description, acceptance criteria,
 frozen contract, branch/PR facts, role-stage movement, escalation into
 Blocked-Escalated, evidence, cost, and Approved → Done after merge/deploy
 confirmation. Unsupported Linear edits are restored from the ticket file.
+Removing an issue from every Linear Project explicitly clears its effective
+initiative; it cannot enter execution again until the operator assigns one.
 
-An API outage never stops an in-flight ticket. The local sync map and logs show
+Preflight, sequencing, and projection combine the overlay with the exact ticket
+worktree or committed ticket branch. The launcher-managed `ticket-state`
+command materializes accepted operator fields and commits factory-owned stage
+moves on the ticket branch. Contract 1.2 stops in Review: transition and
+materialization both refuse Awaiting Approval, Approved, and Done until trusted
+bundle and merge/deploy attestation paths exist, and sequencing does not
+authorize `AWAIT-MERGE`. An API outage never stops an in-flight ticket. The local sync map and logs show
 stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 
@@ -52,6 +61,10 @@ territory.
 Legal happy-path transitions are:
 
 `Backlog → Ready → Planning → Building → Review → Awaiting Approval → Approved → Done`.
+
+This is the target lifecycle, not permission for the generic transition API.
+The current 1.2 candidate stops at Review after bundle creation and cannot
+autonomously claim Awaiting Approval or Done.
 
 Spec-lint failure stays in Planning. Review changes return to Building. A
 broken preview returns to Building. Any active stage may enter
@@ -83,7 +96,7 @@ Linear Project, stores its UUID in `linear-map.json`, and assigns every issue.
 `View: factory` also creates a shared Project-filtered Factory Pipeline view
 and stores its UUID with the initiative mapping.
 Project status, target date, and issue membership may be edited in Linear and
-are ingested locally; the initiative summary remains Git-owned.
+are ingested into the operator overlay; the initiative summary remains Git-owned.
 
 ## Ticket template
 

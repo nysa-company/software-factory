@@ -76,7 +76,9 @@ migration plus retained rollback support.
 
 Contract `1.1.0` preserves 1.0 behavior when `MAX_CONCURRENT_TICKETS` is absent
 or `1`; the opt-in value `2` requires the 1.1 launcher, profile skill, and
-dispatcher role contract to move together.
+dispatcher role contract to move together. Contract `1.2.0` inherits that
+lease behavior unchanged while requiring ticket worktrees for preflight and
+sequencing.
 
 **Use a repository ruleset, not classic branch protection.** Verified by live probe (2026-07-12, dispatcher trial setup): a write deploy key pushed straight through classic branch protection to `main`, and also through a ruleset whose bypass list included the repository-admin *role* (deploy keys inherit it). Deploy keys — how agent machines authenticate — are only blocked by a ruleset whose bypass list contains **no repository roles**. Probes to run after any change to these settings: agent key pushes to `main` (must be rejected), agent key pushes a ticket branch (must succeed).
 
@@ -120,7 +122,8 @@ Requires a paid plan for private repos (GitHub Team or the repo being public).
 
 Merge itself is triggered by the operator's approval on the Narrator bundle (manually at pilot stage: operator clicks merge after approving; automated later).
 
-Release rollback also uses protected Git. Keep `MAINTENANCE`, stop the product's
+Release rollback also uses protected Git. Use `chore/<slug>-revert` as the
+canonical revert branch name. Keep `MAINTENANCE`, stop the product's
 factory services, and reconcile any interrupted activation first. Then merge a
 normal protected revert restoring the previous `KIT_PIN` and product tree. Run
 `factory-kit rollback` only if the candidate generation is committed and still

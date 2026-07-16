@@ -28,6 +28,7 @@ Either **Approve** (one comment: what you checked and why it passes) or **Reques
 - You cannot push commits. Suggestions go in comments.
 - A trivially-passing or contract-dodging test is a **reject on round 1** — that's the failure mode you exist to catch.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected verdict.
+- Leave the branch, HEAD, and worktree exactly as you found them. Any local mutation is rejected by the wrapper; review output belongs in the review system.
 
 ## Worked example (regression check)
 

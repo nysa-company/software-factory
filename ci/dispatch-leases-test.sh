@@ -16,7 +16,7 @@ trap cleanup EXIT HUP INT TERM
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s%s\n' "$1" "${2:+ — $2}" >&2; FAILURES=$((FAILURES + 1)); }
 
-mkdir -p "$PRODUCT/factory/tickets"
+mkdir -p "$PRODUCT/factory/tickets" "$PRODUCT/factory/runs"
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=2' > "$PRODUCT/factory/PROJECT.env"
 printf '%s\n' \
   'PER_RUN_BUDGET_USD=1.00' \
@@ -26,13 +26,23 @@ printf '%s\n' \
   'DAILY_CAP_USD=20.00' \
   > "$PRODUCT/factory/ENVELOPE.env"
 printf '%s\n' "$(git -C "$ROOT" rev-parse HEAD)" > "$PRODUCT/factory/KIT_PIN"
+printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' \
+  > "$PRODUCT/factory/ledger.csv"
+printf '%s\n' \
+  'factory/runtime-ledger.csv' \
+  'factory/runs/' \
+  'factory/.active-runs/' \
+  'factory/.launch.lock/' \
+  'factory/.ledger.lock/' \
+  'factory/.dispatch-leases/' \
+  'factory/.dispatch-leases.lock/' > "$PRODUCT/.gitignore"
 for ticket in T-901 T-902 T-903; do
   printf '# %s\n\nState: Ready\n' "$ticket" > "$PRODUCT/factory/tickets/$ticket.md"
 done
 git -C "$PRODUCT" init -q -b main
 git -C "$PRODUCT" config user.email dispatch-test@example.invalid
 git -C "$PRODUCT" config user.name dispatch-test
-git -C "$PRODUCT" add factory
+git -C "$PRODUCT" add .gitignore factory
 git -C "$PRODUCT" commit -qm fixture
 
 pids=""
@@ -85,7 +95,7 @@ MOCK_SLEEP=2 FACTORY_DISPATCH_LEASE_ID="$FIRST_ID" FACTORY_ROOT="$PRODUCT" \
   "$RUN" --role planner --ticket "$FIRST_TICKET" -- "bounded run" > "$TMP/bounded-run.out" 2>&1 &
 RUN_PID=$!
 for _try in $(seq 1 200); do
-  compgen -G "$PRODUCT/factory/.active-runs/$FIRST_TICKET.*.pid" >/dev/null && break
+  compgen -G "$PRODUCT/factory/.active-runs/$FIRST_TICKET.*.lock" >/dev/null && break
   sleep 0.02
 done
 LIVE_RELEASE_RC=0

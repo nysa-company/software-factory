@@ -93,6 +93,11 @@ The factory needs you at four points:
    or send it back with a concrete reason. Done is recorded after merge and
    staging confirmation.
 
+That fourth step describes the target lifecycle. Contract 1.2 currently stops
+in Review after the Narrator posts the bundle: its generic ticket-state command
+cannot move a ticket to Awaiting Approval or Done. Wait for the dedicated
+bundle and merge/staging attestation paths before using the approval close-out.
+
 ## Does moving a ticket to Ready start the factory?
 
 **Not by itself in the current installation.** Moving a mapped Linear issue to
@@ -101,9 +106,15 @@ the installed job is a reconciler, not an autonomous dispatcher.
 
 After the Ready transition is visible locally, a dispatcher session must:
 
-1. run `scripts/preflight.sh --ticket T-NNN`;
-2. follow `scripts/next-stage.sh --ticket T-NNN`;
-3. launch each role through `scripts/run-agent.sh`.
+1. resolve the active contract with
+   `~/.factory/bin/factory-launch <project> contract --json`;
+2. create the exact clean ticket branch/worktree from current protected
+   `origin/main`, then run `ticket-state --action materialize` to create and
+   verify its remote ref;
+3. run the launcher's `preflight` and `next-stage` routes with the exact ticket
+   worktree required by that contract;
+4. launch each role only through
+   `~/.factory/bin/factory-launch <project> run`.
 
 If a standing dispatcher is added later, Ready can become its kickoff signal.
 Until then, Ready means **authorized and eligible to start**, not **already

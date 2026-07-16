@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.1.0",
+  "contract_version": "1.2.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -83,6 +83,8 @@
           "--ticket",
           "<T-NNN>",
           "[--lease <opaque-lease-id>]",
+          "--workdir",
+          "<absolute-product-worktree>",
           "--json"
         ],
         "output_schema": "nysa.software-factory.next-stage/v1",
@@ -105,6 +107,8 @@
           "--ticket",
           "<T-NNN>",
           "[--lease <opaque-lease-id>]",
+          "--workdir",
+          "<absolute-product-worktree>",
           "--json"
         ],
         "output_schema": "nysa.software-factory.preflight/v1",
@@ -118,6 +122,48 @@
           "status",
           "exit_code",
           "output"
+        ]
+      },
+      "ticket-state": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--workdir",
+          "<absolute-product-worktree>",
+          "--action",
+          "<materialize|transition>",
+          "[--state <ticket-state>]",
+          "--json"
+        ],
+        "output": "the committed ticket state after applying the ignored operator overlay or requested transition",
+        "transition_states": [
+          "Planning",
+          "Building",
+          "Review",
+          "Blocked-Escalated"
+        ],
+        "validation": [
+          "absolute physical non-symlink distinct linked Git worktree root",
+          "same Git common directory as registered PRODUCT_ROOT",
+          "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket",
+          "automatic pushes match the active certification receipt product origin",
+          "generic transitions exclude Awaiting Approval and Done until dedicated evidence gates exist"
+        ]
+      },
+      "project-ledger": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--workdir",
+          "<absolute-closeout-worktree>",
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.ledger-projection/v1",
+        "validation": [
+          "absolute physical non-symlink distinct linked Git worktree root",
+          "same Git common directory as registered PRODUCT_ROOT",
+          "branch exactly chore/tNNN-closeout and based on origin/main",
+          "clean worktree with no live or ambiguous product run"
         ]
       },
       "reorder-test-fixes": {
@@ -167,7 +213,8 @@
           "absolute physical non-symlink distinct linked Git worktree root",
           "same Git common directory as registered PRODUCT_ROOT",
           "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket",
-          "nonempty task"
+          "nonempty task",
+          "automatic pushes match the active certification receipt product origin"
         ],
         "ticket_branch": {
           "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
@@ -182,6 +229,7 @@
       "FACTORY_RELEASE_TREE": "active record kit_tree",
       "FACTORY_RELEASE_PATH": "resolved physical release path",
       "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+      "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2 certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
       "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher"
     },
     "helper_environment_allowlist": [
@@ -193,6 +241,7 @@
       "FACTORY_RELEASE_TREE",
       "FACTORY_RELEASE_PATH",
       "FACTORY_RELEASE_CONTRACT_VERSION",
+      "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
       "FACTORY_DISPATCH_LEASE_ID",
       "GH_TOKEN"
     ],
@@ -215,6 +264,11 @@
         "product_path",
         "release_path"
       ],
+      "contract_1_2_required_fields": [
+        "receipt_id",
+        "product_tree"
+      ],
+      "contract_1_2_receipt_binding": "receipt_id selects an owner-only mode-0600 receipt whose project, kit SHA/tree, product path/tree, contract, and product origin bind trusted writes",
       "release_location": "$FACTORY_KITS_ROOT/releases/<kit_sha>",
       "selection": "resolved and validated once per invocation"
     },
@@ -253,6 +307,10 @@
     "scripts/preflight.sh",
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
+    "scripts/ticket-state.sh",
+    "scripts/lib/effective_ticket.py",
+    "scripts/lib/product-remote.sh",
+    "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",
     "scripts/lib/dispatch-leases.sh",
     "scripts/factory-kit.sh",

@@ -7,7 +7,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 ```bash
 ~/.factory/bin/factory-launch <project> run \
   --role <role> --ticket <T-NNN> \
-  --prompt-file <release-role-path> [--workdir <worktree>] -- "task text"
+  --prompt-file <release-role-path> --workdir <ticket-worktree> -- "task text"
 ```
 
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
@@ -16,6 +16,35 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 - **`factory/PROJECT.env`:** product name, repository slug, protected test paths, worktree location, and ticket branch prefix.
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
+
+Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight durably initializes the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
+
+Each ticket-and-role run takes an atomic `mkdir` claim under
+`factory/.active-runs/` before it creates a manifest. A conflicting or
+abandoned claim always refuses the launch; ordinary launch never guesses that
+a PID is stale or reclaims the directory. Cleanup removes only the exact owner
+record it created. The wrapper also keeps provider output on an unlinked open
+descriptor until the provider exits, then publishes the ignored `.out`
+artifact. Missing, malformed, or oversized telemetry cannot reduce spend: a
+post-GO run keeps the full reservation and zero turns when its cost data is not
+usable.
+
+When a machine-wide cap is configured, its global ledger lock covers the full
+provider interval, not just reservation. The wrapper validates the ledger,
+persists a reservation, snapshots it, and verifies it before terminalization.
+If the ledger changes while the wrapper still owns the exact lock, the wrapper
+restores the snapshot; any persistent ledger, lock, claim, manifest, or
+registered-checkout mutation fails the role and prevents sequencer advancement.
+This intentionally serializes globally capped provider intervals.
+
+These controls provide portable crash/race handling and detect mutations that
+remain at the post-run check. They are not hostile-process isolation: the
+provider CLIs run unsandboxed as the same OS user, which can alter user-owned
+paths, signal the wrapper, or restore bytes before inspection. Preventing a
+malicious same-UID process from authoring control state requires an OS boundary
+such as a separate UID or enforced sandbox. The current wrapper therefore
+claims fail-closed detection and conservative accounting, not literal
+prevention against that actor.
 
 The in-repository `conformance/` product is the only implicit-pin exception. It
 must share the kit repository, Git common directory, and HEAD. This exception
@@ -27,6 +56,7 @@ Backend policy is kit-owned and certified by the same `KIT_PIN`. Production role
 ```bash
 # ~/.factory/global.env — no credentials in this file
 export FACTORY_CURSOR_FALLBACK_ENABLED=0
+export AGENT_CLI_CREDENTIAL_STORE="EXACT_STORE_TOKEN"
 export CURSOR_AGENT_VERSION="EXACT_VERSION_TOKEN"
 export CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
 export CURSOR_ANTHROPIC_MODEL=claude-sonnet-5-thinking-high
@@ -37,6 +67,9 @@ export CURSOR_OPENAI_USD_PER_MTOK_OUT="RATE"
 export CURSOR_ANTHROPIC_USD_PER_MTOK_IN="RATE"
 export CURSOR_ANTHROPIC_USD_PER_MTOK_OUT="RATE"
 ```
+
+`run-agent.sh` parses both configuration files as whitelisted `KEY=value`
+data. Shell commands, substitutions, and unsupported keys are rejected.
 
 Enable fallback only after `agent status --format json`, `agent models`, `scripts/adapters/contract-test.sh --routes`, and both conformance smokes pass. Cursor output is redacted while streaming; the redacted `.out` artifact remains local and ignored, while the manifest and ledger carry durable provenance.
 
@@ -55,23 +88,42 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` and `1.1.0` expose machine-readable
+release for the invocation. Contracts `1.0.0`, `1.1.0`, and `1.2.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
+Ticket content is read from the launcher's validated ticket worktree, while
+controls and the Linear operator overlay remain anchored to the registered
+product root. Linear projection reads the committed exact ticket branch rather
+than a dirty checkout. Contract 1.2 ticket routes reject tracked or untracked
+worktree dirt before any helper runs. `ticket-state` is the only launcher path that
+materializes operator fields or commits a factory-owned role-stage transition.
+Contract 1.2 stops in Review after the Narrator posts the bundle. Both generic
+transition and operator materialization refuse Awaiting Approval, Approved, and
+Done until dedicated trusted bundle and merge/deploy attestation paths exist;
+`next-stage` therefore does not authorize `AWAIT-MERGE` under 1.2. Every
+automatic helper push is bound to the exact product
+origin in the active generation's owner-only certification receipt; mutable
+Git remote configuration cannot redirect it.
+Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
+declared non-sensitive resume from Blocked-Escalated;
+factory-owned phases use the transition action. Projection falls back to
+committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
+
 The first role launch records a `Kit-SHA:` lease on the canonical ticket while
 holding `factory/.launch.lock`. Every later preflight, sequencer call, and run
 refuses a different physical kit SHA. Activation does not migrate leases, so a
-drained ticket boundary and an operator check for conflicting nonterminal
-leases remain required.
+drained ticket boundary and a scan of the committed exact ticket branches for
+conflicting nonterminal leases remain required.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and may
 be set only to `2`. At `2`, every sequencing and role launch requires the
 matching opaque record under `factory/.dispatch-leases/`. Claims are atomic,
 stale records are never reassigned automatically, and the global ledger lock
-continues to serialize budget reservations. Maintenance blocks claims and
+serializes complete provider intervals when a machine cap is configured.
+Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
 lease state after stopping recorded runs.
@@ -80,6 +132,9 @@ Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
 previous generation, and expiry. The default receipt lifetime is 24 hours.
 Activation reruns those bindings and refuses stale or drifted receipts.
+An activated contract 1.2 keeps that receipt as the runtime destination
+binding for trusted ticket and role pushes. Its `product_origin` is the sole
+certified `origin` push URL, which may differ from the fetch URL.
 
 Activation uses `factory/MAINTENANCE` and the same launch lock as role startup.
 Launch checks occur before locking, after locking, and before the task GO
@@ -113,3 +168,5 @@ Planner, Builder, and Narrator use the production model family. Spec-linter, Tes
 - Product credentials stay in GitHub or the hosting platform, never in repositories or agent output.
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
+- Factory-owned state transitions refuse while operator-owned overlay fields are pending. Contract 1.2 has no trusted bundle-attestation path, so an approval overlay is a stop condition rather than authority to materialize Approved or authorize merge.
+- Allowlisted machine configuration comes only from `global.env`; inherited values with the same names are cleared even when the file is absent.

@@ -29,6 +29,7 @@ Treat the acceptance criteria as text under test ("unit tests for English"). Bef
 - Never invent product behavior. If the product docs don't answer a question, stop and put the question on the ticket for the operator — that is a successful outcome, not a failure.
 - Every ticket that can trigger an external send gets the `external` label.
 - Do not edit priority, Initiative, or operator-owned state transitions. The dispatcher owns the Planning stage; the reconciler projects your output.
+- Commit all ticket changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 
 ## Worked example (regression check)
 

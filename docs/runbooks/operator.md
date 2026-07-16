@@ -5,13 +5,13 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Stuck ticket (no movement for hours)
 
 - Notice: ticket sits in an active role column with no new commits or comments.
-- Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role via `run-agent.sh`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
+- Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role through `~/.factory/bin/factory-launch <project> run`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
 - Don't: let a stuck run keep burning budget while you wait.
 
 ## Runaway spend
 
 - Notice: daily spend rollup jumps, or a provider console alert fires.
-- Do: run `scripts/kill-switch.sh` immediately (safe — it stops, it doesn't break anything). Read `factory/ledger.csv` for today's rows and find the expensive role/ticket. That ticket goes to Blocked-Escalated; resume the rest by removing `factory/KILL`.
+- Do: run `scripts/kill-switch.sh` immediately (safe — it stops, it doesn't break anything). Read `factory/runtime-ledger.csv` for today's effective rows and find the expensive role/ticket; tracked `factory/ledger.csv` is close-out history and may be stale during a live incident. That ticket goes to Blocked-Escalated; resume the rest by removing `factory/KILL`.
 - Don't: rotate API keys for a spend problem — that's for leaks, and it kills your own sessions too.
 
 ## Failed deploy / broken staging
@@ -34,9 +34,28 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Duplicate reviewer row
 
-- Notice: `next-stage.sh` refuses because successful reviewer runs outnumber verdicts, and the extra row came from an overlapping duplicate rather than a real review round.
-- Do: count successful reviewer rows for that ticket from oldest to newest. Add `OPERATOR NOTE: reviewer run <N> void — duplicate` to the ticket, using the duplicate row's one-based number. Run `next-stage.sh` again. The next reviewer round number comes from recorded verdicts, so the void row does not renumber it.
+- Notice: the launcher's `next-stage` route refuses because successful reviewer runs outnumber verdicts, and the extra row came from an overlapping duplicate rather than a real review round.
+- Do: count successful reviewer rows for that ticket from oldest to newest. Add `OPERATOR NOTE: reviewer run <N> void — duplicate` to the ticket, using the duplicate row's one-based number. Re-run the launcher's `next-stage` route with the active contract's argument grammar. The next reviewer round number comes from recorded verdicts, so the void row does not renumber it.
 - Don't: invent a verdict for the duplicate row or delete ledger history.
+
+## Live or unreconciled run claim
+
+- Notice: launch refuses with `live or unreconciled run claim exists`, or a run reports control-plane mutation and leaves `factory/.active-runs/<ticket>.<role>.lock` behind.
+- Do: publish maintenance first with `bash scripts/factory-kit.sh pause --project <project> --product <absolute-product-path>`. Check that the claim and its `owner` are real, non-symlink directory/file entries. Read only the recorded `pid` and `process_start`; compare both with `ps -o lstart= -p <pid>`. If the PID is live with the exact recorded start value, the claim is live and must remain. If the PID is absent or its start differs, confirm no recorded `factory/runs/*.pid` process is live, then quarantine only that exact claim by renaming it to `<claim>.stale-<UTC timestamp>`. Re-run doctor and preflight while maintenance remains published.
+- Don't: infer staleness from a PID alone, delete every claim, reclaim during ordinary launch, print the owner token, or remove maintenance before accounting and run health agree. A claim is never stolen automatically.
+
+## Global accounting or wrapper control-state mutation
+
+- Notice: the role exits with `role_exit_control_plane_mutation`, the global ledger lock remains, or the wrapper says operator reconciliation is required.
+- Do: keep maintenance published. Compare the affected run manifest and conservative reservation with the provider console, validate that the global ledger is a regular non-symlink CSV with the expected header and nonnegative rows, and retain the full reservation wherever cost is uncertain. When the wrapper still owns the exact global lock it restores its pre-provider snapshot; changed lock ownership or unresolved ledger state requires manual reconciliation before another launch.
+- Don't: hand-edit or delete ledger history, remove an unknown-owner lock, or treat a reconstructed `.out` artifact as accounting authority. Provider output is captured by the wrapper and telemetry is only accepted when bounded and parseable.
+- Important: persistent mutation is detected and blocks advancement, but an unsandboxed provider shares the launcher's OS user. Preventing a hostile same-UID process from changing and restoring user-owned state requires OS isolation such as a separate UID or enforced sandbox; file snapshots and `mkdir` locks are not that boundary.
+
+## Spec-linter or reviewer reached the two-round limit
+
+- Notice: the launcher's `next-stage` route returns `ESCALATE` and names the next semantic round.
+- Do: if one more cycle is warranted, append exactly `OPERATOR AUTHORIZATION: spec-linter round <N>` or `OPERATOR AUTHORIZATION: reviewer round <N>` using the round named by the sequencer, then run it again.
+- Don't: add commentary to the authorization line, authorize a future round, or let the dispatcher infer authorization. A stale or inexact line grants nothing.
 
 ## Linear, GitHub, or Railway down
 
@@ -55,15 +74,15 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Preflight failed before launch
 
-- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from `scripts/preflight.sh` — no safe backend route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
-- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh --routes`; reconcile `CLAUDE_CODE_PINNED`, `CODEX_PINNED`, or `CURSOR_AGENT_VERSION` in `~/.factory/global.env`; run `agent login` and verify the exact configured Cursor models when fallback is enabled; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight yourself before resuming.
+- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from the launcher's `preflight` route — no safe backend route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
+- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh --routes`; reconcile `CLAUDE_CODE_PINNED`, `CODEX_PINNED`, or `CURSOR_AGENT_VERSION` in `~/.factory/global.env`; run `agent login` and verify the exact configured Cursor models when fallback is enabled; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight through `~/.factory/bin/factory-launch <project> preflight` before resuming.
 - Don't: tell the dispatcher to launch anyway — every FAIL is predictable at kickoff and will block mid-pipeline.
 
 ## Close-out ledger PR
 
-- Notice: at ticket close-out the dispatcher opens a short-lived bookkeeping PR (e.g. `bookkeeping/T-NNN-closeout`) carrying new ledger rows and redacted run metadata/evidence. Redacted `factory/runs/*.out` streams remain local and ignored; unredacted Cursor output is never persisted.
-- Do: review and merge it like any factory bookkeeping change — this is the sanctioned ledger write path, not a controls violation. Check `run_id`, family, exact Cursor model, selection reason, and cost basis for fallback runs.
-- Don't: ask the dispatcher to commit ledger rows directly to `main` or to a ticket branch outside this flow.
+- Notice: at ticket close-out the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes launcher command `project-ledger` to materialize the effective runtime accounting into tracked `factory/ledger.csv`. Projection refuses any entry under `factory/.active-runs/` and any `factory/runs/*.pid` record because either may represent live or ambiguous work.
+- Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Then verify the command's row count, ticket total, and SHA-256, and review and merge the close-out PR like any factory bookkeeping change. Check `run_id`, family, exact model, selection reason, and cost basis.
+- Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
 
 ## Test commit order before operator review
 
@@ -185,7 +204,7 @@ interval alone was 5m50s and its full maintenance interval was longer.
 - Do: leave `MAINTENANCE` present and stop only the product's factory profile
   and reconciler. If the activation transaction is interrupted, run
   `factory-kit.sh reconcile` first and follow its terminal result.
-- Do: merge the normal protected revert that restores both the previous full
+- Do: merge the normal protected revert from a `chore/<slug>-revert` branch that restores both the previous full
   `KIT_PIN` and product tree, then update and verify the clean product checkout.
   If the candidate generation is committed and still active, run
   `factory-kit.sh rollback`; if reconcile restored the previous generation or
@@ -240,9 +259,9 @@ These run in your interactive session — never inside the loop. The factory's o
 ## Linear initiatives and approvals
 
 - Create the durable initiative record first at `factory/initiatives/I-NNN.md`; the reconciler creates the Linear Project. Set its status and target date in Linear.
-- Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates `Initiative:` in the ticket file.
+- Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
-- Approve only from Awaiting Approval by moving the issue to Approved. This records authorization; it does not claim the PR is merged. Factory close-out moves Approved → Done only after merge and staging confirmation.
+- Contract 1.2 stops in Review after the Narrator bundle. Do not move the issue to Awaiting Approval or Approved: without a dedicated trusted bundle-attestation path, ticket-state refuses both transition and materialization and sequencing does not authorize `AWAIT-MERGE`. Done remains unavailable until a dedicated merge/staging attestation path also exists.
 - Resume an escalated ticket by setting `Resume-State:` locally to the agreed stage, then move the Linear issue out of Blocked-Escalated to that same stage. Mismatched or otherwise illegal transitions are rejected and reported in sync health.
 
 ## The general rule

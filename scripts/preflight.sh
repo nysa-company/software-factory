@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # preflight.sh — kickoff checks before a ticket's first launch.
-# The dispatcher runs this once per ticket before the first run-agent.sh call.
+# The factory-launch preflight route runs this once per ticket before launch.
 # Usage: preflight.sh --ticket T-NNN
 # FACTORY_ROOT semantics match run-agent.sh (anchors factory/ under the repo root).
 set -euo pipefail
 
-TICKET="" LEASE_ID=""
+TICKET="" LEASE_ID="" WORKDIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2;;
     --lease) LEASE_ID="$2"; shift 2;;
+    --workdir) WORKDIR="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -19,10 +20,12 @@ done
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
-LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/ledger.csv}"
+CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
+LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/runtime-ledger.csv}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 PROJECTED_TICKET_USD="${PROJECTED_TICKET_USD:-5.00}"
-TICKET_FILE="$FACTORY_DIR/tickets/$TICKET.md"
+TICKET_SOURCE="$CONTENT_ROOT/factory/tickets/$TICKET.md"
+TICKET_FILE="$TICKET_SOURCE"
 
 FAIL=0
 pass() { echo "PASS: $*"; }
@@ -35,6 +38,8 @@ warn() { echo "WARN: $*"; }
 source "$KIT_DIR/scripts/lib/kit-pin.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/plain-config.sh"
 if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   fail "MAINTENANCE file present ($FACTORY_DIR/MAINTENANCE) — factory control plane is paused"
   echo "PREFLIGHT FAIL"
@@ -58,6 +63,20 @@ if [[ -f "$TICKET_FILE" ]] &&
   echo "PREFLIGHT FAIL"
   exit 1
 fi
+
+if [[ -f "$TICKET_SOURCE" ]]; then
+  EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
+  trap 'rm -f "$EFFECTIVE_TICKET"' EXIT
+  if python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
+    --ticket-file "$TICKET_SOURCE" --operator-map "$FACTORY_DIR/linear-map.json" \
+    --ticket "$TICKET" > "$EFFECTIVE_TICKET"; then
+    TICKET_FILE="$EFFECTIVE_TICKET"
+  else
+    fail "effective ticket state could not be resolved"
+    echo "PREFLIGHT FAIL"
+    exit 1
+  fi
+fi
 if [[ -n "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
   pass "ticket Kit-SHA affinity matches selected kit SHA"
 fi
@@ -67,12 +86,38 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 
+# Product and machine configuration are data-only trust boundaries. Validate
+# both before any backend probe can touch a credential-bearing CLI.
+[[ -f "$ENV_FILE" ]] || {
+  fail "envelope not found: $ENV_FILE"
+  echo "PREFLIGHT FAIL"
+  exit 1
+}
+unset PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS \
+  PER_RUN_TIMEOUT_MIN DAILY_CAP_USD
+if ! factory_load_plain_config "$ENV_FILE" envelope \
+  "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_CONFIG_KEYS"; then
+  fail "envelope config is unsafe or malformed"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
+
 # --- optional machine-level cap (same anchor as run-agent.sh) ---
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
+if ! factory_validate_runtime_overrides; then
+  fail "$FACTORY_RUNTIME_OVERRIDE_ERROR"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
+factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 GLOBAL_LEDGER=""
 if [[ -f "$GLOBAL_ENV" ]]; then
-  # shellcheck disable=SC1090
-  source "$GLOBAL_ENV"
+  if ! factory_load_plain_config "$GLOBAL_ENV" global \
+    "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1; then
+    fail "global config is unsafe or malformed"
+    echo "PREFLIGHT FAIL"
+    exit 1
+  fi
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
 fi
 if ! factory_validate_runtime_overrides; then
@@ -80,7 +125,6 @@ if ! factory_validate_runtime_overrides; then
   echo "PREFLIGHT FAIL"
   exit 1
 fi
-
 # (a) backend routes — resolve without submitting any task. The authenticated
 # isolated harness fixes the mock adapter before this script starts, so it must
 # not probe credential-bearing production CLIs.
@@ -139,31 +183,42 @@ else
 fi
 
 # (b) daily budget — same spend computation as run-agent.sh, reserve = PROJECTED_TICKET_USD
-if [[ ! -f "$ENV_FILE" ]]; then
-  fail "envelope not found: $ENV_FILE"
-else
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  TODAY="$(date +%F)"
-  [[ -f "$LEDGER" ]] || echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$LEDGER"
+TODAY="$(date +%F)"
+LEDGER_READY=1
+if [[ -L "$FACTORY_DIR/runs" ]] ||
+   { [[ ! -d "$FACTORY_DIR/runs" ]] &&
+     ! python3 "$KIT_DIR/scripts/lib/durable-file.py" touch \
+       "$FACTORY_DIR/runs/.initialized"; }; then
+  fail "run manifest directory could not be durably established"
+  LEDGER_READY=0
+fi
+if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+   [[ "$LEDGER_READY" -eq 1 ]] &&
+   ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh --factory-root "$REPO_ROOT" >/dev/null; then
+  fail "effective ledger could not be reduced"
+  LEDGER_READY=0
+fi
+if [[ "$LEDGER_READY" -eq 1 ]]; then
   SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
-  if awk -v s="$SPENT_TODAY" -v r="$PROJECTED_TICKET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-    fail "repo daily cap insufficient (spent \$$SPENT_TODAY + reserve \$$PROJECTED_TICKET_USD > \$$DAILY_CAP_USD)"
+else
+  SPENT_TODAY="0.0000"
+fi
+if awk -v s="$SPENT_TODAY" -v r="$PROJECTED_TICKET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+  fail "repo daily cap insufficient (spent \$$SPENT_TODAY + reserve \$$PROJECTED_TICKET_USD > \$$DAILY_CAP_USD)"
+else
+  pass "repo daily budget covers projected ticket (\$$SPENT_TODAY spent + \$$PROJECTED_TICKET_USD reserve <= \$$DAILY_CAP_USD)"
+fi
+if [[ -n "$GLOBAL_LEDGER" && -n "${GLOBAL_DAILY_CAP_USD:-}" ]]; then
+  mkdir -p "$(dirname "$GLOBAL_LEDGER")"
+  [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$GLOBAL_LEDGER"
+  SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
+  if awk -v s="$SPENT_GLOBAL" -v r="$PROJECTED_TICKET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+    fail "machine daily cap insufficient (spent \$$SPENT_GLOBAL + reserve \$$PROJECTED_TICKET_USD > \$$GLOBAL_DAILY_CAP_USD)"
   else
-    pass "repo daily budget covers projected ticket (\$$SPENT_TODAY spent + \$$PROJECTED_TICKET_USD reserve <= \$$DAILY_CAP_USD)"
+    pass "machine daily budget covers projected ticket (\$$SPENT_GLOBAL spent + \$$PROJECTED_TICKET_USD reserve <= \$$GLOBAL_DAILY_CAP_USD)"
   fi
-  if [[ -n "$GLOBAL_LEDGER" && -n "${GLOBAL_DAILY_CAP_USD:-}" ]]; then
-    mkdir -p "$(dirname "$GLOBAL_LEDGER")"
-    [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$GLOBAL_LEDGER"
-    SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
-    if awk -v s="$SPENT_GLOBAL" -v r="$PROJECTED_TICKET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-      fail "machine daily cap insufficient (spent \$$SPENT_GLOBAL + reserve \$$PROJECTED_TICKET_USD > \$$GLOBAL_DAILY_CAP_USD)"
-    else
-      pass "machine daily budget covers projected ticket (\$$SPENT_GLOBAL spent + \$$PROJECTED_TICKET_USD reserve <= \$$GLOBAL_DAILY_CAP_USD)"
-    fi
-  else
-    pass "no machine-level daily cap configured"
-  fi
+else
+  pass "no machine-level daily cap configured"
 fi
 
 # (d) repo clone on main, clean, up to date with origin/main
@@ -199,8 +254,8 @@ elif grep -qE '^State: Ready' "$TICKET_FILE"; then
   INITIATIVE="$(sed -n 's/^Initiative:[[:space:]]*//p' "$TICKET_FILE" | head -n1)"
   if [[ -z "$INITIATIVE" ]]; then
     fail "ticket has no Initiative field"
-  elif [[ ! -f "$FACTORY_DIR/initiatives/$INITIATIVE.md" ]]; then
-    fail "ticket initiative not found: $FACTORY_DIR/initiatives/$INITIATIVE.md"
+  elif [[ ! -f "$CONTENT_ROOT/factory/initiatives/$INITIATIVE.md" ]]; then
+    fail "ticket initiative not found: $CONTENT_ROOT/factory/initiatives/$INITIATIVE.md"
   else
     pass "ticket belongs to initiative $INITIATIVE"
   fi

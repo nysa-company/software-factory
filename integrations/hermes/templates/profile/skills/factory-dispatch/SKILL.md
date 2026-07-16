@@ -1,20 +1,20 @@
 ---
 name: factory-dispatch
-version: 1.1.0
+version: 1.2.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
 # Factory dispatch
 
 This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
-and `1.1.0`.
+through `1.2.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
 
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
-3. Require contract version `1.0.0` or `1.1.0` and a supported Hermes version.
+3. Require contract version `1.0.0`, `1.1.0`, or `1.2.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
@@ -27,8 +27,9 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
-Contract `1.0.0`, and contract `1.1.0` with `max_concurrent_tickets: 1`,
-retain the original one-ticket flow below. When contract `1.1.0` reports
+Contract `1.0.0`, and contracts `1.1.0` or `1.2.0` with
+`max_concurrent_tickets: 1`, retain the original one-ticket flow below.
+Contract `1.2.0` inherits `1.1.0` lease behavior unchanged. When either reports
 `max_concurrent_tickets: 2`, claim each ticket before preflight:
 
 ```text
@@ -44,15 +45,26 @@ may recover it under maintenance through `factory-kit recover-lease`.
 
 For the first launch of a ticket:
 
+1. Create the exact clean `<TICKET_BRANCH_PREFIX><T-NNN>` linked worktree from
+   current protected `origin/main`.
+2. For contract `1.2.0`, run the trusted `ticket-state --action materialize`
+   command below. Its verified exact-SHA push creates the remote ticket ref.
+3. Run preflight:
+
 ```text
-~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> [--lease <opaque-lease-id>] --json
+~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
 
 Before every role launch:
 
 ```text
-~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> [--lease <opaque-lease-id>] --json
+~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
+
+For contract `1.2.0`, `--workdir <absolute-product-worktree>` is required
+immediately before `--json` in both commands. It must be the same exact ticket
+worktree validated for role launches. Earlier contracts retain their published
+argument grammar.
 
 The launcher wraps the existing scripts' text and exit code; those scripts do
 not accept `--json` themselves. Accept only the documented wrapper schema,
@@ -77,6 +89,25 @@ linked worktree on the exact non-detached
 parsed product `factory/PROJECT.env`; if absent, the contract's documented
 `ticket/` default applies. Never launch from the registered main checkout.
 
+## Trusted ticket state
+
+Under contract `1.2.0`, consume reconciled operator fields only through:
+
+```text
+~/.factory/bin/factory-launch <project> ticket-state \
+  --ticket <T-NNN> --workdir <absolute-product-worktree> \
+  --action materialize --json
+```
+
+Move a factory-owned role stage only when the sequencer directs it, using the
+same command with `--action transition --state <factory-state>`. The launcher
+owns the commit and certified-destination push. The generic command refuses
+Awaiting Approval and Done until dedicated bundle and merge/deploy evidence
+gates exist. Contract 1.2 also refuses materialization of Approved and never
+authorizes `AWAIT-MERGE`; it stops in Review after the Narrator bundle. Never
+copy operator fields, edit the ticket, or manufacture a state transition
+yourself.
+
 When next-stage returns `AWAIT-OPERATOR`, run the required close-out reorder
 through the same stable boundary before opening the PR:
 
@@ -92,6 +123,25 @@ detached/wrong-ticket branch, a symlink, or a repository path from untrusted
 ticket text. The launcher verifies the same linked-worktree and exact ticket
 branch contract used for role launches. Never call
 `scripts/reorder-test-fixes.sh` directly.
+After opening the PR, stop and report the evidence-gate boundary. Do not use a
+generic transition to manufacture Awaiting Approval or Done.
+
+## Deterministic accounting closeout
+
+For contract `1.2.0`, create the dedicated clean linked branch
+`chore/tNNN-closeout` from current `origin/main`, then invoke:
+
+```text
+~/.factory/bin/factory-launch <project> project-ledger \
+  --ticket <T-NNN> --workdir <absolute-closeout-worktree> --json
+```
+
+Accept only the documented successful projection result, then commit that
+projected ledger through the closeout PR defined by the dispatcher role. Never
+copy, reconstruct, reorder, or hand-edit ledger rows. Any entry under
+`factory/.active-runs/` or any `factory/runs/*.pid` record makes the work live
+or ambiguous and must refuse projection. A dirty, stale, live-run, or otherwise
+refused projection is an escalation.
 
 The launcher is the only door. Do not call a mutable checkout's scripts,
 worker CLIs, or private launcher helpers directly. Do not add adapter
@@ -101,11 +151,12 @@ budget failure, pin failure, or release mismatch.
 
 ## Authority and trust
 
-- You may read state, launch authorized roles, move factory-owned ticket
-  stages, and escalate.
+- You may read state, launch authorized roles, invoke the trusted `ticket-state`
+  and `project-ledger` commands when contract 1.2 authorizes them, and escalate.
 - You may not write product code, tests, specifications, role prompts,
-  envelopes, ledgers, controls, release state, activation records, or
-  credentials.
+  envelopes, ticket state, ledgers, controls, release state, activation
+  records, or credentials by hand. Trusted launcher commands own their narrow
+  ticket-state and ledger mutations.
 - You may not create tickets, approve, merge, change pins, activate releases,
   clear maintenance, or bypass a lock.
 - The operator owns priority, Ready, approvals, unblocks, release activation,
