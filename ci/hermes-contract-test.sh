@@ -1419,9 +1419,9 @@ assert_bad_real_run_lease() {
     fail "real run reached adapter with $label dispatcher lease"
 }
 
-# First prove that two concurrent reservations cannot exceed one dollar of
-# capacity. Runtime manifests, not the projection-only durable ledger, are the
-# authoritative evidence under contract 1.2.
+# First prove that two concurrent launch requests serialize provider execution
+# and cannot exceed one dollar of capacity. Runtime manifests, not the
+# projection-only durable ledger, are authoritative under contract 1.2.
 run_launcher launchtest claim --ticket T-779 > "$TMP/real-claim-779.json"
 run_launcher launchtest claim --ticket T-780 > "$TMP/real-claim-780.json"
 REAL_LEASE_779="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-779.json")"
@@ -1457,25 +1457,15 @@ for _try in $(seq 1 1000); do
 done
 [[ "$started" -eq 1 ]] || fail "near-cap fixture did not reach exactly one task adapter"
 BUDGET_779_RC=0 BUDGET_780_RC=0
-if [[ -e "$REAL_RUN_WORKTREE_779_PHYS/.factory-test-adapter-started" ]]; then
-  wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
-  if [[ "$BUDGET_780_RC" -ne 5 ]]; then
-    awk '{print}' "$TMP/budget-780.out" >&2
-    fail "near-cap loser did not refuse reservation (status $BUDGET_780_RC)"
-  fi
-  touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
-  wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
-else
-  wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
-  if [[ "$BUDGET_779_RC" -ne 5 ]]; then
-    awk '{print}' "$TMP/budget-779.out" >&2
-    fail "near-cap loser did not refuse reservation (status $BUDGET_779_RC)"
-  fi
-  touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
-  wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
-fi
+touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
+wait "$BUDGET_780_PID" || BUDGET_780_RC=$?
 BACKGROUND_PIDS=""
 rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+started=0
+[[ -e "$REAL_RUN_WORKTREE_779_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
+[[ -e "$REAL_RUN_WORKTREE_780_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
+[[ "$started" -eq 1 ]] || fail "near-cap loser reached the serialized provider interval"
 if [[ ! ( "$BUDGET_779_RC" -eq 0 && "$BUDGET_780_RC" -eq 5 ) &&
       ! ( "$BUDGET_779_RC" -eq 5 && "$BUDGET_780_RC" -eq 0 ) ]]; then
   printf 'near-cap statuses: T-779=%s T-780=%s\n' "$BUDGET_779_RC" "$BUDGET_780_RC" >&2
@@ -1552,31 +1542,38 @@ run_launcher launchtest run \
 REAL_RUN_778_PID=$!
 BACKGROUND_PIDS="$BACKGROUND_PIDS $REAL_RUN_778_PID"
 for _try in $(seq 1 1000); do
-  [[ -e "$REAL_RUN_WORKTREE_PHYS/.factory-test-adapter-started" &&
-     -e "$REAL_RUN_WORKTREE_778_PHYS/.factory-test-adapter-started" ]] && break
+  started=0
+  [[ -e "$REAL_RUN_WORKTREE_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
+  [[ -e "$REAL_RUN_WORKTREE_778_PHYS/.factory-test-adapter-started" ]] && started=$((started + 1))
+  [[ "$started" -eq 1 ]] && break
   sleep 0.02
 done
-if [[ ! -e "$REAL_RUN_WORKTREE_PHYS/.factory-test-adapter-started" ||
-      ! -e "$REAL_RUN_WORKTREE_778_PHYS/.factory-test-adapter-started" ]] ||
+if [[ "$started" -ne 1 ]] ||
    ! kill -0 "$REAL_RUN_PID" 2>/dev/null || ! kill -0 "$REAL_RUN_778_PID" 2>/dev/null; then
-  fail "two real role runs did not overlap in distinct worktrees"
+  fail "serialized role runs did not keep one provider active and one queued"
 fi
+[[ -f "$LAUNCH_PRODUCT/factory/.dispatch-leases/T-777.json" &&
+   -f "$LAUNCH_PRODUCT/factory/.dispatch-leases/T-778.json" ]] ||
+  fail "serialized providers did not preserve both dispatcher leases"
 touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
 REAL_RUN_RC=0 REAL_RUN_778_RC=0
 wait "$REAL_RUN_PID" || REAL_RUN_RC=$?
 wait "$REAL_RUN_778_PID" || REAL_RUN_778_RC=$?
 BACKGROUND_PIDS=""
 rm -f "$LAUNCH_PRODUCT/factory/test-adapter-gate"
+[[ -e "$REAL_RUN_WORKTREE_PHYS/.factory-test-adapter-started" &&
+   -e "$REAL_RUN_WORKTREE_778_PHYS/.factory-test-adapter-started" ]] ||
+  fail "queued role did not run after the active provider exited"
 [[ "$REAL_RUN_RC" -eq 0 && "$REAL_RUN_778_RC" -eq 42 ]] ||
-  fail "one failed role run affected its concurrent peer"
+  fail "one failed serialized role run affected its peer"
 [[ "$(git -C "$REAL_RUN_WORKTREE_PHYS" branch --show-current)" == "ticket/T-777" &&
    "$(git -C "$REAL_RUN_WORKTREE_778_PHYS" branch --show-current)" == "ticket/T-778" ]] ||
-  fail "concurrent role runs did not retain exact ticket branches"
+  fail "serialized role runs did not retain exact ticket branches"
 [[ -f "$LAUNCH_PRODUCT/factory/.dispatch-leases/T-777.json" &&
    -f "$LAUNCH_PRODUCT/factory/.dispatch-leases/T-778.json" ]] ||
   fail "one failed role run invalidated a dispatcher lease"
 grep -qF "mock adapter ran task: overlap-success" "$TMP/real-run.txt" ||
-  fail "successful concurrent role did not complete"
+  fail "successful serialized role did not complete"
 
 REAL_MANIFEST="$(awk -F= '$1=="ticket" && $2=="T-777" {print FILENAME}' \
   "$LAUNCH_PRODUCT/factory/runs/"*.meta | tail -1)"

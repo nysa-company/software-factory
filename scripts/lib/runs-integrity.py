@@ -2,7 +2,6 @@
 """Snapshot and restore launcher-owned run manifests around an agent process."""
 
 import base64
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,7 @@ import stat
 import sys
 
 
-SNAPSHOT_SCHEMA = 3
+SNAPSHOT_SCHEMA = 1
 DIRECTORY_FLAGS = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
                    getattr(os, "O_NOFOLLOW", 0))
 FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -72,15 +71,7 @@ def manifests(descriptor):
     return {name: read_manifest(descriptor, name) for name in manifest_names(descriptor)}
 
 
-def ownership_names(descriptor):
-    return sorted(name for name in os.listdir(descriptor) if name.endswith(".owner"))
-
-
-def ownerships(descriptor):
-    return {name: read_manifest(descriptor, name) for name in ownership_names(descriptor)}
-
-
-def snapshot(directory, owned=None):
+def snapshot(directory):
     directory = Path(os.path.abspath(directory))
     parent_descriptor, parent_stat = open_real_directory(directory.parent, "runs parent")
     try:
@@ -102,8 +93,6 @@ def snapshot(directory, owned=None):
                 "parent": identity(parent_stat),
                 "directory": identity(opened),
                 "manifests": manifests(descriptor),
-                "ownerships": ownerships(descriptor),
-                "owned": owned,
             }
         finally:
             os.close(descriptor)
@@ -180,18 +169,12 @@ def recover_directory(parent_descriptor, runs_name, expected):
     os.fsync(parent_descriptor)
 
 
-def restore_manifests(descriptor, expected, expected_ownerships):
+def restore_manifests(descriptor, expected):
     for name in manifest_names(descriptor):
-        quarantine(descriptor, name)
-    for name in ownership_names(descriptor):
         quarantine(descriptor, name)
     for name, encoded in expected.items():
         if not name.endswith(".meta") or "/" in name or name in {".", ".."}:
             raise ValueError(f"invalid manifest name in snapshot: {name}")
-        durable_write(descriptor, name, base64.b64decode(encoded, validate=True))
-    for name, encoded in expected_ownerships.items():
-        if not name.endswith(".owner") or "/" in name or name in {".", ".."}:
-            raise ValueError(f"invalid ownership name in snapshot: {name}")
         durable_write(descriptor, name, base64.b64decode(encoded, validate=True))
     os.fsync(descriptor)
 
@@ -200,114 +183,8 @@ def validate_snapshot(expected):
     if (not isinstance(expected, dict) or expected.get("schema") != SNAPSHOT_SCHEMA or
             not isinstance(expected.get("parent"), dict) or
             not isinstance(expected.get("directory"), dict) or
-            not isinstance(expected.get("manifests"), dict) or
-            not isinstance(expected.get("ownerships"), dict) or
-            not isinstance(expected.get("owned"), (str, type(None)))):
+            not isinstance(expected.get("manifests"), dict)):
         raise ValueError("invalid runs snapshot")
-
-
-def valid_new_owner(name, encoded, manifest):
-    try:
-        content = base64.b64decode(encoded, validate=True).decode("utf-8")
-        values = {}
-        for line in content.splitlines():
-            key, value = line.split("=", 1)
-            if key in values:
-                return False
-            values[key] = value
-        run_id = name.removesuffix(".owner")
-        return (
-            set(values) == {
-                "schema", "run_id", "ticket", "role", "launcher_pid",
-                "launcher_start", "ownership_token",
-            }
-            and values["schema"] == "1"
-            and values["run_id"] == run_id == manifest.get("run_id")
-            and values["ticket"] == manifest.get("ticket")
-            and values["role"] == manifest.get("role")
-            and values["launcher_pid"] == manifest.get("launcher_pid")
-            and values["launcher_start"] == manifest.get("launcher_start")
-            and values["ownership_token"] == manifest.get("ownership_token")
-            and run_id.endswith(f"-{values['launcher_pid']}")
-            and values["launcher_pid"].isdigit()
-            and bool(values["launcher_start"])
-            and len(values["ownership_token"]) == 32
-            and all(value in "0123456789abcdef" for value in values["ownership_token"])
-        )
-    except (KeyError, UnicodeError, ValueError):
-        return False
-
-
-def valid_sibling_transition(name, before, after, current_ownerships):
-    # ponytail: semantic validation preserves inherited overlap; use a
-    # privileged manifest writer if hostile same-UID isolation is required.
-    helper = Path(__file__).resolve().parents[1] / "ledger-view.py"
-    spec = importlib.util.spec_from_file_location("ledger_view", helper)
-    ledger_view = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ledger_view)
-
-    def values(encoded):
-        content = base64.b64decode(encoded, validate=True).decode("utf-8")
-        return ledger_view.parse_meta(content, Path(name))
-
-    def lifecycle(parsed):
-        phase = parsed.get("phase")
-        state = parsed.get("accounting_state")
-        schema = parsed.get("accounting_schema")
-        if (phase == "resolved" and not schema and not state and
-                parsed.get("go_issued") == "0"):
-            probe = dict(parsed)
-            probe.update(accounting_schema="1", accounting_state="reserved", phase="reserved")
-            if ledger_view.manifest_row(Path(name), probe) is None:
-                raise ValueError(f"invalid resolved manifest: {name}")
-            return 0
-        if schema != "1" or ledger_view.manifest_row(Path(name), parsed) is None:
-            raise ValueError(f"invalid accounting manifest: {name}")
-        if state == "reserved":
-            expected = {
-                "reserved": ("0", 1),
-                "prepared": ("0", 2),
-                "spawned": ("1", 3),
-            }.get(phase)
-            if expected is None or parsed.get("go_issued") != expected[0]:
-                raise ValueError(f"invalid reserved lifecycle phase: {name}")
-            return expected[1]
-        if phase not in {"completed", "abandoned"}:
-            raise ValueError(f"invalid terminal lifecycle phase: {name}")
-        return 4
-
-    try:
-        current = values(after)
-        current_stage = lifecycle(current)
-        if before is None:
-            return valid_new_owner(
-                name.removesuffix(".meta") + ".owner",
-                current_ownerships.get(name.removesuffix(".meta") + ".owner", ""),
-                current,
-            )
-
-        original = values(before)
-        if original == current:
-            return True
-        original_stage = lifecycle(original)
-        mutable = {
-            "phase", "accounting_schema", "accounting_state", "go_issued",
-            "terminal_at", "turns", "effective_cost", "exit_status", "cost_basis",
-            "pid", "pgid", "process_start", "role_exit", "updated_at",
-        }
-        if any(original.get(key) != current.get(key)
-               for key in set(original) | set(current) if key not in mutable):
-            return False
-        if current_stage <= original_stage:
-            return False
-        if original.get("go_issued") == "1" and current.get("go_issued") != "1":
-            return False
-        for key in ("pid", "pgid", "process_start"):
-            if original.get(key) and original.get(key) != current.get(key):
-                return False
-        return True
-    except (KeyError, UnicodeError, ValueError):
-        return False
 
 
 def check(directory, expected):
@@ -330,66 +207,11 @@ def check(directory, expected):
         try:
             try:
                 actual = manifests(descriptor)
-                actual_ownerships = ownerships(descriptor)
             except (OSError, ValueError):
                 actual = None
-                actual_ownerships = None
-            if (identity_matches and actual == expected["manifests"] and
-                    actual_ownerships == expected["ownerships"]):
+            if identity_matches and actual == expected["manifests"]:
                 return True
-            owned = expected["owned"]
-            if (identity_matches and actual is not None and
-                    actual_ownerships is not None and owned):
-                missing = set(expected["manifests"]) - set(actual)
-                owned_changed = actual.get(owned) != expected["manifests"].get(owned)
-                invalid = [
-                    name for name, content in actual.items()
-                    if name != owned and not valid_sibling_transition(
-                        name, expected["manifests"].get(name), content,
-                        actual_ownerships,
-                    )
-                ]
-                new_manifests = set(actual) - set(expected["manifests"])
-                allowed_new_owners = {
-                    name.removesuffix(".meta") + ".owner" for name in new_manifests
-                }
-                invalid_owners = (
-                    set(expected["ownerships"]) - set(actual_ownerships)
-                    | {
-                        name for name, content in actual_ownerships.items()
-                        if name in expected["ownerships"] and
-                        content != expected["ownerships"][name]
-                    }
-                    | (set(actual_ownerships) - set(expected["ownerships"]) - allowed_new_owners)
-                )
-                if not missing and not owned_changed and not invalid and not invalid_owners:
-                    return True
-                if owned_changed and owned in actual:
-                    quarantine(descriptor, owned)
-                for name in invalid:
-                    quarantine(descriptor, name)
-                for name in invalid_owners:
-                    if name in actual_ownerships:
-                        quarantine(descriptor, name)
-                restore = set(missing)
-                restore.update(name for name in invalid if name in expected["manifests"])
-                if owned_changed and owned in expected["manifests"]:
-                    restore.add(owned)
-                for name in restore:
-                    durable_write(
-                        descriptor, name,
-                        base64.b64decode(expected["manifests"][name], validate=True),
-                    )
-                for name in invalid_owners & set(expected["ownerships"]):
-                    durable_write(
-                        descriptor, name,
-                        base64.b64decode(expected["ownerships"][name], validate=True),
-                    )
-                os.fsync(descriptor)
-                return False
-            restore_manifests(
-                descriptor, expected["manifests"], expected["ownerships"],
-            )
+            restore_manifests(descriptor, expected["manifests"])
             return False
         finally:
             os.close(descriptor)
@@ -398,12 +220,11 @@ def check(directory, expected):
 
 
 def main():
-    if len(sys.argv) not in {3, 4} or sys.argv[1] not in {"snapshot", "check"}:
-        raise SystemExit("usage: runs-integrity.py {snapshot|check} RUNS_DIR [OWNED_MANIFEST]")
+    if len(sys.argv) != 3 or sys.argv[1] not in {"snapshot", "check"}:
+        raise SystemExit("usage: runs-integrity.py {snapshot|check} RUNS_DIR")
     directory = Path(sys.argv[2])
     if sys.argv[1] == "snapshot":
-        owned = sys.argv[3] if len(sys.argv) == 4 else None
-        print(json.dumps(snapshot(directory, owned), sort_keys=True, separators=(",", ":")))
+        print(json.dumps(snapshot(directory), sort_keys=True, separators=(",", ":")))
         return
     expected = json.load(sys.stdin)
     if not check(directory, expected):

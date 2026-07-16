@@ -102,6 +102,7 @@ ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 LEDGER_DIR="$(dirname "$LEDGER")"
 LOCK_DIR="$LEDGER_DIR/.ledger.lock"
 LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
+PROVIDER_LOCK="$FACTORY_DIR/.provider.lock"
 RUNS_DIR="$FACTORY_DIR/runs"
 ACTIVE_RUN_FILE=""
 ACTIVE_RUN_TEMP=""
@@ -111,6 +112,8 @@ OWNS_ACTIVE_RUN=0
 HELD_LEDGER_LOCK=0
 HELD_GLOBAL_LOCK=0
 HELD_LAUNCH_LOCK=0
+HELD_PROVIDER_LOCK=0
+PROVIDER_LOCK_TOKEN=""
 RUN_PID=""
 RUN_PGID=""
 RUN_GROUP_ACTIVE=0
@@ -121,7 +124,6 @@ RUN_GO_FILE=""
 RUN_GATE_FILE=""
 RUN_OUTPUT_TEMP=""
 RUNS_META_SNAPSHOT=""
-RUN_OWNER=""
 CONTROL_PLANE_MUTATION=0
 REGISTERED_BRANCH_BEFORE=""
 REGISTERED_HEAD_BEFORE=""
@@ -335,6 +337,19 @@ release_global_lock() {
   HELD_GLOBAL_LOCK=0
 }
 
+provider_lock_is_owned() {
+  [[ "$HELD_PROVIDER_LOCK" -eq 1 && -d "$PROVIDER_LOCK" && ! -L "$PROVIDER_LOCK" &&
+      -f "$PROVIDER_LOCK/owner" && ! -L "$PROVIDER_LOCK/owner" &&
+      "$(cat "$PROVIDER_LOCK/owner" 2>/dev/null)" == "$PROVIDER_LOCK_TOKEN" ]]
+}
+
+release_provider_lock() {
+  provider_lock_is_owned || return 1
+  rm -f "$PROVIDER_LOCK/owner" || return 1
+  rmdir "$PROVIDER_LOCK" || return 1
+  HELD_PROVIDER_LOCK=0
+}
+
 restore_global_if_changed() {
   [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]] || return 0
   local current
@@ -391,9 +406,6 @@ write_manifest() {
     echo "role_branch_before=$(meta_value "${ROLE_BRANCH_BEFORE:-}")"
     echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
-    echo "launcher_pid=$(meta_value "$$")"
-    echo "launcher_start=$(meta_value "${CLAIM_START:-}")"
-    echo "ownership_token=$(meta_value "${CLAIM_TOKEN:-}")"
     echo "updated_at=$(date -u +%FT%TZ)"
   } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$MANIFEST"; then
     return 1
@@ -620,6 +632,10 @@ cleanup() {
     fi
   fi
   [[ "$HELD_LEDGER_LOCK" -eq 0 ]] || rmdir "$LOCK_DIR" 2>/dev/null || true
+  if [[ "$HELD_PROVIDER_LOCK" -eq 1 ]]; then
+    release_provider_lock ||
+      echo "WARNING: provider lock ownership changed; operator reconciliation required" >&2
+  fi
   [[ "$HELD_LAUNCH_LOCK" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$OWNS_ACTIVE_RUN" -eq 1 ]]; then
     if [[ -d "$ACTIVE_RUN_FILE" && ! -L "$ACTIVE_RUN_FILE" &&
@@ -815,29 +831,41 @@ token=$CLAIM_TOKEN"
 printf '%s\n' "$ACTIVE_RUN_EXPECTED" > "$ACTIVE_RUN_FILE/owner"
 ACTIVE_RUN_EXPECTED="$(cat "$ACTIVE_RUN_FILE/owner")"
 
+# ponytail: serialize providers until an OS-enforced writer boundary can keep
+# provider processes out of factory/runs while preserving parallel execution.
+PROVIDER_LOCK_ATTEMPTS=$((PER_RUN_TIMEOUT_MIN * 600 + 100))
+for i in $(seq 1 "$PROVIDER_LOCK_ATTEMPTS"); do
+  if mkdir "$PROVIDER_LOCK" 2>/dev/null; then
+    HELD_PROVIDER_LOCK=1
+    PROVIDER_LOCK_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    printf '%s\n' "$PROVIDER_LOCK_TOKEN" > "$PROVIDER_LOCK/owner" || exit 8
+    break
+  fi
+  if [[ -f "$FACTORY_DIR/KILL" ]]; then
+    echo "KILL file appeared while waiting for provider lock; no task was submitted" >&2
+    exit 4
+  fi
+  if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+    echo "MAINTENANCE file appeared while waiting for provider lock; no task was submitted" >&2
+    exit 4
+  fi
+  sleep 0.1
+done
+if [[ "$HELD_PROVIDER_LOCK" -ne 1 ]]; then
+  echo "provider lock stuck — no task was submitted" >&2
+  exit 8
+fi
+
 GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
 LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
 PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
 RUN_ID="$(date +%s)-$$"
 MANIFEST="$RUNS_DIR/$RUN_ID.meta"
-RUN_OWNER="$RUNS_DIR/$RUN_ID.owner"
 RUN_STARTED_AT="$(date -u +%FT%TZ)"
 TODAY="${RUN_STARTED_AT%%T*}"
 RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
 RESERVED_USD="$PER_RUN_BUDGET_USD"
 [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
-{
-  echo "schema=1"
-  echo "run_id=$RUN_ID"
-  echo "ticket=$(meta_value "$TICKET")"
-  echo "role=$(meta_value "$ROLE")"
-  echo "launcher_pid=$$"
-  echo "launcher_start=$(meta_value "$CLAIM_START")"
-  echo "ownership_token=$CLAIM_TOKEN"
-} | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUN_OWNER" || {
-  echo "run ownership record could not be persisted; no task was submitted" >&2
-  exit 3
-}
 write_manifest "resolved"
 if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "$FACTORY_KIT_PIN_ERROR after launch lock acquisition; no task was submitted" >&2
@@ -1126,7 +1154,7 @@ else
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
       elif ! RUNS_META_SNAPSHOT="$(python3 "$KIT_DIR/scripts/lib/runs-integrity.py" \
-          snapshot "$RUNS_DIR" "$(basename "$MANIFEST")")"; then
+          snapshot "$RUNS_DIR")"; then
         GO_ISSUED=0
         echo "could not snapshot run manifests; no task was submitted" >&2
         terminate_run_group
@@ -1168,6 +1196,11 @@ else
         fi
         if [[ "$(active_claim_snapshot 2>/dev/null || true)" != "$ACTIVE_RUN_SNAPSHOT" ]]; then
           echo "role_exit_control_plane_mutation: run claim changed during provider execution" >&2
+          CONTROL_PLANE_MUTATION=1
+          STATUS=11
+        fi
+        if ! provider_lock_is_owned; then
+          echo "role_exit_control_plane_mutation: provider lock changed during provider execution" >&2
           CONTROL_PLANE_MUTATION=1
           STATUS=11
         fi
@@ -1320,6 +1353,12 @@ else
   FINAL_ACCOUNTING_STATE="completed"
 fi
 
+if ! provider_lock_is_owned; then
+  echo "role_exit_control_plane_mutation: provider lock changed before terminal accounting" >&2
+  CONTROL_PLANE_MUTATION=1
+  ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+  STATUS=11
+fi
 finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" "$STATUS" "$COST_BASIS" "completed"
 
 # Refresh the materialized view under the same lock used by budget checks.
@@ -1337,6 +1376,10 @@ else
 fi
 
 finalize_global_ledger
+release_provider_lock || {
+  echo "WARNING: provider lock ownership changed after terminal accounting; operator reconciliation required" >&2
+  STATUS=11
+}
 
 printf '%s\n' "$RESULT"
 exit "$STATUS"

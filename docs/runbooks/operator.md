@@ -47,7 +47,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Global accounting or wrapper control-state mutation
 
 - Notice: the role exits with `role_exit_control_plane_mutation`, the global ledger lock remains, or the wrapper says operator reconciliation is required.
-- Do: keep maintenance published. Compare the affected run manifest and conservative reservation with the provider console, validate that the global ledger is a regular non-symlink CSV with the expected header and nonnegative rows, and retain the full reservation wherever cost is uncertain. When the wrapper still owns the exact global lock it restores its pre-provider snapshot; changed lock ownership or unresolved ledger state requires manual reconciliation before another launch.
+- Do: keep maintenance published. A product-level control lock normally permits only one provider interval, so quarantine and reconcile every new or changed sibling manifest before another launch. Compare the affected run manifest and conservative reservation with the provider console, validate that the global ledger is a regular non-symlink CSV with the expected header and nonnegative rows, and retain the full reservation wherever cost is uncertain. When the wrapper still owns the exact global lock it restores its pre-provider snapshot; changed lock ownership or unresolved ledger state requires manual reconciliation before another launch.
 - Don't: hand-edit or delete ledger history, remove an unknown-owner lock, or treat a reconstructed `.out` artifact as accounting authority. Provider output is captured by the wrapper and telemetry is only accepted when bounded and parseable.
 - Important: persistent mutation is detected and blocks advancement, but an unsandboxed provider shares the launcher's OS user. Preventing a hostile same-UID process from changing and restoring user-owned state requires OS isolation such as a separate UID or enforced sandbox; file snapshots and `mkdir` locks are not that boundary.
 
@@ -61,6 +61,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 - Do: if Linear is down, in-flight factory work continues from the ticket files, but do not expect a new priority, Ready, approval, or unblock action to take effect until sync recovers. Check `_sync.last_success_at` and `_sync.last_error` in `factory/linear-map.json`. GitHub or Railway outages still pause the stages that depend on them.
 - Don't: edit factory-owned Linear descriptions or force local state to imitate an operator transition that has not been ingested.
+- Note: on a new product, the first normal Linear reconciliation may durably initialize the missing real `factory/runs/` directory. A file, symlink, or other invalid entry at that path is an integrity failure, not something sync replaces.
 
 ## Broken connector (external sends failing)
 

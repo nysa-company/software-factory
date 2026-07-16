@@ -44,7 +44,9 @@ second candidate while a ticket has a nonterminal lease, a run is active, or an
 activation journal is incomplete. Contract `1.1.0` remains single-ticket by
 default and permits an explicit two-ticket pilot only when the product sets
 `MAX_CONCURRENT_TICKETS=2`; each ticket keeps its own exact branch, linked
-worktree, opaque lease, and sequential role flow.
+worktree, opaque lease, and sequential role flow. Those leases may coexist,
+but a product-level control lock serializes provider intervals until an
+OS-enforced writer boundary makes parallel providers safe.
 
 ## Kit release lifecycle
 

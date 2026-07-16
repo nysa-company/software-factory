@@ -343,6 +343,8 @@ def ledger_stats(path):
 
 
 def effective_ledger(factory_dir, dry=False):
+    if dry and not os.path.lexists(factory_dir / "runs"):
+        return []
     if not dry:
         ensure_runs_root(factory_dir)
     helper = Path(__file__).resolve().parent / "ledger-view.py"
