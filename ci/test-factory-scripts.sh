@@ -236,7 +236,7 @@ ROLE_MODELS="$(bash -c '
     printf "%s:%s:%s\\n" "$role" "$(factory_role_model "$role")" "$(factory_role_effort "$role")"
   done
 ' _ "$ROOT/scripts/lib/backend-policy.sh")"
-if [[ "$ROLE_MODELS" == $'planner:gpt-5.6-sol:high\nspec-linter:haiku:medium\ntest-author:fable:medium\nbuilder:gpt-5.6-terra:medium\nreviewer:sonnet:medium\nnarrator:gpt-5.6-terra:medium' ]]; then
+if [[ "$ROLE_MODELS" == $'planner:gpt-5.6-sol:high\nspec-linter:fable:medium\ntest-author:fable:medium\nbuilder:gpt-5.6-terra:medium\nreviewer:sonnet:medium\nnarrator:gpt-5.6-terra:medium' ]]; then
   pass "role model and effort policy is explicit"
 else
   fail "role model and effort policy is explicit" "$ROLE_MODELS"

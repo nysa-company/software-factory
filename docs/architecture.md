@@ -169,7 +169,7 @@ implemented; referenced and rollback-eligible releases are retained.
 
 ## Role and approval flow
 
-Planner, Builder, and Narrator use the production model family. Spec-linter, Test-author, and Reviewer use a separate checking family. Primary routing is explicit: Planner uses GPT-5.6 Sol at high effort; Builder and Narrator use GPT-5.6 Terra at medium effort; Spec-linter uses Claude Haiku 4.5 at medium effort; Test-author uses Claude Fable 5 at medium effort; Reviewer uses Claude Sonnet 5 at medium effort. Cursor remains a family-matched fallback and keeps its separately allowlisted model configuration. Narrator converts verified results into the evidence bundle the operator approves. The exact lifecycle and failure routes live in [workflows/ticket-flow.md](workflows/ticket-flow.md).
+Planner, Builder, and Narrator use the production model family. Spec-linter, Test-author, and Reviewer use a separate checking family. Primary routing is explicit: Planner uses GPT-5.6 Sol at high effort; Builder and Narrator use GPT-5.6 Terra at medium effort; Spec-linter and Test-author use Claude Fable 5 at medium effort; Reviewer uses Claude Sonnet 5 at medium effort. Cursor remains a family-matched fallback and keeps its separately allowlisted model configuration. Narrator converts verified results into the evidence bundle the operator approves. The exact lifecycle and failure routes live in [workflows/ticket-flow.md](workflows/ticket-flow.md).
 
 ## Trust boundaries
 

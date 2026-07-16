@@ -21,7 +21,7 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 |---|---|---|---|---|
 | Dispatcher | Hermes Agent | Deployment-configured | N/A | Coordinates authorized ticket work; it is outside the worker model policy. |
 | Planner | OpenAI / Codex CLI | GPT-5.6 Sol | High | Defines the implementation approach and constraints that downstream roles follow. |
-| Spec-linter | Anthropic / Claude Code CLI | Claude Haiku 4.5 | Medium | Checks the planned contract before implementation starts. |
+| Spec-linter | Anthropic / Claude Code CLI | Claude Fable 5 | Medium | Checks the planned contract before implementation starts. |
 | Test-author | Anthropic / Claude Code CLI | Claude Fable 5 | Medium | Writes the acceptance tests that protect the implementation boundary. |
 | Builder | OpenAI / Codex CLI | GPT-5.6 Terra | Medium | Implements the approved plan while remaining separate from test authorship. |
 | Reviewer | Anthropic / Claude Code CLI | Claude Sonnet 5 | Medium | Independently checks correctness, regressions, and release risk. |
