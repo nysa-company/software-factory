@@ -119,6 +119,11 @@ class EffectiveTicketTests(unittest.TestCase):
                     "state_base": "awaiting approval",
                 },
             ),
+            (
+                "Operator-Approval-Attestation: sha256:" + "0" * 64 + "\n"
+                "Operator-Approval-Attestation: sha256:" + "1" * 64 + "\n",
+                {"priority": "high"},
+            ),
         )
         for duplicate, operator in cases:
             with self.subTest(duplicate=duplicate), self.assertRaises(ValueError):

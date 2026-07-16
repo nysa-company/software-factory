@@ -99,8 +99,12 @@ controls and the Linear operator overlay remain anchored to the registered
 product root. Linear projection reads the committed exact ticket branch rather
 than a dirty checkout. `ticket-state` is the only launcher path that
 materializes operator fields or commits a factory-owned role-stage transition.
-It refuses Awaiting Approval and Done until dedicated bundle and merge/deploy
-attestations exist. Every automatic helper push is bound to the exact product
+Its generic transition surface refuses Awaiting Approval and Done until
+dedicated bundle and merge/deploy attestations exist. From an already committed
+Awaiting Approval state, operator materialization may commit Approved, the
+exact Linear marker, and a materialized operator-field attestation. Sequencing
+accepts that evidence only at the verified remote tip with the expected
+single-ticket commit shape. Every automatic helper push is bound to the exact product
 origin in the active generation's owner-only certification receipt; mutable
 Git remote configuration cannot redirect it.
 
@@ -160,3 +164,4 @@ Planner, Builder, and Narrator use the production model family. Spec-linter, Tes
 - Product credentials stay in GitHub or the hosting platform, never in repositories or agent output.
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
+- Approval commit shape and materialized operator-field attestations detect ordinary bypass inside the portable same-UID trust model; they are audit evidence, not a cryptographic signature against a deliberate host user.

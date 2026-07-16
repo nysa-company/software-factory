@@ -91,14 +91,17 @@ SOURCE_TICKET_FILE="$(cd "$(dirname "$TICKET_FILE")" && pwd -P)/$(basename "$TIC
 COMMITTED_TICKET_FILE="$(mktemp "${TMPDIR:-/tmp}/committed-ticket.XXXXXX")"
 EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
 trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET"' EXIT
+TICKET_WORKTREE_ROOT="" TICKET_RELATIVE="" COMMITTED_HEAD=""
 if WORKTREE_ROOT="$(git -C "$CONTENT_ROOT" rev-parse --show-toplevel 2>/dev/null)"; then
   WORKTREE_ROOT="$(cd "$WORKTREE_ROOT" && pwd -P)"
+  TICKET_WORKTREE_ROOT="$WORKTREE_ROOT"
+  COMMITTED_HEAD="$(git -C "$WORKTREE_ROOT" rev-parse HEAD 2>/dev/null || true)"
   case "$SOURCE_TICKET_FILE" in
     "$WORKTREE_ROOT"/*) TICKET_RELATIVE="${SOURCE_TICKET_FILE#"$WORKTREE_ROOT/"}" ;;
     *) TICKET_RELATIVE="" ;;
   esac
   if [[ -z "$TICKET_RELATIVE" ]] ||
-     ! git -C "$WORKTREE_ROOT" show "HEAD:$TICKET_RELATIVE" \
+     ! git -C "$WORKTREE_ROOT" show "$COMMITTED_HEAD:$TICKET_RELATIVE" \
        > "$COMMITTED_TICKET_FILE" 2>/dev/null; then
     : > "$COMMITTED_TICKET_FILE"
   fi
@@ -229,9 +232,61 @@ if [[ "$A" -ge 1 ]]; then
   # materializer, but sequencing advances only after the trusted command has
   # committed the marker to the exact ticket branch.
   if grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
+    APPROVAL_ATTESTATIONS="$(grep -ci '^Operator-Approval-Attestation:' \
+      "$COMMITTED_TICKET_FILE" 2>/dev/null || true)"
+    VALID_APPROVAL_ATTESTATIONS="$(grep -cE \
+      '^Operator-Approval-Attestation:[[:space:]]*sha256:[0-9a-f]{64}[[:space:]]*$' \
+      "$COMMITTED_TICKET_FILE" 2>/dev/null || true)"
+    MATERIALIZED_APPROVAL_VERSION="$(python3 - "$KIT_DIR/scripts/lib" \
+      "$COMMITTED_TICKET_FILE" <<'PY' 2>/dev/null || true
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from effective_ticket import materialized_operator_version
+
+print(materialized_operator_version(open(sys.argv[2]).read()))
+PY
+)"
+    APPROVAL_BRANCH="$(git -C "$TICKET_WORKTREE_ROOT" symbolic-ref --quiet --short HEAD \
+      2>/dev/null || true)"
+    APPROVAL_HEAD="$COMMITTED_HEAD"
+    APPROVAL_CURRENT_HEAD="$(git -C "$TICKET_WORKTREE_ROOT" rev-parse HEAD \
+      2>/dev/null || true)"
+    APPROVAL_TRACKING="$(git -C "$TICKET_WORKTREE_ROOT" rev-parse \
+      "refs/remotes/origin/$APPROVAL_BRANCH" 2>/dev/null || true)"
+    APPROVAL_CHANGED="$(git -C "$TICKET_WORKTREE_ROOT" diff-tree --no-commit-id \
+      --name-only -r "$APPROVAL_HEAD" 2>/dev/null || true)"
+    APPROVAL_SUBJECT="$(git -C "$TICKET_WORKTREE_ROOT" log -1 --format=%s \
+      "$APPROVAL_HEAD" 2>/dev/null || true)"
+    APPROVAL_AUTHOR="$(git -C "$TICKET_WORKTREE_ROOT" log -1 --format='%an <%ae>' \
+      "$APPROVAL_HEAD" \
+      2>/dev/null || true)"
+    APPROVAL_COMMITTER="$(git -C "$TICKET_WORKTREE_ROOT" log -1 --format='%cn <%ce>' \
+      "$APPROVAL_HEAD" \
+      2>/dev/null || true)"
+    APPROVAL_PARENT="$(git -C "$TICKET_WORKTREE_ROOT" show \
+      "$APPROVAL_HEAD^:$TICKET_RELATIVE" 2>/dev/null || true)"
     if grep -qiE '^State:[[:space:]]*Approved[[:space:]]*$' "$COMMITTED_TICKET_FILE" &&
        grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' \
-         "$COMMITTED_TICKET_FILE"; then
+         "$COMMITTED_TICKET_FILE" &&
+       [[ "$APPROVAL_ATTESTATIONS" -eq 1 && "$VALID_APPROVAL_ATTESTATIONS" -eq 1 &&
+          -n "$MATERIALIZED_APPROVAL_VERSION" &&
+          -n "$TICKET_WORKTREE_ROOT" && -n "$TICKET_RELATIVE" &&
+          "$APPROVAL_HEAD" == "$APPROVAL_CURRENT_HEAD" &&
+          "$APPROVAL_HEAD" == "$APPROVAL_TRACKING" &&
+          "$APPROVAL_CHANGED" == "$TICKET_RELATIVE" &&
+          "$APPROVAL_SUBJECT" == "$TICKET: materialize ticket state" &&
+          "$APPROVAL_AUTHOR" == "Software Factory <factory@local>" &&
+          "$APPROVAL_COMMITTER" == "Software Factory <factory@local>" ]] &&
+       grep -qiE '^State:[[:space:]]*Awaiting Approval[[:space:]]*$' <<< "$APPROVAL_PARENT" &&
+       ! grep -qiE '^Operator-Approval(?:-Attestation)?:' <<< "$APPROVAL_PARENT" &&
+       grep -qE "^Operator-Approval-Attestation:[[:space:]]*sha256:${MATERIALIZED_APPROVAL_VERSION}[[:space:]]*$" \
+         "$COMMITTED_TICKET_FILE" &&
+       [[ "$(git -C "$TICKET_WORKTREE_ROOT" rev-parse HEAD 2>/dev/null || true)" == \
+            "$APPROVAL_HEAD" &&
+          "$(git -C "$TICKET_WORKTREE_ROOT" rev-parse \
+            "refs/remotes/origin/$APPROVAL_BRANCH" 2>/dev/null || true)" == \
+            "$APPROVAL_HEAD" ]]; then
       echo "AWAIT-MERGE operator approval materialized on the ticket branch; merge and staging confirmation are next"
       exit 0
     fi

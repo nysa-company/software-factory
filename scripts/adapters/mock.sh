@@ -50,6 +50,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = re.sub(r"^State:\s*.*$", "State: Done", path.read_text(), count=1, flags=re.MULTILINE)
 text += "Operator-Approval: Linear\n"
+text += "Operator-Approval-Attestation: sha256:" + "0" * 64 + "\n"
 path.write_text(text)
 PY
     git -C "$WORKDIR" add "${ticket_file#"$WORKDIR/"}"

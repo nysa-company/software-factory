@@ -101,7 +101,9 @@ fields or commits role-stage transitions, and adds `project-ledger` as the only
 path that projects effective runtime accounting into the tracked durable
 ledger. Trusted write helpers accept only the exact product origin from the
 active certification receipt. The generic ticket-state transition refuses
-Awaiting Approval and Done until dedicated evidence attestations are added.
+Awaiting Approval and Done until dedicated evidence attestations are added;
+materialization from an already committed Awaiting Approval ticket may record
+the reconciled Linear approval and its materialized operator-field version.
 
 `run` and `reorder-test-fixes` are process boundaries rather than JSON
 commands. Their arguments and behavior are still compatibility-sensitive and

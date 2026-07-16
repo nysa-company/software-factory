@@ -17,13 +17,19 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contract 1.1 keeps live tickets serialized by default and permits an explicit two-ticket lease pilot with exact worktree isolation, atomic budget reservations, and opaque leases confined to trusted helpers. Relay T-107 completed every managed role on kit `3b63cc7` and reached Done through protected implementation and closeout PRs.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
-- Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Generic ticket-state transitions stop before Awaiting Approval and Done until dedicated evidence attestations exist.
+- Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Generic ticket-state transitions stop before Awaiting Approval and Done until dedicated evidence attestations exist; from committed Awaiting Approval, Linear approval materialization records a materialized operator-field attestation and must remain the verified remote-tip commit.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
 - Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and manifests are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. Persistent claim, manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
 - Hermes contract 1.2 requires exact ticket worktrees for preflight and sequencing, exposes trusted ticket-state and ledger projection, and keeps the standalone launcher compatible with active 1.0 and 1.1 releases.
 
 ## Log
+
+## 2026-07-15 — Decision 23: Approval materialization is tip-bound
+
+Category: System change
+
+From an already committed Awaiting Approval ticket, trusted Linear materialization records Approved, the exact approval marker, and the materialized operator-field version in one single-ticket commit. Sequencing verifies that version and requires the commit at the remote tip; this is auditable bypass detection within the documented same-UID ceiling, not a cryptographic signature.
 
 ## 2026-07-13 — Decision 1: Repository-local decision numbering
 

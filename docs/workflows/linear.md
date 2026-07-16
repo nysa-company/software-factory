@@ -30,7 +30,10 @@ worktree or committed ticket branch. The launcher-managed `ticket-state`
 command materializes accepted operator fields and commits factory-owned stage
 moves on the ticket branch. Its generic transition surface is limited to role
 stages and escalation; Awaiting Approval and Done remain refused until trusted
-bundle and merge/deploy attestations exist. An API outage never stops an in-flight ticket. The local sync map and logs show
+bundle and merge/deploy attestations exist. If the committed ticket is already
+Awaiting Approval, the command may materialize exact Linear approval with a
+tracked hash of the resulting protected operator fields; the sequencer also verifies the
+commit shape and remote tip before advancing. An API outage never stops an in-flight ticket. The local sync map and logs show
 stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 

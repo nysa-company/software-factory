@@ -43,12 +43,15 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
 OPERATOR_VERSION="$(<"$OPERATOR_VERSION_FILE")"
 
 if [[ "$ACTION" == "materialize" ]]; then
-  python3 - "$TICKET_FILE" "$TMP" <<'PY'
+  python3 - "$TICKET_FILE" "$TMP" "$KIT_DIR/scripts/lib" <<'PY'
 import re
 import sys
 from pathlib import Path
 
-current_path, effective_path = map(Path, sys.argv[1:])
+current_path, effective_path = map(Path, sys.argv[1:3])
+sys.path.insert(0, sys.argv[3])
+from effective_ticket import materialized_operator_version
+
 current_text = current_path.read_text()
 effective_text = effective_path.read_text()
 
@@ -69,6 +72,9 @@ if current_state != effective_state and effective_state == "approved" and not le
     raise SystemExit("operator approval requires committed Awaiting Approval state")
 current_approval = field(current_text, "Operator-Approval")
 effective_approval = field(effective_text, "Operator-Approval")
+current_attestation_count = len(re.findall(
+    r"^Operator-Approval-Attestation:", current_text, re.MULTILINE | re.IGNORECASE
+))
 approval_changed = effective_approval != current_approval
 if approval_changed and effective_approval != "Linear":
     raise SystemExit("operator approval marker must be Linear")
@@ -76,6 +82,18 @@ if approval_changed and not legal_approval:
     raise SystemExit("operator approval marker requires Awaiting Approval -> Approved")
 if current_state != effective_state and effective_state == "approved" and effective_approval != "Linear":
     raise SystemExit("Approved requires Operator-Approval: Linear")
+if effective_state == "approved" and effective_approval == "Linear" and not (
+    legal_approval and approval_changed
+):
+    raise SystemExit("Approved materialization requires a fresh Awaiting Approval transition")
+if legal_approval:
+    if current_attestation_count:
+        raise SystemExit("approval attestation already exists before materialization")
+    materialized_version = materialized_operator_version(effective_text)
+    effective_text = effective_text.rstrip("\n") + (
+        f"\nOperator-Approval-Attestation: sha256:{materialized_version}\n"
+    )
+    effective_path.write_text(effective_text)
 PY
 elif [[ "$ACTION" == "transition" ]]; then
   python3 - "$TMP" "$STATE" <<'PY'
