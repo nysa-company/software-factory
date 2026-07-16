@@ -312,32 +312,46 @@ def record_failure(map_path, mapping, error):
 
 
 def ledger_stats(path):
+    if not isinstance(path, Path):
+        reader = csv.DictReader(path)
+    elif not path.is_file():
+        return {}
+    else:
+        with path.open() as handle:
+            return ledger_stats(handle)
     stats = {}
-    if not path.is_file():
-        return stats
-    with path.open() as handle:
-        for row in csv.DictReader(handle):
-            ticket_id = row.get("ticket", "").strip()
-            if not ticket_id:
-                continue
-            item = stats.setdefault(ticket_id, {"cost": 0.0, "runs": 0, "last_role": None})
-            try:
-                item["cost"] += float(row.get("cost_usd") or 0)
-            except ValueError:
-                pass
-            if row.get("exit_status", "").strip() == "0":
-                item["runs"] += 1
-                item["last_role"] = row.get("role", "").strip() or item["last_role"]
+    for row in reader:
+        ticket_id = row.get("ticket", "").strip()
+        if not ticket_id:
+            continue
+        item = stats.setdefault(
+            ticket_id,
+            {"cost": 0.0, "runs": 0, "last_role": None, "narrator_runs": 0},
+        )
+        try:
+            item["cost"] += float(row.get("cost_usd") or 0)
+        except ValueError:
+            pass
+        if row.get("exit_status", "").strip() == "0":
+            role = row.get("role", "").strip()
+            item["runs"] += 1
+            item["last_role"] = role or item["last_role"]
+            if role == "narrator":
+                item["narrator_runs"] += 1
     return stats
 
 
-def effective_ledger(factory_dir):
+def effective_ledger(factory_dir, dry=False):
     helper = Path(__file__).resolve().parent / "ledger-view.py"
-    subprocess.run(
-        [sys.executable, str(helper), "refresh", "--factory-root", str(factory_dir.parent)],
+    command = "print" if dry else "refresh"
+    result = subprocess.run(
+        [sys.executable, str(helper), command, "--factory-root", str(factory_dir.parent)],
         check=True,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if dry else subprocess.DEVNULL,
+        text=True,
     )
+    if dry:
+        return result.stdout.splitlines()
     return factory_dir / "runtime-ledger.csv"
 
 
@@ -696,7 +710,7 @@ def post_comment(key, issue_id, body, dry):
 
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
     config = mapping["_config"]
-    stats = ledger_stats(effective_ledger(factory_dir))
+    stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
         for initiative_id, entry in mapping["initiatives"].items()
@@ -815,7 +829,13 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
         if (
             not entry.get("bundle_posted")
             and entry.get("issue_id")
-            and ticket["state"] in ("awaiting approval", "approved", "done")
+            and (
+                ticket["state"] in ("awaiting approval", "approved", "done")
+                or (
+                    ticket["state"] == "review"
+                    and stats.get(ticket["id"], {}).get("narrator_runs", 0) > 0
+                )
+            )
             and bundle_text is not None
         ):
             post_comment(key, entry["issue_id"], "**Evidence bundle**\n\n" + bundle_text, dry)

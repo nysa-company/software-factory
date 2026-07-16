@@ -22,6 +22,7 @@ SPEC.loader.exec_module(LINEAR)
 class FakeLinear:
     def __init__(self):
         self.calls = []
+        self.comments = []
         self.issues = {}
         self.projects = {}
         self.views = {}
@@ -119,6 +120,7 @@ class FakeLinear:
                 issue["labels"] = {"nodes": [{"id": item, "name": item} for item in data["labelIds"]]}
             return {"issueUpdate": {"success": True}}
         if "commentCreate" in query:
+            self.comments.append(variables["input"]["body"])
             return {"commentCreate": {"success": True}}
         raise AssertionError(f"Unhandled GraphQL operation: {query}")
 
@@ -352,6 +354,31 @@ class LinearSyncTest(unittest.TestCase):
         updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
         self.assertEqual(updates_before, updates_after)
 
+    def test_review_bundle_posts_once_after_successful_narrator(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("State: Backlog", "State: Review"))
+        (self.factory / "tickets" / "T-001-bundle.md").write_text("Verified bundle\n")
+
+        self.reconcile()
+        self.assertFalse(self.mapping["tickets"]["T-001"]["bundle_posted"])
+        self.assertFalse(any(body.startswith("**Evidence bundle**") for body in self.fake.comments))
+
+        with (self.factory / "ledger.csv").open("a") as handle:
+            handle.write("2026-07-15,12:00:00,T-001,narrator,codex,3,1,0.10,0\n")
+        self.reconcile()
+        evidence = [
+            body for body in self.fake.comments if body.startswith("**Evidence bundle**")
+        ]
+        self.assertEqual(evidence, ["**Evidence bundle**\n\nVerified bundle\n"])
+        self.assertTrue(self.mapping["tickets"]["T-001"]["bundle_posted"])
+
+        self.reconcile()
+        self.assertEqual(
+            len([body for body in self.fake.comments if body.startswith("**Evidence bundle**")]),
+            1,
+        )
+
     def test_non_factory_labels_are_preserved(self):
         self.reconcile()
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
@@ -362,10 +389,13 @@ class LinearSyncTest(unittest.TestCase):
     def test_dry_run_changes_neither_files_nor_map(self):
         before_ticket = (self.factory / "tickets" / "T-001.md").read_text()
         before_map = json.dumps(self.mapping, sort_keys=True)
+        runtime = self.factory / "runtime-ledger.csv"
+        runtime.write_bytes(b"dry-run sentinel\n")
         self.reconcile(dry=True)
         self.assertEqual((self.factory / "tickets" / "T-001.md").read_text(), before_ticket)
         self.assertEqual(json.dumps(self.mapping, sort_keys=True), before_map)
         self.assertFalse(self.map_path.exists())
+        self.assertEqual(runtime.read_bytes(), b"dry-run sentinel\n")
 
     def test_lock_contender_does_not_overwrite_map(self):
         self.mapping["tickets"]["T-001"] = {
