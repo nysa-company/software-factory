@@ -17,15 +17,15 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 
 ## Role backends
 
-| Role | Group | Primary provider / adapter | Primary model | Optional fallback / model |
+| Role | Provider | Model | Effort | Why it matters |
 |---|---|---|---|---|
-| Dispatcher | Coordinator | Hermes Agent (deployment-configured provider) | Deployment-configured; outside the worker backend policy | None |
-| Planner | Production | OpenAI / Codex CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `gpt-5.6-sol-high` |
-| Spec-linter | Checking | Anthropic / Claude Code CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `claude-sonnet-5-thinking-high` |
-| Test-author | Checking | Anthropic / Claude Code CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `claude-sonnet-5-thinking-high` |
-| Builder | Production | OpenAI / Codex CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `gpt-5.6-sol-high` |
-| Reviewer | Checking | Anthropic / Claude Code CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `claude-sonnet-5-thinking-high` |
-| Narrator | Production | OpenAI / Codex CLI | CLI default (`cli-default` in the ledger; not pinned by the kit) | Cursor Agent / `gpt-5.6-sol-high` |
+| Dispatcher | Hermes Agent | Deployment-configured | N/A | Coordinates authorized ticket work; it is outside the worker model policy. |
+| Planner | OpenAI / Codex CLI | GPT-5.6 Sol | High | Defines the implementation approach and constraints that downstream roles follow. |
+| Spec-linter | Anthropic / Claude Code CLI | Claude Fable 5 | Medium | Checks the planned contract before implementation starts. |
+| Test-author | Anthropic / Claude Code CLI | Claude Fable 5 | Medium | Writes the acceptance tests that protect the implementation boundary. |
+| Builder | OpenAI / Codex CLI | GPT-5.6 Terra | Medium | Implements the approved plan while remaining separate from test authorship. |
+| Reviewer | Anthropic / Claude Code CLI | Claude Sonnet 5 | Medium | Independently checks correctness, regressions, and release risk. |
+| Narrator | OpenAI / Codex CLI | GPT-5.6 Terra | Medium | Produces the evidence bundle used for human approval. |
 
 Cursor fallback is disabled by default. When enabled, the wrapper selects the
 matching provider-family route before submitting the task; fallback is never a
