@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+git -C "$ROOT" check-ignore -q --no-index conformance/factory/linear-map.json || {
+  echo "FAIL: Linear operator overlay is not ignored" >&2
+  exit 1
+}
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/ticket-state-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 PRODUCT="$TMP/product"

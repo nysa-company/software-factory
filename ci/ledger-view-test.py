@@ -36,10 +36,10 @@ def git(path, *args):
     subprocess.run(["git", "-C", str(path), *args], check=True, stdout=subprocess.DEVNULL)
 
 
-def manifest(path, *, state="reserved", go="0", cost="", status="", terminal="", ticket="T-123"):
+def manifest(path, *, state="reserved", phase=None, go="0", cost="", status="", terminal="", ticket="T-123"):
     values = {
         "run_id": path.stem,
-        "phase": "reserved" if state == "reserved" else state,
+        "phase": phase or ("reserved" if state == "reserved" else state),
         "accounting_schema": "1",
         "accounting_state": state,
         "reserved_usd": "2.00",
@@ -263,7 +263,7 @@ class LedgerViewTest(unittest.TestCase):
         self.assertEqual(len(quarantined), 1)
         self.assertEqual((quarantined[0] / "forged.meta").read_bytes(), b"forged\n")
 
-    def test_integrity_allows_valid_concurrent_sibling_terminalization(self):
+    def test_integrity_allows_valid_new_terminal_sibling(self):
         runs = self.root / "factory" / "runs"
         owned = runs / "owned.meta"
         sibling = runs / "sibling.meta"
@@ -271,12 +271,120 @@ class LedgerViewTest(unittest.TestCase):
         owned.write_text(owned.read_text().replace("phase=reserved", "phase=spawned").replace("go_issued=0", "go_issued=1"))
         snapshot = self.integrity_snapshot(owned=owned.name).stdout
 
-        manifest(sibling, state="launch_void", status="5", terminal="2026-07-15T12:01:00Z")
-        sibling.write_text(sibling.read_text().replace("phase=launch_void", "phase=abandoned"))
+        manifest(
+            sibling, state="completed", phase="completed", go="1", cost="0.40",
+            status="0", terminal="2026-07-15T12:01:00Z",
+        )
         result = self.integrity_check(snapshot)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(sibling.exists())
+
+    def test_integrity_quarantines_malformed_new_sibling(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        manifest(owned, phase="spawned", go="1")
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        (runs / "malformed.meta").write_bytes(b"not-a-manifest\n")
+
+        result = self.integrity_check(snapshot)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((runs / "malformed.meta").exists())
+        self.assertEqual(len(list(runs.glob("malformed.meta.rejected-role-mutation-*"))), 1)
+
+    def test_integrity_restores_corrupted_existing_sibling_reservation(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        sibling = runs / "sibling.meta"
+        manifest(owned, phase="spawned", go="1")
+        manifest(sibling)
+        original = sibling.read_bytes()
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        sibling.write_bytes(b"not-a-manifest\n")
+
+        result = self.integrity_check(snapshot)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(sibling.read_bytes(), original)
+        rejected = list(runs.glob("sibling.meta.rejected-role-mutation-*"))
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0].read_bytes(), b"not-a-manifest\n")
+
+    def test_integrity_restores_owned_manifest_without_reverting_valid_sibling(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        sibling = runs / "sibling.meta"
+        manifest(owned, phase="spawned", go="1")
+        owned_original = owned.read_bytes()
+        manifest(sibling, phase="spawned", go="1")
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+        owned.write_bytes(b"provider mutation\n")
+        manifest(
+            sibling, state="completed", phase="completed", go="1", cost="0.40",
+            status="0", terminal="2026-07-15T12:01:00Z",
+        )
+        sibling_terminal = sibling.read_bytes()
+
+        result = self.integrity_check(snapshot)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(owned.read_bytes(), owned_original)
+        self.assertEqual(sibling.read_bytes(), sibling_terminal)
+        self.assertEqual(len(list(runs.glob("owned.meta.rejected-role-mutation-*"))), 1)
+
+    def test_integrity_allows_new_inflight_sibling_phases(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        manifest(owned, phase="spawned", go="1")
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+
+        resolved = runs / "new-resolved.meta"
+        manifest(resolved)
+        resolved.write_text(
+            resolved.read_text()
+            .replace("phase=reserved", "phase=resolved")
+            .replace("accounting_schema=1", "accounting_schema=")
+            .replace("accounting_state=reserved", "accounting_state=")
+        )
+        manifest(runs / "new-reserved.meta")
+        manifest(runs / "new-prepared.meta", phase="prepared")
+        manifest(runs / "new-spawned.meta", phase="spawned", go="1")
+
+        result = self.integrity_check(snapshot)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_integrity_allows_existing_sibling_lifecycle_progress(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        manifest(owned, phase="spawned", go="1")
+        resolved = runs / "from-resolved.meta"
+        manifest(resolved)
+        resolved.write_text(
+            resolved.read_text()
+            .replace("phase=reserved", "phase=resolved")
+            .replace("accounting_schema=1", "accounting_schema=")
+            .replace("accounting_state=reserved", "accounting_state=")
+        )
+        manifest(runs / "from-reserved.meta")
+        manifest(runs / "from-prepared.meta", phase="prepared")
+        manifest(runs / "from-spawned.meta", phase="spawned", go="1")
+        snapshot = self.integrity_snapshot(owned=owned.name).stdout
+
+        manifest(resolved, phase="prepared")
+        manifest(runs / "from-reserved.meta", phase="spawned", go="1")
+        manifest(
+            runs / "from-prepared.meta", state="completed", phase="completed", go="1",
+            cost="0.40", status="0", terminal="2026-07-15T12:01:00Z",
+        )
+        manifest(
+            runs / "from-spawned.meta", state="abandoned_conservative",
+            phase="abandoned", go="1", status="11",
+            terminal="2026-07-15T12:01:00Z",
+        )
+
+        result = self.integrity_check(snapshot)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_integrity_allows_sibling_resolved_to_launch_void(self):
         runs = self.root / "factory" / "runs"

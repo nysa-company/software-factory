@@ -26,13 +26,21 @@ printf '%s\n' \
   'DAILY_CAP_USD=20.00' \
   > "$PRODUCT/factory/ENVELOPE.env"
 printf '%s\n' "$(git -C "$ROOT" rev-parse HEAD)" > "$PRODUCT/factory/KIT_PIN"
+printf '%s\n' \
+  'factory/runtime-ledger.csv' \
+  'factory/runs/' \
+  'factory/.active-runs/' \
+  'factory/.launch.lock/' \
+  'factory/.ledger.lock/' \
+  'factory/.dispatch-leases/' \
+  'factory/.dispatch-leases.lock/' > "$PRODUCT/.gitignore"
 for ticket in T-901 T-902 T-903; do
   printf '# %s\n\nState: Ready\n' "$ticket" > "$PRODUCT/factory/tickets/$ticket.md"
 done
 git -C "$PRODUCT" init -q -b main
 git -C "$PRODUCT" config user.email dispatch-test@example.invalid
 git -C "$PRODUCT" config user.name dispatch-test
-git -C "$PRODUCT" add factory
+git -C "$PRODUCT" add .gitignore factory
 git -C "$PRODUCT" commit -qm fixture
 
 pids=""

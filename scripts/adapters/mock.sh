@@ -80,6 +80,14 @@ fi
 if [[ "${MOCK_MUTATE_REGISTERED_MAIN:-0}" == "1" ]]; then
   printf '\n# provider mutation\n' >> "$FACTORY_ROOT/factory/ENVELOPE.env"
 fi
+if [[ "${MOCK_MUTATE_REGISTERED_UNTRACKED:-0}" == "1" ]]; then
+  printf 'provider mutation\n' > "$FACTORY_ROOT/provider-untracked.txt"
+  git -C "$FACTORY_ROOT" config status.showUntrackedFiles no
+fi
+if [[ "${MOCK_MUTATE_WORKDIR_UNTRACKED:-0}" == "1" ]]; then
+  printf 'provider mutation\n' > "$WORKDIR/provider-untracked.txt"
+  git -C "$WORKDIR" config status.showUntrackedFiles no
+fi
 if [[ "${MOCK_MUTATE_DIRTY_TICKET:-0}" == "1" ]]; then
   printf '\nprovider changed already-dirty ticket bytes\n' >> \
     "$FACTORY_ROOT/factory/tickets/${MOCK_DIRTY_TICKET_ID}.md"
@@ -90,6 +98,15 @@ if [[ "${MOCK_FORGE_OUTPUT_PATH:-0}" == "1" ]]; then
     run_id="$(sed -n 's/^run_id=//p' "$manifest" | awk 'NR==1 {print; exit}')"
     [[ -n "$run_id" ]] || continue
     printf 'turns=1 cost_usd=0.01\n' > "$FACTORY_ROOT/factory/runs/$run_id.out"
+    break
+  done
+fi
+if [[ -n "${MOCK_SYMLINK_OUTPUT_TARGET:-}" ]]; then
+  for manifest in "$FACTORY_ROOT"/factory/runs/*.meta; do
+    [[ -f "$manifest" ]] || continue
+    run_id="$(sed -n 's/^run_id=//p' "$manifest" | awk 'NR==1 {print; exit}')"
+    [[ -n "$run_id" ]] || continue
+    ln -sf "$MOCK_SYMLINK_OUTPUT_TARGET" "$FACTORY_ROOT/factory/runs/$run_id.out"
     break
   done
 fi
@@ -106,6 +123,13 @@ if [[ "${MOCK_REPLACE_ACTIVE_CLAIM:-0}" == "1" ]]; then
     rm -rf "$claim"
     mkdir "$claim"
     printf 'pid=99999\nprocess_start=successor\ntoken=successor\n' > "$claim/owner"
+    break
+  done
+fi
+if [[ "${MOCK_ADD_ACTIVE_CLAIM_ENTRY:-0}" == "1" ]]; then
+  for claim in "$FACTORY_ROOT"/factory/.active-runs/*.lock; do
+    [[ -d "$claim" ]] || continue
+    printf 'poison\n' > "$claim/junk"
     break
   done
 fi

@@ -242,6 +242,8 @@ content = owner.read_bytes()
 if (not stat.S_ISDIR(directory_stat.st_mode) or directory.is_symlink() or
         not stat.S_ISREG(owner_stat.st_mode) or owner.is_symlink() or content.rstrip(b"\n") != expected):
     raise SystemExit(1)
+if sorted(entry.name for entry in directory.iterdir()) != ["owner"]:
+    raise SystemExit(1)
 print(f"{directory_stat.st_dev}:{directory_stat.st_ino}:"
       f"{owner_stat.st_dev}:{owner_stat.st_ino}:"
       f"{base64.b64encode(content).decode()}")
@@ -691,7 +693,7 @@ if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     echo "role_exit_wrong_branch: ticket worktree must be on a branch" >&2
     exit 11
   }
-  [[ -z "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain)" ]] || {
+  [[ -z "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain --untracked-files=all)" ]] || {
     echo "role_exit_dirty: ticket worktree must be clean before launch" >&2
     exit 11
   }
@@ -828,7 +830,7 @@ if ! factory_record_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
 fi
 if [[ "$ROLE_EXIT_ENFORCED" -eq 1 && "$TICKET_AFFINITY_WAS_MISSING" -eq 1 ]]; then
   TICKET_RELATIVE="${TICKET_FILE#"$WORKDIR/"}"
-  CHANGED_PATHS="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain | awk '{print $2}')"
+  CHANGED_PATHS="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain --untracked-files=all | awk '{print $2}')"
   if [[ "$CHANGED_PATHS" != "$TICKET_RELATIVE" ]]; then
     echo "role_exit_dirty: Kit-SHA recording changed unexpected paths" >&2
     exit 11
@@ -1112,7 +1114,7 @@ else
            ! REGISTERED_HEAD_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
           rev-parse HEAD 2>/dev/null)" ||
            ! REGISTERED_STATUS_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
-          status --porcelain --untracked-files=no 2>/dev/null)" ||
+          status --porcelain --untracked-files=all 2>/dev/null)" ||
            ! REGISTERED_CONTENT_BEFORE="$(registered_tracked_content 2>/dev/null)"; then
         GO_ISSUED=0
         echo "could not snapshot registered checkout; no task was submitted" >&2
@@ -1155,7 +1157,7 @@ else
         fi
         if [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
               "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)" != "$REGISTERED_HEAD_BEFORE" ||
-              "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)" != "$REGISTERED_STATUS_BEFORE" ||
+              "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" status --porcelain --untracked-files=all 2>/dev/null || true)" != "$REGISTERED_STATUS_BEFORE" ||
               "$(registered_tracked_content 2>/dev/null || true)" != "$REGISTERED_CONTENT_BEFORE" ]]; then
           echo "role_exit_control_plane_mutation: registered checkout changed during provider execution" >&2
           CONTROL_PLANE_MUTATION=1
@@ -1184,7 +1186,8 @@ RUN_GATE_FILE=""
 exec 9>&-
 RESULT="$(cat <&8)"
 exec 8<&-
-printf '%s\n' "$RESULT" > "$RUNS_DIR/$RUN_ID.out"
+printf '%s\n' "$RESULT" | \
+  python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUNS_DIR/$RUN_ID.out"
 
 PROVIDER_STATUS="$STATUS"
 if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
@@ -1192,7 +1195,7 @@ if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
 elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
-  ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain 2>/dev/null || true)"
+  ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain --untracked-files=all 2>/dev/null || true)"
   ROLE_PROTECTED_AFTER="$(ticket_evidence_snapshot "$TICKET_FILE" 2>/dev/null)" ||
     ROLE_PROTECTED_AFTER="__invalid__"
   if [[ "$PROVIDER_STATUS" -eq 0 ]]; then

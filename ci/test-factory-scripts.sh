@@ -37,7 +37,12 @@ write_envelope() {
     'PER_RUN_MAX_TURNS=5' \
     'PER_RUN_TIMEOUT_MIN=1' \
     'DAILY_CAP_USD=50.00' > "$1/factory/ENVELOPE.env"
-  echo "factory/runtime-ledger.csv" > "$1/.gitignore"
+  printf '%s\n' \
+    'factory/runtime-ledger.csv' \
+    'factory/runs/' \
+    'factory/.active-runs/' \
+    'factory/.launch.lock/' \
+    'factory/.ledger.lock/' > "$1/.gitignore"
   printf '%s\n' "$KIT_SHA" > "$1/factory/KIT_PIN"
   [[ "$git_mode" == "no-git" ]] || init_product_git "$1"
 }
@@ -512,7 +517,8 @@ WT="$TMP/worktree"
 mkdir -p "$MAIN/conformance"
 write_envelope "$MAIN/conformance" no-git
 git -C "$MAIN" init -q
-git -C "$MAIN" add conformance/factory/ENVELOPE.env conformance/factory/KIT_PIN
+git -C "$MAIN" add conformance/.gitignore \
+  conformance/factory/ENVELOPE.env conformance/factory/KIT_PIN
 GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com \
 GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com \
   git -C "$MAIN" commit -qm "fixture"
@@ -956,7 +962,10 @@ FACTORY_ROOT="$STATE_GO" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   > "$TMP/sequence-before-go.out" 2>&1 &
 STATE_GO_PID=$!
 for _i in $(seq 1 100); do
-  [[ -n "$(ls "$STATE_GO/factory/runs/".*.ready 2>/dev/null || true)" ]] && break
+  if [[ -n "$(ls "$STATE_GO/factory/runs/".*.ready 2>/dev/null || true)" ]] &&
+     grep -q '^phase=prepared$' "$STATE_GO/factory/runs/"*.meta 2>/dev/null; then
+    break
+  fi
   sleep 0.02
 done
 {
@@ -1167,6 +1176,23 @@ else
     "status=$REGISTERED_MUTATION_STATUS"
 fi
 
+REGISTERED_UNTRACKED_ROOT="$TMP/registered-main-untracked-mutation"
+write_envelope "$REGISTERED_UNTRACKED_ROOT"
+write_ticket "$REGISTERED_UNTRACKED_ROOT" T-239
+REGISTERED_UNTRACKED_STATUS=0
+FACTORY_ROOT="$REGISTERED_UNTRACKED_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  MOCK_MUTATE_REGISTERED_UNTRACKED=1 \
+  "$RUN_AGENT" --role planner --ticket T-239 -- "mutate registered main untracked" \
+  > "$TMP/registered-main-untracked-mutation.out" 2>&1 || REGISTERED_UNTRACKED_STATUS=$?
+if [[ "$REGISTERED_UNTRACKED_STATUS" -eq 11 &&
+      -f "$REGISTERED_UNTRACKED_ROOT/provider-untracked.txt" ]]; then
+  pass "registered checkout detects untracked mutation despite Git config"
+else
+  fail "registered checkout detects untracked mutation despite Git config" \
+    "status=$REGISTERED_UNTRACKED_STATUS"
+fi
+
 DIRTY_CONTENT_ROOT="$TMP/registered-dirty-content-mutation"
 write_envelope "$DIRTY_CONTENT_ROOT"
 write_ticket "$DIRTY_CONTENT_ROOT" T-230
@@ -1201,6 +1227,26 @@ if [[ "$OUTPUT_BIND_STATUS" -eq 0 &&
 else
   fail "accounting reads wrapper-bound output rather than provider pathname" \
     "status=$OUTPUT_BIND_STATUS"
+fi
+
+OUTPUT_SYMLINK_ROOT="$TMP/output-symlink"
+write_envelope "$OUTPUT_SYMLINK_ROOT"
+write_ticket "$OUTPUT_SYMLINK_ROOT" T-240
+OUTPUT_SYMLINK_TARGET="$TMP/output-symlink-target"
+printf 'untouched\n' > "$OUTPUT_SYMLINK_TARGET"
+OUTPUT_SYMLINK_STATUS=0
+FACTORY_ROOT="$OUTPUT_SYMLINK_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  MOCK_SYMLINK_OUTPUT_TARGET="$OUTPUT_SYMLINK_TARGET" \
+  "$RUN_AGENT" --role planner --ticket T-240 -- "symlink output path" \
+  > "$TMP/output-symlink.out" 2>&1 || OUTPUT_SYMLINK_STATUS=$?
+OUTPUT_SYMLINK_PUBLISHED="$(find "$OUTPUT_SYMLINK_ROOT/factory/runs" -name '*.out' -print -quit)"
+if [[ "$OUTPUT_SYMLINK_STATUS" -eq 0 && "$(cat "$OUTPUT_SYMLINK_TARGET")" == "untouched" &&
+      -f "$OUTPUT_SYMLINK_PUBLISHED" && ! -L "$OUTPUT_SYMLINK_PUBLISHED" ]]; then
+  pass "output publication atomically replaces provider symlink"
+else
+  fail "output publication atomically replaces provider symlink" \
+    "status=$OUTPUT_SYMLINK_STATUS"
 fi
 
 for metric_case in huge-cost huge-turns; do
@@ -1260,6 +1306,22 @@ if [[ "$CLAIM_MUTATION_STATUS" -eq 11 && -f "$CLAIM_SUCCESSOR" &&
 else
   fail "claim replacement fails closed without deleting successor ownership" \
     "status=$CLAIM_MUTATION_STATUS"
+fi
+
+CLAIM_ENTRY_ROOT="$TMP/claim-extra-entry"
+write_envelope "$CLAIM_ENTRY_ROOT"
+write_ticket "$CLAIM_ENTRY_ROOT" T-241
+CLAIM_ENTRY_STATUS=0
+FACTORY_ROOT="$CLAIM_ENTRY_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock MOCK_ADD_ACTIVE_CLAIM_ENTRY=1 \
+  "$RUN_AGENT" --role planner --ticket T-241 -- "add claim entry" \
+  > "$TMP/claim-extra-entry.out" 2>&1 || CLAIM_ENTRY_STATUS=$?
+if [[ "$CLAIM_ENTRY_STATUS" -eq 11 &&
+      -f "$CLAIM_ENTRY_ROOT/factory/.active-runs/T-241.planner.lock/junk" ]]; then
+  pass "extra run claim entries fail closed before advancement"
+else
+  fail "extra run claim entries fail closed before advancement" \
+    "status=$CLAIM_ENTRY_STATUS"
 fi
 
 STALE_CLAIM_ROOT="$TMP/stale-claim"
@@ -1756,6 +1818,23 @@ if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
 else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
+fi
+
+setup_role_exit_fixture T-642
+ROLE_UNTRACKED_STATUS=0
+MOCK_MUTATE_WORKDIR_UNTRACKED=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role planner --ticket T-642 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "untracked mutation" > "$TMP/role-untracked.out" 2>&1 || ROLE_UNTRACKED_STATUS=$?
+if [[ "$ROLE_UNTRACKED_STATUS" -eq 11 &&
+      -f "$ROLE_EXIT_WORKTREE/provider-untracked.txt" ]] &&
+   grep -q 'role_exit_dirty' "$TMP/role-untracked.out"; then
+  pass "role exit detects untracked mutation despite Git config"
+else
+  fail "role exit detects untracked mutation despite Git config" \
+    "status=$ROLE_UNTRACKED_STATUS"
 fi
 
 setup_role_exit_fixture T-610

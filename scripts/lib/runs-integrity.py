@@ -198,44 +198,67 @@ def valid_sibling_transition(name, before, after):
     ledger_view = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ledger_view)
 
-    def values(encoded, accounting=True):
+    def values(encoded):
         content = base64.b64decode(encoded, validate=True).decode("utf-8")
-        parsed = ledger_view.parse_meta(content, Path(name))
-        if accounting and ledger_view.manifest_row(Path(name), parsed) is None:
+        return ledger_view.parse_meta(content, Path(name))
+
+    def lifecycle(parsed):
+        phase = parsed.get("phase")
+        state = parsed.get("accounting_state")
+        schema = parsed.get("accounting_schema")
+        if (phase == "resolved" and not schema and not state and
+                parsed.get("go_issued") == "0"):
+            probe = dict(parsed)
+            probe.update(accounting_schema="1", accounting_state="reserved", phase="reserved")
+            if ledger_view.manifest_row(Path(name), probe) is None:
+                raise ValueError(f"invalid resolved manifest: {name}")
+            return 0
+        if schema != "1" or ledger_view.manifest_row(Path(name), parsed) is None:
             raise ValueError(f"invalid accounting manifest: {name}")
-        return parsed
+        if state == "reserved":
+            expected = {
+                "reserved": ("0", 1),
+                "prepared": ("0", 2),
+                "spawned": ("1", 3),
+            }.get(phase)
+            if expected is None or parsed.get("go_issued") != expected[0]:
+                raise ValueError(f"invalid reserved lifecycle phase: {name}")
+            return expected[1]
+        if phase not in {"completed", "abandoned"}:
+            raise ValueError(f"invalid terminal lifecycle phase: {name}")
+        return 4
 
-    current = values(after)
-    if before is None:
-        state = current.get("accounting_state")
-        phase = current.get("phase")
-        return ((state == "reserved" and phase == "spawned") or
-                (state in ledger_view.TERMINAL_STATES and
-                 phase in {state, "completed", "abandoned"}))
+    try:
+        current = values(after)
+        current_stage = lifecycle(current)
+        # A sibling may start and finish entirely after this run's snapshot.
+        # Semantic validation preserves inherited overlap; hostile same-UID
+        # isolation requires the privileged writer described above.
+        if before is None:
+            return True
 
-    original = values(before, accounting=False)
-    if original == current:
+        original = values(before)
+        if original == current:
+            return True
+        original_stage = lifecycle(original)
+        mutable = {
+            "phase", "accounting_schema", "accounting_state", "go_issued",
+            "terminal_at", "turns", "effective_cost", "exit_status", "cost_basis",
+            "pid", "pgid", "process_start", "role_exit", "updated_at",
+        }
+        if any(original.get(key) != current.get(key)
+               for key in set(original) | set(current) if key not in mutable):
+            return False
+        if current_stage <= original_stage:
+            return False
+        if original.get("go_issued") == "1" and current.get("go_issued") != "1":
+            return False
+        for key in ("pid", "pgid", "process_start"):
+            if original.get(key) and original.get(key) != current.get(key):
+                return False
         return True
-    mutable = {
-        "phase", "accounting_schema", "accounting_state", "terminal_at", "turns", "effective_cost",
-        "exit_status", "cost_basis", "role_exit", "updated_at",
-    }
-    if any(original.get(key) != current.get(key)
-           for key in set(original) | set(current) if key not in mutable):
+    except (KeyError, UnicodeError, ValueError):
         return False
-    if original.get("accounting_schema") != "1":
-        return (
-            original.get("phase") == "resolved" and
-            current.get("accounting_schema") == "1" and
-            current.get("phase") in {"launch_void", "abandoned"} and
-            current.get("accounting_state") == "launch_void"
-        )
-    return (
-        original.get("phase") == "spawned" and
-        original.get("accounting_state") == "reserved" and
-        current.get("accounting_state") in ledger_view.TERMINAL_STATES and
-        current.get("phase") in {"completed", "abandoned"}
-    )
 
 
 def check(directory, expected):
@@ -274,11 +297,21 @@ def check(directory, expected):
                 ]
                 if not missing and not owned_changed and not invalid:
                     return True
-                if not missing and not owned_changed:
-                    for name in invalid:
-                        quarantine(descriptor, name)
-                    os.fsync(descriptor)
-                    return False
+                if owned_changed and owned in actual:
+                    quarantine(descriptor, owned)
+                for name in invalid:
+                    quarantine(descriptor, name)
+                restore = set(missing)
+                restore.update(name for name in invalid if name in expected["manifests"])
+                if owned_changed and owned in expected["manifests"]:
+                    restore.add(owned)
+                for name in restore:
+                    durable_write(
+                        descriptor, name,
+                        base64.b64decode(expected["manifests"][name], validate=True),
+                    )
+                os.fsync(descriptor)
+                return False
             restore_manifests(descriptor, expected["manifests"])
             return False
         finally:
