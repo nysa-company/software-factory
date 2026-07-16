@@ -74,9 +74,17 @@ factory_validate_envelope_config() {
     }
 }
 
+factory_clear_plain_config_keys() {
+  local key
+  for key in $1; do
+    unset "$key"
+  done
+}
+
 factory_load_plain_config() {
   local path="$1" kind="$2" allowed="$3" required="$4" export_values="${5:-0}"
   local raw line key value seen=" " required_key
+  factory_clear_plain_config_keys "$allowed"
   while IFS= read -r raw || [[ -n "$raw" ]]; do
     [[ "$raw" != *$'\r'* && "$raw" != *$'\n'* && "$raw" != *$'\t'* ]] || {
       echo "$kind config contains control characters" >&2

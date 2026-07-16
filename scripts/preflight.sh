@@ -104,6 +104,7 @@ fi
 
 # --- optional machine-level cap (same anchor as run-agent.sh) ---
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
+factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 GLOBAL_LEDGER=""
 if [[ -f "$GLOBAL_ENV" ]]; then
   if ! factory_load_plain_config "$GLOBAL_ENV" global \

@@ -1073,6 +1073,16 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
   pass "first active generation is release a" ||
   fail "first active generation is release a"
 
+set_ticket_lease "$PRODUCT_ONE" "$SHA_B"
+commit_all "$PRODUCT_ONE" "lease registered planning ticket to release b"
+push_main "$PRODUCT_ONE"
+LEASE_BRANCH_WORKTREE="$TMP/product-one-ticket-T-006"
+git -C "$PRODUCT_ONE" worktree add -q -b ticket/T-006 \
+  "$LEASE_BRANCH_WORKTREE" main
+printf '%s\n' '# T-006' 'State: Planning' "Kit-SHA: $SHA_A" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "add branch-only ticket lease fixture"
+git -C "$LEASE_BRANCH_WORKTREE" push -q -u origin ticket/T-006
 set_pin "$PRODUCT_ONE" "$SHA_B"
 expect_success "candidate with old ticket lease can certify" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
@@ -1081,9 +1091,59 @@ expect_failure "different nonterminal ticket lease blocks activation" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_WRONG_LEASE"
 
-set_ticket_lease "$PRODUCT_ONE" "$SHA_B"
-commit_all "$PRODUCT_ONE" "lease planning ticket to release b"
-push_main "$PRODUCT_ONE"
+git -C "$PRODUCT_ONE" worktree remove -f "$LEASE_BRANCH_WORKTREE"
+git -C "$PRODUCT_ONE" branch -D ticket/T-006 >/dev/null
+git -C "$PRODUCT_ONE" update-ref -d refs/remotes/origin/ticket/T-006
+expect_failure "remote-only nonterminal ticket lease blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_LEASE"
+git -C "$PRODUCT_ONE" fetch -q origin \
+  refs/heads/ticket/T-006:refs/heads/ticket/T-006
+git -C "$PRODUCT_ONE" worktree add -q "$LEASE_BRANCH_WORKTREE" ticket/T-006
+git -C "$LEASE_BRANCH_WORKTREE" branch --set-upstream-to=origin/ticket/T-006 \
+  ticket/T-006 >/dev/null 2>&1 || true
+sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_B/" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
+mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "move authoritative ticket lease to release b"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+LEASE_BRANCH_REMOTE="$(git -C "$PRODUCT_ONE" remote get-url origin)"
+sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_A/" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
+mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "advance remote outside trusted tracking update"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin \
+  HEAD:refs/heads/factory-test-stale-ticket
+git --git-dir="$LEASE_BRANCH_REMOTE" update-ref refs/heads/ticket/T-006 \
+  "$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
+git --git-dir="$LEASE_BRANCH_REMOTE" update-ref -d \
+  refs/heads/factory-test-stale-ticket
+expect_failure "stale remote-tracking ticket lease blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_LEASE"
+sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_B/" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
+mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "restore verified authoritative ticket lease"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+git -C "$PRODUCT_ONE" branch ticket/T-007 main
+expect_failure "local-only ticket branch blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_LEASE"
+git -C "$PRODUCT_ONE" branch -D ticket/T-007 >/dev/null
+git -C "$PRODUCT_ONE" branch ticket/T-008 main
+git -C "$PRODUCT_ONE" push -q -u origin ticket/T-008
+expect_failure "ticket branch missing its canonical file blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_LEASE"
+git -C "$PRODUCT_ONE" push -q origin --delete ticket/T-008
+git -C "$PRODUCT_ONE" branch -D ticket/T-008 >/dev/null
 expect_success "upgraded product tuple certifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_B="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
@@ -1111,6 +1171,13 @@ expect_success "reconcile completes claimed pre-pointer transaction" \
 
 expect_failure "rollback refuses unreverted product tuple" \
   rollback --project alpha --product "$PRODUCT_ONE"
+sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_A/" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
+mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "restore authoritative ticket lease for rollback"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
 restore_product_tuple "$PRODUCT_ONE" "$SHA_A"
 printf '%s\n\n' "$SHA_A" > "$PRODUCT_ONE/factory/KIT_PIN"
 expect_failure "rollback rejects KIT_PIN blank-line extras" \

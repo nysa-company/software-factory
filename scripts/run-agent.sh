@@ -650,6 +650,7 @@ PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
 # then also reserves against ~/.factory/global-ledger.csv, so N projects can't
 # multiply the daily budget silently. Absent file = single-project behavior.
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
+factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 GLOBAL_LEDGER="" GLOBAL_LOCK=""
 if [[ -f "$GLOBAL_ENV" ]]; then
   factory_load_plain_config "$GLOBAL_ENV" global \

@@ -111,8 +111,8 @@ Git remote configuration cannot redirect it.
 The first role launch records a `Kit-SHA:` lease on the canonical ticket while
 holding `factory/.launch.lock`. Every later preflight, sequencer call, and run
 refuses a different physical kit SHA. Activation does not migrate leases, so a
-drained ticket boundary and an operator check for conflicting nonterminal
-leases remain required.
+drained ticket boundary and a scan of the committed exact ticket branches for
+conflicting nonterminal leases remain required.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and may
 be set only to `2`. At `2`, every sequencing and role launch requires the
@@ -165,3 +165,4 @@ Planner, Builder, and Narrator use the production model family. Spec-linter, Tes
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
 - Approval commit shape and materialized operator-field attestations detect ordinary bypass inside the portable same-UID trust model; they are audit evidence, not a cryptographic signature against a deliberate host user.
+- Allowlisted machine configuration comes only from `global.env`; inherited values with the same names are cleared even when the file is absent.

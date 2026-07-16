@@ -178,6 +178,34 @@ write_backend_stubs
 ln -s "$ROOT" "$TMP/kit-link"
 LINKED_RUN_AGENT="$TMP/kit-link/scripts/run-agent.sh"
 
+printf 'GLOBAL_DAILY_CAP_USD=50.00\n' > "$TMP/global-minimal.env"
+printf 'CODEX_USD_PER_MTOK_IN=1.00\n' > "$TMP/global-partial-pricing.env"
+GLOBAL_CONFIG_RESET="$(GLOBAL_DAILY_CAP_USD=999 FACTORY_PROBE_CODEX=stale \
+  bash -c '
+    source "$1"
+    factory_load_plain_config "$2" global "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1
+    [[ -z "${FACTORY_PROBE_CODEX+x}" && "$GLOBAL_DAILY_CAP_USD" == 50.00 ]]
+  ' _ "$ROOT/scripts/lib/plain-config.sh" "$TMP/global-minimal.env" && echo clean)"
+PARTIAL_PRICING_STATUS=0
+CODEX_USD_PER_MTOK_OUT=2.00 bash -c '
+  source "$1"
+  factory_load_plain_config "$2" global "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1
+' _ "$ROOT/scripts/lib/plain-config.sh" "$TMP/global-partial-pricing.env" \
+  >/dev/null 2>&1 || PARTIAL_PRICING_STATUS=$?
+MISSING_GLOBAL_RESET="$(GLOBAL_DAILY_CAP_USD=999 FACTORY_PROBE_CODEX=stale \
+  bash -c '
+    source "$1"
+    factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
+    [[ -z "${GLOBAL_DAILY_CAP_USD+x}" && -z "${FACTORY_PROBE_CODEX+x}" ]]
+  ' _ "$ROOT/scripts/lib/plain-config.sh" && echo clean)"
+if [[ "$GLOBAL_CONFIG_RESET" == clean && "$PARTIAL_PRICING_STATUS" -ne 0 &&
+      "$MISSING_GLOBAL_RESET" == clean ]]; then
+  pass "global config clears inherited and omitted allowlisted values"
+else
+  fail "global config clears inherited and omitted allowlisted values" \
+    "load=$GLOBAL_CONFIG_RESET partial=$PARTIAL_PRICING_STATUS missing=$MISSING_GLOBAL_RESET"
+fi
+
 IMPLICIT_PIN="$(bash -c '
   source "$1"
   factory_validate_kit_pin "$2" "$2/conformance"
