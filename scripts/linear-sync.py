@@ -659,9 +659,25 @@ def fetch_issue(key, issue_id):
         """query($id: String!) { issue(id: $id) {
              id identifier title description priority updatedAt
              state { id name } project { id } labels { nodes { id name } }
+             assignee { id }
            } }""",
         {"id": issue_id},
     )["issue"]
+
+
+_VIEWER_ID_CACHE = {}
+
+
+def fetch_viewer_id(key):
+    if key in _VIEWER_ID_CACHE:
+        return _VIEWER_ID_CACHE[key]
+    try:
+        viewer_id = gql(key, "{ viewer { id } }")["viewer"]["id"]
+    except Exception as error:  # noqa: BLE001 - must never fail the sync cycle
+        log(f"could not fetch viewer id, skipping escalation assignment: {error}")
+        viewer_id = None
+    _VIEWER_ID_CACHE[key] = viewer_id
+    return viewer_id
 
 
 def desired_labels(ticket, config):
@@ -736,6 +752,7 @@ def post_comment(key, issue_id, body, dry):
 
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
     config = mapping["_config"]
+    viewer_id = fetch_viewer_id(key)
     stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
@@ -818,6 +835,12 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 patch["description"] = description
             if desired_state_id and actual["state"]["id"] != desired_state_id:
                 patch["stateId"] = desired_state_id
+            if (
+                ticket["state"] == "blocked-escalated"
+                and viewer_id
+                and (actual.get("assignee") or {}).get("id") != viewer_id
+            ):
+                patch["assigneeId"] = viewer_id
             if (actual.get("project") or {}).get("id") != project_id and project_id:
                 patch["projectId"] = project_id
             if actual.get("priority", 0) != PRIORITIES.get(ticket["priority"], 0):

@@ -988,12 +988,18 @@ fi
 
 SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
 SPENT_TICKET="$(awk -F, -v t="$TICKET" 'NR>1 && $3==t {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
+# ponytail: shrink the reservation to the remaining ticket budget so a nearly
+# finished ticket is not refused by flat-reserve arithmetic; daily/global cap
+# checks keep the flat reserve (never observed binding near exhaustion).
+RESERVE_TICKET="$(awk -v budget="$PER_RUN_BUDGET_USD" -v spent="$SPENT_TICKET" -v cap="$PER_TICKET_BUDGET_USD" \
+  'BEGIN{remain=cap-spent; if (remain>0 && remain<budget) printf "%.4f", remain; else printf "%s", budget}')"
+RESERVED_USD="$RESERVE_TICKET"
 if awk -v s="$SPENT_TODAY" -v r="$PER_RUN_BUDGET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
   echo "daily cap would be exceeded (spent \$$SPENT_TODAY + reserve \$$PER_RUN_BUDGET_USD > \$$DAILY_CAP_USD) — refusing. See docs/runbooks/operator.md." >&2
   exit 5
 fi
-if awk -v s="$SPENT_TICKET" -v r="$PER_RUN_BUDGET_USD" -v cap="$PER_TICKET_BUDGET_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-  echo "ticket budget would be exceeded for $TICKET (spent \$$SPENT_TICKET + reserve \$$PER_RUN_BUDGET_USD > \$$PER_TICKET_BUDGET_USD) — move ticket to Blocked-Escalated." >&2
+if awk -v s="$SPENT_TICKET" -v r="$RESERVE_TICKET" -v cap="$PER_TICKET_BUDGET_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+  echo "ticket budget would be exceeded for $TICKET (spent \$$SPENT_TICKET + reserve \$$RESERVE_TICKET > \$$PER_TICKET_BUDGET_USD) — move ticket to Blocked-Escalated." >&2
   exit 5
 fi
 # Global cap check + reservation (own lock, taken while holding the repo
@@ -1057,7 +1063,7 @@ if [[ -n "$GLOBAL_LEDGER" ]]; then
   fi
   {
     cat "$GLOBAL_LEDGER"
-    echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION"
+    echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$RESERVED_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION"
   } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$GLOBAL_LEDGER" || {
     echo "global ledger reservation could not be persisted" >&2
     exit 3
@@ -1091,7 +1097,7 @@ RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
 RUN_GATE_FILE="$RUNS_DIR/.$RUN_ID.gate"
 rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
 ADAPTER_ARGS=(
-  --budget "$PER_RUN_BUDGET_USD"
+  --budget "$RESERVED_USD"
   --max-turns "$PER_RUN_MAX_TURNS"
   --timeout-min "$PER_RUN_TIMEOUT_MIN"
   --prompt-file "${PROMPT_FILE:-/dev/null}"
@@ -1388,8 +1394,8 @@ if [[ "$GO_ISSUED" -eq 0 ]]; then
   COST_BASIS="launch_void"
   FINAL_ACCOUNTING_STATE="launch_void"
 elif [[ -z "$COST" ]]; then
-  echo "WARNING: run cost unparsable — ledger keeps conservative reservation of \$$PER_RUN_BUDGET_USD for this run. Reconcile with the provider console." >&2
-  COST="$PER_RUN_BUDGET_USD"
+  echo "WARNING: run cost unparsable — ledger keeps conservative reservation of \$$RESERVED_USD for this run. Reconcile with the provider console." >&2
+  COST="$RESERVED_USD"
   TURNS="${TURNS:-0}"
   COST_BASIS="conservative_reservation"
   FINAL_ACCOUNTING_STATE="abandoned_conservative"

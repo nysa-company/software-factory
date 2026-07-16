@@ -27,10 +27,16 @@ class FakeLinear:
         self.projects = {}
         self.views = {}
         self.counter = 0
+        self.viewer_id = "viewer-1"
+        self.viewer_error = False
 
     def __call__(self, _key, query, variables=None):
         variables = variables or {}
         self.calls.append((query, variables))
+        if "viewer {" in query:
+            if self.viewer_error:
+                raise RuntimeError("viewer lookup failed")
+            return {"viewer": {"id": self.viewer_id}}
         if "teams {" in query:
             return {"teams": {"nodes": [{"id": "team-1", "name": "Software Factory", "key": "SF"}]}}
         if "team(id:" in query:
@@ -101,6 +107,7 @@ class FakeLinear:
                 "state": {"id": data.get("stateId"), "name": self.state_name(data.get("stateId"))},
                 "project": {"id": data["projectId"]} if data.get("projectId") else None,
                 "labels": {"nodes": [{"id": item, "name": item} for item in data.get("labelIds", [])]},
+                "assignee": {"id": data["assigneeId"]} if data.get("assigneeId") else None,
             }
             self.issues[issue_id] = issue
             return {"issueCreate": {"issue": {"id": issue_id, "identifier": issue["identifier"]}}}
@@ -118,6 +125,8 @@ class FakeLinear:
                 issue["project"] = {"id": data["projectId"]}
             if "labelIds" in data:
                 issue["labels"] = {"nodes": [{"id": item, "name": item} for item in data["labelIds"]]}
+            if "assigneeId" in data:
+                issue["assignee"] = {"id": data["assigneeId"]}
             return {"issueUpdate": {"success": True}}
         if "commentCreate" in query:
             self.comments.append(variables["input"]["body"])
@@ -187,6 +196,7 @@ class LinearSyncTest(unittest.TestCase):
             "tickets": {},
         }
         self.fake = FakeLinear()
+        LINEAR._VIEWER_ID_CACHE.clear()
 
     def tearDown(self):
         self.temp.cleanup()
@@ -321,6 +331,44 @@ class LinearSyncTest(unittest.TestCase):
                     target,
                 )
                 previous = target
+
+    def test_blocked_escalated_ticket_is_assigned_to_viewer(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("State: Backlog", "State: Blocked-Escalated"))
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+
+        self.reconcile()
+        update = next(
+            variables["input"]
+            for query, variables in reversed(self.fake.calls)
+            if "issueUpdate" in query
+        )
+        self.assertEqual(update["assigneeId"], "viewer-1")
+        self.assertEqual(issue["assignee"], {"id": "viewer-1"})
+
+        updates_before = sum("issueUpdate" in query for query, _variables in self.fake.calls)
+        self.reconcile()
+        updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
+        self.assertEqual(updates_before, updates_after)
+
+    def test_viewer_lookup_failure_does_not_block_state_patch(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("State: Backlog", "State: Blocked-Escalated"))
+        self.fake.viewer_error = True
+        LINEAR._VIEWER_ID_CACHE.clear()
+
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        self.assertEqual(issue["state"]["name"], "Blocked-Escalated")
+        self.assertIsNone(issue.get("assignee"))
+        update = next(
+            variables["input"]
+            for query, variables in reversed(self.fake.calls)
+            if "issueUpdate" in query
+        )
+        self.assertNotIn("assigneeId", update)
 
     def test_linear_project_membership_is_ingested(self):
         self.reconcile()

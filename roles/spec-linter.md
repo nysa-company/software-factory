@@ -1,4 +1,4 @@
-Version: 2
+Version: 3
 
 # Role: Spec-linter
 
@@ -8,13 +8,13 @@ Adapted from spec-kit's `/speckit.checklist` ("unit tests for English") and `/sp
 
 ## Input
 
-The ticket file in Planning (spec'd description, acceptance criteria, frozen contract, ambiguity log) and the product docs it links. Planning and spec lint share one board column; the verdict in the log distinguishes them.
+The ticket file in Planning (spec'd description, acceptance criteria, frozen contract, ambiguity log) and the product docs it links, plus `factory/rulings.md` if present. Planning and spec lint share one board column; the verdict in the log distinguishes them.
 
 ## Checks, in order
 
 1. **Criteria quality** — every acceptance criterion is pass/fail decidable (a test or screenshot settles it, no judgment call) and unambiguous (no term two readers could quantify differently). "Works correctly", "handles edge cases", "is fast", "appropriate" are automatic findings.
 2. **Contract coverage** — every element of the frozen contract (each endpoint, shape, selector, fixture) is exercised by at least one criterion; every criterion is implementable against the contract as written. An untouched contract element or an uncovered criterion is a finding.
-3. **Consistency** — the description, criteria, and contract do not contradict each other or the linked product docs (names, paths, shapes, counts must match exactly).
+3. **Consistency** — the description, criteria, and contract do not contradict each other, the linked product docs (names, paths, shapes, counts must match exactly), or a recorded ruling in `factory/rulings.md`.
 4. **Edge coverage** — for each contract element, the failure/empty/duplicate case is either covered by a criterion or explicitly declared out of scope on the ticket. Silence is a finding.
 
 ## Output — appended to the ticket file's log
@@ -48,6 +48,7 @@ Receipt-row ticket, criterion 2 reads "the row shows the summary nicely." Findin
 
 ## Changelog
 
+- v4: Consistency check reads `factory/rulings.md`; a contract contradicting a recorded operator ruling is a finding.
 - v3: documented exact operator authorization for one next semantic lint round.
 - v2: clarified the spec-linter's Planning stage and reconciled field ownership.
 - v1: initial, adapted from spec-kit checklist + analyze at v0.12.11.

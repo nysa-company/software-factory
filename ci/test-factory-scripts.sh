@@ -236,7 +236,7 @@ ROLE_MODELS="$(bash -c '
     printf "%s:%s:%s\\n" "$role" "$(factory_role_model "$role")" "$(factory_role_effort "$role")"
   done
 ' _ "$ROOT/scripts/lib/backend-policy.sh")"
-if [[ "$ROLE_MODELS" == $'planner:gpt-5.6-sol:high\nspec-linter:fable:medium\ntest-author:fable:medium\nbuilder:gpt-5.6-terra:medium\nreviewer:sonnet:medium\nnarrator:gpt-5.6-terra:medium' ]]; then
+if [[ "$ROLE_MODELS" == $'planner:gpt-5.6-sol:high\nspec-linter:haiku:medium\ntest-author:fable:medium\nbuilder:gpt-5.6-terra:medium\nreviewer:sonnet:medium\nnarrator:gpt-5.6-terra:medium' ]]; then
   pass "role model and effort policy is explicit"
 else
   fail "role model and effort policy is explicit" "$ROLE_MODELS"
@@ -2131,6 +2131,41 @@ elif grep -Fq '"$ROLE_HEAD_BEFORE:refs/heads/$ROLE_BRANCH_BEFORE"' "$RUN_AGENT" 
   pass "trusted pushes use captured commit SHAs"
 else
   fail "trusted pushes use captured commit SHAs" "exact SHA refspec missing"
+fi
+
+# A nearly exhausted ticket reserves only its remaining budget instead of
+# being refused by flat-reserve arithmetic (T-009 regression).
+NEAR_CAP="$TMP/near-cap"
+write_envelope "$NEAR_CAP"
+{
+  ledger_header
+  printf '2026-07-13,06:00:00,T-620,planner,mock,test,1,19.50,1,,,,,,\n'
+} > "$NEAR_CAP/factory/ledger.csv"
+NEAR_CAP_STATUS=0
+run_mock "$NEAR_CAP" planner T-620 > "$TMP/near-cap.out" 2>&1 || NEAR_CAP_STATUS=$?
+if [[ "$NEAR_CAP_STATUS" -eq 0 ]] &&
+   grep -l 'reserved_usd=0.5000' "$NEAR_CAP/factory/runs"/*.meta >/dev/null 2>&1; then
+  pass "near-exhausted ticket reserves the remaining budget instead of refusing"
+else
+  fail "near-exhausted ticket reserves the remaining budget instead of refusing" \
+    "status=$NEAR_CAP_STATUS output=$(cat "$TMP/near-cap.out")"
+fi
+
+# A ticket at or over its cap still refuses exactly as before.
+EXHAUSTED="$TMP/exhausted-cap"
+write_envelope "$EXHAUSTED"
+{
+  ledger_header
+  printf '2026-07-13,06:00:00,T-621,planner,mock,test,1,20.00,1,,,,,,\n'
+} > "$EXHAUSTED/factory/ledger.csv"
+EXHAUSTED_STATUS=0
+EXHAUSTED_OUT="$(run_mock "$EXHAUSTED" planner T-621 2>&1)" || EXHAUSTED_STATUS=$?
+if [[ "$EXHAUSTED_STATUS" -eq 5 ]] &&
+   [[ "$EXHAUSTED_OUT" == *'ticket budget would be exceeded'* ]]; then
+  pass "exhausted ticket budget still refuses launch"
+else
+  fail "exhausted ticket budget still refuses launch" \
+    "status=$EXHAUSTED_STATUS output=$EXHAUSTED_OUT"
 fi
 
 if [[ "$FAILURES" -gt 0 ]]; then
