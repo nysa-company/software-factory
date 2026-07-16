@@ -100,6 +100,9 @@ factory_dispatch_has_ticket_run() {
   for file in "$root/factory/.active-runs/$ticket."*.pid; do
     [[ -e "$file" ]] && return 0
   done
+  for file in "$root/factory/.active-runs/$ticket."*.lock; do
+    [[ -d "$file" && ! -L "$file" && -f "$file/owner" && ! -L "$file/owner" ]] && return 0
+  done
   return 1
 }
 

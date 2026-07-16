@@ -16,7 +16,7 @@ trap cleanup EXIT HUP INT TERM
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s%s\n' "$1" "${2:+ — $2}" >&2; FAILURES=$((FAILURES + 1)); }
 
-mkdir -p "$PRODUCT/factory/tickets"
+mkdir -p "$PRODUCT/factory/tickets" "$PRODUCT/factory/runs"
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=2' > "$PRODUCT/factory/PROJECT.env"
 printf '%s\n' \
   'PER_RUN_BUDGET_USD=1.00' \
@@ -85,7 +85,7 @@ MOCK_SLEEP=2 FACTORY_DISPATCH_LEASE_ID="$FIRST_ID" FACTORY_ROOT="$PRODUCT" \
   "$RUN" --role planner --ticket "$FIRST_TICKET" -- "bounded run" > "$TMP/bounded-run.out" 2>&1 &
 RUN_PID=$!
 for _try in $(seq 1 200); do
-  compgen -G "$PRODUCT/factory/.active-runs/$FIRST_TICKET.*.pid" >/dev/null && break
+  compgen -G "$PRODUCT/factory/.active-runs/$FIRST_TICKET.*.lock" >/dev/null && break
   sleep 0.02
 done
 LIVE_RELEASE_RC=0

@@ -1793,8 +1793,9 @@ PY
 
 has_active_runs() {
   local product="$1" file
-  for file in "$product/factory/.active-runs/"*.pid "$product/factory/runs/"*.pid; do
-    [[ -e "$file" ]] && return 0
+  for file in "$product/factory/.active-runs/"*.pid \
+    "$product/factory/.active-runs/"*.lock "$product/factory/runs/"*.pid; do
+    [[ -e "$file" || -L "$file" ]] && return 0
   done
   return 1
 }
