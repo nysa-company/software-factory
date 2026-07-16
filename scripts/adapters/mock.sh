@@ -84,6 +84,34 @@ if [[ "${MOCK_MUTATE_DIRTY_TICKET:-0}" == "1" ]]; then
   printf '\nprovider changed already-dirty ticket bytes\n' >> \
     "$FACTORY_ROOT/factory/tickets/${MOCK_DIRTY_TICKET_ID}.md"
 fi
+if [[ "${MOCK_FORGE_OUTPUT_PATH:-0}" == "1" ]]; then
+  for manifest in "$FACTORY_ROOT"/factory/runs/*.meta; do
+    [[ -f "$manifest" ]] || continue
+    run_id="$(sed -n 's/^run_id=//p' "$manifest" | awk 'NR==1 {print; exit}')"
+    [[ -n "$run_id" ]] || continue
+    printf 'turns=1 cost_usd=0.01\n' > "$FACTORY_ROOT/factory/runs/$run_id.out"
+    break
+  done
+fi
+if [[ "${MOCK_DELETE_ACTIVE_CLAIM:-0}" == "1" ]]; then
+  for claim in "$FACTORY_ROOT"/factory/.active-runs/*.lock; do
+    [[ -d "$claim" ]] || continue
+    rm -rf "$claim"
+    break
+  done
+fi
+if [[ "${MOCK_REPLACE_ACTIVE_CLAIM:-0}" == "1" ]]; then
+  for claim in "$FACTORY_ROOT"/factory/.active-runs/*.lock; do
+    [[ -d "$claim" ]] || continue
+    rm -rf "$claim"
+    mkdir "$claim"
+    printf 'pid=99999\nprocess_start=successor\ntoken=successor\n' > "$claim/owner"
+    break
+  done
+fi
+if [[ "${MOCK_MUTATE_GLOBAL_LEDGER:-0}" == "1" ]]; then
+  printf 'forged-global-ledger\n' > "$MOCK_GLOBAL_LEDGER_PATH"
+fi
 if [[ -n "${MOCK_PUSHURL:-}" ]]; then
   git -C "$WORKDIR" config remote.origin.pushurl "$MOCK_PUSHURL"
 fi
@@ -98,7 +126,9 @@ if [[ "${MOCK_SLEEP:-0}" != "0" ]]; then
   fi
 fi
 echo "mock adapter ran task: ${*:-<none>}"
-if [[ "${MOCK_NO_COST:-0}" == "1" ]]; then
+if [[ -n "${MOCK_RAW_METRICS:-}" ]]; then
+  printf '%s\n' "$MOCK_RAW_METRICS"
+elif [[ "${MOCK_NO_COST:-0}" == "1" ]]; then
   echo "turns=3"
 else
   echo "turns=3 cost_usd=${MOCK_COST:-0.42}"

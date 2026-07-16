@@ -74,8 +74,12 @@ def read_csv(path):
 
 
 def read_meta(path):
+    return parse_meta(path.read_text(encoding="utf-8"), path)
+
+
+def parse_meta(content, path):
     values = {}
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for number, line in enumerate(content.splitlines(), 1):
         if not line or "=" not in line:
             fail(f"malformed manifest line {number} in {path}")
         key, value = line.split("=", 1)
@@ -83,6 +87,48 @@ def read_meta(path):
             fail(f"duplicate manifest key {key} in {path}")
         values[key] = value
     return values
+
+
+def run_manifests(directory):
+    try:
+        before = directory.lstat()
+    except FileNotFoundError:
+        fail(f"runs root is missing: {directory}")
+    if not stat.S_ISDIR(before.st_mode):
+        fail(f"runs root must be a real directory: {directory}")
+
+    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+             getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(directory, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if ((before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode)) !=
+                (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode))):
+            fail(f"runs root changed while opening: {directory}")
+        result = []
+        for name in sorted(value for value in os.listdir(descriptor) if value.endswith(".meta")):
+            path = directory / name
+            value = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+                fail(f"run manifest must be a regular single-link file: {name}")
+            file_descriptor = os.open(
+                name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=descriptor,
+            )
+            try:
+                opened_file = os.fstat(file_descriptor)
+                if (not stat.S_ISREG(opened_file.st_mode) or opened_file.st_nlink != 1 or
+                        (value.st_dev, value.st_ino) !=
+                        (opened_file.st_dev, opened_file.st_ino)):
+                    fail(f"run manifest changed while opening: {name}")
+                with os.fdopen(file_descriptor, encoding="utf-8") as handle:
+                    file_descriptor = -1
+                    result.append((path, parse_meta(handle.read(), path)))
+            finally:
+                if file_descriptor >= 0:
+                    os.close(file_descriptor)
+        return result
+    finally:
+        os.close(descriptor)
 
 
 def number(value, label):
@@ -97,8 +143,8 @@ def number(value, label):
     return value
 
 
-def manifest_row(path):
-    values = read_meta(path)
+def manifest_row(path, values=None):
+    values = read_meta(path) if values is None else values
     if values.get("accounting_schema") != "1":
         return None
     required = (
@@ -266,13 +312,7 @@ def effective_rows(factory_root, durable=None, runtime=None, runs=None):
     factory = factory_root / "factory"
     durable = durable or factory / "ledger.csv"
     runs = runs or factory / "runs"
-    manifests = []
-    if runs.is_dir():
-        paths = sorted(runs.glob("*.meta"))
-        for path in paths:
-            if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
-                fail(f"run manifest must be a regular non-symlink file: {path.name}")
-        manifests = [manifest_row(path) for path in paths]
+    manifests = [manifest_row(path, values) for path, values in run_manifests(runs)]
     # runtime is deliberately output-only. The effective view is reduced from
     # committed durable history plus authoritative run manifests every time.
     return merge_rows(read_csv(durable), manifests)
@@ -360,10 +400,7 @@ def projection_locks(factory_root):
 
 def unsettled_manifest(factory_root):
     runs = factory_root / "factory" / "runs"
-    if not runs.is_dir():
-        return None
-    for path in sorted(runs.glob("*.meta")):
-        values = read_meta(path)
+    for path, values in run_manifests(runs):
         if values.get("accounting_schema") == "1":
             settled = values.get("accounting_state") in TERMINAL_STATES
         else:
@@ -379,10 +416,7 @@ def unmatched_legacy_terminal_manifest(factory_root, rows):
         for row in rows if row["run_id"] and not is_reservation(row)
     }
     runs = factory_root / "factory" / "runs"
-    if not runs.is_dir():
-        return None
-    for path in sorted(runs.glob("*.meta")):
-        values = read_meta(path)
+    for path, values in run_manifests(runs):
         if (values.get("accounting_schema") != "1" and
                 values.get("phase") in {"completed", "abandoned"} and
                 (values.get("ticket"), values.get("run_id")) not in accounted):

@@ -104,6 +104,8 @@ LAUNCH_LOCK="$FACTORY_DIR/.launch.lock"
 RUNS_DIR="$FACTORY_DIR/runs"
 ACTIVE_RUN_FILE=""
 ACTIVE_RUN_TEMP=""
+ACTIVE_RUN_EXPECTED=""
+ACTIVE_RUN_SNAPSHOT=""
 OWNS_ACTIVE_RUN=0
 HELD_LEDGER_LOCK=0
 HELD_GLOBAL_LOCK=0
@@ -116,12 +118,16 @@ RUN_PID_FILE=""
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
+RUN_OUTPUT_TEMP=""
 RUNS_META_SNAPSHOT=""
 CONTROL_PLANE_MUTATION=0
 REGISTERED_BRANCH_BEFORE=""
 REGISTERED_HEAD_BEFORE=""
 REGISTERED_STATUS_BEFORE=""
 REGISTERED_CONTENT_BEFORE=""
+GLOBAL_LEDGER_SNAPSHOT=""
+GLOBAL_LOCK_TOKEN=""
+GLOBAL_STATE_MUTATED=0
 RUN_START_ID=""
 MANIFEST=""
 MANIFEST_PHASE=""
@@ -195,6 +201,148 @@ registered_tracked_content() {
     "$FACTORY_TRUSTED_GIT_BIN" hash-object --stdin
 }
 
+process_start_identity() {
+  ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print; exit}'
+}
+
+ensure_runs_directory() {
+  [[ ! -L "$RUNS_DIR" ]] || return 1
+  mkdir -p "$FACTORY_DIR" "$LEDGER_DIR" "$RUNS_DIR" || return 1
+  python3 - "$FACTORY_DIR" "$RUNS_DIR" <<'PY'
+import os
+import stat
+import sys
+
+for raw in sys.argv[1:]:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(raw, flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError(f"not a directory: {raw}")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+PY
+}
+
+active_claim_snapshot() {
+  python3 - "$ACTIVE_RUN_FILE" "$ACTIVE_RUN_EXPECTED" <<'PY'
+import base64
+import os
+import stat
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1])
+expected = sys.argv[2].encode()
+owner = directory / "owner"
+directory_stat = directory.lstat()
+owner_stat = owner.lstat()
+content = owner.read_bytes()
+if (not stat.S_ISDIR(directory_stat.st_mode) or directory.is_symlink() or
+        not stat.S_ISREG(owner_stat.st_mode) or owner.is_symlink() or content.rstrip(b"\n") != expected):
+    raise SystemExit(1)
+print(f"{directory_stat.st_dev}:{directory_stat.st_ino}:"
+      f"{owner_stat.st_dev}:{owner_stat.st_ino}:"
+      f"{base64.b64encode(content).decode()}")
+PY
+}
+
+validate_global_ledger() {
+  python3 - "$1" <<'PY'
+import csv
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+header = ("date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,"
+          "exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version").split(",")
+with path.open(newline="", encoding="utf-8") as handle:
+    reader = csv.DictReader(handle)
+    if reader.fieldnames != header:
+        raise SystemExit(1)
+    for row in reader:
+        if None in row or None in row.values():
+            raise SystemExit(1)
+        if any(not row[key] for key in ("date", "repo", "ticket", "role", "adapter", "turns", "cost_usd", "exit_status")):
+            raise SystemExit(1)
+        turns, cost, status, run_id = row["turns"], row["cost_usd"], row["exit_status"], row["run_id"]
+        if not re.fullmatch(r"[0-9]{1,4}", turns) or int(turns) > 1000:
+            raise SystemExit(1)
+        if not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,18})?", cost) or float(cost) > 1_000_000:
+            raise SystemExit(1)
+        if run_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", run_id):
+            raise SystemExit(1)
+        if not ((re.fullmatch(r"[0-9]{1,3}", status) and int(status) <= 255) or
+                (run_id and status == f"reserved-{run_id}")):
+            raise SystemExit(1)
+PY
+}
+
+snapshot_global_ledger() {
+  python3 - "$1" <<'PY'
+import base64
+import sys
+from pathlib import Path
+print(base64.b64encode(Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+}
+
+restore_global_ledger() {
+  printf '%s' "$GLOBAL_LEDGER_SNAPSHOT" | python3 -c '
+import base64
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+path = Path(sys.argv[1])
+content = base64.b64decode(sys.stdin.buffer.read().strip(), validate=True)
+descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+try:
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+' "$GLOBAL_LEDGER"
+}
+
+global_lock_is_owned() {
+  [[ -n "$GLOBAL_LOCK_TOKEN" && -f "$GLOBAL_LOCK/owner" && ! -L "$GLOBAL_LOCK/owner" &&
+      "$(cat "$GLOBAL_LOCK/owner" 2>/dev/null)" == "$GLOBAL_LOCK_TOKEN" ]]
+}
+
+release_global_lock() {
+  global_lock_is_owned || return 1
+  rm -f "$GLOBAL_LOCK/owner" || return 1
+  rmdir "$GLOBAL_LOCK" || return 1
+  HELD_GLOBAL_LOCK=0
+}
+
+restore_global_if_changed() {
+  [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]] || return 0
+  local current
+  current="$(snapshot_global_ledger "$GLOBAL_LEDGER" 2>/dev/null || true)"
+  if [[ "$current" == "$GLOBAL_LEDGER_SNAPSHOT" ]] && global_lock_is_owned; then
+    return 0
+  fi
+  GLOBAL_STATE_MUTATED=1
+  global_lock_is_owned || return 1
+  restore_global_ledger && validate_global_ledger "$GLOBAL_LEDGER"
+}
+
 write_manifest() {
   local phase="$1"
   [[ -n "$MANIFEST" ]] || return 0
@@ -265,12 +413,19 @@ refresh_runtime_ledger() {
 }
 
 finalize_global_ledger() {
-  local acquired=0 tmp_global
+  local acquired=0
   [[ -n "$GLOBAL_LEDGER" && -f "$GLOBAL_LEDGER" ]] || return 0
+  [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]] || return 0
   if [[ "$HELD_GLOBAL_LOCK" -ne 1 ]]; then
+    if [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]]; then
+      echo "WARNING: global ledger lock was lost; conservative reservation retained for operator reconciliation" >&2
+      return 0
+    fi
     for _global_try in $(seq 1 50); do
       if mkdir "$GLOBAL_LOCK" 2>/dev/null; then
         HELD_GLOBAL_LOCK=1
+        GLOBAL_LOCK_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+        printf '%s\n' "$GLOBAL_LOCK_TOKEN" > "$GLOBAL_LOCK/owner"
         acquired=1
         break
       fi
@@ -281,12 +436,21 @@ finalize_global_ledger() {
     echo "WARNING: global ledger lock stuck while finalizing run $RUN_ID — conservative reservation retained" >&2
     return 0
   fi
-  tmp_global="$GLOBAL_LEDGER.tmp.$$"
-  awk -F, -v reserved="reserved-$RUN_ID" '$10 != reserved' "$GLOBAL_LEDGER" > "$tmp_global"
-  echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$EFFECTIVE_COST,$EXIT_STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION" >> "$tmp_global"
-  mv "$tmp_global" "$GLOBAL_LEDGER"
-  rmdir "$GLOBAL_LOCK" 2>/dev/null || true
-  HELD_GLOBAL_LOCK=0
+  if ! restore_global_if_changed; then
+    echo "WARNING: global ledger or lock ownership changed; conservative reservation retained for operator reconciliation" >&2
+    return 0
+  fi
+  if ! {
+    awk -F, -v reserved="reserved-$RUN_ID" '$10 != reserved' "$GLOBAL_LEDGER"
+    echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,$PROMPT_VERSION,${TURNS:-0},$EFFECTIVE_COST,$EXIT_STATUS,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,$COST_BASIS,$LEDGER_VERSION"
+  } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$GLOBAL_LEDGER" ||
+     ! validate_global_ledger "$GLOBAL_LEDGER"; then
+    echo "WARNING: global ledger terminalization failed; lock retained for operator reconciliation" >&2
+    return 0
+  fi
+  GLOBAL_LEDGER_SNAPSHOT="$(snapshot_global_ledger "$GLOBAL_LEDGER")"
+  release_global_lock ||
+    echo "WARNING: global ledger lock ownership changed during release; operator reconciliation required" >&2
   : "$acquired"
 }
 
@@ -405,6 +569,8 @@ cleanup() {
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
   [[ -z "$RUN_GATE_FILE" ]] || rm -f "$RUN_GATE_FILE"
+  [[ -z "$RUN_OUTPUT_TEMP" ]] || rm -f "$RUN_OUTPUT_TEMP"
+  exec 8<&- 9>&- 2>/dev/null || true
   if [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
     [[ "$status" -ne 0 ]] || status=125
     if [[ "$GO_ISSUED" -eq 1 ]]; then
@@ -437,12 +603,26 @@ cleanup() {
     fi
     finalize_global_ledger || true
   fi
-  [[ "$HELD_GLOBAL_LOCK" -eq 0 ]] || rmdir "$GLOBAL_LOCK" 2>/dev/null || true
+  if [[ "$HELD_GLOBAL_LOCK" -eq 1 ]]; then
+    if [[ -z "$GLOBAL_LEDGER_SNAPSHOT" ]]; then
+      release_global_lock ||
+        echo "WARNING: global lock ownership changed; it was not removed" >&2
+    else
+      echo "WARNING: global ledger lock retained for operator reconciliation" >&2
+    fi
+  fi
   [[ "$HELD_LEDGER_LOCK" -eq 0 ]] || rmdir "$LOCK_DIR" 2>/dev/null || true
   [[ "$HELD_LAUNCH_LOCK" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
-  [[ -z "$ACTIVE_RUN_TEMP" ]] || rm -f "$ACTIVE_RUN_TEMP"
   if [[ "$OWNS_ACTIVE_RUN" -eq 1 ]]; then
-    rm -f "$ACTIVE_RUN_FILE"
+    if [[ -d "$ACTIVE_RUN_FILE" && ! -L "$ACTIVE_RUN_FILE" &&
+          -f "$ACTIVE_RUN_FILE/owner" && ! -L "$ACTIVE_RUN_FILE/owner" &&
+          "$(cat "$ACTIVE_RUN_FILE/owner" 2>/dev/null)" == "$ACTIVE_RUN_EXPECTED" ]]; then
+      rm -f "$ACTIVE_RUN_FILE/owner"
+      rmdir "$ACTIVE_RUN_FILE" 2>/dev/null ||
+        echo "WARNING: run claim gained unexpected entries; operator reconciliation required" >&2
+    else
+      echo "WARNING: run claim ownership changed; successor state was not removed" >&2
+    fi
   fi
 }
 trap cleanup EXIT
@@ -474,6 +654,7 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   GLOBAL_LOCK="$(dirname "$GLOBAL_ENV")/.ledger.lock"
   [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
 fi
+export -n GLOBAL_LEDGER GLOBAL_DAILY_CAP_USD 2>/dev/null || true
 # Product and machine configuration are not trusted to supply launcher-only
 # authority, and adapters must never inherit it.
 set +a
@@ -535,6 +716,10 @@ if [[ -z "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
   TICKET_AFFINITY_WAS_MISSING=1
   FACTORY_TICKET_KIT_SHA="$FACTORY_KIT_SHA"
 fi
+ensure_runs_directory || {
+  echo "run manifest directory could not be durably established" >&2
+  exit 3
+}
 if [[ -z "${FACTORY_LEDGER:-}" ]] && ! refresh_runtime_ledger; then
   echo "effective ledger could not be reduced; no task was submitted" >&2
   exit 3
@@ -581,41 +766,9 @@ ADAPTER="$SELECTED"
 ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
 
-mkdir -p "$FACTORY_DIR" "$RUNS_DIR" "$LEDGER_DIR"
-# Claim the ticket+role slot before creating a manifest. A refused duplicate is
-# not a registered run and therefore cannot alter a live provider's manifest
-# integrity snapshot.
-ACTIVE_RUNS_DIR="$LEDGER_DIR/.active-runs"
-GUARD_KEY="$(printf '%s.%s' "$TICKET" "$ROLE" | tr -c 'A-Za-z0-9._-' '_')"
-ACTIVE_RUN_FILE="$ACTIVE_RUNS_DIR/$GUARD_KEY.pid"
-ACTIVE_RUN_TEMP="$ACTIVE_RUNS_DIR/.$GUARD_KEY.$$.pid"
-mkdir -p "$ACTIVE_RUNS_DIR"
-echo "$$" > "$ACTIVE_RUN_TEMP"
-while ! ln "$ACTIVE_RUN_TEMP" "$ACTIVE_RUN_FILE" 2>/dev/null; do
-  EXISTING_PID="$(cat "$ACTIVE_RUN_FILE" 2>/dev/null || true)"
-  if [[ "$EXISTING_PID" =~ ^[0-9]+$ ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    echo "live run already exists for $TICKET role $ROLE (wrapper pid $EXISTING_PID) — refusing duplicate launch" >&2
-    exit 7
-  fi
-  rm -f "$ACTIVE_RUN_FILE"
-done
-OWNS_ACTIVE_RUN=1
-rm -f "$ACTIVE_RUN_TEMP"
-ACTIVE_RUN_TEMP=""
-
-GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
-LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
-PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
-RUN_ID="$(date +%s)-$$"
-MANIFEST="$RUNS_DIR/$RUN_ID.meta"
-RUN_STARTED_AT="$(date -u +%FT%TZ)"
-TODAY="${RUN_STARTED_AT%%T*}"
-RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
-RESERVED_USD="$PER_RUN_BUDGET_USD"
-[[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
-write_manifest "resolved"
-
-# Serialize task registration with kill-switch KILL creation + PID scanning.
+# Serialize claim creation with kill-switch publication. Claims are mkdir
+# locks and are never reclaimed automatically; operator recovery must inspect
+# an abandoned owner record rather than guessing from a reusable PID.
 for i in $(seq 1 100); do
   mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
   sleep 0.1
@@ -632,6 +785,35 @@ if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   echo "MAINTENANCE file appeared after launch lock acquisition; no task was submitted" >&2
   exit 4
 fi
+ACTIVE_RUNS_DIR="$LEDGER_DIR/.active-runs"
+GUARD_KEY="$(printf '%s.%s' "$TICKET" "$ROLE" | tr -c 'A-Za-z0-9._-' '_')"
+ACTIVE_RUN_FILE="$ACTIVE_RUNS_DIR/$GUARD_KEY.lock"
+mkdir -p "$ACTIVE_RUNS_DIR"
+if ! mkdir "$ACTIVE_RUN_FILE" 2>/dev/null; then
+  echo "live or unreconciled run claim exists for $TICKET role $ROLE — refusing duplicate launch" >&2
+  exit 7
+fi
+OWNS_ACTIVE_RUN=1
+CLAIM_START="$(process_start_identity "$$")"
+[[ -n "$CLAIM_START" ]] || { echo "could not record run claim process identity" >&2; exit 8; }
+CLAIM_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+ACTIVE_RUN_EXPECTED="pid=$$
+process_start=$CLAIM_START
+token=$CLAIM_TOKEN"
+printf '%s\n' "$ACTIVE_RUN_EXPECTED" > "$ACTIVE_RUN_FILE/owner"
+ACTIVE_RUN_EXPECTED="$(cat "$ACTIVE_RUN_FILE/owner")"
+
+GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
+LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
+PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
+RUN_ID="$(date +%s)-$$"
+MANIFEST="$RUNS_DIR/$RUN_ID.meta"
+RUN_STARTED_AT="$(date -u +%FT%TZ)"
+TODAY="${RUN_STARTED_AT%%T*}"
+RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
+RESERVED_USD="$PER_RUN_BUDGET_USD"
+[[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
+write_manifest "resolved"
 if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "$FACTORY_KIT_PIN_ERROR after launch lock acquisition; no task was submitted" >&2
   exit 3
@@ -718,17 +900,38 @@ LEDGER_VERSION="$(meta_value "$SELECTED_VERSION")"
 ACCOUNTING_SCHEMA=1
 ACCOUNTING_STATE="reserved"
 if [[ -n "$GLOBAL_LEDGER" ]]; then
-  mkdir -p "$(dirname "$GLOBAL_LEDGER")"
-  for i in $(seq 1 50); do mkdir "$GLOBAL_LOCK" 2>/dev/null && { HELD_GLOBAL_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "global ledger lock stuck — see runbook" >&2; rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0; exit 8; }; done
-  if [[ ! -f "$GLOBAL_LEDGER" ]]; then
+  GLOBAL_DIR="$(dirname "$GLOBAL_LEDGER")"
+  [[ -d "$GLOBAL_DIR" && ! -L "$GLOBAL_DIR" ]] || {
+    echo "global ledger directory must be an existing real directory" >&2
+    exit 3
+  }
+  for i in $(seq 1 50); do
+    if mkdir "$GLOBAL_LOCK" 2>/dev/null; then
+      HELD_GLOBAL_LOCK=1
+      GLOBAL_LOCK_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+      printf '%s\n' "$GLOBAL_LOCK_TOKEN" > "$GLOBAL_LOCK/owner"
+      break
+    fi
+    sleep 0.2
+    [[ $i -eq 50 ]] && { echo "global ledger lock stuck — see runbook" >&2; rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0; exit 8; }
+  done
+  if [[ -L "$GLOBAL_LEDGER" ]]; then
+    echo "global ledger must be a regular non-symlink file" >&2
+    exit 3
+  elif [[ ! -f "$GLOBAL_LEDGER" ]]; then
     echo "$GLOBAL_LEDGER_HEADER" > "$GLOBAL_LEDGER"
   else
     CURRENT_GLOBAL_HEADER="$(awk 'NR==1 {print; exit}' "$GLOBAL_LEDGER")"
     case "$CURRENT_GLOBAL_HEADER" in
       "$GLOBAL_LEDGER_HEADER") ;;
-      "$LEGACY_GLOBAL_HEADER"|"$PARTIAL_GLOBAL_HEADER")
+      "$LEGACY_GLOBAL_HEADER")
         TMP_HEADER="$GLOBAL_LEDGER.header.$$"
-        { echo "$GLOBAL_LEDGER_HEADER"; awk 'NR>1' "$GLOBAL_LEDGER"; } > "$TMP_HEADER"
+        { echo "$GLOBAL_LEDGER_HEADER"; awk 'NR>1 {print $0 ",,,,,,"}' "$GLOBAL_LEDGER"; } > "$TMP_HEADER"
+        mv "$TMP_HEADER" "$GLOBAL_LEDGER"
+        ;;
+      "$PARTIAL_GLOBAL_HEADER")
+        TMP_HEADER="$GLOBAL_LEDGER.header.$$"
+        { echo "$GLOBAL_LEDGER_HEADER"; awk 'NR>1 {print $0 ",,,,"}' "$GLOBAL_LEDGER"; } > "$TMP_HEADER"
         mv "$TMP_HEADER" "$GLOBAL_LEDGER"
         ;;
       *)
@@ -737,14 +940,28 @@ if [[ -n "$GLOBAL_LEDGER" ]]; then
         ;;
     esac
   fi
+  validate_global_ledger "$GLOBAL_LEDGER" || {
+    echo "global ledger contains invalid accounting rows" >&2
+    exit 3
+  }
   SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
   if awk -v s="$SPENT_GLOBAL" -v r="$PER_RUN_BUDGET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
     echo "MACHINE daily cap would be exceeded across all factories (spent \$$SPENT_GLOBAL + reserve \$$PER_RUN_BUDGET_USD > \$$GLOBAL_DAILY_CAP_USD) — refusing. See docs/runbooks/operator.md." >&2
-    rmdir "$GLOBAL_LOCK" "$LOCK_DIR"; HELD_GLOBAL_LOCK=0; HELD_LEDGER_LOCK=0; exit 5
+    release_global_lock || true
+    rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0; exit 5
   fi
-  echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION" >> "$GLOBAL_LEDGER"
-  rmdir "$GLOBAL_LOCK"
-  HELD_GLOBAL_LOCK=0
+  {
+    cat "$GLOBAL_LEDGER"
+    echo "$TODAY,$RUN_START_TIME,$REPO_ROOT,$TICKET,$ROLE,$ADAPTER,reserved,0,$PER_RUN_BUDGET_USD,reserved-$RUN_ID,$RUN_ID,$LEDGER_FAMILY,$LEDGER_MODEL,$LEDGER_REASON,conservative_reservation,$LEDGER_VERSION"
+  } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$GLOBAL_LEDGER" || {
+    echo "global ledger reservation could not be persisted" >&2
+    exit 3
+  }
+  validate_global_ledger "$GLOBAL_LEDGER" || {
+    echo "global ledger reservation could not be validated" >&2
+    exit 3
+  }
+  GLOBAL_LEDGER_SNAPSHOT="$(snapshot_global_ledger "$GLOBAL_LEDGER")"
 fi
 
 # Reserve in the per-run manifest, then materialize the ignored runtime view.
@@ -780,10 +997,18 @@ case "$ADAPTER" in
     ADAPTER_ARGS+=(--model "$SELECTED_MODEL" --effort "$SELECTED_EFFORT")
     ;;
 esac
+RUN_OUTPUT_TEMP="$(mktemp "$RUNS_DIR/.$RUN_ID.output.XXXXXX")" || {
+  echo "could not allocate wrapper-owned output capture" >&2
+  exit 125
+}
+exec 8< "$RUN_OUTPUT_TEMP"
+exec 9> "$RUN_OUTPUT_TEMP"
+rm -f "$RUN_OUTPUT_TEMP"
+RUN_OUTPUT_TEMP=""
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
   "$RUN_READY_FILE" "$RUN_GATE_FILE" "$ADAPTER_SH" \
   "${ADAPTER_ARGS[@]}" \
-  -- "$TASK" > "$RUNS_DIR/$RUN_ID.out" 2>&1 &
+  -- "$TASK" 8<&- >&9 2>&1 &
 RUN_PID=$!
 RUN_PGID="$RUN_PID"
 RUN_GROUP_ACTIVE=1
@@ -894,6 +1119,12 @@ else
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
+      elif ! ACTIVE_RUN_SNAPSHOT="$(active_claim_snapshot 2>/dev/null)"; then
+        GO_ISSUED=0
+        echo "could not bind run claim ownership; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=125
       elif ! : > "$RUN_GATE_FILE"; then
         GO_ISSUED=0
         echo "could not open adapter GO gate; no task was submitted" >&2
@@ -907,6 +1138,18 @@ else
         STATUS=$?
         if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
             python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
+          CONTROL_PLANE_MUTATION=1
+          STATUS=11
+        fi
+        if [[ "$(active_claim_snapshot 2>/dev/null || true)" != "$ACTIVE_RUN_SNAPSHOT" ]]; then
+          echo "role_exit_control_plane_mutation: run claim changed during provider execution" >&2
+          CONTROL_PLANE_MUTATION=1
+          STATUS=11
+        fi
+        GLOBAL_STATE_MUTATED=0
+        if [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]] &&
+           { ! restore_global_if_changed || [[ "$GLOBAL_STATE_MUTATED" -eq 1 ]]; }; then
+          echo "role_exit_control_plane_mutation: global ledger or lock changed during provider execution" >&2
           CONTROL_PLANE_MUTATION=1
           STATUS=11
         fi
@@ -938,7 +1181,10 @@ rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
-RESULT="$(cat "$RUNS_DIR/$RUN_ID.out")"
+exec 9>&-
+RESULT="$(cat <&8)"
+exec 8<&-
+printf '%s\n' "$RESULT" > "$RUNS_DIR/$RUN_ID.out"
 
 PROVIDER_STATUS="$STATUS"
 if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
@@ -1004,10 +1250,25 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
 fi
 
 METRICS_LINE="$(printf '%s\n' "$RESULT" | tail -n1)"
-TURNS="$(sed -n 's/.*turns=\([0-9][0-9]*\).*/\1/p' <<<"$METRICS_LINE")"
+TURNS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^turns=/) { sub(/^turns=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 COST="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_usd=/) { sub(/^cost_usd=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
-COST_BASIS="$(sed -n 's/.*cost_basis=\([A-Za-z0-9_-]*\).*/\1/p' <<<"$METRICS_LINE")"
-[[ -z "$COST" || "$COST" =~ ^[0-9]+([.][0-9]+)?$ ]] || COST=""
+COST_BASIS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_basis=/) { sub(/^cost_basis=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
+TELEMETRY_INVALID=0
+if [[ ! "$TURNS" =~ ^[0-9]{1,4}$ ]] ||
+   ! awk -v value="$TURNS" 'BEGIN { exit !(value >= 0 && value <= 1000) }'; then
+  TELEMETRY_INVALID=1
+fi
+if [[ -n "$COST" ]] &&
+   { [[ ! "$COST" =~ ^[0-9]{1,7}([.][0-9]{1,18})?$ ]] ||
+     ! awk -v value="$COST" 'BEGIN { exit !(value >= 0 && value <= 1000000) }'; }; then
+  TELEMETRY_INVALID=1
+fi
+if [[ "$TELEMETRY_INVALID" -eq 1 ]]; then
+  echo "WARNING: adapter telemetry invalid or oversized — keeping the full reservation and zero turns." >&2
+  COST=""
+  TURNS=0
+  COST_BASIS=""
+fi
 if [[ "$GO_ISSUED" -eq 0 ]]; then
   COST="0"
   TURNS="0"

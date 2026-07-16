@@ -4,17 +4,24 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "ledger-view.py"
+INTEGRITY_HELPER = ROOT / "scripts" / "lib" / "runs-integrity.py"
+DURABLE_HELPER = ROOT / "scripts" / "lib" / "durable-file.py"
 SPEND_ROLLUP = ROOT / "scripts" / "spend-rollup.sh"
 SPEC = importlib.util.spec_from_file_location("ledger_view", HELPER)
 LEDGER_VIEW = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(LEDGER_VIEW)
+DURABLE_SPEC = importlib.util.spec_from_file_location("durable_file", DURABLE_HELPER)
+DURABLE_FILE = importlib.util.module_from_spec(DURABLE_SPEC)
+DURABLE_SPEC.loader.exec_module(DURABLE_FILE)
 HEADER = "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version\n"
 
 
@@ -71,6 +78,19 @@ class LedgerViewTest(unittest.TestCase):
         run("refresh", "--factory-root", self.root)
         with (self.root / "factory" / "runtime-ledger.csv").open() as handle:
             return list(csv.DictReader(handle))
+
+    def integrity_snapshot(self, check=True):
+        return subprocess.run(
+            [str(INTEGRITY_HELPER), "snapshot", str(self.root / "factory" / "runs")],
+            check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    def integrity_check(self, snapshot):
+        return subprocess.run(
+            [str(INTEGRITY_HELPER), "check", str(self.root / "factory" / "runs")],
+            input=snapshot, check=False, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
 
     def test_manifest_reservation_then_terminal_replaces_exact_run(self):
         path = self.root / "factory" / "runs" / "run-1.meta"
@@ -148,7 +168,137 @@ class LedgerViewTest(unittest.TestCase):
         path.symlink_to(self.root / "factory" / "ledger.csv")
         result = run("refresh", "--factory-root", self.root, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("regular non-symlink", result.stderr)
+        self.assertIn("regular single-link", result.stderr)
+
+    def test_runs_root_must_be_a_real_directory(self):
+        runs = self.root / "factory" / "runs"
+        outside = Path(self.temp.name) / "outside-runs"
+        outside.mkdir()
+        for replacement in ("missing", "file", "symlink"):
+            if runs.is_symlink() or runs.is_file():
+                runs.unlink()
+            elif runs.exists():
+                shutil.rmtree(runs)
+            if replacement == "file":
+                runs.write_text("not a directory")
+            elif replacement == "symlink":
+                runs.symlink_to(outside, target_is_directory=True)
+
+            reduced = run("refresh", "--factory-root", self.root, check=False)
+            snapped = self.integrity_snapshot(check=False)
+            self.assertNotEqual(reduced.returncode, 0, replacement)
+            self.assertNotEqual(snapped.returncode, 0, replacement)
+            self.assertIn("runs root", reduced.stderr)
+            self.assertIn("runs root", snapped.stderr)
+
+    def test_multi_link_manifest_fails_closed(self):
+        path = self.root / "factory" / "runs" / "linked.meta"
+        manifest(path)
+        os.link(path, self.root / "factory" / "linked-copy")
+        reduced = run("refresh", "--factory-root", self.root, check=False)
+        snapped = self.integrity_snapshot(check=False)
+        self.assertNotEqual(reduced.returncode, 0)
+        self.assertNotEqual(snapped.returncode, 0)
+        self.assertIn("single-link", reduced.stderr)
+        self.assertIn("multi-link", snapped.stderr)
+
+    def test_integrity_recovers_renamed_runs_without_following_replacement_symlink(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        owned.write_bytes(b"launcher-owned\n")
+        snapshot = self.integrity_snapshot().stdout
+        original = runs.stat()
+
+        hidden = self.root / "factory" / "provider-renamed-runs"
+        runs.rename(hidden)
+        outside = Path(self.temp.name) / "outside-control-plane"
+        outside.mkdir()
+        (outside / "owned.meta").write_bytes(b"launcher-owned\n")
+        (outside / "sentinel").write_bytes(b"do-not-touch\n")
+        runs.symlink_to(outside, target_is_directory=True)
+
+        result = self.integrity_check(snapshot)
+        restored = runs.stat()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("control_plane_mutation", result.stderr)
+        self.assertFalse(runs.is_symlink())
+        self.assertEqual((restored.st_dev, restored.st_ino), (original.st_dev, original.st_ino))
+        self.assertEqual((runs / "owned.meta").read_bytes(), b"launcher-owned\n")
+        self.assertEqual((outside / "sentinel").read_bytes(), b"do-not-touch\n")
+        self.assertEqual((outside / "owned.meta").read_bytes(), b"launcher-owned\n")
+        quarantined = list((self.root / "factory").glob("runs.rejected-role-mutation-*"))
+        self.assertEqual(len(quarantined), 1)
+        self.assertTrue(quarantined[0].is_symlink())
+
+    def test_integrity_recreates_deleted_runs_and_restores_manifests(self):
+        runs = self.root / "factory" / "runs"
+        owned = runs / "owned.meta"
+        owned.write_bytes(b"launcher-owned\n")
+        snapshot = self.integrity_snapshot().stdout
+        shutil.rmtree(runs)
+
+        result = self.integrity_check(snapshot)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(runs.is_dir())
+        self.assertFalse(runs.is_symlink())
+        self.assertEqual((runs / "owned.meta").read_bytes(), b"launcher-owned\n")
+
+    def test_integrity_quarantines_replacement_directory_before_restore(self):
+        runs = self.root / "factory" / "runs"
+        (runs / "owned.meta").write_bytes(b"launcher-owned\n")
+        snapshot = self.integrity_snapshot().stdout
+        removed = Path(self.temp.name) / "removed-original"
+        runs.rename(removed)
+        runs.mkdir()
+        (runs / "forged.meta").write_bytes(b"forged\n")
+
+        result = self.integrity_check(snapshot)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual((runs / "owned.meta").read_bytes(), b"launcher-owned\n")
+        self.assertFalse((runs / "forged.meta").exists())
+        quarantined = list((self.root / "factory").glob("runs.rejected-role-mutation-*"))
+        self.assertEqual(len(quarantined), 1)
+        self.assertEqual((quarantined[0] / "forged.meta").read_bytes(), b"forged\n")
+
+    def test_integrity_refuses_replaced_parent_without_writing_through_symlink(self):
+        runs = self.root / "factory" / "runs"
+        (runs / "owned.meta").write_bytes(b"launcher-owned\n")
+        snapshot = self.integrity_snapshot().stdout
+        original_factory = self.root / "original-factory"
+        (self.root / "factory").rename(original_factory)
+        outside = Path(self.temp.name) / "outside-parent"
+        outside.mkdir()
+        (outside / "sentinel").write_bytes(b"do-not-touch\n")
+        (self.root / "factory").symlink_to(outside, target_is_directory=True)
+
+        result = self.integrity_check(snapshot)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("runs parent must be a real directory", result.stderr)
+        self.assertEqual((outside / "sentinel").read_bytes(), b"do-not-touch\n")
+        self.assertFalse((outside / "runs").exists())
+
+    def test_durable_publish_fsyncs_runs_parent(self):
+        runs = self.root / "factory" / "runs"
+        calls = []
+        original = DURABLE_FILE.fsync_directory
+
+        def record(path):
+            calls.append(Path(path))
+            return original(path)
+
+        with mock.patch.object(DURABLE_FILE, "fsync_directory", side_effect=record):
+            DURABLE_FILE.publish(runs / "durable.meta", b"durable\n")
+        self.assertIn(self.root / "factory", calls)
+
+    def test_durable_publish_does_not_follow_runs_symlink(self):
+        runs = self.root / "factory" / "runs"
+        runs.rmdir()
+        outside = Path(self.temp.name) / "outside-durable"
+        outside.mkdir()
+        runs.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(OSError):
+            DURABLE_FILE.publish(runs / "escaped.meta", b"must-not-escape\n")
+        self.assertFalse((outside / "escaped.meta").exists())
 
     def test_oversized_manifest_numbers_fail_closed(self):
         path = self.root / "factory" / "runs" / "huge.meta"

@@ -3,14 +3,18 @@
 
 import os
 from pathlib import Path
+import secrets
+import stat
 import sys
-import tempfile
 
 
 def fsync_directory(path):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+             getattr(os, "O_NOFOLLOW", 0))
     descriptor = os.open(path, flags)
     try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise NotADirectoryError(path)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -18,19 +22,37 @@ def fsync_directory(path):
 
 def publish(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    # Persist the parent directory's own entry before publishing a file in it.
+    # This covers the launcher's first factory/runs creation after a crash.
+    if path.parent.parent != path.parent:
+        fsync_directory(path.parent.parent)
+    directory_flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                       getattr(os, "O_NOFOLLOW", 0))
+    directory = os.open(path.parent, directory_flags)
+    temp = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}"
+    descriptor = -1
     try:
+        descriptor = os.open(
+            temp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory,
+        )
         with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp, path)
-        fsync_directory(path.parent)
+        os.replace(temp, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
     finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         try:
-            os.unlink(temp)
+            os.unlink(temp, dir_fd=directory)
         except FileNotFoundError:
             pass
+        os.close(directory)
 
 
 def main():

@@ -284,7 +284,7 @@ ledger_row() {
 
 expect_stage() {
   local expected="$1" root="$2" ticket="$3" actual status
-  mkdir -p "$root/factory"
+  mkdir -p "$root/factory/runs"
   [[ -f "$root/factory/KIT_PIN" ]] ||
     printf '%s\n' "$KIT_SHA" > "$root/factory/KIT_PIN"
   if ! git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
@@ -311,6 +311,7 @@ SEALED_TREE="$(bash -c '
 SEALED_PRODUCT="$TMP/sealed-product"
 write_envelope "$SEALED_PRODUCT"
 write_ticket "$SEALED_PRODUCT" T-190
+mkdir -p "$SEALED_PRODUCT/factory/runs"
 SEALED_STAGE="$(env \
   FACTORY_ROOT="$SEALED_PRODUCT" \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
@@ -489,6 +490,7 @@ fi
 FORGED_VIEW="$TMP/forged-runtime-view"
 write_envelope "$FORGED_VIEW"
 write_ticket "$FORGED_VIEW" T-192
+mkdir -p "$FORGED_VIEW/factory/runs"
 ledger_header > "$FORGED_VIEW/factory/ledger.csv"
 {
   ledger_header
@@ -595,6 +597,7 @@ fi
 MOCK_GUARD="$TMP/mock-guard"
 write_envelope "$MOCK_GUARD"
 write_ticket "$MOCK_GUARD" T-204
+mkdir -p "$MOCK_GUARD/factory/runs"
 MOCK_GUARD_STATUS=0
 env -u FACTORY_TEST_MODE -u FACTORY_TRUSTED_TEST_HARNESS \
   FACTORY_ROOT="$MOCK_GUARD" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
@@ -850,7 +853,8 @@ PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$WRONG_ROLE" \
   WRONG_ROLE_STATUS=$?
 if [[ "$WRONG_ROLE_STATUS" -eq 10 &&
       ! -f "$WRONG_ROLE/factory/ledger.csv" &&
-      ! -d "$WRONG_ROLE/factory/runs" ]] &&
+      -d "$WRONG_ROLE/factory/runs" &&
+      -z "$(find "$WRONG_ROLE/factory/runs" -name '*.meta' -print -quit)" ]] &&
    ! grep -q '^Kit-SHA:' "$WRONG_ROLE/factory/tickets/T-218.md"; then
   pass "sequencer rejects mismatched initial builder"
 else
@@ -1183,6 +1187,164 @@ else
     "status=$DIRTY_CONTENT_STATUS"
 fi
 
+OUTPUT_BIND_ROOT="$TMP/output-binding"
+write_envelope "$OUTPUT_BIND_ROOT"
+write_ticket "$OUTPUT_BIND_ROOT" T-231
+OUTPUT_BIND_STATUS=0
+FACTORY_ROOT="$OUTPUT_BIND_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock MOCK_FORGE_OUTPUT_PATH=1 \
+  "$RUN_AGENT" --role planner --ticket T-231 -- "forge output path" \
+  > "$TMP/output-binding.out" 2>&1 || OUTPUT_BIND_STATUS=$?
+if [[ "$OUTPUT_BIND_STATUS" -eq 0 &&
+      "$(awk -F, '$3=="T-231" {print $7":"$8}' "$OUTPUT_BIND_ROOT/factory/runtime-ledger.csv")" == "3:0.42" ]]; then
+  pass "accounting reads wrapper-bound output rather than provider pathname"
+else
+  fail "accounting reads wrapper-bound output rather than provider pathname" \
+    "status=$OUTPUT_BIND_STATUS"
+fi
+
+for metric_case in huge-cost huge-turns; do
+  METRIC_ROOT="$TMP/invalid-telemetry-$metric_case"
+  write_envelope "$METRIC_ROOT"
+  write_ticket "$METRIC_ROOT" T-232
+  HUGE_TELEMETRY="$(awk 'BEGIN { for (i=0; i<500; i++) printf "9" }')"
+  if [[ "$metric_case" == "huge-cost" ]]; then
+    RAW_METRICS="turns=3 cost_usd=$HUGE_TELEMETRY"
+  else
+    RAW_METRICS="turns=$HUGE_TELEMETRY cost_usd=0.01"
+  fi
+  METRIC_STATUS=0
+  FACTORY_ROOT="$METRIC_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+    FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock MOCK_RAW_METRICS="$RAW_METRICS" \
+    "$RUN_AGENT" --role planner --ticket T-232 -- "$metric_case" \
+    > "$TMP/invalid-telemetry-$metric_case.out" 2>&1 || METRIC_STATUS=$?
+  if [[ "$METRIC_STATUS" -eq 0 &&
+        "$(awk -F, '$3=="T-232" {print $7":"$8":"$14}' "$METRIC_ROOT/factory/runtime-ledger.csv")" == "0:1.00:conservative_reservation" ]]; then
+    pass "$metric_case telemetry retains full reservation and zero turns"
+  else
+    fail "$metric_case telemetry retains full reservation and zero turns" \
+      "status=$METRIC_STATUS"
+  fi
+done
+
+CLAIM_MUTATION_ROOT="$TMP/claim-replacement"
+write_envelope "$CLAIM_MUTATION_ROOT"
+write_ticket "$CLAIM_MUTATION_ROOT" T-233
+CLAIM_MUTATION_STATUS=0
+FACTORY_ROOT="$CLAIM_MUTATION_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock MOCK_REPLACE_ACTIVE_CLAIM=1 \
+  "$RUN_AGENT" --role planner --ticket T-233 -- "replace claim" \
+  > "$TMP/claim-replacement.out" 2>&1 || CLAIM_MUTATION_STATUS=$?
+CLAIM_SUCCESSOR="$CLAIM_MUTATION_ROOT/factory/.active-runs/T-233.planner.lock/owner"
+if [[ "$CLAIM_MUTATION_STATUS" -eq 11 && -f "$CLAIM_SUCCESSOR" &&
+      "$(sed -n 's/^token=//p' "$CLAIM_SUCCESSOR")" == "successor" &&
+      "$(awk -F, '$3=="T-233" {print $8":"$9}' "$CLAIM_MUTATION_ROOT/factory/runtime-ledger.csv")" == "0.42:11" ]]; then
+  pass "claim replacement fails closed without deleting successor ownership"
+else
+  fail "claim replacement fails closed without deleting successor ownership" \
+    "status=$CLAIM_MUTATION_STATUS"
+fi
+
+STALE_CLAIM_ROOT="$TMP/stale-claim"
+write_envelope "$STALE_CLAIM_ROOT"
+write_ticket "$STALE_CLAIM_ROOT" T-234
+mkdir -p "$STALE_CLAIM_ROOT/factory/.active-runs/T-234.planner.lock"
+printf 'pid=99999\nprocess_start=stale\ntoken=stale\n' > \
+  "$STALE_CLAIM_ROOT/factory/.active-runs/T-234.planner.lock/owner"
+STALE_CLAIM_STATUS=0
+FACTORY_ROOT="$STALE_CLAIM_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-234 -- "stale claim" \
+  > "$TMP/stale-claim.out" 2>&1 || STALE_CLAIM_STATUS=$?
+if [[ "$STALE_CLAIM_STATUS" -eq 7 &&
+      -f "$STALE_CLAIM_ROOT/factory/.active-runs/T-234.planner.lock/owner" &&
+      -z "$(find "$STALE_CLAIM_ROOT/factory/runs" -name '*.meta' -print -quit)" ]]; then
+  pass "stale claim is never reclaimed by an ordinary launch"
+else
+  fail "stale claim is never reclaimed by an ordinary launch" \
+    "status=$STALE_CLAIM_STATUS"
+fi
+
+GLOBAL_MUTATION_ROOT="$TMP/global-ledger-mutation"
+write_envelope "$GLOBAL_MUTATION_ROOT"
+write_ticket "$GLOBAL_MUTATION_ROOT" T-235
+GLOBAL_MUTATION_ENV="$TMP/global-ledger-mutation-config/global.env"
+write_backend_global "$GLOBAL_MUTATION_ENV"
+GLOBAL_MUTATION_LEDGER="$(dirname "$GLOBAL_MUTATION_ENV")/global-ledger.csv"
+GLOBAL_MUTATION_STATUS=0
+FACTORY_ROOT="$GLOBAL_MUTATION_ROOT" FACTORY_GLOBAL_ENV="$GLOBAL_MUTATION_ENV" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  MOCK_MUTATE_GLOBAL_LEDGER=1 MOCK_GLOBAL_LEDGER_PATH="$GLOBAL_MUTATION_LEDGER" \
+  "$RUN_AGENT" --role planner --ticket T-235 -- "mutate global ledger" \
+  > "$TMP/global-ledger-mutation.out" 2>&1 || GLOBAL_MUTATION_STATUS=$?
+if [[ "$GLOBAL_MUTATION_STATUS" -eq 11 &&
+      "$(awk -F, '$4=="T-235" {print $9":"$10}' "$GLOBAL_MUTATION_LEDGER")" == "0.42:11" &&
+      ! -e "$(dirname "$GLOBAL_MUTATION_ENV")/.ledger.lock" ]]; then
+  pass "global ledger mutation is restored and terminalized under one lock"
+else
+  fail "global ledger mutation is restored and terminalized under one lock" \
+    "status=$GLOBAL_MUTATION_STATUS"
+fi
+
+GLOBAL_LEDGER_TEST_HEADER='date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version'
+for global_case in extra-field negative-cost huge-cost; do
+  GLOBAL_BAD_ROOT="$TMP/global-ledger-$global_case-product"
+  write_envelope "$GLOBAL_BAD_ROOT"
+  write_ticket "$GLOBAL_BAD_ROOT" T-236
+  GLOBAL_BAD_ENV="$TMP/global-ledger-$global_case-config/global.env"
+  write_backend_global "$GLOBAL_BAD_ENV"
+  GLOBAL_BAD_LEDGER="$(dirname "$GLOBAL_BAD_ENV")/global-ledger.csv"
+  case "$global_case" in
+    extra-field)
+      printf '%s\n%s\n' "$GLOBAL_LEDGER_TEST_HEADER" \
+        '2026-07-15,00:00:00,/tmp/product,T-1,planner,mock,test,1,0.10,0,old,mock,,,test_fixture,test,extra' > "$GLOBAL_BAD_LEDGER"
+      ;;
+    negative-cost)
+      printf '%s\n%s\n' "$GLOBAL_LEDGER_TEST_HEADER" \
+        '2026-07-15,00:00:00,/tmp/product,T-1,planner,mock,test,1,-1,0,old,mock,,,test_fixture,test' > "$GLOBAL_BAD_LEDGER"
+      ;;
+    huge-cost)
+      printf '%s\n' "$GLOBAL_LEDGER_TEST_HEADER" > "$GLOBAL_BAD_LEDGER"
+      printf '2026-07-15,00:00:00,/tmp/product,T-1,planner,mock,test,1,%s,0,old,mock,,,test_fixture,test\n' \
+        "$HUGE_TELEMETRY" >> "$GLOBAL_BAD_LEDGER"
+      ;;
+  esac
+  GLOBAL_BAD_STATUS=0
+  FACTORY_ROOT="$GLOBAL_BAD_ROOT" FACTORY_GLOBAL_ENV="$GLOBAL_BAD_ENV" \
+    FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role planner --ticket T-236 -- "$global_case" \
+    > "$TMP/global-ledger-$global_case.out" 2>&1 || GLOBAL_BAD_STATUS=$?
+  if [[ "$GLOBAL_BAD_STATUS" -eq 3 &&
+        "$(cat "$GLOBAL_BAD_LEDGER")" != *"reserved-"* &&
+        ! -e "$(dirname "$GLOBAL_BAD_ENV")/.ledger.lock" ]]; then
+    pass "global ledger rejects $global_case before provider execution"
+  else
+    fail "global ledger rejects $global_case before provider execution" \
+      "status=$GLOBAL_BAD_STATUS"
+  fi
+done
+
+GLOBAL_SYMLINK_ROOT="$TMP/global-ledger-symlink-product"
+write_envelope "$GLOBAL_SYMLINK_ROOT"
+write_ticket "$GLOBAL_SYMLINK_ROOT" T-237
+GLOBAL_SYMLINK_ENV="$TMP/global-ledger-symlink-config/global.env"
+write_backend_global "$GLOBAL_SYMLINK_ENV"
+GLOBAL_SYMLINK_LEDGER="$(dirname "$GLOBAL_SYMLINK_ENV")/global-ledger.csv"
+printf '%s\n' "$GLOBAL_LEDGER_TEST_HEADER" > "$TMP/global-ledger-target.csv"
+ln -s "$TMP/global-ledger-target.csv" "$GLOBAL_SYMLINK_LEDGER"
+GLOBAL_SYMLINK_STATUS=0
+FACTORY_ROOT="$GLOBAL_SYMLINK_ROOT" FACTORY_GLOBAL_ENV="$GLOBAL_SYMLINK_ENV" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-237 -- "symlink global" \
+  > "$TMP/global-ledger-symlink.out" 2>&1 || GLOBAL_SYMLINK_STATUS=$?
+if [[ "$GLOBAL_SYMLINK_STATUS" -eq 3 && -L "$GLOBAL_SYMLINK_LEDGER" &&
+      ! -e "$(dirname "$GLOBAL_SYMLINK_ENV")/.ledger.lock" ]]; then
+  pass "global ledger rejects symlink storage before provider execution"
+else
+  fail "global ledger rejects symlink storage before provider execution" \
+    "status=$GLOBAL_SYMLINK_STATUS"
+fi
+
 # Semantic round numbering with one explicitly voided duplicate row.
 ROUNDS="$TMP/rounds"
 mkdir -p "$ROUNDS/factory/tickets"
@@ -1279,7 +1441,7 @@ MOCK_SLEEP=5 FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
   "$RUN_AGENT" --role planner --ticket T-400 -- "slow run" > "$TMP/first.out" 2>&1 &
 FIRST_PID=$!
 for _i in $(seq 1 50); do
-  [[ -n "$(ls "$GUARD/factory/.active-runs/"*.pid 2>/dev/null || true)" ]] && break
+  [[ -n "$(ls "$GUARD/factory/.active-runs/"*.lock/owner 2>/dev/null || true)" ]] && break
   sleep 0.05
 done
 SECOND_OUTPUT="$(FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
@@ -1290,7 +1452,7 @@ SECOND_STATUS=$?
 wait "$FIRST_PID"
 FIRST_PID=""
 
-if [[ "$SECOND_STATUS" -eq 7 && "$SECOND_OUTPUT" == *"live run already exists"* ]]; then
+if [[ "$SECOND_STATUS" -eq 7 && "$SECOND_OUTPUT" == *"run claim exists"* ]]; then
   pass "duplicate-run guard refuses overlap"
 else
   fail "duplicate-run guard refuses overlap" "status $SECOND_STATUS: $SECOND_OUTPUT"

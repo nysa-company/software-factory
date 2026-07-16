@@ -180,7 +180,15 @@ fi
 # (b) daily budget — same spend computation as run-agent.sh, reserve = PROJECTED_TICKET_USD
 TODAY="$(date +%F)"
 LEDGER_READY=1
+if [[ -L "$FACTORY_DIR/runs" ]] ||
+   { [[ ! -d "$FACTORY_DIR/runs" ]] &&
+     ! python3 "$KIT_DIR/scripts/lib/durable-file.py" touch \
+       "$FACTORY_DIR/runs/.initialized"; }; then
+  fail "run manifest directory could not be durably established"
+  LEDGER_READY=0
+fi
 if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+   [[ "$LEDGER_READY" -eq 1 ]] &&
    ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh --factory-root "$REPO_ROOT" >/dev/null; then
   fail "effective ledger could not be reduced"
   LEDGER_READY=0

@@ -8,65 +8,215 @@ from pathlib import Path
 import secrets
 import stat
 import sys
-import tempfile
 
 
-def manifests(directory):
-    result = {}
-    for path in sorted(directory.glob("*.meta")):
-        mode = path.lstat().st_mode
-        if not stat.S_ISREG(mode) or path.is_symlink():
-            raise ValueError(f"nonregular run manifest: {path.name}")
-        result[path.name] = base64.b64encode(path.read_bytes()).decode("ascii")
-    return result
+SNAPSHOT_SCHEMA = 1
+DIRECTORY_FLAGS = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                   getattr(os, "O_NOFOLLOW", 0))
+FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 
 
-def durable_write(path, content):
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+def identity(value):
+    return {
+        "device": value.st_dev,
+        "inode": value.st_ino,
+        "type": stat.S_IFMT(value.st_mode),
+    }
+
+
+def same_identity(value, expected):
+    return identity(value) == expected
+
+
+def real_directory(path, label):
+    value = path.lstat()
+    if not stat.S_ISDIR(value.st_mode):
+        raise ValueError(f"{label} must be a real directory")
+    return value
+
+
+def open_real_directory(path, label):
+    before = real_directory(path, label)
+    descriptor = os.open(path, DIRECTORY_FLAGS)
+    after = os.fstat(descriptor)
+    if not stat.S_ISDIR(after.st_mode) or identity(before) != identity(after):
+        os.close(descriptor)
+        raise ValueError(f"{label} changed while opening")
+    return descriptor, after
+
+
+def manifest_names(descriptor):
+    return sorted(name for name in os.listdir(descriptor) if name.endswith(".meta"))
+
+
+def read_manifest(descriptor, name):
+    before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise ValueError(f"nonregular or multi-link run manifest: {name}")
+    file_descriptor = os.open(name, FILE_FLAGS, dir_fd=descriptor)
     try:
-        with os.fdopen(descriptor, "wb") as handle:
+        after = os.fstat(file_descriptor)
+        if (not stat.S_ISREG(after.st_mode) or after.st_nlink != 1 or
+                identity(before) != identity(after)):
+            raise ValueError(f"run manifest changed while opening: {name}")
+        with os.fdopen(file_descriptor, "rb") as handle:
+            file_descriptor = -1
+            return base64.b64encode(handle.read()).decode("ascii")
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+
+
+def manifests(descriptor):
+    return {name: read_manifest(descriptor, name) for name in manifest_names(descriptor)}
+
+
+def snapshot(directory):
+    directory = Path(os.path.abspath(directory))
+    parent_descriptor, parent_stat = open_real_directory(directory.parent, "runs parent")
+    try:
+        try:
+            directory_stat = os.stat(
+                directory.name, dir_fd=parent_descriptor, follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            raise ValueError("runs root is missing")
+        if not stat.S_ISDIR(directory_stat.st_mode):
+            raise ValueError("runs root must be a real directory")
+        descriptor = os.open(directory.name, DIRECTORY_FLAGS, dir_fd=parent_descriptor)
+        try:
+            opened = os.fstat(descriptor)
+            if identity(directory_stat) != identity(opened):
+                raise ValueError("runs root changed while opening")
+            return {
+                "schema": SNAPSHOT_SCHEMA,
+                "parent": identity(parent_stat),
+                "directory": identity(opened),
+                "manifests": manifests(descriptor),
+            }
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
+def durable_write(descriptor, name, content):
+    temporary = f".{name}.{os.getpid()}.{secrets.token_hex(8)}"
+    file_descriptor = -1
+    try:
+        file_descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=descriptor,
+        )
+        with os.fdopen(file_descriptor, "wb") as handle:
+            file_descriptor = -1
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        os.replace(temporary, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        os.fsync(descriptor)
     finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
         try:
-            os.unlink(temporary)
+            os.unlink(temporary, dir_fd=descriptor)
         except FileNotFoundError:
             pass
 
 
-def quarantine(path):
-    target = path.with_name(f"{path.name}.rejected-role-mutation-{secrets.token_hex(6)}")
-    os.replace(path, target)
+def quarantine(descriptor, name):
+    target = f"{name}.rejected-role-mutation-{secrets.token_hex(6)}"
+    os.replace(name, target, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+
+
+def entry_stat(descriptor, name):
+    try:
+        return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def find_original_directory(parent_descriptor, expected, runs_name):
+    found = []
+    for name in os.listdir(parent_descriptor):
+        if name == runs_name:
+            continue
+        try:
+            value = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(value.st_mode) and same_identity(value, expected):
+            found.append(name)
+    if len(found) > 1:
+        raise ValueError("runs root identity appears more than once")
+    return found[0] if found else None
+
+
+def recover_directory(parent_descriptor, runs_name, expected):
+    current = entry_stat(parent_descriptor, runs_name)
+    if current is not None:
+        quarantine(parent_descriptor, runs_name)
+    original = find_original_directory(parent_descriptor, expected, runs_name)
+    if original:
+        os.replace(
+            original, runs_name,
+            src_dir_fd=parent_descriptor, dst_dir_fd=parent_descriptor,
+        )
+    else:
+        os.mkdir(runs_name, 0o700, dir_fd=parent_descriptor)
+    os.fsync(parent_descriptor)
+
+
+def restore_manifests(descriptor, expected):
+    for name in manifest_names(descriptor):
+        quarantine(descriptor, name)
+    for name, encoded in expected.items():
+        if not name.endswith(".meta") or "/" in name or name in {".", ".."}:
+            raise ValueError(f"invalid manifest name in snapshot: {name}")
+        durable_write(descriptor, name, base64.b64decode(encoded, validate=True))
+    os.fsync(descriptor)
+
+
+def validate_snapshot(expected):
+    if (not isinstance(expected, dict) or expected.get("schema") != SNAPSHOT_SCHEMA or
+            not isinstance(expected.get("parent"), dict) or
+            not isinstance(expected.get("directory"), dict) or
+            not isinstance(expected.get("manifests"), dict)):
+        raise ValueError("invalid runs snapshot")
 
 
 def check(directory, expected):
+    validate_snapshot(expected)
+    directory = Path(os.path.abspath(directory))
+    parent_descriptor, parent_stat = open_real_directory(directory.parent, "runs parent")
     try:
-        actual = manifests(directory)
-    except (OSError, ValueError):
-        actual = {}
-    if actual == expected:
-        return True
+        if not same_identity(parent_stat, expected["parent"]):
+            raise ValueError("runs parent identity changed; refusing recovery")
 
-    for path in sorted(directory.glob("*.meta")):
+        current = entry_stat(parent_descriptor, directory.name)
+        identity_matches = (
+            current is not None and stat.S_ISDIR(current.st_mode) and
+            same_identity(current, expected["directory"])
+        )
+        if not identity_matches:
+            recover_directory(parent_descriptor, directory.name, expected["directory"])
+
+        descriptor = os.open(directory.name, DIRECTORY_FLAGS, dir_fd=parent_descriptor)
         try:
-            quarantine(path)
-        except FileNotFoundError:
-            pass
-    for name, encoded in expected.items():
-        durable_write(directory / name, base64.b64decode(encoded, validate=True))
-    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(directory_fd)
+            try:
+                actual = manifests(descriptor)
+            except (OSError, ValueError):
+                actual = None
+            if identity_matches and actual == expected["manifests"]:
+                return True
+            restore_manifests(descriptor, expected["manifests"])
+            return False
+        finally:
+            os.close(descriptor)
     finally:
-        os.close(directory_fd)
-    return False
+        os.close(parent_descriptor)
 
 
 def main():
@@ -74,7 +224,7 @@ def main():
         raise SystemExit("usage: runs-integrity.py {snapshot|check} RUNS_DIR")
     directory = Path(sys.argv[2])
     if sys.argv[1] == "snapshot":
-        print(json.dumps(manifests(directory), sort_keys=True, separators=(",", ":")))
+        print(json.dumps(snapshot(directory), sort_keys=True, separators=(",", ":")))
         return
     expected = json.load(sys.stdin)
     if not check(directory, expected):
