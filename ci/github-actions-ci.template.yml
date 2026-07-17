@@ -13,14 +13,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: classify change
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if .github/scripts/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
+            echo "full=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "full=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
+        if: github.event_name == 'push' || steps.scope.outputs.full == 'true'
         with:
           node-version: 22
-      # <add: npm ci / lint / typecheck once the product has them>
+      # <add with the same condition: npm ci / lint / typecheck once the product has them>
       - name: tests
+        if: github.event_name == 'push' || steps.scope.outputs.full == 'true'
         run: npm test
         working-directory: <app directory>
-      # <add: build step + Playwright self-referential snapshots once UI exists>
+      # <add with the same condition: build + Playwright snapshots once UI exists>
 
   test-immutability:
     runs-on: ubuntu-latest

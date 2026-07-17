@@ -14,9 +14,9 @@ Activate these only after the first product instantiation has a deployed web app
 The Nysa T-013/T-014 and T-015/T-016 pilots proved two concurrent ticket
 leases with disjoint worktrees and serialized provider intervals. Prioritize:
 
-- Add a required-status-compatible fast CI path for factory, context, and
-  ledger-only changes; skip product databases, builds, tests, and deploy
-  previews only when the changed paths cannot affect them.
+- Extend the required-status-compatible lightweight fast path to proven-safe
+  factory and ledger-only changes; skip product databases, builds, tests, and
+  deploy previews only when the changed paths cannot affect them.
 - Create the protected ticket PR before Narrator so required checks, review
   automation, deploy previews, and evidence gathering overlap.
 - Add trusted bundle, merge, deployment, and Done attestations so completed

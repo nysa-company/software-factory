@@ -14,14 +14,35 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+      macos: ${{ steps.scope.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: classify change
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if bash ci/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
+            echo "full=false" >> "$GITHUB_OUTPUT"
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "full=true" >> "$GITHUB_OUTPUT"
+            if bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
+              echo "macos=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "macos=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
       - uses: actions/setup-node@v4
+        if: steps.scope.outputs.full == 'true'
         with:
           node-version: 22
       - uses: actions/setup-python@v5
+        if: steps.scope.outputs.full == 'true'
         with:
           python-version: "3.12"
       - name: repository baseline
@@ -29,13 +50,20 @@ jobs:
       - name: secret scan
         run: scripts/secret-scan
       - name: artifact policy
-        run: scripts/artifact-check --base origin/main
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/artifact-check --base "$BASE_SHA"
       - name: full verification
+        if: steps.scope.outputs.full == 'true'
         run: bash ci/test-all.sh
         env:
           BASE_REF: origin/main
 
   macos-bash-3:
+    needs: linux
+    if: >-
+      needs.linux.outputs.full == 'true' &&
+      (github.event_name == 'push' || needs.linux.outputs.macos == 'true')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -49,21 +77,32 @@ jobs:
       - name: full suite under system Bash
         run: /bin/bash ci/test-all.sh
 
-  # Keep the existing required "ci" context while making it aggregate both
-  # supported execution environments. A macOS failure can no longer merge
-  # merely because the Linux job passed.
+  # Keep the required "ci" context stable. It accepts intentional skips only
+  # after Linux classifies the complete diff.
   ci:
     if: always()
     needs: [linux, macos-bash-3]
     runs-on: ubuntu-latest
     steps:
-      - name: require Linux and macOS verification
+      - name: require applicable verification
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL_REQUIRED: ${{ needs.linux.outputs.full }}
           LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_REQUIRED: ${{ needs.linux.outputs.macos }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
         run: |
           test "$LINUX_RESULT" = success
-          test "$MACOS_RESULT" = success
+          if test "$FULL_REQUIRED" = false; then
+            test "$MACOS_REQUIRED" = false
+            test "$MACOS_RESULT" = skipped
+          elif test "$EVENT_NAME" = push || test "$MACOS_REQUIRED" = true; then
+            test "$MACOS_RESULT" = success
+          else
+            test "$FULL_REQUIRED" = true
+            test "$MACOS_REQUIRED" = false
+            test "$MACOS_RESULT" = skipped
+          fi
 
   test-immutability:
     runs-on: ubuntu-latest
