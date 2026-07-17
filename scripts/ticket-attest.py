@@ -41,6 +41,8 @@ def gh(*args):
     if result.returncode:
         if args[:2] == ("pr", "merge"):
             raise Refusal("GitHub did not accept protected auto-merge")
+        if args[:2] == ("pr", "create"):
+            raise Refusal("GitHub did not create the protected closeout PR")
         raise Refusal("GitHub query failed")
     return result
 
@@ -210,6 +212,70 @@ def exact_pr(repo, branch, state):
     if pr.get("headRefName") != branch or pr.get("baseRefName") != "main":
         raise Refusal("GitHub returned a PR with the wrong head or base")
     return pr
+
+
+def ensure_closeout_pr(repo, ticket, branch, head, method):
+    fields = "number,headRefName,baseRefName,headRefOid,url,state,mergedAt,mergeCommit"
+
+    def candidates():
+        value = json.loads(gh(
+            "pr", "list", "--repo", repo, "--state", "all", "--head", branch,
+            "--base", "main", "--json", fields,
+        ).stdout)
+        if not isinstance(value, list):
+            raise Refusal("GitHub returned invalid closeout PR evidence")
+        return value
+
+    prs = candidates()
+    if not prs:
+        gh(
+            "pr", "create", "--repo", repo, "--head", branch, "--base", "main",
+            "--title", f"{ticket}: record protected merge closeout",
+            "--body", (
+                f"Factory-owned metadata and accounting closeout for {ticket}.\n\n"
+                "No additional business approval is required. Protected checks, "
+                "reviews, and merge policy remain authoritative."
+            ),
+        )
+        prs = candidates()
+    if len(prs) != 1:
+        raise Refusal("expected exactly one closeout PR for the exact branch")
+    pr = prs[0]
+    if (
+        pr.get("headRefName") != branch
+        or pr.get("baseRefName") != "main"
+        or pr.get("headRefOid") != head
+        or not isinstance(pr.get("number"), int)
+        or pr["number"] <= 0
+    ):
+        raise Refusal("closeout PR repository, branch, base, or head is invalid")
+    if pr.get("state") == "MERGED":
+        if not pr.get("mergedAt"):
+            raise Refusal("merged closeout PR lacks merge evidence")
+        return pr
+    if pr.get("state") != "OPEN":
+        raise Refusal("closeout PR is neither open nor merged")
+    gh(
+        "pr", "merge", str(pr["number"]), "--repo", repo, "--auto",
+        f"--{method}",
+    )
+    view = json.loads(gh(
+        "pr", "view", str(pr["number"]), "--repo", repo,
+        "--json", "number,headRefName,baseRefName,headRefOid,autoMergeRequest,state,mergedAt",
+    ).stdout)
+    request = view.get("autoMergeRequest") or {}
+    if (
+        view.get("number") != pr["number"]
+        or view.get("headRefName") != branch
+        or view.get("baseRefName") != "main"
+        or view.get("headRefOid") != head
+        or (
+            view.get("state") != "MERGED"
+            and request.get("mergeMethod") != method.upper()
+        )
+    ):
+        raise Refusal("GitHub did not confirm auto-merge for the exact closeout head")
+    return view
 
 
 def ensure_clean_branch(product, workdir, expected, *, based_on_main=False, require_remote=True):
@@ -499,14 +565,67 @@ def successful_post_merge_checks(repo, merge, required):
     return successful
 
 
-def commit_push(product, workdir, remote, branch, message, paths):
-    for path in paths:
-        git(workdir, "add", "--", str(path.relative_to(workdir)))
-    git(
-        workdir, "-c", "user.name=Software Factory", "-c",
-        "user.email=factory@local", "commit", "-m", message,
-    )
-    head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+def validate_closeout_commit(
+    workdir, ticket, head, done_att, repo, original_pr, merge, checks,
+    successful, kit_sha, method, bundle_att, approval_att, approval_head,
+    evidence_blobs,
+):
+    expected_keys = {
+        "schema", "ticket", "repository", "pr_number", "approved_pr_head",
+        "reviewed_sha", "bundle_blob", "bundle_attestation_blob",
+        "approval_attestation_blob", "approval_parent_head",
+        "auto_merge_method", "merge_commit", "merged_at", "required_checks",
+        "successful_checks", "ledger", "kit_sha", "closeout_parent",
+        "attested_at",
+    }
+    expected_paths = {
+        "factory/ledger.csv",
+        f"factory/tickets/{ticket}.md",
+        f"factory/attestations/{ticket}/done.json",
+    }
+    parent = git(workdir, "rev-parse", f"{head}^").stdout.strip()
+    paths = set(git(
+        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r", head,
+    ).stdout.splitlines())
+    ledger = done_att.get("ledger") or {}
+    ledger_path = workdir / "factory" / "ledger.csv"
+    if (
+        set(done_att) != expected_keys
+        or done_att.get("schema") != "nysa.software-factory.ticket-done/v1"
+        or done_att.get("ticket") != ticket
+        or done_att.get("repository") != repo
+        or done_att.get("pr_number") != original_pr.get("number")
+        or done_att.get("approved_pr_head") != approval_head
+        or done_att.get("reviewed_sha") != bundle_att["reviewed_sha"]
+        or done_att.get("bundle_blob") != bundle_att["bundle_blob"]
+        or done_att.get("bundle_attestation_blob") != evidence_blobs[0]
+        or done_att.get("approval_attestation_blob") != evidence_blobs[1]
+        or done_att.get("approval_parent_head") != approval_att["parent_head"]
+        or done_att.get("auto_merge_method") != method
+        or done_att.get("merge_commit") != merge
+        or done_att.get("merged_at") != original_pr.get("mergedAt")
+        or done_att.get("required_checks") != checks
+        or done_att.get("successful_checks") != successful
+        or done_att.get("kit_sha") != kit_sha
+        or done_att.get("closeout_parent") != parent
+        or paths != expected_paths
+        or ledger.get("schema") != "nysa.software-factory.ledger-projection/v1"
+        or ledger.get("status") != "ok"
+        or ledger.get("ticket") != ticket
+        or ledger.get("sha256") != hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    ):
+        raise Refusal("existing closeout commit or Done receipt is invalid")
+    timestamp(done_att.get("attested_at"), "Done attestation")
+    text = (workdir / "factory" / "tickets" / f"{ticket}.md").read_text()
+    if (
+        field(text, "State").lower() != "done"
+        or field(text, "Operator-Approval").lower() != "linear"
+    ):
+        raise Refusal("existing closeout commit lacks the attested Done ticket")
+    return parent
+
+
+def push_head(product, workdir, remote, branch, head):
     configured = git(product, "remote", "get-url", "--push", "--all", "origin").stdout.splitlines()
     if configured != [remote]:
         raise Refusal("configured origin no longer matches the certified product origin")
@@ -516,6 +635,17 @@ def commit_push(product, workdir, remote, branch, message, paths):
         raise Refusal("remote did not confirm the attestation commit")
     git(workdir, "update-ref", f"refs/remotes/origin/{branch}", head)
     return head
+
+
+def commit_push(product, workdir, remote, branch, message, paths):
+    for path in paths:
+        git(workdir, "add", "--", str(path.relative_to(workdir)))
+    git(
+        workdir, "-c", "user.name=Software Factory", "-c",
+        "user.email=factory@local", "commit", "-m", message,
+    )
+    head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+    return push_head(product, workdir, remote, branch, head)
 
 
 def consume_overlay(product, ticket, expected_version):
@@ -703,12 +833,26 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
 
 def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     branch = f"chore/{args.ticket.lower().replace('-', '')}-closeout"
-    head = ensure_clean_branch(
-        product, workdir, branch, based_on_main=True, require_remote=False,
-    )
+    head = ensure_clean_branch(product, workdir, branch, require_remote=False)
     main_head = git(workdir, "rev-parse", "origin/main").stdout.strip()
-    if head != main_head:
-        raise Refusal("closeout branch must start exactly at origin/main")
+    remote_line = git(
+        workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}",
+    ).stdout.split()
+    remote_head = remote_line[0] if remote_line else ""
+    done_path = workdir / "factory" / "attestations" / args.ticket / "done.json"
+    retry = head != main_head
+    done_att = json.loads(done_path.read_text()) if done_path.is_file() else None
+    pending_push = remote_head != head
+    if not retry and remote_head not in ("", head):
+        raise Refusal("closeout branch must exactly match its certified remote tip")
+    if retry and pending_push and (
+        not done_att or remote_head not in ("", done_att.get("closeout_parent"))
+    ):
+        raise Refusal("closeout branch must exactly match its certified remote tip")
+    if retry and not done_att:
+        raise Refusal("modified closeout head lacks an exact Done receipt")
+    if not retry and done_path.is_file():
+        raise Refusal("Done is already present on protected main; use terminal sequencing")
     ticket_branch = f"{prefix}{args.ticket}"
     pr = exact_pr(repo, ticket_branch, "all")
     if pr.get("state") != "MERGED" or not pr.get("mergedAt"):
@@ -729,44 +873,70 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     if (
         field(text, "State").lower() != "approved"
         or field(text, "Operator-Approval").lower() != "linear"
-    ):
+    ) and not retry:
         raise Refusal("closeout requires an Approved ticket on protected main")
-    ledger = Path(__file__).with_name("ledger-view.py")
-    projection = run([
-        sys.executable, "-I", "-S", str(ledger), "project",
-        "--factory-root", str(product), "--workdir", str(workdir), "--ticket", args.ticket,
-    ])
-    ledger_result = json.loads(projection.stdout)
-    text = replace_field(text, "State", "Done")
-    text = check_item(text, "PR merged and staging confirmed")
-    ticket_path.write_text(text)
-    done_path = workdir / "factory" / "attestations" / args.ticket / "done.json"
-    done_att = {
-        "schema": "nysa.software-factory.ticket-done/v1",
-        "ticket": args.ticket,
-        "repository": repo,
-        "pr_number": pr["number"],
-        "approved_pr_head": approval_head,
-        "reviewed_sha": bundle_att["reviewed_sha"],
-        "bundle_blob": bundle_att["bundle_blob"],
-        "bundle_attestation_blob": evidence_blobs[0],
-        "approval_attestation_blob": evidence_blobs[1],
-        "approval_parent_head": approval_att["parent_head"],
-        "auto_merge_method": method,
-        "merge_commit": merge,
-        "merged_at": pr["mergedAt"],
-        "required_checks": checks,
-        "successful_checks": successful,
-        "ledger": ledger_result,
-        "kit_sha": kit_sha,
-        "attested_at": now(),
-    }
-    write_json(done_path, done_att)
-    head = commit_push(
-        product, workdir, remote, branch, f"{args.ticket}: record protected merge closeout",
-        (workdir / "factory" / "ledger.csv", ticket_path, done_path),
+    if retry:
+        validate_closeout_commit(
+            workdir, args.ticket, head, done_att, repo, pr, merge, checks,
+            successful, kit_sha, method, bundle_att, approval_att,
+            approval_head, evidence_blobs,
+        )
+        if pending_push:
+            push_head(product, workdir, remote, branch, head)
+    else:
+        ledger = Path(__file__).with_name("ledger-view.py")
+        projection = run([
+            sys.executable, "-I", "-S", str(ledger), "project",
+            "--factory-root", str(product), "--workdir", str(workdir),
+            "--ticket", args.ticket,
+        ])
+        ledger_result = json.loads(projection.stdout)
+        text = replace_field(text, "State", "Done")
+        text = check_item(text, "PR merged and staging confirmed")
+        ticket_path.write_text(text)
+        done_att = {
+            "schema": "nysa.software-factory.ticket-done/v1",
+            "ticket": args.ticket,
+            "repository": repo,
+            "pr_number": pr["number"],
+            "approved_pr_head": approval_head,
+            "reviewed_sha": bundle_att["reviewed_sha"],
+            "bundle_blob": bundle_att["bundle_blob"],
+            "bundle_attestation_blob": evidence_blobs[0],
+            "approval_attestation_blob": evidence_blobs[1],
+            "approval_parent_head": approval_att["parent_head"],
+            "auto_merge_method": method,
+            "merge_commit": merge,
+            "merged_at": pr["mergedAt"],
+            "required_checks": checks,
+            "successful_checks": successful,
+            "ledger": ledger_result,
+            "kit_sha": kit_sha,
+            "closeout_parent": head,
+            "attested_at": now(),
+        }
+        write_json(done_path, done_att)
+        head = commit_push(
+            product, workdir, remote, branch,
+            f"{args.ticket}: record protected merge closeout",
+            (workdir / "factory" / "ledger.csv", ticket_path, done_path),
+        )
+        validate_closeout_commit(
+            workdir, args.ticket, head, done_att, repo, pr, merge, checks,
+            successful, kit_sha, method, bundle_att, approval_att,
+            approval_head, evidence_blobs,
+        )
+    closeout_pr = ensure_closeout_pr(
+        repo, args.ticket, branch, head, method,
     )
-    return {"action": "done", "head": head, "attestation": done_att}
+    return {
+        "action": "done",
+        "head": head,
+        "attestation": done_att,
+        "closeout_pr_number": closeout_pr["number"],
+        "closeout_pr_state": closeout_pr["state"],
+        "auto_merge": closeout_pr["state"] != "MERGED",
+    }
 
 
 def main():

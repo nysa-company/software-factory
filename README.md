@@ -97,6 +97,9 @@ Contract 1.2 still stops in Review. Contract 1.3 implements the fourth step
 through the trusted `ticket-attest` command: it attests the exact bundle,
 consumes the one Linear approval, requests protected auto-merge, and records
 Done only after merge-commit deployment checks and closeout accounting pass.
+It also auto-merges the protected factory-owned closeout PR and releases any
+dispatcher lease only after attested Done reaches main, so the normal operator
+actions remain Ready and Approved.
 
 ## Does moving a ticket to Ready start the factory?
 

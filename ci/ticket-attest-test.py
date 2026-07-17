@@ -51,6 +51,9 @@ class TicketAttestTests(unittest.TestCase):
             "run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version\n"
         )
         (self.product / "factory/ledger.csv").write_text(ledger_header)
+        (self.product / "factory/KIT_PIN").write_text(
+            command("git", "-C", str(ROOT), "rev-parse", "HEAD").stdout.strip() + "\n"
+        )
         (self.product / "factory/tickets/T-700.md").write_text(self.ticket("Review"))
         self.commit("base")
         command("git", "push", "-q", "-u", "origin", "main", cwd=self.product)
@@ -119,6 +122,10 @@ Priority: normal
     def head(self):
         return command("git", "rev-parse", "HEAD", cwd=self.product).stdout.strip()
 
+    @staticmethod
+    def head_at(path):
+        return command("git", "rev-parse", "HEAD", cwd=path).stdout.strip()
+
     def write_runs(self):
         fields = (
             "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,"
@@ -148,7 +155,16 @@ Priority: normal
             "auto_merge": True, "merged": False, "merge_sha": "b" * 40,
             "pr_head": None, "checks": {"ci": True, "deploy-production": True},
             "check_runs": {},
+            "closeout_pr": "absent", "closeout_duplicate": False,
+            "closeout_wrong": False, "closeout_head": None,
+            "create_fail": False, "closeout_merge_fail": False,
+            "closeout_auto_merge": True,
         }
+        value.update(updates)
+        self.state.write_text(json.dumps(value))
+
+    def update_state(self, **updates):
+        value = json.loads(self.state.read_text())
         value.update(updates)
         self.state.write_text(json.dumps(value))
 
@@ -162,20 +178,53 @@ a = sys.argv[1:]
 head = subprocess.check_output(["git", "-C", os.environ["FAKE_WORKDIR"], "rev-parse", "HEAD"], text=True).strip()
 if a[:2] == ["pr", "list"]:
     state = a[a.index("--state") + 1]
-    item = {"number": 7, "headRefName": "ticket/T-700", "baseRefName": "main",
-            "headRefOid": ("c" * 40 if s["wrong_head"] else (s.get("pr_head") or head)), "url": "https://example.invalid/pr/7",
-            "state": "MERGED" if state == "all" and s["merged"] else "OPEN",
-            "mergedAt": "2026-07-17T18:00:00Z" if s["merged"] else None,
-            "mergeCommit": {"oid": s["merge_sha"]} if s["merged"] else None}
-    print(json.dumps([item, dict(item, number=8)] if s["duplicate"] else [item]))
+    requested_head = a[a.index("--head") + 1]
+    if requested_head.startswith("chore/"):
+        if s["closeout_pr"] == "absent":
+            print("[]")
+        else:
+            item = {"number": 14,
+                    "headRefName": "chore/wrong-closeout" if s["closeout_wrong"] else requested_head,
+                    "baseRefName": "develop" if s["closeout_wrong"] else "main",
+                    "headRefOid": ("c" * 40 if s["closeout_wrong"] else (s.get("closeout_head") or head)),
+                    "url": "https://example.invalid/pr/14",
+                    "state": "MERGED" if s["closeout_pr"] == "merged" else "OPEN",
+                    "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
+                    "mergeCommit": {"oid": "e" * 40} if s["closeout_pr"] == "merged" else None}
+            print(json.dumps([item, dict(item, number=15)] if s["closeout_duplicate"] else [item]))
+    else:
+        item = {"number": 7, "headRefName": "ticket/T-700", "baseRefName": "main",
+                "headRefOid": ("c" * 40 if s["wrong_head"] else (s.get("pr_head") or head)), "url": "https://example.invalid/pr/7",
+                "state": "MERGED" if state == "all" and s["merged"] else "OPEN",
+                "mergedAt": "2026-07-17T18:00:00Z" if s["merged"] else None,
+                "mergeCommit": {"oid": s["merge_sha"]} if s["merged"] else None}
+        print(json.dumps([item, dict(item, number=8)] if s["duplicate"] else [item]))
+elif a[:2] == ["pr", "create"]:
+    if s["create_fail"]: print("create unavailable", file=sys.stderr); raise SystemExit(1)
+    s["closeout_pr"] = "open"
+    s["closeout_head"] = head
+    s["create_argv"] = a
+    s["create_count"] = s.get("create_count", 0) + 1
+    Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
+    print("https://example.invalid/pr/14")
 elif a[:2] == ["pr", "merge"]:
-    if s["merge_fail"]: print("auto-merge unavailable", file=sys.stderr); raise SystemExit(1)
-    s["merge_argv"] = a
+    closeout = a[2] == "14"
+    if (closeout and s["closeout_merge_fail"]) or (not closeout and s["merge_fail"]):
+        print("auto-merge unavailable", file=sys.stderr); raise SystemExit(1)
+    s["closeout_merge_argv" if closeout else "merge_argv"] = a
     Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
 elif a[:2] == ["pr", "view"]:
-    print(json.dumps({"number": 7, "headRefOid": head, "state": "OPEN",
-                      "mergeStateStatus": "BLOCKED",
-                      "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
+    closeout = a[2] == "14"
+    if closeout:
+        print(json.dumps({"number": 14, "headRefName": "chore/t700-closeout",
+                          "baseRefName": "main", "headRefOid": s.get("closeout_head") or head,
+                          "state": "MERGED" if s["closeout_pr"] == "merged" else "OPEN",
+                          "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
+                          "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["closeout_auto_merge"] else None}))
+    else:
+        print(json.dumps({"number": 7, "headRefOid": head, "state": "OPEN",
+                          "mergeStateStatus": "BLOCKED",
+                          "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
 elif a[:1] == ["api"]:
     if a[1].endswith("/status"):
         print(json.dumps({"statuses": [{"context": k, "state": "success" if v else "failure"}
@@ -354,6 +403,143 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("State: Done", (self.workdir / "factory/tickets/T-700.md").read_text())
         self.assertTrue((self.workdir / "factory/attestations/T-700/done.json").is_file())
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state["closeout_pr"], "open")
+        self.assertIn("--squash", state["closeout_merge_argv"])
+        self.assertEqual(
+            state["create_argv"][state["create_argv"].index("--title") + 1],
+            "T-700: record protected merge closeout",
+        )
+        self.assertEqual(
+            state["create_argv"][state["create_argv"].index("--body") + 1],
+            "Factory-owned metadata and accounting closeout for T-700.\n\n"
+            "No additional business approval is required. Protected checks, "
+            "reviews, and merge policy remain authoritative.",
+        )
+
+    def test_done_retries_create_failure_without_new_commit_or_projection(self):
+        self.prepare_done(create_fail=True)
+        failed = self.attest("done")
+        self.assertIn("did not create", failed.stderr)
+        closeout_head = self.head_at(self.workdir)
+        count = command(
+            "git", "rev-list", "--count", "HEAD", cwd=self.workdir,
+        ).stdout.strip()
+        ledger = (self.workdir / "factory/ledger.csv").read_bytes()
+        self.update_state(create_fail=False)
+        retried = self.attest("done")
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head_at(self.workdir), closeout_head)
+        self.assertEqual(
+            command("git", "rev-list", "--count", "HEAD", cwd=self.workdir).stdout.strip(),
+            count,
+        )
+        self.assertEqual((self.workdir / "factory/ledger.csv").read_bytes(), ledger)
+
+    def test_done_retries_failed_closeout_push_without_new_commit(self):
+        self.prepare_done()
+        hook = self.remote / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        failed = self.attest("done")
+        self.assertIn("Git operation failed: push", failed.stderr)
+        closeout_head = self.head_at(self.workdir)
+        hook.unlink()
+        retried = self.attest("done")
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head_at(self.workdir), closeout_head)
+
+    def test_done_retries_auto_merge_failure_on_existing_pr(self):
+        self.prepare_done(closeout_merge_fail=True)
+        failed = self.attest("done")
+        self.assertIn("auto-merge", failed.stderr)
+        closeout_head = self.head_at(self.workdir)
+        self.update_state(closeout_merge_fail=False)
+        retried = self.attest("done")
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head_at(self.workdir), closeout_head)
+        self.assertEqual(json.loads(self.state.read_text())["create_count"], 1)
+
+    def test_done_retries_unconfirmed_closeout_auto_merge(self):
+        self.prepare_done(closeout_auto_merge=False)
+        self.assertIn("did not confirm", self.attest("done").stderr)
+        closeout_head = self.head_at(self.workdir)
+        self.update_state(closeout_auto_merge=True)
+        retried = self.attest("done")
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head_at(self.workdir), closeout_head)
+
+    def test_done_retry_refuses_modified_closeout_head(self):
+        self.prepare_done(create_fail=True)
+        self.assertNotEqual(self.attest("done").returncode, 0)
+        (self.workdir / "unrelated-closeout.txt").write_text("tamper\n")
+        command("git", "add", ".", cwd=self.workdir)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "modify closeout head", cwd=self.workdir,
+        )
+        command(
+            "git", "push", "-q", "origin", "HEAD:chore/t700-closeout",
+            cwd=self.workdir,
+        )
+        self.update_state(create_fail=False)
+        self.assertIn("existing closeout commit", self.attest("done").stderr)
+
+    def test_done_refuses_duplicate_or_wrong_closeout_pr(self):
+        self.prepare_done(closeout_pr="open", closeout_duplicate=True)
+        self.assertIn("exactly one closeout PR", self.attest("done").stderr)
+
+    def test_done_refuses_wrong_closeout_pr_identity(self):
+        self.prepare_done(closeout_pr="open", closeout_wrong=True)
+        self.assertIn("branch, base, or head", self.attest("done").stderr)
+
+    def test_done_accepts_already_merged_exact_closeout_pr(self):
+        self.prepare_done(closeout_pr="merged")
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["closeout_pr_state"], "MERGED")
+        self.assertFalse(payload["auto_merge"])
+        self.assertNotIn("closeout_merge_argv", json.loads(self.state.read_text()))
+        project = self.product / "factory/PROJECT.env"
+        project.write_text(project.read_text() + "MAX_CONCURRENT_TICKETS=2\n")
+        lease = "3" * 64
+        lease_dir = self.product / "factory/.dispatch-leases"
+        lease_dir.mkdir()
+        lease_file = lease_dir / "T-700.json"
+        lease_file.write_text(json.dumps({
+            "schema_version": 1, "ticket": "T-700", "lease_id": lease,
+            "expires_epoch": 4102444800,
+        }))
+        terminal_env = dict(os.environ)
+        terminal_env.update({
+            "FACTORY_ROOT": str(self.product),
+            "FACTORY_HERMES_CONTRACT_VERSION": "1.3.0",
+        })
+        pending = command(
+            "bash", str(ROOT / "scripts/next-stage.sh"), "--ticket", "T-700",
+            "--lease", lease, "--workdir", str(self.product),
+            env=terminal_env, check=False,
+        )
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        self.assertTrue(pending.stdout.startswith("AWAIT-MERGE "), pending.stdout)
+        self.assertTrue(lease_file.exists())
+        command("git", "push", "-q", "origin", "HEAD:main", cwd=self.workdir)
+        command("git", "fetch", "-q", "origin", "main", cwd=self.workdir)
+        stage = command(
+            "bash", str(ROOT / "scripts/next-stage.sh"), "--ticket", "T-700",
+            "--lease", lease, "--workdir", str(self.product),
+            env=terminal_env, check=False,
+        )
+        self.assertEqual(stage.returncode, 0, stage.stderr)
+        self.assertTrue(stage.stdout.startswith("COMPLETE "), stage.stdout)
+        released = command(
+            "bash", str(ROOT / "scripts/dispatch-lease.sh"), "release",
+            "--ticket", "T-700", "--lease", lease,
+            env=terminal_env, check=False,
+        )
+        self.assertEqual(released.returncode, 0, released.stderr)
+        self.assertFalse(lease_file.exists())
 
     def test_done_refuses_missing_or_tampered_approval_and_head_mismatch(self):
         self.prepare_done()
@@ -364,7 +550,10 @@ else:
             "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
             "commit", "-qm", "manual approved without receipt", cwd=self.workdir,
         )
-        command("git", "push", "-q", "origin", "HEAD:main", cwd=self.workdir)
+        command(
+            "git", "push", "-q", "origin", "HEAD:main",
+            "HEAD:chore/t700-closeout", cwd=self.workdir,
+        )
         self.assertIn("lacks bundle or approval", self.attest("done").stderr)
 
     def test_done_refuses_tampered_protected_approval_receipt(self):
@@ -378,7 +567,10 @@ else:
             "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
             "commit", "-qm", "tamper protected approval", cwd=self.workdir,
         )
-        command("git", "push", "-q", "origin", "HEAD:main", cwd=self.workdir)
+        command(
+            "git", "push", "-q", "origin", "HEAD:main",
+            "HEAD:chore/t700-closeout", cwd=self.workdir,
+        )
         self.assertIn("protected approval evidence", self.attest("done").stderr)
 
     def test_done_refuses_merged_head_mismatch_and_check_name_collision(self):
@@ -412,7 +604,7 @@ else:
             "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
             "commit", "-qm", "arbitrary closeout commit", cwd=self.workdir,
         )
-        self.assertIn("exactly at origin/main", self.attest("done").stderr)
+        self.assertIn("certified remote tip", self.attest("done").stderr)
 
     def test_dispatch_lease_wrapper_requires_matching_opaque_lease_at_two(self):
         project = self.product / "factory/PROJECT.env"

@@ -88,7 +88,7 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Trusted approval and close-out PR
 
 - Notice: under contract 1.3, move only Awaiting Approval → Approved in Linear after reviewing the exact bundle. The trusted approval action commits the binding and requests protected GitHub auto-merge. If it refuses stale evidence, a changed head, conflicts, unavailable auto-merge, or failed checks, investigate the named condition; never manually imitate the attestation.
-- Notice: after the ticket PR merges, the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes `ticket-attest --action done`. It verifies the merge and configured post-merge contexts, reuses ledger projection, and commits Done plus closeout evidence. Projection refuses any active or ambiguous claim.
+- Notice: after the ticket PR merges, the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes `ticket-attest --action done`. It verifies the merge and configured post-merge contexts, projects the ledger once, commits Done plus closeout evidence, creates or reuses the exact factory-owned closeout PR, and requests protected auto-merge. No operator approval or manual GitHub merge is required. After protected main contains valid Done, sequencing returns `COMPLETE` and the dispatcher releases the lease. Projection refuses any active or ambiguous claim.
 - Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Review and merge the protected close-out PR like any factory bookkeeping change.
 - Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
 

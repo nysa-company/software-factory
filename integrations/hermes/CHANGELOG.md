@@ -18,6 +18,9 @@ helper output are not compatibility promises.
 - Requires the matching opaque lease for attestations at concurrency two,
   selects the receipt-bound configured merge method, and binds Done to the
   exact protected approval chain and collision-free merge-commit checks.
+- Makes Done own retryable creation and protected auto-merge of the exact
+  factory closeout PR; adds terminal `COMPLETE` sequencing so leases release
+  only after attested Done reaches protected main.
 
 ## 1.2.0 — 2026-07-15
 

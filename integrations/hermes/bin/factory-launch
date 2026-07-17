@@ -981,9 +981,11 @@ PY
         die "done worktree branch must be $ATTEST_BRANCH"
       [[ -z "$(git -C "$RESOLVED_WORKDIR" status --porcelain --untracked-files=all)" ]] ||
         die "done worktree must be clean"
-      [[ "$(git -C "$RESOLVED_WORKDIR" rev-parse HEAD)" == \
-         "$(git -C "$RESOLVED_WORKDIR" rev-parse origin/main)" ]] ||
-        die "done worktree must start exactly at origin/main"
+      if [[ "$(git -C "$RESOLVED_WORKDIR" rev-parse HEAD)" != \
+            "$(git -C "$RESOLVED_WORKDIR" rev-parse origin/main)" ]]; then
+        [[ -f "$RESOLVED_WORKDIR/factory/attestations/$ATTEST_TICKET/done.json" ]] ||
+          die "done worktree must start at origin/main or be an attested retry"
+      fi
     else
       validate_ticket_worktree "$ATTEST_TICKET"
     fi

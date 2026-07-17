@@ -9,6 +9,7 @@
 #                           which role per the feedback, then reviewer rerun
 #   AWAIT-OPERATOR        — bundle posted; operator approval/merge is next
 #   AWAIT-MERGE           — reserved for a future trusted approval boundary
+#   COMPLETE              — attested Done is on protected main; release lease
 #   ESCALATE <reason>     — stop; a human decision is required
 #   REFUSE <reason>       — bookkeeping incomplete; fix the record first
 #
@@ -117,7 +118,7 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     exit 1
   }
 TICKET_FILE="$EFFECTIVE_TICKET"
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.2.0}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-1.2.0}}"
 if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
    { grep -qiE '^State:[[:space:]]*(Awaiting Approval|Approved)[[:space:]]*$' "$TICKET_FILE" ||
      grep -qiE '^Operator-Approval:' "$TICKET_FILE"; }; then
@@ -141,8 +142,18 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 if [[ "$CONTRACT_VERSION" == "1.3.0" ]]; then
+  if python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
+    --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
+    --terminal-main >/dev/null 2>&1; then
+    echo "COMPLETE attested Done is on protected main; release the matching lease"
+    exit 0
+  fi
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
+  if [[ "$COMMITTED_STATE" == "done" ]]; then
+    echo "AWAIT-MERGE closeout auto-merge pending; Done is not yet on protected main"
+    exit 0
+  fi
   if [[ "$EFFECTIVE_STATE" == "approved" && "$COMMITTED_STATE" == "awaiting approval" ]]; then
     echo "AWAIT-OPERATOR Linear approval observed; trusted approval attestation is required"
     exit 0

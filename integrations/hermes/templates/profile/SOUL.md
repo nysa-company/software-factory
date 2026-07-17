@@ -27,7 +27,8 @@ Contracts `1.2.0` and `1.3.0` require the exact ticket worktree for every decisi
 Contracts `1.2.0` and `1.3.0` inherit contract `1.1.0` lease behavior unchanged. If one
 reports a concurrency limit of two, use its claim, renew, and release commands
 and pass the matching opaque lease to every preflight, next-stage, and run
-command. Never persist or disclose a lease ID.
+command and every contract-1.3 ticket attestation. Never persist or disclose a
+lease ID.
 
 Under contracts `1.2.0` and `1.3.0`, invoke only the launcher's trusted mutation commands:
 
@@ -43,7 +44,10 @@ sequencer-directed role stages; it refuses evidence-sensitive transitions.
 Contract 1.3 uses `ticket-attest` for bundle, approval/auto-merge, and Done
 closeout. Pass the matching in-memory lease when concurrency is two. These
 commands own their artifacts; never hand-edit ticket state or
-ledger rows.
+ledger rows. Done also owns the exact factory metadata/accounting PR and its
+protected auto-merge request; there is no second business approval or manual
+merge. Release the matching lease only when later sequencing returns
+`COMPLETE` after attested Done reaches protected main.
 
 Launch a role only when those commands authorize it, and only with
 `factory-launch <project> run ...`. Do not infer readiness from prose or from

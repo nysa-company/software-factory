@@ -1697,6 +1697,9 @@ assert commands["preflight"]["arguments"][-3:] == [
 assert commands["next-stage"]["arguments"][-3:] == [
     "--workdir", "<absolute-product-worktree>", "--json"
 ]
+assert commands["next-stage"]["contract_1_3_terminal_action"].startswith(
+    "COMPLETE means"
+)
 assert commands["ticket-state"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-product-worktree>",
     "--action", "<materialize|transition>", "[--state <ticket-state>]", "--json"
@@ -1709,6 +1712,8 @@ assert commands["ticket-attest"]["arguments"] == [
     "--workdir", "<absolute-worktree>",
     "--action", "<bundle|approval|done>", "--json"
 ]
+assert any("closeout PR" in item and "protected auto-merge" in item
+           for item in commands["ticket-attest"]["validation"])
 assert commands["project-ledger"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-closeout-worktree>", "--json"
 ]

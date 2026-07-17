@@ -132,7 +132,11 @@ unexpired opaque dispatcher lease through the trusted launcher environment;
 the lease is validated with the existing lease helper and never enters an
 attestation or command result. Done starts only from `HEAD == origin/main`,
 binds the exact approved PR head and protected bundle/approval blobs, and
-refuses status/check name collisions.
+refuses status/check name collisions. It projects and commits once, then owns
+creation/reuse and protected auto-merge of the exact closeout PR. A retry
+revalidates the same remote commit. Only valid attested Done on protected main
+produces sequencer action `COMPLETE`, after which the dispatcher releases the
+lease; closeout PR creation is never terminal evidence.
 Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to

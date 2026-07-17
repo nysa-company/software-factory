@@ -187,6 +187,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 "bundle_attestation_blob": bundle_blob,
                 "approval_attestation_blob": approval_blob,
                 "approval_parent_head": "1" * 40,
+                "closeout_parent": "4" * 40,
                 "kit_sha": "2" * 40,
                 "auto_merge_method": "squash",
                 "merged_at": "2026-07-17T18:00:00Z",
@@ -219,6 +220,13 @@ class EffectiveTicketTests(unittest.TestCase):
             text, source = committed_ticket(repo / "factory", "T-700")
             self.assertIn("State: Done", text)
             self.assertEqual(source, "refs/remotes/origin/main")
+            terminal = subprocess.run([
+                sys.executable, str(ROOT / "scripts/lib/effective_ticket.py"),
+                "--factory-dir", str(repo / "factory"), "--ticket", "T-700",
+                "--terminal-main",
+            ], capture_output=True, text=True)
+            self.assertEqual(terminal.returncode, 0, terminal.stderr)
+            self.assertIn("State: Done", terminal.stdout)
             subprocess.run(["git", "-C", repo, "switch", "-q", "main"], check=True)
             done.write_text(json.dumps({
                 "schema": "nysa.software-factory.ticket-done/v1",
@@ -235,6 +243,12 @@ class EffectiveTicketTests(unittest.TestCase):
             text, source = committed_ticket(repo / "factory", "T-700")
             self.assertIn("State: Approved", text)
             self.assertEqual(source, "refs/remotes/origin/ticket/T-700")
+            terminal = subprocess.run([
+                sys.executable, str(ROOT / "scripts/lib/effective_ticket.py"),
+                "--factory-dir", str(repo / "factory"), "--ticket", "T-700",
+                "--terminal-main",
+            ], capture_output=True, text=True)
+            self.assertNotEqual(terminal.returncode, 0)
 
     @staticmethod
     def run_cli(operator):

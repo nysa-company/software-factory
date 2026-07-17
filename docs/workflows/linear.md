@@ -36,7 +36,10 @@ bundle and merge/deploy attestation paths exist, and sequencing does not
 authorize `AWAIT-MERGE`. Contract 1.3 keeps those generic refusals and adds
 `ticket-attest`: bundle creates Awaiting Approval, approval consumes only the
 exact newer Linear approval and enables protected auto-merge, and done records
-verified merge/deployment closeout. An API outage never stops an in-flight ticket. The local sync map and logs show
+verified merge/deployment closeout and requests protected auto-merge for its
+factory-owned metadata/accounting PR. No second operator approval exists.
+After that PR merges, protected-main terminal evidence yields `COMPLETE`,
+releases the lease, and supplies Done to Linear sync. An API outage never stops an in-flight ticket. The local sync map and logs show
 stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 

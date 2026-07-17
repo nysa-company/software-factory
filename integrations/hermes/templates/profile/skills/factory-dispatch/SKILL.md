@@ -146,17 +146,27 @@ Contract 1.2 closeout retains
 ```
 
 Accept only the documented successful projection result, then commit that
-projected ledger through the closeout PR defined by the dispatcher role. Never
+projected ledger through the closeout flow defined by the dispatcher role.
+`ticket-attest --action done` owns that single commit, creates or reuses its
+exact factory metadata/accounting PR, and requests protected auto-merge. Retry
+the same action after network failure; never open or merge another PR. Never
 copy, reconstruct, reorder, or hand-edit ledger rows. Any entry under
 `factory/.active-runs/` or any `factory/runs/*.pid` record makes the work live
 or ambiguous and must refuse projection. A dirty, stale, live-run, or otherwise
 refused projection is an escalation.
 
+After closeout auto-merge, keep sequencing. Only a `COMPLETE` result backed by
+attested Done on protected main authorizes
+`factory-launch <project> lease release --ticket <T-NNN> --lease <opaque>`.
+Do not release on closeout PR creation or auto-merge request. With concurrency
+one there is no lease to release.
+
 The launcher is the only door. Do not call a mutable checkout's scripts,
 worker CLIs, or private launcher helpers directly. Do not add adapter
-overrides. Do not retry a refusal, post-submission failure, timeout, malformed
-result, unknown schema, unknown action, maintenance state, lock conflict,
-budget failure, pin failure, or release mismatch.
+overrides. Except for the documented exact-commit `done` network retry, do not
+retry a refusal, post-submission failure, timeout, malformed result, unknown
+schema, unknown action, maintenance state, lock conflict, budget failure, pin
+failure, or release mismatch.
 
 ## Authority and trust
 

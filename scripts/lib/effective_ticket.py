@@ -239,7 +239,7 @@ def committed_factory_file(factory_dir, ticket_id, filename):
         oid_fields = (
             "merge_commit", "approved_pr_head", "reviewed_sha", "bundle_blob",
             "bundle_attestation_blob", "approval_attestation_blob",
-            "approval_parent_head", "kit_sha",
+            "approval_parent_head", "closeout_parent", "kit_sha",
         )
         checks_valid = (
             isinstance(required, list)
@@ -330,13 +330,30 @@ def committed_ticket(factory_dir, ticket_id):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ticket-file", required=True)
-    parser.add_argument("--operator-map", required=True)
+    parser.add_argument("--ticket-file")
+    parser.add_argument("--operator-map")
+    parser.add_argument("--factory-dir")
+    parser.add_argument("--terminal-main", action="store_true")
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--operator-version-file")
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
+    if args.terminal_main:
+        if (
+            not args.factory_dir
+            or args.ticket_file
+            or args.operator_map
+            or args.operator_version_file
+        ):
+            parser.error("--terminal-main requires only --factory-dir and --ticket")
+        text, source = committed_ticket(Path(args.factory_dir), args.ticket)
+        if source != "refs/remotes/origin/main":
+            raise SystemExit(1)
+        print(text, end="")
+        return
+    if not args.ticket_file or not args.operator_map or args.factory_dir:
+        parser.error("--ticket-file and --operator-map are required")
     text = Path(args.ticket_file).read_text()
     mapping = load_mapping(Path(args.operator_map))
     operator = operator_fields(mapping, args.ticket)

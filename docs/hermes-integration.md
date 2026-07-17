@@ -118,7 +118,16 @@ commits absent from main, or unsuccessful post-merge contexts.
 At concurrency two, all three actions require the matching lease. Done also
 requires a pristine closeout branch exactly at `origin/main`, validates the
 protected approval chain and merged PR head, and rejects ambiguous status/check
-name collisions.
+name collisions. It then creates or reuses one exact factory-owned closeout PR
+and requests protected auto-merge with no bypass or second business approval.
+Network retries reuse and revalidate the same closeout commit instead of
+projecting or committing twice.
+
+After that PR merges, `next-stage` returns `COMPLETE` only when the strengthened
+effective-ticket reader validates attested Done on protected main. The
+dispatcher then invokes the existing trusted lease `release`; PR creation or
+an auto-merge request alone never releases it. Linear sync projects that same
+protected-main Done state.
 
 `project-ledger` refuses any active or ambiguous entry under
 `factory/.active-runs/` and any `factory/runs/*.pid` record. Reconcile those
