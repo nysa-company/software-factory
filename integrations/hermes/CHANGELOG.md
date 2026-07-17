@@ -15,6 +15,9 @@ helper output are not compatibility promises.
   post-merge contexts before projecting accounting and recording Done.
 - Retains contract 1.2's fail-closed Review boundary and generic state
   transition refusals.
+- Requires the matching opaque lease for attestations at concurrency two,
+  selects the receipt-bound configured merge method, and binds Done to the
+  exact protected approval chain and collision-free merge-commit checks.
 
 ## 1.2.0 — 2026-07-15
 

@@ -128,6 +128,9 @@ contract 1.3 invoke `ticket-attest --action bundle`; after the newer exact
 Linear approval overlay appears invoke `--action approval`. This requests
 protected auto-merge but does not approve or merge directly. Refusals are
 escalations; never use a generic transition to manufacture these states.
+When concurrency is two, pass the matching in-memory
+`--lease <opaque-lease-id>` to every ticket-attest action exactly as for
+sequencing and runs. Never write or quote that value in a log or receipt.
 
 ## Deterministic accounting closeout
 
@@ -138,7 +141,8 @@ Contract 1.2 closeout retains
 
 ```text
 ~/.factory/bin/factory-launch <project> ticket-attest \
-  --ticket <T-NNN> --workdir <absolute-closeout-worktree> --action done --json
+  --ticket <T-NNN> [--lease <opaque-lease-id>] \
+  --workdir <absolute-closeout-worktree> --action done --json
 ```
 
 Accept only the documented successful projection result, then commit that

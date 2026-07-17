@@ -730,6 +730,7 @@ class LedgerViewTest(unittest.TestCase):
         (worktree / "factory").symlink_to(outside, target_is_directory=True)
         git(worktree, "add", "factory")
         git(worktree, "commit", "-qm", "replace factory with symlink")
+        git(worktree, "update-ref", "refs/remotes/origin/main", "HEAD")
         escaped = run(
             "project", "--factory-root", self.root, "--workdir", worktree,
             "--ticket", "T-123", check=False,

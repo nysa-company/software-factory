@@ -959,32 +959,43 @@ PY
   ticket-attest)
     [[ "$CONTRACT_VERSION" == "1.3.0" ]] ||
       die "ticket-attest requires contract 1.3.0"
-    [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
-       "$5" == "--action" && "$7" == "--json" ]] || usage
-    ATTEST_TICKET="$2" ATTEST_ACTION="$6"
+    ATTEST_LEASE=""
+    if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
+          "$5" == "--action" && "$7" == "--json" ]]; then
+      ATTEST_WORKDIR="$4" ATTEST_ACTION="$6"
+    elif [[ $# -eq 9 && "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--workdir" && "$7" == "--action" && "$9" == "--json" ]]; then
+      ATTEST_LEASE="$4" ATTEST_WORKDIR="$6" ATTEST_ACTION="$8"
+      [[ "$ATTEST_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    else
+      usage
+    fi
+    ATTEST_TICKET="$2"
     [[ "$ATTEST_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
     [[ "$ATTEST_ACTION" == "bundle" || "$ATTEST_ACTION" == "approval" ||
        "$ATTEST_ACTION" == "done" ]] || die "invalid ticket-attest action"
-    resolve_product_workdir "$4"
+    resolve_product_workdir "$ATTEST_WORKDIR"
     if [[ "$ATTEST_ACTION" == "done" ]]; then
       ATTEST_BRANCH="chore/$(printf '%s' "$ATTEST_TICKET" | tr '[:upper:]' '[:lower:]' | tr -d '-')-closeout"
       [[ "$(git -C "$RESOLVED_WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null)" == "$ATTEST_BRANCH" ]] ||
         die "done worktree branch must be $ATTEST_BRANCH"
       [[ -z "$(git -C "$RESOLVED_WORKDIR" status --porcelain --untracked-files=all)" ]] ||
         die "done worktree must be clean"
-      git -C "$RESOLVED_WORKDIR" merge-base --is-ancestor origin/main HEAD ||
-        die "done worktree must be based on origin/main"
+      [[ "$(git -C "$RESOLVED_WORKDIR" rev-parse HEAD)" == \
+         "$(git -C "$RESOLVED_WORKDIR" rev-parse origin/main)" ]] ||
+        die "done worktree must start exactly at origin/main"
     else
       validate_ticket_worktree "$ATTEST_TICKET"
     fi
     [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
       die "product is in maintenance; ticket-attest refused"
-    ATTEST_HELPER="$RELEASE_PATH/scripts/ticket-attest.py"
+    ATTEST_HELPER="$RELEASE_PATH/scripts/ticket-attest.sh"
     require_managed_file "$ATTEST_HELPER" "active release ticket-attest helper"
     add_certified_origin_env
+    add_dispatch_lease_env "$ATTEST_LEASE"
     cleanup_runtime
     trap - EXIT HUP INT TERM
-    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$ATTEST_HELPER" \
+    exec_selected_helper "$ATTEST_HELPER" \
       --ticket "$ATTEST_TICKET" --workdir "$RESOLVED_WORKDIR" --action "$ATTEST_ACTION"
     ;;
   project-ledger)

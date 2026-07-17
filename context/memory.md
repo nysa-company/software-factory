@@ -37,7 +37,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 Category: System change
 
-Contract 1.3 makes the operator's Awaiting Approval → Approved Linear transition the sole business approval. Trusted bundle and approval attestations bind the reviewed SHA, bundle blob, exact PR/head, role runs, kit SHA, and newer Linear observation before requesting ordinary protected auto-merge; Done is separately attested only from the merged commit on authoritative main with every configured post-merge context successful and closeout accounting projected. Contract 1.2 remains fail-closed at Review.
+Contract 1.3 makes the operator's Awaiting Approval → Approved Linear transition the sole business approval. Trusted bundle and approval attestations bind the latest non-void approved review, later Narrator lineage, bundle blob, exact PR/head, role runs, kit SHA, configured merge method, and newer Linear observation before requesting ordinary protected auto-merge; Done starts exactly at authoritative main and binds the protected approval blobs, exact merged PR head, collision-free configured merge-commit contexts, and projected accounting. At concurrency two every attestation requires the matching opaque lease without recording it. Contract 1.2 remains fail-closed at Review.
 
 ## 2026-07-17 — Decision 37: Required CI gets a documentation fast path
 

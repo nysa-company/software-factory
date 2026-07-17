@@ -35,13 +35,14 @@ Under contracts `1.2.0` and `1.3.0`, invoke only the launcher's trusted mutation
 ~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action materialize --json
 ~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action transition --state <factory-state> --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket <T-NNN> --workdir <closeout-worktree> --json
-~/.factory/bin/factory-launch <project> ticket-attest --ticket <T-NNN> --workdir <worktree> --action <bundle|approval|done> --json
+~/.factory/bin/factory-launch <project> ticket-attest --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <worktree> --action <bundle|approval|done> --json
 ```
 
 Use `ticket-state` only for ordinary reconciled operator fields or
 sequencer-directed role stages; it refuses evidence-sensitive transitions.
 Contract 1.3 uses `ticket-attest` for bundle, approval/auto-merge, and Done
-closeout. These commands own their artifacts; never hand-edit ticket state or
+closeout. Pass the matching in-memory lease when concurrency is two. These
+commands own their artifacts; never hand-edit ticket state or
 ledger rows.
 
 Launch a role only when those commands authorize it, and only with

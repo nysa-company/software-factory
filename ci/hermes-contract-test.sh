@@ -1705,7 +1705,8 @@ assert commands["ticket-state"]["transition_states"] == [
     "Planning", "Building", "Review", "Blocked-Escalated"
 ]
 assert commands["ticket-attest"]["arguments"] == [
-    "--ticket", "<T-NNN>", "--workdir", "<absolute-worktree>",
+    "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]",
+    "--workdir", "<absolute-worktree>",
     "--action", "<bundle|approval|done>", "--json"
 ]
 assert commands["project-ledger"]["arguments"] == [

@@ -141,11 +141,65 @@ class EffectiveTicketTests(unittest.TestCase):
             subprocess.run(["git", "init", "--bare", "-q", remote], check=True)
             subprocess.run(["git", "-C", repo, "remote", "add", "origin", remote], check=True)
             ticket.parent.mkdir(parents=True, exist_ok=True)
-            ticket.write_text(BASE_TICKET.replace("Backlog", "Done"))
+            ticket.write_text(
+                BASE_TICKET.replace("Backlog", "Done")
+                + "Operator-Approval: Linear\n"
+            )
+            bundle = done.with_name("bundle.json")
+            approval = done.with_name("approval.json")
+            bundle.write_text(json.dumps({
+                "schema": "nysa.software-factory.ticket-bundle/v1",
+                "ticket": "T-700",
+                "repository": "acme/widget",
+                "pr_number": 7,
+                "reviewed_sha": "c" * 40,
+                "bundle_blob": "d" * 40,
+                "kit_sha": "2" * 40,
+            }))
+            approval.write_text(json.dumps({
+                "schema": "nysa.software-factory.ticket-approval/v1",
+                "ticket": "T-700",
+                "repository": "acme/widget",
+                "pr_number": 7,
+                "reviewed_sha": "c" * 40,
+                "bundle_blob": "d" * 40,
+                "kit_sha": "2" * 40,
+                "auto_merge_method": "squash",
+                "parent_head": "1" * 40,
+            }))
+            bundle_blob = subprocess.run(
+                ["git", "-C", repo, "hash-object", bundle],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            approval_blob = subprocess.run(
+                ["git", "-C", repo, "hash-object", approval],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
             done.write_text(json.dumps({
                 "schema": "nysa.software-factory.ticket-done/v1",
                 "ticket": "T-700",
+                "repository": "acme/widget",
+                "pr_number": 7,
                 "merge_commit": "a" * 40,
+                "approved_pr_head": "b" * 40,
+                "reviewed_sha": "c" * 40,
+                "bundle_blob": "d" * 40,
+                "bundle_attestation_blob": bundle_blob,
+                "approval_attestation_blob": approval_blob,
+                "approval_parent_head": "1" * 40,
+                "kit_sha": "2" * 40,
+                "auto_merge_method": "squash",
+                "merged_at": "2026-07-17T18:00:00Z",
+                "attested_at": "2026-07-17T18:05:00Z",
+                "required_checks": ["ci", "deploy-production"],
+                "successful_checks": ["ci", "deploy-production"],
+                "ledger": {
+                    "schema": "nysa.software-factory.ledger-projection/v1",
+                    "status": "ok",
+                    "ticket": "T-700",
+                    "row_count": 2,
+                    "sha256": "3" * 64,
+                },
             }))
             subprocess.run(["git", "-C", repo, "add", "."], check=True)
             subprocess.run([
@@ -165,6 +219,22 @@ class EffectiveTicketTests(unittest.TestCase):
             text, source = committed_ticket(repo / "factory", "T-700")
             self.assertIn("State: Done", text)
             self.assertEqual(source, "refs/remotes/origin/main")
+            subprocess.run(["git", "-C", repo, "switch", "-q", "main"], check=True)
+            done.write_text(json.dumps({
+                "schema": "nysa.software-factory.ticket-done/v1",
+                "ticket": "T-700",
+                "merge_commit": "a" * 40,
+            }))
+            subprocess.run(["git", "-C", repo, "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "partial",
+            ], check=True)
+            subprocess.run(["git", "-C", repo, "push", "-q", "origin", "main"], check=True)
+            subprocess.run(["git", "-C", repo, "fetch", "-q", "origin"], check=True)
+            text, source = committed_ticket(repo / "factory", "T-700")
+            self.assertIn("State: Approved", text)
+            self.assertEqual(source, "refs/remotes/origin/ticket/T-700")
 
     @staticmethod
     def run_cli(operator):

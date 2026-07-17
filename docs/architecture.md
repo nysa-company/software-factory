@@ -13,7 +13,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. All products share the Software Factory Linear team; each initiative gets a Linear Project.
 - **`factory/KIT_PIN`:** exactly one lowercase, full 40-character certified kit SHA. External products fail closed when it is missing, malformed, or different from the physical release.
-- **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, and contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names).
+- **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), and required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`).
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
@@ -127,6 +127,12 @@ requires the exact merged commit on authoritative `origin/main`, all configured
 post-merge contexts successful on that commit, and projects accounting into a
 separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
+When concurrency is two, every attestation action also requires the matching
+unexpired opaque dispatcher lease through the trusted launcher environment;
+the lease is validated with the existing lease helper and never enters an
+attestation or command result. Done starts only from `HEAD == origin/main`,
+binds the exact approved PR head and protected bundle/approval blobs, and
+refuses status/check name collisions.
 Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to

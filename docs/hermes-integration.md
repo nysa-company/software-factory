@@ -74,7 +74,7 @@ Contract versions `1.0.0` through `1.3.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> preflight --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> ticket-state --ticket T-123 --workdir /absolute/ticket-worktree --action materialize --json
-~/.factory/bin/factory-launch <project> ticket-attest --ticket T-123 --workdir /absolute/ticket-worktree --action bundle --json
+~/.factory/bin/factory-launch <project> ticket-attest --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --action bundle --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
@@ -111,9 +111,14 @@ Contract 1.3 adds `ticket-attest` with exact actions `bundle`, `approval`, and
 `done`. Bundle/approval require the exact clean ticket branch and remote tip;
 done requires clean `chore/tNNN-closeout` based on `origin/main`. The helper
 parses `GH_REPO` and `DONE_REQUIRED_CHECKS` from `factory/PROJECT.env` as data,
-uses only the receipt-bound origin and profile-derived `GH_TOKEN`, and refuses
+requires the exact configured `AUTO_MERGE_METHOD`, uses only the receipt-bound
+origin and profile-derived `GH_TOKEN`, and refuses
 ambiguous PRs, changed evidence, stale approval, unconfirmed auto-merge, merge
 commits absent from main, or unsuccessful post-merge contexts.
+At concurrency two, all three actions require the matching lease. Done also
+requires a pristine closeout branch exactly at `origin/main`, validates the
+protected approval chain and merged PR head, and rejects ambiguous status/check
+name collisions.
 
 `project-ledger` refuses any active or ambiguous entry under
 `factory/.active-runs/` and any `factory/runs/*.pid` record. Reconcile those

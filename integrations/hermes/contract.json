@@ -154,6 +154,7 @@
         "arguments": [
           "--ticket",
           "<T-NNN>",
+          "[--lease <opaque-lease-id>]",
           "--workdir",
           "<absolute-worktree>",
           "--action",
@@ -163,8 +164,10 @@
         "output": "an evidence-bound tracked attestation and exact protected GitHub auto-merge request",
         "validation": [
           "available only under contract 1.3.0",
+          "matching unexpired dispatcher lease required when MAX_CONCURRENT_TICKETS=2 and never persisted or returned",
           "bundle and approval require the exact clean ticket branch and remote tip",
-          "done requires exact clean chore/tNNN-closeout based on origin/main",
+          "done requires exact clean chore/tNNN-closeout with HEAD equal to origin/main",
+          "AUTO_MERGE_METHOD is required and exactly squash, merge, or rebase",
           "all pushes use the certification receipt product origin",
           "GitHub credentials come only from the trusted Hermes profile"
         ]
@@ -328,6 +331,7 @@
     "scripts/run-agent.sh",
     "scripts/ticket-state.sh",
     "scripts/ticket-attest.py",
+    "scripts/ticket-attest.sh",
     "scripts/lib/effective_ticket.py",
     "scripts/lib/product-remote.sh",
     "scripts/ledger-view.py",

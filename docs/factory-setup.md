@@ -13,7 +13,7 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
-- Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid.
+- Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid. Set `AUTO_MERGE_METHOD=squash`, `merge`, or `rebase` to the repository's protected merge strategy.
 - Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Set it to
   `2` only after contract 1.1 is active and a bounded concurrency pilot is
   approved; no other value is valid. Two ticket leases may progress, but the
@@ -106,7 +106,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] No secrets in git history (`git log -p | grep -i` for key patterns, or a scanner)
 - [ ] Linear board matches `docs/workflows/linear.md`; initiative Projects and ticket template installed; `scripts/linear-sync.py --setup` run; `com.factory.linear-sync` loaded; sync health is current
 - [ ] Branch protection on; test-immutability check is a required status
-- [ ] `GH_REPO` and `DONE_REQUIRED_CHECKS` exactly match the protected repository and required post-merge contexts; GitHub auto-merge is enabled without bypass permissions
+- [ ] `GH_REPO`, `DONE_REQUIRED_CHECKS`, and `AUTO_MERGE_METHOD` exactly match the protected repository, required post-merge contexts, and enabled merge strategy; GitHub auto-merge is enabled without bypass permissions
 - [ ] Staging deploy works; preview deploys work on PRs
 - [ ] Rollback drill performed once, timed, and noted in `factory/`
 - [ ] Walking skeleton merged; operator has clicked the staging URL

@@ -376,8 +376,9 @@ def validate_projection(source, workdir, ticket):
     if git(workdir, "status", "--porcelain").stdout:
         fail("projection worktree must be clean")
     git(workdir, "rev-parse", "--verify", "origin/main")
-    if git(workdir, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode:
-        fail("projection branch is not based on current origin/main")
+    if git(workdir, "rev-parse", "HEAD").stdout.strip() != \
+            git(workdir, "rev-parse", "origin/main").stdout.strip():
+        fail("projection branch must start exactly at current origin/main")
 
 
 def validate_projection_target(workdir):

@@ -41,6 +41,7 @@ class TicketAttestTests(unittest.TestCase):
         (self.product / "factory/runs").mkdir()
         (self.product / "factory/PROJECT.env").write_text(
             "GH_REPO=acme/widget\nDONE_REQUIRED_CHECKS=ci,deploy-production\n"
+            "AUTO_MERGE_METHOD=squash\n"
         )
         (self.product / ".gitignore").write_text(
             "factory/runs/\nfactory/runtime-ledger.csv\nfactory/linear-map.json\n"
@@ -145,7 +146,8 @@ Priority: normal
         value = {
             "duplicate": False, "wrong_head": False, "merge_fail": False,
             "auto_merge": True, "merged": False, "merge_sha": "b" * 40,
-            "checks": {"ci": True, "deploy-production": True},
+            "pr_head": None, "checks": {"ci": True, "deploy-production": True},
+            "check_runs": {},
         }
         value.update(updates)
         self.state.write_text(json.dumps(value))
@@ -153,7 +155,7 @@ Priority: normal
     def install_fake_gh(self):
         path = self.bin / "gh"
         path.write_text("""#!/usr/bin/env python3
-import json, os, subprocess, sys
+import json, os, subprocess, sys, urllib.parse
 from pathlib import Path
 s = json.loads(Path(os.environ["FAKE_GH_STATE"]).read_text())
 a = sys.argv[1:]
@@ -161,23 +163,27 @@ head = subprocess.check_output(["git", "-C", os.environ["FAKE_WORKDIR"], "rev-pa
 if a[:2] == ["pr", "list"]:
     state = a[a.index("--state") + 1]
     item = {"number": 7, "headRefName": "ticket/T-700", "baseRefName": "main",
-            "headRefOid": ("c" * 40 if s["wrong_head"] else head), "url": "https://example.invalid/pr/7",
+            "headRefOid": ("c" * 40 if s["wrong_head"] else (s.get("pr_head") or head)), "url": "https://example.invalid/pr/7",
             "state": "MERGED" if state == "all" and s["merged"] else "OPEN",
             "mergedAt": "2026-07-17T18:00:00Z" if s["merged"] else None,
             "mergeCommit": {"oid": s["merge_sha"]} if s["merged"] else None}
     print(json.dumps([item, dict(item, number=8)] if s["duplicate"] else [item]))
 elif a[:2] == ["pr", "merge"]:
     if s["merge_fail"]: print("auto-merge unavailable", file=sys.stderr); raise SystemExit(1)
+    s["merge_argv"] = a
+    Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
 elif a[:2] == ["pr", "view"]:
     print(json.dumps({"number": 7, "headRefOid": head, "state": "OPEN",
                       "mergeStateStatus": "BLOCKED",
-                      "autoMergeRequest": {"mergeMethod": "MERGE"} if s["auto_merge"] else None}))
+                      "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
 elif a[:1] == ["api"]:
     if a[1].endswith("/status"):
         print(json.dumps({"statuses": [{"context": k, "state": "success" if v else "failure"}
                                       for k, v in s["checks"].items()]}))
     else:
-        print(json.dumps({"check_runs": []}))
+        query = urllib.parse.urlparse(a[1]).query
+        name = urllib.parse.parse_qs(query).get("check_name", [""])[0]
+        print(json.dumps({"check_runs": s["check_runs"].get(name, [])}))
 else:
     raise SystemExit(2)
 """)
@@ -211,18 +217,49 @@ else:
         result = self.attest("approval")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("State: Approved", (self.product / "factory/tickets/T-700.md").read_text())
-        self.assertEqual(self.attest("approval").returncode, 0)
+        state = json.loads(self.state.read_text())
+        self.assertIn("--squash", state["merge_argv"])
+        self.assertNotIn("--merge", state["merge_argv"])
 
     def test_stale_approval_is_refused(self):
         self.bundle()
         self.approval_overlay(stale=True)
         self.assertIn("not newer", self.attest("approval").stderr)
 
+    def test_merge_method_is_required_and_allowlisted(self):
+        project = self.product / "factory/PROJECT.env"
+        project.write_text(project.read_text().replace(
+            "AUTO_MERGE_METHOD=squash\n", "AUTO_MERGE_METHOD=octopus\n",
+        ))
+        self.assertIn("AUTO_MERGE_METHOD", self.attest("bundle").stderr)
+
     def test_changed_code_after_review_is_refused(self):
         (self.product / "app.txt").write_text("unreviewed\n")
         self.commit("unreviewed")
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.assertIn("changed after", self.attest("bundle").stderr)
+
+    def test_later_request_changes_overrides_earlier_approve(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text() + "reviewer round 2: REQUEST CHANGES — regression\n")
+        ledger = self.product / "factory/runtime-ledger.csv"
+        rows = ledger.read_text()
+        for index, role in ((3, "reviewer"), (4, "narrator")):
+            run_id = f"{role}-2"
+            (self.product / f"factory/runs/{run_id}.meta").write_text(
+                f"run_id={run_id}\naccounting_schema=1\naccounting_state=completed\n"
+                "exit_status=0\nticket=T-700\n"
+                f"role={role}\nrole_head_before={self.reviewed}\n"
+                f"terminal_at=2026-07-17T12:0{index}:00Z\n"
+            )
+            rows += (
+                f"2026-07-17,12:0{index}:00,T-700,{role},mock,1,1,0.1,0,{run_id},"
+                "anthropic,mock,primary,reported,1\n"
+            )
+        ledger.write_text(rows)
+        self.commit("later rejection")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.assertIn("latest non-void", self.attest("bundle").stderr)
 
     def test_changed_bundle_after_attestation_is_refused(self):
         self.bundle()
@@ -252,6 +289,31 @@ else:
         self.write_state()
         self.assertEqual(self.attest("approval").returncode, 0)
 
+    def test_approval_retry_rejects_tampered_receipt_or_later_head(self):
+        self.bundle()
+        self.approval_overlay()
+        self.write_state(merge_fail=True)
+        self.assertNotEqual(self.attest("approval").returncode, 0)
+        approval = self.product / "factory/attestations/T-700/approval.json"
+        value = json.loads(approval.read_text())
+        value["reviewed_sha"] = "d" * 40
+        approval.write_text(json.dumps(value, sort_keys=True) + "\n")
+        self.commit("tamper approval receipt")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.write_state()
+        self.assertIn("invalid", self.attest("approval").stderr)
+
+    def test_approval_retry_rejects_unrelated_later_head(self):
+        self.bundle()
+        self.approval_overlay()
+        self.write_state(merge_fail=True)
+        self.assertNotEqual(self.attest("approval").returncode, 0)
+        (self.product / "unrelated.txt").write_text("later\n")
+        self.commit("later unrelated head")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.write_state()
+        self.assertIn("invalid", self.attest("approval").stderr)
+
     def test_auto_merge_unconfirmed_is_refused(self):
         self.bundle()
         self.approval_overlay()
@@ -272,7 +334,11 @@ else:
         )
         command("git", "push", "-q", "-u", "origin", "chore/t700-closeout", cwd=self.workdir)
         self.env["FAKE_WORKDIR"] = str(self.workdir)
-        self.write_state(merged=True, merge_sha=merge_sha, **state)
+        merged_state = {
+            "merged": True, "merge_sha": merge_sha, "pr_head": merge_sha,
+        }
+        merged_state.update(state)
+        self.write_state(**merged_state)
 
     def test_done_refuses_failed_checks_and_merge_not_on_main(self):
         self.prepare_done(checks={"ci": True, "deploy-production": False})
@@ -288,6 +354,102 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("State: Done", (self.workdir / "factory/tickets/T-700.md").read_text())
         self.assertTrue((self.workdir / "factory/attestations/T-700/done.json").is_file())
+
+    def test_done_refuses_missing_or_tampered_approval_and_head_mismatch(self):
+        self.prepare_done()
+        approval = self.workdir / "factory/attestations/T-700/approval.json"
+        approval.unlink()
+        command("git", "add", "-A", cwd=self.workdir)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "manual approved without receipt", cwd=self.workdir,
+        )
+        command("git", "push", "-q", "origin", "HEAD:main", cwd=self.workdir)
+        self.assertIn("lacks bundle or approval", self.attest("done").stderr)
+
+    def test_done_refuses_tampered_protected_approval_receipt(self):
+        self.prepare_done()
+        approval = self.workdir / "factory/attestations/T-700/approval.json"
+        value = json.loads(approval.read_text())
+        value["reviewed_sha"] = "9" * 40
+        approval.write_text(json.dumps(value, sort_keys=True) + "\n")
+        command("git", "add", approval, cwd=self.workdir)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "tamper protected approval", cwd=self.workdir,
+        )
+        command("git", "push", "-q", "origin", "HEAD:main", cwd=self.workdir)
+        self.assertIn("protected approval evidence", self.attest("done").stderr)
+
+    def test_done_refuses_merged_head_mismatch_and_check_name_collision(self):
+        self.prepare_done(pr_head=self.reviewed)
+        self.assertNotEqual(self.attest("done").returncode, 0)
+        approval_head = command(
+            "git", "rev-parse", "origin/main", cwd=self.workdir,
+        ).stdout.strip()
+        self.write_state(
+            merged=True, merge_sha=approval_head, pr_head=approval_head,
+            check_runs={"ci": [{
+                "name": "ci", "status": "completed", "conclusion": "success",
+            }]},
+        )
+        self.assertIn("ambiguous", self.attest("done").stderr)
+        duplicate = {
+            "name": "ci", "status": "completed", "conclusion": "success",
+        }
+        self.write_state(
+            merged=True, merge_sha=approval_head, pr_head=approval_head,
+            checks={"deploy-production": True},
+            check_runs={"ci": [duplicate, dict(duplicate)]},
+        )
+        self.assertIn("multiple latest", self.attest("done").stderr)
+
+    def test_done_refuses_closeout_commit_before_projection(self):
+        self.prepare_done()
+        (self.workdir / "arbitrary.txt").write_text("not closeout evidence\n")
+        command("git", "add", ".", cwd=self.workdir)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "arbitrary closeout commit", cwd=self.workdir,
+        )
+        self.assertIn("exactly at origin/main", self.attest("done").stderr)
+
+    def test_dispatch_lease_wrapper_requires_matching_opaque_lease_at_two(self):
+        project = self.product / "factory/PROJECT.env"
+        wrapper = ROOT / "scripts/ticket-attest.sh"
+        env = dict(self.env)
+        env.pop("FACTORY_DISPATCH_LEASE_ID", None)
+        single = command(
+            "bash", str(wrapper), "--ticket", "T-700", "--workdir",
+            str(self.product), "--action", "invalid", env=env, check=False,
+        )
+        self.assertNotIn("dispatcher lease", single.stderr)
+        project.write_text(project.read_text() + "MAX_CONCURRENT_TICKETS=2\n")
+        lease = "1" * 64
+        lease_dir = self.product / "factory/.dispatch-leases"
+        lease_dir.mkdir()
+        (lease_dir / "T-700.json").write_text(json.dumps({
+            "schema_version": 1, "ticket": "T-700", "lease_id": lease,
+            "expires_epoch": 4102444800,
+        }))
+        missing = command(
+            "bash", str(wrapper), "--ticket", "T-700", "--workdir",
+            str(self.product), "--action", "bundle", env=env, check=False,
+        )
+        self.assertIn("canonical dispatcher lease", missing.stderr)
+        env["FACTORY_DISPATCH_LEASE_ID"] = "2" * 64
+        wrong = command(
+            "bash", str(wrapper), "--ticket", "T-700", "--workdir",
+            str(self.product), "--action", "bundle", env=env, check=False,
+        )
+        self.assertIn("does not match", wrong.stderr)
+        env["FACTORY_DISPATCH_LEASE_ID"] = lease
+        matching = command(
+            "bash", str(wrapper), "--ticket", "T-700", "--workdir",
+            str(self.product), "--action", "bundle", env=env, check=False,
+        )
+        self.assertNotIn("dispatcher lease", matching.stderr)
+        self.assertNotIn(lease, missing.stdout + missing.stderr + wrong.stdout + wrong.stderr)
 
 
 if __name__ == "__main__":

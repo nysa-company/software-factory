@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import quote
 
 
 class Refusal(ValueError):
@@ -56,7 +57,10 @@ def timestamp(value, label):
 
 
 def parse_project(path):
-    allowed = {"GH_REPO", "DONE_REQUIRED_CHECKS", "TICKET_BRANCH_PREFIX"}
+    allowed = {
+        "GH_REPO", "DONE_REQUIRED_CHECKS", "TICKET_BRANCH_PREFIX",
+        "AUTO_MERGE_METHOD",
+    }
     values = {}
     if not path.is_file() or path.is_symlink():
         raise Refusal("factory/PROJECT.env is missing or unsafe")
@@ -94,7 +98,10 @@ def parse_project(path):
         for name in names
     ) or len(names) != len(set(names)):
         raise Refusal("DONE_REQUIRED_CHECKS must be a nonempty unique comma-separated exact-name list")
-    return repo, prefix, names
+    method = values.get("AUTO_MERGE_METHOD", "")
+    if method not in {"squash", "merge", "rebase"}:
+        raise Refusal("AUTO_MERGE_METHOD must be exactly squash, merge, or rebase")
+    return repo, prefix, names, method
 
 
 def meta(path):
@@ -129,14 +136,66 @@ def successful_runs(product, ticket):
         raise Refusal("effective runtime ledger is missing")
     with ledger.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
-    successful_ids = {
-        row.get("run_id") for row in rows
-        if row.get("ticket") == ticket and row.get("exit_status") == "0"
-    }
+    successful_ids = {}
+    for index, row in enumerate(rows):
+        if row.get("ticket") != ticket or row.get("exit_status") != "0":
+            continue
+        run_id = row.get("run_id")
+        if not run_id or run_id in successful_ids:
+            raise Refusal("successful ledger run IDs are missing or ambiguous")
+        successful_ids[run_id] = index
     for value in manifests:
         if value.get("run_id") not in successful_ids:
             raise Refusal(f"successful manifest {value.get('run_id')} is absent from ledger")
+        value["_ledger_index"] = successful_ids[value["run_id"]]
     return manifests
+
+
+def review_evidence(text, manifests, workdir):
+    reviewers = sorted(
+        (item for item in manifests if item.get("role") == "reviewer"),
+        key=lambda item: item["_ledger_index"],
+    )
+    narrators = sorted(
+        (item for item in manifests if item.get("role") == "narrator"),
+        key=lambda item: item["_ledger_index"],
+    )
+    if not reviewers or not narrators:
+        raise Refusal("successful reviewer and narrator evidence is required")
+    voids = set()
+    for match in re.finditer(
+        r"^\s*OPERATOR NOTE:\s*reviewer run\s+(\d+)\s+void[^A-Za-z0-9]*duplicate\s*$",
+        text, re.I | re.M,
+    ):
+        ordinal = int(match.group(1))
+        if 1 <= ordinal <= len(reviewers):
+            voids.add(ordinal)
+    nonvoid = [item for ordinal, item in enumerate(reviewers, 1) if ordinal not in voids]
+    verdicts = re.findall(
+        r"^\s*reviewer round\s+(\d+):\s*(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+        text, re.I | re.M,
+    )
+    if not nonvoid or len(verdicts) != len(nonvoid):
+        raise Refusal("reviewer run and semantic verdict evidence is incomplete")
+    if not verdicts[-1][1].upper().startswith("APPROVE"):
+        raise Refusal("latest non-void Reviewer verdict is not APPROVE")
+    reviewer = nonvoid[-1]
+    narrator = narrators[-1]
+    reviewed = reviewer.get("role_head_before", "")
+    narrator_head = narrator.get("role_head_before", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", reviewed):
+        raise Refusal("latest reviewer manifest lacks a reviewed SHA")
+    if not re.fullmatch(r"[0-9a-f]{40}", narrator_head):
+        raise Refusal("latest narrator manifest lacks branch lineage")
+    if timestamp(narrator.get("terminal_at"), "Narrator completion") <= timestamp(
+        reviewer.get("terminal_at"), "Reviewer completion"
+    ) or narrator["_ledger_index"] <= reviewer["_ledger_index"]:
+        raise Refusal("Narrator evidence is not after the latest Reviewer")
+    if git(
+        workdir, "merge-base", "--is-ancestor", reviewed, narrator_head, check=False,
+    ).returncode:
+        raise Refusal("Narrator did not run on the reviewed branch lineage")
+    return reviewer, narrator, reviewed
 
 
 def exact_pr(repo, branch, state):
@@ -204,6 +263,242 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def blob_id(workdir, path):
+    return git(workdir, "hash-object", str(path)).stdout.strip()
+
+
+def blob_at(workdir, commit, relative):
+    content = git(workdir, "show", f"{commit}:{relative}").stdout
+    result = run(
+        ["git", "-C", str(workdir), "hash-object", "--stdin"],
+        input_text=content,
+    )
+    return result.stdout.strip()
+
+
+def valid_oid(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
+
+
+def validate_bundle_attestation(value, ticket, repo, branch, kit_sha):
+    expected_keys = {
+        "schema", "ticket", "repository", "branch", "branch_head",
+        "reviewed_sha", "bundle_path", "bundle_blob", "pr_number", "pr_url",
+        "reviewer_run_id", "narrator_run_id", "kit_sha", "attested_at",
+    }
+    if (
+        set(value) != expected_keys
+        or value.get("schema") != "nysa.software-factory.ticket-bundle/v1"
+        or value.get("ticket") != ticket
+        or value.get("repository") != repo
+        or value.get("branch") != branch
+        or value.get("kit_sha") != kit_sha
+        or not isinstance(value.get("pr_number"), int)
+        or value["pr_number"] <= 0
+        or not isinstance(value.get("pr_url"), str)
+        or not value["pr_url"]
+        or not all(valid_oid(value.get(key)) for key in (
+            "branch_head", "reviewed_sha", "bundle_blob",
+        ))
+        or value.get("bundle_path") != f"factory/tickets/{ticket}-bundle.md"
+        or not isinstance(value.get("reviewer_run_id"), str)
+        or not value["reviewer_run_id"]
+        or not isinstance(value.get("narrator_run_id"), str)
+        or not value["narrator_run_id"]
+    ):
+        raise Refusal("bundle attestation identity or evidence is invalid")
+    timestamp(value.get("attested_at"), "bundle attestation")
+    return value
+
+
+def validate_bundle_commit(workdir, ticket, value, bundle_commit):
+    receipt_path = f"factory/attestations/{ticket}/bundle.json"
+    bundle_path = f"factory/tickets/{ticket}-bundle.md"
+    expected_paths = {
+        f"factory/tickets/{ticket}.md",
+        receipt_path,
+    }
+    parent = git(workdir, "rev-parse", f"{bundle_commit}^").stdout.strip()
+    actual_paths = set(git(
+        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r",
+        bundle_commit,
+    ).stdout.splitlines())
+    if (
+        parent != value["branch_head"]
+        or actual_paths != expected_paths
+        or blob_at(workdir, bundle_commit, bundle_path) != value["bundle_blob"]
+    ):
+        raise Refusal("bundle attestation commit or reviewed branch evidence is invalid")
+
+
+def validate_approval_attestation(
+    value, bundle_att, ticket, repo, branch, kit_sha, method, workdir, head,
+):
+    bundle_path = f"factory/attestations/{ticket}/bundle.json"
+    expected_paths = {
+        f"factory/tickets/{ticket}.md",
+        f"factory/attestations/{ticket}/approval.json",
+    }
+    expected_keys = {
+        "schema", "ticket", "repository", "branch", "parent_head",
+        "reviewed_sha", "bundle_blob", "bundle_attestation_blob", "pr_number",
+        "operator_version", "linear_updated_at", "observed_at", "kit_sha",
+        "auto_merge_method", "attested_at",
+    }
+    parent = git(workdir, "rev-parse", f"{head}^").stdout.strip()
+    validate_bundle_commit(workdir, ticket, bundle_att, parent)
+    actual_paths = set(git(
+        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r", head,
+    ).stdout.splitlines())
+    if (
+        set(value) != expected_keys
+        or value.get("schema") != "nysa.software-factory.ticket-approval/v1"
+        or value.get("ticket") != ticket
+        or value.get("repository") != repo
+        or value.get("branch") != branch
+        or value.get("pr_number") != bundle_att["pr_number"]
+        or value.get("reviewed_sha") != bundle_att["reviewed_sha"]
+        or value.get("bundle_blob") != bundle_att["bundle_blob"]
+        or value.get("kit_sha") != kit_sha
+        or value.get("auto_merge_method") != method
+        or value.get("attested_at") != value.get("observed_at")
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("operator_version", ""))
+        or timestamp(value.get("observed_at"), "approval observation")
+        <= timestamp(bundle_att.get("attested_at"), "bundle attestation")
+        or timestamp(value.get("linear_updated_at"), "Linear approval update")
+        <= timestamp(bundle_att.get("attested_at"), "bundle attestation")
+        or value.get("parent_head") != parent
+        or parent != git(workdir, "rev-parse", "HEAD^").stdout.strip()
+        or value.get("bundle_attestation_blob") != blob_at(
+            workdir, parent, bundle_path,
+        )
+        or value["bundle_attestation_blob"] != blob_id(
+            workdir, workdir / bundle_path,
+        )
+        or actual_paths != expected_paths
+    ):
+        raise Refusal("existing approval attestation or approval commit is invalid")
+    return value
+
+
+def protected_approval_evidence(
+    workdir, ticket, repo, branch, kit_sha, method, pr,
+):
+    root = workdir / "factory" / "attestations" / ticket
+    bundle_path = root / "bundle.json"
+    approval_path = root / "approval.json"
+    if not bundle_path.is_file() or not approval_path.is_file():
+        raise Refusal("protected main lacks bundle or approval attestation")
+    bundle_att = validate_bundle_attestation(
+        json.loads(bundle_path.read_text()), ticket, repo, branch, kit_sha,
+    )
+    approval_att = json.loads(approval_path.read_text())
+    approval_keys = {
+        "schema", "ticket", "repository", "branch", "parent_head",
+        "reviewed_sha", "bundle_blob", "bundle_attestation_blob", "pr_number",
+        "operator_version", "linear_updated_at", "observed_at", "kit_sha",
+        "auto_merge_method", "attested_at",
+    }
+    approval_head = pr.get("headRefOid", "")
+    if not valid_oid(approval_head):
+        raise Refusal("merged PR lacks the approved head commit")
+    parent = git(workdir, "rev-parse", f"{approval_head}^").stdout.strip()
+    validate_bundle_commit(workdir, ticket, bundle_att, parent)
+    expected_paths = {
+        f"factory/tickets/{ticket}.md",
+        f"factory/attestations/{ticket}/approval.json",
+    }
+    actual_paths = set(git(
+        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r",
+        approval_head,
+    ).stdout.splitlines())
+    relative_bundle = f"factory/attestations/{ticket}/bundle.json"
+    relative_approval = f"factory/attestations/{ticket}/approval.json"
+    bundle_attestation_blob = blob_id(workdir, bundle_path)
+    approval_attestation_blob = blob_id(workdir, approval_path)
+    observed = timestamp(approval_att.get("observed_at"), "approval observation")
+    updated = timestamp(
+        approval_att.get("linear_updated_at"), "Linear approval update",
+    )
+    bundle_time = timestamp(bundle_att.get("attested_at"), "bundle attestation")
+    if (
+        set(approval_att) != approval_keys
+        or approval_att.get("schema") != "nysa.software-factory.ticket-approval/v1"
+        or approval_att.get("ticket") != ticket
+        or approval_att.get("repository") != repo
+        or approval_att.get("branch") != branch
+        or approval_att.get("pr_number") != pr.get("number")
+        or approval_att.get("reviewed_sha") != bundle_att["reviewed_sha"]
+        or approval_att.get("bundle_blob") != bundle_att["bundle_blob"]
+        or approval_att.get("bundle_attestation_blob") != bundle_attestation_blob
+        or approval_att.get("kit_sha") != kit_sha
+        or approval_att.get("auto_merge_method") != method
+        or approval_att.get("attested_at") != approval_att.get("observed_at")
+        or observed <= bundle_time
+        or updated <= bundle_time
+        or not re.fullmatch(
+            r"[0-9a-f]{64}", approval_att.get("operator_version", ""),
+        )
+        or approval_att.get("parent_head") != parent
+        or actual_paths != expected_paths
+        or blob_at(workdir, approval_head, relative_bundle)
+        != bundle_attestation_blob
+        or blob_at(workdir, approval_head, relative_approval)
+        != approval_attestation_blob
+    ):
+        raise Refusal("protected approval evidence does not match the merged PR head")
+    approved_ticket = git(
+        workdir, "show", f"{approval_head}:factory/tickets/{ticket}.md",
+    ).stdout
+    if (
+        field(approved_ticket, "State").lower() != "approved"
+        or field(approved_ticket, "Operator-Approval").lower() != "linear"
+    ):
+        raise Refusal("merged PR head does not contain the attested Approved ticket")
+    return bundle_att, approval_att, approval_head, (
+        bundle_attestation_blob, approval_attestation_blob,
+    )
+
+
+def successful_post_merge_checks(repo, merge, required):
+    combined = json.loads(gh("api", f"repos/{repo}/commits/{merge}/status").stdout)
+    statuses = {}
+    for status in combined.get("statuses", []):
+        name = status.get("context")
+        if name in required and name not in statuses:
+            statuses[name] = status.get("state") == "success"
+    successful = []
+    for name in required:
+        encoded = quote(name, safe="")
+        response = json.loads(gh(
+            "api",
+            f"repos/{repo}/commits/{merge}/check-runs"
+            f"?check_name={encoded}&filter=latest",
+        ).stdout)
+        check_runs = [
+            item for item in response.get("check_runs", [])
+            if item.get("name") == name
+        ]
+        if name in statuses and check_runs:
+            raise Refusal(f"required context name is ambiguous across status and check APIs: {name}")
+        if len(check_runs) > 1:
+            raise Refusal(f"multiple latest check runs share required name: {name}")
+        if name in statuses:
+            passed = statuses[name]
+        elif len(check_runs) == 1:
+            item = check_runs[0]
+            passed = (
+                item.get("status") == "completed"
+                and item.get("conclusion") == "success"
+            )
+        else:
+            passed = False
+        if not passed:
+            raise Refusal(f"required post-merge check is missing or unsuccessful: {name}")
+        successful.append(name)
+    return successful
+
+
 def commit_push(product, workdir, remote, branch, message, paths):
     for path in paths:
         git(workdir, "add", "--", str(path.relative_to(workdir)))
@@ -264,17 +559,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     if not re.search(r"approve to merge", bundle_text, re.I):
         raise Refusal("evidence bundle lacks the operator approval question")
     manifests = successful_runs(product, args.ticket)
-    reviewers = [item for item in manifests if item.get("role") == "reviewer"]
-    narrators = [item for item in manifests if item.get("role") == "narrator"]
-    if not reviewers or not narrators:
-        raise Refusal("successful reviewer and narrator evidence is required")
-    reviewer = max(reviewers, key=lambda item: item.get("terminal_at", ""))
-    narrator = max(narrators, key=lambda item: item.get("terminal_at", ""))
-    reviewed = reviewer.get("role_head_before", "")
-    if not re.fullmatch(r"[0-9a-f]{40}", reviewed):
-        raise Refusal("latest reviewer manifest lacks a reviewed SHA")
-    if not re.search(r"^reviewer round\s+\d+:\s*APPROVE\s*$", text, re.I | re.M):
-        raise Refusal("ticket lacks reviewer APPROVE verdict")
+    reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
     allowed = {
         f"factory/tickets/{args.ticket}.md",
         f"factory/tickets/{args.ticket}-bundle.md",
@@ -316,22 +601,18 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     return {"action": "bundle", "head": result_head, "attestation": attestation}
 
 
-def approval(args, product, workdir, repo, prefix, remote, kit_sha):
+def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     branch = f"{prefix}{args.ticket}"
     head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     bundle_path = workdir / "factory" / "tickets" / f"{args.ticket}-bundle.md"
     attestation_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     approval_path = attestation_path.with_name("approval.json")
-    bundle_att = json.loads(attestation_path.read_text())
-    if bundle_att.get("schema") != "nysa.software-factory.ticket-bundle/v1":
-        raise Refusal("bundle attestation schema is invalid")
+    bundle_att = validate_bundle_attestation(
+        json.loads(attestation_path.read_text()), args.ticket, repo, branch, kit_sha,
+    )
     if git(workdir, "hash-object", str(bundle_path)).stdout.strip() != bundle_att.get("bundle_blob"):
         raise Refusal("evidence bundle changed after attestation")
-    if bundle_att.get("ticket") != args.ticket or bundle_att.get("repository") != repo:
-        raise Refusal("bundle attestation identity mismatch")
-    if not re.fullmatch(r"[0-9a-f]{40}", bundle_att.get("branch_head", "")):
-        raise Refusal("bundle attestation branch evidence is invalid")
     mapping = json.loads((product / "factory" / "linear-map.json").read_text())
     operator = mapping.get("tickets", {}).get(args.ticket, {}).get("operator") or {}
     existing_approval = json.loads(approval_path.read_text()) if approval_path.exists() else None
@@ -340,39 +621,32 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha):
         and operator.get("approval") == "Linear"
         and operator.get("state_base") == "awaiting approval"
     )
-    if not exact_overlay and not existing_approval:
+    if not exact_overlay:
         raise Refusal("exact Linear Awaiting Approval -> Approved overlay is required")
-    if exact_overlay:
-        observed = timestamp(operator.get("observed_at"), "approval observation")
-        updated = timestamp(operator.get("linear_updated_at"), "Linear approval update")
-        attested = timestamp(bundle_att.get("attested_at"), "bundle attestation")
-        if observed <= attested or updated <= attested:
-            raise Refusal("Linear approval is not newer than the bundle attestation")
-        version = hashlib.sha256(json.dumps(
-            {key: operator[key] for key in ("priority", "initiative", "state", "approval") if key in operator},
-            sort_keys=True, separators=(",", ":"),
-        ).encode()).hexdigest()
-    else:
-        version = existing_approval.get("operator_version", "")
+    observed = timestamp(operator.get("observed_at"), "approval observation")
+    updated = timestamp(operator.get("linear_updated_at"), "Linear approval update")
+    attested = timestamp(bundle_att.get("attested_at"), "bundle attestation")
+    if observed <= attested or updated <= attested:
+        raise Refusal("Linear approval is not newer than the bundle attestation")
+    version = hashlib.sha256(json.dumps(
+        {key: operator[key] for key in ("priority", "initiative", "state", "approval") if key in operator},
+        sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
     pr = exact_pr(repo, branch, "open")
     if pr.get("number") != bundle_att.get("pr_number") or pr.get("headRefOid") != head:
         raise Refusal("PR identity or head changed before approval")
     if existing_approval:
-        approval_att = existing_approval
+        approval_att = validate_approval_attestation(
+            existing_approval, bundle_att, args.ticket, repo, branch, kit_sha,
+            method, workdir, head,
+        )
         if approval_att.get("operator_version") != version:
             raise Refusal("existing approval attestation does not match the overlay")
     else:
         text = ticket_path.read_text()
         if field(text, "State").lower() != "awaiting approval":
             raise Refusal("approval requires committed Awaiting Approval state")
-        parent = git(workdir, "rev-parse", "HEAD^").stdout.strip()
-        expected_paths = {
-            f"factory/tickets/{args.ticket}.md",
-            f"factory/attestations/{args.ticket}/bundle.json",
-        }
-        actual_paths = set(git(workdir, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").stdout.splitlines())
-        if parent != bundle_att["branch_head"] or actual_paths != expected_paths:
-            raise Refusal("bundle attestation commit or branch evidence changed")
+        validate_bundle_commit(workdir, args.ticket, bundle_att, head)
         text = replace_field(text, "State", "Approved")
         if re.search(r"^Operator-Approval:", text, re.I | re.M):
             text = replace_field(text, "Operator-Approval", "Linear")
@@ -394,36 +668,49 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha):
             "linear_updated_at": operator["linear_updated_at"],
             "observed_at": operator["observed_at"],
             "kit_sha": kit_sha,
-            "attested_at": now(),
+            "auto_merge_method": method,
+            "attested_at": operator["observed_at"],
         }
         write_json(approval_path, approval_att)
         head = commit_push(
             product, workdir, remote, branch, f"{args.ticket}: attest Linear approval",
             (ticket_path, approval_path),
         )
+        validate_approval_attestation(
+            approval_att, bundle_att, args.ticket, repo, branch, kit_sha,
+            method, workdir, head,
+        )
     current = exact_pr(repo, branch, "open")
     if current.get("number") != approval_att["pr_number"] or current.get("headRefOid") != head:
         raise Refusal("PR head changed before auto-merge request")
     gh(
-        "pr", "merge", str(current["number"]), "--repo", repo, "--auto", "--merge",
+        "pr", "merge", str(current["number"]), "--repo", repo, "--auto",
+        f"--{method}",
     )
     view = json.loads(gh(
         "pr", "view", str(current["number"]), "--repo", repo,
         "--json", "number,headRefOid,autoMergeRequest,state,mergeStateStatus",
     ).stdout)
+    request = view.get("autoMergeRequest") or {}
     if view.get("headRefOid") != head or (
-        view.get("state") != "MERGED" and not view.get("autoMergeRequest")
+        view.get("state") != "MERGED"
+        and request.get("mergeMethod") != method.upper()
     ):
         raise Refusal("GitHub did not confirm auto-merge for the exact approved head")
-    if exact_overlay:
-        consume_overlay(product, args.ticket, version)
+    consume_overlay(product, args.ticket, version)
     return {"action": "approval", "head": head, "pr_number": current["number"], "auto_merge": True}
 
 
-def done(args, product, workdir, repo, prefix, remote, checks, kit_sha):
+def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     branch = f"chore/{args.ticket.lower().replace('-', '')}-closeout"
-    ensure_clean_branch(product, workdir, branch, based_on_main=True, require_remote=False)
-    pr = exact_pr(repo, f"{prefix}{args.ticket}", "all")
+    head = ensure_clean_branch(
+        product, workdir, branch, based_on_main=True, require_remote=False,
+    )
+    main_head = git(workdir, "rev-parse", "origin/main").stdout.strip()
+    if head != main_head:
+        raise Refusal("closeout branch must start exactly at origin/main")
+    ticket_branch = f"{prefix}{args.ticket}"
+    pr = exact_pr(repo, ticket_branch, "all")
     if pr.get("state") != "MERGED" or not pr.get("mergedAt"):
         raise Refusal("ticket PR is not merged")
     merge = (pr.get("mergeCommit") or {}).get("oid", "")
@@ -431,26 +718,25 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha):
         raise Refusal("merged PR lacks an exact merge commit")
     if git(workdir, "merge-base", "--is-ancestor", merge, "origin/main", check=False).returncode:
         raise Refusal("PR merge commit is not reachable from authoritative origin/main")
-    combined = json.loads(gh("api", f"repos/{repo}/commits/{merge}/status").stdout)
-    runs = json.loads(gh("api", f"repos/{repo}/commits/{merge}/check-runs").stdout)
-    observed = {}
-    for status in combined.get("statuses", []):
-        observed[status.get("context")] = status.get("state") == "success"
-    for item in runs.get("check_runs", []):
-        observed[item.get("name")] = item.get("status") == "completed" and item.get("conclusion") == "success"
-    missing = [name for name in checks if observed.get(name) is not True]
-    if missing:
-        raise Refusal("required post-merge checks are missing or unsuccessful: " + ", ".join(missing))
+    bundle_att, approval_att, approval_head, evidence_blobs = (
+        protected_approval_evidence(
+            workdir, args.ticket, repo, ticket_branch, kit_sha, method, pr,
+        )
+    )
+    successful = successful_post_merge_checks(repo, merge, checks)
+    ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    text = ticket_path.read_text()
+    if (
+        field(text, "State").lower() != "approved"
+        or field(text, "Operator-Approval").lower() != "linear"
+    ):
+        raise Refusal("closeout requires an Approved ticket on protected main")
     ledger = Path(__file__).with_name("ledger-view.py")
     projection = run([
         sys.executable, "-I", "-S", str(ledger), "project",
         "--factory-root", str(product), "--workdir", str(workdir), "--ticket", args.ticket,
     ])
     ledger_result = json.loads(projection.stdout)
-    ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
-    text = ticket_path.read_text()
-    if field(text, "State").lower() != "approved":
-        raise Refusal("closeout requires an Approved ticket on protected main")
     text = replace_field(text, "State", "Done")
     text = check_item(text, "PR merged and staging confirmed")
     ticket_path.write_text(text)
@@ -460,10 +746,17 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha):
         "ticket": args.ticket,
         "repository": repo,
         "pr_number": pr["number"],
+        "approved_pr_head": approval_head,
+        "reviewed_sha": bundle_att["reviewed_sha"],
+        "bundle_blob": bundle_att["bundle_blob"],
+        "bundle_attestation_blob": evidence_blobs[0],
+        "approval_attestation_blob": evidence_blobs[1],
+        "approval_parent_head": approval_att["parent_head"],
+        "auto_merge_method": method,
         "merge_commit": merge,
         "merged_at": pr["mergedAt"],
         "required_checks": checks,
-        "successful_checks": sorted(name for name in checks if observed.get(name)),
+        "successful_checks": successful,
         "ledger": ledger_result,
         "kit_sha": kit_sha,
         "attested_at": now(),
@@ -490,13 +783,17 @@ def main():
     kit_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
     if not remote or not re.fullmatch(r"[0-9a-f]{40}", kit_sha):
         raise Refusal("trusted launcher evidence is unavailable")
-    repo, prefix, checks = parse_project(product / "factory" / "PROJECT.env")
+    repo, prefix, checks, method = parse_project(product / "factory" / "PROJECT.env")
     if args.action == "bundle":
         result = bundle(args, product, workdir, repo, prefix, remote, kit_sha)
     elif args.action == "approval":
-        result = approval(args, product, workdir, repo, prefix, remote, kit_sha)
+        result = approval(
+            args, product, workdir, repo, prefix, remote, kit_sha, method,
+        )
     else:
-        result = done(args, product, workdir, repo, prefix, remote, checks, kit_sha)
+        result = done(
+            args, product, workdir, repo, prefix, remote, checks, kit_sha, method,
+        )
     print(json.dumps({"status": "ok", "ticket": args.ticket, **result}, indent=2, sort_keys=True))
 
 
