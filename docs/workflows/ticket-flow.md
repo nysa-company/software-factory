@@ -11,8 +11,9 @@ The full lifecycle of one ticket, with the two invariants that never bend: **tes
 5. **Builder** (production/OpenAI family, fresh git worktree on the same branch) runs in Building and implements until tests, lint, and typecheck pass. Never touches test files — CI enforces this. Opens the PR.
 6. **CI** runs: lint, typecheck, tests, build, self-referential snapshots, test-immutability check.
 7. **Reviewer** runs in Review and checks test adequacy and spec conformance. Approve, or request changes back to Building (max 2 rounds → Blocked-Escalated with a plain-language note).
-8. **Narrator** remains in Review and posts the bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note. The current contract stops here until a dedicated bundle attestation can move the ticket to Awaiting Approval.
-9. **Operator** approval remains outside the contract 1.2 execution path. Until a dedicated trusted bundle-attestation path exists, transition and materialization refuse Awaiting Approval and Approved, and the sequencer does not authorize `AWAIT-MERGE`. A separate merge-and-staging attestation path is also required before Done can be materialized.
+8. **Narrator** remains in Review and commits the bundle from the PR's preview deploy: plain-language summary, preview link, screenshots, criteria table, risk line, cost, rollback note. Under contract 1.3, the dispatcher then invokes trusted `ticket-attest --action bundle`; it verifies the exact reviewed SHA, run evidence, allowed post-review paths, bundle blob, and unique exact PR before committing Awaiting Approval. Contract 1.2 still stops in Review.
+9. **Operator** moves Awaiting Approval → Approved in Linear. The reconciler records the exact observation and Linear update times. Trusted `ticket-attest --action approval` accepts only an approval newer than the unchanged bundle attestation, commits Approved and its binding attestation, and requests ordinary protected GitHub auto-merge for the exact current PR head. A failed or unconfirmed request retains the overlay for retry and never bypasses protection.
+10. After GitHub merges, the dispatcher prepares exact clean `chore/tNNN-closeout` from `origin/main`. Trusted `ticket-attest --action done` requires the PR merge commit on authoritative main and every configured exact post-merge context successful on that commit, reuses ledger projection, writes Done plus terminal evidence, and pushes one closeout commit. The protected closeout PR is opened and merged separately.
 
 Backend fallback is selected by `run-agent.sh` before it submits the role task. Once any task-bearing CLI starts, every failure is terminal for that run; the dispatcher escalates instead of launching another backend.
 
@@ -33,4 +34,4 @@ Reviewer is read-only and must leave the branch, HEAD, and worktree unchanged.
 
 - Branch per ticket: exactly `<TICKET_BRANCH_PREFIX><T-NNN>` (default `ticket/T-NNN`), with no slug or suffix.
 - Commit order is load-bearing: test commits (author: test-author) first, implementation commits (author: builder) after. The reviewer verifies authorship; CI verifies the builder's commits touch no test paths.
-- One PR per ticket, merged only via the operator's approval on the bundle. Protected branch; no direct pushes to main.
+- One PR per ticket. The single business approval is the Linear bundle approval; it enables protected auto-merge without bypassing required checks or conflicts. No direct pushes to main.

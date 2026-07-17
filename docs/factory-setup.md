@@ -13,6 +13,7 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
+- Set exact `GH_REPO=owner/repository`. For contract 1.3, also set `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid.
 - Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Set it to
   `2` only after contract 1.1 is active and a bounded concurrency pilot is
   approved; no other value is valid. Two ticket leases may progress, but the
@@ -95,7 +96,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Product repo exists, sibling location, `factory/initiatives/` and `factory/tickets/` created (no kit code copied; only the three CI files)
 - [ ] `factory/KIT_PIN` contains exactly one lowercase full SHA; `factory/PROJECT.env` names an executable, repository-contained `CERTIFY_SCRIPT`
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
-- [ ] The active contract 1.2 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
+- [ ] The active contract 1.2/1.3 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
 - [ ] `~/.factory/bin/factory-launch` and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
 - [ ] Factory Hermes profile, project registry, and factory gateway LaunchAgent are separate from the dashboard and primary Hermes profile
 - [ ] Real-Hermes canary uses a separate profile/product and no copied production secrets; redacted evidence is recorded
@@ -105,6 +106,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] No secrets in git history (`git log -p | grep -i` for key patterns, or a scanner)
 - [ ] Linear board matches `docs/workflows/linear.md`; initiative Projects and ticket template installed; `scripts/linear-sync.py --setup` run; `com.factory.linear-sync` loaded; sync health is current
 - [ ] Branch protection on; test-immutability check is a required status
+- [ ] `GH_REPO` and `DONE_REQUIRED_CHECKS` exactly match the protected repository and required post-merge contexts; GitHub auto-merge is enabled without bypass permissions
 - [ ] Staging deploy works; preview deploys work on PRs
 - [ ] Rollback drill performed once, timed, and noted in `factory/`
 - [ ] Walking skeleton merged; operator has clicked the staging URL

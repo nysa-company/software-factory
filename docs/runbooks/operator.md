@@ -85,10 +85,11 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh --routes`; reconcile `CLAUDE_CODE_PINNED`, `CODEX_PINNED`, or `CURSOR_AGENT_VERSION` in `~/.factory/global.env`; run `agent login` and verify the exact configured Cursor models when fallback is enabled; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight through `~/.factory/bin/factory-launch <project> preflight` before resuming.
 - Don't: tell the dispatcher to launch anyway — every FAIL is predictable at kickoff and will block mid-pipeline.
 
-## Close-out ledger PR
+## Trusted approval and close-out PR
 
-- Notice: at ticket close-out the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes launcher command `project-ledger` to materialize the effective runtime accounting into tracked `factory/ledger.csv`. Projection refuses any entry under `factory/.active-runs/` and any `factory/runs/*.pid` record because either may represent live or ambiguous work.
-- Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Then verify the command's row count, ticket total, and SHA-256, and review and merge the close-out PR like any factory bookkeeping change. Check `run_id`, family, exact model, selection reason, and cost basis.
+- Notice: under contract 1.3, move only Awaiting Approval → Approved in Linear after reviewing the exact bundle. The trusted approval action commits the binding and requests protected GitHub auto-merge. If it refuses stale evidence, a changed head, conflicts, unavailable auto-merge, or failed checks, investigate the named condition; never manually imitate the attestation.
+- Notice: after the ticket PR merges, the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes `ticket-attest --action done`. It verifies the merge and configured post-merge contexts, reuses ledger projection, and commits Done plus closeout evidence. Projection refuses any active or ambiguous claim.
+- Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Review and merge the protected close-out PR like any factory bookkeeping change.
 - Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
 
 ## Test commit order before operator review
@@ -268,7 +269,7 @@ These run in your interactive session — never inside the loop. The factory's o
 - Create the durable initiative record first at `factory/initiatives/I-NNN.md`; the reconciler creates the Linear Project. Set its status and target date in Linear.
 - Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
-- Contract 1.2 stops in Review after the Narrator bundle. Do not move the issue to Awaiting Approval or Approved: without a dedicated trusted bundle-attestation path, ticket-state refuses both transition and materialization and sequencing does not authorize `AWAIT-MERGE`. Done remains unavailable until a dedicated merge/staging attestation path also exists.
+- Contract 1.2 stops in Review. Under contract 1.3, wait for trusted bundle attestation to create Awaiting Approval, then make the one business decision by moving it to Approved in Linear. Do not click a separate GitHub approval or bypass protection; the trusted approval attestation requests auto-merge. Done appears only after the protected closeout commit merges.
 - Resume an escalated ticket by setting `Resume-State:` locally to the agreed stage, then move the Linear issue out of Blocked-Escalated to that same stage. Mismatched or otherwise illegal transitions are rejected and reported in sync health.
 
 ## The general rule
