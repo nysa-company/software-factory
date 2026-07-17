@@ -34,7 +34,7 @@ leases with disjoint worktrees and serialized provider intervals. Prioritize:
 - Reuse still-valid kit-suite evidence for an unchanged sealed SHA; always rerun product-tree checks and receipt binding, and invalidate reuse when the host, release tree, suite definition, or evidence lifetime changes.
 - Add a maintenance-only accounting audit and conservative reconciliation command for legacy manifests, with quarantine evidence and no guessed cost reduction.
 - Add a trusted operator-approved lease-release route for tickets stopped in Review, without exposing or persisting opaque lease IDs.
-- Provide forge-neutral merge-queue or auto-merge guidance so protected changes merge after all required checks pass without operator polling.
+- Adopt a forge merge queue or auto-merge for concurrent ticket PRs so protected changes merge after all required checks pass without operator polling.
 - Extend preflight with Git forge/API health, required local services, provider CLI authentication, and configured deployment-check readiness.
 - Design a provider-call concurrency canary now that a second two-lease pilot
   succeeded. Retain serialized production provider and global-ledger locks
