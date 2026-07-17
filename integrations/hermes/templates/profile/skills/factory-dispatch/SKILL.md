@@ -157,7 +157,7 @@ refused projection is an escalation.
 
 After closeout auto-merge, keep sequencing. Only a `COMPLETE` result backed by
 attested Done on protected main authorizes
-`factory-launch <project> lease release --ticket <T-NNN> --lease <opaque>`.
+`factory-launch <project> release --ticket <T-NNN> --lease <opaque>`.
 Do not release on closeout PR creation or auto-merge request. With concurrency
 one there is no lease to release.
 
