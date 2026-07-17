@@ -8,3 +8,15 @@ Activate these only after the first product instantiation has a deployed web app
 - Add performance baselines once a real deployment exists.
 - Add a code-quality score only when it informs a real release decision.
 - Add milestone spec-drift checks when a living deployed specification exists.
+
+## Concurrency-pilot follow-ups
+
+Prioritize these from the first two-ticket contract 1.2 pilot:
+
+- Add machine-readable certification progress and a `--watch` view with phase names, elapsed time, and the current deterministic gate.
+- Reuse still-valid kit-suite evidence for an unchanged sealed SHA; always rerun product-tree checks and receipt binding, and invalidate reuse when the host, release tree, suite definition, or evidence lifetime changes.
+- Add a maintenance-only accounting audit and conservative reconciliation command for legacy manifests, with quarantine evidence and no guessed cost reduction.
+- Add a trusted operator-approved lease-release route for tickets stopped in Review, without exposing or persisting opaque lease IDs.
+- Provide forge-neutral merge-queue or auto-merge guidance so protected changes merge after all required checks pass without operator polling.
+- Extend preflight with Git forge/API health, required local services, provider CLI authentication, and configured deployment-check readiness.
+- Pilot provider-call concurrency only after another successful two-lease run; retain the serialized provider and global-ledger locks until bounded parallel accounting and crash recovery are proven.
