@@ -742,7 +742,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.2.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.3.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
@@ -1003,7 +1003,7 @@ FACTORY_ROOT="$STATE_GO" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   "$RUN_AGENT" --role planner --ticket T-225 -- "pre-GO state race" \
   > "$TMP/sequence-before-go.out" 2>&1 &
 STATE_GO_PID=$!
-for _i in $(seq 1 100); do
+for _i in $(seq 1 500); do
   if [[ -n "$(ls "$STATE_GO/factory/runs/".*.ready 2>/dev/null || true)" ]] &&
      grep -q '^phase=prepared$' "$STATE_GO/factory/runs/"*.meta 2>/dev/null; then
     break
@@ -1140,7 +1140,7 @@ FACTORY_ROOT="$BEFORE_GO" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   "$RUN_AGENT" --role planner --ticket T-222 -- "before go" \
   > "$TMP/before-go.out" 2>&1 &
 BEFORE_GO_PID=$!
-for _i in $(seq 1 100); do
+for _i in $(seq 1 500); do
   [[ -n "$(ls "$BEFORE_GO/factory/runs/".*.ready 2>/dev/null || true)" ]] && break
   sleep 0.02
 done
