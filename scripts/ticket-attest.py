@@ -29,11 +29,19 @@ def run(argv, *, cwd=None, input_text=None, check=True):
 
 
 def git(root, *args, check=True):
-    return run(["git", "-C", str(root), *args], check=check)
+    result = run(["git", "-C", str(root), *args], check=False)
+    if check and result.returncode:
+        raise Refusal(f"Git operation failed: {args[0]}")
+    return result
 
 
 def gh(*args):
-    return run(["gh", *args])
+    result = run(["gh", *args], check=False)
+    if result.returncode:
+        if args[:2] == ("pr", "merge"):
+            raise Refusal("GitHub did not accept protected auto-merge")
+        raise Refusal("GitHub query failed")
+    return result
 
 
 def now():
@@ -79,16 +87,13 @@ def parse_project(path):
     ):
         raise Refusal("TICKET_BRANCH_PREFIX is invalid")
     checks = values.get("DONE_REQUIRED_CHECKS", "")
-    if checks:
-        names = checks.split(",")
-        if any(
-            name != name.strip()
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._:/()=-]{0,199}", name)
-            for name in names
-        ) or len(names) != len(set(names)):
-            raise Refusal("DONE_REQUIRED_CHECKS must be a unique comma-separated exact-name list")
-    else:
-        names = []
+    names = checks.split(",") if checks else []
+    if not names or any(
+        name != name.strip()
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._:/()=-]{0,199}", name)
+        for name in names
+    ) or len(names) != len(set(names)):
+        raise Refusal("DONE_REQUIRED_CHECKS must be a nonempty unique comma-separated exact-name list")
     return repo, prefix, names
 
 
@@ -251,10 +256,13 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         raise Refusal("bundle requires ticket State Review")
     bundle_text = bundle_path.read_text()
     required = (
-        "What this does", "Preview", "Acceptance criteria", "Risk", "Cost", "Rollback",
+        "What this does", "Preview", "Screenshots", "Acceptance criteria",
+        "Risk", "Cost", "Rollback",
     )
     if any(not re.search(rf"^#+\s+.*{re.escape(section)}", bundle_text, re.I | re.M) for section in required):
         raise Refusal("evidence bundle is missing a required section")
+    if not re.search(r"approve to merge", bundle_text, re.I):
+        raise Refusal("evidence bundle lacks the operator approval question")
     manifests = successful_runs(product, args.ticket)
     reviewers = [item for item in manifests if item.get("role") == "reviewer"]
     narrators = [item for item in manifests if item.get("role") == "narrator"]
@@ -396,11 +404,9 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha):
     current = exact_pr(repo, branch, "open")
     if current.get("number") != approval_att["pr_number"] or current.get("headRefOid") != head:
         raise Refusal("PR head changed before auto-merge request")
-    merged = gh(
+    gh(
         "pr", "merge", str(current["number"]), "--repo", repo, "--auto", "--merge",
     )
-    if merged.returncode:
-        raise Refusal("GitHub did not accept protected auto-merge")
     view = json.loads(gh(
         "pr", "view", str(current["number"]), "--repo", repo,
         "--json", "number,headRefOid,autoMergeRequest,state,mergeStateStatus",

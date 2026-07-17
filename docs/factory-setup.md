@@ -13,7 +13,7 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
-- Set exact `GH_REPO=owner/repository`. For contract 1.3, also set `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid.
+- Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid.
 - Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Set it to
   `2` only after contract 1.1 is active and a bounded concurrency pilot is
   approved; no other value is valid. Two ticket leases may progress, but the

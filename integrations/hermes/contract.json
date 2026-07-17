@@ -147,7 +147,7 @@
           "same Git common directory as registered PRODUCT_ROOT",
           "non-detached branch exactly matching TICKET_BRANCH_PREFIX plus ticket",
           "automatic pushes match the active certification receipt product origin",
-          "generic transitions exclude Awaiting Approval and Done until dedicated evidence gates exist"
+          "generic transitions always exclude Awaiting Approval, Approved, and Done; contract 1.3 uses ticket-attest"
         ]
       },
       "ticket-attest": {

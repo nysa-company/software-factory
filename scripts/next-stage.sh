@@ -148,6 +148,25 @@ if [[ "$CONTRACT_VERSION" == "1.3.0" ]]; then
     exit 0
   fi
   if [[ "$COMMITTED_STATE" == "approved" ]]; then
+    if python3 - "$FACTORY_DIR/linear-map.json" "$TICKET" <<'PY'
+import json
+import sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+except FileNotFoundError:
+    raise SystemExit(1)
+operator = value.get("tickets", {}).get(sys.argv[2], {}).get("operator") or {}
+if not (
+    operator.get("state") == "Approved"
+    and operator.get("approval") == "Linear"
+    and operator.get("state_base") == "awaiting approval"
+):
+    raise SystemExit(1)
+PY
+    then
+      echo "AWAIT-OPERATOR approval attested; protected auto-merge request must be confirmed"
+      exit 0
+    fi
     APPROVAL_ATTESTATION="$CONTENT_ROOT/factory/attestations/$TICKET/approval.json"
     python3 - "$APPROVAL_ATTESTATION" "$TICKET" <<'PY' || {
 import json

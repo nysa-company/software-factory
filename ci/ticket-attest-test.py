@@ -64,10 +64,12 @@ class TicketAttestTests(unittest.TestCase):
             "# Evidence bundle\n"
             "## What this does\nSafe change.\n"
             "## Preview\nLocal preview.\n"
+            "## Screenshots\nNo visual change.\n"
             "## Acceptance criteria\nAll pass.\n"
             "## Risk\nLow.\n"
             "## Cost\n1 USD.\n"
             "## Rollback\nRevert PR.\n"
+            "Approve to merge, or send back with what is wrong?\n"
         )
         self.commit("narrator bundle")
         command("git", "push", "-q", "-u", "origin", "ticket/T-700", cwd=self.product)
@@ -274,6 +276,8 @@ else:
 
     def test_done_refuses_failed_checks_and_merge_not_on_main(self):
         self.prepare_done(checks={"ci": True, "deploy-production": False})
+        self.assertIn("missing or unsuccessful", self.attest("done").stderr)
+        self.write_state(merged=True, merge_sha=self.head(), checks={"ci": True})
         self.assertIn("missing or unsuccessful", self.attest("done").stderr)
         self.write_state(merged=True, merge_sha="d" * 40)
         self.assertIn("not reachable", self.attest("done").stderr)
