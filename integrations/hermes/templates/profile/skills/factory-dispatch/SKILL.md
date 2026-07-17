@@ -131,7 +131,9 @@ escalations; never use a generic transition to manufacture these states.
 
 ## Deterministic accounting closeout
 
-For closeout, create the dedicated clean linked branch
+Contract 1.2 closeout retains
+`factory-launch <project> project-ledger --ticket <T-NNN> --workdir
+<absolute-closeout-worktree> --json`. Under contract 1.3, create the dedicated clean linked branch
 `chore/tNNN-closeout` from current `origin/main`, then invoke:
 
 ```text
