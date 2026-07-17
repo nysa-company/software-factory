@@ -96,9 +96,10 @@ sequencing.
   including organization admins, because the certified commit must be proven to
   have passed the same protected path as every other release.
 - Required approving reviews: 1 once the org has ≥2 humans. At single-operator stage set it to 0 — GitHub forbids approving your own PR, so a sole human with a 1-review rule can never merge anything. Merge-by-operator stays mechanical anyway: deploy keys cannot merge PRs (git-only credential), and `main` rejects their direct pushes.
-- No merge queue for the initial two-ticket pilot. Merge the two PRs
-  sequentially and rebase/recheck the second; add a queue only after measured
-  merge contention justifies it.
+- Concurrent ticket pilots produced measured rebase/recheck contention. Prefer
+  the forge's merge queue or auto-merge when it preserves strict required
+  checks, squash history, and operator approval; otherwise merge sequentially
+  and rebase/recheck the remaining PR.
 
 ## CLI
 
