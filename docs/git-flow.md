@@ -11,6 +11,33 @@ Settings for the product repo's `main` branch. These make the factory's rules me
 - Delete the merged branch. Keep no long-lived integration branches unless concurrency creates a measured need.
 - The local plugin AI review is a pre-publication check for this kit repository. It does not replace the factory Reviewer, Narrator evidence bundle, or human approval for product tickets.
 
+## Selective CI
+
+The required `ci` workflow always starts and always reports its aggregate
+status. A fail-closed classifier may skip expensive product tests when the
+complete diff is non-empty and limited to the documented inert-metadata
+allowlist. In this kit that includes the documentation roots plus `AGENTS.md`,
+`CLAUDE.md`, the pull-request template, the Hermes changelog, and the
+conformance shakedown report. Repository baseline, secret, artifact, and
+test-immutability checks still run.
+
+Every non-lightweight change runs the Linux suite. On pull requests, the macOS
+system-Bash suite is additionally required for shell files, CI, deployment,
+shared scripts, and the Hermes launcher. Every non-lightweight push to `main`
+runs both Linux and macOS so release verification remains bound to a fully
+tested merged SHA. Instantiated product workflows may skip expensive product
+checks for allowlisted PRs, but every product push to `main` runs its full
+verification so deployment evidence remains bound to the merged SHA.
+
+Do not infer safety from commit size, commit messages, or a Markdown suffix:
+one-line code and executable Markdown prompt changes require full CI. Do not
+put `paths-ignore` on a required workflow; GitHub leaves its check pending
+instead of reporting success. Mixed changes, renames from outside the
+allowlist, and executable Markdown all run at least Linux CI; missing
+comparison commits and classifier errors run both platforms. Each product owns
+its instantiated helper and must review any allowlist change against paths
+that can affect its runtime.
+
 ## Parallel kit development
 
 Kit development is parallel; production release selection is serialized.
