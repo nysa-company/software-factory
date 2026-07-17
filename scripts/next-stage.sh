@@ -117,8 +117,10 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     exit 1
   }
 TICKET_FILE="$EFFECTIVE_TICKET"
-if grep -qiE '^State:[[:space:]]*(Awaiting Approval|Approved)[[:space:]]*$' "$TICKET_FILE" ||
-   grep -qiE '^Operator-Approval:' "$TICKET_FILE"; then
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.2.0}"
+if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
+   { grep -qiE '^State:[[:space:]]*(Awaiting Approval|Approved)[[:space:]]*$' "$TICKET_FILE" ||
+     grep -qiE '^Operator-Approval:' "$TICKET_FILE"; }; then
   echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
   exit 1
 fi
@@ -137,6 +139,33 @@ fi
 if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   echo "REFUSE $FACTORY_DISPATCH_LEASE_ERROR"
   exit 1
+fi
+if [[ "$CONTRACT_VERSION" == "1.3.0" ]]; then
+  EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
+  COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
+  if [[ "$EFFECTIVE_STATE" == "approved" && "$COMMITTED_STATE" == "awaiting approval" ]]; then
+    echo "AWAIT-OPERATOR Linear approval observed; trusted approval attestation is required"
+    exit 0
+  fi
+  if [[ "$COMMITTED_STATE" == "approved" ]]; then
+    APPROVAL_ATTESTATION="$CONTENT_ROOT/factory/attestations/$TICKET/approval.json"
+    python3 - "$APPROVAL_ATTESTATION" "$TICKET" <<'PY' || {
+import json
+import sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("schema") != "nysa.software-factory.ticket-approval/v1" or value.get("ticket") != sys.argv[2]:
+    raise SystemExit(1)
+PY
+      echo "REFUSE Approved ticket lacks a valid approval attestation"
+      exit 1
+    }
+    echo "AWAIT-MERGE protected auto-merge requested; await merge and closeout"
+    exit 0
+  fi
+  if [[ "$COMMITTED_STATE" == "awaiting approval" ]]; then
+    echo "AWAIT-OPERATOR bundle attested; await Linear approval"
+    exit 0
+  fi
 fi
 if [[ -z "${FACTORY_LEDGER:-}" ]] &&
    ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh \
@@ -235,7 +264,8 @@ if [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
   # future bundle-attestation path. Contract 1.2 stops before that boundary.
-  if grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
+  if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
+     grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
     echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
     exit 1
   fi

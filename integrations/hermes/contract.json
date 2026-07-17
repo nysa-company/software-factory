@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.2.0",
+  "contract_version": "1.3.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -150,6 +150,25 @@
           "generic transitions exclude Awaiting Approval and Done until dedicated evidence gates exist"
         ]
       },
+      "ticket-attest": {
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--workdir",
+          "<absolute-worktree>",
+          "--action",
+          "<bundle|approval|done>",
+          "--json"
+        ],
+        "output": "an evidence-bound tracked attestation and exact protected GitHub auto-merge request",
+        "validation": [
+          "available only under contract 1.3.0",
+          "bundle and approval require the exact clean ticket branch and remote tip",
+          "done requires exact clean chore/tNNN-closeout based on origin/main",
+          "all pushes use the certification receipt product origin",
+          "GitHub credentials come only from the trusted Hermes profile"
+        ]
+      },
       "project-ledger": {
         "arguments": [
           "--ticket",
@@ -229,7 +248,7 @@
       "FACTORY_RELEASE_TREE": "active record kit_tree",
       "FACTORY_RELEASE_PATH": "resolved physical release path",
       "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
-      "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2 certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
+      "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
       "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher"
     },
     "helper_environment_allowlist": [
@@ -268,7 +287,7 @@
         "receipt_id",
         "product_tree"
       ],
-      "contract_1_2_receipt_binding": "receipt_id selects an owner-only mode-0600 receipt whose project, kit SHA/tree, product path/tree, contract, and product origin bind trusted writes",
+      "contract_1_2_receipt_binding": "contracts 1.2 and 1.3 use receipt_id to select an owner-only mode-0600 receipt whose project, kit SHA/tree, product path/tree, contract, and product origin bind trusted writes",
       "release_location": "$FACTORY_KITS_ROOT/releases/<kit_sha>",
       "selection": "resolved and validated once per invocation"
     },
@@ -308,6 +327,7 @@
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
     "scripts/ticket-state.sh",
+    "scripts/ticket-attest.py",
     "scripts/lib/effective_ticket.py",
     "scripts/lib/product-remote.sh",
     "scripts/ledger-view.py",

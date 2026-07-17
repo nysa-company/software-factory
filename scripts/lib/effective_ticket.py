@@ -183,6 +183,38 @@ def committed_factory_file(factory_dir, ticket_id, filename):
             return fallback.read_text(), "main-worktree"
         return None, None
     relative = fallback.resolve().relative_to(repo).as_posix()
+    ticket_relative = (factory_dir / "tickets" / f"{ticket_id}.md").resolve().relative_to(repo).as_posix()
+    done_relative = (
+        factory_dir / "attestations" / ticket_id / "done.json"
+    ).resolve().relative_to(repo).as_posix()
+    done = subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{done_relative}"],
+        capture_output=True, text=True,
+    )
+    terminal_ticket = subprocess.run(
+        ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{ticket_relative}"],
+        capture_output=True, text=True,
+    )
+    if done.returncode == 0 and terminal_ticket.returncode == 0:
+        try:
+            attestation = json.loads(done.stdout)
+        except json.JSONDecodeError:
+            attestation = {}
+        terminal_state = re.search(
+            r"^State:\s*Done\s*$", terminal_ticket.stdout, re.MULTILINE | re.IGNORECASE,
+        )
+        if (
+            attestation.get("schema") == "nysa.software-factory.ticket-done/v1"
+            and attestation.get("ticket") == ticket_id
+            and re.fullmatch(r"[0-9a-f]{40}", attestation.get("merge_commit", ""))
+            and terminal_state
+        ):
+            terminal = subprocess.run(
+                ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{relative}"],
+                capture_output=True, text=True,
+            )
+            if terminal.returncode == 0:
+                return terminal.stdout, "refs/remotes/origin/main"
     branch = f"{ticket_branch_prefix(factory_dir)}{ticket_id}"
     for ref in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}"):
         result = subprocess.run(
