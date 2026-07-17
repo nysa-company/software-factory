@@ -20,3 +20,10 @@ Prioritize these from the first two-ticket contract 1.2 pilot:
 - Provide forge-neutral merge-queue or auto-merge guidance so protected changes merge after all required checks pass without operator polling.
 - Extend preflight with Git forge/API health, required local services, provider CLI authentication, and configured deployment-check readiness.
 - Pilot provider-call concurrency only after another successful two-lease run; retain the serialized provider and global-ledger locks until bounded parallel accounting and crash recovery are proven.
+
+## Open-source evaluation follow-ups
+
+- Pilot one pinned SWE-ReX local-container backend for a non-production role behind `factory-launch`; keep budgets, timeouts, manifests, commits, pushes, protected-test checks, sequencing, and Linear updates outside it, and prove kill, crash, telemetry-loss, and mutation behavior before product use.
+- Compare E2B or Daytona with the same canary only if the local-container pilot cannot close the documented same-UID isolation gap.
+- When implementing trusted approval and close-out, evaluate Flow-Next-style requirement-to-evidence traceability and in-toto/SLSA-shaped provenance fields before inventing a factory-specific evidence schema.
+- Reuse Open SWE-style deterministic trigger IDs and short-lived GitHub credentials in the Hermes supervisor only where they preserve Linear and factory authority; adopt metaswarm review rubrics only when an observed review gap justifies them.

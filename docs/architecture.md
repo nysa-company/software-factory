@@ -178,6 +178,7 @@ Planner, Builder, and Narrator use the production model family. Spec-linter, Tes
 - Builders cannot change protected tests; CI checks commit authorship and paths.
 - Product credentials stay in GitHub or the hosting platform, never in repositories or agent output.
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
+- External agent frameworks may supply an execution or sandbox transport only behind `factory-launch`. They do not own sequencing, budgets, role selection, Git pushes, ticket state, evidence, or approval; every candidate is pinned and must pass the factory conformance boundary before product use.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
 - Factory-owned state transitions refuse while operator-owned overlay fields are pending. Contract 1.2 has no trusted bundle-attestation path, so an approval overlay is a stop condition rather than authority to materialize Approved or authorize merge.
 - Allowlisted machine configuration comes only from `global.env`; inherited values with the same names are cleared even when the file is absent.

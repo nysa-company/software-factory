@@ -29,8 +29,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.2 rejects dirty exact ticket worktrees before preflight, sequencing, state, reorder, or role helpers. Factory state transitions require supported pending operator fields to materialize first; approval overlays are unsupported stop conditions until a trusted bundle-attestation path exists.
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
 - Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch debounces transient owner-liveness misses but never reclaims stale or unsafe ownership; normal release atomically renames an owned lock before cleanup, and only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
+- Open-source factory frameworks remain references, not replacement control planes: any adopted execution or sandbox component stays behind `factory-launch`, while sequencing, budgets, role separation, Git authority, evidence, and operator approval remain factory-owned. The first justified experiment is a pinned SWE-ReX local-container backend for one non-production role; E2B or Daytona becomes relevant only if that canary proves local isolation insufficient.
 
 ## Log
+
+## 2026-07-16 — Decision 35: Borrow mechanisms, not another factory
+
+Category: Decision
+
+Research across metaswarm, SWE-AF, Flow-Next, Open SWE, OpenHands, SWE-agent, SWE-ReX, E2B, and adjacent infrastructure found no project that combines protected test authorship, enforced cross-family review, hard spend accounting, exact-SHA releases, durable ticket state, and evidence-based human approval. Preserve that control plane; selectively borrow Flow-Next-style requirement-to-evidence traceability, metaswarm-style independent review evidence, Open SWE trigger/idempotency patterns, and in-toto/SLSA-shaped provenance fields, and test SWE-ReX only as a pinned execution transport behind the launcher. Do not add a second orchestrator, tracker, model-budget authority, or observability stack during the walking-factory phase.
 
 ## 2026-07-16 — Decision 34: Legacy ledger lifecycle pairs remain readable
 
