@@ -11,15 +11,35 @@ Activate these only after the first product instantiation has a deployed web app
 
 ## Concurrency-pilot follow-ups
 
-Prioritize these from the first two-ticket contract 1.2 pilot:
+The Nysa T-013/T-014 and T-015/T-016 pilots proved two concurrent ticket
+leases with disjoint worktrees and serialized provider intervals. Prioritize:
+
+- Add a required-status-compatible fast CI path for factory, context, and
+  ledger-only changes; skip product databases, builds, tests, and deploy
+  previews only when the changed paths cannot affect them.
+- Create the protected ticket PR before Narrator so required checks, review
+  automation, deploy previews, and evidence gathering overlap.
+- Add trusted bundle, merge, deployment, and Done attestations so completed
+  tickets do not remain in Review with stale PR and accounting evidence.
+- Validate ticket-cut manifests against the active contract, including
+  rejecting approval fields that the contract cannot attest.
+- Make provider CLI probes noninteractive and fail closed without credentials.
+- Re-fetch and verify the authoritative ticket ref immediately before provider
+  submission, and safely prune deleted remote-tracking ticket refs during
+  maintenance reconciliation and activation.
+- Make close-out accounting batch-aware so one projection can explain every
+  completed ticket it materializes without ambiguous ownership.
 
 - Add machine-readable certification progress and a `--watch` view with phase names, elapsed time, and the current deterministic gate.
 - Reuse still-valid kit-suite evidence for an unchanged sealed SHA; always rerun product-tree checks and receipt binding, and invalidate reuse when the host, release tree, suite definition, or evidence lifetime changes.
 - Add a maintenance-only accounting audit and conservative reconciliation command for legacy manifests, with quarantine evidence and no guessed cost reduction.
 - Add a trusted operator-approved lease-release route for tickets stopped in Review, without exposing or persisting opaque lease IDs.
-- Provide forge-neutral merge-queue or auto-merge guidance so protected changes merge after all required checks pass without operator polling.
+- Adopt a forge merge queue or auto-merge for concurrent ticket PRs so protected changes merge after all required checks pass without operator polling.
 - Extend preflight with Git forge/API health, required local services, provider CLI authentication, and configured deployment-check readiness.
-- Pilot provider-call concurrency only after another successful two-lease run; retain the serialized provider and global-ledger locks until bounded parallel accounting and crash recovery are proven.
+- Design a provider-call concurrency canary now that a second two-lease pilot
+  succeeded. Retain serialized production provider and global-ledger locks
+  until OS-enforced writer isolation, bounded parallel accounting, and crash
+  recovery are proven.
 
 ## Open-source evaluation follow-ups
 
