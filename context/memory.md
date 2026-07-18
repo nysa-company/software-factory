@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - This repository is a product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions in this repository use their own numbering, beginning at Decision 1.
-- Backend fallback is pre-execution selection: production stays OpenAI-family, checking stays Anthropic-family, and one logical role run submits its task to at most one agent process.
+- Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned once at the ticket boundary, and one logical role run submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, config-review, and full local PR gates enabled. The canonical verification command is `bash ci/test-all.sh`.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
@@ -15,8 +15,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. A narrow fail-closed inert-metadata diff skips expensive suites while retaining Linux policy and test-immutability checks. Every other change runs Linux; shell/platform-sensitive PRs and every non-lightweight merged SHA also run macOS system-Bash verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
-- Primary role routing is explicit: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/medium; Spec-linter and Test-author use Claude Fable 5/medium; Reviewer uses Claude Sonnet 5/medium. Cursor remains the family-matched fallback.
-- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contract 1.2 permits two exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Nysa T-013/T-014 and T-015/T-016 proved that lease-level concurrency while provider intervals remained serialized; provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
+- The no-record default is `legacy-balanced-v1`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/medium; Spec-linter and Test-author use Claude Fable 5/medium; Reviewer uses Claude Sonnet 5/medium. OpenAI-, Claude-, and Cursor-priority profiles provide exact ordered alternatives; Cursor model IDs are distinct routes and selectable identity is separate from reported identity.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.2 and 1.3 permit two exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Nysa T-013/T-014 and T-015/T-016 proved that lease-level concurrency while provider intervals remained serialized; provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contract 1.3 adds trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
@@ -31,8 +31,23 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
 - Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch debounces transient owner-liveness misses but never reclaims stale or unsafe ownership; normal release atomically renames an owned lock before cleanup, and only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 - Open-source factory frameworks remain references, not replacement control planes: any adopted execution or sandbox component stays behind `factory-launch`, while sequencing, budgets, role separation, Git authority, evidence, and operator approval remain factory-owned. The first justified experiment is a pinned SWE-ReX local-container backend for one non-production role; E2B or Daytona becomes relevant only if that canary proves local isolation insufficient.
+- The operator activates model profiles by exact preview hash and may add narrow TTL-bound `credits_exhausted` overrides; subscription quota telemetry is incomplete. Ticket pinning commits and pushes Kit-SHA plus the exact six-role plan atomically, roles never re-resolve, exact-route re-probe is allowed, and post-submission retry is forbidden.
+- Kimi K2.6 is disabled experimental through Claude CLI/OpenRouter/Moonshot, appears in no profile, and has not had a live or billed pilot. Credential rotation is required before a pilot, and direct same-UID token exposure remains without a broker or OS isolation.
+- Route-plan provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management and evidence-bound ticket attestations are integrated under Hermes contract 1.3.
 
 ## Log
+
+## 2026-07-18 — Decision 40: Model portfolios pin exact ticket routes
+
+Category: System change
+
+The operator activates an ordered model profile by exact preview hash;
+`legacy-balanced-v1` remains the default while OpenAI-, Claude-, and
+Cursor-priority profiles provide explicit alternatives. Ticket-boundary
+pinning resolves all six roles with distinct production/checking families and
+commits the Kit-SHA plus exact route plan in one verified push; roles never
+re-resolve, exact-route re-probe is allowed, and post-submission retry is not.
+Kimi remains disabled and unpiloted, and scoped budgets remain future work.
 
 ## 2026-07-17 — Decision 39: Exact sealed releases reuse bounded suite proof
 

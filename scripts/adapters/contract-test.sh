@@ -19,11 +19,20 @@ source "$KIT_DIR/scripts/lib/backend-policy.sh"
 
 MODE="adapters"
 ADAPTERS="claude-code,codex"
+PROFILE_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --adapters) MODE="adapters"; ADAPTERS="$2"; shift 2 ;;
     --routes) MODE="routes"; shift ;;
-    *) echo "usage: contract-test.sh [--adapters a,b | --routes]" >&2; exit 2 ;;
+    --profile)
+      MODE="profile"
+      shift
+      if [[ $# -gt 0 && "$1" != --* ]]; then
+        PROFILE_ID="$1"
+        shift
+      fi
+      ;;
+    *) echo "usage: contract-test.sh [--adapters a,b | --routes | --profile [profile-id]]" >&2; exit 2 ;;
   esac
 done
 
@@ -45,6 +54,33 @@ if [[ "$MODE" == "routes" ]]; then
       bad "$role route: ${FACTORY_RESOLVE_ERROR:-unknown}"
     fi
   done
+elif [[ "$MODE" == "profile" ]]; then
+  PROFILE_PLAN="$(mktemp "${TMPDIR:-/tmp}/factory-contract-profile.XXXXXX")" || exit 2
+  cleanup_profile() { rm -f "$PROFILE_PLAN"; }
+  trap cleanup_profile EXIT
+  if [[ -z "$PROFILE_ID" ]]; then
+    if factory_load_model_probe_context; then
+      PROFILE_ID="$FACTORY_MODEL_PROFILE_ID"
+      PROFILE_DISABLED="$FACTORY_DISABLED_ROUTE_IDS"
+    else
+      bad "profile context: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      PROFILE_DISABLED=""
+    fi
+  else
+    PROFILE_DISABLED=""
+  fi
+  if [[ "$FAIL" -eq 0 ]] &&
+     factory_resolve_model_profile "$PROFILE_ID" "$PROFILE_PLAN" "$PROFILE_DISABLED"; then
+    for role in planner builder narrator spec-linter test-author reviewer; do
+      if factory_select_model_role "$PROFILE_PLAN" "$role"; then
+        note "$role route: $FACTORY_SELECTED_ADAPTER/$FACTORY_SELECTED_MODEL ($FACTORY_SELECTED_ROUTE_ID)"
+      else
+        bad "$role route: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      fi
+    done
+  elif [[ "$FAIL" -eq 0 ]]; then
+    bad "profile $PROFILE_ID: ${FACTORY_RESOLVE_ERROR:-unknown}"
+  fi
 else
   OLD_IFS="$IFS"
   IFS=,

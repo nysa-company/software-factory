@@ -21,6 +21,25 @@ helper output are not compatibility promises.
 - Makes Done own retryable creation and protected auto-merge of the exact
   factory closeout PR; adds terminal `COMPLETE` sequencing so leases release
   only after attested Done reaches protected main.
+- Adds sealed `models profiles`, `status`, `plan`, `activate`, `disable`,
+  `enable`, and `pin` grammars.
+- Adds operator-approved profile-hash activation, default
+  `legacy-balanced-v1`, ordered all-six-role portfolio resolution, and
+  TTL-bound `credits_exhausted` overrides.
+- Pins Kit-SHA and the exact six-role route plan in one committed and pushed
+  ticket-branch transaction. Role launches select only their pinned tuple,
+  re-probe only that exact route, and never retry after task submission.
+- Binds bundle attestations to the committed route-plan blob and digest, policy
+  hash, and exact pinned tuple reported by every successful role-run manifest.
+- Catalog provenance separates transport, gateway, inference provider, family,
+  account route, selectable ID, and reported identity. Cursor exact models are
+  distinct routes. Manifest provenance is ready for future scoped budgets, but
+  no provider/family/model limits are implemented and the ledger schema is
+  unchanged.
+- Catalogs Kimi K2.6 as disabled experimental through Claude
+  CLI/OpenRouter/Moonshot. It is absent from profiles and has not had a live or
+  billed pilot; credential rotation and resolution of same-UID token exposure
+  are prerequisites.
 
 ## 1.2.0 — 2026-07-15
 

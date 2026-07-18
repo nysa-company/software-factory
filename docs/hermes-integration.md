@@ -46,10 +46,12 @@ product or deployment certification; external products and
 
 ## Ticket release affinity
 
-At the first role launch, `run-agent.sh` takes `factory/.launch.lock`,
-revalidates the pin, and appends exactly one `Kit-SHA: <full-sha>` line to the
-canonical ticket. Later preflight, sequencing, and role runs refuse a lease
-that differs from the physical release. Blocked and resumed tickets retain
+Before the first role, sealed `models pin` validates the clean exact ticket
+worktree and certified origin, resolves all six routes, and records the
+`Kit-SHA` plus `factory/route-plans/<T-NNN>.json` in one commit and exact-branch
+push. Later preflight, sequencing, and role runs refuse a different physical
+release. Roles select only their tuple from that plan and never re-resolve;
+each run re-probes only that exact route. Blocked and resumed tickets retain
 the same affinity.
 
 Activation does not migrate ticket leases. Before activation, the operator
@@ -79,6 +81,29 @@ Contract versions `1.0.0` through `1.3.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> ticket-attest --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --action bundle --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
+
+Model policy is task-free and sealed:
+
+```bash
+~/.factory/bin/factory-launch <project> models profiles --json
+~/.factory/bin/factory-launch <project> models plan --json
+~/.factory/bin/factory-launch <project> models plan --profile claude-priority-v1 --json
+~/.factory/bin/factory-launch <project> models activate --profile claude-priority-v1 --approve-hash <profile-hash-from-preview> --approved-by <operator-id> --json
+~/.factory/bin/factory-launch <project> models disable --scope-type route --scope-id codex-gpt-5.6-sol --reason credits_exhausted --ttl-seconds 3600 --operator-id <operator-id> --json
+~/.factory/bin/factory-launch <project> models enable --scope-type route --scope-id codex-gpt-5.6-sol --json
+~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
+```
+
+The operator activates only the exact profile hash returned by preview.
+`legacy-balanced-v1` is used when no active record exists.
+`openai-priority-v1` orders OpenAI-production then Anthropic-production
+portfolios; `claude-priority-v1` reverses them. `cursor-priority-v1` has both
+orders with exact Cursor routes first. Each portfolio has ordered per-role
+candidates and distinct production/checking families; no partial plan is
+valid. Temporary overrides accept only reason `credits_exhausted`, a TTL from
+1 through 604800 seconds, and scope `account-route`, `provider-family`,
+`model`, or `route`. Subscription quota telemetry is not complete enough to
+drive automatic activation.
 
 Contracts `1.1.0` through `1.3.0` keep one-ticket behavior by default. A product may set
 `MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
@@ -145,6 +170,18 @@ The doctor is diagnostic and read-only. It uses temporary files for bounded
 CLI version probes, reports credential presence only, redacts secret-bearing
 keys and credential URLs, and never authenticates or repairs anything.
 `warning` does not mean authentication succeeded. `error` blocks dispatch.
+
+The route catalog keeps transport, gateway, inference provider, family,
+account route, selectable model ID, and expected reported identity separate.
+The selected ID is sent to the CLI; the independently reported identity must
+match when one is expected. Cursor's exact OpenAI and Anthropic model IDs are
+therefore separate routes, not a shared adapter default.
+
+Kimi K2.6 is cataloged only as a disabled experimental route using Claude CLI
+through OpenRouter to Moonshot. It is absent from all profiles and no live or
+billed pilot has been performed. Rotate its credential before any pilot.
+Direct same-UID token observation remains possible without a credential broker
+or OS-level isolation.
 
 ## Install and certify an exact release
 

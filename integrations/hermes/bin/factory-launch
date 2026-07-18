@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|models|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -535,6 +535,8 @@ HELPER_ENV=(
   "PATH=$SAFE_PATH"
   "TMPDIR=$SAFE_TMPDIR"
   "FACTORY_ROOT=$PRODUCT_ROOT"
+  "FACTORY_MODEL_STATE_ROOT=$KITS_ROOT/projects"
+  "FACTORY_PROJECT=$PROJECT"
   "FACTORY_RELEASE_SHA=$KIT_SHA"
   "FACTORY_RELEASE_TREE=$KIT_TREE"
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
@@ -880,6 +882,107 @@ PY
     exec_selected_helper "$DOCTOR" --json --project "$PROJECT" \
       --profile-dir "$PROFILE_DIR" --registry "$REGISTRY_FILE" \
       --kit-dir "$RELEASE_PATH" --product-root "$PRODUCT_ROOT" --kit-sha "$KIT_SHA"
+    ;;
+  models)
+    [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ]] ||
+      die "models requires contract 1.2.0 or newer"
+    [[ $# -ge 2 ]] || usage
+    MODEL_ACTION="$1"
+    MODEL_MUTATION=0
+    case "$MODEL_ACTION" in
+      profiles|status)
+        [[ $# -eq 2 && "$2" == "--json" ]] || usage
+        MODEL_ARGS=("$MODEL_ACTION")
+        ;;
+      plan)
+        if [[ $# -eq 2 && "$2" == "--json" ]]; then
+          MODEL_ARGS=("$MODEL_ACTION")
+        elif [[ $# -eq 4 && "$2" == "--profile" && "$4" == "--json" ]]; then
+          [[ "$3" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$3" != "auto" ]] ||
+            die "invalid model profile identifier"
+          MODEL_ARGS=("$MODEL_ACTION" --profile "$3")
+        else
+          usage
+        fi
+        ;;
+      activate)
+        [[ $# -eq 8 && "$2" == "--profile" && "$4" == "--approve-hash" &&
+           "$6" == "--approved-by" && "$8" == "--json" ]] || usage
+        [[ "$3" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$3" != "auto" ]] ||
+          die "invalid model profile identifier"
+        [[ "$5" =~ ^[0-9a-f]{64}$ ]] || die "invalid model approval hash"
+        [[ "$7" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$7" != "auto" ]] ||
+          die "invalid model approver identifier"
+        MODEL_ARGS=("$MODEL_ACTION" --profile "$3" --approve-hash "$5" --approved-by "$7")
+        MODEL_MUTATION=1
+        ;;
+      disable)
+        [[ $# -eq 12 && "$2" == "--scope-type" && "$4" == "--scope-id" &&
+           "$6" == "--reason" && "$8" == "--ttl-seconds" &&
+           "${10}" == "--operator-id" && "${12}" == "--json" ]] || usage
+        MODEL_SCOPE_TYPE="$3" MODEL_SCOPE_ID="$5"
+        [[ "$MODEL_SCOPE_TYPE" =~ ^(account-route|provider-family|model|route)$ ]] ||
+          die "invalid model scope type"
+        if [[ "$MODEL_SCOPE_TYPE" == "model" ]]; then
+          [[ "$MODEL_SCOPE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ &&
+             "$MODEL_SCOPE_ID" != "auto" ]] || die "invalid model scope identifier"
+        else
+          [[ "$MODEL_SCOPE_ID" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ &&
+             "$MODEL_SCOPE_ID" != "auto" ]] || die "invalid model scope identifier"
+        fi
+        [[ "$7" == "credits_exhausted" ]] || die "invalid model disable reason"
+        [[ "$9" =~ ^[1-9][0-9]{0,5}$ && "$((10#$9))" -le 604800 ]] ||
+          die "invalid model disable TTL"
+        [[ "${11}" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "${11}" != "auto" ]] ||
+          die "invalid model operator identifier"
+        MODEL_ARGS=("$MODEL_ACTION" --scope-type "$MODEL_SCOPE_TYPE" \
+          --scope-id "$MODEL_SCOPE_ID" --reason "$7" --ttl-seconds "$9" \
+          --operator-id "${11}")
+        MODEL_MUTATION=1
+        ;;
+      enable)
+        [[ $# -eq 6 && "$2" == "--scope-type" && "$4" == "--scope-id" &&
+           "$6" == "--json" ]] || usage
+        MODEL_SCOPE_TYPE="$3" MODEL_SCOPE_ID="$5"
+        [[ "$MODEL_SCOPE_TYPE" =~ ^(account-route|provider-family|model|route)$ ]] ||
+          die "invalid model scope type"
+        if [[ "$MODEL_SCOPE_TYPE" == "model" ]]; then
+          [[ "$MODEL_SCOPE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ &&
+             "$MODEL_SCOPE_ID" != "auto" ]] || die "invalid model scope identifier"
+        else
+          [[ "$MODEL_SCOPE_ID" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ &&
+             "$MODEL_SCOPE_ID" != "auto" ]] || die "invalid model scope identifier"
+        fi
+        MODEL_ARGS=("$MODEL_ACTION" --scope-type "$MODEL_SCOPE_TYPE" --scope-id "$MODEL_SCOPE_ID")
+        MODEL_MUTATION=1
+        ;;
+      pin)
+        [[ $# -eq 6 && "$2" == "--ticket" && "$4" == "--workdir" &&
+           "$6" == "--json" ]] || usage
+        [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+        resolve_product_workdir "$5"
+        validate_ticket_worktree "$3"
+        MODEL_ARGS=("$MODEL_ACTION" --ticket "$3" --workdir "$RESOLVED_WORKDIR")
+        add_certified_origin_env
+        MODEL_MUTATION=1
+        ;;
+      *)
+        usage
+        ;;
+    esac
+    if [[ "$MODEL_MUTATION" -eq 1 && -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]]; then
+      die "product is in maintenance; model mutation refused"
+    fi
+    MODEL_HELPER="$RELEASE_PATH/scripts/model-control.sh"
+    require_managed_file "$MODEL_HELPER" "active release model-control helper"
+    # Model control is task-free and needs no profile credential.
+    MODEL_HELPER_ENV=()
+    for MODEL_ENV_ITEM in "${HELPER_ENV[@]}"; do
+      [[ "$MODEL_ENV_ITEM" == GH_TOKEN=* ]] || MODEL_HELPER_ENV+=("$MODEL_ENV_ITEM")
+    done
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${MODEL_HELPER_ENV[@]}" /bin/bash "$MODEL_HELPER" "${MODEL_ARGS[@]}"
     ;;
   preflight)
     validate_ticket_command "$@"

@@ -19,6 +19,9 @@ class Refusal(ValueError):
     pass
 
 
+ROLES = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
+
+
 def run(argv, *, cwd=None, input_text=None, check=True):
     result = subprocess.run(
         argv, cwd=cwd, input=input_text, text=True,
@@ -151,6 +154,68 @@ def successful_runs(product, ticket):
             raise Refusal(f"successful manifest {value.get('run_id')} is absent from ledger")
         value["_ledger_index"] = successful_ids[value["run_id"]]
     return manifests
+
+
+def route_plan_evidence(workdir, ticket, kit_sha, manifests):
+    path = workdir / "factory" / "route-plans" / f"{ticket}.json"
+    if not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1:
+        raise Refusal("committed ticket route plan is missing or unsafe")
+    raw = path.read_bytes()
+    try:
+        plan = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise Refusal("ticket route plan is malformed")
+    if (
+        set(plan) != {"schema", "ticket", "kit_sha", "created_at", "resolution"}
+        or plan.get("schema") != "ticket-model-route-plan/v1"
+        or plan.get("ticket") != ticket
+        or plan.get("kit_sha") != kit_sha
+    ):
+        raise Refusal("ticket route plan does not match the attested ticket and kit")
+    resolution = plan.get("resolution")
+    selections = resolution.get("selections") if isinstance(resolution, dict) else None
+    if (
+        not isinstance(selections, dict)
+        or set(selections) != set(ROLES)
+        or not re.fullmatch(r"[0-9a-f]{64}", resolution.get("policy_hash", ""))
+    ):
+        raise Refusal("ticket route plan lacks a complete six-role policy")
+    digest = hashlib.sha256(raw).hexdigest()
+    manifest_fields = {
+        "adapter": "adapter",
+        "provider_family": "provider_family",
+        "model_id": "selection_id",
+        "effort": "effort",
+        "adapter_version": "adapter_version",
+        "route_id": "route_id",
+        "gateway_id": "gateway_id",
+        "inference_provider_id": "inference_provider_id",
+        "account_route_id": "account_route_id",
+        "transport": "transport",
+    }
+    for manifest in manifests:
+        role = manifest.get("role")
+        selection = selections.get(role)
+        if not isinstance(selection, dict):
+            raise Refusal("successful run references a role absent from the route plan")
+        if any(
+            manifest.get(field) != selection.get(selected)
+            for field, selected in manifest_fields.items()
+        ):
+            raise Refusal(f"successful {role} run does not match its pinned route")
+        if (
+            manifest.get("selection_reason") != "pinned_route_plan"
+            or manifest.get("policy_hash") != resolution["policy_hash"]
+            or manifest.get("route_plan_sha256") != digest
+            or manifest.get("kit_sha") != kit_sha
+        ):
+            raise Refusal(f"successful {role} run lacks pinned route provenance")
+    return {
+        "policy_hash": resolution["policy_hash"],
+        "route_plan_blob": git(workdir, "hash-object", str(path)).stdout.strip(),
+        "route_plan_path": str(path.relative_to(workdir)),
+        "route_plan_sha256": digest,
+    }
 
 
 def review_evidence(text, manifests, workdir):
@@ -346,11 +411,12 @@ def valid_oid(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
 
 
-def validate_bundle_attestation(value, ticket, repo, branch, kit_sha):
+def validate_bundle_attestation(value, ticket, repo, branch, kit_sha, workdir):
     expected_keys = {
         "schema", "ticket", "repository", "branch", "branch_head",
         "reviewed_sha", "bundle_path", "bundle_blob", "pr_number", "pr_url",
-        "reviewer_run_id", "narrator_run_id", "kit_sha", "attested_at",
+        "reviewer_run_id", "narrator_run_id", "kit_sha", "policy_hash",
+        "route_plan_path", "route_plan_blob", "route_plan_sha256", "attested_at",
     }
     if (
         set(value) != expected_keys
@@ -359,6 +425,10 @@ def validate_bundle_attestation(value, ticket, repo, branch, kit_sha):
         or value.get("repository") != repo
         or value.get("branch") != branch
         or value.get("kit_sha") != kit_sha
+        or value.get("route_plan_path") != f"factory/route-plans/{ticket}.json"
+        or not valid_oid(value.get("route_plan_blob"))
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("route_plan_sha256", ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("policy_hash", ""))
         or not isinstance(value.get("pr_number"), int)
         or value["pr_number"] <= 0
         or not isinstance(value.get("pr_url"), str)
@@ -371,6 +441,13 @@ def validate_bundle_attestation(value, ticket, repo, branch, kit_sha):
         or not value["reviewer_run_id"]
         or not isinstance(value.get("narrator_run_id"), str)
         or not value["narrator_run_id"]
+        or blob_at(
+            workdir, value.get("branch_head", ""), value.get("route_plan_path", ""),
+        ) != value.get("route_plan_blob")
+        or hashlib.sha256(git(
+            workdir, "show",
+            f"{value.get('branch_head', '')}:{value.get('route_plan_path', '')}",
+        ).stdout.encode()).hexdigest() != value.get("route_plan_sha256")
     ):
         raise Refusal("bundle attestation identity or evidence is invalid")
     timestamp(value.get("attested_at"), "bundle attestation")
@@ -456,7 +533,7 @@ def protected_approval_evidence(
     if not bundle_path.is_file() or not approval_path.is_file():
         raise Refusal("protected main lacks bundle or approval attestation")
     bundle_att = validate_bundle_attestation(
-        json.loads(bundle_path.read_text()), ticket, repo, branch, kit_sha,
+        json.loads(bundle_path.read_text()), ticket, repo, branch, kit_sha, workdir,
     )
     approval_att = json.loads(approval_path.read_text())
     approval_keys = {
@@ -689,6 +766,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     if not re.search(r"approve to merge", bundle_text, re.I):
         raise Refusal("evidence bundle lacks the operator approval question")
     manifests = successful_runs(product, args.ticket)
+    route_plan = route_plan_evidence(workdir, args.ticket, kit_sha, manifests)
     reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
     allowed = {
         f"factory/tickets/{args.ticket}.md",
@@ -716,6 +794,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         "reviewer_run_id": reviewer["run_id"],
         "narrator_run_id": narrator["run_id"],
         "kit_sha": kit_sha,
+        **route_plan,
         "attested_at": now(),
     }
     write_json(attestation_path, attestation)
@@ -740,6 +819,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     approval_path = attestation_path.with_name("approval.json")
     bundle_att = validate_bundle_attestation(
         json.loads(attestation_path.read_text()), args.ticket, repo, branch, kit_sha,
+        workdir,
     )
     if git(workdir, "hash-object", str(bundle_path)).stdout.strip() != bundle_att.get("bundle_blob"):
         raise Refusal("evidence bundle changed after attestation")

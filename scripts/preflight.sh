@@ -130,6 +130,7 @@ fi
 # not probe credential-bearing production CLIs.
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
+ROUTE_PLAN="$CONTENT_ROOT/factory/route-plans/$TICKET.json"
 if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
       "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" &&
       "${FACTORY_ADAPTER_OVERRIDE:-}" == "mock" ]]; then
@@ -142,7 +143,24 @@ if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
   else
     fail "isolated mock route is missing required runtime tools"
   fi
+elif [[ -f "$ROUTE_PLAN" ]]; then
+  for ROLE_SAMPLE in planner builder narrator spec-linter test-author reviewer; do
+    if ! factory_select_pinned_model_role \
+        "$ROUTE_PLAN" "$TICKET" "$FACTORY_KIT_SHA" "$ROLE_SAMPLE"; then
+      fail "$ROLE_SAMPLE pinned route is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      continue
+    fi
+    PINNED_ROUTE="$FACTORY_SELECTED_ROUTE_ID"
+    PINNED_ADAPTER="$FACTORY_SELECTED_ADAPTER"
+    PINNED_MODEL="$FACTORY_SELECTED_MODEL"
+    if factory_verify_selected_pinned_route_ready; then
+      pass "$ROLE_SAMPLE pinned route ready ($PINNED_ROUTE: $PINNED_ADAPTER/$PINNED_MODEL)"
+    else
+      fail "$ROLE_SAMPLE pinned route unavailable or drifted ($PINNED_ROUTE): ${FACTORY_RESOLVE_ERROR:-unknown}"
+    fi
+  done
 else
+  warn "legacy routing is unpinned for $TICKET"
   if CONTRACT_OUT="$(FACTORY_GLOBAL_ENV="$GLOBAL_ENV" "$KIT_DIR/scripts/adapters/contract-test.sh" --routes 2>&1)"; then
     pass "backend route contract test passed"
   else

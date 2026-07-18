@@ -61,7 +61,21 @@ must share the kit repository, Git common directory, and HEAD. This exception
 exists for CI only. Live/external products and deployment certification require
 an explicit `KIT_PIN`.
 
-Backend policy is kit-owned and certified by the same `KIT_PIN`. Production roles require the OpenAI family (`codex`, with optional `cursor-openai` fallback); checking roles require the Anthropic family (`claude-code`, with optional `cursor-anthropic` fallback). Fallback is resolved before task submission and is never a retry: one logical role run submits its task to at most one agent process. Machine-specific Cursor model IDs, the approved CLI compatibility version, and `FACTORY_CURSOR_FALLBACK_ENABLED` live in `~/.factory/global.env`. Exact model IDs must be present in `scripts/lib/cursor-model-families.txt`; `auto` is forbidden.
+Model policy is kit-owned and certified by the same `KIT_PIN`. The route catalog
+separates adapter, transport, gateway, inference provider, provider family,
+account route, selection ID, and expected reported identity. Selection ID is
+what the CLI is asked to run; reported identity is independently probed and a
+mismatch is invalid. Cursor's exact OpenAI and Anthropic models are individual
+routes, not one model inherited from a shared adapter.
+
+Profiles contain ordered portfolios and ordered candidates per role. At the
+ticket boundary, the first portfolio that resolves all six roles is selected.
+`INVALID` or `UNKNOWN` hard-stops; only `UNAVAILABLE` advances to another
+candidate or portfolio. Every portfolio declares distinct production and
+checking families. The operator activates a profile by approving its exact
+preview hash. Without an activation record, `legacy-balanced-v1` is the
+default; its OpenAI-production/Anthropic-checking split is profile policy, not
+a fixed architectural requirement.
 
 ```bash
 # ~/.factory/global.env — no credentials in this file
@@ -81,7 +95,16 @@ export CURSOR_ANTHROPIC_USD_PER_MTOK_OUT="RATE"
 `run-agent.sh` parses both configuration files as whitelisted `KEY=value`
 data. Shell commands, substitutions, and unsupported keys are rejected.
 
-Enable fallback only after `agent status --format json`, `agent models`, `scripts/adapters/contract-test.sh --routes`, and both conformance smokes pass. Cursor output is redacted while streaming; the redacted `.out` artifact remains local and ignored, while the manifest and ledger carry durable provenance.
+Calibrate a route only after its task-free identity/readiness probe, adapter
+contract, and conformance smokes pass. Cursor output is redacted while
+streaming; the redacted `.out` artifact remains local and ignored, while the
+manifest and ledger carry durable provenance.
+
+The disabled experimental Kimi route uses Claude CLI transport, the OpenRouter
+gateway, and Moonshot inference for `moonshotai/kimi-k2.6`. It is in no profile
+and has not had a live or billed pilot. Credential rotation is required before
+one. File-based injection keeps the token out of argv and durable output, but
+without a broker or OS isolation a same-UID process may still observe it.
 
 ## Release and activation model
 
@@ -106,6 +129,8 @@ release for the invocation. Contracts `1.0.0` through `1.3.0` expose machine-rea
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
+Contract `1.2.0` adds sealed `models`, ticket-state, and ledger controls;
+contract `1.3.0` composes them with evidence-bound ticket attestations.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -146,11 +171,13 @@ declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to
 committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
 
-The first role launch records a `Kit-SHA:` lease on the canonical ticket while
-holding `factory/.launch.lock`. Every later preflight, sequencer call, and run
-refuses a different physical kit SHA. Activation does not migrate leases, so a
-drained ticket boundary and a scan of the committed exact ticket branches for
-conflicting nonterminal leases remain required.
+Before the first role, `models pin` resolves one exact six-role plan and records
+it with `Kit-SHA:` in one committed and pushed ticket-branch transaction. Every
+later preflight, sequencer call, and run refuses a different physical kit SHA;
+roles read only their pinned tuple and never re-resolve. A run re-probes only
+that exact route. After task submission, failure is terminal and never triggers
+retry or fallback. Activation does not migrate pins, so a drained ticket
+boundary and a scan of committed exact ticket branches remain required.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and may
 be set only to `2`. At `2`, every sequencing and role launch requires the
@@ -200,7 +227,18 @@ implemented; referenced and rollback-eligible releases are retained.
 
 ## Role and approval flow
 
-Planner, Builder, and Narrator use the production model family. Spec-linter, Test-author, and Reviewer use a separate checking family. Primary routing is explicit: Planner uses GPT-5.6 Sol at high effort; Builder and Narrator use GPT-5.6 Terra at medium effort; Spec-linter and Test-author use Claude Fable 5 at medium effort; Reviewer uses Claude Sonnet 5 at medium effort. Cursor remains a family-matched fallback and keeps its separately allowlisted model configuration. Narrator converts verified results into the evidence bundle the operator approves. The exact lifecycle and failure routes live in [workflows/ticket-flow.md](workflows/ticket-flow.md).
+Planner, Builder, and Narrator use the selected portfolio's production family.
+Spec-linter, Test-author, and Reviewer use its distinct checking family.
+`legacy-balanced-v1` retains the historical OpenAI/Anthropic choices;
+`openai-priority-v1`, `claude-priority-v1`, and `cursor-priority-v1` provide
+explicit alternative ordering. Narrator converts verified results into the
+evidence bundle the operator approves. The exact lifecycle and failure routes
+live in [workflows/ticket-flow.md](workflows/ticket-flow.md).
+
+Ticket-plan provenance records catalog/profile/policy hashes and every selected
+route tuple. It can support future provider, family, or model budgets, but
+those limits are not implemented. The envelope remains the budget authority
+and the ledger schema is unchanged.
 
 ## Trust boundaries
 

@@ -12,6 +12,7 @@ KIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 KIT_TREE="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
 PHYSICAL_KIT_PATH="$(cd "$ROOT" && pwd -P)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/sf-factory-tests.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 STUB_BIN="$TMP/bin"
 FAILURES=0
 mkdir -p "$STUB_BIN"
@@ -137,6 +138,7 @@ case "${1:-}" in
 esac
 
 [[ -z "${FACTORY_TEST_TRACE:-}" ]] || echo "cursor-task" >> "$FACTORY_TEST_TRACE"
+[[ -z "${FACTORY_TEST_ARGS:-}" ]] || printf '%s\n' "$*" >> "$FACTORY_TEST_ARGS"
 if [[ "${STUB_CURSOR_MALFORMED:-0}" == "1" ]]; then
   echo '{"type":"assistant","message":{"content":"no terminal result"}}'
   exit 0
@@ -285,6 +287,95 @@ if [[ "$FALSE_AUTH_PROBE" == "UNAVAILABLE:authentication_unavailable" ]]; then
 else
   fail "Cursor status JSON must affirm authentication" "$FALSE_AUTH_PROBE"
 fi
+
+EXPLICIT_CURSOR_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test CURSOR_OPENAI_MODEL=claude-sonnet-5-thinking-high \
+  bash -c 'source "$1"; factory_probe_adapter cursor-openai gpt-5.6-sol-high; echo "$PROBE_STATE:$PROBE_REASON:$PROBE_MODEL"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$EXPLICIT_CURSOR_PROBE" == "READY:local_contract_ready:gpt-5.6-sol-high" ]]; then
+  pass "Cursor probe validates the explicit route model"
+else
+  fail "Cursor probe validates the explicit route model" "$EXPLICIT_CURSOR_PROBE"
+fi
+
+PROFILE_PLAN="$TMP/profile-plan.json"
+PROFILE_TRACE="$TMP/profile-probes.trace"
+: > "$PROFILE_TRACE"
+PROFILE_RESULT="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test FACTORY_PROBE_TRACE="$PROFILE_TRACE" \
+  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
+  FACTORY_PROBE_CURSOR_OPENAI=READY:test FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+  bash -c '
+    source "$1"
+    factory_resolve_model_profile claude-priority-v1 "$2" || {
+      echo "ERROR:$FACTORY_RESOLVE_ERROR"; exit
+    }
+    for role in planner builder narrator spec-linter test-author reviewer; do
+      factory_select_model_role "$2" "$role" || exit
+      printf "%s:%s:%s:%s\n" "$role" "$FACTORY_SELECTED_ADAPTER" \
+        "$FACTORY_SELECTED_FAMILY" "$FACTORY_SELECTED_MODEL"
+    done
+  ' _ "$ROOT/scripts/lib/backend-policy.sh" "$PROFILE_PLAN")"
+PROFILE_PROBE_COUNT="$(wc -l < "$PROFILE_TRACE" | tr -d ' ')"
+if [[ "$PROFILE_PROBE_COUNT" == "6" &&
+      "$PROFILE_RESULT" == *"planner:claude-code:anthropic:sonnet"* &&
+      "$PROFILE_RESULT" == *"spec-linter:codex:openai:gpt-5.6-terra"* &&
+      "$(printf '%s\n' "$PROFILE_RESULT" | wc -l | tr -d ' ')" == "6" ]]; then
+  pass "profile resolution probes unique routes and selects all family-split roles"
+else
+  fail "profile resolution probes unique routes and selects all family-split roles" \
+    "probes=$PROFILE_PROBE_COUNT result=$PROFILE_RESULT"
+fi
+
+CONTRACT_PROFILE="$(PATH="$STUB_BIN:$PATH" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
+  FACTORY_PROBE_CURSOR_OPENAI=READY:test FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+  "$ROOT/scripts/adapters/contract-test.sh" --profile claude-priority-v1 2>&1)"
+if [[ "$(printf '%s\n' "$CONTRACT_PROFILE" | \
+      awk '/ route: / {count++} END {print count+0}')" == "6" &&
+      "$CONTRACT_PROFILE" == *"requested adapter contracts hold"* ]]; then
+  pass "contract profile mode reports all six roles without task submission"
+else
+  fail "contract profile mode reports all six roles without task submission" \
+    "$CONTRACT_PROFILE"
+fi
+
+DISABLED_PLAN="$TMP/disabled-plan.json"
+DISABLED_TRACE="$TMP/disabled-probes.trace"
+: > "$DISABLED_TRACE"
+DISABLED_RESULT="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test FACTORY_PROBE_TRACE="$DISABLED_TRACE" \
+  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
+  FACTORY_PROBE_CURSOR_OPENAI=READY:test FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+  bash -c '
+    source "$1"
+    factory_resolve_model_profile legacy-balanced-v1 "$2" cursor-gpt-5.6-sol-high &&
+      factory_select_model_role "$2" planner &&
+      echo "$FACTORY_SELECTED_ROUTE_ID"
+  ' _ "$ROOT/scripts/lib/backend-policy.sh" "$DISABLED_PLAN")"
+if [[ "$(wc -l < "$DISABLED_TRACE" | tr -d ' ')" == "5" &&
+      "$DISABLED_RESULT" == "codex-gpt-5.6-sol" &&
+      "$(< "$DISABLED_TRACE")" != *"cursor-openai|gpt-5.6-sol-high"* ]]; then
+  pass "disabled route is unavailable without a CLI probe"
+else
+  fail "disabled route is unavailable without a CLI probe" "$DISABLED_RESULT"
+fi
+
+for BAD_STATE in INVALID UNKNOWN; do
+  BAD_PLAN="$TMP/bad-$BAD_STATE-plan.json"
+  BAD_RESULT="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+    CURSOR_AGENT_VERSION=2026.07.test FACTORY_PROBE_CODEX="$BAD_STATE:test" \
+    FACTORY_PROBE_CLAUDE_CODE=READY:test FACTORY_PROBE_CURSOR_OPENAI=READY:test \
+    FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+    bash -c 'source "$1"; if factory_resolve_model_profile legacy-balanced-v1 "$2"; then echo READY; else echo "$FACTORY_RESOLVE_ERROR"; fi' \
+    _ "$ROOT/scripts/lib/backend-policy.sh" "$BAD_PLAN")"
+  if [[ "$BAD_RESULT" == "profile_resolution_failed" ]]; then
+    pass "$BAD_STATE readiness fails closed"
+  else
+    fail "$BAD_STATE readiness fails closed" "$BAD_RESULT"
+  fi
+done
 
 EMPTY_CODEX_VERSION_PROBE="$(PATH="$STUB_BIN:$PATH" CODEX_PINNED=0.144.1 \
   STUB_CODEX_VERSION_EMPTY=1 STUB_CODEX_VERSION_STATUS=124 \
@@ -712,6 +803,85 @@ else
   awk '{print "  | " $0}' "$PRIMARY_OUT" >&2
 fi
 
+# A ticket pin remains authoritative after profile activation changes. Its
+# selected route is re-probed alone, and stable provenance stays manifest-only.
+PINNED="$TMP/pinned-route"
+write_envelope "$PINNED"
+write_ticket "$PINNED" T-219
+PINNED_STATE="$TMP/pinned-state"
+mkdir -p "$PINNED_STATE"
+PINNED_PLAN="$PINNED/factory/route-plans/T-219.json"
+python3 "$ROOT/scripts/model-manager.py" pin \
+  --state-root "$PINNED_STATE" --project pinned-test \
+  --ticket T-219 --kit-sha "$KIT_SHA" \
+  --resolution-file "$PROFILE_PLAN" --output "$PINNED_PLAN" >/dev/null
+LEGACY_HASH="$(python3 "$ROOT/scripts/model-manager.py" profiles \
+  --state-root "$PINNED_STATE" --project pinned-test | python3 -c \
+  'import json,sys; print(next(x["profile_hash"] for x in json.load(sys.stdin)["profiles"] if x["profile_id"]=="legacy-balanced-v1"))')"
+python3 "$ROOT/scripts/model-manager.py" activate \
+  --state-root "$PINNED_STATE" --project pinned-test \
+  --profile legacy-balanced-v1 --approve-hash "$LEGACY_HASH" \
+  --approved-by test >/dev/null
+PINNED_DOWN_GLOBAL="$TMP/pinned-down-global/global.env"
+write_backend_global "$PINNED_DOWN_GLOBAL" \
+  "export FACTORY_PROBE_CLAUDE_CODE=UNAVAILABLE:pinned_outage"
+PINNED_PROBE_TRACE="$TMP/pinned-probes.trace"
+PINNED_TASK_TRACE="$TMP/pinned-task.trace"
+: > "$PINNED_PROBE_TRACE"
+: > "$PINNED_TASK_TRACE"
+PINNED_DOWN_STATUS=0
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PINNED" \
+  FACTORY_GLOBAL_ENV="$PINNED_DOWN_GLOBAL" \
+  FACTORY_MODEL_STATE_ROOT="$PINNED_STATE" FACTORY_PROJECT=pinned-test \
+  FACTORY_PROBE_TRACE="$PINNED_PROBE_TRACE" \
+  FACTORY_TEST_TRACE="$PINNED_TASK_TRACE" \
+  "$RUN_AGENT" --role planner --ticket T-219 -- "pinned outage" >/dev/null 2>&1 ||
+  PINNED_DOWN_STATUS=$?
+if [[ "$PINNED_DOWN_STATUS" -eq 6 &&
+      "$(cat "$PINNED_PROBE_TRACE")" == "claude-code|sonnet" &&
+      ! -s "$PINNED_TASK_TRACE" ]] &&
+   ! compgen -G "$PINNED/factory/runs/*.meta" >/dev/null; then
+  pass "pinned outage stops without alternate probe, reservation, or task"
+else
+  fail "pinned outage stops without alternate probe, reservation, or task" \
+    "status=$PINNED_DOWN_STATUS probes=$(cat "$PINNED_PROBE_TRACE")"
+fi
+
+PINNED_READY_GLOBAL="$TMP/pinned-ready-global/global.env"
+write_backend_global "$PINNED_READY_GLOBAL" \
+  "export FACTORY_PROBE_CLAUDE_CODE=READY:test"
+: > "$PINNED_PROBE_TRACE"
+: > "$PINNED_TASK_TRACE"
+PINNED_STATUS=0
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PINNED" \
+  FACTORY_GLOBAL_ENV="$PINNED_READY_GLOBAL" \
+  FACTORY_MODEL_STATE_ROOT="$PINNED_STATE" FACTORY_PROJECT=pinned-test \
+  FACTORY_PROBE_TRACE="$PINNED_PROBE_TRACE" \
+  FACTORY_TEST_TRACE="$PINNED_TASK_TRACE" \
+  "$RUN_AGENT" --role planner --ticket T-219 -- "pinned ready" >/dev/null 2>&1 ||
+  PINNED_STATUS=$?
+PINNED_META="$(ls "$PINNED/factory/runs/"*.meta 2>/dev/null || true)"
+PINNED_SHA="$(shasum -a 256 "$PINNED_PLAN" | awk '{print $1}')"
+PINNED_POLICY_HASH="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["resolution"]["policy_hash"])' \
+  "$PINNED_PLAN")"
+if [[ "$PINNED_STATUS" -eq 0 && -n "$PINNED_META" &&
+      "$(cat "$PINNED_PROBE_TRACE")" == "claude-code|sonnet" ]] &&
+   grep -q '^route_id=claude-sonnet$' "$PINNED_META" &&
+   grep -q '^gateway_id=anthropic-claude-code$' "$PINNED_META" &&
+   grep -q '^inference_provider_id=anthropic$' "$PINNED_META" &&
+   grep -q '^account_route_id=claude-native$' "$PINNED_META" &&
+   grep -q '^transport=native-cli$' "$PINNED_META" &&
+   grep -q "^policy_hash=$PINNED_POLICY_HASH$" "$PINNED_META" &&
+   grep -q "^route_plan_sha256=$PINNED_SHA$" "$PINNED_META" &&
+   [[ "$(head -n1 "$PINNED/factory/runtime-ledger.csv")" == \
+      "$(ledger_header)" ]]; then
+  pass "profile changes do not affect pinned runs and manifests record provenance"
+else
+  fail "profile changes do not affect pinned runs and manifests record provenance" \
+    "status=$PINNED_STATUS probes=$(cat "$PINNED_PROBE_TRACE")"
+fi
+
 # A non-task UNAVAILABLE probe selects family-matched Cursor before reservation.
 FALLBACK="$TMP/fallback-route"
 write_envelope "$FALLBACK"
@@ -721,15 +891,19 @@ FALLBACK_GLOBAL="$TMP/fallback-global/global.env"
 write_backend_global "$FALLBACK_GLOBAL" \
   $'export FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down\nexport CURSOR_PRICING_SNAPSHOT_DATE=2026-07-15\nexport CURSOR_OPENAI_USD_PER_MTOK_IN=1.25\nexport CURSOR_OPENAI_USD_PER_MTOK_OUT=10\nexport CURSOR_ANTHROPIC_USD_PER_MTOK_IN=3\nexport CURSOR_ANTHROPIC_USD_PER_MTOK_OUT=15\nexport CURSOR_OPENAI_USD_PER_MTOK_CACHE=0\nexport CURSOR_ANTHROPIC_USD_PER_MTOK_CACHE=0'
 FALLBACK_TRACE="$TMP/fallback.trace"
+FALLBACK_ARGS="$TMP/fallback.args"
 : > "$FALLBACK_TRACE"
+: > "$FALLBACK_ARGS"
 if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      FACTORY_GLOBAL_ENV="$FALLBACK_GLOBAL" FACTORY_TEST_TRACE="$FALLBACK_TRACE" \
+     FACTORY_TEST_ARGS="$FALLBACK_ARGS" \
      "$LINKED_RUN_AGENT" --role planner --ticket T-211 -- "fallback route" >/dev/null &&
    [[ "$(awk -F, '$3=="T-211" {print $5}' "$FALLBACK/factory/runtime-ledger.csv")" == "cursor-openai" ]] &&
    [[ "$(awk -F, '$3=="T-211" {print $12}' "$FALLBACK/factory/runtime-ledger.csv")" == "gpt-5.6-sol-high" ]] &&
    [[ "$(awk -F, '$3=="T-211" {print $14}' "$FALLBACK/factory/runtime-ledger.csv")" == "conservative_reservation" ]] &&
    [[ "$(awk -F, '$3=="T-211" {print $8}' "$FALLBACK/factory/runtime-ledger.csv")" == "1.00" ]] &&
    [[ "$(wc -l < "$FALLBACK_TRACE" | tr -d ' ')" == "1" ]] &&
+   grep -q -- '--model gpt-5.6-sol-high' "$FALLBACK_ARGS" &&
    grep -q '^cursor-task$' "$FALLBACK_TRACE"; then
   FALLBACK_OUT="$(ls "$FALLBACK/factory/runs/"*.out)"
   FALLBACK_META="$(ls "$FALLBACK/factory/runs/"*.meta)"

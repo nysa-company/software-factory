@@ -28,11 +28,12 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 
 ## Step 2 — Envelope
 
-Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns), daily cap, retry ceilings, escalation rules, exit thresholds. Then set the matching hard caps in the Anthropic and OpenAI consoles and review Cursor usage controls before enabling fallback. Cursor CLI has no documented per-run dollar stop: the ledger always keeps the full run reservation. Approved token telemetry plus a dated pricing snapshot may add an observational estimate, but never reduce that reservation.
+Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns), daily cap, retry ceilings, escalation rules, exit thresholds. Then set matching hard caps in provider consoles and review Cursor usage controls before activating a profile that prioritizes those routes. Subscription quota/credit telemetry is incomplete and is not a safe automatic routing signal. Cursor CLI has no documented per-run dollar stop: the ledger always keeps the full run reservation. Approved token telemetry plus a dated pricing snapshot may add an observational estimate, but never reduce that reservation. Route-plan provenance can support future provider/family/model limits, but none are implemented and the ledger schema is unchanged.
 
 ## Step 3 — Keys and secrets
 
-- Keep production CLI, checking CLI, and product-runtime credentials separate. Cursor fallback uses a one-time local `agent login` (or `CURSOR_API_KEY` for unattended infrastructure); never put Cursor credentials in the kit or product config.
+- Keep route/account and product-runtime credentials separate. Cursor uses a one-time local `agent login` (or `CURSOR_API_KEY` for unattended infrastructure); never put credentials in kit or product config.
+- Keep Kimi disabled. No live or billed pilot has run. Before any pilot, rotate its credential and address the residual same-UID token exposure with a credential broker or OS isolation.
 - Secrets live only in GitHub Actions secrets and the hosting platform. No `.env` in git, ever.
 
 ## Step 4 — Linear
@@ -75,6 +76,11 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   Set `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS` only as explicit machine policy;
   changing it forces a fresh suite and caps the product receipt to that proof.
 
+- Review model policy through the sealed launcher. Run `models profiles --json`,
+  preview the intended profile with `models plan [--profile <id>] --json`, and
+  activate only with that profile's exact returned hash and an operator ID.
+  `legacy-balanced-v1` is the no-record default.
+
 - Create a separate sandbox product and Hermes canary profile. Do not copy the
   production `.env`, secret files, registry, ledger, board mapping, or
   LaunchAgent. Run the real-Hermes canary in
@@ -103,11 +109,14 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
 - [ ] The active contract 1.2/1.3 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
 - [ ] `~/.factory/bin/factory-launch` and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
+- [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `legacy-balanced-v1`
+- [ ] A clean sample ticket passed `models pin --ticket <T-NNN> --workdir <exact-worktree> --json`, creating one pushed commit containing both `Kit-SHA` and the exact six-role route plan
+- [ ] Kimi remains disabled and absent from every profile; no live/billed-pilot claim is recorded, and credential rotation plus broker/OS isolation are prerequisites to a pilot
 - [ ] Factory Hermes profile, project registry, and factory gateway LaunchAgent are separate from the dashboard and primary Hermes profile
 - [ ] Real-Hermes canary uses a separate profile/product and no copied production secrets; redacted evidence is recorded
 - [ ] `ENVELOPE.md` has no unfilled blanks
 - [ ] Console spend caps set on the primary providers; Cursor usage controls reviewed before fallback is enabled
-- [ ] Production, checking, Cursor, and product-runtime credentials are separated; none are committed
+- [ ] Provider/account-route, Cursor, and product-runtime credentials are separated; none are committed
 - [ ] No secrets in git history (`git log -p | grep -i` for key patterns, or a scanner)
 - [ ] Linear board matches `docs/workflows/linear.md`; initiative Projects and ticket template installed; `scripts/linear-sync.py --setup` run; `com.factory.linear-sync` loaded; sync health is current
 - [ ] Branch protection on; test-immutability check is a required status
