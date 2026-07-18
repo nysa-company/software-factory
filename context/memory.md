@@ -34,8 +34,23 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The operator activates model profiles by exact preview hash and may add narrow TTL-bound `credits_exhausted` overrides; subscription quota telemetry is incomplete. Ticket pinning commits and pushes Kit-SHA plus the exact six-role plan atomically, roles never re-resolve, exact-route re-probe is allowed, and post-submission retry is forbidden.
 - Kimi K2.6 is disabled experimental through Claude CLI/OpenRouter/Moonshot, appears in no profile, and has not had a live or billed pilot. Credential rotation is required before a pilot, and direct same-UID token exposure remains without a broker or OS isolation.
 - Route-plan provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management and evidence-bound ticket attestations are integrated under Hermes contract 1.3.
+- The Contract 1.3 cutover has one bounded legacy-closeout format for an exact authorized Contract 1.2 batch. It is separate from normal attestations and route plans, becomes authoritative only through one manual protected product merge, and is validated by the same protected-main terminal reader used by sequencing and activation; plain Done never suffices.
 
 ## Log
+
+## 2026-07-18 — Decision 41: Legacy closeout preserves the Contract 1.3 trust boundary
+
+Category: System change
+
+The one-time Contract 1.2 migration uses exact authorization and per-ticket
+receipts under `factory/migrations/contract-1.3/`, never synthetic normal
+attestations. A deterministic local generator binds immutable Git/GitHub,
+check-app, ledger, audit, cutoff, old/new kit, and protected-basis evidence but
+performs no remote mutation; only the operator's manual merge of the complete
+single product PR grants authority. Review is the normal legacy class, while
+only T-019/T-020 may carry the separately audited Planning anomaly class.
+Shared validation makes plain Done, partial batches, unknown files, conflicting
+receipts, and wrong target kits fail activation and terminal sequencing.
 
 ## 2026-07-18 — Decision 40: Model portfolios pin exact ticket routes
 

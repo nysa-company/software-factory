@@ -2073,6 +2073,8 @@ for surface in [
     "scripts/lib/kit-pin.sh",
     "scripts/lib/plain-config.sh",
     "scripts/lib/product-remote.sh",
+    "scripts/lib/legacy_closeout.py",
+    "scripts/legacy-closeout.py",
     "scripts/model-routing/catalog-v1.json",
     "scripts/model-routing/profiles-v1.json",
     "factory/route-plans/<T-NNN>.json",

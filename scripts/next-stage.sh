@@ -25,6 +25,7 @@
 #
 # Usage: next-stage.sh --ticket T-NNN   (FACTORY_ROOT anchors the factory dir)
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 TICKET="" LEASE_ID="" WORKDIR=""
 while [[ $# -gt 0 ]]; do
@@ -133,21 +134,35 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "REFUSE $FACTORY_KIT_PIN_ERROR"
   exit 1
 fi
-if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
+TERMINAL_BASIS=""
+if [[ "$CONTRACT_VERSION" == "1.3.0" ]]; then
+  TERMINAL_BASIS="$(python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
+    --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
+    --terminal-basis 2>/dev/null || true)"
+fi
+if [[ -z "$TERMINAL_BASIS" ]] &&
+   ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "REFUSE $FACTORY_TICKET_KIT_ERROR"
   exit 1
+fi
+if [[ "$TERMINAL_BASIS" == "validated-legacy-closeout" ]]; then
+  echo "COMPLETE validated legacy closeout is on protected main; no historical lease is implied"
+  exit 0
 fi
 if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   echo "REFUSE $FACTORY_DISPATCH_LEASE_ERROR"
   exit 1
 fi
-if [[ "$CONTRACT_VERSION" == "1.3.0" ]]; then
-  if python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
-    --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
-    --terminal-main >/dev/null 2>&1; then
+if [[ -n "$TERMINAL_BASIS" ]]; then
+  if [[ "$TERMINAL_BASIS" == "attested-done" ]]; then
     echo "COMPLETE attested Done is on protected main; release the matching lease"
-    exit 0
+  else
+    echo "REFUSE protected main returned an unknown terminal basis"
+    exit 1
   fi
+  exit 0
+fi
+if [[ "$CONTRACT_VERSION" == "1.3.0" ]]; then
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
   if [[ "$COMMITTED_STATE" == "done" ]]; then

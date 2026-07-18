@@ -9,6 +9,8 @@ import subprocess
 import unicodedata
 from pathlib import Path
 
+from legacy_closeout import ValidationError, protected_terminal
+
 MATERIALIZED_OPERATOR_FIELDS = ("priority", "initiative", "state", "approval")
 OPERATOR_METADATA_FIELDS = ("state_base", "observed_at", "linear_updated_at")
 OPERATOR_FIELDS = frozenset(MATERIALIZED_OPERATOR_FIELDS + OPERATOR_METADATA_FIELDS)
@@ -183,128 +185,17 @@ def committed_factory_file(factory_dir, ticket_id, filename):
             return fallback.read_text(), "main-worktree"
         return None, None
     relative = fallback.resolve().relative_to(repo).as_posix()
-    ticket_relative = (factory_dir / "tickets" / f"{ticket_id}.md").resolve().relative_to(repo).as_posix()
-    done_relative = (
-        factory_dir / "attestations" / ticket_id / "done.json"
-    ).resolve().relative_to(repo).as_posix()
-    done = subprocess.run(
-        ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{done_relative}"],
-        capture_output=True, text=True,
-    )
-    terminal_ticket = subprocess.run(
-        ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{ticket_relative}"],
-        capture_output=True, text=True,
-    )
-    bundle_relative = (
-        factory_dir / "attestations" / ticket_id / "bundle.json"
-    ).resolve().relative_to(repo).as_posix()
-    approval_relative = (
-        factory_dir / "attestations" / ticket_id / "approval.json"
-    ).resolve().relative_to(repo).as_posix()
-    bundle_receipt = subprocess.run(
-        ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{bundle_relative}"],
-        capture_output=True, text=True,
-    )
-    approval_receipt = subprocess.run(
-        ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{approval_relative}"],
-        capture_output=True, text=True,
-    )
-    if (
-        done.returncode == 0
-        and terminal_ticket.returncode == 0
-        and bundle_receipt.returncode == 0
-        and approval_receipt.returncode == 0
-    ):
-        try:
-            attestation = json.loads(done.stdout)
-            bundle_value = json.loads(bundle_receipt.stdout)
-            approval_value = json.loads(approval_receipt.stdout)
-        except json.JSONDecodeError:
-            attestation = bundle_value = approval_value = {}
-        def blob(content):
-            return subprocess.run(
-                ["git", "-C", str(repo), "hash-object", "--stdin"],
-                input=content, capture_output=True, text=True, check=True,
-            ).stdout.strip()
-        terminal_state = re.search(
-            r"^State:\s*Done\s*$", terminal_ticket.stdout, re.MULTILINE | re.IGNORECASE,
+    try:
+        protected_terminal(repo, ticket_id)
+    except ValidationError:
+        pass
+    else:
+        terminal = subprocess.run(
+            ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{relative}"],
+            capture_output=True, text=True,
         )
-        terminal_approval = re.search(
-            r"^Operator-Approval:\s*Linear\s*$",
-            terminal_ticket.stdout, re.MULTILINE | re.IGNORECASE,
-        )
-        required = attestation.get("required_checks")
-        successful = attestation.get("successful_checks")
-        ledger = attestation.get("ledger")
-        oid_fields = (
-            "merge_commit", "approved_pr_head", "reviewed_sha", "bundle_blob",
-            "bundle_attestation_blob", "approval_attestation_blob",
-            "approval_parent_head", "closeout_parent", "kit_sha",
-        )
-        checks_valid = (
-            isinstance(required, list)
-            and bool(required)
-            and required == successful
-            and len(required) == len(set(required))
-            and all(
-                isinstance(name, str)
-                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._:/()=-]{0,199}", name)
-                for name in required
-            )
-        )
-        if (
-            attestation.get("schema") == "nysa.software-factory.ticket-done/v1"
-            and attestation.get("ticket") == ticket_id
-            and re.fullmatch(
-                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
-                attestation.get("repository", ""),
-            )
-            and isinstance(attestation.get("pr_number"), int)
-            and attestation["pr_number"] > 0
-            and attestation.get("auto_merge_method") in {"squash", "merge", "rebase"}
-            and all(
-                re.fullmatch(r"[0-9a-f]{40}", attestation.get(name, ""))
-                for name in oid_fields
-            )
-            and checks_valid
-            and isinstance(attestation.get("merged_at"), str)
-            and isinstance(attestation.get("attested_at"), str)
-            and isinstance(ledger, dict)
-            and ledger.get("schema") == "nysa.software-factory.ledger-projection/v1"
-            and ledger.get("status") == "ok"
-            and ledger.get("ticket") == ticket_id
-            and isinstance(ledger.get("row_count"), int)
-            and ledger["row_count"] >= 0
-            and re.fullmatch(r"[0-9a-f]{64}", ledger.get("sha256", ""))
-            and blob(bundle_receipt.stdout) == attestation.get("bundle_attestation_blob")
-            and blob(approval_receipt.stdout) == attestation.get("approval_attestation_blob")
-            and bundle_value.get("schema") == "nysa.software-factory.ticket-bundle/v1"
-            and bundle_value.get("ticket") == ticket_id
-            and bundle_value.get("repository") == attestation.get("repository")
-            and bundle_value.get("pr_number") == attestation.get("pr_number")
-            and bundle_value.get("reviewed_sha") == attestation.get("reviewed_sha")
-            and bundle_value.get("bundle_blob") == attestation.get("bundle_blob")
-            and bundle_value.get("kit_sha") == attestation.get("kit_sha")
-            and approval_value.get("schema") == "nysa.software-factory.ticket-approval/v1"
-            and approval_value.get("ticket") == ticket_id
-            and approval_value.get("repository") == attestation.get("repository")
-            and approval_value.get("pr_number") == attestation.get("pr_number")
-            and approval_value.get("reviewed_sha") == attestation.get("reviewed_sha")
-            and approval_value.get("bundle_blob") == attestation.get("bundle_blob")
-            and approval_value.get("kit_sha") == attestation.get("kit_sha")
-            and approval_value.get("auto_merge_method")
-            == attestation.get("auto_merge_method")
-            and approval_value.get("parent_head")
-            == attestation.get("approval_parent_head")
-            and terminal_state
-            and terminal_approval
-        ):
-            terminal = subprocess.run(
-                ["git", "-C", str(repo), "show", f"refs/remotes/origin/main:{relative}"],
-                capture_output=True, text=True,
-            )
-            if terminal.returncode == 0:
-                return terminal.stdout, "refs/remotes/origin/main"
+        if terminal.returncode == 0:
+            return terminal.stdout, "refs/remotes/origin/main"
     branch = f"{ticket_branch_prefix(factory_dir)}{ticket_id}"
     for ref in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}"):
         result = subprocess.run(
@@ -313,6 +204,11 @@ def committed_factory_file(factory_dir, ticket_id, filename):
             text=True,
         )
         if result.returncode == 0:
+            if (
+                filename == f"{ticket_id}.md"
+                and re.search(r"(?mi)^State:\s*Done\s*$", result.stdout)
+            ):
+                continue
             return result.stdout, ref
     result = subprocess.run(
         ["git", "-C", str(repo), "show", f"HEAD:{relative}"],
@@ -320,6 +216,11 @@ def committed_factory_file(factory_dir, ticket_id, filename):
         text=True,
     )
     if result.returncode == 0:
+        if (
+            filename == f"{ticket_id}.md"
+            and re.search(r"(?mi)^State:\s*Done\s*$", result.stdout)
+        ):
+            return None, None
         return result.stdout, "HEAD"
     return None, None
 
@@ -334,23 +235,30 @@ def main():
     parser.add_argument("--operator-map")
     parser.add_argument("--factory-dir")
     parser.add_argument("--terminal-main", action="store_true")
+    parser.add_argument("--terminal-basis", action="store_true")
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--operator-version-file")
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
-    if args.terminal_main:
+    if args.terminal_main or args.terminal_basis:
         if (
             not args.factory_dir
             or args.ticket_file
             or args.operator_map
             or args.operator_version_file
+            or (args.terminal_main and args.terminal_basis)
         ):
-            parser.error("--terminal-main requires only --factory-dir and --ticket")
-        text, source = committed_ticket(Path(args.factory_dir), args.ticket)
-        if source != "refs/remotes/origin/main":
+            parser.error("terminal lookup requires only --factory-dir and --ticket")
+        factory_dir = Path(args.factory_dir)
+        try:
+            result = protected_terminal(factory_dir.parent, args.ticket)
+        except ValidationError:
             raise SystemExit(1)
-        print(text, end="")
+        if args.terminal_basis:
+            print(result["basis"])
+        else:
+            print(result["text"], end="")
         return
     if not args.ticket_file or not args.operator_map or args.factory_dir:
         parser.error("--ticket-file and --operator-map are required")

@@ -242,8 +242,7 @@ EOF
 State: Backlog
 EOF
   cat > "$path/factory/tickets/T-003.md" <<'EOF'
-State: Done
-Kit-SHA: 0000000000000000000000000000000000000000
+State: Backlog
 EOF
   cat > "$path/factory/tickets/T-004.md" <<'EOF'
 State: Planning
@@ -1133,10 +1132,18 @@ RECEIPT_INVALID_DONE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END
 expect_failure "terminal ticket lease is validated before state decision" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
   --receipt "$RECEIPT_INVALID_DONE"
-printf '%s\n' 'State: Done' \
-  'Kit-SHA: 0000000000000000000000000000000000000000' \
+printf '%s\n' 'State: Done' "Kit-SHA: $SHA_A" \
   > "$PRODUCT_ONE/factory/tickets/T-003.md"
-commit_all "$PRODUCT_ONE" "restore canonical terminal lease"
+commit_all "$PRODUCT_ONE" "add unattested Done fixture"
+push_main "$PRODUCT_ONE"
+expect_success "plain-Done product tuple can certify" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+RECEIPT_PLAIN_DONE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_failure "plain Done without protected terminal evidence blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  --receipt "$RECEIPT_PLAIN_DONE"
+printf '%s\n' 'State: Backlog' > "$PRODUCT_ONE/factory/tickets/T-003.md"
+commit_all "$PRODUCT_ONE" "restore nonterminal backlog fixture"
 push_main "$PRODUCT_ONE"
 expect_success "clean ticket tuple recertifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
