@@ -2011,6 +2011,7 @@ import pathlib, re, subprocess, sys
 factory, candidate, lib, origin = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 sys.path.insert(0, sys.argv[3])
 from effective_ticket import ticket_branch_prefix
+from legacy_closeout import ValidationError, protected_terminal
 
 tickets = factory / "tickets"
 repo = factory.parent
@@ -2108,6 +2109,17 @@ for ticket_id in sorted(ticket_ids):
     if lease and not re.fullmatch(r"[0-9a-f]{40}", lease):
         raise SystemExit("%s has a noncanonical Kit-SHA" % ticket_id)
     if state.lower() == "done":
+        try:
+            terminal = protected_terminal(repo, ticket_id)
+        except ValidationError as error:
+            raise SystemExit(
+                "%s claims Done without valid protected-main terminal evidence: %s"
+                % (ticket_id, error)
+            )
+        if terminal.get("basis") not in (
+            "attested-done", "validated-legacy-closeout",
+        ):
+            raise SystemExit("%s has an unknown terminal basis" % ticket_id)
         continue
     if lease:
         if lease != candidate:

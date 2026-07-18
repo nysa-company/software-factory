@@ -131,6 +131,36 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Confirm the factory-owned close-out PR entered protected auto-merge; do not supply another business approval or manual merge.
 - Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
 
+## One-time Contract 1.2 legacy closeout
+
+- Notice: this is a bounded release migration, not a permanent compatibility
+  mode and not a substitute for Contract 1.3 attestations. Never create
+  `factory/attestations/` records for historical work or rewrite its old
+  `Kit-SHA`.
+- Do: finish and settle every allowlisted old-contract ticket first. Generate
+  from an exact clean `HEAD == origin/main` basis with
+  `scripts/legacy-closeout.py --product <repo> --request <reviewed-request>`.
+  Review the exact repository, source/target kits, ticket classes, immutable
+  ticket/bundle blobs, merged PR metadata, four app-bound successful checks,
+  ledger rows, cutoff, branch observation, and protected-main basis.
+- Do: use `legacy-reviewed` only for exact Review. T-019/T-020 are the only
+  permitted `out-of-band-merged` Planning anomalies and require a fresh
+  independent audit and combined full-test digests. A historical ticket has
+  no route plan and the legacy receipt must say so.
+- Do: put authorization, the complete receipt set, Done/Migration ticket
+  projections, and target `KIT_PIN` in one product PR. Disable auto-merge and
+  bypass; the operator's manual protected merge of that exact head is the
+  present approval. Any main movement, conflict edit, changed ruleset, missing
+  ticket, failed check, or accounting ambiguity requires regeneration and
+  recertification.
+- Don't: commit or push from the generator, accept a partial batch, hand-edit
+  generated JSON, or treat `State: Done` alone as terminal evidence.
+- Rollback: for an interrupted activation use `reconcile`. After a committed
+  activation, keep maintenance, merge the protected exact-tree product revert
+  restoring the old pin and migration state, then run `factory-kit rollback`,
+  restore the prior profile bundle, restart, and verify health before clearing
+  maintenance.
+
 ## Test commit order before operator review
 
 - Notice: reviewer approved but CI fails the test-immutability gate because test commits came after implementation.
@@ -192,8 +222,9 @@ same-UID token exposure remains until a broker or OS isolation is used.
    profile. Never copy the production `.env`, secrets, board mapping, registry,
    ledger, or LaunchAgent.
 4. Confirm no active runs and no nonterminal ticket with a different
-   `Kit-SHA`. The release manager checks live-run records but does not scan
-   non-running ticket leases.
+   `Kit-SHA`. Activation scans committed local, tracking, and live remote
+   ticket sources; a Done claim also requires a valid normal attestation chain
+   or protected-main legacy closeout.
 5. Merge the product's candidate `KIT_PIN` through the protected PR and verify
    the merged product tree still matches the receipt.
 6. Publish managed maintenance with `factory-kit.sh pause` before touching

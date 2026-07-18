@@ -40,6 +40,9 @@ helper output are not compatibility promises.
   CLI/OpenRouter/Moonshot. It is absent from profiles and has not had a live or
   billed pilot; credential rotation and resolution of same-UID token exposure
   are prerequisites.
+- Adds no launcher command for migration, but strengthens terminal sequencing
+  so Done requires either the normal protected attestation chain or the
+  separately validated, one-time protected-main Contract 1.2 legacy closeout.
 
 ## 1.2.0 — 2026-07-15
 

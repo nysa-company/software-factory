@@ -1,0 +1,620 @@
+#!/usr/bin/env python3
+"""Strict protected-main validation for normal and one-time legacy closeout."""
+
+import csv
+import hashlib
+import io
+import json
+import re
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+
+class ValidationError(ValueError):
+    pass
+
+
+MIGRATION_DIR = "factory/migrations/contract-1.3"
+AUTH_SCHEMA = "nysa.software-factory.legacy-closeout-authorization/v1"
+RECEIPT_SCHEMA = "nysa.software-factory.legacy-closeout/v1"
+REQUIRED_CHECK_NAMES = ("app-tests", "ci", "policy", "test-immutability")
+OUT_OF_BAND_TICKETS = frozenset(("T-019", "T-020"))
+ROLES = frozenset(("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator"))
+OID = re.compile(r"[0-9a-f]{40}")
+DIGEST = re.compile(r"[0-9a-f]{64}")
+TICKET_ID = re.compile(r"T-[0-9]+")
+REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+AUTH_KEYS = {
+    "schema", "repository", "source_kit_sha", "target_kit_sha",
+    "candidate_contract", "tickets", "required_checks", "authorization",
+    "cutoff", "protected_main_basis",
+}
+AUTH_TICKET_KEYS = {"ticket", "classification", "source_state", "receipt"}
+CHECK_IDENTITY_KEYS = {"name", "app_id", "app_slug"}
+AUTHORIZATION_KEYS = {"method", "statement", "auto_merge", "bypass"}
+BASIS_KEYS = {"commit", "tree"}
+RECEIPT_KEYS = {
+    "schema", "ticket", "repository", "classification", "source_state",
+    "source_kit_sha", "target_kit_sha", "candidate_contract",
+    "source_ticket_blob", "source_bundle_blob", "pr", "branch", "checks",
+    "ledger", "independent_audit", "authorization_blob", "cutoff",
+    "protected_main_basis", "route_plan",
+}
+PR_KEYS = {"number", "head", "merge_commit", "merged_at", "merged_by"}
+BRANCH_KEYS = {"name", "state", "tip", "observed_at"}
+CHECK_KEYS = {
+    "name", "app_id", "app_slug", "status", "conclusion", "skipped",
+}
+LEDGER_KEYS = {"sha256", "run_ids"}
+AUDIT_KEYS = {"required", "report_sha256", "combined_test_sha256"}
+ROUTE_PLAN_KEYS = {"present", "sha256"}
+
+NORMAL_BUNDLE_KEYS = {
+    "schema", "ticket", "repository", "branch", "branch_head",
+    "reviewed_sha", "bundle_path", "bundle_blob", "pr_number", "pr_url",
+    "reviewer_run_id", "narrator_run_id", "kit_sha", "policy_hash",
+    "route_plan_path", "route_plan_blob", "route_plan_sha256", "attested_at",
+}
+NORMAL_APPROVAL_KEYS = {
+    "schema", "ticket", "repository", "branch", "parent_head",
+    "reviewed_sha", "bundle_blob", "bundle_attestation_blob", "pr_number",
+    "operator_version", "linear_updated_at", "observed_at", "kit_sha",
+    "auto_merge_method", "attested_at",
+}
+NORMAL_DONE_KEYS = {
+    "schema", "ticket", "repository", "pr_number", "approved_pr_head",
+    "reviewed_sha", "bundle_blob", "bundle_attestation_blob",
+    "approval_attestation_blob", "approval_parent_head",
+    "auto_merge_method", "merge_commit", "merged_at", "required_checks",
+    "successful_checks", "ledger", "kit_sha", "closeout_parent",
+    "attested_at",
+}
+NORMAL_LEDGER_KEYS = {
+    "schema", "schema_version", "status", "ticket", "row_count",
+    "ticket_cost_usd", "sha256",
+}
+
+
+def run(repo, *args, input_text=None, check=True):
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        input=input_text,
+        capture_output=True,
+        text=True,
+    )
+    if check and result.returncode:
+        raise ValidationError(result.stderr.strip() or "Git evidence is unavailable")
+    return result
+
+
+def exact(value, keys, label):
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValidationError(f"{label} has unknown or missing fields")
+    return value
+
+
+def oid(value, label):
+    if not isinstance(value, str) or not OID.fullmatch(value):
+        raise ValidationError(f"{label} is not a full lowercase Git object ID")
+    return value
+
+
+def digest(value, label, *, nullable=False):
+    if nullable and value is None:
+        return value
+    if not isinstance(value, str) or not DIGEST.fullmatch(value):
+        raise ValidationError(f"{label} is not a lowercase SHA-256 digest")
+    return value
+
+
+def timestamp(value, label):
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValidationError(f"{label} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValidationError(f"{label} is invalid") from error
+    if parsed.tzinfo is None:
+        raise ValidationError(f"{label} must include a timezone")
+    return parsed
+
+
+def json_at(repo, ref, path, label):
+    result = run(repo, "show", f"{ref}:{path}", check=False)
+    if result.returncode:
+        return None
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValidationError(f"{label} is not valid JSON") from error
+    return value
+
+
+def text_at(repo, ref, path):
+    result = run(repo, "show", f"{ref}:{path}", check=False)
+    return None if result.returncode else result.stdout
+
+
+def blob_at(repo, ref, path):
+    result = run(repo, "rev-parse", f"{ref}:{path}", check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def hash_text(repo, text):
+    return run(repo, "hash-object", "--stdin", input_text=text).stdout.strip()
+
+
+def one_field(text, name):
+    values = re.findall(
+        rf"(?mi)^{re.escape(name)}:\s*(.*?)\s*$", text,
+    )
+    if len(values) != 1:
+        raise ValidationError(f"ticket must contain exactly one {name} field")
+    return values[0].strip()
+
+
+def repository_from_project(repo, ref):
+    text = text_at(repo, ref, "factory/PROJECT.env")
+    if text is None:
+        raise ValidationError("protected main lacks factory/PROJECT.env")
+    values = []
+    for raw in text.splitlines():
+        match = re.fullmatch(r"\s*(?:export\s+)?GH_REPO\s*=\s*(.*?)\s*", raw)
+        if match:
+            value = match.group(1)
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            values.append(value)
+    if len(values) != 1 or not REPOSITORY.fullmatch(values[0]):
+        raise ValidationError("factory/PROJECT.env must define one exact GH_REPO")
+    return values[0]
+
+
+def _normal_terminal(repo, ticket, ref):
+    root = f"factory/attestations/{ticket}"
+    bundle = json_at(repo, ref, f"{root}/bundle.json", "bundle attestation")
+    approval = json_at(repo, ref, f"{root}/approval.json", "approval attestation")
+    done = json_at(repo, ref, f"{root}/done.json", "Done attestation")
+    present = tuple(value is not None for value in (bundle, approval, done))
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValidationError("protected main has a partial normal attestation chain")
+    exact(bundle, NORMAL_BUNDLE_KEYS, "bundle attestation")
+    exact(approval, NORMAL_APPROVAL_KEYS, "approval attestation")
+    exact(done, NORMAL_DONE_KEYS, "Done attestation")
+    exact(done.get("ledger"), NORMAL_LEDGER_KEYS, "Done ledger projection")
+    repository = repository_from_project(repo, ref)
+    branch = f"ticket/{ticket}"
+    if (
+        bundle["schema"] != "nysa.software-factory.ticket-bundle/v1"
+        or approval["schema"] != "nysa.software-factory.ticket-approval/v1"
+        or done["schema"] != "nysa.software-factory.ticket-done/v1"
+        or any(value["ticket"] != ticket for value in (bundle, approval, done))
+        or any(value["repository"] != repository for value in (bundle, approval, done))
+        or bundle["branch"] != branch
+        or approval["branch"] != branch
+        or bundle["bundle_path"] != f"factory/tickets/{ticket}-bundle.md"
+        or bundle["route_plan_path"] != f"factory/route-plans/{ticket}.json"
+        or approval["pr_number"] != bundle["pr_number"]
+        or done["pr_number"] != bundle["pr_number"]
+        or approval["reviewed_sha"] != bundle["reviewed_sha"]
+        or done["reviewed_sha"] != bundle["reviewed_sha"]
+        or approval["bundle_blob"] != bundle["bundle_blob"]
+        or done["bundle_blob"] != bundle["bundle_blob"]
+        or approval["bundle_attestation_blob"] != done["bundle_attestation_blob"]
+        or approval["parent_head"] != done["approval_parent_head"]
+        or approval["kit_sha"] != bundle["kit_sha"]
+        or done["kit_sha"] != bundle["kit_sha"]
+        or approval["auto_merge_method"] != done["auto_merge_method"]
+        or done["auto_merge_method"] not in {"squash", "merge", "rebase"}
+        or done["required_checks"] != done["successful_checks"]
+        or not done["required_checks"]
+        or len(done["required_checks"]) != len(set(done["required_checks"]))
+        or done["ledger"]["schema"] != "nysa.software-factory.ledger-projection/v1"
+        or done["ledger"]["schema_version"] != 1
+        or done["ledger"]["status"] != "ok"
+        or done["ledger"]["ticket"] != ticket
+        or not isinstance(done["ledger"]["row_count"], int)
+        or done["ledger"]["row_count"] < 0
+        or not isinstance(done["ledger"]["ticket_cost_usd"], (int, float))
+    ):
+        raise ValidationError("normal attestation chain identities do not match")
+    for name in (
+        "branch_head", "reviewed_sha", "bundle_blob", "route_plan_blob",
+    ):
+        oid(bundle[name], f"bundle {name}")
+    for name in ("parent_head", "bundle_blob", "bundle_attestation_blob", "reviewed_sha"):
+        oid(approval[name], f"approval {name}")
+    for name in (
+        "approved_pr_head", "reviewed_sha", "bundle_blob",
+        "bundle_attestation_blob", "approval_attestation_blob",
+        "approval_parent_head", "merge_commit", "kit_sha", "closeout_parent",
+    ):
+        oid(done[name], f"Done {name}")
+    for name in ("policy_hash", "route_plan_sha256"):
+        digest(bundle[name], f"bundle {name}")
+    digest(approval["operator_version"], "approval operator_version")
+    digest(done["ledger"]["sha256"], "Done ledger sha256")
+    timestamp(bundle["attested_at"], "bundle attested_at")
+    bundle_time = timestamp(bundle["attested_at"], "bundle attested_at")
+    observed = timestamp(approval["observed_at"], "approval observed_at")
+    updated = timestamp(approval["linear_updated_at"], "approval linear_updated_at")
+    merged = timestamp(done["merged_at"], "Done merged_at")
+    attested = timestamp(done["attested_at"], "Done attested_at")
+    if (
+        approval["attested_at"] != approval["observed_at"]
+        or observed <= bundle_time
+        or updated <= bundle_time
+        or attested < merged
+    ):
+        raise ValidationError("normal attestation timestamps are not ordered")
+    if (
+        blob_at(repo, ref, f"{root}/bundle.json") != done["bundle_attestation_blob"]
+        or blob_at(repo, ref, f"{root}/approval.json") != done["approval_attestation_blob"]
+        or blob_at(repo, ref, bundle["route_plan_path"]) != bundle["route_plan_blob"]
+    ):
+        raise ValidationError("normal attestation blobs do not match protected main")
+    route_plan_text = text_at(repo, ref, bundle["route_plan_path"])
+    bundle_text = text_at(repo, ref, bundle["bundle_path"])
+    ledger_text = text_at(repo, ref, "factory/ledger.csv")
+    if (
+        route_plan_text is None
+        or hashlib.sha256(route_plan_text.encode()).hexdigest()
+        != bundle["route_plan_sha256"]
+        or bundle_text is None
+        or hash_text(repo, bundle_text) != bundle["bundle_blob"]
+        or ledger_text is None
+        or hashlib.sha256(ledger_text.encode()).hexdigest()
+        != done["ledger"]["sha256"]
+    ):
+        raise ValidationError("normal protected-main blobs or digests do not match")
+    ticket_text = text_at(repo, ref, f"factory/tickets/{ticket}.md")
+    if ticket_text is None or one_field(ticket_text, "State").lower() != "done":
+        raise ValidationError("normal terminal ticket is not Done")
+    if one_field(ticket_text, "Operator-Approval").lower() != "linear":
+        raise ValidationError("normal terminal ticket lacks Linear approval")
+    return {"basis": "attested-done", "ticket": ticket, "text": ticket_text}
+
+
+def _validate_check_identities(required):
+    if not isinstance(required, list) or len(required) != len(REQUIRED_CHECK_NAMES):
+        raise ValidationError("legacy authorization required_checks is incomplete")
+    names = []
+    for item in required:
+        exact(item, CHECK_IDENTITY_KEYS, "required check identity")
+        if (
+            not isinstance(item["name"], str)
+            or not isinstance(item["app_id"], int)
+            or item["app_id"] <= 0
+            or not isinstance(item["app_slug"], str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", item["app_slug"])
+        ):
+            raise ValidationError("required check identity is invalid")
+        names.append(item["name"])
+    if tuple(sorted(names)) != REQUIRED_CHECK_NAMES or len(names) != len(set(names)):
+        raise ValidationError("legacy authorization check names are not exact")
+    return {item["name"]: item for item in required}
+
+
+def _validate_ledger(repo, basis, ticket, ledger):
+    exact(ledger, LEDGER_KEYS, "legacy ledger evidence")
+    digest(ledger["sha256"], "legacy ledger sha256")
+    if (
+        not isinstance(ledger["run_ids"], list)
+        or not ledger["run_ids"]
+        or len(ledger["run_ids"]) != len(set(ledger["run_ids"]))
+        or any(not isinstance(item, str) or not item for item in ledger["run_ids"])
+    ):
+        raise ValidationError("legacy ledger run IDs are missing or ambiguous")
+    text = text_at(repo, basis, "factory/ledger.csv")
+    if text is None or hashlib.sha256(text.encode()).hexdigest() != ledger["sha256"]:
+        raise ValidationError("legacy ledger digest does not match protected basis")
+    rows = list(csv.DictReader(io.StringIO(text)))
+    ticket_rows = [row for row in rows if row.get("ticket") == ticket]
+    actual_ids = [row.get("run_id") for row in ticket_rows]
+    if (
+        any(not value for value in actual_ids)
+        or len(actual_ids) != len(set(actual_ids))
+        or ledger["run_ids"] != actual_ids
+    ):
+        raise ValidationError("legacy ledger run IDs do not bind all ticket rows")
+    successful_roles = {
+        row.get("role") for row in ticket_rows if row.get("exit_status") == "0"
+    }
+    if not {"reviewer", "narrator"} <= successful_roles or not successful_roles <= ROLES:
+        raise ValidationError("legacy ledger lacks successful Reviewer/Narrator evidence")
+
+
+def _validate_legacy_documents(repo, ref, authorization, receipts):
+    exact(authorization, AUTH_KEYS, "legacy authorization")
+    if (
+        authorization["schema"] != AUTH_SCHEMA
+        or not REPOSITORY.fullmatch(authorization.get("repository", ""))
+        or authorization["candidate_contract"] != "1.3.0"
+        or authorization["source_kit_sha"] == authorization["target_kit_sha"]
+    ):
+        raise ValidationError("legacy authorization identity is invalid")
+    oid(authorization["source_kit_sha"], "source kit SHA")
+    oid(authorization["target_kit_sha"], "target kit SHA")
+    if repository_from_project(repo, ref) != authorization["repository"]:
+        raise ValidationError("legacy authorization repository does not match protected main")
+    cutoff = timestamp(authorization["cutoff"], "legacy cutoff")
+    if cutoff.microsecond:
+        raise ValidationError("legacy cutoff must use whole-second precision")
+    basis = exact(
+        authorization["protected_main_basis"], BASIS_KEYS,
+        "protected-main basis",
+    )
+    oid(basis["commit"], "protected-main basis commit")
+    oid(basis["tree"], "protected-main basis tree")
+    if run(repo, "rev-parse", f"{basis['commit']}^{{tree}}").stdout.strip() != basis["tree"]:
+        raise ValidationError("protected-main basis tree does not match its commit")
+    if run(repo, "merge-base", "--is-ancestor", basis["commit"], ref, check=False).returncode:
+        raise ValidationError("protected-main basis is not an ancestor of protected main")
+    basis_time = timestamp(
+        run(repo, "show", "-s", "--format=%cI", basis["commit"]).stdout.strip(),
+        "protected-main basis commit time",
+    )
+    if basis_time > cutoff:
+        raise ValidationError("protected-main basis is newer than the migration cutoff")
+    checks_by_name = _validate_check_identities(authorization["required_checks"])
+    approval = exact(
+        authorization["authorization"], AUTHORIZATION_KEYS,
+        "legacy authorization payload",
+    )
+    if (
+        approval["method"] != "manual-protected-main-merge"
+        or approval["auto_merge"] is not False
+        or approval["bypass"] is not False
+        or not isinstance(approval["statement"], str)
+        or approval["statement"].strip() != approval["statement"]
+        or len(approval["statement"]) < 20
+        or any(ord(character) < 32 for character in approval["statement"])
+    ):
+        raise ValidationError("legacy authorization must require a manual protected merge")
+    entries = authorization["tickets"]
+    if not isinstance(entries, list) or not entries:
+        raise ValidationError("legacy authorization ticket batch is empty")
+    auth_blob = blob_at(repo, ref, f"{MIGRATION_DIR}/authorization.json")
+    if not auth_blob:
+        raise ValidationError("legacy authorization is not on protected main")
+    expected_receipts = {}
+    for entry in entries:
+        exact(entry, AUTH_TICKET_KEYS, "legacy authorization ticket")
+        ticket = entry["ticket"]
+        if not isinstance(ticket, str) or not TICKET_ID.fullmatch(ticket):
+            raise ValidationError("legacy authorization ticket ID is invalid")
+        if ticket in expected_receipts:
+            raise ValidationError("legacy authorization contains a duplicate ticket")
+        expected_path = f"{MIGRATION_DIR}/{ticket}.json"
+        if entry["receipt"] != expected_path:
+            raise ValidationError("legacy authorization receipt path is invalid")
+        expected_receipts[ticket] = entry
+    actual_files = run(
+        repo, "ls-tree", "-r", "--name-only", ref, "--", MIGRATION_DIR,
+    ).stdout.splitlines()
+    expected_files = [
+        f"{MIGRATION_DIR}/authorization.json",
+        *(expected_receipts[ticket]["receipt"] for ticket in sorted(expected_receipts)),
+    ]
+    if sorted(actual_files) != sorted(expected_files):
+        raise ValidationError("legacy migration directory has missing or extra files")
+    if set(receipts) != set(expected_receipts):
+        raise ValidationError("legacy receipt batch is partial or contains extra tickets")
+    introduction = run(
+        repo, "log", "--format=%H", "--diff-filter=A", ref, "--",
+        f"{MIGRATION_DIR}/authorization.json",
+    ).stdout.splitlines()
+    if len(introduction) != 1:
+        raise ValidationError("legacy authorization must be introduced exactly once")
+    migration_commit = introduction[0]
+    parents = run(repo, "show", "-s", "--format=%P", migration_commit).stdout.split()
+    if parents != [basis["commit"]]:
+        raise ValidationError("legacy migration must be one atomic protected change from its basis")
+    migration_paths = set(run(
+        repo, "diff-tree", "--no-commit-id", "--name-only", "-r",
+        migration_commit,
+    ).stdout.splitlines())
+    expected_paths = {
+        "factory/KIT_PIN",
+        *expected_files,
+        *(f"factory/tickets/{ticket}.md" for ticket in expected_receipts),
+    }
+    if migration_paths != expected_paths:
+        raise ValidationError("legacy migration commit has missing or extra files")
+    if text_at(repo, migration_commit, "factory/KIT_PIN") != authorization["target_kit_sha"] + "\n":
+        raise ValidationError("legacy migration commit is not pinned to the target kit")
+    if timestamp(
+        run(repo, "show", "-s", "--format=%cI", migration_commit).stdout.strip(),
+        "legacy migration commit time",
+    ) < cutoff:
+        raise ValidationError("legacy migration commit predates its evidence cutoff")
+    for path in expected_paths - {"factory/KIT_PIN"}:
+        if blob_at(repo, migration_commit, path) != blob_at(repo, ref, path):
+            raise ValidationError("legacy migration evidence changed after protected merge")
+    for ticket, entry in expected_receipts.items():
+        receipt = exact(receipts[ticket], RECEIPT_KEYS, f"{ticket} legacy receipt")
+        classification = entry["classification"]
+        source_state = entry["source_state"]
+        if (
+            receipt["schema"] != RECEIPT_SCHEMA
+            or receipt["ticket"] != ticket
+            or receipt["repository"] != authorization["repository"]
+            or receipt["classification"] != classification
+            or receipt["source_state"] != source_state
+            or receipt["source_kit_sha"] != authorization["source_kit_sha"]
+            or receipt["target_kit_sha"] != authorization["target_kit_sha"]
+            or receipt["candidate_contract"] != authorization["candidate_contract"]
+            or receipt["authorization_blob"] != auth_blob
+            or receipt["cutoff"] != authorization["cutoff"]
+            or receipt["protected_main_basis"] != basis
+        ):
+            raise ValidationError(f"{ticket} legacy receipt does not match authorization")
+        if classification == "legacy-reviewed":
+            if source_state != "Review":
+                raise ValidationError("legacy-reviewed requires exact source State Review")
+        elif classification == "out-of-band-merged":
+            if source_state != "Planning" or ticket not in OUT_OF_BAND_TICKETS:
+                raise ValidationError("out-of-band migration is limited to T-019/T-020 Planning")
+        else:
+            raise ValidationError("legacy classification is invalid")
+        source_ticket = text_at(repo, basis["commit"], f"factory/tickets/{ticket}.md")
+        source_bundle = text_at(
+            repo, basis["commit"], f"factory/tickets/{ticket}-bundle.md",
+        )
+        if source_ticket is None or source_bundle is None:
+            raise ValidationError(f"{ticket} source evidence is absent from the basis")
+        if (
+            hash_text(repo, source_ticket) != receipt["source_ticket_blob"]
+            or hash_text(repo, source_bundle) != receipt["source_bundle_blob"]
+            or one_field(source_ticket, "State") != source_state
+            or one_field(source_ticket, "Kit-SHA") != authorization["source_kit_sha"]
+        ):
+            raise ValidationError(f"{ticket} source ticket or bundle evidence changed")
+        oid(receipt["source_ticket_blob"], "source ticket blob")
+        oid(receipt["source_bundle_blob"], "source bundle blob")
+        route_plan = exact(receipt["route_plan"], ROUTE_PLAN_KEYS, "legacy route plan")
+        if route_plan != {"present": False, "sha256": None} or text_at(
+            repo, basis["commit"], f"factory/route-plans/{ticket}.json",
+        ) is not None:
+            raise ValidationError("legacy ticket may not satisfy ordinary route-plan evidence")
+        pr = exact(receipt["pr"], PR_KEYS, "legacy PR evidence")
+        if (
+            not isinstance(pr["number"], int)
+            or pr["number"] <= 0
+            or not isinstance(pr["merged_by"], str)
+            or not pr["merged_by"]
+        ):
+            raise ValidationError("legacy PR identity is invalid")
+        oid(pr["head"], "legacy PR head")
+        oid(pr["merge_commit"], "legacy PR merge commit")
+        if run(
+            repo, "merge-base", "--is-ancestor", pr["merge_commit"], basis["commit"],
+            check=False,
+        ).returncode:
+            raise ValidationError("legacy PR merge is not in the protected basis")
+        if timestamp(pr["merged_at"], "legacy PR merged_at") > cutoff:
+            raise ValidationError("legacy PR merged after the cutoff")
+        if (
+            blob_at(repo, pr["head"], f"factory/tickets/{ticket}.md")
+            != receipt["source_ticket_blob"]
+            or blob_at(repo, pr["head"], f"factory/tickets/{ticket}-bundle.md")
+            != receipt["source_bundle_blob"]
+        ):
+            raise ValidationError("legacy PR head does not bind source ticket and bundle")
+        branch = exact(receipt["branch"], BRANCH_KEYS, "legacy branch observation")
+        if (
+            branch["name"] != f"ticket/{ticket}"
+            or branch["state"] not in {"deleted", "exact"}
+            or branch["observed_at"] != authorization["cutoff"]
+            or (
+                branch["state"] == "deleted" and branch["tip"] is not None
+            )
+            or (
+                branch["state"] == "exact" and branch["tip"] != pr["head"]
+            )
+        ):
+            raise ValidationError("legacy branch observation is invalid")
+        if branch["tip"] is not None:
+            oid(branch["tip"], "legacy branch tip")
+        observed_checks = receipt["checks"]
+        if not isinstance(observed_checks, list) or len(observed_checks) != len(checks_by_name):
+            raise ValidationError("legacy check evidence is incomplete")
+        seen = set()
+        for check in observed_checks:
+            exact(check, CHECK_KEYS, "legacy check")
+            name = check["name"]
+            if (
+                name in seen
+                or name not in checks_by_name
+                or check["app_id"] != checks_by_name[name]["app_id"]
+                or check["app_slug"] != checks_by_name[name]["app_slug"]
+                or check["status"] != "completed"
+                or check["conclusion"] != "success"
+                or check["skipped"] is not False
+            ):
+                raise ValidationError("legacy check is duplicate, skipped, unsuccessful, or from the wrong app")
+            seen.add(name)
+        if set(seen) != set(checks_by_name):
+            raise ValidationError("legacy check evidence is incomplete")
+        _validate_ledger(repo, basis["commit"], ticket, receipt["ledger"])
+        audit = exact(receipt["independent_audit"], AUDIT_KEYS, "independent audit")
+        required_audit = classification == "out-of-band-merged"
+        if audit["required"] is not required_audit:
+            raise ValidationError("independent audit requirement does not match classification")
+        digest(audit["report_sha256"], "independent audit report", nullable=not required_audit)
+        digest(
+            audit["combined_test_sha256"], "combined test evidence",
+            nullable=not required_audit,
+        )
+        if not required_audit and (
+            audit["report_sha256"] is not None
+            or audit["combined_test_sha256"] is not None
+        ):
+            raise ValidationError("legacy-reviewed receipt may not invent independent audit evidence")
+        terminal = text_at(repo, ref, f"factory/tickets/{ticket}.md")
+        if terminal is None:
+            raise ValidationError(f"{ticket} terminal ticket is absent")
+        if (
+            one_field(terminal, "State") != "Done"
+            or one_field(terminal, "Operator-Approval") != "Migration"
+            or one_field(terminal, "Migration-Receipt") != entry["receipt"]
+            or one_field(terminal, "Kit-SHA") != authorization["source_kit_sha"]
+        ):
+            raise ValidationError(f"{ticket} terminal ticket does not bind the legacy receipt")
+    return {
+        ticket: {
+            "basis": "validated-legacy-closeout",
+            "ticket": ticket,
+            "text": text_at(repo, ref, f"factory/tickets/{ticket}.md"),
+            "target_kit_sha": authorization["target_kit_sha"],
+        }
+        for ticket in expected_receipts
+    }
+
+
+def legacy_batch(repo, ref="refs/remotes/origin/main"):
+    repo = Path(repo)
+    authorization = json_at(
+        repo, ref, f"{MIGRATION_DIR}/authorization.json", "legacy authorization",
+    )
+    if authorization is None:
+        return {}
+    if not isinstance(authorization, dict):
+        raise ValidationError("legacy authorization must be an object")
+    entries = authorization.get("tickets")
+    if not isinstance(entries, list):
+        raise ValidationError("legacy authorization tickets must be a list")
+    receipts = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("ticket"), str):
+            raise ValidationError("legacy authorization ticket is invalid")
+        ticket = entry["ticket"]
+        value = json_at(
+            repo, ref, f"{MIGRATION_DIR}/{ticket}.json", f"{ticket} legacy receipt",
+        )
+        if value is not None:
+            receipts[ticket] = value
+    return _validate_legacy_documents(repo, ref, authorization, receipts)
+
+
+def validate_generated_legacy_batch(repo, authorization, receipts, ref):
+    """Validate generated documents against an index/tree containing them."""
+    return _validate_legacy_documents(Path(repo), ref, authorization, receipts)
+
+
+def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
+    if not isinstance(ticket, str) or not TICKET_ID.fullmatch(ticket):
+        raise ValidationError("invalid ticket identifier")
+    normal = _normal_terminal(Path(repo), ticket, ref)
+    legacy = legacy_batch(Path(repo), ref)
+    if normal and ticket in legacy:
+        raise ValidationError("ticket has conflicting normal and legacy terminal evidence")
+    if normal:
+        return normal
+    if ticket in legacy:
+        return legacy[ticket]
+    raise ValidationError("protected main lacks valid terminal evidence")

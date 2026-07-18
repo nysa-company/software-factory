@@ -141,6 +141,22 @@ class EffectiveTicketTests(unittest.TestCase):
             subprocess.run(["git", "init", "--bare", "-q", remote], check=True)
             subprocess.run(["git", "-C", repo, "remote", "add", "origin", remote], check=True)
             ticket.parent.mkdir(parents=True, exist_ok=True)
+            (repo / "factory/PROJECT.env").write_text("GH_REPO=acme/widget\n")
+            route_plan = repo / "factory/route-plans/T-700.json"
+            route_plan.parent.mkdir(parents=True)
+            route_plan.write_text('{"schema":"test-route-plan"}\n')
+            ticket_bundle = repo / "factory/tickets/T-700-bundle.md"
+            ticket_bundle.write_text("# T-700 bundle\n")
+            ledger = repo / "factory/ledger.csv"
+            ledger.write_text("date,ticket,run_id\n2026-07-17,T-700,run-1\n")
+            route_blob = subprocess.run(
+                ["git", "-C", repo, "hash-object", route_plan],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            ticket_bundle_blob = subprocess.run(
+                ["git", "-C", repo, "hash-object", ticket_bundle],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
             ticket.write_text(
                 BASE_TICKET.replace("Backlog", "Done")
                 + "Operator-Approval: Linear\n"
@@ -151,26 +167,52 @@ class EffectiveTicketTests(unittest.TestCase):
                 "schema": "nysa.software-factory.ticket-bundle/v1",
                 "ticket": "T-700",
                 "repository": "acme/widget",
+                "branch": "ticket/T-700",
+                "branch_head": "e" * 40,
                 "pr_number": 7,
+                "pr_url": "https://example.invalid/pr/7",
                 "reviewed_sha": "c" * 40,
-                "bundle_blob": "d" * 40,
+                "bundle_path": "factory/tickets/T-700-bundle.md",
+                "bundle_blob": ticket_bundle_blob,
+                "reviewer_run_id": "reviewer-1",
+                "narrator_run_id": "narrator-1",
                 "kit_sha": "2" * 40,
+                "policy_hash": "5" * 64,
+                "route_plan_path": "factory/route-plans/T-700.json",
+                "route_plan_blob": route_blob,
+                "route_plan_sha256": __import__("hashlib").sha256(
+                    route_plan.read_bytes()
+                ).hexdigest(),
+                "attested_at": "2026-07-17T17:00:00Z",
             }))
             approval.write_text(json.dumps({
                 "schema": "nysa.software-factory.ticket-approval/v1",
                 "ticket": "T-700",
                 "repository": "acme/widget",
+                "branch": "ticket/T-700",
                 "pr_number": 7,
                 "reviewed_sha": "c" * 40,
-                "bundle_blob": "d" * 40,
+                "bundle_blob": ticket_bundle_blob,
                 "kit_sha": "2" * 40,
                 "auto_merge_method": "squash",
                 "parent_head": "1" * 40,
+                "bundle_attestation_blob": "",
+                "operator_version": "6" * 64,
+                "linear_updated_at": "2026-07-17T17:30:00Z",
+                "observed_at": "2026-07-17T17:30:00Z",
+                "attested_at": "2026-07-17T17:30:00Z",
             }))
             bundle_blob = subprocess.run(
                 ["git", "-C", repo, "hash-object", bundle],
                 check=True, capture_output=True, text=True,
             ).stdout.strip()
+            approval_blob = subprocess.run(
+                ["git", "-C", repo, "hash-object", approval],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            approval_value = json.loads(approval.read_text())
+            approval_value["bundle_attestation_blob"] = bundle_blob
+            approval.write_text(json.dumps(approval_value))
             approval_blob = subprocess.run(
                 ["git", "-C", repo, "hash-object", approval],
                 check=True, capture_output=True, text=True,
@@ -183,7 +225,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 "merge_commit": "a" * 40,
                 "approved_pr_head": "b" * 40,
                 "reviewed_sha": "c" * 40,
-                "bundle_blob": "d" * 40,
+                "bundle_blob": ticket_bundle_blob,
                 "bundle_attestation_blob": bundle_blob,
                 "approval_attestation_blob": approval_blob,
                 "approval_parent_head": "1" * 40,
@@ -196,10 +238,14 @@ class EffectiveTicketTests(unittest.TestCase):
                 "successful_checks": ["ci", "deploy-production"],
                 "ledger": {
                     "schema": "nysa.software-factory.ledger-projection/v1",
+                    "schema_version": 1,
                     "status": "ok",
                     "ticket": "T-700",
                     "row_count": 2,
-                    "sha256": "3" * 64,
+                    "ticket_cost_usd": 1.0,
+                    "sha256": __import__("hashlib").sha256(
+                        ledger.read_bytes()
+                    ).hexdigest(),
                 },
             }))
             subprocess.run(["git", "-C", repo, "add", "."], check=True)

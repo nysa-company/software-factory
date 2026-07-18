@@ -156,6 +156,19 @@ dispatcher then invokes the existing trusted lease `release`; PR creation or
 an auto-merge request alone never releases it. Linear sync projects that same
 protected-main Done state.
 
+The release also contains one non-launcher migration utility,
+`scripts/legacy-closeout.py`, for the bounded Contract 1.2 backlog present at
+the Contract 1.3 cutover. It has no Hermes command or permanent compatibility
+surface. From an exact protected-main basis it validates trusted Git/GitHub
+history, app-bound successful checks, settled accounting, classification,
+cutoff, and an exact request, then deterministically writes a distinct
+`factory/migrations/contract-1.3/` authorization/receipt batch, terminal ticket
+projections, and target pin. It never commits, pushes, merges, uses auto-merge,
+or mutates Linear. The batch is authoritative only after the operator manually
+merges the single protected product PR. The same internal validator is used by
+effective-ticket reading, `next-stage`, and activation; plain Done and partial
+or conflicting evidence are invalid.
+
 `project-ledger` refuses any active or ambiguous entry under
 `factory/.active-runs/` and any `factory/runs/*.pid` record. Reconcile those
 records under maintenance before close-out; projection never guesses that a

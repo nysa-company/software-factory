@@ -412,6 +412,8 @@
     "scripts/ticket-attest.py",
     "scripts/ticket-attest.sh",
     "scripts/lib/effective_ticket.py",
+    "scripts/lib/legacy_closeout.py",
+    "scripts/legacy-closeout.py",
     "scripts/lib/product-remote.sh",
     "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",

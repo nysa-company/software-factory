@@ -166,6 +166,23 @@ creation/reuse and protected auto-merge of the exact closeout PR. A retry
 revalidates the same remote commit. Only valid attested Done on protected main
 produces sequencer action `COMPLETE`, after which the dispatcher releases the
 lease; closeout PR creation is never terminal evidence.
+
+A one-time Contract 1.2 migration may instead use the separate
+`factory/migrations/contract-1.3/` legacy-closeout format. It does not create or
+satisfy ordinary bundle, approval, Done, or route-plan attestations. The local
+`scripts/legacy-closeout.py` generator reads immutable Git evidence and GitHub
+PR/check metadata, requires settled Reviewer/Narrator accounting, and performs
+no commit, push, merge, or Linear mutation. Its exact authorization and
+complete receipt batch remain inert until the operator manually merges the one
+protected product PR containing the receipts, terminal ticket projections,
+and target pin. Review sources use `legacy-reviewed`; only the explicitly
+bounded Planning anomalies T-019/T-020 may use `out-of-band-merged`, with
+independent audit and combined-test digests. Historical tickets explicitly
+record that route plans were absent. Activation and sequencing share the same
+strict protected-main validator: plain `State: Done`, partial batches, extra
+files, conflicting normal attestations, or a receipt targeting another kit
+fail closed.
+
 Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to
