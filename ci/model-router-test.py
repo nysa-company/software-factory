@@ -283,6 +283,100 @@ class ModelRouterTest(unittest.TestCase):
             ROUTER.canonical_json(self.profiles),
         )
 
+    def test_history_aware_fallback_excludes_failed_route_and_resolves_future_roles(self):
+        prior = self.resolve()
+        readiness = self.readiness()
+        result = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            self.profile_map["legacy-balanced-v1"],
+            readiness,
+            prior,
+            "builder",
+            "codex-gpt-5.6-terra",
+            ["builder", "reviewer"],
+            {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
+        )
+        self.assertEqual(result["schema"], "model-fallback-resolution/v2")
+        self.assertEqual(
+            result["selections"]["builder"]["route_id"],
+            "cursor-gpt-5.6-sol-high",
+        )
+        self.assertEqual(
+            result["selections"]["reviewer"]["route_id"], "claude-sonnet"
+        )
+        self.assertEqual(result["selections"]["planner"], prior["selections"]["planner"])
+        ROUTER.validate_fallback_plan(
+            result, self.catalog, self.routes, self.profile_map
+        )
+
+    def test_fallback_advances_only_unavailable_and_hard_stops_bad_evidence(self):
+        prior = self.resolve()
+        for state in ("INVALID", "UNKNOWN"):
+            with self.subTest(state=state):
+                readiness = self.readiness()
+                readiness["cursor-gpt-5.6-sol-high"].update(
+                    {"state": state, "reason": "bad-evidence"}
+                )
+                with self.assertRaisesRegex(ROUTER.RouterError, state):
+                    ROUTER.resolve_fallback_policy(
+                        self.catalog,
+                        self.routes,
+                        self.profile_map["legacy-balanced-v1"],
+                        readiness,
+                        prior,
+                        "planner",
+                        "codex-gpt-5.6-sol",
+                        ["planner"],
+                        {"P": ["openai"], "T": [], "B": []},
+                    )
+        readiness = self.readiness()
+        readiness["cursor-gpt-5.6-sol-high"]["state"] = "UNAVAILABLE"
+        with self.assertRaisesRegex(ROUTER.RouterError, "no complete fallback"):
+            ROUTER.resolve_fallback_policy(
+                self.catalog,
+                self.routes,
+                self.profile_map["legacy-balanced-v1"],
+                readiness,
+                prior,
+                "planner",
+                "codex-gpt-5.6-sol",
+                ["planner"],
+                {"P": ["openai"], "T": [], "B": []},
+            )
+
+    def test_boundary_history_requires_third_family_only_for_producer_switch(self):
+        prior = self.resolve()
+        with self.assertRaisesRegex(ROUTER.RouterError, "contributor-family"):
+            ROUTER.resolve_fallback_policy(
+                self.catalog,
+                self.routes,
+                self.profile_map["legacy-balanced-v1"],
+                self.readiness(),
+                prior,
+                "planner",
+                "codex-gpt-5.6-sol",
+                ["planner"],
+                {"P": ["openai", "anthropic"], "T": [], "B": []},
+            )
+
+        checker = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            self.profile_map["legacy-balanced-v1"],
+            self.readiness(),
+            prior,
+            "spec-linter",
+            "claude-fable",
+            ["spec-linter"],
+            {"P": ["openai"], "T": [], "B": []},
+        )
+        self.assertEqual(checker["contributor_families"]["P"], ["openai"])
+        self.assertEqual(
+            checker["selections"]["spec-linter"]["route_id"],
+            "cursor-claude-sonnet-5-thinking-high",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

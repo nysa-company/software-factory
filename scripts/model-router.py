@@ -45,6 +45,22 @@ SELECTION_KEYS = frozenset((
     "inference_provider_id", "provider_family", "account_route_id",
     "selection_id", "effort", "adapter_version", "reported_identity",
 ))
+CONTRIBUTOR_BOUNDARIES = ("P", "T", "B")
+BOUNDARY_PRODUCER = {
+    "planner": "P",
+    "test-author": "T",
+    "builder": "B",
+}
+BOUNDARY_CHECKER = {
+    "spec-linter": "P",
+    "builder": "T",
+    "reviewer": "B",
+}
+FALLBACK_PLAN_KEYS = frozenset((
+    "schema", "profile_id", "profile_version", "profile_hash",
+    "catalog_hash", "prior_policy_hash", "policy_hash", "failed_role",
+    "failed_route_id", "future_roles", "contributor_families", "selections",
+))
 
 
 class RouterError(ValueError):
@@ -376,6 +392,239 @@ def resolve_policy(catalog, routes, profile, readiness):
             "selections": selections,
         }
     raise RouterError("no portfolio has ready candidates for every role")
+
+
+def validate_contributor_families(value):
+    """Validate and normalize the boundary-specific P/T/B family history."""
+    _exact_keys(value, frozenset(CONTRIBUTOR_BOUNDARIES), "contributor_families")
+    result = {}
+    for boundary in CONTRIBUTOR_BOUNDARIES:
+        families = value[boundary]
+        if not isinstance(families, list):
+            raise RouterError("contributor_families.%s must be an array" % boundary)
+        seen = set()
+        normalized = []
+        for index, family in enumerate(families):
+            _safe_id(
+                family,
+                "contributor_families.%s[%d]" % (boundary, index),
+            )
+            if family in seen:
+                raise RouterError(
+                    "contributor_families.%s has a duplicate family" % boundary
+                )
+            seen.add(family)
+            normalized.append(family)
+        result[boundary] = normalized
+    return result
+
+
+def _fallback_role_policies(profile, role):
+    """Return profile-authorized candidates in deterministic profile order."""
+    seen = set()
+    result = []
+    for portfolio in profile["portfolios"]:
+        role_policy = portfolio["roles"][role]
+        for route_id in role_policy["candidates"]:
+            if route_id in seen:
+                continue
+            seen.add(route_id)
+            result.append((route_id, role_policy))
+    return result
+
+
+def _validate_fallback_assignment(selections, contributors):
+    effective = dict((key, list(value)) for key, value in contributors.items())
+    for role, boundary in BOUNDARY_PRODUCER.items():
+        family = selections[role]["provider_family"]
+        if family not in effective[boundary]:
+            effective[boundary].append(family)
+    for role, boundary in BOUNDARY_CHECKER.items():
+        family = selections[role]["provider_family"]
+        if family in effective[boundary]:
+            return None
+    return effective
+
+
+def validate_fallback_plan(plan, catalog, routes, profile_map):
+    _exact_keys(plan, FALLBACK_PLAN_KEYS, "fallback plan")
+    if plan["schema"] != "model-fallback-resolution/v2":
+        raise RouterError("unsupported fallback plan schema")
+    for key in ("catalog_hash", "profile_hash", "prior_policy_hash", "policy_hash"):
+        if not isinstance(plan[key], str) or not re.fullmatch(r"[0-9a-f]{64}", plan[key]):
+            raise RouterError("fallback plan.%s is not a SHA-256 hash" % key)
+    if plan["catalog_hash"] != content_hash(catalog):
+        raise RouterError("fallback plan catalog hash mismatch")
+    profile = _profile(profile_map, plan["profile_id"])
+    if plan["profile_version"] != profile["version"]:
+        raise RouterError("fallback plan profile version mismatch")
+    if plan["profile_hash"] != profile_hash(profile):
+        raise RouterError("fallback plan profile hash mismatch")
+    if plan["failed_role"] not in ROLES:
+        raise RouterError("fallback plan failed role is invalid")
+    if plan["failed_route_id"] not in routes:
+        raise RouterError("fallback plan failed route is invalid")
+    future_roles = plan["future_roles"]
+    if (
+        not isinstance(future_roles, list)
+        or plan["failed_role"] not in future_roles
+        or len(future_roles) != len(set(future_roles))
+        or any(role not in ROLES for role in future_roles)
+    ):
+        raise RouterError("fallback plan future roles are invalid")
+    contributors = validate_contributor_families(plan["contributor_families"])
+    _exact_keys(plan["selections"], frozenset(ROLES), "fallback plan selections")
+    authorized = {
+        role: dict(_fallback_role_policies(profile, role)) for role in ROLES
+    }
+    for role in ROLES:
+        selection = plan["selections"][role]
+        _exact_keys(selection, SELECTION_KEYS, "fallback plan selections.%s" % role)
+        route_id = selection["route_id"]
+        if route_id not in authorized[role]:
+            raise RouterError("fallback route is not profile-authorized for %s" % role)
+        expected = _selected_tuple(
+            role,
+            routes[route_id],
+            authorized[role][route_id],
+            {
+                "adapter_version": selection["adapter_version"],
+                "reported_identity": selection["reported_identity"],
+            },
+        )
+        if selection != expected:
+            raise RouterError("fallback plan route tuple mismatch for %s" % role)
+        if role in future_roles and route_id == plan["failed_route_id"]:
+            raise RouterError("fallback plan reuses the failed route")
+    if _validate_fallback_assignment(plan["selections"], contributors) != contributors:
+        raise RouterError("fallback contributor-family constraints are invalid")
+    without_hash = dict(plan)
+    without_hash.pop("policy_hash")
+    if plan["policy_hash"] != content_hash(without_hash):
+        raise RouterError("fallback plan policy hash mismatch")
+    return plan
+
+
+def resolve_fallback_policy(
+    catalog,
+    routes,
+    profile,
+    readiness,
+    prior_plan,
+    failed_role,
+    failed_route_id,
+    future_roles,
+    contributor_families,
+):
+    """Resolve all remaining roles while preserving immutable role history.
+
+    Only future roles are readiness-gated. The exact failed route is excluded
+    from every future role, and candidate traversal advances only through
+    UNAVAILABLE. INVALID and UNKNOWN are terminal evidence failures.
+    """
+    profile_map = {profile["profile_id"]: profile}
+    if prior_plan.get("schema") == "model-resolution-plan/v1":
+        validate_plan(prior_plan, catalog, routes, profile_map)
+    elif prior_plan.get("schema") == "model-fallback-resolution/v2":
+        validate_fallback_plan(prior_plan, catalog, routes, profile_map)
+    else:
+        raise RouterError("unsupported prior resolution schema")
+    if failed_role not in ROLES:
+        raise RouterError("unknown failed role: %s" % failed_role)
+    if failed_route_id not in routes:
+        raise RouterError("unknown failed route: %s" % failed_route_id)
+    if prior_plan["selections"][failed_role]["route_id"] != failed_route_id:
+        raise RouterError("failed route does not match the prior role selection")
+    if not isinstance(future_roles, list) or not future_roles:
+        raise RouterError("future_roles must be a non-empty role array")
+    if len(set(future_roles)) != len(future_roles):
+        raise RouterError("future_roles contains a duplicate role")
+    if any(role not in ROLES for role in future_roles):
+        raise RouterError("future_roles contains an unknown role")
+    if failed_role not in future_roles:
+        raise RouterError("future_roles must include the failed role")
+
+    normalized_readiness = validate_readiness(readiness, routes)
+    contributors = validate_contributor_families(contributor_families)
+    failed_boundary = BOUNDARY_PRODUCER.get(failed_role)
+    failed_family = routes[failed_route_id]["provider_family"]
+    if failed_boundary is not None and failed_family not in contributors[failed_boundary]:
+        contributors[failed_boundary].append(failed_family)
+
+    future = frozenset(future_roles)
+    selections = dict(
+        (role, dict(prior_plan["selections"][role])) for role in ROLES
+    )
+    choices = {}
+    for role in ROLES:
+        if role not in future:
+            continue
+        policies = _fallback_role_policies(profile, role)
+        prior_route = prior_plan["selections"][role]["route_id"]
+        if prior_route != failed_route_id:
+            policies.sort(key=lambda value: value[0] != prior_route)
+        choices[role] = [
+            (route_id, role_policy)
+            for route_id, role_policy in policies
+            if route_id != failed_route_id
+        ]
+        if not choices[role]:
+            raise RouterError("no ready fallback candidate for %s" % role)
+
+    ordered_future = [role for role in ROLES if role in future]
+
+    def assign(index):
+        if index == len(ordered_future):
+            return _validate_fallback_assignment(selections, contributors)
+        role = ordered_future[index]
+        for route_id, role_policy in choices[role]:
+            state = normalized_readiness.get(route_id, {
+                "state": "UNKNOWN",
+                "reason": "readiness_missing",
+                "adapter_version": "",
+                "reported_identity": "",
+            })
+            if state["state"] == "UNAVAILABLE":
+                continue
+            if state["state"] in ("INVALID", "UNKNOWN"):
+                raise RouterError(
+                    "%s route %s is %s: %s"
+                    % (role, route_id, state["state"], state["reason"])
+                )
+            if state["state"] != "READY":
+                raise RouterError("%s route %s has invalid state" % (role, route_id))
+            selection = _selected_tuple(
+                role, routes[route_id], role_policy, state
+            )
+            selections[role] = selection
+            effective = assign(index + 1)
+            if effective is not None:
+                return effective
+        return None
+
+    effective_contributors = assign(0)
+    if effective_contributors is None:
+        raise RouterError(
+            "no complete fallback assignment satisfies contributor-family boundaries"
+        )
+
+    catalog_digest = content_hash(catalog)
+    profile_digest = profile_hash(profile)
+    fallback_policy = {
+        "catalog_hash": catalog_digest,
+        "contributor_families": effective_contributors,
+        "failed_role": failed_role,
+        "failed_route_id": failed_route_id,
+        "future_roles": list(future_roles),
+        "prior_policy_hash": prior_plan["policy_hash"],
+        "profile_hash": profile_digest,
+        "profile_id": profile["profile_id"],
+        "profile_version": profile["version"],
+        "schema": "model-fallback-resolution/v2",
+        "selections": selections,
+    }
+    fallback_policy["policy_hash"] = content_hash(fallback_policy)
+    return fallback_policy
 
 
 def validate_plan(plan, catalog, routes, profile_map):
