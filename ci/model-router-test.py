@@ -49,6 +49,7 @@ class ModelRouterTest(unittest.TestCase):
                 "claude-fable",
                 "claude-sonnet",
                 "cursor-gpt-5.6-sol-high",
+                "cursor-claude-fable-5-thinking-medium",
                 "cursor-claude-sonnet-5-thinking-high",
                 "claude-kimi-moonshotai-kimi-k2.6",
             },
@@ -62,6 +63,13 @@ class ModelRouterTest(unittest.TestCase):
         self.assertEqual(kimi["selection_id"], "moonshotai/kimi-k2.6")
         self.assertFalse(kimi["enabled"])
         self.assertEqual(kimi["lifecycle"], "experimental")
+        cursor_fable = self.routes["cursor-claude-fable-5-thinking-medium"]
+        self.assertEqual(cursor_fable["selection_id"], "claude-fable-5-thinking-medium")
+        self.assertEqual(
+            cursor_fable["expected_reported_identity"],
+            "Fable 5 1M Medium Thinking (NO ZDR)",
+        )
+        self.assertTrue(cursor_fable["enabled"])
         serialized = ROUTER.canonical_json(self.catalog)
         self.assertEqual(ROUTER.DEFAULT_CATALOG.read_text().strip(), serialized)
 
@@ -82,6 +90,41 @@ class ModelRouterTest(unittest.TestCase):
         )
         self.assertEqual(selected["planner"]["effort"], "high")
         self.assertTrue(all(selected[role]["effort"] == "medium" for role in ROUTER.ROLES[1:]))
+
+    def test_balanced_v2_has_requested_default_routes_and_efforts(self):
+        plan = self.resolve("balanced-v2")
+        selected = plan["selections"]
+        self.assertEqual(
+            {role: selected[role]["route_id"] for role in ROUTER.ROLES},
+            {
+                "planner": "codex-gpt-5.6-sol",
+                "builder": "codex-gpt-5.6-terra",
+                "narrator": "codex-gpt-5.6-terra",
+                "spec-linter": "claude-fable",
+                "test-author": "claude-fable",
+                "reviewer": "claude-sonnet",
+            },
+        )
+        self.assertEqual(
+            {role: selected[role]["effort"] for role in ROUTER.ROLES},
+            {
+                "planner": "high",
+                "builder": "high",
+                "narrator": "high",
+                "spec-linter": "medium",
+                "test-author": "medium",
+                "reviewer": "high",
+            },
+        )
+        readiness = self.readiness()
+        readiness["claude-fable"]["state"] = "UNAVAILABLE"
+        fallback = self.resolve("balanced-v2", readiness)
+        for role in ("spec-linter", "test-author"):
+            self.assertEqual(
+                fallback["selections"][role]["route_id"],
+                "cursor-claude-fable-5-thinking-medium",
+            )
+            self.assertEqual(fallback["selections"][role]["effort"], "medium")
 
     def test_hashes_and_resolution_are_deterministic(self):
         profile = self.profile_map["legacy-balanced-v1"]
@@ -309,6 +352,67 @@ class ModelRouterTest(unittest.TestCase):
         ROUTER.validate_fallback_plan(
             result, self.catalog, self.routes, self.profile_map
         )
+
+    def test_historical_catalog_is_accepted_only_for_compatible_migration(self):
+        historical_catalog = copy.deepcopy(self.catalog)
+        historical_catalog["routes"] = [
+            route for route in historical_catalog["routes"]
+            if route["route_id"] != "cursor-claude-fable-5-thinking-medium"
+        ]
+        historical_routes = ROUTER.validate_catalog(historical_catalog)
+        readiness = {
+            route_id: {
+                "adapter_version": "test-v1",
+                "reason": "test",
+                "reported_identity": route["expected_reported_identity"],
+                "state": "READY",
+            }
+            for route_id, route in historical_routes.items()
+            if route["enabled"]
+        }
+        prior = ROUTER.resolve_policy(
+            historical_catalog,
+            historical_routes,
+            self.profile_map["legacy-balanced-v1"],
+            readiness,
+        )
+        with self.assertRaisesRegex(ROUTER.RouterError, "catalog hash mismatch"):
+            ROUTER.validate_plan(
+                prior, self.catalog, self.routes, self.profile_map
+            )
+        ROUTER.validate_plan(
+            prior,
+            self.catalog,
+            self.routes,
+            self.profile_map,
+            allow_historical_catalog=True,
+        )
+        current_readiness = self.readiness()
+        result = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            self.profile_map["legacy-balanced-v1"],
+            current_readiness,
+            prior,
+            "builder",
+            "codex-gpt-5.6-terra",
+            ["builder", "reviewer"],
+            {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
+        )
+        self.assertEqual(
+            result["selections"]["builder"]["route_id"],
+            "cursor-gpt-5.6-sol-high",
+        )
+        tampered = copy.deepcopy(prior)
+        tampered["selections"]["builder"]["selection_id"] = "gpt-5.6-sol"
+        with self.assertRaisesRegex(ROUTER.RouterError, "tuple mismatch"):
+            ROUTER.validate_plan(
+                tampered,
+                self.catalog,
+                self.routes,
+                self.profile_map,
+                allow_historical_catalog=True,
+            )
 
     def test_fallback_advances_only_unavailable_and_hard_stops_bad_evidence(self):
         prior = self.resolve()

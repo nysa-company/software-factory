@@ -100,7 +100,7 @@ Use only the selected release through the sealed launcher:
 ```
 
 `models plan --json` previews the active profile, or default
-`legacy-balanced-v1` when none is active. Activation accepts only the exact
+`balanced-v2` when none is active. Activation accepts only the exact
 profile hash shown by preview. `openai-priority-v1` tries OpenAI production
 first, then Anthropic production; `claude-priority-v1` reverses those
 portfolios. `cursor-priority-v1` tries exact Cursor OpenAI/Anthropic routes
