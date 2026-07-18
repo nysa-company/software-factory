@@ -25,6 +25,7 @@
 #
 # Usage: next-stage.sh --ticket T-NNN   (FACTORY_ROOT anchors the factory dir)
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 TICKET="" LEASE_ID="" WORKDIR=""
 while [[ $# -gt 0 ]]; do
