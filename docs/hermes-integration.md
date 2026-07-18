@@ -68,7 +68,7 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.3.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.4.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
@@ -92,6 +92,8 @@ Model policy is task-free and sealed:
 ~/.factory/bin/factory-launch <project> models disable --scope-type route --scope-id codex-gpt-5.6-sol --reason credits_exhausted --ttl-seconds 3600 --operator-id <operator-id> --json
 ~/.factory/bin/factory-launch <project> models enable --scope-type route --scope-id codex-gpt-5.6-sol --json
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ```
 
 The operator activates only the exact profile hash returned by preview.
@@ -105,7 +107,13 @@ valid. Temporary overrides accept only reason `credits_exhausted`, a TTL from
 `model`, or `route`. Subscription quota telemetry is not complete enough to
 drive automatic activation.
 
-Contracts `1.1.0` through `1.3.0` keep one-ticket behavior by default. A product may set
+Contract 1.4 adds explicit v1-plan migration and operator-approved mid-ticket
+fallback. The exact failed route is excluded, prior contributor-family history
+is enforced, and a one-use Linear comment binds the validated partial-work
+snapshot and append-only journal revision. See
+[model-routing.md](model-routing.md) for the role priorities and complete flow.
+
+Contracts `1.1.0` through `1.4.0` keep one-ticket behavior by default. A product may set
 `MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
 `release`, and supplies the matching `--lease` to preflight, next-stage, and
 run. Maintenance blocks claims and renewals but matching owners may still

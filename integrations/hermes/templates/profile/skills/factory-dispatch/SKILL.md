@@ -7,14 +7,14 @@ description: Dispatch a registered product through the stable factory launcher.
 # Factory dispatch
 
 This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
-through `1.3.0`.
+through `1.4.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
 
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
-3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, or `1.3.0` and a supported Hermes version.
+3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, or `1.4.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
