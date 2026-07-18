@@ -82,6 +82,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Model portfolio control
 
 The operator owns profile activation and temporary credit-exhaustion overrides.
+The complete primary/secondary table and enforced fallback rules are in
+[model-routing.md](../model-routing.md).
 Use only the selected release through the sealed launcher:
 
 ```bash
