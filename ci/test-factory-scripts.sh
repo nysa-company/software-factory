@@ -450,7 +450,7 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_RUN_STATUS=0
 env \
@@ -461,7 +461,7 @@ env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -470,7 +470,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -481,7 +481,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.3.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.4.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
@@ -497,7 +497,7 @@ FORGED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$TMP" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)" ||
   FORGED_STAGE_STATUS=$?
 if [[ "$FORGED_STAGE_STATUS" -eq 1 &&
@@ -685,15 +685,21 @@ fi
 OVERRIDE="$TMP/override/ledger.csv"
 mkdir -p "$(dirname "$OVERRIDE")"
 write_ticket "$WT/conformance" T-201
-if FACTORY_ROOT="$WT/conformance" FACTORY_LEDGER="$OVERRIDE" \
+OVERRIDE_STATUS=0
+FACTORY_ROOT="$WT/conformance" FACTORY_LEDGER="$OVERRIDE" \
      FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
      FACTORY_ADAPTER_OVERRIDE=mock \
-     "$RUN_AGENT" --role planner --ticket T-201 -- "override" >/dev/null &&
-   [[ "$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$OVERRIDE")" == "1" ]] &&
-   [[ "$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$MAIN/conformance/factory/runtime-ledger.csv")" == "0" ]]; then
+     "$RUN_AGENT" --role planner --ticket T-201 -- "override" >/dev/null ||
+  OVERRIDE_STATUS=$?
+OVERRIDE_ROWS="$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$OVERRIDE")"
+CANONICAL_ROWS="$(awk -F, '$3=="T-201" {n++} END {print n+0}' \
+  "$MAIN/conformance/factory/runtime-ledger.csv")"
+if [[ "$OVERRIDE_STATUS" -eq 0 && "$OVERRIDE_ROWS" == "1" &&
+      "$CANONICAL_ROWS" == "0" ]]; then
   pass "FACTORY_LEDGER override wins"
 else
-  fail "FACTORY_LEDGER override wins"
+  fail "FACTORY_LEDGER override wins" \
+    "status=$OVERRIDE_STATUS override_rows=$OVERRIDE_ROWS canonical_rows=$CANONICAL_ROWS"
 fi
 
 # Legacy or partial headers migrate to the complete append-only schema.
@@ -916,7 +922,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.3.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.4.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
