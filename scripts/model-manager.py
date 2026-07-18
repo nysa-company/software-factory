@@ -21,7 +21,7 @@ SPEC = importlib.util.spec_from_file_location("model_router", ROUTER_PATH)
 ROUTER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ROUTER)
 
-DEFAULT_PROFILE = "legacy-balanced-v1"
+DEFAULT_PROFILE = "balanced-v2"
 MAX_FILE_SIZE = 1024 * 1024
 MAX_TTL_SECONDS = 7 * 24 * 60 * 60
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -324,7 +324,9 @@ def _parse_json_argument(value, location):
         raise ManagerError("cannot parse %s JSON: %s" % (location, exc))
 
 
-def _validate_pin(value, catalog, routes, profile_map):
+def _validate_pin(
+    value, catalog, routes, profile_map, allow_historical_catalog=False
+):
     _exact_keys(value, PIN_KEYS, "ticket plan")
     if value["schema"] != "ticket-model-route-plan/v1":
         raise ManagerError("unsupported ticket plan schema")
@@ -334,7 +336,13 @@ def _validate_pin(value, catalog, routes, profile_map):
         raise ManagerError("ticket plan has invalid kit SHA")
     _timestamp(value["created_at"], "ticket plan created_at")
     try:
-        ROUTER.validate_plan(value["resolution"], catalog, routes, profile_map)
+        ROUTER.validate_plan(
+            value["resolution"],
+            catalog,
+            routes,
+            profile_map,
+            allow_historical_catalog=allow_historical_catalog,
+        )
     except ROUTER.RouterError as exc:
         raise ManagerError("invalid embedded resolution: %s" % exc)
     return value
@@ -365,7 +373,9 @@ def migrate_v1_plan(plan_blob, pin_commit, new_kit_sha, migrated_at,
         )
     except (UnicodeError, json.JSONDecodeError, ROUTER.RouterError) as exc:
         raise ManagerError("cannot parse legacy plan: %s" % exc)
-    _validate_pin(value, catalog, routes, profile_map)
+    _validate_pin(
+        value, catalog, routes, profile_map, allow_historical_catalog=True
+    )
     if not isinstance(pin_commit, str) or not KIT_SHA.fullmatch(pin_commit):
         raise ManagerError("pin commit must be 40 lowercase hex characters")
     if not isinstance(new_kit_sha, str) or not KIT_SHA.fullmatch(new_kit_sha):
@@ -450,7 +460,13 @@ def validate_journal(value, catalog, routes, profile_map):
             except (ValueError, UnicodeError, json.JSONDecodeError,
                     ROUTER.RouterError) as exc:
                 raise ManagerError("invalid migration legacy plan: %s" % exc)
-            _validate_pin(legacy, catalog, routes, profile_map)
+            _validate_pin(
+                legacy,
+                catalog,
+                routes,
+                profile_map,
+                allow_historical_catalog=True,
+            )
             if hashlib.sha256(plan_blob).hexdigest() != body["legacy_plan_sha256"]:
                 raise ManagerError("migration legacy plan digest mismatch")
             if legacy["ticket"] != value["ticket"]:

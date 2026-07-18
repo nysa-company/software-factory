@@ -6,16 +6,16 @@ role, what “fallback” means, and when the factory must stop.
 ## Default model order
 
 If the operator has not activated another profile, the factory uses
-`legacy-balanced-v1`. Its primary and secondary routes are:
+`balanced-v2`. Its primary and secondary routes are:
 
 | Role | Lane | Primary route | Secondary route | Effort |
 |---|---|---|---|---|
 | Planner | Production | Codex CLI — GPT-5.6 Sol | Cursor CLI — GPT-5.6 Sol High | High |
-| Builder | Production | Codex CLI — GPT-5.6 Terra | Cursor CLI — GPT-5.6 Sol High | Medium |
-| Narrator | Production | Codex CLI — GPT-5.6 Terra | Cursor CLI — GPT-5.6 Sol High | Medium |
-| Spec-linter | Checking | Claude CLI — Fable 5 | Cursor CLI — Claude Sonnet 5 Thinking High | Medium |
-| Test-author | Checking | Claude CLI — Fable 5 | Cursor CLI — Claude Sonnet 5 Thinking High | Medium |
-| Reviewer | Checking | Claude CLI — Sonnet 5 | Cursor CLI — Claude Sonnet 5 Thinking High | Medium |
+| Builder | Production | Codex CLI — GPT-5.6 Terra | Cursor CLI — GPT-5.6 Sol High | High |
+| Narrator | Production | Codex CLI — GPT-5.6 Terra | Cursor CLI — GPT-5.6 Sol High | High |
+| Spec-linter | Checking | Claude CLI — Fable 5 | Cursor CLI — Claude Fable 5 Thinking Medium | Medium |
+| Test-author | Checking | Claude CLI — Fable 5 | Cursor CLI — Claude Fable 5 Thinking Medium | Medium |
+| Reviewer | Checking | Claude CLI — Sonnet 5 | Cursor CLI — Claude Sonnet 5 Thinking High | High |
 
 “Secondary” is a same-family transport/account alternative, not an independent
 review family. Cursor GPT remains in the OpenAI family; Cursor Claude remains in
@@ -104,6 +104,9 @@ The operator may activate a different profile before pinning:
   then the reverse.
 - `cursor-priority-v1`: gives the exact Cursor routes priority over native
   routes in both portfolio orders.
+- `legacy-balanced-v1`: preserves the previous medium-effort
+  Builder/Narrator/Reviewer policy and Sonnet Cursor fallback for existing
+  activation records and pinned-plan migration.
 
 These profiles change candidate order, not the separation, approval, evidence,
 or one-process-per-attempt rules. The committed ticket route plan or journal,

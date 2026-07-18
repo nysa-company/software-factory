@@ -524,7 +524,13 @@ def resolve_fallback_policy(
     """
     profile_map = {profile["profile_id"]: profile}
     if prior_plan.get("schema") == "model-resolution-plan/v1":
-        validate_plan(prior_plan, catalog, routes, profile_map)
+        validate_plan(
+            prior_plan,
+            catalog,
+            routes,
+            profile_map,
+            allow_historical_catalog=True,
+        )
     elif prior_plan.get("schema") == "model-fallback-resolution/v2":
         validate_fallback_plan(prior_plan, catalog, routes, profile_map)
     else:
@@ -627,7 +633,7 @@ def resolve_fallback_policy(
     return fallback_policy
 
 
-def validate_plan(plan, catalog, routes, profile_map):
+def validate_plan(plan, catalog, routes, profile_map, allow_historical_catalog=False):
     _exact_keys(plan, PLAN_KEYS, "plan")
     if plan["schema"] != "model-resolution-plan/v1":
         raise RouterError("unsupported plan schema")
@@ -638,7 +644,10 @@ def validate_plan(plan, catalog, routes, profile_map):
         value = plan[key]
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise RouterError("plan.%s is not a SHA-256 hash" % key)
-    if plan["catalog_hash"] != content_hash(catalog):
+    if (
+        not allow_historical_catalog
+        and plan["catalog_hash"] != content_hash(catalog)
+    ):
         raise RouterError("plan catalog hash mismatch")
     profile = _profile(profile_map, plan["profile_id"])
     if plan["profile_version"] != profile["version"]:

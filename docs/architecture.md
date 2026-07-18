@@ -73,7 +73,7 @@ ticket boundary, the first portfolio that resolves all six roles is selected.
 `INVALID` or `UNKNOWN` hard-stops; only `UNAVAILABLE` advances to another
 candidate or portfolio. Every portfolio declares distinct production and
 checking families. The operator activates a profile by approving its exact
-preview hash. Without an activation record, `legacy-balanced-v1` is the
+preview hash. Without an activation record, `balanced-v2` is the
 default; its OpenAI-production/Anthropic-checking split is profile policy, not
 a fixed architectural requirement. Contract 1.4 can append an
 operator-approved mid-ticket route revision after an eligible failed attempt;
@@ -272,7 +272,8 @@ implemented; referenced and rollback-eligible releases are retained.
 
 Planner, Builder, and Narrator use the selected portfolio's production family.
 Spec-linter, Test-author, and Reviewer use its distinct checking family.
-`legacy-balanced-v1` retains the historical OpenAI/Anthropic choices;
+`balanced-v2` is the no-record default; `legacy-balanced-v1` remains available
+for compatibility with prior activation records and migrations.
 `openai-priority-v1`, `claude-priority-v1`, and `cursor-priority-v1` provide
 explicit alternative ordering. Narrator converts verified results into the
 evidence bundle the operator approves. The exact lifecycle and failure routes

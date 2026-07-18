@@ -290,7 +290,7 @@ class ModelManagerTest(unittest.TestCase):
 
     def test_probe_context_applies_scopes_and_uses_active_or_default_profile(self):
         initial = self.output("probe-context")
-        self.assertEqual(initial["profile_id"], "legacy-balanced-v1")
+        self.assertEqual(initial["profile_id"], "balanced-v2")
         self.assertEqual(initial["disabled_route_ids"], [])
 
         self.activate("claude-priority-v1")
@@ -386,6 +386,58 @@ class ModelManagerTest(unittest.TestCase):
         self.assertEqual(
             body["historical_selections"], legacy["resolution"]["selections"]
         )
+
+    def test_migration_accepts_only_tuple_compatible_historical_catalog(self):
+        historical_catalog = copy.deepcopy(self.catalog)
+        historical_catalog["routes"] = [
+            route for route in historical_catalog["routes"]
+            if route["route_id"] != "cursor-claude-fable-5-thinking-medium"
+        ]
+        historical_routes = ROUTER.validate_catalog(historical_catalog)
+        historical_readiness = {
+            route_id: dict(value)
+            for route_id, value in self.readiness.items()
+            if route_id in historical_routes
+        }
+        resolution = ROUTER.resolve_policy(
+            historical_catalog,
+            historical_routes,
+            self.profiles["legacy-balanced-v1"],
+            historical_readiness,
+        )
+        legacy = {
+            "created_at": "2026-07-18T11:00:00Z",
+            "kit_sha": "a" * 40,
+            "resolution": resolution,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-123",
+        }
+        raw = (ROUTER.canonical_json(legacy) + "\n").encode()
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            raw,
+            "b" * 40,
+            "c" * 40,
+            "2026-07-18T12:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        MANAGER_MODULE.validate_journal(
+            journal, self.catalog, self.routes, self.profiles
+        )
+        tampered = copy.deepcopy(legacy)
+        tampered["resolution"]["selections"]["planner"]["selection_id"] = "auto"
+        tampered_raw = (ROUTER.canonical_json(tampered) + "\n").encode()
+        with self.assertRaisesRegex(MANAGER_MODULE.ManagerError, "tuple mismatch"):
+            MANAGER_MODULE.migrate_v1_plan(
+                tampered_raw,
+                "b" * 40,
+                "c" * 40,
+                "2026-07-18T12:00:00Z",
+                self.catalog,
+                self.routes,
+                self.profiles,
+            )
 
     def test_append_only_fallback_revision_is_parent_hashed_and_selectable(self):
         legacy_path = self.base / "legacy-plan.json"

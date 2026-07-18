@@ -17,6 +17,10 @@ helper output are not compatibility promises.
   downstream independent check.
 - Extends attestations to bind the complete revision and failed-attempt chain
   while retaining contract-1.3 receipt validation.
+- Makes `balanced-v2` the no-record model profile with high-effort production
+  and Reviewer roles plus Cursor Fable Thinking Medium secondaries for
+  Spec-linter and Test-author. Historical catalog hashes remain migration-only
+  and require exact current route-tuple compatibility.
 
 ## 1.3.0 — 2026-07-17
 

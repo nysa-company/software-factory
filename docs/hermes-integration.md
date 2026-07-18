@@ -97,7 +97,8 @@ Model policy is task-free and sealed:
 ```
 
 The operator activates only the exact profile hash returned by preview.
-`legacy-balanced-v1` is used when no active record exists.
+`balanced-v2` is used when no active record exists; `legacy-balanced-v1`
+remains available for compatibility.
 `openai-priority-v1` orders OpenAI-production then Anthropic-production
 portfolios; `claude-priority-v1` reverses them. `cursor-priority-v1` has both
 orders with exact Cursor routes first. Each portfolio has ordered per-role
