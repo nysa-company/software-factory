@@ -19,6 +19,8 @@ MIGRATION_DIR = "factory/migrations/contract-1.3"
 AUTH_SCHEMA = "nysa.software-factory.legacy-closeout-authorization/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.legacy-closeout/v1"
 REQUIRED_CHECK_NAMES = ("app-tests", "ci", "policy", "test-immutability")
+AGGREGATE_CHECK_NAMES = ("ci", "test-immutability")
+AGGREGATE_CHECK_TICKETS = frozenset(("T-013", "T-014", "T-015", "T-016"))
 OUT_OF_BAND_TICKETS = frozenset(("T-019", "T-020"))
 ROLES = frozenset(("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator"))
 OID = re.compile(r"[0-9a-f]{40}")
@@ -299,6 +301,16 @@ def _validate_check_identities(required):
     return {item["name"]: item for item in required}
 
 
+def required_check_names(classification, ticket):
+    if classification == "legacy-reviewed-aggregate":
+        if ticket not in AGGREGATE_CHECK_TICKETS:
+            raise ValidationError(
+                "aggregate-check migration is limited to T-013 through T-016"
+            )
+        return AGGREGATE_CHECK_NAMES
+    return REQUIRED_CHECK_NAMES
+
+
 def _validate_ledger(repo, basis, ticket, ledger):
     exact(ledger, LEDGER_KEYS, "legacy ledger evidence")
     digest(ledger["sha256"], "legacy ledger sha256")
@@ -456,6 +468,12 @@ def _validate_legacy_documents(repo, ref, authorization, receipts):
         if classification == "legacy-reviewed":
             if source_state != "Review":
                 raise ValidationError("legacy-reviewed requires exact source State Review")
+        elif classification == "legacy-reviewed-aggregate":
+            if source_state != "Review":
+                raise ValidationError(
+                    "legacy-reviewed-aggregate requires exact source State Review"
+                )
+            required_check_names(classification, ticket)
         elif classification == "out-of-band-merged":
             if source_state != "Planning" or ticket not in OUT_OF_BAND_TICKETS:
                 raise ValidationError("out-of-band migration is limited to T-019/T-020 Planning")
@@ -520,8 +538,12 @@ def _validate_legacy_documents(repo, ref, authorization, receipts):
             raise ValidationError("legacy branch observation is invalid")
         if branch["tip"] is not None:
             oid(branch["tip"], "legacy branch tip")
+        ticket_checks = {
+            name: checks_by_name[name]
+            for name in required_check_names(classification, ticket)
+        }
         observed_checks = receipt["checks"]
-        if not isinstance(observed_checks, list) or len(observed_checks) != len(checks_by_name):
+        if not isinstance(observed_checks, list) or len(observed_checks) != len(ticket_checks):
             raise ValidationError("legacy check evidence is incomplete")
         seen = set()
         for check in observed_checks:
@@ -529,20 +551,22 @@ def _validate_legacy_documents(repo, ref, authorization, receipts):
             name = check["name"]
             if (
                 name in seen
-                or name not in checks_by_name
-                or check["app_id"] != checks_by_name[name]["app_id"]
-                or check["app_slug"] != checks_by_name[name]["app_slug"]
+                or name not in ticket_checks
+                or check["app_id"] != ticket_checks[name]["app_id"]
+                or check["app_slug"] != ticket_checks[name]["app_slug"]
                 or check["status"] != "completed"
                 or check["conclusion"] != "success"
                 or check["skipped"] is not False
             ):
                 raise ValidationError("legacy check is duplicate, skipped, unsuccessful, or from the wrong app")
             seen.add(name)
-        if set(seen) != set(checks_by_name):
+        if set(seen) != set(ticket_checks):
             raise ValidationError("legacy check evidence is incomplete")
         _validate_ledger(repo, basis["commit"], ticket, receipt["ledger"])
         audit = exact(receipt["independent_audit"], AUDIT_KEYS, "independent audit")
-        required_audit = classification == "out-of-band-merged"
+        required_audit = classification in {
+            "legacy-reviewed-aggregate", "out-of-band-merged",
+        }
         if audit["required"] is not required_audit:
             raise ValidationError("independent audit requirement does not match classification")
         digest(audit["report_sha256"], "independent audit report", nullable=not required_audit)

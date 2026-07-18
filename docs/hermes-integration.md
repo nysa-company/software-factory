@@ -169,6 +169,11 @@ merges the single protected product PR. The same internal validator is used by
 effective-ticket reading, `next-stage`, and activation; plain Done and partial
 or conflicting evidence are invalid.
 
+T-013 through T-016 predate separate `policy` and `app-tests` check jobs. Their
+only bounded migration class requires the authentic app-bound aggregate `ci`
+and `test-immutability` checks plus independent criteria-audit and current
+combined-test digests. No other ticket may use that historical check profile.
+
 `project-ledger` refuses any active or ambiguous entry under
 `factory/.active-runs/` and any `factory/runs/*.pid` record. Reconcile those
 records under maintenance before close-out; projection never guesses that a

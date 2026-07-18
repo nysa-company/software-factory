@@ -143,10 +143,13 @@ same-UID token exposure remains until a broker or OS isolation is used.
   Review the exact repository, source/target kits, ticket classes, immutable
   ticket/bundle blobs, merged PR metadata, four app-bound successful checks,
   ledger rows, cutoff, branch observation, and protected-main basis.
-- Do: use `legacy-reviewed` only for exact Review. T-019/T-020 are the only
-  permitted `out-of-band-merged` Planning anomalies and require a fresh
-  independent audit and combined full-test digests. A historical ticket has
-  no route plan and the legacy receipt must say so.
+- Do: use `legacy-reviewed` only for exact Review. T-013 through T-016 alone
+  use `legacy-reviewed-aggregate` because their PRs predate separate
+  `policy`/`app-tests` jobs; require their authentic app-bound aggregate `ci`
+  and `test-immutability` checks plus fresh independent-audit and combined-test
+  digests. T-019/T-020 are the only permitted `out-of-band-merged` Planning
+  anomalies and require the same audit digests. A historical ticket has no
+  route plan and the legacy receipt must say so.
 - Do: put authorization, the complete receipt set, Done/Migration ticket
   projections, and target `KIT_PIN` in one product PR. Disable auto-merge and
   bypass; the operator's manual protected merge of that exact head is the

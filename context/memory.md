@@ -35,8 +35,19 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Kimi K2.6 is disabled experimental through Claude CLI/OpenRouter/Moonshot, appears in no profile, and has not had a live or billed pilot. Credential rotation is required before a pilot, and direct same-UID token exposure remains without a broker or OS isolation.
 - Route-plan provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management and evidence-bound ticket attestations are integrated under Hermes contract 1.3.
 - The Contract 1.3 cutover has one bounded legacy-closeout format for an exact authorized Contract 1.2 batch. It is separate from normal attestations and route plans, becomes authoritative only through one manual protected product merge, and is validated by the same protected-main terminal reader used by sequencing and activation; plain Done never suffices.
+- T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 
 ## Log
+
+## 2026-07-18 — Decision 42: Earliest legacy PRs bind their authentic check era
+
+Category: System change
+
+T-013 through T-016 predate separate `policy` and `app-tests` jobs, so their
+one-time allowlisted migration class binds the authentic app-owned aggregate
+`ci` and `test-immutability` checks plus independent criteria-audit and current
+combined-test digests. No other ticket may use that class; later reviewed
+tickets still require all four exact app-bound checks.
 
 ## 2026-07-18 — Decision 41: Legacy closeout preserves the Contract 1.3 trust boundary
 
