@@ -152,6 +152,21 @@ class FallbackTest(unittest.TestCase):
             self.fail(result.stderr)
         return json.loads(result.stdout)
 
+    def test_preview_accepts_conservatively_accounted_provider_failure(self):
+        manifest = self.product / "factory/runs/run-failed-1.meta"
+        raw = manifest.read_text().replace(
+            "accounting_state=completed",
+            "accounting_state=abandoned_conservative",
+        )
+        for phase in ("completed", "abandoned"):
+            with self.subTest(phase=phase):
+                manifest.write_text(
+                    raw.replace("phase=completed", f"phase={phase}")
+                )
+                self.assertEqual(
+                    self.command("preview")["failed_run_id"], "run-failed-1"
+                )
+
     def test_preview_then_apply_commits_partial_work_and_journal_once(self):
         preview = self.command("preview")
         approval = Path(self.temp.name) / "approval.json"

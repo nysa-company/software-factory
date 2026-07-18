@@ -100,8 +100,11 @@ def load_evidence(factory_root, ticket, failed_run):
         failed.get("ticket") != ticket
         or failed.get("go_issued") != "1"
         or not re.fullmatch(r"[1-9][0-9]{0,2}", failed.get("exit_status", ""))
-        or failed.get("accounting_state") not in ("completed", "abandoned_conservative")
-        or failed.get("phase") != failed.get("accounting_state")
+        or (failed.get("phase"), failed.get("accounting_state")) not in (
+            ("completed", "completed"),
+            ("completed", "abandoned_conservative"),
+            ("abandoned", "abandoned_conservative"),
+        )
         or failed.get("role_exit") != "provider_failed"
         or failed.get("role") not in ROLE_ORDER
         or not failed.get("route_id")
