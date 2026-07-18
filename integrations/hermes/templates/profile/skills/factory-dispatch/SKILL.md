@@ -1,6 +1,6 @@
 ---
 name: factory-dispatch
-version: 1.3.0
+version: 1.4.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
@@ -27,9 +27,9 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
-Contract `1.0.0`, and contracts `1.1.0` through `1.3.0` with
+Contract `1.0.0`, and contracts `1.1.0` through `1.4.0` with
 `max_concurrent_tickets: 1`, retain the original one-ticket flow below.
-Contracts `1.2.0` and `1.3.0` inherit `1.1.0` lease behavior unchanged. When one reports
+Contracts `1.2.0` through `1.4.0` inherit `1.1.0` lease behavior unchanged. When one reports
 `max_concurrent_tickets: 2`, claim each ticket before preflight:
 
 ```text
@@ -134,7 +134,7 @@ ticket text. The launcher verifies the same linked-worktree and exact ticket
 branch contract used for role launches. Never call
 `scripts/reorder-test-fixes.sh` directly.
 After opening the PR, contract 1.2 stops at the evidence boundary. Under
-contract 1.3 invoke `ticket-attest --action bundle`; after the newer exact
+contracts 1.3 and 1.4 invoke `ticket-attest --action bundle`; after the newer exact
 Linear approval overlay appears invoke `--action approval`. This requests
 protected auto-merge but does not approve or merge directly. Refusals are
 escalations; never use a generic transition to manufacture these states.
@@ -146,7 +146,7 @@ sequencing and runs. Never write or quote that value in a log or receipt.
 
 Contract 1.2 closeout retains
 `factory-launch <project> project-ledger --ticket <T-NNN> --workdir
-<absolute-closeout-worktree> --json`. Under contract 1.3, create the dedicated clean linked branch
+<absolute-closeout-worktree> --json`. Under contracts 1.3 and 1.4, create the dedicated clean linked branch
 `chore/tNNN-closeout` from current `origin/main`, then invoke:
 
 ```text

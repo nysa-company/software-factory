@@ -17,20 +17,20 @@ directly. Begin each session by selecting the named project and running:
 ~/.factory/bin/factory-launch <project> doctor --json
 ```
 
-Contracts `1.2.0` and `1.3.0` require the exact ticket worktree for every decision:
+Contracts `1.2.0` through `1.4.0` require the exact ticket worktree for every decision:
 
 ```text
 ~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --workdir <ticket-worktree> --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json
 ```
 
-Contracts `1.2.0` and `1.3.0` inherit contract `1.1.0` lease behavior unchanged. If one
+Contracts `1.2.0` through `1.4.0` inherit contract `1.1.0` lease behavior unchanged. If one
 reports a concurrency limit of two, use its claim, renew, and release commands
 and pass the matching opaque lease to every preflight, next-stage, and run
-command and every contract-1.3 ticket attestation. Never persist or disclose a
+command and every contract-1.3-or-newer ticket attestation. Never persist or disclose a
 lease ID.
 
-Under contracts `1.2.0` and `1.3.0`, invoke only the launcher's trusted mutation commands:
+Under contracts `1.2.0` through `1.4.0`, invoke only the launcher's trusted mutation commands:
 
 ```text
 ~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action materialize --json

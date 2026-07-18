@@ -1,0 +1,63 @@
+{
+  "journal_path": "factory/route-plans/TICKET.json",
+  "max_file_bytes": 1048576,
+  "protected_paths": [
+    ".git",
+    ".git/**",
+    "factory/attestations/**",
+    "factory/ENVELOPE.env",
+    "factory/KILL",
+    "factory/ledger.csv",
+    "factory/runtime-ledger.csv",
+    "factory/runs/**",
+    "factory/route-plans/**"
+  ],
+  "provider_identities": [],
+  "role_forbidden_paths": {
+    "builder": [
+      "**/test/**",
+      "**/tests/**",
+      "**/*_test.*",
+      "**/*.test.*",
+      "**/*.spec.*",
+      "factory/**"
+    ],
+    "narrator": [
+      "**/test/**",
+      "**/tests/**"
+    ]
+  },
+  "roles": {
+    "builder": [
+      "**"
+    ],
+    "narrator": [
+      "factory/tickets/TICKET.md",
+      "factory/tickets/TICKET-bundle.md"
+    ],
+    "planner": [
+      "factory/tickets/TICKET.md"
+    ],
+    "reviewer": [
+      "__no_paths__"
+    ],
+    "spec-linter": [
+      "factory/tickets/TICKET.md"
+    ],
+    "test-author": [
+      "**/test/**",
+      "**/tests/**",
+      "**/*_test.*",
+      "**/*.test.*",
+      "**/*.spec.*",
+      "factory/tickets/TICKET.md"
+    ]
+  },
+  "schema": "nysa.software-factory.handoff-boundary/v1",
+  "secret_patterns": [
+    "-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----",
+    "\\bAKIA[0-9A-Z]{16}\\b",
+    "\\bgh[pousr]_[A-Za-z0-9_]{20,}\\b",
+    "\\bsk-[A-Za-z0-9_-]{20,}\\b"
+  ]
+}

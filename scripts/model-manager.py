@@ -625,6 +625,24 @@ def build_parser():
         if name == "migrate":
             migrate.add_argument("--approve-hash", required=True)
             migrate.add_argument("--output", required=True)
+    fallback_plan = commands.add_parser("fallback-plan")
+    _common(fallback_plan)
+    fallback_plan.add_argument("--ticket-plan", required=True)
+    fallback_plan.add_argument("--readiness", required=True)
+    fallback_plan.add_argument("--failed-role", required=True)
+    fallback_plan.add_argument("--failed-route", required=True)
+    fallback_plan.add_argument("--future-roles", required=True)
+    fallback_plan.add_argument("--contributors", required=True)
+    fallback = commands.add_parser("fallback")
+    _common(fallback)
+    fallback.add_argument("--ticket-plan", required=True)
+    fallback.add_argument("--resolution-file", required=True)
+    fallback.add_argument("--failed-manifest-digest", required=True)
+    fallback.add_argument("--snapshot-digest", required=True)
+    fallback.add_argument("--reason", required=True, choices=sorted(FALLBACK_REASONS))
+    fallback.add_argument("--approval-receipt", required=True)
+    fallback.add_argument("--created-at", required=True)
+    fallback.add_argument("--output", required=True)
     return parser
 
 
@@ -825,12 +843,64 @@ def run(args):
             raise ManagerError("--output must be an absolute path")
         existing = _load_secure_json(output, required=False, expected_mode=0o644)
         if existing is not None:
-            validate_journal(existing, catalog, routes, profile_map)
-            if existing != journal:
-                raise ManagerError("existing route journal differs from migration")
-            return existing
+            if existing.get("schema") == "ticket-model-route-journal/v2":
+                validate_journal(existing, catalog, routes, profile_map)
+                if existing != journal:
+                    raise ManagerError("existing route journal differs from migration")
+                return existing
+            if output.resolve() != Path(args.ticket_plan).resolve():
+                raise ManagerError("migration may replace only its exact v1 plan")
         _atomic_write(output, journal, mode=0o644)
         return journal
+    if args.command == "fallback-plan":
+        journal = _load_secure_json(
+            Path(args.ticket_plan), expected_mode=0o644
+        )
+        validate_journal(journal, catalog, routes, profile_map)
+        prior = active_resolution(journal)
+        profile = profile_map.get(prior["profile_id"])
+        if profile is None:
+            raise ManagerError("journal references an unknown profile")
+        readiness = _parse_json_argument(args.readiness, "readiness")
+        future_roles = _parse_json_argument(args.future_roles, "future roles")
+        contributors = _parse_json_argument(args.contributors, "contributors")
+        try:
+            return ROUTER.resolve_fallback_policy(
+                catalog,
+                routes,
+                profile,
+                readiness,
+                prior,
+                args.failed_role,
+                args.failed_route,
+                future_roles,
+                contributors,
+            )
+        except ROUTER.RouterError as exc:
+            raise ManagerError(str(exc))
+    if args.command == "fallback":
+        journal_path = Path(args.ticket_plan)
+        journal = _load_secure_json(journal_path, expected_mode=0o644)
+        validate_journal(journal, catalog, routes, profile_map)
+        resolution = _load_secure_json(Path(args.resolution_file))
+        approval = _parse_json_argument(args.approval_receipt, "approval receipt")
+        result = append_fallback_revision(
+            journal,
+            resolution,
+            args.failed_manifest_digest,
+            args.snapshot_digest,
+            args.reason,
+            approval,
+            args.created_at,
+            catalog,
+            routes,
+            profile_map,
+        )
+        output = Path(args.output)
+        if output.resolve() != journal_path.resolve():
+            raise ManagerError("fallback output must replace the ticket journal")
+        _atomic_write(output, result, mode=0o644)
+        return result
     if args.command == "select":
         if args.role not in ROUTER.ROLES:
             raise ManagerError("unknown role: %s" % args.role)

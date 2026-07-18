@@ -437,6 +437,8 @@ write_manifest() {
     echo "transport=$(meta_value "${SELECTED_TRANSPORT:-}")"
     echo "policy_hash=$(meta_value "${SELECTED_POLICY_HASH:-}")"
     echo "route_plan_sha256=$(meta_value "${SELECTED_ROUTE_PLAN_SHA256:-}")"
+    echo "route_revision=$(meta_value "${SELECTED_ROUTE_REVISION:-}")"
+    echo "route_revision_hash=$(meta_value "${SELECTED_ROUTE_REVISION_HASH:-}")"
     echo "primary_probe=$(meta_value "${PRIMARY_PROBE_SUMMARY:-}")"
     echo "kit_sha=$(meta_value "${FACTORY_KIT_SHA:-}")"
     echo "kit_tree=$(meta_value "${FACTORY_KIT_TREE:-}")"
@@ -814,6 +816,8 @@ SELECTED_ACCOUNT_ROUTE_ID=""
 SELECTED_TRANSPORT=""
 SELECTED_POLICY_HASH=""
 SELECTED_ROUTE_PLAN_SHA256=""
+SELECTED_ROUTE_REVISION=""
+SELECTED_ROUTE_REVISION_HASH=""
 if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
   if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" || "${FACTORY_TEST_MODE:-0}" != "1" ]]; then
     echo "FACTORY_ADAPTER_OVERRIDE requires FACTORY_TEST_MODE=1 and the mock adapter" >&2
@@ -847,6 +851,8 @@ elif [[ -f "$ROUTE_PLAN" ]]; then
   SELECTED_TRANSPORT="$FACTORY_SELECTED_TRANSPORT"
   SELECTED_POLICY_HASH="$FACTORY_SELECTED_POLICY_HASH"
   SELECTED_ROUTE_PLAN_SHA256="$FACTORY_SELECTED_ROUTE_PLAN_SHA256"
+  SELECTED_ROUTE_REVISION="$FACTORY_SELECTED_ROUTE_REVISION"
+  SELECTED_ROUTE_REVISION_HASH="$FACTORY_SELECTED_ROUTE_REVISION_HASH"
   SELECTION_REASON="$FACTORY_SELECTION_REASON"
   PRIMARY_PROBE_SUMMARY="pinned:${PROBE_STATE}:${PROBE_REASON}"
 elif ! factory_load_model_probe_context; then
