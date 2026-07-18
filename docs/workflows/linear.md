@@ -29,11 +29,17 @@ initiative; it cannot enter execution again until the operator assigns one.
 
 Preflight, sequencing, and projection combine the overlay with the exact ticket
 worktree or committed ticket branch. The launcher-managed `ticket-state`
-command materializes accepted operator fields and commits factory-owned stage
+command materializes accepted non-sensitive operator fields and commits ordinary factory-owned stage
 moves on the ticket branch. Contract 1.2 stops in Review: transition and
 materialization both refuse Awaiting Approval, Approved, and Done until trusted
 bundle and merge/deploy attestation paths exist, and sequencing does not
-authorize `AWAIT-MERGE`. An API outage never stops an in-flight ticket. The local sync map and logs show
+authorize `AWAIT-MERGE`. Contract 1.3 keeps those generic refusals and adds
+`ticket-attest`: bundle creates Awaiting Approval, approval consumes only the
+exact newer Linear approval and enables protected auto-merge, and done records
+verified merge/deployment closeout and requests protected auto-merge for its
+factory-owned metadata/accounting PR. No second operator approval exists.
+After that PR merges, protected-main terminal evidence yields `COMPLETE`,
+releases the lease, and supplies Done to Linear sync. An API outage never stops an in-flight ticket. The local sync map and logs show
 stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 
@@ -62,9 +68,9 @@ Legal happy-path transitions are:
 
 `Backlog → Ready → Planning → Building → Review → Awaiting Approval → Approved → Done`.
 
-This is the target lifecycle, not permission for the generic transition API.
-The current 1.2 candidate stops at Review after bundle creation and cannot
-autonomously claim Awaiting Approval or Done.
+This lifecycle is not permission for the generic transition API. Contract 1.2
+stops at Review. Contract 1.3 performs the final three evidence-sensitive moves
+only through the trusted attestation route.
 
 Spec-lint failure stays in Planning. Review changes return to Building. A
 broken preview returns to Building. Any active stage may enter

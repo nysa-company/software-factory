@@ -18,6 +18,8 @@ The default state root is `~/.factory/kits`. Tests may override it with
 ├── bin/factory-launch
 └── kits/
     ├── releases/<full-40-character-sha>/
+    ├── manifests/<full-40-character-sha>.json
+    ├── manifests/<full-40-character-sha>.suite.json
     ├── receipts/<receipt-id>.json
     └── projects/<project>/
         ├── active.json
@@ -64,7 +66,7 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0`, `1.1.0`, and `1.2.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.3.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
@@ -74,10 +76,11 @@ Contract versions `1.0.0`, `1.1.0`, and `1.2.0` certify Hermes Agent `0.18.2`, b
 ~/.factory/bin/factory-launch <project> preflight --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> ticket-state --ticket T-123 --workdir /absolute/ticket-worktree --action materialize --json
+~/.factory/bin/factory-launch <project> ticket-attest --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --action bundle --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Contracts `1.1.0` and `1.2.0` keep one-ticket behavior by default. A product may set
+Contracts `1.1.0` through `1.3.0` keep one-ticket behavior by default. A product may set
 `MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
 `release`, and supplies the matching `--lease` to preflight, next-stage, and
 run. Maintenance blocks claims and renewals but matching owners may still
@@ -105,6 +108,28 @@ creation. Both ticket-state transition and materialization refuse Awaiting
 Approval, Approved, and Done until dedicated trusted bundle and merge/deploy
 attestation paths are added; `next-stage` does not authorize `AWAIT-MERGE`
 under 1.2.
+
+Contract 1.3 adds `ticket-attest` with exact actions `bundle`, `approval`, and
+`done`. Bundle/approval require the exact clean ticket branch and remote tip;
+done requires clean `chore/tNNN-closeout` based on `origin/main`. The helper
+parses `GH_REPO` and `DONE_REQUIRED_CHECKS` from `factory/PROJECT.env` as data,
+requires the exact configured `AUTO_MERGE_METHOD`, uses only the receipt-bound
+origin and profile-derived `GH_TOKEN`, and refuses
+ambiguous PRs, changed evidence, stale approval, unconfirmed auto-merge, merge
+commits absent from main, or unsuccessful post-merge contexts.
+At concurrency two, all three actions require the matching lease. Done also
+requires a pristine closeout branch exactly at `origin/main`, validates the
+protected approval chain and merged PR head, and rejects ambiguous status/check
+name collisions. It then creates or reuses one exact factory-owned closeout PR
+and requests protected auto-merge with no bypass or second business approval.
+Network retries reuse and revalidate the same closeout commit instead of
+projecting or committing twice.
+
+After that PR merges, `next-stage` returns `COMPLETE` only when the strengthened
+effective-ticket reader validates attested Done on protected main. The
+dispatcher then invokes the existing trusted lease `release`; PR creation or
+an auto-merge request alone never releases it. Linear sync projects that same
+protected-main Done state.
 
 `project-ledger` refuses any active or ambiguous entry under
 `factory/.active-runs/` and any `factory/runs/*.pid` record. Reconcile those
@@ -141,7 +166,9 @@ Installation verifies canonical origin identity, full-SHA ancestry on fetched
 suite, repository check, and secret scan in a disposable writable checkout,
 then archives the verified Git object into
 `~/.factory/kits/releases/$SHA` and seals it read-only. Existing valid
-installs are idempotent; partial or corrupt paths fail closed.
+installs are idempotent; partial or corrupt paths fail closed. A successful
+fresh install also writes owner-only, expiring suite evidence beside the
+trusted install manifest.
 
 The product must be clean, pinned to the same SHA, and define one executable,
 repository-contained path:
@@ -159,8 +186,14 @@ bash "$KIT_REPO/scripts/factory-kit.sh" certify \
   --sha "$SHA"
 ```
 
-Certification runs the kit checks against a disposable writable copy and
-runs the product's certification script with a fixed working directory,
+Certification first verifies the manifest-backed sealed release. It reuses the
+install suite result only when its release, current physical tree, host,
+OS/architecture, suite-definition, tool-version, and configured lifetime
+bindings all match and it remains unexpired. Otherwise it safely reruns the
+suite against a disposable writable copy and atomically refreshes the evidence
+after all suite and release checks pass. Missing or invalid reusable evidence is
+a cache miss, not a certification failure; a failed fresh suite still fails.
+The product's certification script always runs with a fixed working directory,
 sanitized environment, and timeout. A passing receipt binds:
 
 - project, kit SHA/tree/canonical origin, and contract version;
@@ -168,12 +201,17 @@ sanitized environment, and timeout. A passing receipt binds:
   hash;
 - host, operating system, architecture, previous generation, and required
   check results;
+- the exact kit-suite evidence ID, digest, definition, lifetime, and whether it
+  was reused;
 - creation and expiry timestamps.
 
 Receipts are mode `0600`. Their default lifetime is 86,400 seconds and may be
 changed with `FACTORY_KIT_RECEIPT_TTL_SECONDS`. Activation rechecks receipt
 expiry and every bound value. Product, pin, config, host, release, or contract
-drift requires recertification.
+drift requires recertification. Suite evidence also defaults to 86,400 seconds,
+may be changed with `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS`, and caps receipt
+expiry so product proof cannot outlive kit-suite proof. Receipt schema 2 and
+certification tool version 2 intentionally reject older incompatible receipts.
 
 The implemented receipt does not yet bind live Hermes profile files,
 LaunchAgent hashes, or every CLI path/version. The real-Hermes canary and

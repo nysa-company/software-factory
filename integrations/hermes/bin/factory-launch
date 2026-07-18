@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|ticket-state|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -324,7 +324,7 @@ for key in required:
     if not isinstance(item, str) or not item or "\n" in item or "\r" in item or "\t" in item:
         raise SystemExit(1)
 optional = (value.get("receipt_id", ""), value.get("product_tree", ""))
-if value["contract_version"] == "1.2.0":
+if value["contract_version"] in ("1.2.0", "1.3.0"):
     for item in optional:
         if not isinstance(item, str) or not item or any(ch in item for ch in "\n\r\t"):
             raise SystemExit(1)
@@ -363,12 +363,12 @@ EOF
 [[ "$KIT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
   die "active kit tree is not a lowercase full object ID"
 case "$ACTIVE_CONTRACT" in
-  1.0.0|1.1.0|1.2.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
+  1.0.0|1.1.0|1.2.0|1.3.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
   *) die "active Hermes contract is incompatible" ;;
 esac
 
 CERTIFIED_PRODUCT_ORIGIN=""
-if [[ "$CONTRACT_VERSION" == "1.2.0" ]]; then
+if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ]]; then
   [[ "$RECEIPT_ID" =~ ^[0-9a-f]{64}$ ]] ||
     die "contract 1.2 active record lacks a valid receipt binding"
   [[ "$ACTIVE_PRODUCT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
@@ -587,8 +587,9 @@ validate_ticket_command() {
   fi
   [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
   TICKET="$2"
-  if [[ "$CONTRACT_VERSION" == "1.2.0" && -z "$TICKET_WORKDIR" ]]; then
-    die "contract 1.2.0 requires a ticket workdir"
+  if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ]] &&
+     [[ -z "$TICKET_WORKDIR" ]]; then
+    die "contract $CONTRACT_VERSION requires a ticket workdir"
   fi
   if [[ -n "$TICKET_WORKDIR" ]]; then
     resolve_product_workdir "$TICKET_WORKDIR"
@@ -599,21 +600,23 @@ validate_ticket_command() {
 
 add_dispatch_lease_env() {
   if [[ -n "${1:-}" ]]; then
-    [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ]] ||
+    [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ||
+       "$CONTRACT_VERSION" == "1.3.0" ]] ||
       die "dispatcher leases require contract 1.1.0 or newer"
     HELPER_ENV+=("FACTORY_DISPATCH_LEASE_ID=$1")
   fi
 }
 
 add_certified_origin_env() {
-  [[ "$CONTRACT_VERSION" == "1.2.0" ]] || return 0
+  [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ]] || return 0
   [[ -n "$CERTIFIED_PRODUCT_ORIGIN" ]] ||
     die "certified product origin is unavailable"
   HELPER_ENV+=("FACTORY_CERTIFIED_PRODUCT_ORIGIN=$CERTIFIED_PRODUCT_ORIGIN")
 }
 
 validate_lease_command() {
-  [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ]] ||
+  [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ||
+     "$CONTRACT_VERSION" == "1.3.0" ]] ||
     die "dispatcher leases require contract 1.1.0 or newer"
   LEASE_ID=""
   if [[ "$1" == "claim" ]]; then
@@ -738,7 +741,7 @@ validate_ticket_worktree() {
     die "ticket worktree must be on a non-detached branch"
   [[ "$branch" == "$expected" ]] ||
     die "worktree branch does not match the requested ticket"
-  if [[ "$CONTRACT_VERSION" == "1.2.0" ]]; then
+  if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ]]; then
     worktree_status="$(git -C "$RESOLVED_WORKDIR" status --porcelain \
       --untracked-files=all --ignore-submodules=none)" ||
       die "ticket worktree cannot be inspected"
@@ -919,8 +922,8 @@ PY
     exit "$rc"
     ;;
   ticket-state)
-    [[ "$CONTRACT_VERSION" == "1.2.0" ]] ||
-      die "ticket-state requires contract 1.2.0"
+    [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ]] ||
+      die "ticket-state requires contract 1.2.0 or newer"
     if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
           "$5" == "--action" && "$7" == "--json" ]]; then
       TICKET_STATE_VALUE=""
@@ -953,9 +956,53 @@ PY
         --workdir "$RESOLVED_WORKDIR" --action "$TICKET_ACTION"
     fi
     ;;
+  ticket-attest)
+    [[ "$CONTRACT_VERSION" == "1.3.0" ]] ||
+      die "ticket-attest requires contract 1.3.0"
+    ATTEST_LEASE=""
+    if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
+          "$5" == "--action" && "$7" == "--json" ]]; then
+      ATTEST_WORKDIR="$4" ATTEST_ACTION="$6"
+    elif [[ $# -eq 9 && "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--workdir" && "$7" == "--action" && "$9" == "--json" ]]; then
+      ATTEST_LEASE="$4" ATTEST_WORKDIR="$6" ATTEST_ACTION="$8"
+      [[ "$ATTEST_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    else
+      usage
+    fi
+    ATTEST_TICKET="$2"
+    [[ "$ATTEST_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    [[ "$ATTEST_ACTION" == "bundle" || "$ATTEST_ACTION" == "approval" ||
+       "$ATTEST_ACTION" == "done" ]] || die "invalid ticket-attest action"
+    resolve_product_workdir "$ATTEST_WORKDIR"
+    if [[ "$ATTEST_ACTION" == "done" ]]; then
+      ATTEST_BRANCH="chore/$(printf '%s' "$ATTEST_TICKET" | tr '[:upper:]' '[:lower:]' | tr -d '-')-closeout"
+      [[ "$(git -C "$RESOLVED_WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null)" == "$ATTEST_BRANCH" ]] ||
+        die "done worktree branch must be $ATTEST_BRANCH"
+      [[ -z "$(git -C "$RESOLVED_WORKDIR" status --porcelain --untracked-files=all)" ]] ||
+        die "done worktree must be clean"
+      if [[ "$(git -C "$RESOLVED_WORKDIR" rev-parse HEAD)" != \
+            "$(git -C "$RESOLVED_WORKDIR" rev-parse origin/main)" ]]; then
+        [[ -f "$RESOLVED_WORKDIR/factory/attestations/$ATTEST_TICKET/done.json" ]] ||
+          die "done worktree must start at origin/main or be an attested retry"
+      fi
+    else
+      validate_ticket_worktree "$ATTEST_TICKET"
+    fi
+    [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
+      die "product is in maintenance; ticket-attest refused"
+    ATTEST_HELPER="$RELEASE_PATH/scripts/ticket-attest.sh"
+    require_managed_file "$ATTEST_HELPER" "active release ticket-attest helper"
+    add_certified_origin_env
+    add_dispatch_lease_env "$ATTEST_LEASE"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec_selected_helper "$ATTEST_HELPER" \
+      --ticket "$ATTEST_TICKET" --workdir "$RESOLVED_WORKDIR" --action "$ATTEST_ACTION"
+    ;;
   project-ledger)
-    [[ "$CONTRACT_VERSION" == "1.2.0" ]] ||
-      die "project-ledger requires contract 1.2.0"
+    [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ]] ||
+      die "project-ledger requires contract 1.2.0 or newer"
     [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--workdir" && "$5" == "--json" ]] || usage
     PROJECT_TICKET="$2"
     [[ "$PROJECT_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"

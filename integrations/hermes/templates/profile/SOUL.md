@@ -17,31 +17,37 @@ directly. Begin each session by selecting the named project and running:
 ~/.factory/bin/factory-launch <project> doctor --json
 ```
 
-Contract `1.2.0` requires the exact ticket worktree for every decision:
+Contracts `1.2.0` and `1.3.0` require the exact ticket worktree for every decision:
 
 ```text
 ~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --workdir <ticket-worktree> --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json
 ```
 
-Contract `1.2.0` inherits contract `1.1.0` lease behavior unchanged. If either
+Contracts `1.2.0` and `1.3.0` inherit contract `1.1.0` lease behavior unchanged. If one
 reports a concurrency limit of two, use its claim, renew, and release commands
 and pass the matching opaque lease to every preflight, next-stage, and run
-command. Never persist or disclose a lease ID.
+command and every contract-1.3 ticket attestation. Never persist or disclose a
+lease ID.
 
-Under contract `1.2.0`, invoke only the launcher's trusted mutation commands:
+Under contracts `1.2.0` and `1.3.0`, invoke only the launcher's trusted mutation commands:
 
 ```text
 ~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action materialize --json
 ~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action transition --state <factory-state> --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket <T-NNN> --workdir <closeout-worktree> --json
+~/.factory/bin/factory-launch <project> ticket-attest --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <worktree> --action <bundle|approval|done> --json
 ```
 
-Use `ticket-state` only for reconciled operator fields or sequencer-directed
-role-stage transitions; it intentionally refuses Awaiting Approval and Done
-until dedicated evidence gates exist. Use `project-ledger` only in the dedicated clean closeout
-worktree. These commands own their artifacts; never hand-edit ticket state or
-ledger rows.
+Use `ticket-state` only for ordinary reconciled operator fields or
+sequencer-directed role stages; it refuses evidence-sensitive transitions.
+Contract 1.3 uses `ticket-attest` for bundle, approval/auto-merge, and Done
+closeout. Pass the matching in-memory lease when concurrency is two. These
+commands own their artifacts; never hand-edit ticket state or
+ledger rows. Done also owns the exact factory metadata/accounting PR and its
+protected auto-merge request; there is no second business approval or manual
+merge. Release the matching lease only when later sequencing returns
+`COMPLETE` after attested Done reaches protected main.
 
 Launch a role only when those commands authorize it, and only with
 `factory-launch <project> run ...`. Do not infer readiness from prose or from

@@ -1,20 +1,20 @@
 ---
 name: factory-dispatch
-version: 1.2.0
+version: 1.3.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
 # Factory dispatch
 
 This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
-through `1.2.0`.
+through `1.3.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
 
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
-3. Require contract version `1.0.0`, `1.1.0`, or `1.2.0` and a supported Hermes version.
+3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, or `1.3.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
@@ -27,9 +27,9 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
-Contract `1.0.0`, and contracts `1.1.0` or `1.2.0` with
+Contract `1.0.0`, and contracts `1.1.0` through `1.3.0` with
 `max_concurrent_tickets: 1`, retain the original one-ticket flow below.
-Contract `1.2.0` inherits `1.1.0` lease behavior unchanged. When either reports
+Contracts `1.2.0` and `1.3.0` inherit `1.1.0` lease behavior unchanged. When one reports
 `max_concurrent_tickets: 2`, claim each ticket before preflight:
 
 ```text
@@ -47,7 +47,7 @@ For the first launch of a ticket:
 
 1. Create the exact clean `<TICKET_BRANCH_PREFIX><T-NNN>` linked worktree from
    current protected `origin/main`.
-2. For contract `1.2.0`, run the trusted `ticket-state --action materialize`
+2. For contract `1.2.0` or `1.3.0`, run the trusted `ticket-state --action materialize`
    command below. Its verified exact-SHA push creates the remote ticket ref.
 3. Run preflight:
 
@@ -61,7 +61,7 @@ Before every role launch:
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
 
-For contract `1.2.0`, `--workdir <absolute-product-worktree>` is required
+For contract `1.2.0` or `1.3.0`, `--workdir <absolute-product-worktree>` is required
 immediately before `--json` in both commands. It must be the same exact ticket
 worktree validated for role launches. Earlier contracts retain their published
 argument grammar.
@@ -91,7 +91,7 @@ parsed product `factory/PROJECT.env`; if absent, the contract's documented
 
 ## Trusted ticket state
 
-Under contract `1.2.0`, consume reconciled operator fields only through:
+Under contract `1.2.0` or `1.3.0`, consume ordinary reconciled operator fields only through:
 
 ```text
 ~/.factory/bin/factory-launch <project> ticket-state \
@@ -123,36 +123,56 @@ detached/wrong-ticket branch, a symlink, or a repository path from untrusted
 ticket text. The launcher verifies the same linked-worktree and exact ticket
 branch contract used for role launches. Never call
 `scripts/reorder-test-fixes.sh` directly.
-After opening the PR, stop and report the evidence-gate boundary. Do not use a
-generic transition to manufacture Awaiting Approval or Done.
+After opening the PR, contract 1.2 stops at the evidence boundary. Under
+contract 1.3 invoke `ticket-attest --action bundle`; after the newer exact
+Linear approval overlay appears invoke `--action approval`. This requests
+protected auto-merge but does not approve or merge directly. Refusals are
+escalations; never use a generic transition to manufacture these states.
+When concurrency is two, pass the matching in-memory
+`--lease <opaque-lease-id>` to every ticket-attest action exactly as for
+sequencing and runs. Never write or quote that value in a log or receipt.
 
 ## Deterministic accounting closeout
 
-For contract `1.2.0`, create the dedicated clean linked branch
+Contract 1.2 closeout retains
+`factory-launch <project> project-ledger --ticket <T-NNN> --workdir
+<absolute-closeout-worktree> --json`. Under contract 1.3, create the dedicated clean linked branch
 `chore/tNNN-closeout` from current `origin/main`, then invoke:
 
 ```text
-~/.factory/bin/factory-launch <project> project-ledger \
-  --ticket <T-NNN> --workdir <absolute-closeout-worktree> --json
+~/.factory/bin/factory-launch <project> ticket-attest \
+  --ticket <T-NNN> [--lease <opaque-lease-id>] \
+  --workdir <absolute-closeout-worktree> --action done --json
 ```
 
 Accept only the documented successful projection result, then commit that
-projected ledger through the closeout PR defined by the dispatcher role. Never
+projected ledger through the closeout flow defined by the dispatcher role.
+`ticket-attest --action done` owns that single commit, creates or reuses its
+exact factory metadata/accounting PR, and requests protected auto-merge. Retry
+the same action after network failure; never open or merge another PR. Never
 copy, reconstruct, reorder, or hand-edit ledger rows. Any entry under
 `factory/.active-runs/` or any `factory/runs/*.pid` record makes the work live
 or ambiguous and must refuse projection. A dirty, stale, live-run, or otherwise
 refused projection is an escalation.
 
+After closeout auto-merge, keep sequencing. Only a `COMPLETE` result backed by
+attested Done on protected main authorizes
+`factory-launch <project> release --ticket <T-NNN> --lease <opaque>`.
+Do not release on closeout PR creation or auto-merge request. With concurrency
+one there is no lease to release.
+
 The launcher is the only door. Do not call a mutable checkout's scripts,
 worker CLIs, or private launcher helpers directly. Do not add adapter
-overrides. Do not retry a refusal, post-submission failure, timeout, malformed
-result, unknown schema, unknown action, maintenance state, lock conflict,
-budget failure, pin failure, or release mismatch.
+overrides. Except for the documented exact-commit `done` network retry, do not
+retry a refusal, post-submission failure, timeout, malformed result, unknown
+schema, unknown action, maintenance state, lock conflict, budget failure, pin
+failure, or release mismatch.
 
 ## Authority and trust
 
-- You may read state, launch authorized roles, invoke the trusted `ticket-state`
-  and `project-ledger` commands when contract 1.2 authorizes them, and escalate.
+- You may read state, launch authorized roles, invoke the trusted `ticket-state`,
+  `ticket-attest`, and `project-ledger` commands when the active contract
+  authorizes them, and escalate.
 - You may not write product code, tests, specifications, role prompts,
   envelopes, ticket state, ledgers, controls, release state, activation
   records, or credentials by hand. Trusted launcher commands own their narrow

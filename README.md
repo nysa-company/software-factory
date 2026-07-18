@@ -93,10 +93,13 @@ The factory needs you at four points:
    or send it back with a concrete reason. Done is recorded after merge and
    staging confirmation.
 
-That fourth step describes the target lifecycle. Contract 1.2 currently stops
-in Review after the Narrator posts the bundle: its generic ticket-state command
-cannot move a ticket to Awaiting Approval or Done. Wait for the dedicated
-bundle and merge/staging attestation paths before using the approval close-out.
+Contract 1.2 still stops in Review. Contract 1.3 implements the fourth step
+through the trusted `ticket-attest` command: it attests the exact bundle,
+consumes the one Linear approval, requests protected auto-merge, and records
+Done only after merge-commit deployment checks and closeout accounting pass.
+It also auto-merges the protected factory-owned closeout PR and releases any
+dispatcher lease only after attested Done reaches main, so the normal operator
+actions remain Ready and Approved.
 
 ## Does moving a ticket to Ready start the factory?
 

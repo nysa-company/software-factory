@@ -13,7 +13,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. All products share the Software Factory Linear team; each initiative gets a Linear Project.
 - **`factory/KIT_PIN`:** exactly one lowercase, full 40-character certified kit SHA. External products fail closed when it is missing, malformed, or different from the physical release.
-- **`factory/PROJECT.env`:** product name, repository slug, protected test paths, worktree location, and ticket branch prefix.
+- **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), and required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`).
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
@@ -89,6 +89,10 @@ Machine-local release state lives under `~/.factory/kits`:
 
 - `releases/<full-sha>/` contains a verified Git tree with no Git metadata,
   safe symlinks only, and no write bits.
+- `manifests/<full-sha>.suite.json` is owner-only, expiring evidence for the
+  exact install suite result. It is reusable only for the same sealed release,
+  physical tree, host, OS/architecture, suite definition, tool version, and
+  configured evidence lifetime.
 - `projects/<project>/active.json` is the authoritative per-product release
   record.
 - `projects/<project>/activation-journal/` records recoverable activation
@@ -98,7 +102,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0`, `1.1.0`, and `1.2.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.3.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -117,6 +121,26 @@ Done until dedicated trusted bundle and merge/deploy attestation paths exist;
 automatic helper push is bound to the exact product
 origin in the active generation's owner-only certification receipt; mutable
 Git remote configuration cannot redirect it.
+Contract 1.3 adds only the dedicated `ticket-attest` route. `bundle` binds the
+latest successful Reviewer and Narrator runs, reviewed SHA, unchanged
+post-review ticket/bundle paths, bundle Git blob, and the unique exact open PR,
+then records Awaiting Approval. `approval` consumes only a newer exact Linear
+Awaiting Approval → Approved overlay, commits the approval attestation, and
+requests normal protected GitHub auto-merge for that exact PR head. `done`
+requires the exact merged commit on authoritative `origin/main`, all configured
+post-merge contexts successful on that commit, and projects accounting into a
+separate closeout branch with a terminal attestation and Done ticket. It never
+bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
+When concurrency is two, every attestation action also requires the matching
+unexpired opaque dispatcher lease through the trusted launcher environment;
+the lease is validated with the existing lease helper and never enters an
+attestation or command result. Done starts only from `HEAD == origin/main`,
+binds the exact approved PR head and protected bundle/approval blobs, and
+refuses status/check name collisions. It projects and commits once, then owns
+creation/reuse and protected auto-merge of the exact closeout PR. A retry
+revalidates the same remote commit. Only valid attested Done on protected main
+produces sequencer action `COMPLETE`, after which the dispatcher releases the
+lease; closeout PR creation is never terminal evidence.
 Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to
@@ -143,7 +167,14 @@ Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
 previous generation, and expiry. The default receipt lifetime is 24 hours.
 Activation reruns those bindings and refuses stale or drifted receipts.
-An activated contract 1.2 keeps that receipt as the runtime destination
+Installation and certification serialize the kit-suite evidence decision under
+the install lock. Certification may reuse an unexpired passing suite result for
+the exact unchanged sealed release, but always reruns product certification and
+all product, config, receipt, and activation validation. Fresh certification
+refreshes evidence only after the isolated suite, tracked-tree check, and sealed
+release verification pass. Product receipts bind the exact evidence ID/digest
+and cannot expire after that evidence.
+An activated contract 1.2 or 1.3 keeps that receipt as the runtime destination
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.
 
@@ -180,5 +211,5 @@ Planner, Builder, and Narrator use the production model family. Spec-linter, Tes
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
 - External agent frameworks may supply an execution or sandbox transport only behind `factory-launch`. They do not own sequencing, budgets, role selection, Git pushes, ticket state, evidence, or approval; every candidate is pinned and must pass the factory conformance boundary before product use.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
-- Factory-owned state transitions refuse while operator-owned overlay fields are pending. Contract 1.2 has no trusted bundle-attestation path, so an approval overlay is a stop condition rather than authority to materialize Approved or authorize merge.
+- Factory-owned generic state transitions refuse while operator-owned overlay fields are pending. Contract 1.2 has no trusted bundle-attestation path, so an approval overlay is a stop condition. Contract 1.3 confines Awaiting Approval, Approved, auto-merge, and Done to evidence-validating `ticket-attest` actions.
 - Allowlisted machine configuration comes only from `global.env`; inherited values with the same names are cleared even when the file is absent.

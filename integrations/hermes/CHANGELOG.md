@@ -5,6 +5,23 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.3.0 — 2026-07-17
+
+- Adds exact-grammar `ticket-attest` actions for bundle, Linear approval, and
+  post-merge Done closeout.
+- Binds approval to immutable run, reviewed-SHA, bundle-blob, PR, head, kit,
+  and Linear observation evidence before requesting protected auto-merge.
+- Verifies the merge commit on authoritative main and configured exact
+  post-merge contexts before projecting accounting and recording Done.
+- Retains contract 1.2's fail-closed Review boundary and generic state
+  transition refusals.
+- Requires the matching opaque lease for attestations at concurrency two,
+  selects the receipt-bound configured merge method, and binds Done to the
+  exact protected approval chain and collision-free merge-commit checks.
+- Makes Done own retryable creation and protected auto-merge of the exact
+  factory closeout PR; adds terminal `COMPLETE` sequencing so leases release
+  only after attested Done reaches protected main.
+
 ## 1.2.0 — 2026-07-15
 
 - Uses the fixed Command Line Tools Python binary when available so macOS
