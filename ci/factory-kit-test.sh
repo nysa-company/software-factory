@@ -795,7 +795,7 @@ chmod 644 "$EVIDENCE_A"
 expect_success "broad-mode suite evidence falls back safely" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
-   [[ "$(stat -f '%Lp' "$EVIDENCE_A" 2>/dev/null || stat -c '%a' "$EVIDENCE_A")" == "600" ]]; then
+   [[ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$EVIDENCE_A")" == "600" ]]; then
   pass "fresh suite restores restrictive evidence permissions"
 else
   fail "fresh suite restores restrictive evidence permissions"
