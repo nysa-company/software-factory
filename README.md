@@ -15,21 +15,37 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 | `ci/` | Executable regression checks and the product CI template |
 | `conformance/` | The Nysa-shaped conformance product — the kit's permanent test bed |
 
-## Role backends
+## Worker model portfolios
 
-| Role | Provider | Model | Effort | Why it matters |
-|---|---|---|---|---|
-| Dispatcher | Hermes Agent | Deployment-configured | N/A | Coordinates authorized ticket work; it is outside the worker model policy. |
-| Planner | OpenAI / Codex CLI | GPT-5.6 Sol | High | Defines the implementation approach and constraints that downstream roles follow. |
-| Spec-linter | Anthropic / Claude Code CLI | Claude Fable 5 | Medium | Checks the planned contract before implementation starts. |
-| Test-author | Anthropic / Claude Code CLI | Claude Fable 5 | Medium | Writes the acceptance tests that protect the implementation boundary. |
-| Builder | OpenAI / Codex CLI | GPT-5.6 Terra | Medium | Implements the approved plan while remaining separate from test authorship. |
-| Reviewer | Anthropic / Claude Code CLI | Claude Sonnet 5 | Medium | Independently checks correctness, regressions, and release risk. |
-| Narrator | OpenAI / Codex CLI | GPT-5.6 Terra | Medium | Produces the evidence bundle used for human approval. |
+The catalog describes routes without conflating their layers: transport,
+gateway, inference provider, provider family, account route, selectable model
+ID, and provider-reported identity are separate fields. A route is one exact
+combination of those fields; the two Cursor models are therefore separate
+routes, not one model inherited from a shared adapter.
 
-Cursor fallback is disabled by default. When enabled, the wrapper selects the
-matching provider-family route before submitting the task; fallback is never a
-retry after a failed run.
+Profiles contain ordered portfolios and ordered candidates for each of the six
+worker roles. At the ticket boundary the router probes candidates and accepts
+only a portfolio that resolves all six roles while keeping production and
+checking families distinct. The operator activates a profile by approving its
+preview hash. With no activation record, `legacy-balanced-v1` is the default:
+
+| Lane | Roles | Current first choices |
+|---|---|---|
+| Production / OpenAI | Planner; Builder; Narrator | Codex GPT-5.6 Sol/high; GPT-5.6 Terra/medium; GPT-5.6 Terra/medium |
+| Checking / Anthropic | Spec-linter; Test-author; Reviewer | Claude Fable 5/medium; Fable 5/medium; Sonnet 5/medium |
+
+`openai-priority-v1` tries that portfolio then the family-swapped Claude
+production portfolio. `claude-priority-v1` uses the reverse order.
+`cursor-priority-v1` tries Cursor's exact OpenAI and Anthropic routes first in
+both portfolio orders. The route plan is pinned with the Kit-SHA on the ticket
+branch; later roles consume their exact tuple and never re-resolve. Fallback is
+pre-submission selection only, never a retry after a task-bearing process
+starts.
+
+Kimi K2.6 is a disabled experimental route through Claude CLI, OpenRouter, and
+Moonshot. It is in no profile and has not had a live or billed pilot. Credential
+rotation is required before any pilot, and without a broker or OS isolation a
+same-UID process may still observe the token.
 
 ## Core rules (enforced by the kit, not by prompts)
 
@@ -38,7 +54,7 @@ retry after a failed run.
 3. Approval happens before merge, from a Narrator evidence bundle.
 4. Test author and reviewer run on a different model family than the builder.
 5. Two review rounds, then the ticket escalates to a human with a plain-language note.
-6. Backend fallback is pre-execution selection, never retry: one role run submits its task to at most one agent process.
+6. Route selection is pinned once at the ticket boundary; one role run submits its task to at most one agent process.
 
 ## How Linear and Markdown work together
 

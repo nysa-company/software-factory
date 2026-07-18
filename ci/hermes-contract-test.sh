@@ -71,7 +71,8 @@ PY
 }
 
 assert_helper_confinement() {
-  local file="$1" credential_expectation="${2:-present}" safe_tmp safe_home expected_cksum
+  local file="$1" credential_expectation="${2:-present}" \
+    origin_expectation="${3:-absent}" safe_tmp safe_home expected_cksum
   safe_tmp="$(cd "$TMP/launcher-tmp" && pwd -P)"
   safe_home="$(cd "$TEST_HOME" && pwd -P)"
   grep -qF "HOME=$safe_home" "$file" || fail "helper HOME was not explicitly passed"
@@ -86,6 +87,10 @@ assert_helper_confinement() {
     fail "isolated launcher did not authenticate its test harness"
   grep -qF "FACTORY_ROOT=$(cd "$LAUNCH_PRODUCT" && pwd -P)" "$file" ||
     fail "helper FACTORY_ROOT was not canonical"
+  grep -qF "FACTORY_MODEL_STATE_ROOT=$(cd "$KITS_ROOT/projects" && pwd -P)" "$file" ||
+    fail "helper model state root was not canonical"
+  grep -qFx "FACTORY_PROJECT=launchtest" "$file" ||
+    fail "helper project context was not explicit"
   if grep -Fq "$GH_SECRET" "$file" || grep -Fq "$CALLER_GH_SECRET" "$file"; then
     fail "helper environment snapshot stored a credential value"
   fi
@@ -100,15 +105,19 @@ assert_helper_confinement() {
       fail "caller GH_TOKEN reached helper without a profile credential"
     fi
   fi
+  if [[ "$origin_expectation" == "present" ]]; then
+    grep -qFx "FACTORY_CERTIFIED_PRODUCT_ORIGIN=$LAUNCH_PRODUCT_REMOTE" "$file" ||
+      fail "pin helper did not receive the receipt-bound certified origin"
+  fi
   local variable
   for variable in \
     FACTORY_LAUNCH_TEST_MODE FACTORY_LAUNCH_TEST_HOME \
     FACTORY_LAUNCH_TEST_ACCOUNT_HOME FACTORY_KITS_ROOT HERMES_FACTORY_PROFILE \
     FACTORY_ENVELOPE FACTORY_LEDGER FACTORY_GLOBAL_ENV \
+    FACTORY_MODEL_MANAGER FACTORY_MODEL_CATALOG FACTORY_MODEL_PROFILES \
     FACTORY_DISPATCH_LEASE_ID \
     FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
     FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
-    FACTORY_CERTIFIED_PRODUCT_ORIGIN \
     PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
     GIT_INDEX_FILE GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT \
     GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
@@ -117,6 +126,10 @@ assert_helper_confinement() {
       fail "caller control propagated to helper: $variable"
     fi
   done
+  if [[ "$origin_expectation" != "present" ]] &&
+     grep -q "^FACTORY_CERTIFIED_PRODUCT_ORIGIN=" "$file"; then
+    fail "certified product origin reached a helper that does not perform trusted writes"
+  fi
 }
 
 tree_for_directory() {
@@ -214,6 +227,11 @@ run_launcher() {
     FACTORY_PROBE_CLAUDE_CODE=INVALID:bypass \
     FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_BIN="$TMP/agent-bypass" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$TMP/caller-origin-bypass.git" \
+    FACTORY_MODEL_STATE_ROOT="$TMP/caller-model-state-bypass" \
+    FACTORY_PROJECT=caller-model-project \
+    FACTORY_MODEL_MANAGER="$TMP/caller-model-manager.py" \
+    FACTORY_MODEL_CATALOG="$TMP/caller-model-catalog.json" \
+    FACTORY_MODEL_PROFILES="$TMP/caller-model-profiles.json" \
     CODEX_PINNED=bypass MOCK_STATUS=0 PROJECTED_TICKET_USD=999999 \
     PYTHONHOME="$TMP/python-home-bypass" PYTHONPATH="$TMP/python-path-bypass" \
     PYTHONWARNINGS=error GIT_DIR="$TMP/git-dir-bypass" \
@@ -245,6 +263,14 @@ path.write_text(path.read_text().replace("1.3.0", contract))
 PY
   cp "$ROOT/scripts/dispatch-lease.sh" "$release/scripts/dispatch-lease.sh"
   cp "$ROOT/scripts/lib/dispatch-leases.sh" "$release/scripts/lib/dispatch-leases.sh"
+  cp "$ROOT/scripts/model-control.sh" "$release/scripts/model-control-real.sh"
+  cp "$ROOT/scripts/model-manager.py" "$release/scripts/model-manager.py"
+  cp "$ROOT/scripts/model-router.py" "$release/scripts/model-router.py"
+  cp -R "$ROOT/scripts/model-routing" "$release/scripts/model-routing"
+  cp "$ROOT/scripts/lib/backend-policy.sh" "$release/scripts/lib/backend-policy.sh"
+  cp "$ROOT/scripts/lib/kit-pin.sh" "$release/scripts/lib/kit-pin.sh"
+  cp "$ROOT/scripts/lib/plain-config.sh" "$release/scripts/lib/plain-config.sh"
+  cp "$ROOT/scripts/lib/product-remote.sh" "$release/scripts/lib/product-remote.sh"
   for role in planner spec-linter test-author builder reviewer narrator; do
     printf '# %s prompt\n' "$role" > "$release/roles/$role.md"
   done
@@ -323,10 +349,21 @@ echo "REORDER $label"
 echo "WORKDIR=\$(pwd -P)"
 printf 'ARG=%s\n' "\$@"
 EOF
+  cat > "$release/scripts/model-control.sh" <<'EOF'
+#!/usr/bin/env bash
+ENV_OUT="$FACTORY_ROOT/factory/model-helper.env"
+env | awk -F= '$1 != "GH_TOKEN"' | LC_ALL=C sort > "$ENV_OUT"
+if [[ ${GH_TOKEN+x} == x ]]; then
+  printf 'GH_TOKEN_PRESENT=true\n' >> "$ENV_OUT"
+fi
+exec /bin/bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/model-control-real.sh" "$@"
+EOF
   chmod +x "$release/scripts/factory-doctor.sh" "$release/scripts/factory-doctor-real.sh" \
     "$release/scripts/preflight.sh" \
     "$release/scripts/next-stage.sh" "$release/scripts/run-agent.sh" \
-    "$release/scripts/reorder-test-fixes.sh" "$release/scripts/dispatch-lease.sh"
+    "$release/scripts/reorder-test-fixes.sh" "$release/scripts/model-control.sh" \
+    "$release/scripts/model-control-real.sh" \
+    "$release/scripts/dispatch-lease.sh"
 }
 
 mkdir -p "$PROFILE/projects" "$TEST_HOME/.hermes/secrets" "$TEST_HOME/.factory/.ledger.lock"
@@ -368,6 +405,18 @@ MULTILINE_SECRET="doctor-multiline-never-print"
 printf 'GH_TOKEN=%s\n' "$GH_SECRET" > "$PROFILE/.env"
 printf '%s\n' "$LINEAR_SECRET" > "$TEST_HOME/.hermes/secrets/linear-api-key"
 chmod 600 "$PROFILE/.env" "$TEST_HOME/.hermes/secrets/linear-api-key"
+cat > "$TEST_HOME/.factory/global.env" <<'EOF'
+CODEX_PINNED=0.144.1
+CLAUDE_CODE_PINNED=2.1.207
+FACTORY_CURSOR_FALLBACK_ENABLED=1
+CURSOR_AGENT_VERSION=2026.07.test
+CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
+CURSOR_ANTHROPIC_MODEL=claude-sonnet-5-thinking-high
+FACTORY_PROBE_CODEX=READY:test
+FACTORY_PROBE_CLAUDE_CODE=READY:test
+FACTORY_PROBE_CURSOR_OPENAI=READY:test
+FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test
+EOF
 ENV_BEFORE="$(cksum "$PROFILE/.env")"
 KEY_BEFORE="$(cksum "$TEST_HOME/.hermes/secrets/linear-api-key")"
 
@@ -555,16 +604,20 @@ PY
 SHA_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 SHA_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 SHA_V11="dddddddddddddddddddddddddddddddddddddddd"
+SHA_MODELS="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 RELEASE_A="$KITS_ROOT/releases/$SHA_A"
 RELEASE_B="$KITS_ROOT/releases/$SHA_B"
 RELEASE_V11="$KITS_ROOT/releases/$SHA_V11"
+RELEASE_MODELS="$KITS_ROOT/releases/$SHA_MODELS"
 mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
 create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner" "1.0.0"
 create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR" "1.1.0"
 create_test_release "$RELEASE_V11" "RELEASE-V11" "RUN planner" "1.1.0"
+create_test_release "$RELEASE_MODELS" "RELEASE-MODELS" "RUN planner" "1.2.0"
 TREE_A="$(tree_for_directory "$RELEASE_A")"
 TREE_B="$(tree_for_directory "$RELEASE_B")"
 TREE_V11="$(tree_for_directory "$RELEASE_V11")"
+TREE_MODELS="$(tree_for_directory "$RELEASE_MODELS")"
 printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 REGISTRY_SENTINEL="$TMP/registry-was-sourced"
 cat > "$PROFILE/projects/launchtest.env" <<EOF
@@ -587,6 +640,9 @@ PY
 CLAIM_V1_RC=0
 run_launcher launchtest claim --ticket T-123 > "$TMP/claim-v1.out" 2>&1 || CLAIM_V1_RC=$?
 [[ "$CLAIM_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed dispatcher leases"
+MODELS_V1_RC=0
+run_launcher launchtest models profiles --json > "$TMP/models-v1.out" 2>&1 || MODELS_V1_RC=$?
+[[ "$MODELS_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed model control"
 TICKET_STATE_V1_RC=0
 run_launcher launchtest ticket-state --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
   --action materialize --json > "$TMP/ticket-state-v1.out" 2>&1 || TICKET_STATE_V1_RC=$?
@@ -742,6 +798,9 @@ PROJECT_LEDGER_V11_RC=0
 run_launcher launchtest project-ledger --ticket T-123 --workdir "$LAUNCH_PRODUCT" \
   --json > "$TMP/project-ledger-v11.out" 2>&1 || PROJECT_LEDGER_V11_RC=$?
 [[ "$PROJECT_LEDGER_V11_RC" -eq 1 ]] || fail "contract 1.1 unexpectedly exposed project-ledger"
+MODELS_V11_RC=0
+run_launcher launchtest models status --json > "$TMP/models-v11.out" 2>&1 || MODELS_V11_RC=$?
+[[ "$MODELS_V11_RC" -eq 1 ]] || fail "contract 1.1 unexpectedly exposed model control"
 python3 - "$TMP/launcher-contract-v11.json" "$TMP/launcher-doctor-v11.json" \
   "$TMP/preflight-v11.json" "$TMP/next-v11.json" <<'PY'
 import json, sys
@@ -944,6 +1003,8 @@ git -C "$LAUNCH_PRODUCT" init -b main >/dev/null 2>&1
 git -C "$LAUNCH_PRODUCT" config user.email "hermes-contract@test.local"
 git -C "$LAUNCH_PRODUCT" config user.name "hermes-contract-test"
 printf 'launcher worktree fixture\n' > "$LAUNCH_PRODUCT/README.md"
+mkdir -p "$LAUNCH_PRODUCT/factory/tickets"
+printf '# T-123\n\nState: Ready\n' > "$LAUNCH_PRODUCT/factory/tickets/T-123.md"
 cat > "$LAUNCH_PRODUCT/.gitignore" <<'EOF'
 factory/*-helper.env
 factory/runs/
@@ -972,6 +1033,166 @@ WRONG_TICKET_WORKTREE_PHYS="$(cd "$WRONG_TICKET_WORKTREE" && pwd -P)"
 RELEASE_B_PHYS="$(cd "$RELEASE_B" && pwd -P)"
 RELEASE_A_PHYS="$(cd "$RELEASE_A" && pwd -P)"
 LAUNCH_PRODUCT_PHYS="$(cd "$LAUNCH_PRODUCT" && pwd -P)"
+
+# Contract 1.2 exposes only the task-free, release-selected model-control
+# grammar. The launcher supplies project isolation and validates pin worktrees.
+printf '%s\n' "$SHA_MODELS" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_MODELS" "$TREE_MODELS" "$RELEASE_MODELS"
+MODEL_STATE_ROOT_PHYS="$(cd "$KITS_ROOT/projects" && pwd -P)"
+MODEL_HELPER_ENV="$LAUNCH_PRODUCT/factory/model-helper.env"
+
+assert_model_call() {
+  local label="$1"
+  shift
+  local origin_expectation=absent
+  [[ "$1" != "pin" ]] || origin_expectation=present
+  local action="$1"
+  local output="$TMP/models-$label.json"
+  if ! run_launcher launchtest models "$@" > "$output" 2>"$TMP/models-$label.err"; then
+    awk '{print}' "$TMP/models-$label.err" >&2
+    fail "valid model-control invocation was refused: $label"
+  fi
+  python3 - "$output" "$action" <<'PY'
+import json, sys
+path, action = sys.argv[1:]
+value = json.load(open(path, encoding="utf-8"))
+expected = {
+    "profiles": "model-manager-profiles/v1",
+    "status": "model-manager-status/v1",
+    "plan": "model-resolution-plan/v1",
+    "activate": "model-routing-active/v1",
+    "disable": "model-routing-overrides/v1",
+    "enable": "model-routing-overrides/v1",
+}[action]
+assert value["schema"] == expected, value
+if action in {"status", "activate", "disable", "enable"}:
+    assert value["project"] == "launchtest", value
+PY
+  assert_no_secret "$output"
+  assert_helper_confinement "$MODEL_HELPER_ENV" absent "$origin_expectation"
+  ! grep -qFx "GH_TOKEN_PRESENT=true" "$MODEL_HELPER_ENV" ||
+    fail "task-free model helper received GH_TOKEN"
+}
+
+assert_model_call profiles profiles --json
+assert_model_call status status --json
+assert_model_call plan plan --json
+assert_model_call plan-profile plan --profile legacy-balanced-v1 --json
+MODEL_PROFILE_HASH="$(python3 "$ROOT/scripts/model-router.py" profile-hash \
+  legacy-balanced-v1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile_hash"])')"
+assert_model_call activate activate --profile legacy-balanced-v1 \
+  --approve-hash "$MODEL_PROFILE_HASH" \
+  --approved-by operator-1 --json
+assert_model_call disable disable --scope-type route --scope-id codex-gpt-5.6-sol \
+  --reason credits_exhausted --ttl-seconds 60 --operator-id operator-1 --json
+assert_model_call enable enable --scope-type route --scope-id codex-gpt-5.6-sol --json
+
+PIN_HEAD_BEFORE="$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)"
+if ! run_launcher launchtest models pin --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
+  --json > "$TMP/models-pin.json"; then
+  cat "$TMP/models-pin.json" >&2
+  fail "valid model pin invocation failed"
+fi
+python3 - "$TMP/models-pin.json" "$RUN_WORKTREE_PHYS" "$SHA_MODELS" <<'PY'
+import json, pathlib, subprocess, sys
+path, workdir, kit_sha = sys.argv[1:]
+value = json.load(open(path, encoding="utf-8"))
+assert value["schema"] == "ticket-model-route-plan/v1", value
+assert value["commit_created"] is True, value
+assert len(value["commit_sha"]) == 40 and len(value["pin_hash"]) == 64, value
+ticket = pathlib.Path(workdir) / "factory/tickets/T-123.md"
+plan = pathlib.Path(workdir) / "factory/route-plans/T-123.json"
+assert ticket.read_text().count("Kit-SHA:") == 1
+assert f"Kit-SHA: {kit_sha}" in ticket.read_text()
+assert json.loads(plan.read_text())["ticket"] == "T-123"
+changed = subprocess.check_output(
+    ["git", "-C", workdir, "diff-tree", "--no-commit-id", "--name-only", "-r",
+     value["commit_sha"]], text=True
+).splitlines()
+assert sorted(changed) == [
+    "factory/route-plans/T-123.json", "factory/tickets/T-123.md"
+], changed
+PY
+[[ "$(git -C "$RUN_WORKTREE_PHYS" rev-list --count "$PIN_HEAD_BEFORE..HEAD")" == "1" ]] ||
+  fail "model pin did not create exactly one commit"
+[[ -z "$(git -C "$RUN_WORKTREE_PHYS" status --porcelain --untracked-files=all)" ]] ||
+  fail "model pin left staged or dirty state"
+PIN_REMOTE_HEAD="$(git -C "$RUN_WORKTREE_PHYS" ls-remote --heads \
+  "$LAUNCH_PRODUCT_REMOTE" refs/heads/ticket/T-123 | awk 'NR==1 {print $1; exit}')"
+[[ "$PIN_REMOTE_HEAD" == "$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)" ]] ||
+  fail "model pin did not push the exact ticket branch"
+assert_helper_confinement "$MODEL_HELPER_ENV" absent present
+assert_no_secret "$TMP/models-pin.json"
+if ! run_launcher launchtest models pin --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
+  --json > "$TMP/models-pin-again.json"; then
+  cat "$TMP/models-pin-again.json" >&2
+  fail "idempotent model pin invocation failed"
+fi
+python3 - "$TMP/models-pin.json" "$TMP/models-pin-again.json" <<'PY'
+import json, sys
+first, second = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:])
+assert second["commit_created"] is False, second
+assert second["commit_sha"] == first["commit_sha"], (first, second)
+assert second["pin_hash"] == first["pin_hash"], (first, second)
+PY
+
+expect_bad_model() {
+  local label="$1" rc=0
+  shift
+  run_launcher launchtest models "$@" > "$TMP/bad-model-$label.out" 2>&1 || rc=$?
+  [[ "$rc" -ne 0 ]] || fail "invalid model-control invocation was accepted: $label"
+  assert_no_secret "$TMP/bad-model-$label.out"
+}
+
+expect_bad_model reordered-json --json profiles
+expect_bad_model extra profiles --json extra
+expect_bad_model reordered-profile plan --json --profile legacy-balanced-v1
+expect_bad_model malformed-profile plan --profile ../unsafe --json
+expect_bad_model malformed-hash activate --profile legacy-balanced-v1 \
+  --approve-hash ABC --approved-by operator-1 --json
+expect_bad_model wrong-hash activate --profile legacy-balanced-v1 \
+  --approve-hash bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  --approved-by operator-1 --json
+expect_bad_model malformed-scope enable --scope-type route --scope-id ../unsafe --json
+expect_bad_model bad-reason disable --scope-type route --scope-id codex-gpt-5.6-sol \
+  --reason operator_request --ttl-seconds 60 --operator-id operator-1 --json
+expect_bad_model zero-ttl disable --scope-type route --scope-id codex-gpt-5.6-sol \
+  --reason credits_exhausted --ttl-seconds 0 --operator-id operator-1 --json
+expect_bad_model large-ttl disable --scope-type route --scope-id codex-gpt-5.6-sol \
+  --reason credits_exhausted --ttl-seconds 604801 --operator-id operator-1 --json
+expect_bad_model pin-main pin --ticket T-123 --workdir "$LAUNCH_PRODUCT_PHYS" --json
+expect_bad_model pin-wrong-ticket pin --ticket T-123 \
+  --workdir "$WRONG_TICKET_WORKTREE_PHYS" --json
+
+mv "$KITS_ROOT/projects/launchtest/routing" \
+  "$KITS_ROOT/projects/launchtest/routing-real"
+ln -s "$KITS_ROOT/projects/launchtest/routing-real" \
+  "$KITS_ROOT/projects/launchtest/routing"
+expect_bad_model symlinked-state status --json
+rm "$KITS_ROOT/projects/launchtest/routing"
+mv "$KITS_ROOT/projects/launchtest/routing-real" \
+  "$KITS_ROOT/projects/launchtest/routing"
+
+touch "$LAUNCH_PRODUCT/factory/MAINTENANCE"
+assert_model_call maintenance-profiles profiles --json
+assert_model_call maintenance-status status --json
+assert_model_call maintenance-plan plan --json
+expect_bad_model maintenance-activate activate --profile legacy-balanced-v1 \
+  --approve-hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --approved-by operator-1 --json
+expect_bad_model maintenance-disable disable --scope-type route \
+  --scope-id codex-gpt-5.6-sol --reason credits_exhausted --ttl-seconds 60 \
+  --operator-id operator-1 --json
+expect_bad_model maintenance-enable enable --scope-type route \
+  --scope-id codex-gpt-5.6-sol --json
+expect_bad_model maintenance-pin pin --ticket T-123 \
+  --workdir "$RUN_WORKTREE_PHYS" --json
+rm -f "$LAUNCH_PRODUCT/factory/MAINTENANCE"
+# Keep later launcher/run accounting fixtures independent from the model-state
+# mutation coverage above.
+rm -rf "$KITS_ROOT/projects/launchtest/routing"
+rm -f "$TEST_HOME/.factory/global.env"
+
 # Compatibility smoke: the new launcher can still run a mock role selected
 # from an active 1.0 release.
 printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
@@ -1171,14 +1392,16 @@ rm -f "$LAUNCH_PRODUCT/factory/MAINTENANCE"
 # Real sealed-runtime smoke: copied production helpers, no .git, trusted CLI stub.
 SHA_C="cccccccccccccccccccccccccccccccccccccccc"
 RELEASE_C="$KITS_ROOT/releases/$SHA_C"
-mkdir -p "$RELEASE_C/integrations/hermes" "$RELEASE_C/scripts"
+mkdir -p "$RELEASE_C/integrations/hermes" "$RELEASE_C/scripts/model-routing"
 cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py reorder-test-fixes.sh dispatch-lease.sh; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py reorder-test-fixes.sh dispatch-lease.sh model-control.sh model-manager.py model-router.py; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
+cp -p "$ROOT/scripts/model-routing/catalog-v1.json" \
+  "$ROOT/scripts/model-routing/profiles-v1.json" "$RELEASE_C/scripts/model-routing/"
 # Keep the production mock adapter's confidentiality assertion, but wrap it with
 # a deterministic gate so concurrent launcher runs can be observed in flight.
 mv "$RELEASE_C/scripts/adapters/mock.sh" "$RELEASE_C/scripts/adapters/mock-real.sh"
@@ -1486,7 +1709,11 @@ for _try in $(seq 1 1000); do
   [[ "$started" -eq 1 ]] && break
   sleep 0.02
 done
-[[ "$started" -eq 1 ]] || fail "near-cap fixture did not reach exactly one task adapter"
+if [[ "$started" -ne 1 ]]; then
+  sed 's/^/T-779: /' "$TMP/budget-779.out" >&2
+  sed 's/^/T-780: /' "$TMP/budget-780.out" >&2
+  fail "near-cap fixture did not reach exactly one task adapter"
+fi
 BUDGET_779_RC=0 BUDGET_780_RC=0
 touch "$LAUNCH_PRODUCT/factory/test-adapter-gate"
 wait "$BUDGET_779_PID" || BUDGET_779_RC=$?
@@ -1689,6 +1916,37 @@ assert contract["launcher"]["source"] == "integrations/hermes/bin/factory-launch
 commands = contract["launcher"]["commands"]
 assert commands["contract"]["arguments"] == ["--json"]
 assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
+assert commands["models"]["minimum_contract_version"] == "1.2.0"
+assert commands["models"]["helper"] == "scripts/model-control.sh"
+assert commands["models"]["grammars"] == [
+    "profiles --json",
+    "status --json",
+    "plan --json",
+    "plan --profile <safe-id> --json",
+    "activate --profile <safe-id> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
+    "disable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --reason credits_exhausted --ttl-seconds <1..604800> --operator-id <safe-id> --json",
+    "enable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --json",
+    "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
+]
+assert commands["models"]["state"] == {
+    "root": "$FACTORY_KITS_ROOT/projects",
+    "project": "<project>",
+    "active_profile": "$FACTORY_KITS_ROOT/projects/<project>/routing/active.json",
+    "temporary_overrides": "$FACTORY_KITS_ROOT/projects/<project>/routing/overrides.json",
+    "ticket_route_plan": "<ticket-worktree>/factory/route-plans/<T-NNN>.json",
+    "isolation": "active profiles and temporary overrides are selected only from the validated launcher project",
+}
+assert commands["models"]["output_schemas"]["activate"] == "model-routing-active/v1"
+assert commands["models"]["output_schemas"]["pin"].endswith(
+    "commit_created, commit_sha, and pin_hash"
+)
+assert commands["models"]["pin_transaction"]["result_fields"] == [
+    "commit_created", "commit_sha", "pin_hash"
+]
+assert commands["models"]["maintenance"] == {
+    "allowed": ["profiles", "status", "plan"],
+    "refused": ["activate", "disable", "enable", "pin"],
+}
 assert commands["preflight"]["arguments"][-1] == "--json"
 assert commands["next-stage"]["arguments"][-1] == "--json"
 assert commands["preflight"]["arguments"][-3:] == [
@@ -1761,6 +2019,8 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_RELEASE_TREE": "active record kit_tree",
     "FACTORY_RELEASE_PATH": "resolved physical release path",
     "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+    "FACTORY_MODEL_STATE_ROOT": "resolved production kits projects directory",
+    "FACTORY_PROJECT": "validated launcher project slug",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
 }
@@ -1773,6 +2033,8 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_RELEASE_TREE",
     "FACTORY_RELEASE_PATH",
     "FACTORY_RELEASE_CONTRACT_VERSION",
+    "FACTORY_MODEL_STATE_ROOT",
+    "FACTORY_PROJECT",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
     "GH_TOKEN",
@@ -1803,6 +2065,19 @@ assert contract["launcher"]["active_record"]["contract_1_2_required_fields"] == 
 ]
 assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
+for surface in [
+    "scripts/model-control.sh",
+    "scripts/model-manager.py",
+    "scripts/model-router.py",
+    "scripts/lib/backend-policy.sh",
+    "scripts/lib/kit-pin.sh",
+    "scripts/lib/plain-config.sh",
+    "scripts/lib/product-remote.sh",
+    "scripts/model-routing/catalog-v1.json",
+    "scripts/model-routing/profiles-v1.json",
+    "factory/route-plans/<T-NNN>.json",
+]:
+    assert surface in contract["compatibility_sensitive_surfaces"], surface
 
 integration = os.path.join(root, "integrations", "hermes")
 required = [

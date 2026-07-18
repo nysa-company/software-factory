@@ -7,6 +7,10 @@
 
 FACTORY_POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FACTORY_CURSOR_MODEL_ALLOWLIST="${FACTORY_CURSOR_MODEL_ALLOWLIST:-$FACTORY_POLICY_DIR/cursor-model-families.txt}"
+FACTORY_MODEL_ROUTER="${FACTORY_MODEL_ROUTER:-$FACTORY_POLICY_DIR/../model-router.py}"
+FACTORY_MODEL_MANAGER="${FACTORY_MODEL_MANAGER:-$FACTORY_POLICY_DIR/../model-manager.py}"
+FACTORY_MODEL_CATALOG="${FACTORY_MODEL_CATALOG:-$FACTORY_POLICY_DIR/../model-routing/catalog-v1.json}"
+FACTORY_MODEL_PROFILES="${FACTORY_MODEL_PROFILES:-$FACTORY_POLICY_DIR/../model-routing/profiles-v1.json}"
 
 factory_role_group() {
   case "$1" in
@@ -63,6 +67,7 @@ factory_adapter_family() {
   case "$1" in
     codex|cursor-openai) printf '%s\n' openai ;;
     claude-code|cursor-anthropic) printf '%s\n' anthropic ;;
+    claude-kimi) printf '%s\n' moonshot ;;
     mock) printf '%s\n' mock ;;
     *) return 1 ;;
   esac
@@ -97,7 +102,7 @@ factory_model_report_name() {
 }
 
 factory_probe_override() {
-  local adapter="$1" value=""
+  local adapter="$1" explicit_model="${2:-}" value=""
   case "$adapter" in
     codex) value="${FACTORY_PROBE_CODEX:-}" ;;
     claude-code) value="${FACTORY_PROBE_CLAUDE_CODE:-}" ;;
@@ -114,21 +119,41 @@ factory_probe_override() {
   PROBE_VERSION="test"
   PROBE_MODEL=""
   case "$adapter" in
-    cursor-*) PROBE_MODEL="$(factory_cursor_model "$adapter")" ;;
+    cursor-*) PROBE_MODEL="${explicit_model:-$(factory_cursor_model "$adapter")}" ;;
   esac
+  PROBE_REPORTED_IDENTITY=""
+  if [[ "$adapter" == cursor-* && -n "$PROBE_MODEL" ]]; then
+    PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$PROBE_MODEL" 2>/dev/null || true)"
+  fi
   return 0
 }
 
 factory_probe_adapter() {
-  local adapter="$1" installed installed_version help model expected_family actual_family
+  local adapter="$1" explicit_model="${2:-}"
+  local installed installed_version help model expected_family actual_family
+  local claude_bin secret_file minimal_path required_flag
   local cursor_bin="${CURSOR_AGENT_BIN:-agent}"
   local probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-10}"
   PROBE_STATE="UNKNOWN"
   PROBE_REASON="unclassified"
   PROBE_VERSION=""
   PROBE_MODEL=""
+  PROBE_REPORTED_IDENTITY=""
 
-  if factory_probe_override "$adapter"; then
+  if [[ -n "${FACTORY_PROBE_TRACE:-}" &&
+        "${FACTORY_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" ]]; then
+    printf '%s|%s\n' "$adapter" "$explicit_model" >> "$FACTORY_PROBE_TRACE"
+  fi
+  if factory_probe_override "$adapter" "$explicit_model"; then
+    return 0
+  fi
+  if [[ "$adapter" == "claude-kimi" ]] &&
+     { [[ "${FACTORY_KIMI_PILOT_TEST:-0}" != "1" ]] ||
+       [[ "${FACTORY_TEST_MODE:-0}" != "1" ]] ||
+       [[ "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ]]; }; then
+    PROBE_STATE="UNAVAILABLE"
+    PROBE_REASON="experimental_route_disabled"
     return 0
   fi
   if [[ "$adapter" != "mock" ]] && ! command -v timeout >/dev/null 2>&1; then
@@ -181,11 +206,58 @@ factory_probe_adapter() {
       fi
       PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
       ;;
+    claude-kimi)
+      PROBE_MODEL="${explicit_model:-moonshotai/kimi-k2.6}"
+      PROBE_REPORTED_IDENTITY="moonshotai/kimi-k2.6"
+      if [[ "${FACTORY_KIMI_PILOT_TEST:-0}" != "1" ||
+            "${FACTORY_TEST_MODE:-0}" != "1" ||
+            "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ]]; then
+        PROBE_STATE="UNAVAILABLE"
+        PROBE_REASON="experimental_route_disabled"
+        PROBE_REPORTED_IDENTITY=""
+        return 0
+      fi
+      if [[ "$PROBE_MODEL" != "moonshotai/kimi-k2.6" ]]; then
+        PROBE_STATE="INVALID"; PROBE_REASON="model_not_explicit"; return 0
+      fi
+      claude_bin="$(type -P claude || true)"
+      if [[ -z "$claude_bin" ]]; then
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
+      fi
+      minimal_path="$(dirname "$claude_bin"):/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+      installed="$(timeout "$probe_timeout" env -i HOME="$HOME" PATH="$minimal_path" \
+        "$claude_bin" --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
+      PROBE_VERSION="$installed"
+      if [[ -z "$installed" ]]; then
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
+      fi
+      if [[ "${installed%% *}" != "2.1.207" ]]; then
+        PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
+      fi
+      help="$(timeout "$probe_timeout" env -i HOME="$HOME" PATH="$minimal_path" \
+        "$claude_bin" --help 2>/dev/null || true)"
+      for required_flag in --max-turns --max-budget-usd --output-format --model \
+        --append-system-prompt-file --dangerously-skip-permissions; do
+        if [[ "$help" != *"$required_flag"* ]]; then
+          PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
+        fi
+      done
+      secret_file="$HOME/.factory/secrets/openrouter-kimi.key"
+      if [[ -n "${FACTORY_KIMI_SECRET_FILE:-}" ]]; then
+        secret_file="$FACTORY_KIMI_SECRET_FILE"
+      fi
+      if ! timeout "$probe_timeout" python3 \
+          "$FACTORY_POLICY_DIR/claude-kimi-secret.py" --check "$secret_file" \
+          >/dev/null 2>&1; then
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
+      fi
+      PROBE_STATE="READY"; PROBE_REASON="trusted_pilot_contract_ready"
+      ;;
     cursor-openai|cursor-anthropic)
       if [[ "${FACTORY_CURSOR_FALLBACK_ENABLED:-0}" != "1" ]]; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="fallback_disabled"; return 0
       fi
-      model="$(factory_cursor_model "$adapter")"
+      model="${explicit_model:-$(factory_cursor_model "$adapter")}"
       PROBE_MODEL="$model"
       if [[ -z "$model" || "$model" == "auto" ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="model_not_explicit"; return 0
@@ -228,6 +300,10 @@ factory_probe_adapter() {
       if ! timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
            awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
         PROBE_STATE="INVALID"; PROBE_REASON="model_unavailable"; return 0
+      fi
+      PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$model" 2>/dev/null || true)"
+      if [[ -z "$PROBE_REPORTED_IDENTITY" ]]; then
+        PROBE_STATE="INVALID"; PROBE_REASON="model_not_allowlisted"; return 0
       fi
       PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
       ;;
@@ -298,5 +374,304 @@ factory_resolve_role() {
   FACTORY_SELECTED_EFFORT="$effort"
   FACTORY_SELECTED_VERSION="$PROBE_VERSION"
   FACTORY_SELECTION_REASON="primary_${FACTORY_PRIMARY_REASON}"
+  return 0
+}
+
+# Resolve a complete profile from non-task readiness probes. Each catalog route
+# is probed once, even when several roles share it.
+factory_resolve_model_profile() {
+  local profile_id="$1" output_plan="$2" disabled="${3:-}"
+  local tmp probes rows readiness plan_tmp route_id adapter selection expected
+  local disabled_route state reason version reported
+  FACTORY_RESOLVE_ERROR=""
+  [[ -n "$profile_id" && -n "$output_plan" ]] || {
+    FACTORY_RESOLVE_ERROR="invalid_resolution_arguments"
+    return 2
+  }
+  command -v python3 >/dev/null 2>&1 || {
+    FACTORY_RESOLVE_ERROR="python_missing"
+    return 2
+  }
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/factory-model-resolution.XXXXXX")" || {
+    FACTORY_RESOLVE_ERROR="temporary_directory_failed"
+    return 2
+  }
+  probes="$tmp/probes.json"
+  rows="$tmp/probes.tsv"
+  readiness="$tmp/readiness.tsv"
+  : > "$readiness"
+
+  if ! python3 -B "$FACTORY_MODEL_ROUTER" probe-list "$profile_id" \
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES" \
+      > "$probes" 2>/dev/null; then
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="probe_list_invalid"
+    return 2
+  fi
+  if ! python3 - "$probes" "$rows" "$disabled" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    probes = json.load(handle)
+disabled = set(filter(None, re.split(r"[\s,]+", sys.argv[3])))
+safe = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+if any(not safe.fullmatch(value) or value == "auto" for value in disabled):
+    raise SystemExit(2)
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    for probe in probes:
+        values = (
+            probe["route_id"], probe["adapter"], probe["selection_id"],
+            probe["expected_reported_identity"],
+        )
+        if any("\t" in value or "\n" in value for value in values):
+            raise SystemExit(2)
+        handle.write("\t".join(values) + "\n")
+PY
+  then
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="disabled_route_ids_invalid"
+    return 2
+  fi
+
+  while IFS=$'\t' read -r route_id adapter selection expected; do
+    [[ -n "$route_id" ]] || continue
+    disabled_route=0
+    case ",$(printf '%s' "$disabled" | tr '[:space:]' ',')," in
+      *",$route_id,"*) disabled_route=1 ;;
+    esac
+    if [[ "$disabled_route" == "1" ]]; then
+      state="UNAVAILABLE"
+      reason="credits_exhausted"
+      version=""
+      reported=""
+    else
+      factory_probe_adapter "$adapter" "$selection"
+      state="$PROBE_STATE"
+      reason="$PROBE_REASON"
+      version="$PROBE_VERSION"
+      reported="$PROBE_REPORTED_IDENTITY"
+      if [[ "$state" == "READY" && "$reported" != "$expected" ]]; then
+        state="INVALID"
+        reason="reported_identity_mismatch"
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$route_id" "$state" "$reason" "$version" "$reported" >> "$readiness"
+  done < "$rows"
+
+  if ! python3 - "$readiness" "$tmp/readiness.json" <<'PY'
+import json
+import sys
+
+result = {}
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for line in handle:
+        route_id, state, reason, version, reported = line.rstrip("\n").split("\t")
+        if route_id in result:
+            raise SystemExit(2)
+        result[route_id] = {
+            "adapter_version": version,
+            "reason": reason,
+            "reported_identity": reported,
+            "state": state,
+        }
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(result, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    handle.write("\n")
+PY
+  then
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="readiness_generation_failed"
+    return 2
+  fi
+
+  plan_tmp="$(mktemp "${output_plan}.tmp.XXXXXX")" || {
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="output_temporary_file_failed"
+    return 2
+  }
+  if ! python3 -B "$FACTORY_MODEL_ROUTER" resolve "$profile_id" "$tmp/readiness.json" \
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES" \
+      > "$plan_tmp" 2>/dev/null; then
+    rm -f "$plan_tmp"
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="profile_resolution_failed"
+    return 2
+  fi
+  chmod 0600 "$plan_tmp" 2>/dev/null || {
+    rm -f "$plan_tmp"
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="output_mode_failed"
+    return 2
+  }
+  if ! mv -f "$plan_tmp" "$output_plan"; then
+    rm -f "$plan_tmp"
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="output_install_failed"
+    return 2
+  fi
+  rm -rf "$tmp"
+  return 0
+}
+
+# Load project routing state for probes, with no product or task content.
+factory_load_model_probe_context() {
+  local context override="${FACTORY_MODEL_PROFILE_OVERRIDE:-}"
+  FACTORY_RESOLVE_ERROR=""
+  if [[ -n "$override" ]]; then
+    if [[ "${FACTORY_TEST_MODE:-0}" != "1" ||
+          "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ]]; then
+      FACTORY_RESOLVE_ERROR="profile_override_requires_trusted_test_harness"
+      return 2
+    fi
+  fi
+  if [[ -n "${FACTORY_MODEL_STATE_ROOT:-}" || -n "${FACTORY_PROJECT:-}" ]]; then
+    if [[ -z "${FACTORY_MODEL_STATE_ROOT:-}" || -z "${FACTORY_PROJECT:-}" ]]; then
+      FACTORY_RESOLVE_ERROR="model_state_context_incomplete"
+      return 2
+    fi
+    if ! context="$(python3 -B "$FACTORY_MODEL_MANAGER" probe-context \
+        --state-root "$FACTORY_MODEL_STATE_ROOT" --project "$FACTORY_PROJECT" \
+        --catalog "$FACTORY_MODEL_CATALOG" \
+        --profiles-file "$FACTORY_MODEL_PROFILES" 2>/dev/null)"; then
+      FACTORY_RESOLVE_ERROR="model_state_invalid"
+      return 2
+    fi
+    if ! read -r FACTORY_MODEL_PROFILE_ID FACTORY_DISABLED_ROUTE_IDS < <(
+      python3 -c 'import json,sys
+d=json.load(sys.stdin)
+assert d["schema"]=="model-manager-probe-context/v1"
+print(d["profile_id"], ",".join(d["disabled_route_ids"]))' <<< "$context"
+    ); then
+      FACTORY_RESOLVE_ERROR="model_context_invalid"
+      return 2
+    fi
+  else
+    FACTORY_MODEL_PROFILE_ID="legacy-balanced-v1"
+    FACTORY_DISABLED_ROUTE_IDS=""
+  fi
+  [[ -z "$override" ]] || FACTORY_MODEL_PROFILE_ID="$override"
+  return 0
+}
+
+# Select one validated role tuple from a pure model-resolution plan.
+factory_select_model_role() {
+  local plan="$1" role="$2" selection values
+  FACTORY_RESOLVE_ERROR=""
+  if ! selection="$(python3 -B "$FACTORY_MODEL_ROUTER" select "$plan" "$role" \
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES" \
+      2>/dev/null)"; then
+    FACTORY_RESOLVE_ERROR="plan_selection_invalid"
+    return 2
+  fi
+  if ! values="$(python3 - "$plan" "$selection" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    plan = json.load(handle)
+value = json.loads(sys.argv[2])
+fields = (
+    value["adapter"], value["provider_family"], value["selection_id"],
+    value["effort"], value["adapter_version"], value["route_id"],
+    value["gateway_id"], value["inference_provider_id"],
+    value["account_route_id"], value["transport"], plan["policy_hash"],
+    value["reported_identity"],
+)
+if any("\t" in item or "\n" in item for item in fields):
+    raise SystemExit(2)
+print("\t".join(fields))
+PY
+  )"; then
+    FACTORY_RESOLVE_ERROR="plan_tuple_invalid"
+    return 2
+  fi
+  IFS=$'\t' read -r FACTORY_SELECTED_ADAPTER FACTORY_SELECTED_FAMILY \
+    FACTORY_SELECTED_MODEL FACTORY_SELECTED_EFFORT FACTORY_SELECTED_VERSION \
+    FACTORY_SELECTED_ROUTE_ID FACTORY_SELECTED_GATEWAY_ID \
+    FACTORY_SELECTED_PROVIDER_ID FACTORY_SELECTED_ACCOUNT_ROUTE_ID \
+    FACTORY_SELECTED_TRANSPORT FACTORY_SELECTED_POLICY_HASH \
+    FACTORY_SELECTED_REPORTED_IDENTITY <<< "$values"
+  FACTORY_SELECTION_REASON="resolved_profile"
+  return 0
+}
+
+# Select one role from an immutable ticket route plan. The manager validates
+# the wrapper, embedded pure resolution, ticket/kit affinity, and exact role
+# tuple before any values are exposed to the launcher.
+factory_select_pinned_model_role() {
+  local ticket_plan="$1" ticket="$2" kit_sha="$3" role="$4"
+  local state_root project selection values
+  FACTORY_RESOLVE_ERROR=""
+  state_root="${FACTORY_MODEL_STATE_ROOT:-${HOME:-/tmp}/.factory/model-state}"
+  project="${FACTORY_PROJECT:-software-factory}"
+  if [[ "$state_root" != /* ]]; then
+    FACTORY_RESOLVE_ERROR="model_state_root_not_absolute"
+    return 2
+  fi
+  if ! selection="$(python3 -B "$FACTORY_MODEL_MANAGER" select \
+      --state-root "$state_root" --project "$project" \
+      --catalog "$FACTORY_MODEL_CATALOG" \
+      --profiles-file "$FACTORY_MODEL_PROFILES" \
+      --ticket-plan "$ticket_plan" --ticket "$ticket" \
+      --kit-sha "$kit_sha" --role "$role" 2>/dev/null)"; then
+    FACTORY_RESOLVE_ERROR="pinned_selection_invalid"
+    return 2
+  fi
+  if ! values="$(python3 - "$ticket_plan" "$selection" <<'PY'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    raw = handle.read()
+plan = json.loads(raw)
+value = json.loads(sys.argv[2])
+fields = (
+    value["adapter"], value["provider_family"], value["selection_id"],
+    value["effort"], value["adapter_version"], value["route_id"],
+    value["gateway_id"], value["inference_provider_id"],
+    value["account_route_id"], value["transport"],
+    plan["resolution"]["policy_hash"], value["reported_identity"],
+    hashlib.sha256(raw).hexdigest(),
+)
+if any(not isinstance(item, str) or "\x1f" in item or "\n" in item for item in fields):
+    raise SystemExit(2)
+print("\x1f".join(fields))
+PY
+  )"; then
+    FACTORY_RESOLVE_ERROR="pinned_tuple_invalid"
+    return 2
+  fi
+  IFS=$'\x1f' read -r FACTORY_SELECTED_ADAPTER FACTORY_SELECTED_FAMILY \
+    FACTORY_SELECTED_MODEL FACTORY_SELECTED_EFFORT FACTORY_SELECTED_VERSION \
+    FACTORY_SELECTED_ROUTE_ID FACTORY_SELECTED_GATEWAY_ID \
+    FACTORY_SELECTED_PROVIDER_ID FACTORY_SELECTED_ACCOUNT_ROUTE_ID \
+    FACTORY_SELECTED_TRANSPORT FACTORY_SELECTED_POLICY_HASH \
+    FACTORY_SELECTED_REPORTED_IDENTITY FACTORY_SELECTED_ROUTE_PLAN_SHA256 \
+    <<< "$values"
+  FACTORY_SELECTION_REASON="pinned_route_plan"
+  return 0
+}
+
+# Re-probe only the already selected route. This is deliberately verification,
+# never resolution: an outage or identity/version drift cannot select fallback.
+factory_verify_selected_pinned_route_ready() {
+  FACTORY_RESOLVE_ERROR=""
+  factory_probe_adapter "$FACTORY_SELECTED_ADAPTER" "$FACTORY_SELECTED_MODEL"
+  if [[ "$PROBE_STATE" != "READY" ]]; then
+    FACTORY_RESOLVE_ERROR="pinned_route_${PROBE_STATE}_${PROBE_REASON}"
+    return 2
+  fi
+  if [[ "$PROBE_VERSION" != "$FACTORY_SELECTED_VERSION" ]]; then
+    FACTORY_RESOLVE_ERROR="pinned_route_adapter_version_drift"
+    return 2
+  fi
+  if [[ "$PROBE_REPORTED_IDENTITY" != "$FACTORY_SELECTED_REPORTED_IDENTITY" ]]; then
+    FACTORY_RESOLVE_ERROR="pinned_route_reported_identity_drift"
+    return 2
+  fi
   return 0
 }

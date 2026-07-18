@@ -2,6 +2,7 @@
 """Network-free trusted ticket attestation regressions."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -39,6 +40,7 @@ class TicketAttestTests(unittest.TestCase):
         command("git", "remote", "add", "origin", str(self.remote), cwd=self.product)
         (self.product / "factory/tickets").mkdir(parents=True)
         (self.product / "factory/runs").mkdir()
+        (self.product / "factory/route-plans").mkdir()
         (self.product / "factory/PROJECT.env").write_text(
             "GH_REPO=acme/widget\nDONE_REQUIRED_CHECKS=ci,deploy-production\n"
             "AUTO_MERGE_METHOD=squash\n"
@@ -53,6 +55,45 @@ class TicketAttestTests(unittest.TestCase):
         (self.product / "factory/ledger.csv").write_text(ledger_header)
         (self.product / "factory/KIT_PIN").write_text(
             command("git", "-C", str(ROOT), "rev-parse", "HEAD").stdout.strip() + "\n"
+        )
+        selection = {
+            "account_route_id": "test-account",
+            "adapter": "mock",
+            "adapter_version": "1",
+            "effort": "medium",
+            "gateway_id": "direct",
+            "inference_provider_id": "test-provider",
+            "provider_family": "anthropic",
+            "reported_identity": "mock",
+            "role": "",
+            "route_id": "mock-route",
+            "selection_id": "mock",
+            "transport": "test",
+        }
+        selections = {
+            role: {**selection, "role": role}
+            for role in (
+                "planner", "spec-linter", "test-author", "builder", "reviewer", "narrator",
+            )
+        }
+        route_plan = {
+            "created_at": "2026-07-17T11:00:00Z",
+            "kit_sha": KIT_SHA,
+            "resolution": {
+                "catalog_hash": "b" * 64,
+                "policy_hash": "d" * 64,
+                "portfolio_id": "test-portfolio",
+                "profile_hash": "c" * 64,
+                "profile_id": "test-profile",
+                "profile_version": 1,
+                "schema": "model-resolution-plan/v1",
+                "selections": selections,
+            },
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-700",
+        }
+        (self.product / "factory/route-plans/T-700.json").write_text(
+            json.dumps(route_plan, indent=2, sort_keys=True) + "\n"
         )
         (self.product / "factory/tickets/T-700.md").write_text(self.ticket("Review"))
         self.commit("base")
@@ -132,6 +173,9 @@ Priority: normal
             "run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version\n"
         )
         rows = []
+        plan_digest = hashlib.sha256(
+            (self.product / "factory/route-plans/T-700.json").read_bytes()
+        ).hexdigest()
         for index, role in enumerate(("reviewer", "narrator"), 1):
             run_id = f"{role}-1"
             (self.product / f"factory/runs/{run_id}.meta").write_text(
@@ -139,13 +183,16 @@ Priority: normal
                 "reserved_usd=1\ngo_issued=1\nstarted_at=2026-07-17T12:00:00Z\n"
                 "prompt_version=1\nturns=1\neffective_cost=0.1\ncost_basis=reported\n"
                 f"exit_status=0\nticket=T-700\nrole={role}\nadapter=mock\n"
-                "provider_family=anthropic\nselection_reason=primary\nadapter_version=1\n"
-                "model_id=mock\n"
+                "provider_family=anthropic\nselection_reason=pinned_route_plan\n"
+                "adapter_version=1\nmodel_id=mock\neffort=medium\nroute_id=mock-route\n"
+                "gateway_id=direct\ninference_provider_id=test-provider\n"
+                "account_route_id=test-account\ntransport=test\n"
+                f"policy_hash={'d' * 64}\nroute_plan_sha256={plan_digest}\nkit_sha={KIT_SHA}\n"
                 f"role_head_before={self.reviewed}\nterminal_at=2026-07-17T12:0{index}:00Z\n"
             )
             rows.append(
                 f"2026-07-17,12:0{index}:00,T-700,{role},mock,1,1,0.1,0,{run_id},"
-                "anthropic,mock,primary,reported,1\n"
+                "anthropic,mock,pinned_route_plan,reported,1\n"
             )
         (self.product / "factory/runtime-ledger.csv").write_text(fields + "".join(rows))
 
@@ -288,22 +335,38 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.assertIn("changed after", self.attest("bundle").stderr)
 
+    def test_bundle_refuses_run_provenance_outside_pinned_route(self):
+        manifest = self.product / "factory/runs/reviewer-1.meta"
+        manifest.write_text(
+            manifest.read_text().replace("route_id=mock-route", "route_id=other-route")
+        )
+        self.assertIn("does not match its pinned route", self.attest("bundle").stderr)
+
     def test_later_request_changes_overrides_earlier_approve(self):
         ticket = self.product / "factory/tickets/T-700.md"
         ticket.write_text(ticket.read_text() + "reviewer round 2: REQUEST CHANGES — regression\n")
         ledger = self.product / "factory/runtime-ledger.csv"
         rows = ledger.read_text()
+        plan_digest = hashlib.sha256(
+            (self.product / "factory/route-plans/T-700.json").read_bytes()
+        ).hexdigest()
         for index, role in ((3, "reviewer"), (4, "narrator")):
             run_id = f"{role}-2"
             (self.product / f"factory/runs/{run_id}.meta").write_text(
                 f"run_id={run_id}\naccounting_schema=1\naccounting_state=completed\n"
                 "exit_status=0\nticket=T-700\n"
                 f"role={role}\nrole_head_before={self.reviewed}\n"
+                "adapter=mock\nprovider_family=anthropic\nmodel_id=mock\neffort=medium\n"
+                "selection_reason=pinned_route_plan\nadapter_version=1\n"
+                "route_id=mock-route\ngateway_id=direct\n"
+                "inference_provider_id=test-provider\naccount_route_id=test-account\n"
+                "transport=test\n"
+                f"policy_hash={'d' * 64}\nroute_plan_sha256={plan_digest}\nkit_sha={KIT_SHA}\n"
                 f"terminal_at=2026-07-17T12:0{index}:00Z\n"
             )
             rows += (
                 f"2026-07-17,12:0{index}:00,T-700,{role},mock,1,1,0.1,0,{run_id},"
-                "anthropic,mock,primary,reported,1\n"
+                "anthropic,mock,pinned_route_plan,reported,1\n"
             )
         ledger.write_text(rows)
         self.commit("later rejection")

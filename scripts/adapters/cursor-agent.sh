@@ -8,6 +8,7 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
 
 BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
+MODEL="" EFFORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --budget) BUDGET="$2"; shift 2 ;;
@@ -15,6 +16,8 @@ while [[ $# -gt 0 ]]; do
     --timeout-min) TIMEOUT_MIN="$2"; shift 2 ;;
     --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
     --workdir) WORKDIR="$2"; shift 2 ;;
+    --model) MODEL="$2"; shift 2 ;;
+    --effort) EFFORT="$2"; shift 2 ;;
     --) shift; break ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -27,7 +30,20 @@ case "${FACTORY_CURSOR_FAMILY:-}" in
   *) echo "Cursor adapter must be invoked through a family-typed shim" >&2; exit 2 ;;
 esac
 
-MODEL="$(factory_cursor_model "$ADAPTER")"
+# Temporary compatibility for the legacy launcher. Resolved callers always
+# supply both values; remove this bridge when run-agent consumes plans.
+if [[ -z "$MODEL" && -z "$EFFORT" ]]; then
+  MODEL="$(factory_cursor_model "$ADAPTER")"
+  EFFORT="medium"
+fi
+if [[ -z "$MODEL" || -z "$EFFORT" ]]; then
+  echo "Cursor adapter requires --model and --effort" >&2
+  exit 2
+fi
+case "$EFFORT" in
+  low|medium|high) ;;
+  *) echo "Cursor effort is invalid" >&2; exit 2 ;;
+esac
 EXPECTED_FAMILY="$(factory_adapter_family "$ADAPTER")"
 ACTUAL_FAMILY="$(factory_model_family "$MODEL" 2>/dev/null || true)"
 EXPECTED_REPORTED_MODEL="$(factory_model_report_name "$MODEL" 2>/dev/null || true)"
@@ -56,6 +72,12 @@ INSTALLED_VERSION="$(printf '%s\n' "$INSTALLED" | awk '{print $NF}')"
   echo "Cursor Agent compatibility version mismatch" >&2
   exit 6
 }
+if ! timeout "${FACTORY_PROBE_TIMEOUT_SEC:-10}" "$CURSOR_BIN" models 2>/dev/null |
+     awk -v model="$MODEL" \
+       '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
+  echo "Resolved Cursor model is unavailable" >&2
+  exit 6
+fi
 
 FULL_TASK="$TASK"
 if [[ -s "$PROMPT_FILE" ]]; then

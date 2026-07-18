@@ -78,6 +78,77 @@
         ],
         "output_schema": "nysa.software-factory.hermes-doctor/v1"
       },
+      "models": {
+        "minimum_contract_version": "1.2.0",
+        "helper": "scripts/model-control.sh",
+        "grammars": [
+          "profiles --json",
+          "status --json",
+          "plan --json",
+          "plan --profile <safe-id> --json",
+          "activate --profile <safe-id> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
+          "disable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --reason credits_exhausted --ttl-seconds <1..604800> --operator-id <safe-id> --json",
+          "enable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --json",
+          "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json"
+        ],
+        "output": "deterministic JSON emitted directly by the selected release model-control helper",
+        "output_schemas": {
+          "profiles": "model-manager-profiles/v1",
+          "status": "model-manager-status/v1",
+          "plan": "model-resolution-plan/v1",
+          "activate": "model-routing-active/v1",
+          "disable": "model-routing-overrides/v1",
+          "enable": "model-routing-overrides/v1",
+          "pin": "ticket-model-route-plan/v1 plus commit_created, commit_sha, and pin_hash"
+        },
+        "json_marker": "required as the final launcher argument and stripped before helper invocation",
+        "maintenance": {
+          "allowed": [
+            "profiles",
+            "status",
+            "plan"
+          ],
+          "refused": [
+            "activate",
+            "disable",
+            "enable",
+            "pin"
+          ]
+        },
+        "state": {
+          "root": "$FACTORY_KITS_ROOT/projects",
+          "project": "<project>",
+          "active_profile": "$FACTORY_KITS_ROOT/projects/<project>/routing/active.json",
+          "temporary_overrides": "$FACTORY_KITS_ROOT/projects/<project>/routing/overrides.json",
+          "ticket_route_plan": "<ticket-worktree>/factory/route-plans/<T-NNN>.json",
+          "isolation": "active profiles and temporary overrides are selected only from the validated launcher project"
+        },
+        "pin_transaction": {
+          "first_pin": "validate a clean exact ticket branch and certified origin, record a missing Kit-SHA with the shared validated helper, generate the route plan, stage both paths, create exactly one Software Factory commit, and push HEAD to the exact ticket branch",
+          "existing_pin": "an exact committed Kit-SHA and route plan is validated, pushed to the exact ticket branch, and returned without a new commit",
+          "refusals": [
+            "dirty worktree",
+            "wrong or detached ticket branch",
+            "certified product origin mismatch",
+            "conflicting Kit-SHA or route plan",
+            "uncommitted existing route plan",
+            "partial or unexpected staged changes"
+          ],
+          "pre_commit_failure": "restore the ticket and route-plan paths and leave no staged-only state",
+          "result_fields": [
+            "commit_created",
+            "commit_sha",
+            "pin_hash"
+          ]
+        },
+        "validation": [
+          "exact argument order with no arbitrary manager, catalog, profile-file, or profile-override paths",
+          "pin workdir uses the launcher's exact physical ticket worktree validation",
+          "profile GH_TOKEN is not passed to this task-free helper",
+          "only pin receives the receipt-bound FACTORY_CERTIFIED_PRODUCT_ORIGIN",
+          "task-bearing adapters do not inherit FACTORY_MODEL_STATE_ROOT or FACTORY_PROJECT"
+        ]
+      },
       "next-stage": {
         "arguments": [
           "--ticket",
@@ -167,6 +238,7 @@
           "available only under contract 1.3.0",
           "matching unexpired dispatcher lease required when MAX_CONCURRENT_TICKETS=2 and never persisted or returned",
           "bundle and approval require the exact clean ticket branch and remote tip",
+          "bundle binds every successful role-run manifest to its exact committed six-role route-plan tuple, blob, digest, policy hash, and kit SHA",
           "initial done requires exact clean chore/tNNN-closeout with HEAD equal to origin/main; retries require the exact remote attested closeout commit",
           "AUTO_MERGE_METHOD is required and exactly squash, merge, or rebase",
           "done creates or reuses one exact closeout PR and requests protected auto-merge without bypass",
@@ -254,6 +326,8 @@
       "FACTORY_RELEASE_TREE": "active record kit_tree",
       "FACTORY_RELEASE_PATH": "resolved physical release path",
       "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
+      "FACTORY_MODEL_STATE_ROOT": "resolved production kits projects directory",
+      "FACTORY_PROJECT": "validated launcher project slug",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
       "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher"
     },
@@ -266,6 +340,8 @@
       "FACTORY_RELEASE_TREE",
       "FACTORY_RELEASE_PATH",
       "FACTORY_RELEASE_CONTRACT_VERSION",
+      "FACTORY_MODEL_STATE_ROOT",
+      "FACTORY_PROJECT",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
       "FACTORY_DISPATCH_LEASE_ID",
       "GH_TOKEN"
@@ -342,7 +418,17 @@
     "scripts/lib/dispatch-leases.sh",
     "scripts/factory-kit.sh",
     "scripts/kill-switch.sh",
-    "scripts/reorder-test-fixes.sh"
+    "scripts/reorder-test-fixes.sh",
+    "scripts/model-control.sh",
+    "scripts/model-manager.py",
+    "scripts/model-router.py",
+    "scripts/lib/backend-policy.sh",
+    "scripts/lib/kit-pin.sh",
+    "scripts/lib/plain-config.sh",
+    "scripts/lib/product-remote.sh",
+    "scripts/model-routing/catalog-v1.json",
+    "scripts/model-routing/profiles-v1.json",
+    "factory/route-plans/<T-NNN>.json"
   ],
   "launch_agents": {
     "gateway": {

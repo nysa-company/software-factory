@@ -79,10 +79,49 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Postgres (staging): Railway dashboard → database → Backups → restore. Staging data is disposable; fixtures re-seed it.
 - Board: restore the product repo first. Markdown and the ledger are the durable execution record; `scripts/linear-sync.py --setup` plus a normal sync recreates Projects/issues and mappings. Linear remains authoritative only for operator-owned priority, Project membership, Ready, approval, and unblock actions.
 
+## Model portfolio control
+
+The operator owns profile activation and temporary credit-exhaustion overrides.
+Use only the selected release through the sealed launcher:
+
+```bash
+~/.factory/bin/factory-launch <project> models profiles --json
+~/.factory/bin/factory-launch <project> models plan --profile openai-priority-v1 --json
+~/.factory/bin/factory-launch <project> models activate --profile openai-priority-v1 --approve-hash <preview-profile-hash> --approved-by <operator-id> --json
+~/.factory/bin/factory-launch <project> models disable --scope-type account-route --scope-id codex-native --reason credits_exhausted --ttl-seconds 3600 --operator-id <operator-id> --json
+~/.factory/bin/factory-launch <project> models enable --scope-type account-route --scope-id codex-native --json
+~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
+```
+
+`models plan --json` previews the active profile, or default
+`legacy-balanced-v1` when none is active. Activation accepts only the exact
+profile hash shown by preview. `openai-priority-v1` tries OpenAI production
+first, then Anthropic production; `claude-priority-v1` reverses those
+portfolios. `cursor-priority-v1` tries exact Cursor OpenAI/Anthropic routes
+before native routes in both portfolio orders. Legacy has one native-first
+OpenAI-production/Anthropic-checking portfolio.
+
+Use `disable` only for confirmed temporary credit exhaustion. It can target an
+account route, provider family, selectable model ID, or exact route for 1 to
+604800 seconds; expiry is automatic, while `enable` removes it early.
+Subscription quota telemetry is incomplete, so the launcher cannot reliably
+infer remaining credits or distinguish every subscription limit from an
+outage. Record the operator judgment and choose the narrowest scope.
+
+Pin only on the clean exact ticket worktree before the first role. It records
+the Kit-SHA and exact six-role route plan in one commit, pushes and verifies the
+ticket branch, and is idempotent for the same committed plan. Roles never
+re-resolve. Each run re-probes only its exact pinned route, and any failure
+after task submission ends the run without retry.
+
+Kimi K2.6 remains disabled experimental through Claude CLI/OpenRouter/Moonshot.
+No live or billed pilot has run. Rotate the credential before a pilot; direct
+same-UID token exposure remains until a broker or OS isolation is used.
+
 ## Preflight failed before launch
 
-- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from the launcher's `preflight` route — no safe backend route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
-- Do: read each FAIL line. Common fixes: run `scripts/adapters/contract-test.sh --routes`; reconcile `CLAUDE_CODE_PINNED`, `CODEX_PINNED`, or `CURSOR_AGENT_VERSION` in `~/.factory/global.env`; run `agent login` and verify the exact configured Cursor models when fallback is enabled; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight through `~/.factory/bin/factory-launch <project> preflight` before resuming.
+- Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from the launcher's `preflight` route — no pinned safe route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
+- Do: read each FAIL line. Common fixes: inspect `models status --json` and `models plan --json`; run `scripts/adapters/contract-test.sh --routes`; reconcile pinned CLI versions in `~/.factory/global.env`; authenticate the affected account route without printing credentials; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight through `~/.factory/bin/factory-launch <project> preflight` before resuming.
 - Don't: tell the dispatcher to launch anyway — every FAIL is predictable at kickoff and will block mid-pipeline.
 
 ## Trusted approval and close-out PR

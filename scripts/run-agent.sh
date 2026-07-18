@@ -430,6 +430,13 @@ write_manifest() {
     echo "effort=$(meta_value "${SELECTED_EFFORT:-}")"
     echo "selection_reason=$(meta_value "${SELECTION_REASON:-}")"
     echo "adapter_version=$(meta_value "${SELECTED_VERSION:-}")"
+    echo "route_id=$(meta_value "${SELECTED_ROUTE_ID:-}")"
+    echo "gateway_id=$(meta_value "${SELECTED_GATEWAY_ID:-}")"
+    echo "inference_provider_id=$(meta_value "${SELECTED_PROVIDER_ID:-}")"
+    echo "account_route_id=$(meta_value "${SELECTED_ACCOUNT_ROUTE_ID:-}")"
+    echo "transport=$(meta_value "${SELECTED_TRANSPORT:-}")"
+    echo "policy_hash=$(meta_value "${SELECTED_POLICY_HASH:-}")"
+    echo "route_plan_sha256=$(meta_value "${SELECTED_ROUTE_PLAN_SHA256:-}")"
     echo "primary_probe=$(meta_value "${PRIMARY_PROBE_SUMMARY:-}")"
     echo "kit_sha=$(meta_value "${FACTORY_KIT_SHA:-}")"
     echo "kit_tree=$(meta_value "${FACTORY_KIT_TREE:-}")"
@@ -799,6 +806,14 @@ fi
 # --- resolve one backend before reservation and before submitting the task ---
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
+ROUTE_PLAN="$WORKDIR/factory/route-plans/$TICKET.json"
+SELECTED_ROUTE_ID=""
+SELECTED_GATEWAY_ID=""
+SELECTED_PROVIDER_ID=""
+SELECTED_ACCOUNT_ROUTE_ID=""
+SELECTED_TRANSPORT=""
+SELECTED_POLICY_HASH=""
+SELECTED_ROUTE_PLAN_SHA256=""
 if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
   if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" || "${FACTORY_TEST_MODE:-0}" != "1" ]]; then
     echo "FACTORY_ADAPTER_OVERRIDE requires FACTORY_TEST_MODE=1 and the mock adapter" >&2
@@ -810,6 +825,36 @@ if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
   SELECTED_VERSION="test"
   SELECTION_REASON="test_override"
   PRIMARY_PROBE_SUMMARY="test_override"
+elif [[ -f "$ROUTE_PLAN" ]]; then
+  if ! factory_select_pinned_model_role \
+      "$ROUTE_PLAN" "$TICKET" "$FACTORY_KIT_SHA" "$ROLE"; then
+    echo "invalid pinned route for role '$ROLE': ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
+    exit 6
+  fi
+  if ! factory_verify_selected_pinned_route_ready; then
+    echo "pinned route unavailable or drifted for role '$ROLE': ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
+    exit 6
+  fi
+  SELECTED="$FACTORY_SELECTED_ADAPTER"
+  SELECTED_FAMILY="$FACTORY_SELECTED_FAMILY"
+  SELECTED_MODEL="$FACTORY_SELECTED_MODEL"
+  SELECTED_EFFORT="$FACTORY_SELECTED_EFFORT"
+  SELECTED_VERSION="$FACTORY_SELECTED_VERSION"
+  SELECTED_ROUTE_ID="$FACTORY_SELECTED_ROUTE_ID"
+  SELECTED_GATEWAY_ID="$FACTORY_SELECTED_GATEWAY_ID"
+  SELECTED_PROVIDER_ID="$FACTORY_SELECTED_PROVIDER_ID"
+  SELECTED_ACCOUNT_ROUTE_ID="$FACTORY_SELECTED_ACCOUNT_ROUTE_ID"
+  SELECTED_TRANSPORT="$FACTORY_SELECTED_TRANSPORT"
+  SELECTED_POLICY_HASH="$FACTORY_SELECTED_POLICY_HASH"
+  SELECTED_ROUTE_PLAN_SHA256="$FACTORY_SELECTED_ROUTE_PLAN_SHA256"
+  SELECTION_REASON="$FACTORY_SELECTION_REASON"
+  PRIMARY_PROBE_SUMMARY="pinned:${PROBE_STATE}:${PROBE_REASON}"
+elif ! factory_load_model_probe_context; then
+  echo "model routing state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
+  exit 6
+elif [[ "$FACTORY_MODEL_PROFILE_ID" != "legacy-balanced-v1" ]]; then
+  echo "active model profile '$FACTORY_MODEL_PROFILE_ID' requires a pinned ticket route plan; no task was submitted" >&2
+  exit 6
 elif factory_resolve_role "$ROLE"; then
   SELECTED="$FACTORY_SELECTED_ADAPTER"
   SELECTED_FAMILY="$FACTORY_SELECTED_FAMILY"
@@ -1108,7 +1153,7 @@ ADAPTER_ARGS=(
   --workdir "$WORKDIR"
 )
 case "$ADAPTER" in
-  codex|claude-code)
+  codex|claude-code|cursor-openai|cursor-anthropic|claude-kimi)
     ADAPTER_ARGS+=(--model "$SELECTED_MODEL" --effort "$SELECTED_EFFORT")
     ;;
 esac
@@ -1120,6 +1165,9 @@ exec 8< "$RUN_OUTPUT_TEMP"
 exec 9> "$RUN_OUTPUT_TEMP"
 rm -f "$RUN_OUTPUT_TEMP"
 RUN_OUTPUT_TEMP=""
+# The controller may read project model state while selecting a route, but
+# task-bearing adapters must never inherit mutation-capable state paths.
+unset FACTORY_MODEL_STATE_ROOT FACTORY_PROJECT
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
   "$RUN_READY_FILE" "$RUN_GATE_FILE" "$ADAPTER_SH" \
   "${ADAPTER_ARGS[@]}" \
