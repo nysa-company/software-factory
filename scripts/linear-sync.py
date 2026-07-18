@@ -36,6 +36,13 @@ KEY_FILE = Path.home() / ".hermes" / "secrets" / "linear-api-key"
 TEAM_NAME = "Software Factory"
 TEAM_KEY = "SF"
 MAX_COMMENT_CHARS = 60000
+FALLBACK_APPROVAL_TTL_SECONDS = 900
+FALLBACK_APPROVAL = re.compile(
+    r"FACTORY MODEL FALLBACK APPROVAL:\s*([0-9a-f]{64})\s+"
+    r"RUN:\s*([A-Za-z0-9._-]{1,200})\s+"
+    r"REASON:\s*(credits_exhausted|provider_unavailable)\s+"
+    r"NONCE:\s*([0-9a-f]{32})\s*\Z"
+)
 
 # Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
 # The second element is the Linear workflow-state *type* used when the
@@ -660,9 +667,56 @@ def fetch_issue(key, issue_id):
              id identifier title description priority updatedAt
              state { id name } project { id } labels { nodes { id name } }
              assignee { id }
+             comments { nodes { id body createdAt updatedAt user { id name } } }
            } }""",
         {"id": issue_id},
     )["issue"]
+
+
+def ingest_fallback_approval(actual, entry, dry):
+    consumed = set(entry.get("consumed_model_fallback_comment_ids", []))
+    candidates = []
+    for comment in (actual.get("comments") or {}).get("nodes", []):
+        comment_id = comment.get("id")
+        if not isinstance(comment_id, str) or comment_id in consumed:
+            continue
+        match = FALLBACK_APPROVAL.fullmatch((comment.get("body") or "").strip())
+        user = comment.get("user") or {}
+        if not match or not isinstance(user.get("id"), str) or not user["id"]:
+            continue
+        approval_hash, failed_run_id, reason, nonce = match.groups()
+        try:
+            created = dt.datetime.fromisoformat(
+                (comment.get("createdAt") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        expires = created + dt.timedelta(seconds=FALLBACK_APPROVAL_TTL_SECONDS)
+        candidates.append((
+            comment.get("updatedAt") or comment.get("createdAt") or "",
+            comment_id,
+            {
+                "approval_hash": approval_hash,
+                "comment_id": comment_id,
+                "expires_at": expires.replace(microsecond=0).isoformat(),
+                "failed_run_id": failed_run_id,
+                "linear_created_at": comment.get("createdAt"),
+                "linear_updated_at": comment.get("updatedAt"),
+                "nonce": nonce,
+                "observed_at": utc_now(),
+                "operator_id": user["id"],
+                "operator_name": user.get("name") or "",
+                "reason": reason,
+                "schema": "model-fallback-linear-approval/v1",
+            },
+        ))
+    if not candidates:
+        return
+    approval = sorted(candidates, key=lambda item: (item[0], item[1]))[-1][2]
+    if dry:
+        log("DRY would update model fallback approval overlay")
+    else:
+        entry["model_fallback_approval"] = approval
 
 
 _VIEWER_ID_CACHE = {}
@@ -787,6 +841,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
 
         if entry.get("issue_id"):
             actual = fetch_issue(key, entry["issue_id"])
+            ingest_fallback_approval(actual, entry, dry)
             if not entry.get("identifier") and actual.get("identifier") and not dry:
                 entry["identifier"] = actual["identifier"]
                 save_map(map_path, mapping)

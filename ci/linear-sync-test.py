@@ -632,6 +632,46 @@ class LinearSyncTest(unittest.TestCase):
         self.assertEqual(saved["_sync"]["last_error"], "offline")
         self.assertIn("failed_at", saved["_sync"])
 
+    def test_exact_unconsumed_comment_records_fallback_approval(self):
+        approval_hash = "a" * 64
+        nonce = "b" * 32
+        actual = {
+            "comments": {
+                "nodes": [
+                    {
+                        "id": "comment-1",
+                        "body": (
+                            f"FACTORY MODEL FALLBACK APPROVAL: {approval_hash} "
+                            "RUN: run-1 REASON: credits_exhausted "
+                            f"NONCE: {nonce}"
+                        ),
+                        "createdAt": "2026-07-18T12:00:00Z",
+                        "updatedAt": "2026-07-18T12:00:01Z",
+                        "user": {"id": "operator-1", "name": "Operator"},
+                    },
+                    {
+                        "id": "ignored",
+                        "body": "please retry",
+                        "createdAt": "2026-07-18T12:01:00Z",
+                        "updatedAt": "2026-07-18T12:01:00Z",
+                        "user": {"id": "operator-1", "name": "Operator"},
+                    },
+                ]
+            }
+        }
+        entry = {}
+        LINEAR.ingest_fallback_approval(actual, entry, False)
+        approval = entry["model_fallback_approval"]
+        self.assertEqual(approval["approval_hash"], approval_hash)
+        self.assertEqual(approval["failed_run_id"], "run-1")
+        self.assertEqual(approval["operator_id"], "operator-1")
+        self.assertEqual(approval["reason"], "credits_exhausted")
+        self.assertEqual(approval["nonce"], nonce)
+
+        consumed = {"consumed_model_fallback_comment_ids": ["comment-1"]}
+        LINEAR.ingest_fallback_approval(actual, consumed, False)
+        self.assertNotIn("model_fallback_approval", consumed)
+
     def test_graphql_retries_rate_limit(self):
         limited = urllib.error.HTTPError(
             LINEAR.API_URL,

@@ -3,7 +3,7 @@
 # Public interface: factory-doctor.sh [--json] [--project <slug>]
 set -u
 
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.3.0}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.4.0}"
 DOCTOR_SCHEMA="nysa.software-factory.hermes-doctor/v1"
 SUPPORTED_HERMES_AGENT="0.18.2"
 SUPPORTED_HERMES_BUILD="2026.7.7.2"
