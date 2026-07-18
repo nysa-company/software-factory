@@ -208,11 +208,64 @@ case "$command_name" in
     done
     [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ]] ||
       json_error "route migration requires contract 1.4.0"
+    if [[ "$command_name" == "migrate" ]]; then
+      [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
+        json_error "migration approval hash is invalid"
+      [[ "$approved_by" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ &&
+         "$approved_by" != "auto" ]] ||
+        json_error "migration approver is invalid"
+    fi
     validate_control_workdir "$ticket" "$workdir" 0
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
       json_error "v1 ticket route plan is missing or unsafe"
     factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
       json_error "$FACTORY_KIT_PIN_ERROR"
+    existing_preview="$(python3 - "$CONTROL_PLAN_FILE" "$ticket" "$FACTORY_KIT_SHA" <<'PY'
+import hashlib, json, sys
+raw = open(sys.argv[1], "rb").read()
+value = json.loads(raw)
+if value.get("schema") != "ticket-model-route-journal/v2":
+    raise SystemExit(0)
+if (
+    value.get("ticket") != sys.argv[2]
+    or value.get("kit_sha") != sys.argv[3]
+    or len(value.get("revisions", [])) != 1
+    or value["revisions"][0].get("body", {}).get("kind") != "migration"
+):
+    raise SystemExit(2)
+canonical = json.dumps(
+    value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+).encode()
+print(json.dumps({
+    "journal": value,
+    "preview_hash": hashlib.sha256(canonical).hexdigest(),
+    "schema": "ticket-model-route-migration-preview/v1",
+}, sort_keys=True, separators=(",", ":")))
+PY
+)" || json_error "existing route journal is not a recoverable migration"
+    if [[ -n "$existing_preview" ]]; then
+      if [[ "$command_name" == "migrate-plan" ]]; then
+        printf '%s\n' "$existing_preview"
+        exit 0
+      fi
+      existing_hash="$(python3 -c \
+        'import json,sys; print(json.loads(sys.argv[1])["preview_hash"])' \
+        "$existing_preview")"
+      [[ "$approve_hash" == "$existing_hash" ]] ||
+        json_error "migration approval hash does not match existing journal"
+      expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
+      [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
+        json_error "remote tracking state is unavailable"
+      commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+        "$CONTROL_REMOTE" "$expected_remote_head")"
+      python3 - "$existing_preview" "$commit_sha" "$approved_by" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+value.update(commit_sha=sys.argv[2], approved_by=sys.argv[3], recovered=True)
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+      exit 0
+    fi
     pin_commit="$(git -C "$workdir" log -1 --format=%H -- \
       "factory/route-plans/$ticket.json")"
     [[ "$pin_commit" =~ ^[0-9a-f]{40}$ ]] ||
