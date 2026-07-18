@@ -29,7 +29,6 @@ leases with disjoint worktrees and serialized provider intervals. Prioritize:
   completed ticket it materializes without ambiguous ownership.
 
 - Add machine-readable certification progress and a `--watch` view with phase names, elapsed time, and the current deterministic gate.
-- Reuse still-valid kit-suite evidence for an unchanged sealed SHA; always rerun product-tree checks and receipt binding, and invalidate reuse when the host, release tree, suite definition, or evidence lifetime changes.
 - Add a maintenance-only accounting audit and conservative reconciliation command for legacy manifests, with quarantine evidence and no guessed cost reduction.
 - Add a trusted operator-approved lease-release route for tickets stopped in Review, without exposing or persisting opaque lease IDs.
 - Extend preflight with Git forge/API health, required local services, provider CLI authentication, and configured deployment-check readiness.

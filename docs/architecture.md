@@ -89,6 +89,10 @@ Machine-local release state lives under `~/.factory/kits`:
 
 - `releases/<full-sha>/` contains a verified Git tree with no Git metadata,
   safe symlinks only, and no write bits.
+- `manifests/<full-sha>.suite.json` is owner-only, expiring evidence for the
+  exact install suite result. It is reusable only for the same sealed release,
+  physical tree, host, OS/architecture, suite definition, tool version, and
+  configured evidence lifetime.
 - `projects/<project>/active.json` is the authoritative per-product release
   record.
 - `projects/<project>/activation-journal/` records recoverable activation
@@ -163,6 +167,13 @@ Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
 previous generation, and expiry. The default receipt lifetime is 24 hours.
 Activation reruns those bindings and refuses stale or drifted receipts.
+Installation and certification serialize the kit-suite evidence decision under
+the install lock. Certification may reuse an unexpired passing suite result for
+the exact unchanged sealed release, but always reruns product certification and
+all product, config, receipt, and activation validation. Fresh certification
+refreshes evidence only after the isolated suite, tracked-tree check, and sealed
+release verification pass. Product receipts bind the exact evidence ID/digest
+and cannot expire after that evidence.
 An activated contract 1.2 or 1.3 keeps that receipt as the runtime destination
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.

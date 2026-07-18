@@ -109,6 +109,21 @@ print("" if value is None else value)
 PY
 }
 
+set_evidence_value() {
+  local path="$1" key="$2" value="$3"
+  python3 - "$path" "$key" "$value" <<'PY'
+import hashlib, json, pathlib, sys
+path, key, raw = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+value = json.loads(path.read_text())
+value[key] = json.loads(raw)
+value.pop("evidence_id", None)
+payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+value["evidence_id"] = hashlib.sha256(payload).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+  chmod 600 "$path"
+}
+
 state_snapshot() {
   python3 - "$STATE" <<'PY'
 import hashlib, os, pathlib, stat, sys
@@ -324,6 +339,12 @@ if [[ -n "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" ]] &&
    /bin/cat "$FACTORY_KIT_SANDBOX_DENY_HOME" >/dev/null 2>&1; then
   printf 'sandbox read real home secret\n' >&2
   exit 46
+fi
+[[ "${FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS:-0}" == "0" ]] ||
+  sleep "$FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS"
+if [[ "${FACTORY_KIT_TEST_SUITE_FAIL:-0}" != "0" ]]; then
+  printf 'fixture suite failed\n' >&2
+  exit 47
 fi
 printf 'fixture suite passed\n'
 EOF
@@ -550,6 +571,7 @@ else
 fi
 
 MANIFEST_A="$STATE/manifests/$SHA_A.json"
+EVIDENCE_A="$STATE/manifests/$SHA_A.suite.json"
 if [[ -f "$MANIFEST_A" && ! -L "$MANIFEST_A" ]] &&
    [[ "$(json_value "$MANIFEST_A" kit_sha)" == "$SHA_A" ]] &&
    [[ "$(json_value "$MANIFEST_A" git_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" ]] &&
@@ -557,6 +579,16 @@ if [[ -f "$MANIFEST_A" && ! -L "$MANIFEST_A" ]] &&
   pass "trusted external install manifest binds release"
 else
   fail "trusted external install manifest binds release"
+fi
+if [[ -f "$EVIDENCE_A" && ! -L "$EVIDENCE_A" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" status)" == "pass" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" kit_sha)" == "$SHA_A" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" release_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" suite_definition)" == "factory-kit-suite-v1" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" evidence_ttl_seconds)" == "86400" ]]; then
+  pass "install publishes bound reusable kit-suite evidence"
+else
+  fail "install publishes bound reusable kit-suite evidence"
 fi
 
 FIRST_SNAPSHOT="$(state_snapshot)"
@@ -727,6 +759,171 @@ rm "$PRODUCT_ONE/factory/FAIL_CERTIFY"
 commit_all "$PRODUCT_ONE" "restore certification"
 push_main "$PRODUCT_ONE"
 
+CERTIFICATION_TRACE="$TMP/certification.trace"
+export FACTORY_KIT_TEST_CERTIFICATION_TRACE="$CERTIFICATION_TRACE"
+: > "$CERTIFICATION_TRACE"
+expect_success "first certification reuses install suite evidence" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+REUSED_RECEIPT_ONE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_success "successive certification reuses suite evidence" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+REUSED_RECEIPT_TWO="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+if [[ "$(grep -c '^kit-suite:reused$' "$CERTIFICATION_TRACE")" == "2" &&
+      "$(grep -c '^product-certification$' "$CERTIFICATION_TRACE")" == "2" &&
+      "$(json_value "$REUSED_RECEIPT_ONE" receipt_id)" != "$(json_value "$REUSED_RECEIPT_TWO" receipt_id)" &&
+      "$(json_value "$REUSED_RECEIPT_ONE" kit_suite_evidence.reused)" == "True" &&
+      "$(json_value "$REUSED_RECEIPT_TWO" kit_suite_evidence.reused)" == "True" ]]; then
+  pass "reuse still runs product certification and issues fresh receipts"
+else
+  fail "reuse still runs product certification and issues fresh receipts"
+fi
+
+printf '{malformed\n' > "$EVIDENCE_A"
+chmod 600 "$EVIDENCE_A"
+: > "$CERTIFICATION_TRACE"
+expect_success "malformed suite evidence falls back to a fresh suite" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+   [[ "$(json_value "$EVIDENCE_A" status)" == "pass" ]]; then
+  pass "fresh suite refreshes malformed evidence"
+else
+  fail "fresh suite refreshes malformed evidence"
+fi
+
+chmod 644 "$EVIDENCE_A"
+: > "$CERTIFICATION_TRACE"
+expect_success "broad-mode suite evidence falls back safely" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+   [[ "$(stat -f '%Lp' "$EVIDENCE_A" 2>/dev/null || stat -c '%a' "$EVIDENCE_A")" == "600" ]]; then
+  pass "fresh suite restores restrictive evidence permissions"
+else
+  fail "fresh suite restores restrictive evidence permissions"
+fi
+
+mv "$EVIDENCE_A" "$TMP/evidence-target"
+ln -s "$TMP/evidence-target" "$EVIDENCE_A"
+: > "$CERTIFICATION_TRACE"
+expect_success "symlinked suite evidence falls back safely" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if [[ -f "$EVIDENCE_A" && ! -L "$EVIDENCE_A" ]] &&
+   grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE"; then
+  pass "symlinked evidence is replaced without following it"
+else
+  fail "symlinked evidence is replaced without following it"
+fi
+
+set_evidence_value "$EVIDENCE_A" created_epoch 1
+set_evidence_value "$EVIDENCE_A" expires_epoch 86401
+: > "$CERTIFICATION_TRACE"
+expect_success "stale suite evidence reruns the suite" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+  pass "stale evidence is never reused" ||
+  fail "stale evidence is never reused"
+
+for binding in host os architecture; do
+  set_evidence_value "$EVIDENCE_A" "$binding" '"mismatch"'
+  : > "$CERTIFICATION_TRACE"
+  expect_success "$binding mismatch reruns the suite" \
+    certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+  grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+    pass "$binding mismatch is never reused" ||
+    fail "$binding mismatch is never reused"
+done
+
+set_evidence_value "$EVIDENCE_A" release_tree '"0000000000000000000000000000000000000000"'
+: > "$CERTIFICATION_TRACE"
+expect_success "release-tree evidence mismatch reruns the suite" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+  pass "release-tree mismatch is never reused" ||
+  fail "release-tree mismatch is never reused"
+
+set_evidence_value "$EVIDENCE_A" suite_definition '"factory-kit-suite-v0"'
+: > "$CERTIFICATION_TRACE"
+expect_success "suite-definition mismatch reruns the suite" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+  pass "suite-definition mismatch is never reused" ||
+  fail "suite-definition mismatch is never reused"
+
+export FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS=60
+export FACTORY_KIT_RECEIPT_TTL_SECONDS=3600
+: > "$CERTIFICATION_TRACE"
+expect_success "configured evidence lifetime change reruns the suite" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+CAPPED_RECEIPT="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+   [[ "$(json_value "$CAPPED_RECEIPT" expires_epoch)" == \
+      "$(json_value "$CAPPED_RECEIPT" kit_suite_evidence.expires_epoch)" ]] &&
+   [[ "$(json_value "$CAPPED_RECEIPT" kit_suite_evidence.evidence_ttl_seconds)" == "60" ]]; then
+  pass "receipt expiry is capped and bound to suite evidence"
+else
+  fail "receipt expiry is capped and bound to suite evidence"
+fi
+unset FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS
+unset FACTORY_KIT_RECEIPT_TTL_SECONDS
+
+set_evidence_value "$EVIDENCE_A" status '"fail"'
+FAILED_EVIDENCE_HASH="$(shasum -a 256 "$EVIDENCE_A" | awk '{print $1}')"
+export FACTORY_KIT_TEST_SUITE_FAIL=1
+expect_failure "failed fresh suite does not publish passing evidence" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+unset FACTORY_KIT_TEST_SUITE_FAIL
+if [[ "$FAILED_EVIDENCE_HASH" == "$(shasum -a 256 "$EVIDENCE_A" | awk '{print $1}')" &&
+      "$(json_value "$EVIDENCE_A" status)" == "fail" ]]; then
+  pass "failed fresh suite leaves prior nonpassing evidence unchanged"
+else
+  fail "failed fresh suite leaves prior nonpassing evidence unchanged"
+fi
+expect_success "successful fresh suite repairs nonpassing evidence" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+
+chmod u+w "$STATE/releases/$SHA_A/payload.txt"
+printf 'drifted\n' > "$STATE/releases/$SHA_A/payload.txt"
+: > "$CERTIFICATION_TRACE"
+expect_failure "physical release drift fails before evidence reuse" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if ! grep -q '^kit-suite:' "$CERTIFICATION_TRACE"; then
+  pass "drifted physical release cannot consume suite evidence"
+else
+  fail "drifted physical release cannot consume suite evidence"
+fi
+printf 'release-a\n' > "$STATE/releases/$SHA_A/payload.txt"
+chmod -R a-w "$STATE/releases/$SHA_A"
+
+printf '{partial' > "$EVIDENCE_A"
+chmod 600 "$EVIDENCE_A"
+: > "$CERTIFICATION_TRACE"
+export FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS=1
+export FACTORY_KIT_LOCK_ATTEMPTS=200
+run_kit certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  > "$TMP/concurrent-certify-one.out" 2>&1 &
+CONCURRENT_ONE=$!
+for _ in $(seq 1 40); do
+  [[ -f "$STATE/.install.lock/owner" ]] && break
+  sleep 0.05
+done
+run_kit certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  > "$TMP/concurrent-certify-two.out" 2>&1 &
+CONCURRENT_TWO=$!
+wait "$CONCURRENT_ONE"; CONCURRENT_ONE_STATUS=$?
+wait "$CONCURRENT_TWO"; CONCURRENT_TWO_STATUS=$?
+unset FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS
+unset FACTORY_KIT_LOCK_ATTEMPTS
+if [[ "$CONCURRENT_ONE_STATUS" == "0" && "$CONCURRENT_TWO_STATUS" == "0" &&
+      "$(grep -c '^kit-suite:certification$' "$CERTIFICATION_TRACE")" == "1" &&
+      "$(grep -c '^kit-suite:reused$' "$CERTIFICATION_TRACE")" == "1" &&
+      "$(grep -c '^product-certification$' "$CERTIFICATION_TRACE")" == "2" ]] &&
+   python3 -m json.tool "$EVIDENCE_A" >/dev/null; then
+  pass "concurrent certifications serialize evidence refresh atomically"
+else
+  fail "concurrent certifications serialize evidence refresh atomically" \
+    "$(<"$TMP/concurrent-certify-one.out") $(<"$TMP/concurrent-certify-two.out")"
+fi
+unset FACTORY_KIT_TEST_CERTIFICATION_TRACE
+
 PRODUCT_ONE_ORIGIN="$(git -C "$PRODUCT_ONE" remote get-url origin)"
 PRODUCT_ONE_DECOY="$TMP/product-one-decoy.git"
 git init --bare -q "$PRODUCT_ONE_DECOY"
@@ -816,7 +1013,7 @@ fi
 RECEIPT_STALE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 RECEIPT_STALE_ID="$(json_value "$RECEIPT_STALE" receipt_id)"
 if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
-      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "1" &&
+      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "2" &&
       -z "$(json_value "$RECEIPT_STALE" expected_previous_generation)" &&
       ! -e "$PRODUCT_ONE/factory/product-certification-marker" &&
       ! -e "$STATE/releases/$SHA_A/release-certification-marker" &&

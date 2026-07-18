@@ -10,6 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, config-review, and full local PR gates enabled. The canonical verification command is `bash ci/test-all.sh`.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
+- Install records owner-only, expiring kit-suite evidence for the exact sealed release. Certification reuses it only when every release, physical-tree, host, platform, suite-definition, tool-version, and configured-lifetime binding matches; product certification and product/config/receipt validation always rerun, and receipt expiry cannot outlive suite proof.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. A narrow fail-closed inert-metadata diff skips expensive suites while retaining Linux policy and test-immutability checks. Every other change runs Linux; shell/platform-sensitive PRs and every non-lightweight merged SHA also run macOS system-Bash verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
@@ -32,6 +33,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Open-source factory frameworks remain references, not replacement control planes: any adopted execution or sandbox component stays behind `factory-launch`, while sequencing, budgets, role separation, Git authority, evidence, and operator approval remain factory-owned. The first justified experiment is a pinned SWE-ReX local-container backend for one non-production role; E2B or Daytona becomes relevant only if that canary proves local isolation insufficient.
 
 ## Log
+
+## 2026-07-17 — Decision 39: Exact sealed releases reuse bounded suite proof
+
+Category: System change
+
+Fresh install or certification records atomic owner-only kit-suite evidence bound to the exact SHA/tree/origin/release path, recomputed physical tree, host, OS/architecture, suite definition, tool version, and configured lifetime. Certification treats missing or invalid evidence as a cache miss under the existing install lock, refreshes it only after a successful isolated suite and release revalidation, always reruns product certification and product binding checks, and issues schema-2 receipts bound to the exact suite proof with expiry capped by it.
 
 ## 2026-07-17 — Decision 38: One Linear approval enables protected auto-merge
 

@@ -13,10 +13,14 @@ PROJECTS_DIR="$KITS_ROOT/projects"
 RECEIPTS_DIR="$KITS_ROOT/receipts"
 CONSUMED_DIR="$RECEIPTS_DIR/consumed"
 CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
-RECEIPT_SCHEMA=1
+RECEIPT_SCHEMA=2
 INSTALL_MANIFEST_SCHEMA=1
-CERTIFICATION_TOOL_VERSION=1
+SUITE_EVIDENCE_SCHEMA=1
+CERTIFICATION_TOOL_VERSION=2
+# Bump whenever run_kit_checks_isolated command composition or semantics change.
+KIT_SUITE_DEFINITION="factory-kit-suite-v1"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
+DEFAULT_SUITE_EVIDENCE_TTL="${FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS:-86400}"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_ROOT/scripts/lib/dispatch-leases.sh"
@@ -877,6 +881,128 @@ manifest_file_for() {
   printf '%s/%s.json\n' "$MANIFESTS_DIR" "$1"
 }
 
+suite_evidence_file_for() {
+  printf '%s/%s.suite.json\n' "$MANIFESTS_DIR" "$1"
+}
+
+validate_suite_evidence_ttl() {
+  [[ "$DEFAULT_SUITE_EVIDENCE_TTL" =~ ^[0-9]+$ &&
+     "$DEFAULT_SUITE_EVIDENCE_TTL" -gt 0 ]] ||
+    die "kit-suite evidence TTL must be a positive integer"
+}
+
+remove_symlinked_suite_evidence() {
+  local evidence="$1"
+  if [[ -L "$evidence" ]]; then
+    rm "$evidence" || die "could not remove unsafe kit-suite evidence symlink"
+  fi
+}
+
+write_suite_evidence() {
+  local sha="$1" origin="$2" tree="$3" release="$4"
+  local evidence created expires
+  evidence="$(suite_evidence_file_for "$sha")"
+  created="$(now_epoch)"
+  expires=$((created + DEFAULT_SUITE_EVIDENCE_TTL))
+  python3 - "$sha" "$origin" "$tree" "$release" "$tree" \
+    "$(host_name)" "$(uname -s)" "$(uname -m)" "$KIT_SUITE_DEFINITION" \
+    "$CERTIFICATION_TOOL_VERSION" "$created" "$expires" \
+    "$DEFAULT_SUITE_EVIDENCE_TTL" "$SUITE_EVIDENCE_SCHEMA" \
+    <<'PY' | atomic_json_from_stdin "$evidence"
+import hashlib, json, sys, time
+(sha, origin, tree, release, release_tree, host, os_name, architecture,
+ suite_definition, tool_version, created, expires, ttl, schema) = sys.argv[1:]
+value = {
+    "schema_version": int(schema),
+    "status": "pass",
+    "kit_sha": sha,
+    "kit_tree": tree,
+    "canonical_origin": origin,
+    "sealed_release_path": release,
+    "release_tree": release_tree,
+    "host": host,
+    "os": os_name,
+    "architecture": architecture,
+    "suite_definition": suite_definition,
+    "certification_tool_version": int(tool_version),
+    "created_epoch": int(created),
+    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(created))),
+    "expires_epoch": int(expires),
+    "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(expires))),
+    "evidence_ttl_seconds": int(ttl),
+}
+payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+value["evidence_id"] = hashlib.sha256(payload).hexdigest()
+print(json.dumps(value))
+PY
+  chmod 600 "$evidence"
+}
+
+validated_suite_evidence() {
+  local sha="$1" origin="$2" tree="$3" release="$4" evidence
+  evidence="$(suite_evidence_file_for "$sha")"
+  python3 - "$evidence" "$sha" "$origin" "$tree" "$release" "$tree" \
+    "$(host_name)" "$(uname -s)" "$(uname -m)" "$KIT_SUITE_DEFINITION" \
+    "$CERTIFICATION_TOOL_VERSION" "$DEFAULT_SUITE_EVIDENCE_TTL" \
+    "$SUITE_EVIDENCE_SCHEMA" "$(now_epoch)" <<'PY'
+import hashlib, json, os, pathlib, stat, sys
+(raw_path, sha, origin, tree, release, release_tree, host, os_name,
+ architecture, suite_definition, tool_version, ttl, schema, now) = sys.argv[1:]
+path = pathlib.Path(raw_path)
+try:
+    st = path.lstat()
+    if (stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or
+            st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077 or
+            st.st_nlink != 1):
+        raise ValueError
+    raw = path.read_bytes()
+    value = json.loads(raw)
+    expected = {
+        "schema_version": int(schema),
+        "status": "pass",
+        "kit_sha": sha,
+        "kit_tree": tree,
+        "canonical_origin": origin,
+        "sealed_release_path": release,
+        "release_tree": release_tree,
+        "host": host,
+        "os": os_name,
+        "architecture": architecture,
+        "suite_definition": suite_definition,
+        "certification_tool_version": int(tool_version),
+        "evidence_ttl_seconds": int(ttl),
+    }
+    if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+        raise ValueError
+    created = value.get("created_epoch")
+    expires = value.get("expires_epoch")
+    if (not isinstance(created, int) or isinstance(created, bool) or
+            not isinstance(expires, int) or isinstance(expires, bool) or
+            created > int(now) or expires != created + int(ttl) or expires <= int(now)):
+        raise ValueError
+    evidence_id = value.get("evidence_id")
+    payload = dict(value)
+    payload.pop("evidence_id", None)
+    calculated_id = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if evidence_id != calculated_id:
+        raise ValueError
+    digest = hashlib.sha256(raw).hexdigest()
+except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    raise SystemExit(1)
+print("%s\t%s\t%s\t%s" % (evidence_id, digest, created, expires))
+PY
+}
+
+record_certification_trace() {
+  local event="$1" trace="${FACTORY_KIT_TEST_CERTIFICATION_TRACE:-}"
+  [[ -n "$trace" ]] || return 0
+  [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+    die "certification tracing requires FACTORY_KIT_TEST_MODE"
+  printf '%s\n' "$event" >> "$trace"
+}
+
 write_install_manifest() {
   local sha="$1" origin="$2" tree="$3" release="$4" manifest
   manifest="$(manifest_file_for "$sha")"
@@ -1080,16 +1206,23 @@ run_kit_checks_isolated() {
   shift 5
   local status=0
   local raw="$scratch/kit-checks.raw" redacted="$scratch/kit-checks.redacted"
+  if [[ "${FACTORY_KIT_TEST_SUITE_FAIL:-0}" != "0" ||
+        "${FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS:-0}" != "0" ]]; then
+    [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+      die "kit-suite test controls require FACTORY_KIT_TEST_MODE"
+  fi
   configure_phase_sandbox "$phase" "$workspace" "$@"
   python3 - "$checkout" "$home" "$scratch" "$raw" \
     "$SANDBOX_EXEC" "$SANDBOX_PROFILE" "${FACTORY_FIXTURE_DIRTY:-0}" \
     "${FACTORY_KIT_SANDBOX_CAPTURE:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
-    "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" <<'PY' || status=$?
+    "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
+    "${FACTORY_KIT_TEST_SUITE_FAIL:-0}" \
+    "${FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS:-0}" <<'PY' || status=$?
 import os, pathlib, subprocess, sys
 (
     checkout, home, scratch, output, sandbox_exec, profile, dirty, capture,
-    deny_sibling, deny_home,
+    deny_sibling, deny_home, test_fail, test_sleep,
 ) = sys.argv[1:]
 root = pathlib.Path(checkout)
 prefix = [sandbox_exec, "-f", profile] if profile else []
@@ -1161,6 +1294,10 @@ if deny_sibling:
     environment["FACTORY_KIT_SANDBOX_DENY_SIBLING"] = deny_sibling
 if deny_home:
     environment["FACTORY_KIT_SANDBOX_DENY_HOME"] = deny_home
+if test_fail != "0":
+    environment["FACTORY_KIT_TEST_SUITE_FAIL"] = test_fail
+if test_sleep != "0":
+    environment["FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS"] = test_sleep
 commands = []
 if (root / "ci/test-all.sh").is_file():
     commands.append(["bash", "ci/test-all.sh"])
@@ -1650,6 +1787,7 @@ validate_receipt_snapshot() {
   local expected_id="${6:-}" release="$RELEASES_DIR/$sha"
   local expected_tree manifest_values manifest_origin pin contract receipt_id
   local product_top product_git_tree kit_pin_hash project_env_hash
+  local evidence_created evidence_expires
   [[ -f "$receipt" ]] || die "certification receipt not found: $receipt"
   [[ ! -L "$receipt" ]] || die "certification receipt may not be a symlink"
   [[ "$(json_get "$receipt" schema_version)" == "$RECEIPT_SCHEMA" ]] ||
@@ -1712,6 +1850,34 @@ validate_receipt_snapshot() {
   [[ "$(uname -s)" == "$(json_get "$receipt" os)" &&
      "$(uname -m)" == "$(json_get "$receipt" architecture)" ]] ||
     die "receipt OS or architecture does not match"
+  [[ "$(json_get "$receipt" kit_suite_evidence.evidence_id)" =~ ^[0-9a-f]{64}$ &&
+     "$(json_get "$receipt" kit_suite_evidence.digest)" =~ ^[0-9a-f]{64}$ ]] ||
+    die "receipt kit-suite evidence identity is invalid"
+  [[ "$(json_get "$receipt" kit_suite_evidence.status)" == "pass" &&
+     "$(json_get "$receipt" kit_suite_evidence.kit_sha)" == "$sha" &&
+     "$(json_get "$receipt" kit_suite_evidence.kit_tree)" == "$expected_tree" &&
+     "$(json_get "$receipt" kit_suite_evidence.canonical_origin)" == "$manifest_origin" &&
+     "$(json_get "$receipt" kit_suite_evidence.sealed_release_path)" == "$release" &&
+     "$(json_get "$receipt" kit_suite_evidence.release_tree)" == "$expected_tree" ]] ||
+    die "receipt kit-suite evidence release binding is invalid"
+  [[ "$(json_get "$receipt" kit_suite_evidence.host)" == "$(host_name)" &&
+     "$(json_get "$receipt" kit_suite_evidence.os)" == "$(uname -s)" &&
+     "$(json_get "$receipt" kit_suite_evidence.architecture)" == "$(uname -m)" &&
+     "$(json_get "$receipt" kit_suite_evidence.suite_definition)" == "$KIT_SUITE_DEFINITION" &&
+     "$(json_get "$receipt" kit_suite_evidence.certification_tool_version)" == "$CERTIFICATION_TOOL_VERSION" &&
+     "$(json_get "$receipt" kit_suite_evidence.evidence_ttl_seconds)" == "$DEFAULT_SUITE_EVIDENCE_TTL" ]] ||
+    die "receipt kit-suite evidence environment binding is invalid"
+  evidence_created="$(json_get "$receipt" kit_suite_evidence.created_epoch)"
+  evidence_expires="$(json_get "$receipt" kit_suite_evidence.expires_epoch)"
+  [[ "$evidence_created" =~ ^[0-9]+$ && "$evidence_expires" =~ ^[0-9]+$ &&
+     "$evidence_expires" -eq $((evidence_created + DEFAULT_SUITE_EVIDENCE_TTL)) &&
+     "$evidence_expires" -gt "$(now_epoch)" &&
+     "$(json_get "$receipt" expires_epoch)" -le "$evidence_expires" ]] ||
+    die "receipt kit-suite evidence lifetime is invalid"
+  case "$(json_get "$receipt" kit_suite_evidence.reused)" in
+    true|false) ;;
+    *) die "receipt kit-suite evidence reuse marker is invalid" ;;
+  esac
   [[ "$(json_get "$receipt" checks.kit_suite)" == "pass" &&
      "$(json_get "$receipt" checks.github_required)" == "pass" &&
      "$(json_get "$receipt" checks.repo_check)" == "pass" &&
@@ -2148,6 +2314,7 @@ cmd_install() {
   run_kit_checks_isolated "$checkout" "$workspace/home" "$workspace/tmp" \
     "$workspace" "install" "$source_top" ||
     die "kit checks failed in disposable checkout"
+  record_certification_trace "kit-suite:install"
   # Checks run in a disposable workspace and may create caches or reports.
   # Only tracked-tree mutation is disqualifying; the sealed release is built
   # afterward from the verified Git object, never from this workspace.
@@ -2188,6 +2355,8 @@ cmd_install() {
   forget_temp "$release"
   record_publish_phase manifest_written "$release" "$release" "$manifest"
   verify_release_from_manifest "$sha" >/dev/null
+  validate_suite_evidence_ttl
+  write_suite_evidence "$sha" "$origin_identity" "$kit_tree" "$release"
   release_lock "$lock"
   say "INSTALL OK: $sha ($origin)"
 }
@@ -2195,12 +2364,19 @@ cmd_install() {
 cmd_certify() {
   local slug="$1" product="$2" sha="$3"
   local product_top release kit_tree pin product_git_tree product_repo contract manifest_values
-  local writable script created expires receipt_id receipt previous_generation workspace
-  local kit_pin_hash project_env_hash kit_origin
+  local writable writable_head script created expires receipt_id receipt previous_generation workspace
+  local kit_pin_hash project_env_hash kit_origin lock evidence_values evidence_id
+  local evidence_digest evidence_created evidence_expires suite_reused
   validate_slug "$slug"
-  validate_project_storage "$slug"
   validate_sha "$sha"
+  validate_suite_evidence_ttl
+  validate_managed_roots "$slug"
+  safe_create_directory "$KITS_ROOT"
+  lock="$KITS_ROOT/.install.lock"
+  acquire_lock "$lock" "global install"
   ensure_managed_directories "$slug"
+  remove_symlinked_suite_evidence "$(suite_evidence_file_for "$sha")"
+  validate_project_storage "$slug"
   product_top="$(absolute_dir "$product")"
   release="$RELEASES_DIR/$sha"
   manifest_values="$(verify_release_from_manifest "$sha")"
@@ -2218,20 +2394,42 @@ cmd_certify() {
   ISOLATED_HOME="$workspace/home"
   prepare_writable_release_copy "$release" "$workspace"
   writable="$PREPARED_COPY"
-  prepare_pinned_scanner "$release" "$writable" "$workspace/tmp" ||
-    die "could not stage the pinned scanner for isolated certification"
+  writable_head="$(git -C "$writable" rev-parse HEAD)"
   prepare_writable_product_copy "$product_top" "$workspace"
   script="$(certify_script_path "$PREPARED_PRODUCT")" ||
     die "invalid product certification contract"
-  run_kit_checks_isolated "$writable" "$ISOLATED_HOME" "$workspace/tmp" \
-    "$workspace" "certification" "$product_top" "$release" ||
-    die "kit certification checks failed"
-  git -C "$writable" diff --quiet &&
-    git -C "$writable" diff --cached --quiet ||
-    die "kit certification checks modified the tracked candidate tree"
+  suite_reused=true
+  if evidence_values="$(validated_suite_evidence \
+      "$sha" "$kit_origin" "$kit_tree" "$release" 2>/dev/null)"; then
+    record_certification_trace "kit-suite:reused"
+  else
+    suite_reused=false
+    prepare_pinned_scanner "$release" "$writable" "$workspace/tmp" ||
+      die "could not stage the pinned scanner for isolated certification"
+    run_kit_checks_isolated "$writable" "$ISOLATED_HOME" "$workspace/tmp" \
+      "$workspace" "certification" "$product_top" "$release" ||
+      die "kit certification checks failed"
+    record_certification_trace "kit-suite:certification"
+    git -C "$writable" diff --quiet &&
+      git -C "$writable" diff --cached --quiet ||
+      die "kit certification checks modified the tracked candidate tree"
+    [[ "$(git -C "$writable" rev-parse HEAD)" == "$writable_head" ]] ||
+      die "kit certification checks changed the candidate commit"
+    verify_release_from_manifest "$sha" >/dev/null
+    write_suite_evidence "$sha" "$kit_origin" "$kit_tree" "$release"
+    evidence_values="$(validated_suite_evidence \
+      "$sha" "$kit_origin" "$kit_tree" "$release")" ||
+      die "fresh kit-suite evidence failed validation"
+  fi
+  evidence_id="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $1}')"
+  evidence_digest="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $2}')"
+  evidence_created="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $3}')"
+  evidence_expires="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $4}')"
+  release_lock "$lock"
   run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
     "$workspace" "$product_top" "$release" ||
     die "product certification failed"
+  record_certification_trace "product-certification"
   verify_release_from_manifest "$sha" >/dev/null
   require_clean_product "$product_top"
   [[ "$(product_tree "$product_top")" == "$product_git_tree" ]] ||
@@ -2241,6 +2439,9 @@ cmd_certify() {
     die "receipt TTL must be a positive integer"
   created="$(now_epoch)"
   expires=$((created + DEFAULT_RECEIPT_TTL))
+  [[ "$expires" -le "$evidence_expires" ]] || expires="$evidence_expires"
+  [[ "$expires" -gt "$created" ]] ||
+    die "kit-suite evidence expired during product certification"
   kit_pin_hash="$(file_hash "$product_top/factory/KIT_PIN")"
   project_env_hash="$(file_hash "$product_top/factory/PROJECT.env")"
   previous_generation=""
@@ -2259,13 +2460,18 @@ cmd_certify() {
     "$product_top" "$product_repo" "$product_git_tree" "$kit_pin_hash" \
     "$project_env_hash" "$contract" "$(host_name)" "$(uname -s)" "$(uname -m)" \
     "$created" "$expires" "$receipt_id" "$previous_generation" \
-    "$CERTIFICATION_TOOL_VERSION" <<'PY' | atomic_json_from_stdin "$receipt"
+    "$CERTIFICATION_TOOL_VERSION" "$evidence_id" "$evidence_digest" \
+    "$evidence_created" "$evidence_expires" "$DEFAULT_SUITE_EVIDENCE_TTL" \
+    "$KIT_SUITE_DEFINITION" "$suite_reused" "$release" \
+    <<'PY' | atomic_json_from_stdin "$receipt"
 import json, sys, time
 (slug, sha, kit_tree, kit_origin, product_path, product_origin, product_tree,
  kit_pin_hash, project_env_hash, contract, host, os_name, architecture,
- created, expires, receipt_id, previous_generation, tool_version) = sys.argv[1:]
+ created, expires, receipt_id, previous_generation, tool_version, evidence_id,
+ evidence_digest, evidence_created, evidence_expires, evidence_ttl,
+ suite_definition, suite_reused, release) = sys.argv[1:]
 value = {
-    "schema_version": 1,
+    "schema_version": 2,
     "certification_tool_version": int(tool_version),
     "receipt_id": receipt_id,
     "status": "pass",
@@ -2289,6 +2495,25 @@ value = {
     "expires_epoch": int(expires),
     "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(expires))),
     "expected_previous_generation": int(previous_generation) if previous_generation else None,
+    "kit_suite_evidence": {
+        "evidence_id": evidence_id,
+        "digest": evidence_digest,
+        "status": "pass",
+        "kit_sha": sha,
+        "kit_tree": kit_tree,
+        "canonical_origin": kit_origin,
+        "sealed_release_path": release,
+        "release_tree": kit_tree,
+        "host": host,
+        "os": os_name,
+        "architecture": architecture,
+        "suite_definition": suite_definition,
+        "certification_tool_version": int(tool_version),
+        "evidence_ttl_seconds": int(evidence_ttl),
+        "created_epoch": int(evidence_created),
+        "expires_epoch": int(evidence_expires),
+        "reused": suite_reused == "true",
+    },
     "checks": {
         "kit_suite": "pass",
         "github_required": "pass",

@@ -69,6 +69,11 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   bash scripts/factory-kit.sh certify \
     --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
   ```
+  A fresh install records 24-hour owner-only kit-suite evidence by default.
+  Repeated certification of the exact unchanged sealed release may reuse it,
+  while product certification and all product/config/receipt checks still run.
+  Set `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS` only as explicit machine policy;
+  changing it forces a fresh suite and caps the product receipt to that proof.
 
 - Create a separate sandbox product and Hermes canary profile. Do not copy the
   production `.env`, secret files, registry, ledger, board mapping, or

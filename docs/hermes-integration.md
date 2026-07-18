@@ -18,6 +18,8 @@ The default state root is `~/.factory/kits`. Tests may override it with
 ├── bin/factory-launch
 └── kits/
     ├── releases/<full-40-character-sha>/
+    ├── manifests/<full-40-character-sha>.json
+    ├── manifests/<full-40-character-sha>.suite.json
     ├── receipts/<receipt-id>.json
     └── projects/<project>/
         ├── active.json
@@ -164,7 +166,9 @@ Installation verifies canonical origin identity, full-SHA ancestry on fetched
 suite, repository check, and secret scan in a disposable writable checkout,
 then archives the verified Git object into
 `~/.factory/kits/releases/$SHA` and seals it read-only. Existing valid
-installs are idempotent; partial or corrupt paths fail closed.
+installs are idempotent; partial or corrupt paths fail closed. A successful
+fresh install also writes owner-only, expiring suite evidence beside the
+trusted install manifest.
 
 The product must be clean, pinned to the same SHA, and define one executable,
 repository-contained path:
@@ -182,8 +186,14 @@ bash "$KIT_REPO/scripts/factory-kit.sh" certify \
   --sha "$SHA"
 ```
 
-Certification runs the kit checks against a disposable writable copy and
-runs the product's certification script with a fixed working directory,
+Certification first verifies the manifest-backed sealed release. It reuses the
+install suite result only when its release, current physical tree, host,
+OS/architecture, suite-definition, tool-version, and configured lifetime
+bindings all match and it remains unexpired. Otherwise it safely reruns the
+suite against a disposable writable copy and atomically refreshes the evidence
+after all suite and release checks pass. Missing or invalid reusable evidence is
+a cache miss, not a certification failure; a failed fresh suite still fails.
+The product's certification script always runs with a fixed working directory,
 sanitized environment, and timeout. A passing receipt binds:
 
 - project, kit SHA/tree/canonical origin, and contract version;
@@ -191,12 +201,17 @@ sanitized environment, and timeout. A passing receipt binds:
   hash;
 - host, operating system, architecture, previous generation, and required
   check results;
+- the exact kit-suite evidence ID, digest, definition, lifetime, and whether it
+  was reused;
 - creation and expiry timestamps.
 
 Receipts are mode `0600`. Their default lifetime is 86,400 seconds and may be
 changed with `FACTORY_KIT_RECEIPT_TTL_SECONDS`. Activation rechecks receipt
 expiry and every bound value. Product, pin, config, host, release, or contract
-drift requires recertification.
+drift requires recertification. Suite evidence also defaults to 86,400 seconds,
+may be changed with `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS`, and caps receipt
+expiry so product proof cannot outlive kit-suite proof. Receipt schema 2 and
+certification tool version 2 intentionally reject older incompatible receipts.
 
 The implemented receipt does not yet bind live Hermes profile files,
 LaunchAgent hashes, or every CLI path/version. The real-Hermes canary and
