@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
 from legacy_closeout import (  # noqa: E402
+    AGGREGATE_CHECK_TICKETS,
     AUTH_SCHEMA,
     MIGRATION_DIR,
     OUT_OF_BAND_TICKETS,
@@ -26,6 +27,7 @@ from legacy_closeout import (  # noqa: E402
     exact,
     hash_text,
     oid,
+    required_check_names,
     timestamp,
     validate_generated_legacy_batch,
 )
@@ -389,6 +391,20 @@ def generate(product, request_path):
                 "combined_test_sha256": None,
             }:
                 raise ValidationError("legacy-reviewed requires exact Review and no invented audit")
+        elif classification == "legacy-reviewed-aggregate":
+            if (
+                ticket not in AGGREGATE_CHECK_TICKETS
+                or source_state != "Review"
+                or audit.get("required") is not True
+                or not re.fullmatch(r"[0-9a-f]{64}", audit.get("report_sha256", ""))
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}", audit.get("combined_test_sha256", "")
+                )
+            ):
+                raise ValidationError(
+                    "aggregate-check migration requires exact T-013 through T-016 "
+                    "Review and audit evidence"
+                )
         elif classification == "out-of-band-merged":
             if (
                 ticket not in OUT_OF_BAND_TICKETS
@@ -430,7 +446,12 @@ def generate(product, request_path):
             "pr": pr,
             "branch": branch_evidence(repo, ticket, pr["head"], request["cutoff"]),
             "checks": check_evidence(
-                request["repository"], pr["head"], expected_checks,
+                request["repository"],
+                pr["head"],
+                {
+                    name: expected_checks[name]
+                    for name in required_check_names(classification, ticket)
+                },
             ),
             "ledger": ledger_evidence(repo, basis_commit, ticket),
             "independent_audit": audit,

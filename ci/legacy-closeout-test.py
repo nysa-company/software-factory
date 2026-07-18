@@ -117,13 +117,13 @@ class LegacyCloseoutTests(unittest.TestCase):
             "-c", "user.email=test@example.com", "commit", "-qm", message,
         )
 
-    def make_gh(self):
+    def make_gh(self, check_names=CHECKS):
         checks = [{
             "name": name,
             "status": "completed",
             "conclusion": "success",
             "app": {"id": 7, "slug": "github-actions"},
-        } for name in CHECKS]
+        } for name in check_names]
         pr = {
             "number": 13,
             "state": "closed",
@@ -138,7 +138,7 @@ class LegacyCloseoutTests(unittest.TestCase):
         script.write_text(
             "#!/bin/sh\n"
             "case \"$*\" in\n"
-            f"  *check-runs*) cat <<'EOF'\n{json.dumps({'total_count': 4, 'check_runs': checks})}\nEOF\n"
+            f"  *check-runs*) cat <<'EOF'\n{json.dumps({'total_count': len(checks), 'check_runs': checks})}\nEOF\n"
             "  ;;\n"
             "  *commits/*/status*) echo '{\"statuses\":[]}' ;;\n"
             f"  *pulls/13*) cat <<'EOF'\n{json.dumps(pr)}\nEOF\n"
@@ -252,6 +252,30 @@ class LegacyCloseoutTests(unittest.TestCase):
         result = self.generate()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("T-019/T-020", result.stderr)
+
+    def test_early_aggregate_checks_require_allowlisted_audited_review(self):
+        value = json.loads(self.request.read_text())
+        value["tickets"][0]["classification"] = "legacy-reviewed-aggregate"
+        self.request.write_text(json.dumps(value))
+        self.make_gh(("ci", "test-immutability"))
+        missing_audit = self.generate()
+        self.assertNotEqual(missing_audit.returncode, 0)
+        self.assertIn("audit evidence", missing_audit.stderr)
+        value["tickets"][0]["independent_audit"] = {
+            "required": True,
+            "report_sha256": "a" * 64,
+            "combined_test_sha256": "b" * 64,
+        }
+        self.request.write_text(json.dumps(value))
+        result = self.generate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(
+            (self.repo / "factory/migrations/contract-1.3/T-013.json").read_text()
+        )
+        self.assertEqual(
+            [item["name"] for item in receipt["checks"]],
+            ["ci", "test-immutability"],
+        )
 
     def test_batch_rejects_extra_files_partial_batch_and_normal_conflict(self):
         self.assertEqual(self.generate().returncode, 0)

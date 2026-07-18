@@ -175,10 +175,13 @@ PR/check metadata, requires settled Reviewer/Narrator accounting, and performs
 no commit, push, merge, or Linear mutation. Its exact authorization and
 complete receipt batch remain inert until the operator manually merges the one
 protected product PR containing the receipts, terminal ticket projections,
-and target pin. Review sources use `legacy-reviewed`; only the explicitly
-bounded Planning anomalies T-019/T-020 may use `out-of-band-merged`, with
-independent audit and combined-test digests. Historical tickets explicitly
-record that route plans were absent. Activation and sequencing share the same
+and target pin. Review sources use `legacy-reviewed`. The pre-four-job
+T-013–T-016 PRs alone use `legacy-reviewed-aggregate`: their authentic
+app-bound aggregate `ci` and `test-immutability` checks are supplemented by an
+independent criteria audit and current combined-test digest. Only the explicitly
+bounded Planning anomalies T-019/T-020 may use `out-of-band-merged` with the
+same additional audit evidence. Historical tickets explicitly record that
+route plans were absent. Activation and sequencing share the same
 strict protected-main validator: plain `State: Done`, partial batches, extra
 files, conflicting normal attestations, or a receipt targeting another kit
 fail closed.
