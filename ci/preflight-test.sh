@@ -187,7 +187,7 @@ run_sealed_preflight() {
     FACTORY_RELEASE_SHA="$KIT_HEAD_NOW" \
     FACTORY_RELEASE_TREE="$tree" \
     FACTORY_RELEASE_PATH="$release" \
-    FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+    FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
     bash "$release/scripts/preflight.sh" --ticket "$ticket" 2>&1
 }
