@@ -635,6 +635,8 @@ class LinearSyncTest(unittest.TestCase):
     def test_exact_unconsumed_comment_records_fallback_approval(self):
         approval_hash = "a" * 64
         nonce = "b" * 32
+        now = LINEAR.dt.datetime.now(LINEAR.dt.timezone.utc).replace(microsecond=0)
+        created = now - LINEAR.dt.timedelta(minutes=1)
         actual = {
             "comments": {
                 "nodes": [
@@ -645,15 +647,15 @@ class LinearSyncTest(unittest.TestCase):
                             "RUN: run-1 REASON: credits_exhausted "
                             f"NONCE: {nonce}"
                         ),
-                        "createdAt": "2026-07-18T12:00:00Z",
-                        "updatedAt": "2026-07-18T12:00:01Z",
+                        "createdAt": created.isoformat(),
+                        "updatedAt": (created + LINEAR.dt.timedelta(seconds=1)).isoformat(),
                         "user": {"id": "operator-1", "name": "Operator"},
                     },
                     {
                         "id": "ignored",
                         "body": "please retry",
-                        "createdAt": "2026-07-18T12:01:00Z",
-                        "updatedAt": "2026-07-18T12:01:00Z",
+                        "createdAt": now.isoformat(),
+                        "updatedAt": now.isoformat(),
                         "user": {"id": "operator-1", "name": "Operator"},
                     },
                 ]
@@ -671,6 +673,45 @@ class LinearSyncTest(unittest.TestCase):
         consumed = {"consumed_model_fallback_comment_ids": ["comment-1"]}
         LINEAR.ingest_fallback_approval(actual, consumed, False)
         self.assertNotIn("model_fallback_approval", consumed)
+
+    def test_expired_comment_does_not_shadow_valid_fallback_approval(self):
+        now = LINEAR.dt.datetime.now(LINEAR.dt.timezone.utc).replace(microsecond=0)
+        valid_created = now - LINEAR.dt.timedelta(minutes=5)
+        expired_created = now - LINEAR.dt.timedelta(minutes=20)
+        nonce = "b" * 32
+        actual = {
+            "comments": {
+                "nodes": [
+                    {
+                        "id": "valid",
+                        "body": (
+                            f"FACTORY MODEL FALLBACK APPROVAL: {'a' * 64} "
+                            "RUN: run-1 REASON: credits_exhausted "
+                            f"NONCE: {nonce}"
+                        ),
+                        "createdAt": valid_created.isoformat(),
+                        "updatedAt": valid_created.isoformat(),
+                        "user": {"id": "operator-1", "name": "Operator"},
+                    },
+                    {
+                        "id": "expired",
+                        "body": (
+                            f"FACTORY MODEL FALLBACK APPROVAL: {'c' * 64} "
+                            "RUN: run-1 REASON: credits_exhausted "
+                            f"NONCE: {nonce}"
+                        ),
+                        "createdAt": expired_created.isoformat(),
+                        "updatedAt": now.isoformat(),
+                        "user": {"id": "operator-1", "name": "Operator"},
+                    },
+                ]
+            }
+        }
+        entry = {}
+
+        LINEAR.ingest_fallback_approval(actual, entry, False)
+
+        self.assertEqual(entry["model_fallback_approval"]["comment_id"], "valid")
 
     def test_graphql_retries_rate_limit(self):
         limited = urllib.error.HTTPError(

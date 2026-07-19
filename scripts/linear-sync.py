@@ -676,6 +676,7 @@ def fetch_issue(key, issue_id):
 def ingest_fallback_approval(actual, entry, dry):
     consumed = set(entry.get("consumed_model_fallback_comment_ids", []))
     candidates = []
+    now = dt.datetime.now(dt.timezone.utc)
     for comment in (actual.get("comments") or {}).get("nodes", []):
         comment_id = comment.get("id")
         if not isinstance(comment_id, str) or comment_id in consumed:
@@ -692,6 +693,8 @@ def ingest_fallback_approval(actual, entry, dry):
         except ValueError:
             continue
         expires = created + dt.timedelta(seconds=FALLBACK_APPROVAL_TTL_SECONDS)
+        if now > expires:
+            continue
         candidates.append((
             comment.get("updatedAt") or comment.get("createdAt") or "",
             comment_id,
