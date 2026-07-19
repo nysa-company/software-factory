@@ -5,6 +5,7 @@ Product-agnostic kit for running an AI software factory. Read `docs/product-brie
 ## Run checks
 
 - Full suite: `bash ci/test-all.sh`
+- Dynamic preview: `bash ci/test-all.sh --changed origin/main HEAD`; required CI remains in shadow/full mode until its evidence gate passes.
 - Target the smallest relevant shell test while iterating, then run the full suite before completion.
 
 ## Conventions

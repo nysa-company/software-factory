@@ -53,11 +53,14 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: scripts/artifact-check --base "$BASE_SHA"
-      - name: full verification
+      - name: full verification with dynamic-selection shadow
         if: steps.scope.outputs.full == 'true'
-        run: bash ci/test-all.sh
         env:
           BASE_REF: origin/main
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: >-
+          CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY"
+          bash ci/test-all.sh --shadow-changed "$BASE_SHA" "$GITHUB_SHA"
 
   macos-bash-3:
     needs: linux

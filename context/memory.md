@@ -9,6 +9,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, config-review, and full local PR gates enabled. The canonical verification command is `bash ci/test-all.sh`.
+- Dynamic CI selection is fail-closed and evidence-gated: recognized single-component diffs may preview targeted suites, while required PR CI shadows the recommendation by running the full suite. Activation requires 10 merged non-documentation PRs, at least three targeted classifications, and zero reproducible misses; main, macOS compatibility, ambiguous diffs, and shared surfaces remain full.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Certification reuses it only when every release, physical-tree, host, platform, suite-definition, tool-version, and configured-lifetime binding matches; product certification and product/config/receipt validation always rerun, and receipt expiry cannot outlive suite proof.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
@@ -38,6 +39,16 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 
 ## Log
+
+## 2026-07-19 — Decision 47: Shadow fail-closed dynamic CI selection
+
+Category: Decision
+
+Committed diffs classify by dependency surface rather than line count. Only one
+recognized leaf component may target suites; additions, deletions, renames,
+unknown or shared paths, multiple components, and invalid comparisons run full.
+Required CI remains full during a 10-PR shadow window and records every planned
+suite, duration, and unselected failure before targeted enforcement is allowed.
 
 ## 2026-07-19 — Decision 45: Local multi-project operator control plane
 
