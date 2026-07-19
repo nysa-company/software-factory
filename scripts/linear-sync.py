@@ -675,6 +675,11 @@ def fetch_issue(key, issue_id):
 
 def ingest_fallback_approval(actual, entry, dry):
     consumed = set(entry.get("consumed_model_fallback_comment_ids", []))
+    observed_at = utc_now()
+    try:
+        observed = dt.datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return
     candidates = []
     for comment in (actual.get("comments") or {}).get("nodes", []):
         comment_id = comment.get("id")
@@ -691,7 +696,11 @@ def ingest_fallback_approval(actual, entry, dry):
             )
         except ValueError:
             continue
+        if created.tzinfo is None:
+            continue
         expires = created + dt.timedelta(seconds=FALLBACK_APPROVAL_TTL_SECONDS)
+        if expires < observed:
+            continue
         candidates.append((
             comment.get("updatedAt") or comment.get("createdAt") or "",
             comment_id,
@@ -703,7 +712,7 @@ def ingest_fallback_approval(actual, entry, dry):
                 "linear_created_at": comment.get("createdAt"),
                 "linear_updated_at": comment.get("updatedAt"),
                 "nonce": nonce,
-                "observed_at": utc_now(),
+                "observed_at": observed_at,
                 "operator_id": user["id"],
                 "operator_name": user.get("name") or "",
                 "reason": reason,
@@ -712,7 +721,21 @@ def ingest_fallback_approval(actual, entry, dry):
         ))
     if not candidates:
         return
-    approval = sorted(candidates, key=lambda item: (item[0], item[1]))[-1][2]
+    existing = entry.get("model_fallback_approval")
+    approval = None
+    if isinstance(existing, dict):
+        for _updated, _comment_id, candidate in candidates:
+            if all(
+                existing.get(key) == candidate[key]
+                for key in (
+                    "approval_hash", "comment_id", "failed_run_id",
+                    "nonce", "reason",
+                )
+            ):
+                approval = candidate
+                break
+    if approval is None:
+        approval = sorted(candidates, key=lambda item: (item[0], item[1]))[-1][2]
     if dry:
         log("DRY would update model fallback approval overlay")
     else:

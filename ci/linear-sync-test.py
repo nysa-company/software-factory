@@ -660,7 +660,10 @@ class LinearSyncTest(unittest.TestCase):
             }
         }
         entry = {}
-        LINEAR.ingest_fallback_approval(actual, entry, False)
+        with patch.object(
+            LINEAR, "utc_now", return_value="2026-07-18T12:05:00+00:00"
+        ):
+            LINEAR.ingest_fallback_approval(actual, entry, False)
         approval = entry["model_fallback_approval"]
         self.assertEqual(approval["approval_hash"], approval_hash)
         self.assertEqual(approval["failed_run_id"], "run-1")
@@ -668,9 +671,48 @@ class LinearSyncTest(unittest.TestCase):
         self.assertEqual(approval["reason"], "credits_exhausted")
         self.assertEqual(approval["nonce"], nonce)
 
+        actual["comments"]["nodes"].extend([
+            {
+                "id": "expired-newer",
+                "body": (
+                    f"FACTORY MODEL FALLBACK APPROVAL: {'c' * 64} "
+                    "RUN: run-1 REASON: credits_exhausted "
+                    f"NONCE: {'d' * 32}"
+                ),
+                "createdAt": "2026-07-18T11:00:00Z",
+                "updatedAt": "2026-07-18T12:06:00Z",
+                "user": {"id": "operator-1", "name": "Operator"},
+            },
+            {
+                "id": "wrong-newer",
+                "body": (
+                    f"FACTORY MODEL FALLBACK APPROVAL: {'e' * 64} "
+                    "RUN: run-1 REASON: credits_exhausted "
+                    f"NONCE: {'f' * 32}"
+                ),
+                "createdAt": "2026-07-18T12:06:00Z",
+                "updatedAt": "2026-07-18T12:06:00Z",
+                "user": {"id": "operator-1", "name": "Operator"},
+            },
+        ])
+        with patch.object(
+            LINEAR, "utc_now", return_value="2026-07-18T12:07:00+00:00"
+        ):
+            LINEAR.ingest_fallback_approval(actual, entry, False)
+        self.assertEqual(
+            entry["model_fallback_approval"]["comment_id"],
+            "comment-1",
+        )
+
         consumed = {"consumed_model_fallback_comment_ids": ["comment-1"]}
-        LINEAR.ingest_fallback_approval(actual, consumed, False)
-        self.assertNotIn("model_fallback_approval", consumed)
+        with patch.object(
+            LINEAR, "utc_now", return_value="2026-07-18T12:07:00+00:00"
+        ):
+            LINEAR.ingest_fallback_approval(actual, consumed, False)
+        self.assertEqual(
+            consumed["model_fallback_approval"]["comment_id"],
+            "wrong-newer",
+        )
 
     def test_graphql_retries_rate_limit(self):
         limited = urllib.error.HTTPError(
