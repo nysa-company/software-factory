@@ -245,7 +245,10 @@ def calculate(args, nonce):
     contributors = contributors_from(journal, manifests)
     future_roles = list(ROLE_ORDER[ROLE_ORDER.index(role):])
     prior = MANAGER.active_resolution(journal)
-    profile = profile_map[prior["profile_id"]]
+    if prior["profile_id"] == "project-policy":
+        profile = ROUTER.model_policy_profile(prior["model_policy"], routes)
+    else:
+        profile = profile_map[prior["profile_id"]]
     resolution = ROUTER.resolve_fallback_policy(
         catalog,
         routes,

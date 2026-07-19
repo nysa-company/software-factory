@@ -69,6 +69,7 @@ FALLBACK_PLAN_KEYS = frozenset((
     "catalog_hash", "prior_policy_hash", "policy_hash", "failed_role",
     "failed_route_id", "future_roles", "contributor_families", "selections",
 ))
+FALLBACK_PROJECT_PLAN_KEYS = FALLBACK_PLAN_KEYS | frozenset(("model_policy",))
 
 
 class RouterError(ValueError):
@@ -564,7 +565,14 @@ def _validate_fallback_assignment(selections, contributors):
 
 
 def validate_fallback_plan(plan, catalog, routes, profile_map):
-    _exact_keys(plan, FALLBACK_PLAN_KEYS, "fallback plan")
+    if not isinstance(plan, dict):
+        raise RouterError("fallback plan must be an object")
+    project_policy = plan.get("profile_id") == "project-policy"
+    _exact_keys(
+        plan,
+        FALLBACK_PROJECT_PLAN_KEYS if project_policy else FALLBACK_PLAN_KEYS,
+        "fallback plan",
+    )
     if plan["schema"] != "model-fallback-resolution/v2":
         raise RouterError("unsupported fallback plan schema")
     for key in ("catalog_hash", "profile_hash", "prior_policy_hash", "policy_hash"):
@@ -572,7 +580,12 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
             raise RouterError("fallback plan.%s is not a SHA-256 hash" % key)
     if plan["catalog_hash"] != content_hash(catalog):
         raise RouterError("fallback plan catalog hash mismatch")
-    profile = _profile(profile_map, plan["profile_id"])
+    if project_policy:
+        if plan["profile_version"] != 1:
+            raise RouterError("project policy fallback profile identity mismatch")
+        profile = model_policy_profile(plan["model_policy"], routes)
+    else:
+        profile = _profile(profile_map, plan["profile_id"])
     if plan["profile_version"] != profile["version"]:
         raise RouterError("fallback plan profile version mismatch")
     if plan["profile_hash"] != profile_hash(profile):
@@ -640,7 +653,10 @@ def resolve_fallback_policy(
     UNAVAILABLE. INVALID and UNKNOWN are terminal evidence failures.
     """
     profile_map = {profile["profile_id"]: profile}
-    if prior_plan.get("schema") == "model-resolution-plan/v1":
+    if prior_plan.get("schema") in (
+        "model-resolution-plan/v1",
+        "model-resolution-plan/v2",
+    ):
         validate_plan(
             prior_plan,
             catalog,
@@ -746,6 +762,13 @@ def resolve_fallback_policy(
         "schema": "model-fallback-resolution/v2",
         "selections": selections,
     }
+    if profile["profile_id"] == "project-policy":
+        model_policy = prior_plan.get("model_policy")
+        if model_policy is None:
+            raise RouterError("project policy fallback is missing its policy snapshot")
+        if profile != model_policy_profile(model_policy, routes):
+            raise RouterError("project policy fallback profile mismatch")
+        fallback_policy["model_policy"] = model_policy
     fallback_policy["policy_hash"] = content_hash(fallback_policy)
     return fallback_policy
 
