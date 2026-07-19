@@ -45,6 +45,14 @@ def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def approval_digest(value: dict) -> str:
+    """Hash only cancellation state that a fresh preview can reproduce."""
+    approval = dict(value)
+    for field in ("created_at", "nonce", "preview_hash"):
+        approval.pop(field, None)
+    return digest(canonical(approval))
+
+
 def timestamp() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -141,7 +149,7 @@ def calculate(factory_root: Path, ticket: str, run_id: str, reason: str, nonce: 
         "schema": PLAN_SCHEMA,
         "ticket": ticket,
     }
-    plan["preview_hash"] = digest(canonical(plan))
+    plan["preview_hash"] = approval_digest(plan)
     return plan
 
 
@@ -153,8 +161,6 @@ def validate_plan(value: dict, expected_hash: str) -> None:
     }:
         raise CancelError("cancel plan has unexpected fields")
     supplied = value["preview_hash"]
-    unhashed = dict(value)
-    del unhashed["preview_hash"]
     if (
         value["schema"] != PLAN_SCHEMA
         or value["reason"] not in REASONS
@@ -173,7 +179,7 @@ def validate_plan(value: dict, expected_hash: str) -> None:
         or not re.fullmatch(r"[0-9a-f]{64}", value.get("manifest_sha256", ""))
         or not re.fullmatch(r"[0-9a-f]{64}", value.get("pid_record_sha256", ""))
         or not re.fullmatch(r"[0-9a-f]{64}", supplied or "")
-        or supplied != digest(canonical(unhashed))
+        or supplied != approval_digest(value)
         or supplied != expected_hash
     ):
         raise CancelError("cancel preview hash does not match the plan")

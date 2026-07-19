@@ -227,6 +227,22 @@ class AttemptCancellationTest(unittest.TestCase):
         with self.assertRaisesRegex(CANCEL.CancelError, "changed after"):
             CANCEL.apply_plan(self.root, plan, 0.1)
 
+    def test_recomputed_preview_preserves_approval_hash(self):
+        process, started = self.spawn()
+        self.manifest(process, started)
+        timestamps = ("2026-07-18T12:00:00Z", "2026-07-18T12:01:00Z")
+        with mock.patch.object(CANCEL, "timestamp", side_effect=timestamps):
+            approved = CANCEL.calculate(
+                self.root, "T-1", "run-1", "operator_requested", "c" * 32,
+            )
+            current = CANCEL.calculate(
+                self.root, "T-1", "run-1", "operator_requested", "d" * 32,
+            )
+        self.assertNotEqual(approved["nonce"], current["nonce"])
+        self.assertNotEqual(approved["created_at"], current["created_at"])
+        self.assertEqual(approved["preview_hash"], current["preview_hash"])
+        CANCEL.validate_plan(current, approved["preview_hash"])
+
     def test_competing_request_is_not_treated_as_replay(self):
         process, started = self.spawn()
         self.manifest(process, started)
