@@ -405,14 +405,17 @@ PY
     fi
     approval_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-approval.XXXXXX")" ||
       json_error "could not allocate approval input"
+    approval_available=1
+    approval_argument=()
     if ! python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" read \
       --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
       --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
       > "$approval_file"; then
-      rm -f "$approval_file"
-      json_error "exact unexpired Linear fallback approval is required"
+      approval_available=0
     fi
-    approval_hash="$(python3 - "$approval_file" <<'PY'
+    if [[ "$approval_available" -eq 1 ]]; then
+      approval_argument=(--approval "$approval_file")
+      approval_hash="$(python3 - "$approval_file" <<'PY'
 import json, re, sys
 value = json.load(open(sys.argv[1]))
 digest = value.get("approval_hash", "")
@@ -421,6 +424,7 @@ if not re.fullmatch(r"[0-9a-f]{64}", digest):
 print(digest)
 PY
 )" || json_error "fallback approval hash is invalid"
+    fi
     launch_lock="$FACTORY_ROOT/factory/.launch.lock"
     provider_lock="$FACTORY_ROOT/factory/.provider.lock"
     ledger_lock="$FACTORY_ROOT/factory/.ledger.lock"
@@ -439,17 +443,19 @@ PY
       --project "$FACTORY_PROJECT" --ticket "$ticket" \
       --failed-run "$failed_run" --reason "$reason" \
       --readiness "$readiness" --remote "$CONTROL_REMOTE" \
-      --approval "$approval_file" > "$apply_file"; then
+      "${approval_argument[@]}" > "$apply_file"; then
       rm -f "$apply_file" "$approval_file"
       json_error "fallback apply failed"
     fi
     commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
       "$CONTROL_REMOTE" "$expected_remote_head")"
-    python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" consume \
-      --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
-      --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
-      --approval-hash "$approval_hash" >/dev/null ||
-      json_error "fallback committed but Linear approval consumption requires reconciliation"
+    if [[ "$approval_available" -eq 1 ]]; then
+      python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" consume \
+        --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+        --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
+        --approval-hash "$approval_hash" >/dev/null ||
+        json_error "fallback committed but Linear approval consumption requires reconciliation"
+    fi
     rmdir "$FALLBACK_LAUNCH_LOCK"
     FALLBACK_LAUNCH_LOCK=""
     python3 - "$apply_file" "$commit_sha" <<'PY'

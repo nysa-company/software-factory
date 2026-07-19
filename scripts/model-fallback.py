@@ -319,11 +319,41 @@ def recover_applied(args, approval):
         body = revision["body"]
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         return None
+    approval_receipt = body.get("approval_receipt")
     if (
         body.get("kind") != "fallback"
-        or body.get("approval_receipt") != approval
         or body.get("reason") != args.reason
     ):
+        return None
+    if approval is None:
+        if (
+            not isinstance(approval_receipt, dict)
+            or approval_receipt.get("schema")
+            != "model-fallback-linear-approval/v1"
+            or approval_receipt.get("failed_run_id") != args.failed_run
+            or approval_receipt.get("reason") != args.reason
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", approval_receipt.get("approval_hash", "")
+            )
+        ):
+            raise FallbackError(
+                "existing fallback revision has an invalid approval receipt"
+            )
+        approval = approval_receipt
+        branch = git(repo, "branch", "--show-current").decode().strip()
+        remote = git(
+            repo,
+            "ls-remote",
+            "--heads",
+            "--",
+            args.remote,
+            f"refs/heads/{branch}",
+        ).decode().splitlines()
+        if len(remote) != 1 or remote[0].split()[0] != head:
+            raise FallbackError(
+                "committed fallback is not published on the trusted remote"
+            )
+    elif approval_receipt != approval:
         return None
     _failed, failed_raw, _ledger, _manifests = load_evidence(
         Path(args.factory_root), args.ticket, args.failed_run
@@ -372,10 +402,12 @@ def recover_applied(args, approval):
 
 
 def apply(args):
-    approval = json.loads(Path(args.approval).read_text())
+    approval = json.loads(Path(args.approval).read_text()) if args.approval else None
     recovered = recover_applied(args, approval)
     if recovered is not None:
         return recovered
+    if approval is None:
+        raise FallbackError("apply requires a Linear approval")
     result = calculate(args, approval["nonce"])
     if approval.get("approval_hash") != result["approval_hash"]:
         raise FallbackError("Linear approval does not match the current fallback preview")
@@ -447,8 +479,6 @@ def parser():
 
 def main():
     args = parser().parse_args()
-    if args.action == "apply" and not args.approval:
-        raise FallbackError("apply requires a Linear approval")
     value = preview(args) if args.action == "preview" else apply(args)
     print(canonical(value))
 
