@@ -8,6 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_AGENT="$ROOT/scripts/run-agent.sh"
 NEXT_STAGE="$ROOT/scripts/next-stage.sh"
 KILL_SWITCH="$ROOT/scripts/kill-switch.sh"
+ATTEMPT_CANCEL="$ROOT/scripts/attempt-cancel.py"
 KIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 KIT_TREE="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
 PHYSICAL_KIT_PATH="$(cd "$ROOT" && pwd -P)"
@@ -1825,6 +1826,85 @@ else
   fail "sequencer refuses obsolete sequential role" "status $SEQUENTIAL_STATUS"
 fi
 
+# Targeted cancellation binds one prepared run and never publishes product KILL.
+PRE_CANCEL="$TMP/pre-go-cancel"
+write_envelope "$PRE_CANCEL"
+write_ticket "$PRE_CANCEL" T-405
+FACTORY_ROOT="$PRE_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GO_SLEEP=2 \
+  FACTORY_ADAPTER_OVERRIDE=mock MOCK_SLEEP=30 \
+  "$RUN_AGENT" --role planner --ticket T-405 -- "pre-GO cancellation" \
+  > "$TMP/pre-go-cancel.out" 2>&1 &
+PRE_CANCEL_PID=$!
+PRE_CANCEL_RUN=""
+for _i in $(seq 1 450); do
+  PRE_CANCEL_META="$(ls "$PRE_CANCEL/factory/runs/"*.meta 2>/dev/null || true)"
+  if [[ -n "$PRE_CANCEL_META" ]] && grep -q '^phase=prepared$' "$PRE_CANCEL_META"; then
+    PRE_CANCEL_RUN="$(basename "$PRE_CANCEL_META" .meta)"
+    break
+  fi
+  sleep 0.02
+done
+PRE_CANCEL_PLAN="$TMP/pre-go-cancel-plan.json"
+python3 "$ATTEMPT_CANCEL" preview --factory-root "$PRE_CANCEL" \
+  --ticket T-405 --run-id "$PRE_CANCEL_RUN" --reason operator_requested \
+  > "$PRE_CANCEL_PLAN"
+PRE_CANCEL_HASH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' "$PRE_CANCEL_PLAN")"
+python3 "$ATTEMPT_CANCEL" apply --factory-root "$PRE_CANCEL" \
+  --plan "$PRE_CANCEL_PLAN" --preview-hash "$PRE_CANCEL_HASH" --timeout 10 \
+  > "$TMP/pre-go-cancel-receipt.json"
+wait "$PRE_CANCEL_PID" 2>/dev/null || true
+if grep -q '^accounting_state=launch_void$' "$PRE_CANCEL/factory/runs/$PRE_CANCEL_RUN.meta" &&
+   grep -q '^effective_cost=0$' "$PRE_CANCEL/factory/runs/$PRE_CANCEL_RUN.meta" &&
+   grep -q '^role_exit=cancelled$' "$PRE_CANCEL/factory/runs/$PRE_CANCEL_RUN.meta" &&
+   [[ -f "$PRE_CANCEL/factory/runs/$PRE_CANCEL_RUN.cancel.json" &&
+      ! -e "$PRE_CANCEL/factory/KILL" ]]; then
+  pass "pre-GO targeted cancellation is zero-cost and product-local"
+else
+  fail "pre-GO targeted cancellation is zero-cost and product-local"
+fi
+
+# Post-GO cancellation remains charged and drains before its receipt is emitted.
+POST_CANCEL="$TMP/post-go-cancel"
+write_envelope "$POST_CANCEL"
+write_ticket "$POST_CANCEL" T-406
+FACTORY_ROOT="$POST_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock MOCK_SLEEP=30 \
+  "$RUN_AGENT" --role planner --ticket T-406 -- "post-GO cancellation" \
+  > "$TMP/post-go-cancel.out" 2>&1 &
+POST_CANCEL_PID=$!
+POST_CANCEL_RUN=""
+for _i in $(seq 1 450); do
+  POST_CANCEL_META="$(ls "$POST_CANCEL/factory/runs/"*.meta 2>/dev/null || true)"
+  if [[ -n "$POST_CANCEL_META" ]] && grep -q '^go_issued=1$' "$POST_CANCEL_META"; then
+    POST_CANCEL_RUN="$(basename "$POST_CANCEL_META" .meta)"
+    break
+  fi
+  sleep 0.02
+done
+POST_CANCEL_PLAN="$TMP/post-go-cancel-plan.json"
+python3 "$ATTEMPT_CANCEL" preview --factory-root "$POST_CANCEL" \
+  --ticket T-406 --run-id "$POST_CANCEL_RUN" --reason budget_exhausted \
+  > "$POST_CANCEL_PLAN"
+POST_CANCEL_HASH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' "$POST_CANCEL_PLAN")"
+python3 "$ATTEMPT_CANCEL" apply --factory-root "$POST_CANCEL" \
+  --plan "$POST_CANCEL_PLAN" --preview-hash "$POST_CANCEL_HASH" --timeout 10 \
+  > "$TMP/post-go-cancel-receipt.json"
+wait "$POST_CANCEL_PID" 2>/dev/null || true
+if grep -q '^accounting_state=cancelled_conservative$' \
+     "$POST_CANCEL/factory/runs/$POST_CANCEL_RUN.meta" &&
+   grep -q '^role_exit=cancelled$' "$POST_CANCEL/factory/runs/$POST_CANCEL_RUN.meta" &&
+   [[ ! -e "$POST_CANCEL/factory/runs/$POST_CANCEL_RUN.pid" &&
+      ! -e "$POST_CANCEL/factory/.provider.lock" &&
+      ! -e "$POST_CANCEL/factory/KILL" ]] &&
+   awk -F, -v run="$POST_CANCEL_RUN" \
+     '$10==run && $8=="1.00" && $14=="conservative_reservation" {found=1} END {exit !found}' \
+     "$POST_CANCEL/factory/runtime-ledger.csv"; then
+  pass "post-GO targeted cancellation is charged and converged"
+else
+  fail "post-GO targeted cancellation is charged and converged"
+fi
+
 # Kill switch terminates the isolated adapter process group and descendants.
 KILL_ROOT="$TMP/kill-root"
 write_envelope "$KILL_ROOT"
@@ -1838,7 +1918,7 @@ MOCK_SLEEP=30 MOCK_DESCENDANT_PID_FILE="$DESCENDANT_PID_FILE" \
   > "$TMP/kill-wrapper.out" 2>&1 &
 KILL_WRAPPER_PID=$!
 KILL_PID_FILE=""
-for _i in $(seq 1 100); do
+for _i in $(seq 1 200); do
   KILL_PID_FILE="$(ls "$KILL_ROOT/factory/runs/"*.pid 2>/dev/null || true)"
   [[ -n "$KILL_PID_FILE" && -f "$DESCENDANT_PID_FILE" ]] && break
   sleep 0.05

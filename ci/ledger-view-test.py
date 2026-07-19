@@ -141,6 +141,19 @@ class LedgerViewTest(unittest.TestCase):
         row = self.refresh()[-1]
         self.assertEqual((row["cost_usd"], row["turns"], row["cost_basis"]), ("0", "0", "launch_void"))
 
+    def test_post_go_cancellation_keeps_full_reservation(self):
+        path = self.root / "factory" / "runs" / "run-cancelled.meta"
+        manifest(
+            path, state="cancelled_conservative", phase="cancelled_conservative",
+            go="1", cost="0.01", status="130",
+            terminal="2026-07-15T12:01:00Z",
+        )
+        row = self.refresh()[-1]
+        self.assertEqual(
+            (row["cost_usd"], row["cost_basis"], row["exit_status"]),
+            ("2.00", "conservative_reservation", "130"),
+        )
+
     def test_malformed_durable_values_fail_closed(self):
         ledger = self.root / "factory" / "ledger.csv"
         for field, value in (("cost_usd", "9" * 500), ("turns", "9" * 500)):

@@ -37,7 +37,10 @@ MANAGER = load_module("model_manager", ROOT / "scripts/model-manager.py")
 ROUTER = load_module("model_router_fallback", ROOT / "scripts/model-router.py")
 ROLE_ORDER = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
 PRODUCER_BOUNDARY = {"planner": "P", "test-author": "T", "builder": "B"}
-REASONS = frozenset(("credits_exhausted", "provider_unavailable"))
+REASONS = frozenset((
+    "budget_exhausted", "credits_exhausted", "operator_requested",
+    "provider_unavailable",
+))
 
 
 class FallbackError(ValueError):
@@ -100,15 +103,24 @@ def load_evidence(factory_root, ticket, failed_run):
         failed.get("ticket") != ticket
         or failed.get("go_issued") != "1"
         or not re.fullmatch(r"[1-9][0-9]{0,2}", failed.get("exit_status", ""))
-        or failed.get("accounting_state") not in ("completed", "abandoned_conservative")
+        or failed.get("accounting_state") not in (
+            "completed", "abandoned_conservative", "cancelled_conservative",
+        )
         or failed.get("phase") != failed.get("accounting_state")
-        or failed.get("role_exit") != "provider_failed"
+        or failed.get("role_exit") not in ("provider_failed", "cancelled")
         or failed.get("role") not in ROLE_ORDER
         or not failed.get("route_id")
         or not failed.get("provider_family")
         or not re.fullmatch(r"[0-9a-f]{40}", failed.get("role_head_before", ""))
     ):
         raise FallbackError("run is not an eligible terminal provider failure")
+    if (
+        failed.get("role_exit") == "cancelled"
+        and failed.get("cancellation_reason") not in (
+            "budget_exhausted", "operator_requested",
+        )
+    ):
+        raise FallbackError("cancelled run lacks an eligible fallback reason")
     if (runs / f"{failed_run}.pid").exists():
         raise FallbackError("failed run still has a process record")
     ledger_path = factory_root / "factory/runtime-ledger.csv"
@@ -174,6 +186,11 @@ def calculate(args, nonce):
     failed, failed_raw, ledger_raw, manifests = load_evidence(
         factory_root, args.ticket, args.failed_run
     )
+    if (
+        failed.get("role_exit") == "cancelled"
+        and failed.get("cancellation_reason") != args.reason
+    ):
+        raise FallbackError("fallback reason does not match the cancellation receipt")
     role = failed["role"]
     expected_head = failed["role_head_before"]
     branch = git(repo, "symbolic-ref", "--quiet", "--short", "HEAD").decode().strip()

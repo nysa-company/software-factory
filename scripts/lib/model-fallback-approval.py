@@ -14,7 +14,10 @@ import tempfile
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9._-]{1,200}\Z")
 TICKET = re.compile(r"T-[0-9]+\Z")
-REASONS = frozenset(("credits_exhausted", "provider_unavailable"))
+REASONS = frozenset((
+    "budget_exhausted", "credits_exhausted", "operator_requested",
+    "provider_unavailable",
+))
 APPROVAL_KEYS = frozenset((
     "approval_hash", "comment_id", "expires_at", "failed_run_id",
     "linear_created_at", "linear_updated_at", "nonce", "observed_at",
