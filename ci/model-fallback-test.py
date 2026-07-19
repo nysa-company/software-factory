@@ -123,6 +123,7 @@ class FallbackTest(unittest.TestCase):
             "role_remote_before": self.head,
             "route_id": failed["route_id"],
             "run_id": "run-failed-1",
+            "task_submitted": "1",
             "terminal_at": now,
             "ticket": "T-1",
         }
@@ -137,7 +138,7 @@ class FallbackTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def command(self, action, *extra):
+    def command(self, action, *extra, check=True):
         result = subprocess.run(
             [
                 sys.executable, str(SCRIPT), action,
@@ -154,8 +155,10 @@ class FallbackTest(unittest.TestCase):
             text=True,
             capture_output=True,
         )
-        if result.returncode:
+        if result.returncode and check:
             self.fail(result.stderr)
+        if result.returncode:
+            return result
         return json.loads(result.stdout)
 
     def test_preview_then_apply_commits_partial_work_and_journal_once(self):
@@ -223,6 +226,18 @@ class FallbackTest(unittest.TestCase):
         )
         preview = self.command("preview")
         self.assertEqual(preview["failed_run_id"], "run-failed-1")
+
+    def test_pre_submission_failure_is_ineligible(self):
+        manifest = self.product / "factory/runs/run-failed-1.meta"
+        manifest.write_text(
+            manifest.read_text().replace("task_submitted=1", "task_submitted=0")
+        )
+        result = self.command("preview", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "not an eligible terminal provider failure",
+            result.stderr,
+        )
 
 
 if __name__ == "__main__":

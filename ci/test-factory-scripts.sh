@@ -929,6 +929,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q 'input_tokens=70' "$FALLBACK_OUT" &&
      grep -q 'cache_tokens=15' "$FALLBACK_OUT" &&
      grep -q '^phase=completed$' "$FALLBACK_META" &&
+     grep -q '^task_submitted=1$' "$FALLBACK_META" &&
      grep -q "^kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
@@ -1362,6 +1363,7 @@ if [[ "$GO_WRITE_STATUS" -eq 125 ]] &&
    grep -q 'could not persist GO marker' "$TMP/go-marker-write-failure.out" &&
    ! grep -q 'mock adapter ran task' "$GO_WRITE_FAIL/factory/runs/"*.out &&
    grep -q '^go_issued=1$' "$GO_WRITE_META" &&
+   grep -q '^task_submitted=0$' "$GO_WRITE_META" &&
    grep -q '^accounting_state=abandoned_conservative$' "$GO_WRITE_META" &&
    grep -q '^effective_cost=1.00$' "$GO_WRITE_META"; then
   pass "GO attempt stays charged when marker persistence keeps gate closed"

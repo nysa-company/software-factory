@@ -122,6 +122,7 @@ RUN_PID_FILE=""
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
+RUN_SUBMITTED_FILE=""
 RUN_OUTPUT_TEMP=""
 RUNS_META_SNAPSHOT=""
 CONTROL_PLANE_MUTATION=0
@@ -144,6 +145,7 @@ PRODUCT_REMOTE=""
 ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
+TASK_SUBMITTED=0
 RUN_STARTED_AT=""
 TERMINAL_AT=""
 RESERVED_USD=""
@@ -418,6 +420,7 @@ write_manifest() {
     echo "accounting_state=$(meta_value "$ACCOUNTING_STATE")"
     echo "reserved_usd=$(meta_value "$RESERVED_USD")"
     echo "go_issued=$(meta_value "$GO_ISSUED")"
+    echo "task_submitted=$(meta_value "$TASK_SUBMITTED")"
     echo "started_at=$(meta_value "$RUN_STARTED_AT")"
     echo "terminal_at=$(meta_value "$TERMINAL_AT")"
     echo "prompt_version=$(meta_value "$PROMPT_VERSION")"
@@ -640,6 +643,7 @@ cleanup() {
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
   [[ -z "$RUN_GATE_FILE" ]] || rm -f "$RUN_GATE_FILE"
+  [[ -z "$RUN_SUBMITTED_FILE" ]] || rm -f "$RUN_SUBMITTED_FILE"
   [[ -z "$RUN_OUTPUT_TEMP" ]] || rm -f "$RUN_OUTPUT_TEMP"
   exec 8<&- 9>&- 2>/dev/null || true
   if [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
@@ -1158,7 +1162,8 @@ set +e
 RUN_READY_FILE="$RUNS_DIR/.$RUN_ID.ready"
 RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
 RUN_GATE_FILE="$RUNS_DIR/.$RUN_ID.gate"
-rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
+RUN_SUBMITTED_FILE="$RUNS_DIR/.$RUN_ID.submitted"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE"
 ADAPTER_ARGS=(
   --budget "$RESERVED_USD"
   --max-turns "$PER_RUN_MAX_TURNS"
@@ -1183,7 +1188,7 @@ RUN_OUTPUT_TEMP=""
 # task-bearing adapters must never inherit mutation-capable state paths.
 unset FACTORY_MODEL_STATE_ROOT FACTORY_PROJECT
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
-  "$RUN_READY_FILE" "$RUN_GATE_FILE" "$ADAPTER_SH" \
+  "$RUN_READY_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE" "$ADAPTER_SH" \
   "${ADAPTER_ARGS[@]}" \
   -- "$TASK" 8<&- >&9 2>&1 &
 RUN_PID=$!
@@ -1307,6 +1312,9 @@ else
         HELD_LAUNCH_LOCK=0
         wait "$RUN_PID"
         STATUS=$?
+        if [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]]; then
+          TASK_SUBMITTED=1
+        fi
         if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
             python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
           CONTROL_PLANE_MUTATION=1
@@ -1353,10 +1361,11 @@ if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
 else
   echo "WARNING: process group $RUN_PGID survived; PID record retained for kill-switch" >&2
 fi
-rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE"
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
+RUN_SUBMITTED_FILE=""
 exec 9>&-
 RESULT="$(cat <&8)"
 exec 8<&-
