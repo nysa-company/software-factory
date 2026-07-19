@@ -8,6 +8,7 @@ any prior accounting.
 """
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -49,6 +50,13 @@ HASH = re.compile(r"^[0-9a-f]{64}$")
 TICKET = re.compile(r"^T-[0-9]+$")
 RUN_ID = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
 UTC_DATE = re.compile(r"^20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])$")
+UTC_TIMESTAMP = re.compile(
+    r"^20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])"
+    r"T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+)
+OPERATOR_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+OVERRIDE_REASONS = {"budget_exhausted", "operator_requested"}
+MAX_OVERRIDE_SECONDS = 7 * 24 * 60 * 60
 
 
 class ControlError(Exception):
@@ -66,6 +74,37 @@ def digest(value):
 def fail(message):
     print(json.dumps({"error": message, "status": "error"}, sort_keys=True, separators=(",", ":")))
     raise SystemExit(2)
+
+
+def timestamp(value, location):
+    if not isinstance(value, str) or not UTC_TIMESTAMP.fullmatch(value):
+        raise ControlError(f"{location} must be a UTC timestamp")
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+
+
+def validate_override_authority(value, now=None, require_current_issue=True):
+    issued = timestamp(value.get("issued_at"), "override issued_at")
+    expires = timestamp(value.get("expires_at"), "override expires_at")
+    current = now or datetime.now(timezone.utc)
+    if require_current_issue and (
+        issued > current or (current - issued).total_seconds() > 15 * 60
+    ):
+        raise ControlError("override approval window is not current")
+    lifetime = (expires - issued).total_seconds()
+    if lifetime <= 0 or lifetime > MAX_OVERRIDE_SECONDS:
+        raise ControlError("override lifetime must be between 1 second and 7 days")
+    operator_id = value.get("operator_id")
+    if (
+        not isinstance(operator_id, str)
+        or not OPERATOR_ID.fullmatch(operator_id)
+        or operator_id == "auto"
+    ):
+        raise ControlError("override operator identity is invalid")
+    if value.get("reason") not in OVERRIDE_REASONS:
+        raise ControlError("override reason is invalid")
+    return expires
 
 
 def secure_directory(path, create=False):
@@ -500,11 +539,16 @@ def override_preview(args):
         "base_env_sha256": digest(state[4]),
         "changes": changes,
         "day": day or None,
+        "expires_at": args.expires_at,
+        "issued_at": args.issued_at,
+        "operator_id": args.operator_id,
+        "reason": args.reason,
         "role": args.role or None,
         "schema": "factory-envelope-override/v1",
         "scope": args.scope,
         "ticket": args.ticket or None,
     }
+    validate_override_authority(body)
     if args.scope == "global-day":
         if not args.global_env or not Path(args.global_env).is_absolute():
             raise ControlError("global-day scope requires an absolute --global-env")
@@ -603,6 +647,11 @@ def load_override_records(base, ticket, role, day, scopes=None):
         value = json.loads(raw)
         if value.get("schema") != "factory-envelope-override/v1" or digest(canonical(value)) != path.stem:
             raise ControlError("override record identity is invalid")
+        expires = validate_override_authority(
+            value, require_current_issue=False
+        )
+        if expires <= datetime.now(timezone.utc):
+            continue
         scope = value["scope"]
         if scopes is not None and scope not in scopes:
             continue
@@ -722,6 +771,14 @@ def parser():
         command.add_argument("--role")
         command.add_argument("--day")
         command.add_argument("--global-env")
+        command.add_argument("--issued-at", required=True)
+        command.add_argument("--expires-at", required=True)
+        command.add_argument("--operator-id", required=True)
+        command.add_argument(
+            "--reason",
+            required=True,
+            choices=tuple(sorted(OVERRIDE_REASONS)),
+        )
         command.add_argument("--set", action="append", default=[])
         if name == "override-apply":
             command.add_argument("--approve-hash", required=True)

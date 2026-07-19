@@ -120,11 +120,18 @@ class EnvelopeControlTest(unittest.TestCase):
         self.assertIn("regular single-link", unsafe.stdout)
 
     def test_next_attempt_override_is_immutable_and_consumed_once(self):
-        day = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        day = now.date().isoformat()
         options = (
             "--scope", "next-attempt",
             "--ticket", "T-901",
             "--role", "builder",
+            "--issued-at", now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--expires-at", (now + dt.timedelta(minutes=15)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "--operator-id", "operator-1",
+            "--reason", "budget_exhausted",
             "--set", "BUILDER_PER_RUN_BUDGET_USD=3.00",
         )
         preview = self.json_command(
@@ -157,13 +164,20 @@ class EnvelopeControlTest(unittest.TestCase):
         self.assertEqual(effective["FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS"], "")
 
     def test_global_day_record_is_shared_beside_machine_config(self):
-        day = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        day = now.date().isoformat()
         global_env = self.root.parent / "machine" / "global.env"
         global_env.parent.mkdir()
         global_env.write_text("GLOBAL_DAILY_CAP_USD=50.00\n")
         options = (
             "--scope", "global-day", "--day", day,
             "--global-env", str(global_env),
+            "--issued-at", now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--expires-at", (now + dt.timedelta(minutes=15)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "--operator-id", "operator-1",
+            "--reason", "budget_exhausted",
             "--set", "GLOBAL_DAILY_CAP_USD=25.00",
         )
         preview = self.json_command(

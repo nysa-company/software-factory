@@ -28,9 +28,12 @@ ownership, writable-by-others paths, malformed limits, and stale previews.
 For a bounded exception, use `override-plan` and `override-apply` with one of
 `next-attempt`, `ticket`, `role`, `product-day`, or `global-day`. Ticket and
 role selectors narrow the record; day scopes require a UTC `--day YYYY-MM-DD`.
-Overrides are immutable JSON records. A next-attempt use writes a separate
-consumption receipt, so neither the authorization nor prior accounting is ever
-rewritten. Conflicting active records fail closed. `global-day` additionally
+Every override binds an operator ID, reason, issue time, and expiry of no more
+than seven days; preview/apply approval expires after 15 minutes. Overrides are
+immutable JSON records. A next-attempt use writes a separate consumption
+receipt, so neither the authorization nor prior accounting is ever rewritten.
+Expired records are ignored and conflicting active records fail closed.
+`global-day` additionally
 requires `--global-env /absolute/path/to/global.env` and stores its record beside
 that machine configuration so every product using it observes the same cap.
 
@@ -41,7 +44,7 @@ them remotely. Direct backend examples for launcher integration:
 python3 scripts/envelope-control.py inspect --factory-root /absolute/product
 python3 scripts/envelope-control.py plan --factory-root /absolute/product --set BUILDER_PER_RUN_BUDGET_USD=8.00
 python3 scripts/envelope-control.py apply --factory-root /absolute/product --set BUILDER_PER_RUN_BUDGET_USD=8.00 --approve-hash <preview-hash>
-python3 scripts/envelope-control.py override-plan --factory-root /absolute/product --scope next-attempt --ticket T-123 --role builder --set BUILDER_PER_RUN_TIMEOUT_MIN=60
+python3 scripts/envelope-control.py override-plan --factory-root /absolute/product --scope next-attempt --ticket T-123 --role builder --issued-at 2026-07-19T01:00:00Z --expires-at 2026-07-19T01:15:00Z --operator-id operator-1 --reason budget_exhausted --set BUILDER_PER_RUN_TIMEOUT_MIN=60
 ```
 
 ## Failed deploy / broken staging
