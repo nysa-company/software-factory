@@ -37,6 +37,7 @@ run_suite "model manager regression suite" python3 "$ROOT/ci/model-manager-test.
 run_suite "model control regression suite" python3 "$ROOT/ci/model-control-test.py"
 run_suite "disabled Claude Kimi adapter suite" python3 "$ROOT/ci/claude-kimi-adapter-test.py"
 run_suite "selective CI scope" bash "$ROOT/ci/ci-scope-test.sh"
+run_suite "process-group readiness suite" python3 "$ROOT/ci/run-in-process-group-test.py"
 run_suite "factory script regression suite" bash "$ROOT/ci/test-factory-scripts.sh"
 run_suite "dispatcher lease suite" bash "$ROOT/ci/dispatch-leases-test.sh"
 run_suite "reorder test-fixes suite" bash "$ROOT/ci/reorder-test-fixes-test.sh"

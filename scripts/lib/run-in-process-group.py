@@ -10,6 +10,16 @@ import sys
 import time
 from pathlib import Path
 
+READINESS_TIMEOUT_SECONDS = 120
+
+
+def wait_for_gate(go_path: Path) -> None:
+    deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
+    while not go_path.exists():
+        if time.monotonic() >= deadline:
+            raise SystemExit("wrapper did not acknowledge process-group readiness")
+        time.sleep(0.01)
+
 
 def group_members() -> list[int]:
     group = os.getpgrp()
@@ -65,11 +75,7 @@ def main() -> int:
 
     # The wrapper publishes the validated PID/PGID record before acknowledging.
     # If it crashes, no task is submitted.
-    deadline = time.monotonic() + 10
-    while not go_path.exists():
-        if time.monotonic() >= deadline:
-            raise SystemExit("wrapper did not acknowledge process-group readiness")
-        time.sleep(0.01)
+    wait_for_gate(go_path)
 
     try:
         child = subprocess.Popen(sys.argv[3:])
