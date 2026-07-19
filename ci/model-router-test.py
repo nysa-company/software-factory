@@ -392,6 +392,33 @@ class ModelRouterTest(unittest.TestCase):
                 self.catalog, self.routes, profile, readiness, policy
             )
 
+    def test_project_policy_snapshot_survives_mid_ticket_fallback(self):
+        policy = self.model_policy()
+        profile = ROUTER.model_policy_profile(policy, self.routes)
+        prior = ROUTER.resolve_policy(
+            self.catalog, self.routes, profile, self.readiness(), policy
+        )
+        fallback = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            profile,
+            self.readiness(),
+            prior,
+            "builder",
+            prior["selections"]["builder"]["route_id"],
+            ["builder", "reviewer"],
+            {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
+        )
+        self.assertEqual(fallback["profile_id"], "project-policy")
+        self.assertEqual(fallback["model_policy"], policy)
+        self.assertEqual(
+            fallback["selections"]["builder"]["route_id"],
+            policy["roles"]["builder"]["secondary_route_id"],
+        )
+        ROUTER.validate_fallback_plan(
+            fallback, self.catalog, self.routes, self.profile_map
+        )
+
     def test_history_aware_fallback_excludes_failed_route_and_resolves_future_roles(self):
         prior = self.resolve()
         readiness = self.readiness()
