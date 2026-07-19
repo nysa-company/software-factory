@@ -234,8 +234,8 @@ if (
 ):
     raise SystemExit(2)
 canonical = json.dumps(
-    value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-).encode()
+    value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+).encode("utf-8")
 print(json.dumps({
     "journal": value,
     "preview_hash": hashlib.sha256(canonical).hexdigest(),
