@@ -229,8 +229,6 @@
         "arguments": [
           "--ticket",
           "<T-NNN>",
-          "--role",
-          "<next-stage-role>",
           "[--lease <opaque-lease-id>]",
           "--workdir",
           "<absolute-product-worktree>",
@@ -256,6 +254,8 @@
         "arguments": [
           "--ticket",
           "<T-NNN>",
+          "--role",
+          "<next-stage-role>",
           "[--lease <opaque-lease-id>]",
           "--workdir",
           "<absolute-product-worktree>",

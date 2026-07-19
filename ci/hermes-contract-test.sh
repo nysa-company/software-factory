@@ -1996,13 +1996,14 @@ assert commands["models"]["maintenance"] == {
         "fallback",
     ],
 }
-assert commands["preflight"]["arguments"][-1] == "--json"
-assert commands["next-stage"]["arguments"][-1] == "--json"
-assert commands["preflight"]["arguments"][-3:] == [
-    "--workdir", "<absolute-product-worktree>", "--json"
+assert commands["preflight"]["arguments"] == [
+    "--ticket", "<T-NNN>", "--role", "<next-stage-role>",
+    "[--lease <opaque-lease-id>]", "--workdir",
+    "<absolute-product-worktree>", "--json",
 ]
-assert commands["next-stage"]["arguments"][-3:] == [
-    "--workdir", "<absolute-product-worktree>", "--json"
+assert commands["next-stage"]["arguments"] == [
+    "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]", "--workdir",
+    "<absolute-product-worktree>", "--json",
 ]
 assert commands["next-stage"]["contract_1_3_terminal_action"].startswith(
     "COMPLETE means"
