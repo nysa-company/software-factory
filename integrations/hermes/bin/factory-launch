@@ -603,6 +603,21 @@ validate_ticket_command() {
   fi
 }
 
+validate_preflight_command() {
+  PREFLIGHT_ROLE=""
+  if [[ "$CONTRACT_VERSION" == "1.5.0" ]]; then
+    [[ $# -ge 5 && "$1" == "--ticket" && "$3" == "--role" ]] || usage
+    local ticket_arg="$2"
+    PREFLIGHT_ROLE="$4"
+    role_is_allowed "$PREFLIGHT_ROLE" ||
+      die "preflight role is not allowed by the active contract"
+    shift 4
+    validate_ticket_command --ticket "$ticket_arg" "$@"
+  else
+    validate_ticket_command "$@"
+  fi
+}
+
 add_dispatch_lease_env() {
   if [[ -n "${1:-}" ]]; then
     [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ||
@@ -1271,22 +1286,17 @@ PY
     fi
     ;;
   preflight)
-    validate_ticket_command "$@"
+    validate_preflight_command "$@"
     add_dispatch_lease_env "$LEASE_ID"
-    if [[ -n "$LEASE_ID" && -n "$TICKET_WORKDIR" ]]; then
-      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
-        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET" --lease "$LEASE_ID" \
-        --workdir "$TICKET_WORKDIR"
-    elif [[ -n "$LEASE_ID" ]]; then
-      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
-        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET" --lease "$LEASE_ID"
-    elif [[ -n "$TICKET_WORKDIR" ]]; then
-      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
-        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET" --workdir "$TICKET_WORKDIR"
-    else
-      wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
-        "$RELEASE_PATH/scripts/preflight.sh" --ticket "$TICKET"
-    fi
+    PREFLIGHT_ARGS=(--ticket "$TICKET")
+    [[ -z "$PREFLIGHT_ROLE" ]] ||
+      PREFLIGHT_ARGS+=(--role "$PREFLIGHT_ROLE")
+    [[ -z "$LEASE_ID" ]] ||
+      PREFLIGHT_ARGS+=(--lease "$LEASE_ID")
+    [[ -z "$TICKET_WORKDIR" ]] ||
+      PREFLIGHT_ARGS+=(--workdir "$TICKET_WORKDIR")
+    wrap_json_command "$PREFLIGHT_SCHEMA" "preflight" "$TICKET" \
+      "$RELEASE_PATH/scripts/preflight.sh" "${PREFLIGHT_ARGS[@]}"
     rc=$?
     exit "$rc"
     ;;

@@ -20,9 +20,12 @@ directly. Begin each session by selecting the named project and running:
 Contracts `1.2.0` through `1.5.0` require the exact ticket worktree for every decision:
 
 ```text
-~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --workdir <ticket-worktree> --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json
+~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --role <next-stage-role> --workdir <ticket-worktree> --json
 ```
+
+Contract `1.5.0` requires the exact next-stage role in preflight so its displayed
+envelope matches the values reserved by `run`.
 
 Contracts `1.2.0` through `1.5.0` inherit contract `1.1.0` lease behavior unchanged. If one
 reports a concurrency limit of two, use its claim, renew, and release commands

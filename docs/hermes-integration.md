@@ -75,12 +75,16 @@ Contract versions `1.0.0` through `1.5.0` certify Hermes Agent `0.18.2`, build
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
-~/.factory/bin/factory-launch <project> preflight --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> preflight --ticket T-123 --role planner --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> ticket-state --ticket T-123 --workdir /absolute/ticket-worktree --action materialize --json
 ~/.factory/bin/factory-launch <project> ticket-attest --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --action bundle --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
+
+Under Contract 1.5, pass the exact role returned by `next-stage` to `preflight`;
+the launcher rejects roleless preflight so its envelope cannot differ from the
+one reserved by `run`.
 
 Model policy is task-free and sealed:
 

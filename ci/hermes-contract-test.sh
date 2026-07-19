@@ -1584,10 +1584,17 @@ REAL_RUN_WORKTREE_780="$TMP/real-run-worktree-780"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-780 "$REAL_RUN_WORKTREE_780"
 REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
 
+ROLELESS_PREFLIGHT_RC=0
+run_launcher launchtest preflight --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  ROLELESS_PREFLIGHT_RC=$?
+[[ "$ROLELESS_PREFLIGHT_RC" -eq 2 ]] ||
+  fail "contract 1.5 accepted preflight without an exact role"
+
 printf '\nUncommitted-Evidence: forged\n' >> \
   "$REAL_RUN_WORKTREE_PHYS/factory/tickets/T-777.md"
 DIRTY_PREFLIGHT_RC=0
-run_launcher launchtest preflight --ticket T-777 \
+run_launcher launchtest preflight --ticket T-777 --role planner \
   --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
   DIRTY_PREFLIGHT_RC=$?
 DIRTY_NEXT_STAGE_RC=0
@@ -1637,7 +1644,7 @@ run_launcher launchtest ticket-state --ticket T-780 --workdir "$REAL_RUN_WORKTRE
 assert_bad_real_preflight() {
   local label="$1" rc=0
   shift
-  run_launcher launchtest preflight --ticket T-777 "$@" \
+  run_launcher launchtest preflight --ticket T-777 --role planner "$@" \
     --workdir "$REAL_RUN_WORKTREE_PHYS" --json \
     > "$TMP/real-preflight-$label.json" || rc=$?
   [[ "$rc" -eq 1 ]] || fail "real preflight accepted $label dispatcher lease"
@@ -1701,9 +1708,11 @@ run_launcher launchtest claim --ticket T-779 > "$TMP/real-claim-779.json"
 run_launcher launchtest claim --ticket T-780 > "$TMP/real-claim-780.json"
 REAL_LEASE_779="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-779.json")"
 REAL_LEASE_780="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-780.json")"
-run_launcher launchtest preflight --ticket T-779 --lease "$REAL_LEASE_779" \
+run_launcher launchtest preflight --ticket T-779 --role planner \
+  --lease "$REAL_LEASE_779" \
   --workdir "$REAL_RUN_WORKTREE_779_PHYS" --json > "$TMP/real-preflight-779.json"
-run_launcher launchtest preflight --ticket T-780 --lease "$REAL_LEASE_780" \
+run_launcher launchtest preflight --ticket T-780 --role planner \
+  --lease "$REAL_LEASE_780" \
   --workdir "$REAL_RUN_WORKTREE_780_PHYS" --json > "$TMP/real-preflight-780.json"
 run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTREE_779_PHYS" \
   --action transition --state Planning --json > "$TMP/real-ticket-transition-779.json"
@@ -1775,14 +1784,16 @@ run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
 REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
 run_launcher launchtest claim --ticket T-778 > "$TMP/real-claim-778.json"
 REAL_LEASE_778="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-778.json")"
-if ! run_launcher launchtest preflight --ticket T-777 --lease "$REAL_LEASE_ID" \
+if ! run_launcher launchtest preflight --ticket T-777 --role planner \
+  --lease "$REAL_LEASE_ID" \
   --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-preflight.json"; then
   awk '{print}' "$TMP/real-preflight.json" >&2
   git -C "$LAUNCH_PRODUCT" status --short >&2
   git -C "$REAL_RUN_WORKTREE_PHYS" status --short >&2
   fail "contract 1.2 sealed preflight failed"
 fi
-run_launcher launchtest preflight --ticket T-778 --lease "$REAL_LEASE_778" \
+run_launcher launchtest preflight --ticket T-778 --role planner \
+  --lease "$REAL_LEASE_778" \
   --workdir "$REAL_RUN_WORKTREE_778_PHYS" --json > "$TMP/real-preflight-778.json"
 run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
   --action transition --state Planning --json > "$TMP/real-ticket-transition.json"
@@ -1796,6 +1807,7 @@ import json, sys
 state, preflight, stage = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
 assert state["ticket"] == "T-777" and state["state"] == "Planning"
 assert preflight["status"] == "ok"
+assert "planner attempt envelope:" in preflight["output"]
 assert stage["status"] == "ok"
 assert stage["action"] == "RUN"
 assert stage["detail"] == "planner"
@@ -2169,6 +2181,7 @@ skill = open(
 assert "factory-launch <project> reorder-test-fixes" in skill
 assert "version: 1.5.0" in skill
 assert "Contracts `1.2.0` through `1.5.0` inherit `1.1.0` lease behavior unchanged" in skill
+assert "preflight --ticket <T-NNN> --role <next-stage-role>" in skill
 assert "factory-launch <project> ticket-state" in skill
 assert "factory-launch <project> ticket-attest" in skill
 assert "factory-launch <project> project-ledger" in skill
@@ -2180,7 +2193,7 @@ soul = open(
     os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
 ).read()
 assert "Contracts `1.2.0` through `1.5.0` inherit contract `1.1.0` lease behavior unchanged" in soul
-assert "preflight --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
+assert "preflight --ticket <T-NNN> --role <next-stage-role>" in soul
 assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
 assert "factory-launch <project> ticket-state" in soul
 assert "factory-launch <project> ticket-attest" in soul

@@ -63,19 +63,21 @@ For the first launch of a ticket:
    Require one exact six-role plan and a verified pushed ticket commit. An
    existing exact committed pin is idempotent. Never generate, edit, or replace
    the route-plan file yourself.
-4. Run preflight:
-
-```text
-~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
-```
-
-Before every role launch:
+4. Before every role launch, resolve the authorized next stage:
 
 ```text
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
 
-For contract `1.2.0` or `1.3.0`, `--workdir <absolute-product-worktree>` is required
+Then preflight the exact authorized role:
+
+```text
+~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --role <next-stage-role> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
+```
+
+Contract `1.5.0` requires the exact role authorized by `next-stage` so preflight
+resolves the same role envelope used by `run`. For contract `1.2.0` or `1.3.0`,
+`--workdir <absolute-product-worktree>` is required
 immediately before `--json` in both commands. It must be the same exact ticket
 worktree validated for role launches. Earlier contracts retain their published
 argument grammar.
