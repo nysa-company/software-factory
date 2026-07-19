@@ -75,8 +75,8 @@ deletions, renames, unknown or shared paths, multiple components, dependencies,
 contracts, launchers, roles, CI or selector changes, malformed modes, and empty,
 duplicate, or unknown suite IDs. Only explicitly mapped single leaf components
 can recommend their direct and transitive suites plus CI-scope, immutability,
-and artifact-policy checks. Initial mappings remain `shadow`, so a recommendation
-does not reduce required CI.
+and artifact-policy checks. The six audited leaf mappings are active for
+`--changed`; required GitHub CI still uses `--shadow-changed` and executes full.
 
 During shadow execution, an unselected failure fails CI and is rerun once. Only
 a repeated failure is recorded as `SHADOW_MISS`; a passing recheck is recorded

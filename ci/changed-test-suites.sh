@@ -47,23 +47,23 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
       conformance/SHAKEDOWN-REPORT.md)
       ;;
     scripts/linear-sync.py)
-      set_group shadow linear "linear"
+      set_group targeted linear "linear"
       ;;
     scripts/operator-console.py|scripts/operator-snapshot.py)
-      set_group shadow operator-console "operator-console"
+      set_group targeted operator-console "operator-console"
       ;;
     scripts/adapters/claude-kimi.sh|scripts/lib/claude-kimi-output.py|\
       scripts/lib/claude-kimi-secret.py)
-      set_group shadow claude-kimi "claude-kimi"
+      set_group targeted claude-kimi "claude-kimi"
       ;;
     scripts/lib/failed_attempt_handoff.py)
-      set_group shadow failed-handoff "failed-handoff model-fallback"
+      set_group targeted failed-handoff "failed-handoff model-fallback"
       ;;
     scripts/reorder-test-fixes.sh|scripts/lib/reorder_test_fixes.py)
-      set_group shadow reorder-test-fixes "reorder-test-fixes hermes-contract"
+      set_group targeted reorder-test-fixes "reorder-test-fixes hermes-contract"
       ;;
     conformance/app/server.js|conformance/app/tests/*)
-      set_group shadow conformance "conformance"
+      set_group targeted conformance "conformance"
       ;;
     *)
       full "unknown or shared path"

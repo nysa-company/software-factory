@@ -135,17 +135,17 @@ selection_case() {
 
 POLICY="ci-scope immutability artifact-policy"
 selection_case docs/guide.md "metadata|inert metadata|" "metadata selection"
-selection_case scripts/linear-sync.py "shadow|linear|linear $POLICY" "linear selection"
-selection_case scripts/operator-console.py "shadow|operator-console|operator-console $POLICY" "operator console selection"
-selection_case scripts/operator-snapshot.py "shadow|operator-console|operator-console $POLICY" "operator snapshot selection"
-selection_case scripts/adapters/claude-kimi.sh "shadow|claude-kimi|claude-kimi $POLICY" "adapter wrapper selection"
-selection_case scripts/lib/claude-kimi-output.py "shadow|claude-kimi|claude-kimi $POLICY" "adapter output selection"
-selection_case scripts/lib/claude-kimi-secret.py "shadow|claude-kimi|claude-kimi $POLICY" "adapter secret selection"
-selection_case scripts/lib/failed_attempt_handoff.py "shadow|failed-handoff|failed-handoff model-fallback $POLICY" "handoff selection"
-selection_case scripts/reorder-test-fixes.sh "shadow|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder wrapper selection"
-selection_case scripts/lib/reorder_test_fixes.py "shadow|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder implementation selection"
-selection_case conformance/app/server.js "shadow|conformance|conformance $POLICY" "conformance server selection"
-selection_case conformance/app/tests/server.test.js "shadow|conformance|conformance $POLICY" "conformance test selection"
+selection_case scripts/linear-sync.py "targeted|linear|linear $POLICY" "linear selection"
+selection_case scripts/operator-console.py "targeted|operator-console|operator-console $POLICY" "operator console selection"
+selection_case scripts/operator-snapshot.py "targeted|operator-console|operator-console $POLICY" "operator snapshot selection"
+selection_case scripts/adapters/claude-kimi.sh "targeted|claude-kimi|claude-kimi $POLICY" "adapter wrapper selection"
+selection_case scripts/lib/claude-kimi-output.py "targeted|claude-kimi|claude-kimi $POLICY" "adapter output selection"
+selection_case scripts/lib/claude-kimi-secret.py "targeted|claude-kimi|claude-kimi $POLICY" "adapter secret selection"
+selection_case scripts/lib/failed_attempt_handoff.py "targeted|failed-handoff|failed-handoff model-fallback $POLICY" "handoff selection"
+selection_case scripts/reorder-test-fixes.sh "targeted|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder wrapper selection"
+selection_case scripts/lib/reorder_test_fixes.py "targeted|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder implementation selection"
+selection_case conformance/app/server.js "targeted|conformance|conformance $POLICY" "conformance server selection"
+selection_case conformance/app/tests/server.test.js "targeted|conformance|conformance $POLICY" "conformance test selection"
 
 for path in scripts/lib/effective_ticket.py scripts/ledger-view.py scripts/attempt-cancel.py \
   scripts/operator-state.py integrations/operator-console/app.js scripts/model-router.py \
