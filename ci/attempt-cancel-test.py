@@ -63,15 +63,21 @@ class AttemptCancellationTest(unittest.TestCase):
             code = (
                 "import signal,time;"
                 "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                "print('ready',flush=True);"
                 "time.sleep(30)"
             )
         process = subprocess.Popen(
             [sys.executable, "-c", code],
             start_new_session=True,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if ignore_term else subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            text=True,
         )
         self.processes.append(process)
+        if ignore_term:
+            if process.stdout.readline() != "ready\n":
+                self.fail("TERM-resistant fixture did not become ready")
+            process.stdout.close()
         for _ in range(100):
             table = IDENTITY.process_table()
             if process.pid in table:
