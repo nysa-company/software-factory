@@ -14,6 +14,53 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: run `scripts/kill-switch.sh` immediately (safe — it stops, it doesn't break anything). Read `factory/runtime-ledger.csv` for today's effective rows and find the expensive role/ticket; tracked `factory/ledger.csv` is close-out history and may be stale during a live incident. That ticket goes to Blocked-Escalated; resume the rest by removing `factory/KILL`.
 - Don't: rotate API keys for a spend problem — that's for leaks, and it kills your own sessions too.
 
+## Envelope and cap control backend
+
+`scripts/envelope-control.py inspect` returns permanent defaults and each role's
+exact inherited attempt values. Permanent changes are two-step operations:
+`plan --set KEY=value` returns a deterministic `preview_hash`; repeat the same
+arguments with `apply --approve-hash <hash>`. Apply takes the product launch
+lock, compare-and-swaps the exact `ENVELOPE.env` and `ENVELOPE.md` inputs, and
+publishes each file atomically as a consistent pair (rolling back a failed
+second publication). It rejects symlinks, hard links, foreign
+ownership, writable-by-others paths, malformed limits, and stale previews.
+
+For a bounded exception, use `override-plan` and `override-apply` with one of
+`next-attempt`, `ticket`, `role`, `product-day`, or `global-day`. Ticket and
+role selectors narrow the record; day scopes require a UTC `--day YYYY-MM-DD`.
+Every override binds an operator ID, reason, issue time, and expiry of no more
+than seven days; preview/apply approval expires after 15 minutes. Overrides are
+immutable JSON records. A next-attempt use writes a separate consumption
+receipt, so neither the authorization nor prior accounting is ever rewritten.
+Expired records are ignored and conflicting active records fail closed.
+`global-day` additionally
+requires `--global-env /absolute/path/to/global.env` and stores its record beside
+that machine configuration so every product using it observes the same cap.
+
+The sealed launcher must expose these commands explicitly before operators use
+them remotely. Direct backend examples for launcher integration:
+
+```bash
+python3 scripts/envelope-control.py inspect --factory-root /absolute/product
+python3 scripts/envelope-control.py plan --factory-root /absolute/product --set BUILDER_PER_RUN_BUDGET_USD=8.00
+python3 scripts/envelope-control.py apply --factory-root /absolute/product --set BUILDER_PER_RUN_BUDGET_USD=8.00 --approve-hash <preview-hash>
+python3 scripts/envelope-control.py override-plan --factory-root /absolute/product --scope next-attempt --ticket T-123 --role builder --issued-at 2026-07-19T01:00:00Z --expires-at 2026-07-19T01:15:00Z --operator-id operator-1 --reason budget_exhausted --set BUILDER_PER_RUN_TIMEOUT_MIN=60
+```
+
+## Local control console
+
+Run `python3 scripts/operator-console.py`, then open the one-use loopback URL.
+The project selector lists only validated factory registry entries. Workflow,
+model candidates, effective envelope values, and daily spend are read through
+fixed Contract 1.5 launcher commands.
+
+Every mutation is two-step. Preview the exact policy, envelope, override, or
+cancellation; inspect its JSON; then apply that preview hash. If an active
+attempt needs more budget, preview and apply cancellation first. Pre-GO
+cancellation costs zero; post-GO cancellation retains the conservative
+reservation. Apply the bounded override and restart the same role. Never edit
+an in-flight manifest or backdate an override.
+
 ## Failed deploy / broken staging
 
 - Notice: staging URL errors, or a Narrator bundle says "preview broken".
@@ -224,8 +271,10 @@ same-UID token exposure remains until a broker or OS isolation is used.
   only at a ticket boundary with no active run, no conflicting nonterminal
   lease, no maintenance anomaly, and no incomplete activation journal.
 - Do: keep contract `1.0.0` and default contract `1.1.0` at one live ticket.
-  An explicit `MAX_CONCURRENT_TICKETS=2` pilot uses one dispatcher holding two
-  matching leases; parallel kit development alone does not enable it.
+  An explicit `MAX_CONCURRENT_TICKETS=2`, `3`, or `4` pilot uses one dispatcher
+  holding no more than that many matching leases; parallel kit development
+  alone does not enable it, and the product-wide provider lock still permits
+  only one model-provider interval at a time.
 - Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
   combine unrelated candidates into one unreviewed release, or overlap two
   activation/rollback operations.

@@ -45,6 +45,34 @@ The selected six-role plan and Kit SHA are committed to the ticket branch.
 Every role then uses its exact pinned route. Profile activation after pinning
 does not silently change an in-progress ticket.
 
+## Product-owned policy backend
+
+A product may own `factory/model-policy.json` with schema
+`factory-model-policy/v1`. It specifies the production and checking families
+and an explicit primary route, secondary route, and effort for all six roles.
+When present, this policy is used by normal plan and pin resolution. New pins
+embed the validated policy snapshot in a `model-resolution-plan/v2`, so a later
+project policy edit cannot reinterpret or invalidate an existing ticket pin.
+Kit-owned profiles and all existing v1 plans remain unchanged.
+
+The backend exposes `policy-candidates`, `policy-preview`, and `policy-apply`.
+Candidates are computed from the kit catalog and exclude disabled or
+experimental routes. Preview hashes bind both the current policy hash and the
+exact proposed document. Apply requires that preview hash plus the expected
+current hash, providing compare-and-swap behavior. Validation requires
+different production/checking families and a same-family secondary route.
+Readiness remains fail-closed: only `UNAVAILABLE` advances to the secondary.
+
+`ticket-status --ticket T-NNN` is a read-only product ticket status endpoint.
+The Reviewer same-family exception is intentionally unavailable through normal
+policy. `reviewer-exception-contract` reports that a future implementation must
+be ticket-scoped and one-use; normal validation is not weakened.
+
+Hermes integration note: the launcher and contract are deliberately unchanged
+in this change. A later Hermes release can map authenticated API methods to
+these model-control commands and must pass preview/current hashes through
+without rewriting them.
+
 ## Fallback after a run has started
 
 A task-bearing process is never silently retried. If it fails because credits

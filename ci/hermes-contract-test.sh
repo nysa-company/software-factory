@@ -160,7 +160,7 @@ print(json.load(open(sys.argv[1]))["contract_version"])
 PY
 )"
   if [[ "$contract" == "1.2.0" || "$contract" == "1.3.0" ||
-        "$contract" == "1.4.0" ]]; then
+        "$contract" == "1.4.0" || "$contract" == "1.5.0" ]]; then
     origin="$(git -C "$product" remote get-url --push origin)"
     product_tree="$(git -C "$product" rev-parse 'HEAD^{tree}')"
     receipt_id="$(printf '%s' "$sha|$tree|$product|$origin" | shasum -a 256 | awk '{print $1}')"
@@ -244,7 +244,7 @@ run_launcher() {
 }
 
 create_test_release() {
-  local release="$1" label="$2" action="$3" contract="${4:-1.4.0}"
+  local release="$1" label="$2" action="$3" contract="${4:-1.5.0}"
   mkdir -p "$release/integrations/hermes" "$release/scripts/lib" "$release/roles"
   printf '*.out\n' > "$release/.gitignore"
   printf 'tracked ignored release evidence\n' > "$release/tracked.out"
@@ -261,7 +261,7 @@ PY
 import pathlib, sys
 path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
 text = path.read_text()
-old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.4.0}"'
+old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.5.0}"'
 new = f'CONTRACT_VERSION="${{FACTORY_RELEASE_CONTRACT_VERSION:-{contract}}}"'
 if text.count(old) != 1:
     raise SystemExit("factory-doctor contract fixture is ambiguous")
@@ -272,11 +272,15 @@ PY
   cp "$ROOT/scripts/model-control.sh" "$release/scripts/model-control-real.sh"
   cp "$ROOT/scripts/model-manager.py" "$release/scripts/model-manager.py"
   cp "$ROOT/scripts/model-router.py" "$release/scripts/model-router.py"
+  cp "$ROOT/scripts/envelope-control.py" "$release/scripts/envelope-control.py"
+  cp "$ROOT/scripts/attempt-cancel.py" "$release/scripts/attempt-cancel.py"
+  cp "$ROOT/scripts/operator-state.py" "$release/scripts/operator-state.py"
   cp -R "$ROOT/scripts/model-routing" "$release/scripts/model-routing"
   cp "$ROOT/scripts/lib/backend-policy.sh" "$release/scripts/lib/backend-policy.sh"
   cp "$ROOT/scripts/lib/kit-pin.sh" "$release/scripts/lib/kit-pin.sh"
   cp "$ROOT/scripts/lib/plain-config.sh" "$release/scripts/lib/plain-config.sh"
   cp "$ROOT/scripts/lib/product-remote.sh" "$release/scripts/lib/product-remote.sh"
+  cp "$ROOT/scripts/lib/process-identity.py" "$release/scripts/lib/process-identity.py"
   for role in planner spec-linter test-author builder reviewer narrator; do
     printf '# %s prompt\n' "$role" > "$release/roles/$role.md"
   done
@@ -514,7 +518,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.4.0"
+assert data["contract_version"] == "1.5.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -830,24 +834,33 @@ PY
 # Contract 1.1 exposes bounded, opaque ticket-lease operations through the
 # same release-selected launcher. Contract 1.0 above remained usable without them.
 mkdir -p "$LAUNCH_PRODUCT/factory/tickets"
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=2' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
-for ticket in T-201 T-202 T-203; do
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+for ticket in T-201 T-202 T-203 T-204 T-205; do
   printf '# %s\n\nState: Ready\n' "$ticket" > "$LAUNCH_PRODUCT/factory/tickets/$ticket.md"
 done
 run_launcher launchtest claim --ticket T-201 > "$TMP/claim-201.json"
 run_launcher launchtest claim --ticket T-202 > "$TMP/claim-202.json"
+run_launcher launchtest claim --ticket T-203 > "$TMP/claim-203.json"
+run_launcher launchtest claim --ticket T-204 > "$TMP/claim-204.json"
 CLAIM_201_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-201.json")"
 CLAIM_202_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-202.json")"
-CLAIM_203_RC=0
-run_launcher launchtest claim --ticket T-203 > "$TMP/claim-203.out" 2>&1 || CLAIM_203_RC=$?
-[[ "$CLAIM_203_RC" -eq 1 ]] || fail "launcher accepted a third concurrent ticket"
+CLAIM_203_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-203.json")"
+CLAIM_204_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-204.json")"
+CLAIM_205_RC=0
+run_launcher launchtest claim --ticket T-205 > "$TMP/claim-205.out" 2>&1 || CLAIM_205_RC=$?
+[[ "$CLAIM_205_RC" -eq 1 ]] || fail "launcher accepted a fifth concurrent ticket"
+grep -Fqx "dispatcher capacity is full" "$TMP/claim-205.out" ||
+  fail "launcher fifth-ticket capacity refusal was not deterministic"
 run_launcher launchtest renew --ticket T-201 --lease "$CLAIM_201_ID" > "$TMP/renew-201.json"
 run_launcher launchtest release --ticket T-201 --lease "$CLAIM_201_ID" > "$TMP/release-201.json"
 run_launcher launchtest release --ticket T-202 --lease "$CLAIM_202_ID" > "$TMP/release-202.json"
+run_launcher launchtest release --ticket T-203 --lease "$CLAIM_203_ID" > "$TMP/release-203.json"
+run_launcher launchtest release --ticket T-204 --lease "$CLAIM_204_ID" > "$TMP/release-204.json"
 [[ ! -n "$(find "$LAUNCH_PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]] ||
   fail "launcher lease release left state behind"
 rm -f "$LAUNCH_PRODUCT/factory/tickets/T-201.md" \
-  "$LAUNCH_PRODUCT/factory/tickets/T-202.md" "$LAUNCH_PRODUCT/factory/tickets/T-203.md"
+  "$LAUNCH_PRODUCT/factory/tickets/T-202.md" "$LAUNCH_PRODUCT/factory/tickets/T-203.md" \
+  "$LAUNCH_PRODUCT/factory/tickets/T-204.md" "$LAUNCH_PRODUCT/factory/tickets/T-205.md"
 rm -rf "$LAUNCH_PRODUCT/factory/.dispatch-leases"
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 
@@ -1405,7 +1418,7 @@ cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py reorder-test-fixes.sh dispatch-lease.sh model-control.sh model-manager.py model-router.py; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh model-control.sh model-manager.py model-router.py; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 cp -p "$ROOT/scripts/model-routing/catalog-v1.json" \
@@ -1571,10 +1584,17 @@ REAL_RUN_WORKTREE_780="$TMP/real-run-worktree-780"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-780 "$REAL_RUN_WORKTREE_780"
 REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
 
+ROLELESS_PREFLIGHT_RC=0
+run_launcher launchtest preflight --ticket T-777 \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
+  ROLELESS_PREFLIGHT_RC=$?
+[[ "$ROLELESS_PREFLIGHT_RC" -eq 2 ]] ||
+  fail "contract 1.5 accepted preflight without an exact role"
+
 printf '\nUncommitted-Evidence: forged\n' >> \
   "$REAL_RUN_WORKTREE_PHYS/factory/tickets/T-777.md"
 DIRTY_PREFLIGHT_RC=0
-run_launcher launchtest preflight --ticket T-777 \
+run_launcher launchtest preflight --ticket T-777 --role planner \
   --workdir "$REAL_RUN_WORKTREE_PHYS" --json >/dev/null 2>&1 ||
   DIRTY_PREFLIGHT_RC=$?
 DIRTY_NEXT_STAGE_RC=0
@@ -1624,7 +1644,7 @@ run_launcher launchtest ticket-state --ticket T-780 --workdir "$REAL_RUN_WORKTRE
 assert_bad_real_preflight() {
   local label="$1" rc=0
   shift
-  run_launcher launchtest preflight --ticket T-777 "$@" \
+  run_launcher launchtest preflight --ticket T-777 --role planner "$@" \
     --workdir "$REAL_RUN_WORKTREE_PHYS" --json \
     > "$TMP/real-preflight-$label.json" || rc=$?
   [[ "$rc" -eq 1 ]] || fail "real preflight accepted $label dispatcher lease"
@@ -1688,9 +1708,11 @@ run_launcher launchtest claim --ticket T-779 > "$TMP/real-claim-779.json"
 run_launcher launchtest claim --ticket T-780 > "$TMP/real-claim-780.json"
 REAL_LEASE_779="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-779.json")"
 REAL_LEASE_780="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-780.json")"
-run_launcher launchtest preflight --ticket T-779 --lease "$REAL_LEASE_779" \
+run_launcher launchtest preflight --ticket T-779 --role planner \
+  --lease "$REAL_LEASE_779" \
   --workdir "$REAL_RUN_WORKTREE_779_PHYS" --json > "$TMP/real-preflight-779.json"
-run_launcher launchtest preflight --ticket T-780 --lease "$REAL_LEASE_780" \
+run_launcher launchtest preflight --ticket T-780 --role planner \
+  --lease "$REAL_LEASE_780" \
   --workdir "$REAL_RUN_WORKTREE_780_PHYS" --json > "$TMP/real-preflight-780.json"
 run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTREE_779_PHYS" \
   --action transition --state Planning --json > "$TMP/real-ticket-transition-779.json"
@@ -1762,14 +1784,16 @@ run_launcher launchtest claim --ticket T-777 > "$TMP/real-claim.json"
 REAL_LEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim.json")"
 run_launcher launchtest claim --ticket T-778 > "$TMP/real-claim-778.json"
 REAL_LEASE_778="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-778.json")"
-if ! run_launcher launchtest preflight --ticket T-777 --lease "$REAL_LEASE_ID" \
+if ! run_launcher launchtest preflight --ticket T-777 --role planner \
+  --lease "$REAL_LEASE_ID" \
   --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-preflight.json"; then
   awk '{print}' "$TMP/real-preflight.json" >&2
   git -C "$LAUNCH_PRODUCT" status --short >&2
   git -C "$REAL_RUN_WORKTREE_PHYS" status --short >&2
   fail "contract 1.2 sealed preflight failed"
 fi
-run_launcher launchtest preflight --ticket T-778 --lease "$REAL_LEASE_778" \
+run_launcher launchtest preflight --ticket T-778 --role planner \
+  --lease "$REAL_LEASE_778" \
   --workdir "$REAL_RUN_WORKTREE_778_PHYS" --json > "$TMP/real-preflight-778.json"
 run_launcher launchtest ticket-state --ticket T-777 --workdir "$REAL_RUN_WORKTREE_PHYS" \
   --action transition --state Planning --json > "$TMP/real-ticket-transition.json"
@@ -1783,6 +1807,7 @@ import json, sys
 state, preflight, stage = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
 assert state["ticket"] == "T-777" and state["state"] == "Planning"
 assert preflight["status"] == "ok"
+assert "planner attempt envelope:" in preflight["output"]
 assert stage["status"] == "ok"
 assert stage["action"] == "RUN"
 assert stage["detail"] == "planner"
@@ -1845,7 +1870,7 @@ REAL_MANIFEST="$(awk -F= '$1=="ticket" && $2=="T-777" {print FILENAME}' \
   "$LAUNCH_PRODUCT/factory/runs/"*.meta | tail -1)"
 grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release SHA"
 grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release tree"
-grep -qF "contract_version=1.4.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
+grep -qF "contract_version=1.5.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
 grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" || fail "real sealed run manifest omitted physical release path"
 grep -qF "role=planner" "$REAL_MANIFEST" || fail "real sealed run did not use the sequencer-authorized role"
 grep -qF "adapter=mock" "$REAL_MANIFEST" || fail "isolated launcher did not enforce the mock adapter"
@@ -1904,7 +1929,7 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.4.0"
+assert contract["contract_version"] == "1.5.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
@@ -1929,6 +1954,11 @@ assert commands["models"]["helper"] == "scripts/model-control.sh"
 assert commands["models"]["grammars"] == [
     "profiles --json",
     "status --json",
+    "policy-candidates --json",
+    "policy-preview --policy <canonical-json> --json",
+    "policy-apply --policy <canonical-json> --expected-current-hash <lowercase-sha256> --approve-hash <lowercase-sha256> --json",
+    "reviewer-exception-contract --json",
+    "ticket-status --ticket <T-NNN> --json",
     "plan --json",
     "plan --profile <safe-id> --json",
     "activate --profile <safe-id> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
@@ -1938,7 +1968,7 @@ assert commands["models"]["grammars"] == [
     "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json",
     "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
     "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
-    "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
+    "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> [--allow-reviewer-family <safe-id>] --json",
 ]
 assert commands["models"]["state"] == {
     "root": "$FACTORY_KITS_ROOT/projects",
@@ -1956,8 +1986,15 @@ assert commands["models"]["pin_transaction"]["result_fields"] == [
     "commit_created", "commit_sha", "pin_hash"
 ]
 assert commands["models"]["maintenance"] == {
-    "allowed": ["profiles", "status", "plan", "migrate-plan", "fallback-plan"],
-    "refused": ["activate", "disable", "enable", "pin", "migrate", "fallback"],
+    "allowed": [
+        "profiles", "status", "policy-candidates", "policy-preview",
+        "reviewer-exception-contract", "ticket-status", "plan",
+        "migrate-plan", "fallback-plan",
+    ],
+    "refused": [
+        "activate", "disable", "enable", "policy-apply", "pin", "migrate",
+        "fallback",
+    ],
 }
 assert commands["preflight"]["arguments"][-1] == "--json"
 assert commands["next-stage"]["arguments"][-1] == "--json"
@@ -1993,7 +2030,10 @@ assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert contract["concurrency"]["default"] == 1
-assert contract["concurrency"]["maximum"] == 2
+assert contract["concurrency"]["maximum"] == 4
+assert contract["concurrency"]["enabled_value"] == 2
+assert contract["concurrency"]["enabled_values"] == [2, 3, 4]
+assert contract["concurrency"]["lease_required_when_greater_than"] == 1
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
     "<T-NNN>",
@@ -2112,7 +2152,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
+assert "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [
@@ -2139,8 +2179,9 @@ skill = open(
     encoding="utf-8",
 ).read()
 assert "factory-launch <project> reorder-test-fixes" in skill
-assert "version: 1.4.0" in skill
-assert "Contracts `1.2.0` through `1.4.0` inherit `1.1.0` lease behavior unchanged" in skill
+assert "version: 1.5.0" in skill
+assert "Contracts `1.2.0` through `1.5.0` inherit `1.1.0` lease behavior unchanged" in skill
+assert "preflight --ticket <T-NNN> --role <next-stage-role>" in skill
 assert "factory-launch <project> ticket-state" in skill
 assert "factory-launch <project> ticket-attest" in skill
 assert "factory-launch <project> project-ledger" in skill
@@ -2151,8 +2192,8 @@ assert "--workdir <absolute-product-worktree>" in skill
 soul = open(
     os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
 ).read()
-assert "Contracts `1.2.0` through `1.4.0` inherit contract `1.1.0` lease behavior unchanged" in soul
-assert "preflight --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
+assert "Contracts `1.2.0` through `1.5.0` inherit contract `1.1.0` lease behavior unchanged" in soul
+assert "preflight --ticket <T-NNN> --role <next-stage-role>" in soul
 assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
 assert "factory-launch <project> ticket-state" in soul
 assert "factory-launch <project> ticket-attest" in soul

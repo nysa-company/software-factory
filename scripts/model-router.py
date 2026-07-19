@@ -33,6 +33,13 @@ PORTFOLIO_KEYS = frozenset((
     "portfolio_id", "production_family", "checking_family", "roles",
 ))
 ROLE_KEYS = frozenset(("candidates", "effort"))
+MODEL_POLICY_KEYS = frozenset((
+    "schema", "version", "production_family", "checking_family", "roles",
+))
+MODEL_POLICY_ROLE_KEYS = frozenset((
+    "primary_route_id", "secondary_route_id", "effort",
+))
+EFFORTS = ("low", "medium", "high")
 READINESS_KEYS = frozenset((
     "state", "reason", "adapter_version", "reported_identity",
 ))
@@ -40,6 +47,7 @@ PLAN_KEYS = frozenset((
     "schema", "profile_id", "profile_version", "profile_hash",
     "portfolio_id", "catalog_hash", "selections", "policy_hash",
 ))
+PLAN_V2_KEYS = PLAN_KEYS | frozenset(("model_policy",))
 SELECTION_KEYS = frozenset((
     "role", "route_id", "adapter", "transport", "gateway_id",
     "inference_provider_id", "provider_family", "account_route_id",
@@ -61,6 +69,13 @@ FALLBACK_PLAN_KEYS = frozenset((
     "catalog_hash", "prior_policy_hash", "policy_hash", "failed_role",
     "failed_route_id", "future_roles", "contributor_families", "selections",
 ))
+FALLBACK_PROJECT_PLAN_KEYS = FALLBACK_PLAN_KEYS | frozenset(("model_policy",))
+FALLBACK_EXCEPTION_PLAN_KEYS = FALLBACK_PLAN_KEYS | frozenset(
+    ("boundary_exceptions",)
+)
+FALLBACK_PROJECT_EXCEPTION_PLAN_KEYS = (
+    FALLBACK_PROJECT_PLAN_KEYS | frozenset(("boundary_exceptions",))
+)
 
 
 class RouterError(ValueError):
@@ -234,6 +249,105 @@ def validate_profiles(profiles, routes):
     return by_id
 
 
+def validate_model_policy(policy, routes):
+    """Validate a product-owned, single-portfolio policy."""
+    _exact_keys(policy, MODEL_POLICY_KEYS, "model policy")
+    if policy["schema"] != "factory-model-policy/v1":
+        raise RouterError("unsupported model policy schema")
+    if policy["version"] != 1:
+        raise RouterError("unsupported model policy version")
+    for key in ("production_family", "checking_family"):
+        _safe_id(policy[key], "model policy.%s" % key)
+    if policy["production_family"] == policy["checking_family"]:
+        raise RouterError("model policy lane families must be distinct")
+    _exact_keys(policy["roles"], frozenset(ROLES), "model policy.roles")
+    for role in ROLES:
+        location = "model policy.roles.%s" % role
+        role_policy = policy["roles"][role]
+        _exact_keys(role_policy, MODEL_POLICY_ROLE_KEYS, location)
+        if role_policy["effort"] not in EFFORTS:
+            raise RouterError("%s.effort is unsupported" % location)
+        primary_id = role_policy["primary_route_id"]
+        secondary_id = role_policy["secondary_route_id"]
+        for key, route_id in (
+            ("primary_route_id", primary_id),
+            ("secondary_route_id", secondary_id),
+        ):
+            _safe_id(route_id, "%s.%s" % (location, key))
+            route = routes.get(route_id)
+            if route is None:
+                raise RouterError("%s.%s references an unknown route" % (location, key))
+            if not route["enabled"] or route["lifecycle"] != "stable":
+                raise RouterError("%s.%s must select an enabled stable route" % (location, key))
+        if primary_id == secondary_id:
+            raise RouterError("%s primary and secondary routes must be distinct" % location)
+        primary_family = routes[primary_id]["provider_family"]
+        if routes[secondary_id]["provider_family"] != primary_family:
+            raise RouterError("%s secondary route must be in the primary route family" % location)
+        lane_family = (
+            policy["production_family"] if role in PRODUCTION_ROLES
+            else policy["checking_family"]
+        )
+        if primary_family != lane_family:
+            raise RouterError("%s routes are outside the %s lane" % (location, lane_family))
+    return policy
+
+
+def model_policy_profile(policy, routes):
+    validate_model_policy(policy, routes)
+    return {
+        "portfolios": [{
+            "checking_family": policy["checking_family"],
+            "portfolio_id": "project-policy",
+            "production_family": policy["production_family"],
+            "roles": {
+                role: {
+                    "candidates": [
+                        policy["roles"][role]["primary_route_id"],
+                        policy["roles"][role]["secondary_route_id"],
+                    ],
+                    "effort": policy["roles"][role]["effort"],
+                }
+                for role in ROLES
+            },
+        }],
+        "profile_id": "project-policy",
+        "version": 1,
+    }
+
+
+def model_policy_candidates(routes):
+    """Return only catalog-authorized values; clients never invent routes."""
+    values = []
+    for route_id in sorted(routes):
+        route = routes[route_id]
+        if not route["enabled"] or route["lifecycle"] != "stable":
+            continue
+        values.append({
+            "adapter": route["adapter"],
+            "provider_family": route["provider_family"],
+            "route_id": route_id,
+            "selection_id": route["selection_id"],
+        })
+    return {
+        "efforts": list(EFFORTS),
+        "reviewer_exception": {
+            "normal_policy_allowed": False,
+            "supported": True,
+            "ticket_scoped_one_use_required": True,
+        },
+        "roles": [
+            {
+                "lane": "production" if role in PRODUCTION_ROLES else "checking",
+                "role": role,
+            }
+            for role in ROLES
+        ],
+        "routes": values,
+        "schema": "factory-model-policy-candidates/v1",
+    }
+
+
 def load_policy(catalog_path=DEFAULT_CATALOG, profiles_path=DEFAULT_PROFILES):
     catalog = load_json(catalog_path)
     routes = validate_catalog(catalog)
@@ -346,7 +460,11 @@ def _selected_tuple(role, route, role_policy, readiness):
     }
 
 
-def resolve_policy(catalog, routes, profile, readiness):
+def resolve_policy(catalog, routes, profile, readiness, model_policy=None):
+    if model_policy is not None:
+        validate_model_policy(model_policy, routes)
+        if profile != model_policy_profile(model_policy, routes):
+            raise RouterError("model policy profile mismatch")
     readiness = validate_readiness(readiness, routes)
     catalog_digest = content_hash(catalog)
     profile_digest = profile_hash(profile)
@@ -381,16 +499,22 @@ def resolve_policy(catalog, routes, profile, readiness):
         if portfolio_unavailable:
             continue
         policy_digest = _policy_hash(catalog_digest, profile_digest, portfolio, selections)
-        return {
+        result = {
             "catalog_hash": catalog_digest,
             "policy_hash": policy_digest,
             "portfolio_id": portfolio["portfolio_id"],
             "profile_hash": profile_digest,
             "profile_id": profile["profile_id"],
             "profile_version": profile["version"],
-            "schema": "model-resolution-plan/v1",
+            "schema": (
+                "model-resolution-plan/v2"
+                if model_policy is not None else "model-resolution-plan/v1"
+            ),
             "selections": selections,
         }
+        if model_policy is not None:
+            result["model_policy"] = model_policy
+        return result
     raise RouterError("no portfolio has ready candidates for every role")
 
 
@@ -433,21 +557,48 @@ def _fallback_role_policies(profile, role):
     return result
 
 
-def _validate_fallback_assignment(selections, contributors):
+def validate_boundary_exceptions(value, contributors, future_roles):
+    if value is None:
+        return {}
+    _exact_keys(value, frozenset(("reviewer",)), "boundary_exceptions")
+    family = value["reviewer"]
+    _safe_id(family, "boundary_exceptions.reviewer")
+    if "reviewer" not in future_roles:
+        raise RouterError("Reviewer exception requires a future Reviewer role")
+    if family not in contributors["B"]:
+        raise RouterError(
+            "Reviewer exception must name a Builder contributor family"
+        )
+    return {"reviewer": family}
+
+
+def _validate_fallback_assignment(selections, contributors, exceptions=None):
     effective = dict((key, list(value)) for key, value in contributors.items())
+    exceptions = exceptions or {}
     for role, boundary in BOUNDARY_PRODUCER.items():
         family = selections[role]["provider_family"]
         if family not in effective[boundary]:
             effective[boundary].append(family)
     for role, boundary in BOUNDARY_CHECKER.items():
         family = selections[role]["provider_family"]
-        if family in effective[boundary]:
+        if family in effective[boundary] and exceptions.get(role) != family:
             return None
     return effective
 
 
 def validate_fallback_plan(plan, catalog, routes, profile_map):
-    _exact_keys(plan, FALLBACK_PLAN_KEYS, "fallback plan")
+    if not isinstance(plan, dict):
+        raise RouterError("fallback plan must be an object")
+    project_policy = plan.get("profile_id") == "project-policy"
+    has_exception = "boundary_exceptions" in plan
+    if project_policy:
+        keys = (
+            FALLBACK_PROJECT_EXCEPTION_PLAN_KEYS
+            if has_exception else FALLBACK_PROJECT_PLAN_KEYS
+        )
+    else:
+        keys = FALLBACK_EXCEPTION_PLAN_KEYS if has_exception else FALLBACK_PLAN_KEYS
+    _exact_keys(plan, keys, "fallback plan")
     if plan["schema"] != "model-fallback-resolution/v2":
         raise RouterError("unsupported fallback plan schema")
     for key in ("catalog_hash", "profile_hash", "prior_policy_hash", "policy_hash"):
@@ -455,7 +606,12 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
             raise RouterError("fallback plan.%s is not a SHA-256 hash" % key)
     if plan["catalog_hash"] != content_hash(catalog):
         raise RouterError("fallback plan catalog hash mismatch")
-    profile = _profile(profile_map, plan["profile_id"])
+    if project_policy:
+        if plan["profile_version"] != 1:
+            raise RouterError("project policy fallback profile identity mismatch")
+        profile = model_policy_profile(plan["model_policy"], routes)
+    else:
+        profile = _profile(profile_map, plan["profile_id"])
     if plan["profile_version"] != profile["version"]:
         raise RouterError("fallback plan profile version mismatch")
     if plan["profile_hash"] != profile_hash(profile):
@@ -473,6 +629,9 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
     ):
         raise RouterError("fallback plan future roles are invalid")
     contributors = validate_contributor_families(plan["contributor_families"])
+    exceptions = validate_boundary_exceptions(
+        plan.get("boundary_exceptions"), contributors, future_roles
+    )
     _exact_keys(plan["selections"], frozenset(ROLES), "fallback plan selections")
     authorized = {
         role: dict(_fallback_role_policies(profile, role)) for role in ROLES
@@ -496,7 +655,12 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
             raise RouterError("fallback plan route tuple mismatch for %s" % role)
         if role in future_roles and route_id == plan["failed_route_id"]:
             raise RouterError("fallback plan reuses the failed route")
-    if _validate_fallback_assignment(plan["selections"], contributors) != contributors:
+    if (
+        _validate_fallback_assignment(
+            plan["selections"], contributors, exceptions
+        )
+        != contributors
+    ):
         raise RouterError("fallback contributor-family constraints are invalid")
     without_hash = dict(plan)
     without_hash.pop("policy_hash")
@@ -515,6 +679,7 @@ def resolve_fallback_policy(
     failed_route_id,
     future_roles,
     contributor_families,
+    boundary_exceptions=None,
 ):
     """Resolve all remaining roles while preserving immutable role history.
 
@@ -523,7 +688,10 @@ def resolve_fallback_policy(
     UNAVAILABLE. INVALID and UNKNOWN are terminal evidence failures.
     """
     profile_map = {profile["profile_id"]: profile}
-    if prior_plan.get("schema") == "model-resolution-plan/v1":
+    if prior_plan.get("schema") in (
+        "model-resolution-plan/v1",
+        "model-resolution-plan/v2",
+    ):
         validate_plan(
             prior_plan,
             catalog,
@@ -552,6 +720,9 @@ def resolve_fallback_policy(
 
     normalized_readiness = validate_readiness(readiness, routes)
     contributors = validate_contributor_families(contributor_families)
+    exceptions = validate_boundary_exceptions(
+        boundary_exceptions, contributors, future_roles
+    )
     failed_boundary = BOUNDARY_PRODUCER.get(failed_role)
     failed_family = routes[failed_route_id]["provider_family"]
     if failed_boundary is not None and failed_family not in contributors[failed_boundary]:
@@ -581,7 +752,9 @@ def resolve_fallback_policy(
 
     def assign(index):
         if index == len(ordered_future):
-            return _validate_fallback_assignment(selections, contributors)
+            return _validate_fallback_assignment(
+                selections, contributors, exceptions
+            )
         role = ordered_future[index]
         for route_id, role_policy in choices[role]:
             state = normalized_readiness.get(route_id, {
@@ -629,13 +802,28 @@ def resolve_fallback_policy(
         "schema": "model-fallback-resolution/v2",
         "selections": selections,
     }
+    if exceptions:
+        fallback_policy["boundary_exceptions"] = exceptions
+    if profile["profile_id"] == "project-policy":
+        model_policy = prior_plan.get("model_policy")
+        if model_policy is None:
+            raise RouterError("project policy fallback is missing its policy snapshot")
+        if profile != model_policy_profile(model_policy, routes):
+            raise RouterError("project policy fallback profile mismatch")
+        fallback_policy["model_policy"] = model_policy
     fallback_policy["policy_hash"] = content_hash(fallback_policy)
     return fallback_policy
 
 
 def validate_plan(plan, catalog, routes, profile_map, allow_historical_catalog=False):
-    _exact_keys(plan, PLAN_KEYS, "plan")
-    if plan["schema"] != "model-resolution-plan/v1":
+    if not isinstance(plan, dict):
+        raise RouterError("plan must be an object")
+    schema = plan.get("schema")
+    if schema == "model-resolution-plan/v1":
+        _exact_keys(plan, PLAN_KEYS, "plan")
+    elif schema == "model-resolution-plan/v2":
+        _exact_keys(plan, PLAN_V2_KEYS, "plan")
+    else:
         raise RouterError("unsupported plan schema")
     for key in ("profile_id", "portfolio_id"):
         _safe_id(plan[key], "plan.%s" % key)
@@ -649,7 +837,12 @@ def validate_plan(plan, catalog, routes, profile_map, allow_historical_catalog=F
         and plan["catalog_hash"] != content_hash(catalog)
     ):
         raise RouterError("plan catalog hash mismatch")
-    profile = _profile(profile_map, plan["profile_id"])
+    if schema == "model-resolution-plan/v2":
+        if plan["profile_id"] != "project-policy" or plan["profile_version"] != 1:
+            raise RouterError("project policy plan profile identity mismatch")
+        profile = model_policy_profile(plan["model_policy"], routes)
+    else:
+        profile = _profile(profile_map, plan["profile_id"])
     if plan["profile_version"] != profile["version"]:
         raise RouterError("plan profile version mismatch")
     if plan["profile_hash"] != profile_hash(profile):

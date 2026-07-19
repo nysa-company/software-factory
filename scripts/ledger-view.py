@@ -29,7 +29,10 @@ HEADERS = {
     tuple(FIELDS[:11]),
     FIELDS,
 }
-TERMINAL_STATES = {"completed", "launch_void", "abandoned_conservative"}
+TERMINAL_STATES = {
+    "completed", "launch_void", "abandoned_conservative",
+    "cancelled_conservative",
+}
 MAX_COST_USD = 1_000_000
 MAX_TURNS = 1_000_000
 
@@ -199,7 +202,7 @@ def manifest_row(path, values=None):
             if values["go_issued"] != "0":
                 fail(f"launch_void manifest issued GO: {path}")
             cost, turns, basis = "0", "0", "launch_void"
-        elif state == "abandoned_conservative":
+        elif state in {"abandoned_conservative", "cancelled_conservative"}:
             if values["go_issued"] != "1":
                 fail(f"post-GO manifest lacks GO marker: {path}")
             cost, basis = reserved, "conservative_reservation"

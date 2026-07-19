@@ -565,7 +565,7 @@ else:
         self.assertFalse(payload["auto_merge"])
         self.assertNotIn("closeout_merge_argv", json.loads(self.state.read_text()))
         project = self.product / "factory/PROJECT.env"
-        project.write_text(project.read_text() + "MAX_CONCURRENT_TICKETS=2\n")
+        project.write_text(project.read_text() + "MAX_CONCURRENT_TICKETS=4\n")
         lease = "3" * 64
         lease_dir = self.product / "factory/.dispatch-leases"
         lease_dir.mkdir()

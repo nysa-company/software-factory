@@ -14,6 +14,9 @@ factory/KILL
 **/factory/.active-runs/
 **/factory/.dispatch-leases/
 **/factory/.dispatch-leases.lock/
+**/factory/.envelope.lock/
+**/factory/envelope-overrides/
+**/factory/envelope-override-consumptions/
 *.log
 .env
 .env.local

@@ -138,7 +138,9 @@ class FallbackTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def command(self, action, *extra, check=True):
+    def command(
+        self, action, *extra, check=True, reason="credits_exhausted"
+    ):
         result = subprocess.run(
             [
                 sys.executable, str(SCRIPT), action,
@@ -147,7 +149,7 @@ class FallbackTest(unittest.TestCase):
                 "--project", "test",
                 "--ticket", "T-1",
                 "--failed-run", "run-failed-1",
-                "--reason", "credits_exhausted",
+                "--reason", reason,
                 "--readiness", str(self.readiness),
                 "--remote", str(self.remote),
                 *extra,
@@ -160,6 +162,25 @@ class FallbackTest(unittest.TestCase):
         if result.returncode:
             return result
         return json.loads(result.stdout)
+
+    def test_cancelled_attempt_is_eligible_for_same_stage_fallback(self):
+        path = self.product / "factory/runs/run-failed-1.meta"
+        values = {}
+        for line in path.read_text().splitlines():
+            key, value = line.split("=", 1)
+            values[key] = value
+        values.update({
+            "accounting_state": "cancelled_conservative",
+            "cancellation_reason": "budget_exhausted",
+            "phase": "cancelled_conservative",
+            "role_exit": "cancelled",
+        })
+        path.write_text("".join(
+            f"{key}={value}\n" for key, value in sorted(values.items())
+        ))
+        preview = self.command("preview", reason="budget_exhausted")
+        self.assertEqual(preview["reason"], "budget_exhausted")
+        self.assertEqual(preview["failed_run_id"], "run-failed-1")
 
     def test_preview_then_apply_commits_partial_work_and_journal_once(self):
         preview = self.command("preview")
