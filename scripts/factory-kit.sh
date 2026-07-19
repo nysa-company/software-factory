@@ -1213,7 +1213,8 @@ run_kit_checks_isolated() {
   fi
   configure_phase_sandbox "$phase" "$workspace" "$@"
   python3 - "$checkout" "$home" "$scratch" "$raw" \
-    "$SANDBOX_EXEC" "$SANDBOX_PROFILE" "${FACTORY_FIXTURE_DIRTY:-0}" \
+    "$SANDBOX_EXEC" "$SANDBOX_PROFILE" "$SCRIPT_ROOT/scripts/lib/sandbox-ps.py" \
+    "${FACTORY_FIXTURE_DIRTY:-0}" \
     "${FACTORY_KIT_SANDBOX_CAPTURE:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
@@ -1221,8 +1222,8 @@ run_kit_checks_isolated() {
     "${FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS:-0}" <<'PY' || status=$?
 import os, pathlib, subprocess, sys
 (
-    checkout, home, scratch, output, sandbox_exec, profile, dirty, capture,
-    deny_sibling, deny_home, test_fail, test_sleep,
+    checkout, home, scratch, output, sandbox_exec, profile, sandbox_ps, dirty,
+    capture, deny_sibling, deny_home, test_fail, test_sleep,
 ) = sys.argv[1:]
 root = pathlib.Path(checkout)
 prefix = [sandbox_exec, "-f", profile] if profile else []
@@ -1249,21 +1250,7 @@ if os.path.isfile("/usr/bin/xcode-select"):
                         raise SystemExit("sandbox Git override path is unsafe")
                 else:
                     os.symlink(target, link)
-            ps_wrapper = """#!/usr/bin/env python3
-import os, sys
-try:
-    output = sys.argv[sys.argv.index("-o") + 1]
-    pid = int(sys.argv[sys.argv.index("-p") + 1])
-except (ValueError, IndexError):
-    raise SystemExit(2)
-if output == "pgid=":
-    print(os.getpgid(pid))
-elif output == "lstart=":
-    os.kill(pid, 0)
-    print("sandbox-start-" + str(pid))
-else:
-    raise SystemExit(2)
-"""
+            ps_wrapper = pathlib.Path(sandbox_ps).read_text()
             ps_path = os.path.join(override_bin, "ps")
             if os.path.exists(ps_path):
                 if os.path.islink(ps_path) or pathlib.Path(ps_path).read_text() != ps_wrapper:
@@ -1609,6 +1596,7 @@ run_product_certification() {
   configure_phase_sandbox "certification" "$workspace" "$real_product" "$real_release"
   python3 - "$product_copy" "$script" "$sha" "$release_copy" "$workspace/home" \
     "$workspace/tmp" "$timeout" "$raw" "$SANDBOX_PROFILE" "$SANDBOX_EXEC" \
+    "$SCRIPT_ROOT/scripts/lib/sandbox-ps.py" \
     "${FACTORY_KIT_SANDBOX_CAPTURE:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" <<'PY' || status=$?
@@ -1616,9 +1604,10 @@ import os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
 profile = sys.argv[9]
 sandbox_exec = sys.argv[10]
-capture = sys.argv[11]
-deny_sibling = sys.argv[12]
-deny_home = sys.argv[13]
+sandbox_ps = sys.argv[11]
+capture = sys.argv[12]
+deny_sibling = sys.argv[13]
+deny_home = sys.argv[14]
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
@@ -1643,21 +1632,7 @@ if os.path.isfile("/usr/bin/xcode-select"):
                         raise SystemExit("sandbox Git override path is unsafe")
                 else:
                     os.symlink(target, link)
-            ps_wrapper = """#!/usr/bin/env python3
-import os, sys
-try:
-    output = sys.argv[sys.argv.index("-o") + 1]
-    pid = int(sys.argv[sys.argv.index("-p") + 1])
-except (ValueError, IndexError):
-    raise SystemExit(2)
-if output == "pgid=":
-    print(os.getpgid(pid))
-elif output == "lstart=":
-    os.kill(pid, 0)
-    print("sandbox-start-" + str(pid))
-else:
-    raise SystemExit(2)
-"""
+            ps_wrapper = pathlib.Path(sandbox_ps).read_text()
             ps_path = os.path.join(override_bin, "ps")
             if os.path.exists(ps_path):
                 if os.path.islink(ps_path) or pathlib.Path(ps_path).read_text() != ps_wrapper:
