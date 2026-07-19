@@ -122,6 +122,7 @@ RUN_PID_FILE=""
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
+RUN_SUBMITTED_FILE=""
 RUN_OUTPUT_TEMP=""
 RUNS_META_SNAPSHOT=""
 CONTROL_PLANE_MUTATION=0
@@ -144,6 +145,7 @@ PRODUCT_REMOTE=""
 ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
+TASK_SUBMITTED=0
 RUN_STARTED_AT=""
 TERMINAL_AT=""
 RESERVED_USD=""
@@ -153,6 +155,7 @@ COST_BASIS=""
 TURNS=0
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
+MONEY="$KIT_DIR/scripts/lib/money.py"
 SEQUENCER_ERROR=""
 
 sequencer_allows_role() {
@@ -259,6 +262,7 @@ validate_global_ledger() {
 import csv
 import re
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 path = Path(sys.argv[1])
@@ -276,7 +280,8 @@ with path.open(newline="", encoding="utf-8") as handle:
         turns, cost, status, run_id = row["turns"], row["cost_usd"], row["exit_status"], row["run_id"]
         if not re.fullmatch(r"[0-9]{1,4}", turns) or int(turns) > 1000:
             raise SystemExit(1)
-        if not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,18})?", cost) or float(cost) > 1_000_000:
+        if (not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,18})?", cost) or
+                Decimal(cost) > Decimal("1000000")):
             raise SystemExit(1)
         if run_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", run_id):
             raise SystemExit(1)
@@ -415,6 +420,7 @@ write_manifest() {
     echo "accounting_state=$(meta_value "$ACCOUNTING_STATE")"
     echo "reserved_usd=$(meta_value "$RESERVED_USD")"
     echo "go_issued=$(meta_value "$GO_ISSUED")"
+    echo "task_submitted=$(meta_value "$TASK_SUBMITTED")"
     echo "started_at=$(meta_value "$RUN_STARTED_AT")"
     echo "terminal_at=$(meta_value "$TERMINAL_AT")"
     echo "prompt_version=$(meta_value "$PROMPT_VERSION")"
@@ -437,6 +443,8 @@ write_manifest() {
     echo "transport=$(meta_value "${SELECTED_TRANSPORT:-}")"
     echo "policy_hash=$(meta_value "${SELECTED_POLICY_HASH:-}")"
     echo "route_plan_sha256=$(meta_value "${SELECTED_ROUTE_PLAN_SHA256:-}")"
+    echo "route_revision=$(meta_value "${SELECTED_ROUTE_REVISION:-}")"
+    echo "route_revision_hash=$(meta_value "${SELECTED_ROUTE_REVISION_HASH:-}")"
     echo "primary_probe=$(meta_value "${PRIMARY_PROBE_SUMMARY:-}")"
     echo "kit_sha=$(meta_value "${FACTORY_KIT_SHA:-}")"
     echo "kit_tree=$(meta_value "${FACTORY_KIT_TREE:-}")"
@@ -635,6 +643,7 @@ cleanup() {
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
   [[ -z "$RUN_GATE_FILE" ]] || rm -f "$RUN_GATE_FILE"
+  [[ -z "$RUN_SUBMITTED_FILE" ]] || rm -f "$RUN_SUBMITTED_FILE"
   [[ -z "$RUN_OUTPUT_TEMP" ]] || rm -f "$RUN_OUTPUT_TEMP"
   exec 8<&- 9>&- 2>/dev/null || true
   if [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
@@ -814,6 +823,8 @@ SELECTED_ACCOUNT_ROUTE_ID=""
 SELECTED_TRANSPORT=""
 SELECTED_POLICY_HASH=""
 SELECTED_ROUTE_PLAN_SHA256=""
+SELECTED_ROUTE_REVISION=""
+SELECTED_ROUTE_REVISION_HASH=""
 if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
   if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" || "${FACTORY_TEST_MODE:-0}" != "1" ]]; then
     echo "FACTORY_ADAPTER_OVERRIDE requires FACTORY_TEST_MODE=1 and the mock adapter" >&2
@@ -847,6 +858,8 @@ elif [[ -f "$ROUTE_PLAN" ]]; then
   SELECTED_TRANSPORT="$FACTORY_SELECTED_TRANSPORT"
   SELECTED_POLICY_HASH="$FACTORY_SELECTED_POLICY_HASH"
   SELECTED_ROUTE_PLAN_SHA256="$FACTORY_SELECTED_ROUTE_PLAN_SHA256"
+  SELECTED_ROUTE_REVISION="$FACTORY_SELECTED_ROUTE_REVISION"
+  SELECTED_ROUTE_REVISION_HASH="$FACTORY_SELECTED_ROUTE_REVISION_HASH"
   SELECTION_REASON="$FACTORY_SELECTION_REASON"
   PRIMARY_PROBE_SUMMARY="pinned:${PROBE_STATE}:${PROBE_REASON}"
 elif ! factory_load_model_probe_context; then
@@ -1035,20 +1048,23 @@ if ! refresh_runtime_ledger; then
   exit 3
 fi
 
-SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
-SPENT_TICKET="$(awk -F, -v t="$TICKET" 'NR>1 && $3==t {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
+SPENT_TODAY="$(python3 "$MONEY" sum-csv --csv "$LEDGER" --date "$TODAY" \
+  --date-column 0 --amount-column 7)"
+SPENT_TICKET="$(python3 "$MONEY" sum-csv --csv "$LEDGER" \
+  --date-column 0 --amount-column 7 --filter-column 2 --filter-value "$TICKET")"
 # ponytail: shrink the reservation to the remaining ticket budget so a nearly
-# finished ticket is not refused by flat-reserve arithmetic; daily/global cap
-# checks keep the flat reserve (never observed binding near exhaustion).
-RESERVE_TICKET="$(awk -v budget="$PER_RUN_BUDGET_USD" -v spent="$SPENT_TICKET" -v cap="$PER_TICKET_BUDGET_USD" \
-  'BEGIN{remain=cap-spent; if (remain>0 && remain<budget) printf "%.4f", remain; else printf "%s", budget}')"
-RESERVED_USD="$RESERVE_TICKET"
-if awk -v s="$SPENT_TODAY" -v r="$PER_RUN_BUDGET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-  echo "daily cap would be exceeded (spent \$$SPENT_TODAY + reserve \$$PER_RUN_BUDGET_USD > \$$DAILY_CAP_USD) — refusing. See docs/runbooks/operator.md." >&2
+# finished ticket is not refused by flat-reserve arithmetic. The resulting
+# reservation is the amount charged against every cap and passed to the adapter.
+RESERVED_USD="$(python3 "$MONEY" reserve --budget "$PER_RUN_BUDGET_USD" \
+  --spent "$SPENT_TICKET" --cap "$PER_TICKET_BUDGET_USD")"
+if python3 "$MONEY" exceeds --spent "$SPENT_TODAY" --reserve "$RESERVED_USD" \
+    --cap "$DAILY_CAP_USD"; then
+  echo "daily cap would be exceeded (spent \$$SPENT_TODAY + reserve \$$RESERVED_USD > \$$DAILY_CAP_USD) — refusing. See docs/runbooks/operator.md." >&2
   exit 5
 fi
-if awk -v s="$SPENT_TICKET" -v r="$RESERVE_TICKET" -v cap="$PER_TICKET_BUDGET_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-  echo "ticket budget would be exceeded for $TICKET (spent \$$SPENT_TICKET + reserve \$$RESERVE_TICKET > \$$PER_TICKET_BUDGET_USD) — move ticket to Blocked-Escalated." >&2
+if python3 "$MONEY" exceeds --spent "$SPENT_TICKET" --reserve "$RESERVED_USD" \
+    --cap "$PER_TICKET_BUDGET_USD"; then
+  echo "ticket budget would be exceeded for $TICKET (spent \$$SPENT_TICKET + reserve \$$RESERVED_USD > \$$PER_TICKET_BUDGET_USD) — move ticket to Blocked-Escalated." >&2
   exit 5
 fi
 # Global cap check + reservation (own lock, taken while holding the repo
@@ -1104,9 +1120,11 @@ if [[ -n "$GLOBAL_LEDGER" ]]; then
     echo "global ledger contains invalid accounting rows" >&2
     exit 3
   }
-  SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
-  if awk -v s="$SPENT_GLOBAL" -v r="$PER_RUN_BUDGET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
-    echo "MACHINE daily cap would be exceeded across all factories (spent \$$SPENT_GLOBAL + reserve \$$PER_RUN_BUDGET_USD > \$$GLOBAL_DAILY_CAP_USD) — refusing. See docs/runbooks/operator.md." >&2
+  SPENT_GLOBAL="$(python3 "$MONEY" sum-csv --csv "$GLOBAL_LEDGER" \
+    --date "$TODAY" --date-column 0 --amount-column 8)"
+  if python3 "$MONEY" exceeds --spent "$SPENT_GLOBAL" \
+      --reserve "$RESERVED_USD" --cap "$GLOBAL_DAILY_CAP_USD"; then
+    echo "MACHINE daily cap would be exceeded across all factories (spent \$$SPENT_GLOBAL + reserve \$$RESERVED_USD > \$$GLOBAL_DAILY_CAP_USD) — refusing. See docs/runbooks/operator.md." >&2
     release_global_lock || true
     rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0; exit 5
   fi
@@ -1144,7 +1162,8 @@ set +e
 RUN_READY_FILE="$RUNS_DIR/.$RUN_ID.ready"
 RUN_GO_FILE="$RUNS_DIR/.$RUN_ID.go"
 RUN_GATE_FILE="$RUNS_DIR/.$RUN_ID.gate"
-rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
+RUN_SUBMITTED_FILE="$RUNS_DIR/.$RUN_ID.submitted"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE"
 ADAPTER_ARGS=(
   --budget "$RESERVED_USD"
   --max-turns "$PER_RUN_MAX_TURNS"
@@ -1169,7 +1188,7 @@ RUN_OUTPUT_TEMP=""
 # task-bearing adapters must never inherit mutation-capable state paths.
 unset FACTORY_MODEL_STATE_ROOT FACTORY_PROJECT
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
-  "$RUN_READY_FILE" "$RUN_GATE_FILE" "$ADAPTER_SH" \
+  "$RUN_READY_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE" "$ADAPTER_SH" \
   "${ADAPTER_ARGS[@]}" \
   -- "$TASK" 8<&- >&9 2>&1 &
 RUN_PID=$!
@@ -1252,20 +1271,17 @@ else
     else
       GO_ISSUED=1
       if ! write_manifest "spawned"; then
-        GO_ISSUED=0
         echo "could not persist GO marker; no task was submitted" >&2
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
       elif ! python3 "$KIT_DIR/scripts/lib/durable-file.py" touch "$RUN_GO_FILE"; then
-        GO_ISSUED=0
         echo "could not persist GO marker; no task was submitted" >&2
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
       elif ! RUNS_META_SNAPSHOT="$(python3 "$KIT_DIR/scripts/lib/runs-integrity.py" \
           snapshot "$RUNS_DIR")"; then
-        GO_ISSUED=0
         echo "could not snapshot run manifests; no task was submitted" >&2
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
@@ -1277,19 +1293,16 @@ else
            ! REGISTERED_STATUS_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
           status --porcelain --untracked-files=all 2>/dev/null)" ||
            ! REGISTERED_CONTENT_BEFORE="$(registered_tracked_content 2>/dev/null)"; then
-        GO_ISSUED=0
         echo "could not snapshot registered checkout; no task was submitted" >&2
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
       elif ! ACTIVE_RUN_SNAPSHOT="$(active_claim_snapshot 2>/dev/null)"; then
-        GO_ISSUED=0
         echo "could not bind run claim ownership; no task was submitted" >&2
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
       elif ! : > "$RUN_GATE_FILE"; then
-        GO_ISSUED=0
         echo "could not open adapter GO gate; no task was submitted" >&2
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
@@ -1299,6 +1312,9 @@ else
         HELD_LAUNCH_LOCK=0
         wait "$RUN_PID"
         STATUS=$?
+        if [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]]; then
+          TASK_SUBMITTED=1
+        fi
         if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
             python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
           CONTROL_PLANE_MUTATION=1
@@ -1345,10 +1361,11 @@ if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
 else
   echo "WARNING: process group $RUN_PGID survived; PID record retained for kill-switch" >&2
 fi
-rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE"
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
+RUN_SUBMITTED_FILE=""
 exec 9>&-
 RESULT="$(cat <&8)"
 exec 8<&-
@@ -1431,7 +1448,7 @@ elif [[ ! "$TURNS" =~ ^[0-9]{1,4}$ ]] ||
 fi
 if [[ -n "$COST" ]] &&
    { [[ ! "$COST" =~ ^[0-9]{1,7}([.][0-9]{1,18})?$ ]] ||
-     ! awk -v value="$COST" 'BEGIN { exit !(value >= 0 && value <= 1000000) }'; }; then
+     python3 "$MONEY" exceeds --spent "$COST" --reserve 0 --cap 1000000; }; then
   TELEMETRY_INVALID=1
 fi
 if [[ "$TELEMETRY_INVALID" -eq 1 ]]; then

@@ -29,8 +29,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Model provider down (Claude or OpenAI outage)
 
 - Notice: runs fail immediately with API errors; provider status page confirms.
-- Do: if the primary is positively unavailable during the wrapper's non-task probe and a calibrated same-family Cursor fallback is enabled, the wrapper selects it before submitting the task. An outage discovered only after task submission is a failed run: stop, inspect the run manifest, and wait or make a new operator-authorized attempt. If agents are scheduled, `scripts/kill-switch.sh` remains the safe stop.
-- Don't: manually swap families or relaunch after a post-submission failure. Cross-family separation and one-agent-per-logical-run are quality controls, not conveniences.
+- Do: if the primary is unavailable before submission, let the pinned route probe refuse the run. After a terminal, fully accounted provider failure, use the sealed `models fallback-plan` flow below. If agents are scheduled, `scripts/kill-switch.sh` remains the safe stop.
+- Don't: manually swap families or relaunch. The fallback transaction preserves partial work, excludes the failed route, and rechecks contributor-family boundaries.
 
 ## Duplicate reviewer row
 
@@ -82,6 +82,8 @@ What to do when something breaks, written for a non-technical operator. Each ent
 ## Model portfolio control
 
 The operator owns profile activation and temporary credit-exhaustion overrides.
+The complete primary/secondary table and enforced fallback rules are in
+[model-routing.md](../model-routing.md).
 Use only the selected release through the sealed launcher:
 
 ```bash
@@ -91,10 +93,14 @@ Use only the selected release through the sealed launcher:
 ~/.factory/bin/factory-launch <project> models disable --scope-type account-route --scope-id codex-native --reason credits_exhausted --ttl-seconds 3600 --operator-id <operator-id> --json
 ~/.factory/bin/factory-launch <project> models enable --scope-type account-route --scope-id codex-native --json
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> models migrate --ticket T-123 --workdir /absolute/ticket-worktree --approve-hash <preview-hash> --approved-by <operator-id> --json
+~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
+~/.factory/bin/factory-launch <project> models fallback --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ```
 
 `models plan --json` previews the active profile, or default
-`legacy-balanced-v1` when none is active. Activation accepts only the exact
+`balanced-v2` when none is active. Activation accepts only the exact
 profile hash shown by preview. `openai-priority-v1` tries OpenAI production
 first, then Anthropic production; `claude-priority-v1` reverses those
 portfolios. `cursor-priority-v1` tries exact Cursor OpenAI/Anthropic routes
@@ -113,6 +119,21 @@ the Kit-SHA and exact six-role route plan in one commit, pushes and verifies the
 ticket branch, and is idempotent for the same committed plan. Roles never
 re-resolve. Each run re-probes only its exact pinned route, and any failure
 after task submission ends the run without retry.
+
+Contract 1.4 tickets migrate the v1 plan once with `migrate-plan`, followed by
+`models migrate` using the exact preview hash and operator ID. For a later
+eligible failure:
+
+1. Run `fallback-plan` and post its exact `linear_comment` as a Linear comment.
+2. Run the normal Linear sync so the signed-in comment author and 15-minute,
+   one-use approval are recorded in `factory/linear-map.json`.
+3. Run the same command with `fallback` instead of `fallback-plan`.
+
+The apply step refuses active provider/accounting locks, Git or evidence drift,
+unapproved paths, protected ticket-field changes, secrets, and unsafe files. It
+commits the validated partial snapshot and the next append-only route-journal
+revision together, pushes the exact branch head, then consumes the approval.
+Only `credits_exhausted` and `provider_unavailable` are eligible reasons.
 
 Kimi K2.6 remains disabled experimental through Claude CLI/OpenRouter/Moonshot.
 No live or billed pilot has run. Rotate the credential before a pilot; direct

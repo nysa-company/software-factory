@@ -171,6 +171,7 @@ run_preflight() {
       --projected) env_args+=(PROJECTED_TICKET_USD="$2"); shift 2;;
       --probe-trace) env_args+=(FACTORY_TEST_PROBE_TRACE="$2"); shift 2;;
       --adapter-override) env_args+=(FACTORY_ADAPTER_OVERRIDE="$2"); shift 2;;
+      --timezone) env_args+=(TZ="$2"); shift 2;;
       *) echo "unknown run_preflight opt: $1" >&2; return 2;;
     esac
   done
@@ -186,7 +187,7 @@ run_sealed_preflight() {
     FACTORY_RELEASE_SHA="$KIT_HEAD_NOW" \
     FACTORY_RELEASE_TREE="$tree" \
     FACTORY_RELEASE_PATH="$release" \
-    FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+    FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
     bash "$release/scripts/preflight.sh" --ticket "$ticket" 2>&1
 }
@@ -558,9 +559,16 @@ mkdir -p "$REPOBUDGET"
 write_envelope "$REPOBUDGET" "5.00"
 write_ready_ticket "$REPOBUDGET" "T-003"
 init_git_repo "$REPOBUDGET"
-TODAY="$(date +%F)"
+TODAY="$(date -u +%F)"
+UTC_HOUR="$(date -u +%H)"
+if (( 10#$UTC_HOUR < 12 )); then
+  NON_UTC_TEST_TZ="Etc/GMT+12"
+else
+  NON_UTC_TEST_TZ="Pacific/Kiritimati"
+fi
 echo "$TODAY,12:00:00,T-000,planner,claude-code,v1,1,4.50,0" >> "$REPOBUDGET/factory/ledger.csv"
-assert_preflight "repo budget fail" 1 "FAIL: repo daily cap insufficient" "$REPOBUDGET" "T-003"
+assert_preflight "repo budget uses UTC day" 1 "FAIL: repo daily cap insufficient" \
+  "$REPOBUDGET" "T-003" --timezone "$NON_UTC_TEST_TZ"
 
 # --- global budget fail ---
 GLOBALBUDGET="$TMP/globalbudget"

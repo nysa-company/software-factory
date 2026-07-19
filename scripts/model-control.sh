@@ -22,10 +22,12 @@ PIN_TICKET_RELATIVE=""
 PIN_PLAN_RELATIVE=""
 PIN_PLAN_EXISTED=0
 TEMPORARY_FILE=""
+FALLBACK_LAUNCH_LOCK=""
 
 cleanup() {
   local rc=$?
   [[ -z "$TEMPORARY_FILE" ]] || rm -f "$TEMPORARY_FILE"
+  [[ -z "$FALLBACK_LAUNCH_LOCK" ]] || rmdir "$FALLBACK_LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$PIN_PRECOMMIT" -eq 1 && -n "$PIN_WORKDIR" ]]; then
     git -C "$PIN_WORKDIR" restore --staged --worktree -- \
       "$PIN_TICKET_RELATIVE" >/dev/null 2>&1 || true
@@ -78,6 +80,86 @@ load_machine_config() {
     json_error "$FACTORY_RUNTIME_OVERRIDE_ERROR"
 }
 
+validate_control_workdir() {
+  local ticket="$1" workdir="$2" allow_dirty="${3:-0}"
+  local physical git_top branch descriptor prefix_data prefix_count prefix_value
+  [[ "$ticket" =~ ^T-[0-9]+$ ]] || json_error "ticket must match T-NNN"
+  [[ "$workdir" == /* && "${FACTORY_ROOT:-}" == /* ]] ||
+    json_error "workdir and FACTORY_ROOT must be absolute"
+  physical="$(cd "$workdir" 2>/dev/null && pwd -P)" ||
+    json_error "workdir is unavailable"
+  [[ "$physical" == "$workdir" ]] || json_error "workdir must be physical"
+  git_top="$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null)" ||
+    json_error "workdir is not a git worktree"
+  git_top="$(cd "$git_top" && pwd -P)"
+  [[ "$git_top" == "$workdir" ]] || json_error "workdir must be the exact worktree root"
+  branch="$(git -C "$workdir" symbolic-ref --quiet --short HEAD 2>/dev/null)" ||
+    json_error "ticket worktree must be on a branch"
+  CONTROL_BRANCH_PREFIX="ticket/"
+  descriptor="$FACTORY_ROOT/factory/PROJECT.env"
+  if [[ -e "$descriptor" || -L "$descriptor" ]]; then
+    [[ -f "$descriptor" && ! -L "$descriptor" ]] ||
+      json_error "product project descriptor is unsafe"
+    prefix_data="$(awk '
+      /^[[:space:]]*#/ { next }
+      {
+        line=$0
+        sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+        if (line ~ /^TICKET_BRANCH_PREFIX[[:space:]]*=/) {
+          count++
+          sub(/^TICKET_BRANCH_PREFIX[[:space:]]*=[[:space:]]*/, "", line)
+          sub(/[[:space:]]+$/, "", line)
+          if ((line ~ /^".*"$/) || (line ~ /^'\''.*'\''$/))
+            line=substr(line, 2, length(line)-2)
+          value=line
+        }
+      }
+      END { printf "%d\t%s\n", count+0, value }
+    ' "$descriptor")" || json_error "ticket branch prefix cannot be parsed"
+    IFS="$(printf '\t')" read -r prefix_count prefix_value <<EOF
+$prefix_data
+EOF
+    case "$prefix_count" in
+      0) ;;
+      1) CONTROL_BRANCH_PREFIX="$prefix_value" ;;
+      *) json_error "ticket branch prefix must be defined at most once" ;;
+    esac
+  fi
+  [[ "$branch" == "$CONTROL_BRANCH_PREFIX$ticket" ]] ||
+    json_error "worktree branch does not match the requested ticket"
+  if [[ "$allow_dirty" -ne 1 ]]; then
+    [[ -z "$(git -C "$workdir" status --porcelain --untracked-files=all \
+      --ignore-submodules=none)" ]] || json_error "ticket worktree must be clean"
+  fi
+  CONTROL_WORKDIR="$workdir"
+  CONTROL_BRANCH="$branch"
+  CONTROL_TICKET_FILE="$workdir/factory/tickets/$ticket.md"
+  CONTROL_PLAN_FILE="$workdir/factory/route-plans/$ticket.json"
+  [[ -f "$CONTROL_TICKET_FILE" && ! -L "$CONTROL_TICKET_FILE" ]] ||
+    json_error "ticket file is missing or unsafe"
+  CONTROL_REMOTE="$(factory_capture_product_remote \
+    "$workdir" "$FACTORY_TRUSTED_PRODUCT_ORIGIN")" ||
+    json_error "${FACTORY_PRODUCT_REMOTE_ERROR:-certified origin validation failed}"
+}
+
+push_exact_head() {
+  local workdir="$1" branch="$2" remote="$3" expected_old="$4"
+  local head tracking actual
+  head="$(git -C "$workdir" rev-parse HEAD)" || json_error "cannot resolve commit"
+  tracking="$(factory_remote_tracking_tip "$workdir" "$branch")"
+  [[ "$tracking" == "$expected_old" ]] ||
+    json_error "remote tracking state changed before push"
+  git -C "$workdir" push --no-force \
+    "$remote" "$head:refs/heads/$branch" >/dev/null 2>&1 ||
+    json_error "could not push exact model-control commit"
+  actual="$(git -C "$workdir" ls-remote --heads -- "$remote" \
+    "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
+  [[ "$actual" == "$head" ]] || json_error "remote verification failed"
+  factory_update_tracking_ref "$workdir" "$branch" "$head" "$tracking" ||
+    json_error "remote tracking update failed"
+  printf '%s\n' "$head"
+}
+
 command_name="${1:-}"
 [[ -n "$command_name" ]] || json_error "a model-control command is required"
 shift
@@ -112,6 +194,326 @@ case "$command_name" in
       "$FACTORY_DISABLED_ROUTE_IDS" ||
       json_error "model plan failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
     cat "$resolution"
+    ;;
+  migrate-plan|migrate)
+    ticket="" workdir="" approve_hash="" approved_by=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ticket) [[ $# -ge 2 ]] || json_error "--ticket requires a value"; ticket="$2"; shift 2 ;;
+        --workdir) [[ $# -ge 2 ]] || json_error "--workdir requires a value"; workdir="$2"; shift 2 ;;
+        --approve-hash) [[ $# -ge 2 ]] || json_error "--approve-hash requires a value"; approve_hash="$2"; shift 2 ;;
+        --approved-by) [[ $# -ge 2 ]] || json_error "--approved-by requires a value"; approved_by="$2"; shift 2 ;;
+        *) json_error "unknown migration argument: $1" ;;
+      esac
+    done
+    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ]] ||
+      json_error "route migration requires contract 1.4.0"
+    if [[ "$command_name" == "migrate" ]]; then
+      [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
+        json_error "migration approval hash is invalid"
+      [[ "$approved_by" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ &&
+         "$approved_by" != "auto" ]] ||
+        json_error "migration approver is invalid"
+    fi
+    validate_control_workdir "$ticket" "$workdir" 0
+    [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
+      json_error "v1 ticket route plan is missing or unsafe"
+    factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
+      json_error "$FACTORY_KIT_PIN_ERROR"
+    existing_preview="$(python3 - "$CONTROL_PLAN_FILE" "$ticket" "$FACTORY_KIT_SHA" <<'PY'
+import hashlib, json, sys
+raw = open(sys.argv[1], "rb").read()
+value = json.loads(raw)
+if value.get("schema") != "ticket-model-route-journal/v2":
+    raise SystemExit(0)
+if (
+    value.get("ticket") != sys.argv[2]
+    or value.get("kit_sha") != sys.argv[3]
+    or len(value.get("revisions", [])) != 1
+    or value["revisions"][0].get("body", {}).get("kind") != "migration"
+):
+    raise SystemExit(2)
+canonical = json.dumps(
+    value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+).encode("utf-8")
+print(json.dumps({
+    "journal": value,
+    "preview_hash": hashlib.sha256(canonical).hexdigest(),
+    "schema": "ticket-model-route-migration-preview/v1",
+}, sort_keys=True, separators=(",", ":")))
+PY
+)" || json_error "existing route journal is not a recoverable migration"
+    if [[ -n "$existing_preview" ]]; then
+      if [[ "$command_name" == "migrate-plan" ]]; then
+        printf '%s\n' "$existing_preview"
+        exit 0
+      fi
+      existing_hash="$(python3 -c \
+        'import json,sys; print(json.loads(sys.argv[1])["preview_hash"])' \
+        "$existing_preview")"
+      [[ "$approve_hash" == "$existing_hash" ]] ||
+        json_error "migration approval hash does not match existing journal"
+      expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
+      [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
+        json_error "remote tracking state is unavailable"
+      commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+        "$CONTROL_REMOTE" "$expected_remote_head")"
+      python3 - "$existing_preview" "$commit_sha" "$approved_by" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+value.update(commit_sha=sys.argv[2], approved_by=sys.argv[3], recovered=True)
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+      exit 0
+    fi
+    pin_commit="$(git -C "$workdir" log -1 --format=%H -- \
+      "factory/route-plans/$ticket.json")"
+    [[ "$pin_commit" =~ ^[0-9a-f]{40}$ ]] ||
+      json_error "v1 route plan has no committed provenance"
+    commit_epoch="$(git -C "$workdir" show -s --format=%ct "$pin_commit")" ||
+      json_error "cannot derive migration timestamp"
+    migrated_at="$(python3 - "$commit_epoch" <<'PY'
+import datetime as dt, sys
+print(dt.datetime.fromtimestamp(int(sys.argv[1]), dt.timezone.utc)
+      .replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+PY
+)" || json_error "cannot normalize migration timestamp"
+    preview="$(manager migrate-plan --ticket-plan "$CONTROL_PLAN_FILE" \
+      --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
+      --migrated-at "$migrated_at")" || json_error "route migration preview failed"
+    preview_hash="$(python3 - "$preview" <<'PY'
+import json, re, sys
+value = json.loads(sys.argv[1])
+digest = value.get("preview_hash", "")
+if not re.fullmatch(r"[0-9a-f]{64}", digest):
+    raise SystemExit(2)
+print(digest)
+PY
+)" || json_error "route migration preview is malformed"
+    if [[ "$command_name" == "migrate-plan" ]]; then
+      printf '%s\n' "$preview"
+      exit 0
+    fi
+    [[ "$approve_hash" == "$preview_hash" ]] ||
+      json_error "migration approval hash does not match preview"
+    [[ "$approved_by" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$approved_by" != "auto" ]] ||
+      json_error "migration approver is invalid"
+    expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
+    [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
+      json_error "remote tracking state is unavailable"
+    PIN_PRECOMMIT=1
+    PIN_WORKDIR="$workdir"
+    PIN_TICKET_RELATIVE="factory/tickets/$ticket.md"
+    PIN_PLAN_RELATIVE="factory/route-plans/$ticket.json"
+    PIN_PLAN_EXISTED=1
+    python3 - "$CONTROL_TICKET_FILE" "$FACTORY_KIT_SHA" <<'PY' ||
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+new = sys.argv[2]
+text = path.read_text()
+pattern = re.compile(r"^[ \t]*Kit-SHA:[ \t]*([0-9a-f]{40})[ \t]*$", re.M)
+matches = list(pattern.finditer(text))
+if len(matches) != 1:
+    raise SystemExit(2)
+path.write_text(text[:matches[0].start()] + "Kit-SHA: " + new +
+                text[matches[0].end():])
+PY
+      json_error "ticket Kit-SHA migration failed"
+    manager migrate --ticket-plan "$CONTROL_PLAN_FILE" \
+      --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
+      --migrated-at "$migrated_at" --approve-hash "$approve_hash" \
+      --output "$CONTROL_PLAN_FILE" >/dev/null ||
+      json_error "route journal migration failed"
+    git -C "$workdir" add -- "$PIN_TICKET_RELATIVE" "$PIN_PLAN_RELATIVE" ||
+      json_error "could not stage route migration"
+    git -C "$workdir" -c user.name="Software Factory" \
+      -c user.email="factory@local" commit \
+      -m "$ticket: migrate model route journal" -- \
+      "$PIN_TICKET_RELATIVE" "$PIN_PLAN_RELATIVE" >/dev/null ||
+      json_error "could not commit route migration"
+    PIN_PRECOMMIT=0
+    commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+      "$CONTROL_REMOTE" "$expected_remote_head")"
+    python3 - "$preview" "$commit_sha" "$approved_by" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+value.update(commit_sha=sys.argv[2], approved_by=sys.argv[3])
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+    ;;
+  fallback-plan|fallback)
+    ticket="" failed_run="" workdir="" reason=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ticket) [[ $# -ge 2 ]] || json_error "--ticket requires a value"; ticket="$2"; shift 2 ;;
+        --failed-run) [[ $# -ge 2 ]] || json_error "--failed-run requires a value"; failed_run="$2"; shift 2 ;;
+        --workdir) [[ $# -ge 2 ]] || json_error "--workdir requires a value"; workdir="$2"; shift 2 ;;
+        --reason) [[ $# -ge 2 ]] || json_error "--reason requires a value"; reason="$2"; shift 2 ;;
+        *) json_error "unknown fallback argument: $1" ;;
+      esac
+    done
+    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ]] ||
+      json_error "mid-ticket fallback requires contract 1.4.0"
+    [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
+      json_error "failed run identifier is invalid"
+    [[ "$reason" == "credits_exhausted" || "$reason" == "provider_unavailable" ]] ||
+      json_error "fallback reason is invalid"
+    validate_control_workdir "$ticket" "$workdir" 1
+    [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
+      json_error "v2 ticket route journal is missing or unsafe"
+    profile_id="$(python3 - "$CONTROL_PLAN_FILE" <<'PY'
+import base64, json, sys
+value = json.load(open(sys.argv[1]))
+if value.get("schema") != "ticket-model-route-journal/v2":
+    raise SystemExit(2)
+body = value["revisions"][-1]["body"]
+if body["kind"] == "migration":
+    plan = json.loads(base64.b64decode(body["legacy_plan_b64"]))
+    resolution = plan["resolution"]
+else:
+    resolution = body["new_resolution"]
+print(resolution["profile_id"])
+PY
+)" || json_error "route journal cannot select its profile"
+    load_machine_config
+    factory_load_model_probe_context ||
+      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-readiness.XXXXXX")" ||
+      json_error "could not allocate readiness output"
+    plan_probe="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-plan.XXXXXX")" ||
+      json_error "could not allocate probe output"
+    TEMPORARY_FILE="$readiness"
+    rm -f "$readiness"
+    factory_resolve_model_profile "$profile_id" "$plan_probe" \
+      "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" >/dev/null 2>&1 || true
+    rm -f "$plan_probe"
+    [[ -s "$readiness" ]] || json_error "model readiness probes failed"
+    if [[ "$command_name" == "fallback-plan" ]]; then
+      preview_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-preview.XXXXXX")" ||
+        json_error "could not allocate fallback preview"
+      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" preview \
+        --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
+        --project "$FACTORY_PROJECT" --ticket "$ticket" \
+        --failed-run "$failed_run" --reason "$reason" \
+        --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$preview_file"; then
+        rm -f "$preview_file"
+        json_error "fallback preview failed"
+      fi
+      cat "$preview_file"
+      rm -f "$preview_file"
+      exit 0
+    fi
+    approval_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-approval.XXXXXX")" ||
+      json_error "could not allocate approval input"
+    approval_available=1
+    if ! python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" read \
+      --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+      --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
+      > "$approval_file"; then
+      approval_available=0
+      : > "$approval_file"
+    fi
+    approval_hash=""
+    if [[ "$approval_available" -eq 1 ]]; then
+      approval_hash="$(python3 - "$approval_file" <<'PY'
+import json, re, sys
+value = json.load(open(sys.argv[1]))
+digest = value.get("approval_hash", "")
+if not re.fullmatch(r"[0-9a-f]{64}", digest):
+    raise SystemExit(2)
+print(digest)
+PY
+)" || json_error "fallback approval hash is invalid"
+    fi
+    launch_lock="$FACTORY_ROOT/factory/.launch.lock"
+    provider_lock="$FACTORY_ROOT/factory/.provider.lock"
+    ledger_lock="$FACTORY_ROOT/factory/.ledger.lock"
+    mkdir "$launch_lock" 2>/dev/null || json_error "launch lock is busy"
+    FALLBACK_LAUNCH_LOCK="$launch_lock"
+    [[ ! -e "$provider_lock" && ! -L "$provider_lock" &&
+       ! -e "$ledger_lock" && ! -L "$ledger_lock" ]] ||
+      json_error "provider or accounting state is busy"
+    expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
+    [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
+      json_error "remote tracking state is unavailable"
+    if [[ "$approval_available" -eq 0 ]]; then
+      recovery_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-recovery.XXXXXX")" ||
+        json_error "could not allocate fallback recovery result"
+      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" recover \
+        --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
+        --project "$FACTORY_PROJECT" --ticket "$ticket" \
+        --failed-run "$failed_run" --reason "$reason" \
+        --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$recovery_file"; then
+        rm -f "$recovery_file" "$approval_file"
+        json_error "fallback recovery validation failed"
+      fi
+      recovery_values="$(python3 - "$recovery_file" <<'PY'
+import json, re, sys
+value = json.load(open(sys.argv[1]))
+receipt = value.get("approval_receipt")
+if (
+    value.get("recovered") is not True
+    or not isinstance(receipt, dict)
+    or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("approval_hash", ""))
+    or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", receipt.get("comment_id", ""))
+):
+    raise SystemExit(2)
+print(receipt["approval_hash"] + "\t" + receipt["comment_id"])
+PY
+)" || {
+        rm -f "$recovery_file" "$approval_file"
+        json_error "exact unexpired or previously consumed fallback approval is required"
+      }
+      IFS=$'\t' read -r approval_hash approval_comment_id <<< "$recovery_values"
+      python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" verify-consumed \
+        --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+        --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
+        --approval-hash "$approval_hash" --comment-id "$approval_comment_id" \
+        >/dev/null || {
+          rm -f "$recovery_file" "$approval_file"
+          json_error "committed fallback approval consumption is not recorded"
+        }
+      commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+        "$CONTROL_REMOTE" "$expected_remote_head")"
+      rmdir "$FALLBACK_LAUNCH_LOCK"
+      FALLBACK_LAUNCH_LOCK=""
+      python3 - "$recovery_file" "$commit_sha" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+value["commit_sha"] = sys.argv[2]
+value.pop("approval_receipt", None)
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+      rm -f "$recovery_file" "$approval_file"
+      exit 0
+    fi
+    apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
+      json_error "could not allocate fallback result"
+    if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" apply \
+      --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
+      --project "$FACTORY_PROJECT" --ticket "$ticket" \
+      --failed-run "$failed_run" --reason "$reason" \
+      --readiness "$readiness" --remote "$CONTROL_REMOTE" \
+      --approval "$approval_file" > "$apply_file"; then
+      rm -f "$apply_file" "$approval_file"
+      json_error "fallback apply failed"
+    fi
+    commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+      "$CONTROL_REMOTE" "$expected_remote_head")"
+    python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" consume \
+      --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+      --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
+      --approval-hash "$approval_hash" >/dev/null ||
+      json_error "fallback committed but Linear approval consumption requires reconciliation"
+    rmdir "$FALLBACK_LAUNCH_LOCK"
+    FALLBACK_LAUNCH_LOCK=""
+    python3 - "$apply_file" "$commit_sha" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+value["commit_sha"] = sys.argv[2]
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+    rm -f "$apply_file" "$approval_file"
     ;;
   pin)
     ticket=""

@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.3.0",
+  "contract_version": "1.4.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -89,7 +89,11 @@
           "activate --profile <safe-id> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
           "disable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --reason credits_exhausted --ttl-seconds <1..604800> --operator-id <safe-id> --json",
           "enable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --json",
-          "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json"
+          "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
+          "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json",
+          "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
+          "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
+          "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json"
         ],
         "output": "deterministic JSON emitted directly by the selected release model-control helper",
         "output_schemas": {
@@ -99,20 +103,28 @@
           "activate": "model-routing-active/v1",
           "disable": "model-routing-overrides/v1",
           "enable": "model-routing-overrides/v1",
-          "pin": "ticket-model-route-plan/v1 plus commit_created, commit_sha, and pin_hash"
+          "pin": "ticket-model-route-plan/v1 plus commit_created, commit_sha, and pin_hash",
+          "migrate-plan": "ticket-model-route-migration-preview/v1",
+          "migrate": "ticket-model-route-journal/v2 plus commit metadata",
+          "fallback-plan": "ticket-model-fallback-preview/v1",
+          "fallback": "ticket-model-route-journal/v2 plus handoff commit metadata"
         },
         "json_marker": "required as the final launcher argument and stripped before helper invocation",
         "maintenance": {
           "allowed": [
             "profiles",
             "status",
-            "plan"
+            "plan",
+            "migrate-plan",
+            "fallback-plan"
           ],
           "refused": [
             "activate",
             "disable",
             "enable",
-            "pin"
+            "pin",
+            "migrate",
+            "fallback"
           ]
         },
         "state": {
@@ -120,7 +132,7 @@
           "project": "<project>",
           "active_profile": "$FACTORY_KITS_ROOT/projects/<project>/routing/active.json",
           "temporary_overrides": "$FACTORY_KITS_ROOT/projects/<project>/routing/overrides.json",
-          "ticket_route_plan": "<ticket-worktree>/factory/route-plans/<T-NNN>.json",
+          "ticket_route_plan": "<ticket-worktree>/factory/route-plans/<T-NNN>.json (v1 immutable plan or v2 append-only journal)",
           "isolation": "active profiles and temporary overrides are selected only from the validated launcher project"
         },
         "pin_transaction": {
@@ -144,6 +156,8 @@
         "validation": [
           "exact argument order with no arbitrary manager, catalog, profile-file, or profile-override paths",
           "pin workdir uses the launcher's exact physical ticket worktree validation",
+          "fallback uses a dedicated exact-worktree validator that permits only helper-validated partial changes",
+          "fallback consumes one exact unexpired Linear operator approval bound to its preview hash",
           "profile GH_TOKEN is not passed to this task-free helper",
           "only pin receives the receipt-bound FACTORY_CERTIFIED_PRODUCT_ORIGIN",
           "task-bearing adapters do not inherit FACTORY_MODEL_STATE_ROOT or FACTORY_PROJECT"
@@ -426,11 +440,15 @@
     "scripts/model-control.sh",
     "scripts/model-manager.py",
     "scripts/model-router.py",
+    "scripts/model-fallback.py",
     "scripts/lib/backend-policy.sh",
+    "scripts/lib/failed_attempt_handoff.py",
     "scripts/lib/kit-pin.sh",
+    "scripts/lib/model-fallback-approval.py",
     "scripts/lib/plain-config.sh",
     "scripts/lib/product-remote.sh",
     "scripts/model-routing/catalog-v1.json",
+    "scripts/model-routing/handoff-boundaries-v1.json",
     "scripts/model-routing/profiles-v1.json",
     "factory/route-plans/<T-NNN>.json"
   ],

@@ -1,20 +1,20 @@
 ---
 name: factory-dispatch
-version: 1.3.0
+version: 1.4.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
 # Factory dispatch
 
 This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
-through `1.3.0`.
+through `1.4.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
 
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
-3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, or `1.3.0` and a supported Hermes version.
+3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, or `1.4.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
@@ -27,9 +27,9 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
-Contract `1.0.0`, and contracts `1.1.0` through `1.3.0` with
+Contract `1.0.0`, and contracts `1.1.0` through `1.4.0` with
 `max_concurrent_tickets: 1`, retain the original one-ticket flow below.
-Contracts `1.2.0` and `1.3.0` inherit `1.1.0` lease behavior unchanged. When one reports
+Contracts `1.2.0` through `1.4.0` inherit `1.1.0` lease behavior unchanged. When one reports
 `max_concurrent_tickets: 2`, claim each ticket before preflight:
 
 ```text
@@ -134,7 +134,7 @@ ticket text. The launcher verifies the same linked-worktree and exact ticket
 branch contract used for role launches. Never call
 `scripts/reorder-test-fixes.sh` directly.
 After opening the PR, contract 1.2 stops at the evidence boundary. Under
-contract 1.3 invoke `ticket-attest --action bundle`; after the newer exact
+contracts 1.3 and 1.4 invoke `ticket-attest --action bundle`; after the newer exact
 Linear approval overlay appears invoke `--action approval`. This requests
 protected auto-merge but does not approve or merge directly. Refusals are
 escalations; never use a generic transition to manufacture these states.
@@ -146,7 +146,7 @@ sequencing and runs. Never write or quote that value in a log or receipt.
 
 Contract 1.2 closeout retains
 `factory-launch <project> project-ledger --ticket <T-NNN> --workdir
-<absolute-closeout-worktree> --json`. Under contract 1.3, create the dedicated clean linked branch
+<absolute-closeout-worktree> --json`. Under contracts 1.3 and 1.4, create the dedicated clean linked branch
 `chore/tNNN-closeout` from current `origin/main`, then invoke:
 
 ```text
@@ -184,7 +184,7 @@ The catalog treats transport, gateway, inference provider, provider family,
 account route, selection ID, and reported identity as separate route fields.
 Profiles contain ordered portfolios and ordered per-role candidates; a valid
 ticket pin resolves all six roles and keeps production and checking families
-distinct. With no activation record, `legacy-balanced-v1` is the default.
+distinct. With no activation record, `balanced-v2` is the default.
 
 You may inspect:
 

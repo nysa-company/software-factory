@@ -52,12 +52,14 @@ def terminate_remaining_members() -> None:
 
 
 def main() -> int:
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 5:
         raise SystemExit(
-            "usage: run-in-process-group.py READY_FILE GO_FILE COMMAND [ARG ...]"
+            "usage: run-in-process-group.py READY_FILE GO_FILE "
+            "SUBMITTED_FILE COMMAND [ARG ...]"
         )
     ready_path = Path(sys.argv[1])
     go_path = Path(sys.argv[2])
+    submitted_path = Path(sys.argv[3])
     os.setsid()
     ready_tmp = ready_path.with_name(f"{ready_path.name}.{os.getpid()}.tmp")
     ready_tmp.write_text(f"pid={os.getpid()}\npgid={os.getpgrp()}\n")
@@ -72,10 +74,42 @@ def main() -> int:
         time.sleep(0.01)
 
     try:
-        child = subprocess.Popen(sys.argv[3:])
+        child = subprocess.Popen(sys.argv[4:])
     except OSError as error:
         print(f"could not start adapter: {error}", file=sys.stderr)
         return 126
+    try:
+        submitted_tmp = submitted_path.with_name(
+            f"{submitted_path.name}.{os.getpid()}.tmp"
+        )
+        descriptor = os.open(
+            submitted_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+        )
+        try:
+            os.write(descriptor, f"pid={child.pid}\n".encode())
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(submitted_tmp, submitted_path)
+        directory = os.open(submitted_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError as error:
+        print(f"could not persist adapter submission: {error}", file=sys.stderr)
+        child.terminate()
+        try:
+            child.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+        terminate_remaining_members()
+        try:
+            submitted_tmp.unlink()
+        except (NameError, FileNotFoundError):
+            pass
+        return 125
     return_code = child.wait()
     terminate_remaining_members()
     return return_code if return_code >= 0 else 128 + abs(return_code)

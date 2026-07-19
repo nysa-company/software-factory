@@ -3,6 +3,7 @@
 set -u
 export FACTORY_TEST_MODE=1
 export FACTORY_TRUSTED_TEST_HARNESS=1
+export FACTORY_MODEL_PROFILE_OVERRIDE=legacy-balanced-v1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_AGENT="$ROOT/scripts/run-agent.sh"
@@ -244,6 +245,16 @@ else
   fail "role model and effort policy is explicit" "$ROLE_MODELS"
 fi
 
+NO_STATE_PROFILE="$(env -u FACTORY_MODEL_PROFILE_OVERRIDE \
+  -u FACTORY_MODEL_STATE_ROOT -u FACTORY_PROJECT \
+  bash -c 'source "$1"; factory_load_model_probe_context; printf "%s\n" "$FACTORY_MODEL_PROFILE_ID"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$NO_STATE_PROFILE" == "balanced-v2" ]]; then
+  pass "no-record backend context selects balanced-v2"
+else
+  fail "no-record backend context selects balanced-v2" "$NO_STATE_PROFILE"
+fi
+
 AUTO_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
   CURSOR_AGENT_VERSION=2026.07.test CURSOR_OPENAI_MODEL=auto \
   bash -c 'source "$1"; factory_probe_adapter cursor-openai; echo "$PROBE_STATE:$PROBE_REASON"' \
@@ -450,7 +461,7 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_RUN_STATUS=0
 env \
@@ -461,7 +472,7 @@ env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -470,7 +481,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -481,7 +492,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.3.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.4.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
@@ -497,7 +508,7 @@ FORGED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$TMP" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.3.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.4.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)" ||
   FORGED_STAGE_STATUS=$?
 if [[ "$FORGED_STAGE_STATUS" -eq 1 &&
@@ -685,15 +696,21 @@ fi
 OVERRIDE="$TMP/override/ledger.csv"
 mkdir -p "$(dirname "$OVERRIDE")"
 write_ticket "$WT/conformance" T-201
-if FACTORY_ROOT="$WT/conformance" FACTORY_LEDGER="$OVERRIDE" \
+OVERRIDE_STATUS=0
+FACTORY_ROOT="$WT/conformance" FACTORY_LEDGER="$OVERRIDE" \
      FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
      FACTORY_ADAPTER_OVERRIDE=mock \
-     "$RUN_AGENT" --role planner --ticket T-201 -- "override" >/dev/null &&
-   [[ "$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$OVERRIDE")" == "1" ]] &&
-   [[ "$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$MAIN/conformance/factory/runtime-ledger.csv")" == "0" ]]; then
+     "$RUN_AGENT" --role planner --ticket T-201 -- "override" >/dev/null ||
+  OVERRIDE_STATUS=$?
+OVERRIDE_ROWS="$(awk -F, '$3=="T-201" {n++} END {print n+0}' "$OVERRIDE")"
+CANONICAL_ROWS="$(awk -F, '$3=="T-201" {n++} END {print n+0}' \
+  "$MAIN/conformance/factory/runtime-ledger.csv")"
+if [[ "$OVERRIDE_STATUS" -eq 0 && "$OVERRIDE_ROWS" == "1" &&
+      "$CANONICAL_ROWS" == "0" ]]; then
   pass "FACTORY_LEDGER override wins"
 else
-  fail "FACTORY_LEDGER override wins"
+  fail "FACTORY_LEDGER override wins" \
+    "status=$OVERRIDE_STATUS override_rows=$OVERRIDE_ROWS canonical_rows=$CANONICAL_ROWS"
 fi
 
 # Legacy or partial headers migrate to the complete append-only schema.
@@ -912,11 +929,12 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q 'input_tokens=70' "$FALLBACK_OUT" &&
      grep -q 'cache_tokens=15' "$FALLBACK_OUT" &&
      grep -q '^phase=completed$' "$FALLBACK_META" &&
+     grep -q '^task_submitted=1$' "$FALLBACK_META" &&
      grep -q "^kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.3.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.4.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
@@ -1344,12 +1362,13 @@ GO_WRITE_META="$(ls "$GO_WRITE_FAIL/factory/runs/"*.meta)"
 if [[ "$GO_WRITE_STATUS" -eq 125 ]] &&
    grep -q 'could not persist GO marker' "$TMP/go-marker-write-failure.out" &&
    ! grep -q 'mock adapter ran task' "$GO_WRITE_FAIL/factory/runs/"*.out &&
-   grep -q '^go_issued=0$' "$GO_WRITE_META" &&
-   grep -q '^accounting_state=launch_void$' "$GO_WRITE_META" &&
-   grep -q '^effective_cost=0$' "$GO_WRITE_META"; then
-  pass "GO marker persistence failure keeps adapter gate closed"
+   grep -q '^go_issued=1$' "$GO_WRITE_META" &&
+   grep -q '^task_submitted=0$' "$GO_WRITE_META" &&
+   grep -q '^accounting_state=abandoned_conservative$' "$GO_WRITE_META" &&
+   grep -q '^effective_cost=1.00$' "$GO_WRITE_META"; then
+  pass "GO attempt stays charged when marker persistence keeps gate closed"
 else
-  fail "GO marker persistence failure keeps adapter gate closed" \
+  fail "GO attempt stays charged when marker persistence keeps gate closed" \
     "status $GO_WRITE_STATUS"
 fi
 
@@ -2317,15 +2336,57 @@ write_envelope "$NEAR_CAP"
 {
   ledger_header
   printf '2026-07-13,06:00:00,T-620,planner,mock,test,1,19.50,1,,,,,,\n'
+  printf '%s,06:00:00,T-619,planner,mock,test,1,49.50,1,,,,,,\n' \
+    "$(date -u +%F)"
 } > "$NEAR_CAP/factory/ledger.csv"
 NEAR_CAP_STATUS=0
 run_mock "$NEAR_CAP" planner T-620 > "$TMP/near-cap.out" 2>&1 || NEAR_CAP_STATUS=$?
 if [[ "$NEAR_CAP_STATUS" -eq 0 ]] &&
    grep -l 'reserved_usd=0.5000' "$NEAR_CAP/factory/runs"/*.meta >/dev/null 2>&1; then
-  pass "near-exhausted ticket reserves the remaining budget instead of refusing"
+  pass "shrunken ticket reservation is used by the repo daily cap"
 else
-  fail "near-exhausted ticket reserves the remaining budget instead of refusing" \
+  fail "shrunken ticket reservation is used by the repo daily cap" \
     "status=$NEAR_CAP_STATUS output=$(cat "$TMP/near-cap.out")"
+fi
+
+# The same shrunken reservation is used by the machine cap and persisted in
+# the unchanged global-ledger schema.
+NEAR_GLOBAL="$TMP/near-global-cap"
+write_envelope "$NEAR_GLOBAL"
+{
+  ledger_header
+  printf '2026-07-13,06:00:00,T-622,planner,mock,test,1,19.50,1,,,,,,\n'
+} > "$NEAR_GLOBAL/factory/ledger.csv"
+NEAR_GLOBAL_DIR="$TMP/near-global-accounting"
+NEAR_GLOBAL_ENV="$NEAR_GLOBAL_DIR/global.env"
+NEAR_GLOBAL_LEDGER="$NEAR_GLOBAL_DIR/global-ledger.csv"
+mkdir -p "$NEAR_GLOBAL_DIR"
+printf 'GLOBAL_DAILY_CAP_USD=50.00\n' > "$NEAR_GLOBAL_ENV"
+printf '%s\n' 'date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' \
+  > "$NEAR_GLOBAL_LEDGER"
+printf '%s,06:00:00,/other,T-000,planner,mock,test,1,49.50,0,old,test,test,test,test,test\n' \
+  "$(date -u +%F)" >> "$NEAR_GLOBAL_LEDGER"
+write_ticket "$NEAR_GLOBAL" T-622
+NEAR_GLOBAL_STATUS=0
+FACTORY_ROOT="$NEAR_GLOBAL" FACTORY_GLOBAL_ENV="$NEAR_GLOBAL_ENV" \
+  FACTORY_TEST_MODE=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-622 -- "near global cap" \
+  > "$TMP/near-global-cap.out" 2>&1 || NEAR_GLOBAL_STATUS=$?
+if [[ "$NEAR_GLOBAL_STATUS" -eq 0 &&
+      "$(awk -F, '$4=="T-622" {print $9}' "$NEAR_GLOBAL_LEDGER")" == "0.42" &&
+      "$(awk -F, 'NR==1 {print NF}' "$NEAR_GLOBAL_LEDGER")" == "16" ]]; then
+  pass "shrunken ticket reservation is used by the machine daily cap"
+else
+  fail "shrunken ticket reservation is used by the machine daily cap" \
+    "status=$NEAR_GLOBAL_STATUS output=$(cat "$TMP/near-global-cap.out")"
+fi
+
+if python3 "$ROOT/scripts/lib/money.py" exceeds \
+    --spent 0.100000000000000001 --reserve 0.200000000000000002 \
+    --cap 0.300000000000000003; then
+  fail "budget comparisons use exact decimal arithmetic" "equal decimals compared greater"
+else
+  pass "budget comparisons use exact decimal arithmetic"
 fi
 
 # A ticket at or over its cap still refuses exactly as before.
