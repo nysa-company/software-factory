@@ -247,8 +247,10 @@ same-UID token exposure remains until a broker or OS isolation is used.
   only at a ticket boundary with no active run, no conflicting nonterminal
   lease, no maintenance anomaly, and no incomplete activation journal.
 - Do: keep contract `1.0.0` and default contract `1.1.0` at one live ticket.
-  An explicit `MAX_CONCURRENT_TICKETS=2` pilot uses one dispatcher holding two
-  matching leases; parallel kit development alone does not enable it.
+  An explicit `MAX_CONCURRENT_TICKETS=2`, `3`, or `4` pilot uses one dispatcher
+  holding no more than that many matching leases; parallel kit development
+  alone does not enable it, and the product-wide provider lock still permits
+  only one model-provider interval at a time.
 - Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
   combine unrelated candidates into one unreviewed release, or overlap two
   activation/rollback operations.

@@ -16,7 +16,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The required aggregate `ci` status always reports. A narrow fail-closed inert-metadata diff skips expensive suites while retaining Linux policy and test-immutability checks. Every other change runs Linux; shell/platform-sensitive PRs and every non-lightweight merged SHA also run macOS system-Bash verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `balanced-v2`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/high; Spec-linter and Test-author use Claude Fable 5/medium with Cursor Fable Thinking Medium secondary; Reviewer uses Claude Sonnet 5/high. `legacy-balanced-v1` remains compatibility policy; OpenAI-, Claude-, and Cursor-priority profiles remain explicit alternatives.
-- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.2 through 1.5 permit exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Provider intervals remain serialized; provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit a configured maximum of four exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Nysa T-013/T-014 and T-015/T-016 proved initial lease-level concurrency; the product-wide lock still serializes every provider interval, and provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
@@ -49,6 +49,16 @@ are preview-hashed mutations; active budget changes use cancel, conservative
 accounting, and same-role restart rather than retroactive manifest edits.
 Normal Reviewer family separation remains mandatory, with only an exact
 ticket-scoped one-use Linear fallback exception.
+
+## 2026-07-19 — Decision 44: Dispatcher lease capacity expands to four
+
+Category: System change
+
+`MAX_CONCURRENT_TICKETS` accepts only `1` through `4`, defaults to `1`, and
+requires one opaque lease per ticket above `1`. Atomic allocation refuses a
+fifth lease, stale records continue consuming capacity until owner renewal or
+maintenance recovery, and the product-wide provider lock continues to
+serialize model-provider intervals.
 
 ## 2026-07-18 — Decision 42: Balanced v2 raises default effort and adds Cursor Fable
 

@@ -46,7 +46,7 @@
           "--ticket",
           "<T-NNN>"
         ],
-        "output": "one opaque ticket lease record; available only when MAX_CONCURRENT_TICKETS=2"
+        "output": "one opaque ticket lease record; available when MAX_CONCURRENT_TICKETS is 2, 3, or 4"
       },
       "renew": {
         "arguments": [
@@ -312,7 +312,7 @@
         "output": "an evidence-bound tracked attestation and exact protected GitHub auto-merge request",
         "validation": [
           "available only under contract 1.3.0",
-          "matching unexpired dispatcher lease required when MAX_CONCURRENT_TICKETS=2 and never persisted or returned",
+          "matching unexpired dispatcher lease required when MAX_CONCURRENT_TICKETS is greater than 1 and never persisted or returned",
           "bundle and approval require the exact clean ticket branch and remote tip",
           "bundle binds every successful role-run manifest to its exact committed six-role route-plan tuple, blob, digest, policy hash, and kit SHA",
           "initial done requires exact clean chore/tNNN-closeout with HEAD equal to origin/main; retries require the exact remote attested closeout commit",
@@ -455,8 +455,14 @@
     "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
     "key": "MAX_CONCURRENT_TICKETS",
     "default": 1,
-    "maximum": 2,
+    "maximum": 4,
     "enabled_value": 2,
+    "enabled_values": [
+      2,
+      3,
+      4
+    ],
+    "lease_required_when_greater_than": 1,
     "state": "PRODUCT_ROOT/factory/.dispatch-leases/<T-NNN>.json",
     "lease_ttl_seconds": 900,
     "stale_policy": "never reassigned automatically; recover explicitly through factory-kit under maintenance after active-run validation"

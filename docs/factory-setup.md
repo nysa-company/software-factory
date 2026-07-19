@@ -14,10 +14,12 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
 - Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid. Set `AUTO_MERGE_METHOD=squash`, `merge`, or `rebase` to the repository's protected merge strategy.
-- Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Set it to
-  `2` only after contract 1.1 is active and a bounded concurrency pilot is
-  approved; no other value is valid. Two ticket leases may progress, but the
-  product-level control lock serializes their provider intervals.
+- Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Contracts
+  1.1 through 1.4 accept only integers from `1` through `4`; set a value above
+  `1` only after a bounded concurrency pilot is approved. Up to that many
+  ticket leases may progress, but the product-level control lock serializes
+  their provider intervals. A value of `4` therefore permits four in-flight
+  ticket leases, not four simultaneous model-provider calls.
 - Copy exactly three CI files (GitHub requires workflows and helpers to live in the repo they run on): `ci/test-immutability-check.sh` and `ci/lightweight-change.sh` → `.github/scripts/`, and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`. Set `TEST_PATHS` from `PROJECT.env` and review the helper's narrow inert-metadata allowlist for the product. Existing product repositories must receive template updates explicitly; kit updates do not rewrite instantiated CI.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. Optional `<ROLE>_PER_RUN_BUDGET_USD`, `<ROLE>_PER_RUN_MAX_TURNS`, and `<ROLE>_PER_RUN_TIMEOUT_MIN` keys override one role's attempt limits; normalize role hyphens to underscores, and omit a key to inherit its default. Money values are capped at $1,000,000 with six decimal places, turns at 1,000, and timeout at 1,440 minutes. The validator checks the two files agree. `ENVELOPE.env` and `~/.factory/global.env` are parsed as whitelisted data and must never contain shell commands or expansions.
 - If `GLOBAL_DAILY_CAP_USD` is configured, keep its global-ledger parent as a real local directory. The wrapper validates the ledger and holds its exact-owner lock across each complete provider interval, so all globally capped runs on that machine are intentionally serialized.

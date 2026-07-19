@@ -152,7 +152,7 @@ build_sealed_release() {
 run_preflight() {
   local factory_root="$1" ticket="$2"
   shift 2
-  local role=""
+  local role="" lease=""
   local env_args=(
     PATH="$STUB_BIN:$PATH"
     FACTORY_ROOT="$factory_root"
@@ -174,14 +174,14 @@ run_preflight() {
       --adapter-override) env_args+=(FACTORY_ADAPTER_OVERRIDE="$2"); shift 2;;
       --timezone) env_args+=(TZ="$2"); shift 2;;
       --role) role="$2"; shift 2;;
+      --lease) lease="$2"; shift 2;;
       *) echo "unknown run_preflight opt: $1" >&2; return 2;;
     esac
   done
-  if [[ -n "$role" ]]; then
-    env "${env_args[@]}" bash "$PREFLIGHT" --ticket "$ticket" --role "$role" 2>&1
-  else
-    env "${env_args[@]}" bash "$PREFLIGHT" --ticket "$ticket" 2>&1
-  fi
+  local helper_args=(--ticket "$ticket")
+  [[ -z "$role" ]] || helper_args+=(--role "$role")
+  [[ -z "$lease" ]] || helper_args+=(--lease "$lease")
+  env "${env_args[@]}" bash "$PREFLIGHT" "${helper_args[@]}" 2>&1
 }
 
 run_sealed_preflight() {
@@ -700,10 +700,17 @@ mkdir -p "$LEASED"
 write_envelope "$LEASED"
 write_ready_ticket "$LEASED" "T-081"
 printf '\nKit-SHA: %s\n' "$KIT_HEAD_NOW" >> "$LEASED/factory/tickets/T-081.md"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$LEASED/factory/PROJECT.env"
+printf '%s\n' 'factory/.dispatch-leases/' 'factory/.dispatch-leases.lock/' >> "$LEASED/.gitignore"
 init_git_repo "$LEASED"
-assert_preflight "matching ticket lease passes" 0 \
-  "PASS: ticket Kit-SHA affinity matches selected kit SHA" \
+LEASE_RECORD="$(FACTORY_ROOT="$LEASED" "$KIT_DIR/scripts/dispatch-lease.sh" claim --ticket T-081)"
+LEASE_ID="$(printf '%s\n' "$LEASE_RECORD" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
+assert_preflight "concurrency four requires a dispatcher lease" 1 \
+  "FAIL: a canonical dispatcher lease is required while concurrency is enabled" \
   "$LEASED" "T-081"
+assert_preflight "matching concurrency-four ticket lease passes" 0 \
+  "PASS: ticket Kit-SHA affinity matches selected kit SHA" \
+  "$LEASED" "T-081" --lease "$LEASE_ID"
 
 LEASE_MISMATCH="$TMP/lease-mismatch"
 mkdir -p "$LEASE_MISMATCH"

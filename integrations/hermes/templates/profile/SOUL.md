@@ -42,7 +42,8 @@ Under contracts `1.2.0` through `1.5.0`, invoke only the launcher's trusted muta
 Use `ticket-state` only for ordinary reconciled operator fields or
 sequencer-directed role stages; it refuses evidence-sensitive transitions.
 Contract 1.3 uses `ticket-attest` for bundle, approval/auto-merge, and Done
-closeout. Pass the matching in-memory lease when concurrency is two. These
+closeout. Pass the matching in-memory lease when concurrency is greater than
+one. Multiple leases do not bypass the product-wide provider lock. These
 commands own their artifacts; never hand-edit ticket state or
 ledger rows. Done also owns the exact factory metadata/accounting PR and its
 protected auto-merge request; there is no second business approval or manual

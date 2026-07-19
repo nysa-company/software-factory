@@ -17,7 +17,7 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s%s\n' "$1" "${2:+ — $2}" >&2; FAILURES=$((FAILURES + 1)); }
 
 mkdir -p "$PRODUCT/factory/tickets" "$PRODUCT/factory/runs"
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=2' > "$PRODUCT/factory/PROJECT.env"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$PRODUCT/factory/PROJECT.env"
 printf '%s\n' \
   'PER_RUN_BUDGET_USD=1.00' \
   'PER_TICKET_BUDGET_USD=10.00' \
@@ -37,7 +37,7 @@ printf '%s\n' \
   'factory/.ledger.lock/' \
   'factory/.dispatch-leases/' \
   'factory/.dispatch-leases.lock/' > "$PRODUCT/.gitignore"
-for ticket in T-901 T-902 T-903; do
+for ticket in T-901 T-902 T-903 T-904 T-905 T-906 T-907; do
   printf '# %s\n\nState: Ready\n' "$ticket" > "$PRODUCT/factory/tickets/$ticket.md"
 done
 git -C "$PRODUCT" init -q -b main
@@ -47,7 +47,7 @@ git -C "$PRODUCT" add .gitignore factory
 git -C "$PRODUCT" commit -qm fixture
 
 pids=""
-for ticket in T-901 T-902 T-903; do
+for ticket in T-901 T-902 T-903 T-904 T-905; do
   FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket "$ticket" \
     > "$TMP/$ticket.json" 2> "$TMP/$ticket.err" &
   pids="$pids $!"
@@ -56,10 +56,15 @@ successes=0
 for pid in $pids; do
   wait "$pid" && successes=$((successes + 1))
 done
-if [[ "$successes" -eq 2 && "$(find "$PRODUCT/factory/.dispatch-leases" -type f | wc -l | tr -d ' ')" -eq 2 ]]; then
-  pass "atomic claims cap three simultaneous tickets at two"
+if [[ "$successes" -eq 4 && "$(find "$PRODUCT/factory/.dispatch-leases" -type f | wc -l | tr -d ' ')" -eq 4 ]]; then
+  pass "atomic claims cap five simultaneous tickets at four"
 else
-  fail "atomic claims cap three simultaneous tickets at two" "successes=$successes"
+  fail "atomic claims cap five simultaneous tickets at four" "successes=$successes"
+fi
+if grep -Fqx "dispatcher capacity is full" "$TMP"/T-*.err; then
+  pass "fifth concurrent lease gets deterministic capacity refusal"
+else
+  fail "fifth concurrent lease gets deterministic capacity refusal"
 fi
 
 CLAIMED="$(python3 - "$TMP" <<'PY'
@@ -76,6 +81,10 @@ FIRST_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==1 {print $1}')"
 FIRST_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==1 {print $2}')"
 SECOND_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==2 {print $1}')"
 SECOND_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==2 {print $2}')"
+THIRD_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==3 {print $1}')"
+THIRD_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==3 {print $2}')"
+FOURTH_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==4 {print $1}')"
+FOURTH_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==4 {print $2}')"
 
 DUPLICATE_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket "$FIRST_TICKET" >/dev/null 2>&1 || DUPLICATE_RC=$?
@@ -104,12 +113,13 @@ FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRS
   > "$TMP/live-release.out" 2>&1 || LIVE_RELEASE_RC=$?
 RUN_RC=0
 wait "$RUN_PID" || RUN_RC=$?
-if [[ "$RUN_RC" -eq 0 && "$LIVE_RELEASE_RC" -eq 7 ]] &&
+if [[ "$RUN_RC" -eq 0 &&
+      ( "$LIVE_RELEASE_RC" -eq 7 || "$LIVE_RELEASE_RC" -eq 8 ) ]] &&
    grep -q "mock adapter ran task" "$TMP/bounded-run.out" &&
    ! grep -q "lease leaked" "$TMP/bounded-run.out"; then
-  pass "live role keeps its lease while the task adapter receives no lease capability"
+  pass "live role safely refuses lease release while the task adapter receives no lease capability"
 else
-  fail "live role keeps its lease while the task adapter receives no lease capability" \
+  fail "live role safely refuses lease release while the task adapter receives no lease capability" \
     "run=$RUN_RC release=$LIVE_RELEASE_RC"
 fi
 
@@ -117,6 +127,7 @@ python3 - "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json" <<'PY'
 import json, pathlib, time, sys
 path = pathlib.Path(sys.argv[1])
 value = json.loads(path.read_text())
+value["claimed_epoch"] = int(time.time()) - 901
 value["expires_epoch"] = int(time.time()) - 1
 path.write_text(json.dumps(value) + "\n")
 PY
@@ -129,11 +140,33 @@ else
   fail "stale lease blocks work until its owner renews" "stale=$STALE_STAGE renewed=$RENEWED_STAGE"
 fi
 
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null
+RECLAIMED="$(FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-906)"
+RECLAIMED_ID="$(printf '%s\n' "$RECLAIMED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
+python3 - "$PRODUCT/factory/.dispatch-leases/$SECOND_TICKET.json" <<'PY'
+import json, pathlib, time, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["claimed_epoch"] = int(time.time()) - 901
+value["expires_epoch"] = int(time.time()) - 1
+path.write_text(json.dumps(value) + "\n")
+PY
+RECLAIM_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-907 > "$TMP/stale-capacity.out" 2>&1 || RECLAIM_RC=$?
+if [[ "$RECLAIM_RC" -ne 0 ]] &&
+   grep -Fqx "dispatcher capacity is full" "$TMP/stale-capacity.out"; then
+  pass "release reclaims one slot and stale records still consume capacity"
+else
+  fail "release reclaims one slot and stale records still consume capacity" "status=$RECLAIM_RC"
+fi
+
 touch "$PRODUCT/factory/MAINTENANCE"
 RENEW_RC=0
-FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null 2>&1 || RENEW_RC=$?
-FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$SECOND_TICKET" --lease "$SECOND_ID" >/dev/null 2>&1 || RENEW_RC=$?
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$SECOND_TICKET" --lease "$SECOND_ID" >/dev/null
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$THIRD_TICKET" --lease "$THIRD_ID" >/dev/null
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FOURTH_TICKET" --lease "$FOURTH_ID" >/dev/null
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket T-906 --lease "$RECLAIMED_ID" >/dev/null
 if [[ "$RENEW_RC" -eq 4 && -z "$(find "$PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]]; then
   pass "maintenance blocks renewal while permitting lease drain"
 else
@@ -141,11 +174,56 @@ else
 fi
 rm "$PRODUCT/factory/MAINTENANCE"
 
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=3' > "$PRODUCT/factory/PROJECT.env"
+for maximum in 1 2 3 4; do
+  printf 'MAX_CONCURRENT_TICKETS=%s\n' "$maximum" > "$PRODUCT/factory/PROJECT.env"
+  parsed="$(bash -c '. "$1"; factory_dispatch_max_tickets "$2"' _ \
+    "$ROOT/scripts/lib/dispatch-leases.sh" "$PRODUCT")"
+  [[ "$parsed" == "$maximum" ]] ||
+    fail "project concurrency value $maximum is accepted" "parsed=$parsed"
+done
+pass "project concurrency values 1 through 4 are accepted"
+
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=5' > "$PRODUCT/factory/PROJECT.env"
 INVALID_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 || INVALID_RC=$?
 [[ "$INVALID_RC" -eq 3 ]] && pass "invalid concurrency configuration fails closed" || fail "invalid concurrency configuration fails closed" "status=$INVALID_RC"
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=2' > "$PRODUCT/factory/PROJECT.env"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$PRODUCT/factory/PROJECT.env"
+mv "$PRODUCT/factory/PROJECT.env" "$PRODUCT/factory/PROJECT.env.real"
+ln -s PROJECT.env.real "$PRODUCT/factory/PROJECT.env"
+UNSAFE_PROJECT_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 ||
+  UNSAFE_PROJECT_RC=$?
+if [[ "$UNSAFE_PROJECT_RC" -eq 3 ]]; then
+  pass "unsafe project configuration fails closed"
+else
+  fail "unsafe project configuration fails closed" "status=$UNSAFE_PROJECT_RC"
+fi
+rm "$PRODUCT/factory/PROJECT.env"
+mv "$PRODUCT/factory/PROJECT.env.real" "$PRODUCT/factory/PROJECT.env"
+
+mkdir -p "$PRODUCT/factory/.dispatch-leases"
+NOW="$(date +%s)"
+python3 - "$PRODUCT/factory/.dispatch-leases" "$NOW" <<'PY'
+import json, pathlib, sys
+root, now = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+lease_id = "a" * 64
+for ticket in ("T-901", "T-902"):
+    (root / f"{ticket}.json").write_text(json.dumps({
+        "schema_version": 1, "ticket": ticket, "lease_id": lease_id,
+        "claimed_epoch": now, "expires_epoch": now + 900,
+    }) + "\n")
+PY
+DUPLICATE_LEASE_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 > "$TMP/duplicate-lease.out" 2>&1 ||
+  DUPLICATE_LEASE_RC=$?
+if [[ "$DUPLICATE_LEASE_RC" -ne 0 ]] &&
+   grep -Fqx "dispatcher lease state is unsafe" "$TMP/duplicate-lease.out"; then
+  pass "duplicate lease identity makes allocation fail closed"
+else
+  fail "duplicate lease identity makes allocation fail closed" "status=$DUPLICATE_LEASE_RC"
+fi
+rm -f "$PRODUCT/factory/.dispatch-leases/"*.json
+
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null
 FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$PRODUCT" >/dev/null
 if [[ -f "$PRODUCT/factory/KILL" && -z "$(find "$PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]]; then

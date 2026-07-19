@@ -834,24 +834,33 @@ PY
 # Contract 1.1 exposes bounded, opaque ticket-lease operations through the
 # same release-selected launcher. Contract 1.0 above remained usable without them.
 mkdir -p "$LAUNCH_PRODUCT/factory/tickets"
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=2' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
-for ticket in T-201 T-202 T-203; do
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
+for ticket in T-201 T-202 T-203 T-204 T-205; do
   printf '# %s\n\nState: Ready\n' "$ticket" > "$LAUNCH_PRODUCT/factory/tickets/$ticket.md"
 done
 run_launcher launchtest claim --ticket T-201 > "$TMP/claim-201.json"
 run_launcher launchtest claim --ticket T-202 > "$TMP/claim-202.json"
+run_launcher launchtest claim --ticket T-203 > "$TMP/claim-203.json"
+run_launcher launchtest claim --ticket T-204 > "$TMP/claim-204.json"
 CLAIM_201_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-201.json")"
 CLAIM_202_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-202.json")"
-CLAIM_203_RC=0
-run_launcher launchtest claim --ticket T-203 > "$TMP/claim-203.out" 2>&1 || CLAIM_203_RC=$?
-[[ "$CLAIM_203_RC" -eq 1 ]] || fail "launcher accepted a third concurrent ticket"
+CLAIM_203_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-203.json")"
+CLAIM_204_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/claim-204.json")"
+CLAIM_205_RC=0
+run_launcher launchtest claim --ticket T-205 > "$TMP/claim-205.out" 2>&1 || CLAIM_205_RC=$?
+[[ "$CLAIM_205_RC" -eq 1 ]] || fail "launcher accepted a fifth concurrent ticket"
+grep -Fqx "dispatcher capacity is full" "$TMP/claim-205.out" ||
+  fail "launcher fifth-ticket capacity refusal was not deterministic"
 run_launcher launchtest renew --ticket T-201 --lease "$CLAIM_201_ID" > "$TMP/renew-201.json"
 run_launcher launchtest release --ticket T-201 --lease "$CLAIM_201_ID" > "$TMP/release-201.json"
 run_launcher launchtest release --ticket T-202 --lease "$CLAIM_202_ID" > "$TMP/release-202.json"
+run_launcher launchtest release --ticket T-203 --lease "$CLAIM_203_ID" > "$TMP/release-203.json"
+run_launcher launchtest release --ticket T-204 --lease "$CLAIM_204_ID" > "$TMP/release-204.json"
 [[ ! -n "$(find "$LAUNCH_PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]] ||
   fail "launcher lease release left state behind"
 rm -f "$LAUNCH_PRODUCT/factory/tickets/T-201.md" \
-  "$LAUNCH_PRODUCT/factory/tickets/T-202.md" "$LAUNCH_PRODUCT/factory/tickets/T-203.md"
+  "$LAUNCH_PRODUCT/factory/tickets/T-202.md" "$LAUNCH_PRODUCT/factory/tickets/T-203.md" \
+  "$LAUNCH_PRODUCT/factory/tickets/T-204.md" "$LAUNCH_PRODUCT/factory/tickets/T-205.md"
 rm -rf "$LAUNCH_PRODUCT/factory/.dispatch-leases"
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 
@@ -1409,7 +1418,7 @@ cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py reorder-test-fixes.sh dispatch-lease.sh model-control.sh model-manager.py model-router.py envelope-control.py; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh model-control.sh model-manager.py model-router.py; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 cp -p "$ROOT/scripts/model-routing/catalog-v1.json" \
@@ -2009,7 +2018,10 @@ assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert contract["concurrency"]["default"] == 1
-assert contract["concurrency"]["maximum"] == 2
+assert contract["concurrency"]["maximum"] == 4
+assert contract["concurrency"]["enabled_value"] == 2
+assert contract["concurrency"]["enabled_values"] == [2, 3, 4]
+assert contract["concurrency"]["lease_required_when_greater_than"] == 1
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
     "<T-NNN>",

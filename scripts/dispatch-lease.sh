@@ -46,10 +46,10 @@ acquire() {
 }
 
 MAXIMUM="$(factory_dispatch_max_tickets "$ROOT" 2>/dev/null)" || {
-  echo "MAX_CONCURRENT_TICKETS must be defined at most once as 1 or 2" >&2
+  echo "MAX_CONCURRENT_TICKETS must be defined at most once as an integer from 1 through 4" >&2
   exit 3
 }
-[[ "$MAXIMUM" == "2" ]] || { echo "bounded dispatcher concurrency is not enabled" >&2; exit 3; }
+[[ "$MAXIMUM" -gt 1 ]] || { echo "bounded dispatcher concurrency is not enabled" >&2; exit 3; }
 [[ -f "$FACTORY_DIR/tickets/$TICKET.md" && ! -L "$FACTORY_DIR/tickets/$TICKET.md" ]] || {
   echo "ticket file is missing or unsafe" >&2
   exit 3
@@ -77,20 +77,47 @@ import json, os, pathlib, re, secrets, stat, sys, tempfile, time
 
 root, destination = map(pathlib.Path, sys.argv[1:3])
 ticket, maximum = sys.argv[3], int(sys.argv[4])
-entries = list(root.iterdir())
+entries = sorted(root.iterdir(), key=lambda path: path.name)
+lease_ids = set()
+record_tickets = set()
 for path in entries:
     value = path.lstat()
     if not stat.S_ISREG(value.st_mode) or path.is_symlink() or not re.fullmatch(r"T-[0-9]+\.json", path.name):
         raise SystemExit("dispatcher lease state is unsafe")
+    try:
+        record = json.loads(path.read_text())
+    except Exception:
+        raise SystemExit("dispatcher lease state is unsafe")
+    record_ticket = record.get("ticket")
+    record_lease = record.get("lease_id")
+    if (
+        record.get("schema_version") != 1
+        or record_ticket != path.stem
+        or not re.fullmatch(r"T-[0-9]+", record_ticket or "")
+        or not re.fullmatch(r"[0-9a-f]{64}", record_lease or "")
+        or not isinstance(record.get("claimed_epoch"), int)
+        or isinstance(record.get("claimed_epoch"), bool)
+        or not isinstance(record.get("expires_epoch"), int)
+        or isinstance(record.get("expires_epoch"), bool)
+        or record["expires_epoch"] <= record["claimed_epoch"]
+        or record_ticket in record_tickets
+        or record_lease in lease_ids
+    ):
+        raise SystemExit("dispatcher lease state is unsafe")
+    record_tickets.add(record_ticket)
+    lease_ids.add(record_lease)
 if destination.exists():
     raise SystemExit("ticket already has a dispatcher lease")
 if len(entries) >= maximum:
     raise SystemExit("dispatcher capacity is full")
 now = int(time.time())
+lease_id = secrets.token_hex(32)
+while lease_id in lease_ids:
+    lease_id = secrets.token_hex(32)
 record = {
     "schema_version": 1,
     "ticket": ticket,
-    "lease_id": secrets.token_hex(32),
+    "lease_id": lease_id,
     "claimed_epoch": now,
     "expires_epoch": now + 900,
 }

@@ -115,12 +115,17 @@ snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
 Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default. A product may set
-`MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
-`release`, and supplies the matching `--lease` to preflight, next-stage, and
-run. Maintenance blocks claims and renewals but matching owners may still
-release leases so the product can drain. Activation and rollback refuse until
-all leases are gone. Leases expire after 15 minutes unless renewed, but
-expiration never makes them available to another dispatcher. Under
+`MAX_CONCURRENT_TICKETS` to an integer from `2` through `4`; the dispatcher
+then uses `claim`, `renew`, and `release`, and supplies the matching `--lease`
+to preflight, next-stage, run, and ticket-attest. Capacity refusal is
+deterministic, and duplicate ticket or lease identity fails closed.
+Maintenance blocks claims and renewals but matching owners may still release
+leases so the product can drain. Activation and rollback refuse until all
+leases are gone. Leases expire after 15 minutes unless renewed, but expiration
+never makes them available to another dispatcher and a stale record still
+occupies capacity. The product-wide provider lock remains held for each full
+provider interval, so increasing this setting does not enable simultaneous
+model-provider calls. Under
 maintenance, recover a stale record explicitly with:
 
 ```bash

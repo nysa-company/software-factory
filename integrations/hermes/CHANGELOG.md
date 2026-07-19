@@ -15,6 +15,10 @@ helper output are not compatibility promises.
   fallback preview; normal family separation remains unchanged.
 - Adds the loopback-only multi-project operator console and retains project
   isolation through the installed launcher.
+- Expands opt-in bounded dispatch from two to at most four ticket leases.
+- Retains one-ticket defaults, opaque per-ticket lease validation, deterministic
+  capacity refusal, stale-record recovery policy, and the product-wide provider
+  interval lock; this does not enable simultaneous model-provider calls.
 
 ## 1.4.0 — 2026-07-18
 
