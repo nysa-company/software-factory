@@ -329,6 +329,11 @@ case "$HOME" in
   *factory-kit-install*|*factory-kit-certification*) ;;
   *) printf 'install/certification HOME was not isolated\n' >&2; exit 44 ;;
 esac
+if ! ps -axo 'pid=,pgid=,lstart=' |
+  awk -v pid="$$" '$1 == pid && $2 > 1 && NF >= 3 { found=1 } END { exit !found }'; then
+  printf 'sandbox process table omitted the test runner\n' >&2
+  exit 48
+fi
 if [[ -n "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" ]] &&
    /bin/cat "$FACTORY_KIT_SANDBOX_DENY_SIBLING" >/dev/null 2>&1; then
   printf 'sandbox read sibling secret\n' >&2
