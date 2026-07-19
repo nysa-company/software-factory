@@ -113,6 +113,7 @@ HELD_LEDGER_LOCK=0
 HELD_GLOBAL_LOCK=0
 HELD_LAUNCH_LOCK=0
 HELD_PROVIDER_LOCK=0
+RETAIN_PROVIDER_LOCK=0
 PROVIDER_LOCK_EXPECTED=""
 RUN_PID=""
 RUN_PGID=""
@@ -153,6 +154,9 @@ EFFECTIVE_COST=""
 EXIT_STATUS=""
 COST_BASIS=""
 TURNS=0
+CANCEL_REQUEST_FILE=""
+CANCELLATION_REASON=""
+CANCELLATION_PREVIEW_HASH=""
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
@@ -226,6 +230,29 @@ registered_tracked_content() {
 
 process_start_identity() {
   ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print; exit}'
+}
+
+load_cancellation_request() {
+  local output parsed
+  [[ -n "$CANCEL_REQUEST_FILE" && -f "$CANCEL_REQUEST_FILE" &&
+      ! -L "$CANCEL_REQUEST_FILE" ]] || return 1
+  output="$(python3 "$KIT_DIR/scripts/attempt-cancel.py" request \
+    --factory-root "$REPO_ROOT" --ticket "$TICKET" --run-id "$RUN_ID" 2>/dev/null)" ||
+    return 2
+  parsed="$(printf '%s' "$output" | python3 -c '
+import json, re, sys
+value = json.load(sys.stdin)
+reason = value.get("reason", "")
+preview = value.get("preview_hash", "")
+if reason not in ("budget_exhausted", "operator_requested"):
+    raise SystemExit(1)
+if not re.fullmatch(r"[0-9a-f]{64}", preview):
+    raise SystemExit(1)
+print(reason)
+print(preview)
+')" || return 2
+  CANCELLATION_REASON="${parsed%%$'\n'*}"
+  CANCELLATION_PREVIEW_HASH="${parsed#*$'\n'}"
 }
 
 ensure_runs_directory() {
@@ -482,6 +509,8 @@ write_manifest() {
     echo "role_branch_before=$(meta_value "${ROLE_BRANCH_BEFORE:-}")"
     echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
+    echo "cancellation_reason=$(meta_value "$CANCELLATION_REASON")"
+    echo "cancellation_preview_hash=$(meta_value "$CANCELLATION_PREVIEW_HASH")"
     echo "updated_at=$(date -u +%FT%TZ)"
   } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$MANIFEST"; then
     return 1
@@ -709,9 +738,11 @@ cleanup() {
     fi
   fi
   [[ "$HELD_LEDGER_LOCK" -eq 0 ]] || rmdir "$LOCK_DIR" 2>/dev/null || true
-  if [[ "$HELD_PROVIDER_LOCK" -eq 1 ]]; then
+  if [[ "$HELD_PROVIDER_LOCK" -eq 1 && "$RETAIN_PROVIDER_LOCK" -eq 0 ]]; then
     release_provider_lock ||
       echo "WARNING: provider lock ownership changed; operator reconciliation required" >&2
+  elif [[ "$HELD_PROVIDER_LOCK" -eq 1 ]]; then
+    echo "WARNING: provider lock retained until cancellation accounting is reconciled" >&2
   fi
   [[ "$HELD_LAUNCH_LOCK" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$OWNS_ACTIVE_RUN" -eq 1 ]]; then
@@ -1007,6 +1038,7 @@ LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,co
 PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
 RUN_ID="$(date +%s)-$$"
 MANIFEST="$RUNS_DIR/$RUN_ID.meta"
+CANCEL_REQUEST_FILE="$RUNS_DIR/$RUN_ID.cancel-request.json"
 RUN_STARTED_AT="$(date -u +%FT%TZ)"
 TODAY="${RUN_STARTED_AT%%T*}"
 RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
@@ -1270,7 +1302,19 @@ else
           "${FACTORY_TEST_BEFORE_GO_SLEEP:-0}" != "0" ]]; then
       sleep "$FACTORY_TEST_BEFORE_GO_SLEEP"
     fi
-    if [[ -f "$FACTORY_DIR/KILL" ]]; then
+    if [[ -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ]]; then
+      if load_cancellation_request; then
+        echo "targeted cancellation requested before GO; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=130
+      else
+        echo "malformed targeted cancellation request; no task was submitted" >&2
+        terminate_run_group
+        wait "$RUN_PID" 2>/dev/null
+        STATUS=11
+      fi
+    elif [[ -f "$FACTORY_DIR/KILL" ]]; then
       echo "KILL file appeared before GO; no task was submitted" >&2
       terminate_run_group
       wait "$RUN_PID" 2>/dev/null
@@ -1387,6 +1431,14 @@ else
     fi
   fi
 fi
+if [[ -z "$CANCELLATION_REASON" &&
+      ( -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ) ]]; then
+  if ! load_cancellation_request; then
+    echo "role_exit_control_plane_mutation: targeted cancellation request is invalid" >&2
+    CONTROL_PLANE_MUTATION=1
+    STATUS=11
+  fi
+fi
 if [[ "$HELD_LAUNCH_LOCK" -eq 1 ]]; then
   rmdir "$LAUNCH_LOCK"
   HELD_LAUNCH_LOCK=0
@@ -1411,7 +1463,9 @@ printf '%s\n' "$RESULT" | \
   python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUNS_DIR/$RUN_ID.out"
 
 PROVIDER_STATUS="$STATUS"
-if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
+if [[ -n "$CANCELLATION_REASON" ]]; then
+  ROLE_EXIT_STATUS="cancelled"
+elif [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
 elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -1495,7 +1549,17 @@ if [[ "$TELEMETRY_INVALID" -eq 1 ]]; then
   TURNS=0
   COST_BASIS=""
 fi
-if [[ "$GO_ISSUED" -eq 0 ]]; then
+if [[ -n "$CANCELLATION_REASON" && "$GO_ISSUED" -eq 0 ]]; then
+  COST="0"
+  TURNS="0"
+  COST_BASIS="launch_void"
+  FINAL_ACCOUNTING_STATE="launch_void"
+elif [[ -n "$CANCELLATION_REASON" ]]; then
+  COST="$RESERVED_USD"
+  TURNS="${TURNS:-0}"
+  COST_BASIS="conservative_reservation"
+  FINAL_ACCOUNTING_STATE="cancelled_conservative"
+elif [[ "$GO_ISSUED" -eq 0 ]]; then
   COST="0"
   TURNS="0"
   COST_BASIS="launch_void"
@@ -1524,7 +1588,9 @@ if ! provider_lock_is_owned; then
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
   STATUS=11
 fi
-finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" "$STATUS" "$COST_BASIS" "completed"
+FINAL_PHASE="completed"
+[[ -z "$CANCELLATION_REASON" ]] || FINAL_PHASE="$FINAL_ACCOUNTING_STATE"
+finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" "$STATUS" "$COST_BASIS" "$FINAL_PHASE"
 
 # Refresh the materialized view under the same lock used by budget checks.
 for i in $(seq 1 50); do
@@ -1541,10 +1607,20 @@ else
 fi
 
 finalize_global_ledger
-release_provider_lock || {
-  echo "WARNING: provider lock ownership changed after terminal accounting; operator reconciliation required" >&2
-  STATUS=11
-}
+if [[ -n "$CANCELLATION_REASON" ]]; then
+  if ! python3 "$KIT_DIR/scripts/attempt-cancel.py" receipt \
+      --factory-root "$REPO_ROOT" --ticket "$TICKET" --run-id "$RUN_ID" >/dev/null; then
+    echo "WARNING: cancellation receipt could not be emitted; provider lock retained" >&2
+    RETAIN_PROVIDER_LOCK=1
+    STATUS=11
+  fi
+fi
+if [[ "$RETAIN_PROVIDER_LOCK" -eq 0 ]]; then
+  release_provider_lock || {
+    echo "WARNING: provider lock ownership changed after terminal accounting; operator reconciliation required" >&2
+    STATUS=11
+  }
+fi
 
 printf '%s\n' "$RESULT"
 exit "$STATUS"

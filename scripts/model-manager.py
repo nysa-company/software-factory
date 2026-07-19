@@ -56,7 +56,10 @@ FALLBACK_BODY_KEYS = frozenset((
     "approved_snapshot_digest", "reason", "approval_receipt",
     "prior_resolution", "new_resolution", "contributor_families",
 ))
-FALLBACK_REASONS = frozenset(("credits_exhausted", "provider_unavailable"))
+FALLBACK_REASONS = frozenset((
+    "budget_exhausted", "credits_exhausted", "operator_requested",
+    "provider_unavailable",
+))
 SCOPE_TYPES = frozenset(("account-route", "provider-family", "model", "route"))
 ABSENT_POLICY_HASH = ROUTER.content_hash(None)
 

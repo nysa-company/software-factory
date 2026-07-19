@@ -65,31 +65,12 @@ if [[ -d "$RUNS_DIR" ]]; then
 
     if [[ "$PGID" =~ ^[0-9]+$ && "$RUN_ID" == "$(basename "$pidfile" .pid)" &&
           -n "$PROCESS_START" && -f "$RUNS_DIR/$RUN_ID.meta" ]]; then
-      MANIFEST_RUN_ID="$(sed -n 's/^run_id=//p' "$RUNS_DIR/$RUN_ID.meta" | awk 'NR==1 {print; exit}')"
-      MANIFEST_PGID="$(sed -n 's/^pgid=//p' "$RUNS_DIR/$RUN_ID.meta" | awk 'NR==1 {print; exit}')"
-      CURRENT_PGID="$(ps -o pgid= -p "$PID" 2>/dev/null | tr -d ' ')"
-      CURRENT_START="$(ps -o lstart= -p "$PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
-      if [[ "$MANIFEST_RUN_ID" != "$RUN_ID" || "$MANIFEST_PGID" != "$PGID" ||
-            "$CURRENT_PGID" != "$PGID" || "$CURRENT_START" != "$PROCESS_START" ]]; then
-        echo "WARNING: refusing stale or mismatched factory PID record: $pidfile" >&2
-        continue
-      fi
-      if kill -0 -- "-$PGID" 2>/dev/null; then
-        echo "terminating factory run group $PGID ($RUN_ID)"
-        kill -TERM -- "-$PGID" 2>/dev/null || true
-        sleep 2
-        if kill -0 -- "-$PGID" 2>/dev/null; then
-          kill -KILL -- "-$PGID" 2>/dev/null || true
-          for _drain_try in $(seq 1 100); do
-            kill -0 -- "-$PGID" 2>/dev/null || break
-            sleep 0.05
-          done
-        fi
-      fi
-      if kill -0 -- "-$PGID" 2>/dev/null; then
-        echo "WARNING: process group $PGID survived; retaining $pidfile" >&2
-      else
+      echo "terminating factory run group $PGID ($RUN_ID)"
+      if python3 "$KIT_DIR/scripts/lib/process-identity.py" terminate \
+          --runs-dir "$RUNS_DIR" --run-id "$RUN_ID" --timeout 2 >/dev/null; then
         REMOVE_PID_FILE=1
+      else
+        echo "WARNING: refusing stale or mismatched factory PID record, or surviving group: $pidfile" >&2
       fi
     elif [[ "$PID" =~ ^[0-9]+$ && "$PID" == "$(awk 'NR==1 {print; exit}' "$pidfile" 2>/dev/null)" ]]; then
       if kill -0 "$PID" 2>/dev/null; then

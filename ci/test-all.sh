@@ -32,6 +32,7 @@ run_immutability() {
 run_suite "Linear reconciler regression suite" python3 "$ROOT/ci/linear-sync-test.py"
 run_suite "effective ticket overlay suite" python3 "$ROOT/ci/effective-ticket-test.py"
 run_suite "runtime ledger regression suite" python3 "$ROOT/ci/ledger-view-test.py"
+run_suite "targeted attempt cancellation suite" python3 "$ROOT/ci/attempt-cancel-test.py"
 run_suite "model router regression suite" python3 "$ROOT/ci/model-router-test.py"
 run_suite "model manager regression suite" python3 "$ROOT/ci/model-manager-test.py"
 run_suite "model control regression suite" python3 "$ROOT/ci/model-control-test.py"
