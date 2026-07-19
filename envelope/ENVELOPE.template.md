@@ -17,6 +17,22 @@ Cap checks reserve the new run's full per-run budget before starting (a run can'
 
 When the daily cap is hit the run wrapper refuses to start new runs until the next day. The console caps are the backstop if the wrapper is bypassed or broken.
 
+### Optional per-role attempt limits
+
+Any role may override its per-attempt budget, turns, or timeout. Omitted values
+inherit the three `PER_RUN_*` defaults above. In `ENVELOPE.env`, normalize role
+hyphens to underscores, for example:
+
+```text
+BUILDER_PER_RUN_BUDGET_USD=8.00
+BUILDER_PER_RUN_MAX_TURNS=40
+BUILDER_PER_RUN_TIMEOUT_MIN=30
+TEST_AUTHOR_PER_RUN_BUDGET_USD=5.00
+```
+
+Supported roles are planner, narrator, builder, spec-linter, test-author, and
+reviewer. A role budget may not exceed the permanent per-ticket or daily cap.
+
 ## Retries and escalation
 
 | Rule | Value |

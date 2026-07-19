@@ -40,6 +40,23 @@ class ModelRouterTest(unittest.TestCase):
             readiness if readiness is not None else self.readiness(),
         )
 
+    def model_policy(self):
+        portfolio = self.profile_map["balanced-v2"]["portfolios"][0]
+        return {
+            "checking_family": portfolio["checking_family"],
+            "production_family": portfolio["production_family"],
+            "roles": {
+                role: {
+                    "effort": value["effort"],
+                    "primary_route_id": value["candidates"][0],
+                    "secondary_route_id": value["candidates"][1],
+                }
+                for role, value in portfolio["roles"].items()
+            },
+            "schema": "factory-model-policy/v1",
+            "version": 1,
+        }
+
     def test_catalog_has_exact_current_routes_and_disabled_experimental_kimi(self):
         self.assertEqual(
             set(self.routes),
@@ -326,6 +343,82 @@ class ModelRouterTest(unittest.TestCase):
             ROUTER.canonical_json(self.profiles),
         )
 
+    def test_project_policy_enforces_routes_lanes_family_and_effort(self):
+        policy = self.model_policy()
+        profile = ROUTER.model_policy_profile(policy, self.routes)
+        plan = ROUTER.resolve_policy(
+            self.catalog, self.routes, profile, self.readiness(), policy
+        )
+        self.assertEqual(plan["schema"], "model-resolution-plan/v2")
+        ROUTER.validate_plan(plan, self.catalog, self.routes, self.profile_map)
+        for mutate, message in (
+            (
+                lambda value: value["roles"]["planner"].update(
+                    secondary_route_id="claude-sonnet"
+                ),
+                "secondary route",
+            ),
+            (
+                lambda value: value["roles"]["reviewer"].update(
+                    primary_route_id="codex-gpt-5.6-sol",
+                    secondary_route_id="cursor-gpt-5.6-sol-high",
+                ),
+                "outside",
+            ),
+            (
+                lambda value: value["roles"]["planner"].update(
+                    primary_route_id="claude-kimi-moonshotai-kimi-k2.6"
+                ),
+                "enabled stable",
+            ),
+            (
+                lambda value: value["roles"]["builder"].update(effort="auto"),
+                "unsupported",
+            ),
+        ):
+            with self.subTest(message=message):
+                malformed = copy.deepcopy(policy)
+                mutate(malformed)
+                with self.assertRaisesRegex(ROUTER.RouterError, message):
+                    ROUTER.validate_model_policy(malformed, self.routes)
+
+    def test_project_policy_resolution_is_readiness_fail_closed(self):
+        policy = self.model_policy()
+        profile = ROUTER.model_policy_profile(policy, self.routes)
+        readiness = self.readiness()
+        del readiness[policy["roles"]["planner"]["primary_route_id"]]
+        with self.assertRaisesRegex(ROUTER.RouterError, "UNKNOWN"):
+            ROUTER.resolve_policy(
+                self.catalog, self.routes, profile, readiness, policy
+            )
+
+    def test_project_policy_snapshot_survives_mid_ticket_fallback(self):
+        policy = self.model_policy()
+        profile = ROUTER.model_policy_profile(policy, self.routes)
+        prior = ROUTER.resolve_policy(
+            self.catalog, self.routes, profile, self.readiness(), policy
+        )
+        fallback = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            profile,
+            self.readiness(),
+            prior,
+            "builder",
+            prior["selections"]["builder"]["route_id"],
+            ["builder", "reviewer"],
+            {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
+        )
+        self.assertEqual(fallback["profile_id"], "project-policy")
+        self.assertEqual(fallback["model_policy"], policy)
+        self.assertEqual(
+            fallback["selections"]["builder"]["route_id"],
+            policy["roles"]["builder"]["secondary_route_id"],
+        )
+        ROUTER.validate_fallback_plan(
+            fallback, self.catalog, self.routes, self.profile_map
+        )
+
     def test_history_aware_fallback_excludes_failed_route_and_resolves_future_roles(self):
         prior = self.resolve()
         readiness = self.readiness()
@@ -479,6 +572,43 @@ class ModelRouterTest(unittest.TestCase):
         self.assertEqual(
             checker["selections"]["spec-linter"]["route_id"],
             "cursor-claude-sonnet-5-thinking-high",
+        )
+
+    def test_reviewer_same_family_requires_exact_boundary_exception(self):
+        prior = self.resolve()
+        contributors = {"P": ["openai"], "T": [], "B": ["anthropic"]}
+        with self.assertRaisesRegex(ROUTER.RouterError, "contributor-family"):
+            ROUTER.resolve_fallback_policy(
+                self.catalog,
+                self.routes,
+                self.profile_map["legacy-balanced-v1"],
+                self.readiness(),
+                prior,
+                "reviewer",
+                "claude-sonnet",
+                ["reviewer"],
+                contributors,
+            )
+        approved = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            self.profile_map["legacy-balanced-v1"],
+            self.readiness(),
+            prior,
+            "reviewer",
+            "claude-sonnet",
+            ["reviewer"],
+            contributors,
+            {"reviewer": "anthropic"},
+        )
+        self.assertEqual(
+            approved["selections"]["reviewer"]["provider_family"], "anthropic"
+        )
+        self.assertEqual(
+            approved["boundary_exceptions"], {"reviewer": "anthropic"}
+        )
+        ROUTER.validate_fallback_plan(
+            approved, self.catalog, self.routes, self.profile_map
         )
 
 

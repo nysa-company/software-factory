@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Parse factory configuration as data. Configuration files are never shell.
 
-FACTORY_ENVELOPE_CONFIG_KEYS="PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS PER_RUN_TIMEOUT_MIN DAILY_CAP_USD"
+FACTORY_ENVELOPE_REQUIRED_KEYS="PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS PER_RUN_TIMEOUT_MIN DAILY_CAP_USD"
+FACTORY_ENVELOPE_ROLE_KEYS="PLANNER_PER_RUN_BUDGET_USD PLANNER_PER_RUN_MAX_TURNS PLANNER_PER_RUN_TIMEOUT_MIN NARRATOR_PER_RUN_BUDGET_USD NARRATOR_PER_RUN_MAX_TURNS NARRATOR_PER_RUN_TIMEOUT_MIN BUILDER_PER_RUN_BUDGET_USD BUILDER_PER_RUN_MAX_TURNS BUILDER_PER_RUN_TIMEOUT_MIN SPEC_LINTER_PER_RUN_BUDGET_USD SPEC_LINTER_PER_RUN_MAX_TURNS SPEC_LINTER_PER_RUN_TIMEOUT_MIN TEST_AUTHOR_PER_RUN_BUDGET_USD TEST_AUTHOR_PER_RUN_MAX_TURNS TEST_AUTHOR_PER_RUN_TIMEOUT_MIN REVIEWER_PER_RUN_BUDGET_USD REVIEWER_PER_RUN_MAX_TURNS REVIEWER_PER_RUN_TIMEOUT_MIN"
+FACTORY_ENVELOPE_CONFIG_KEYS="$FACTORY_ENVELOPE_REQUIRED_KEYS $FACTORY_ENVELOPE_ROLE_KEYS"
 FACTORY_GLOBAL_CONFIG_KEYS="GLOBAL_DAILY_CAP_USD GLOBAL_LEDGER CLAUDE_CODE_PINNED CODEX_PINNED CODEX_USD_PER_MTOK_IN CODEX_USD_PER_MTOK_OUT FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN AGENT_CLI_CREDENTIAL_STORE CURSOR_AGENT_VERSION CURSOR_OPENAI_MODEL CURSOR_ANTHROPIC_MODEL CURSOR_PRICING_SNAPSHOT_DATE CURSOR_OPENAI_USD_PER_MTOK_IN CURSOR_OPENAI_USD_PER_MTOK_OUT CURSOR_OPENAI_USD_PER_MTOK_CACHE CURSOR_ANTHROPIC_USD_PER_MTOK_IN CURSOR_ANTHROPIC_USD_PER_MTOK_OUT CURSOR_ANTHROPIC_USD_PER_MTOK_CACHE FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE FACTORY_PROBE_CURSOR_OPENAI FACTORY_PROBE_CURSOR_ANTHROPIC FACTORY_PROBE_TIMEOUT_SEC FACTORY_OVERRIDE_MODEL"
 FACTORY_CONFIG_MAX_MONEY_USD=1000000
 FACTORY_CONFIG_MAX_TURNS=1000
@@ -51,6 +53,7 @@ factory_validate_pricing_config() {
 }
 
 factory_validate_envelope_config() {
+  local role prefix budget_key turns_key timeout_key budget
   factory_config_positive_decimal "$PER_RUN_BUDGET_USD" &&
     factory_config_positive_decimal "$PER_TICKET_BUDGET_USD" &&
     factory_config_positive_decimal "$DAILY_CAP_USD" || {
@@ -72,6 +75,58 @@ factory_validate_envelope_config() {
       echo "envelope config per-run budget exceeds a ticket or daily cap" >&2
       return 1
     }
+  for role in PLANNER NARRATOR BUILDER SPEC_LINTER TEST_AUTHOR REVIEWER; do
+    prefix="${role}_"
+    budget_key="${prefix}PER_RUN_BUDGET_USD"
+    turns_key="${prefix}PER_RUN_MAX_TURNS"
+    timeout_key="${prefix}PER_RUN_TIMEOUT_MIN"
+    if [[ -n "${!budget_key+x}" ]]; then
+      factory_config_positive_decimal "${!budget_key}" || {
+        echo "envelope config $budget_key must be a positive finite decimal" >&2
+        return 1
+      }
+      budget="${!budget_key}"
+      awk -v run="$budget" -v ticket="$PER_TICKET_BUDGET_USD" \
+        -v daily="$DAILY_CAP_USD" \
+        'BEGIN { exit !((run <= ticket) && (run <= daily)) }' || {
+          echo "envelope config $budget_key exceeds a ticket or daily cap" >&2
+          return 1
+        }
+    fi
+    if [[ -n "${!turns_key+x}" ]]; then
+      [[ "${!turns_key}" =~ ^[0-9]{1,4}$ ]] &&
+        awk -v value="${!turns_key}" -v maximum="$FACTORY_CONFIG_MAX_TURNS" \
+          'BEGIN { exit !(value > 0 && value <= maximum) }' || {
+            echo "envelope config $turns_key must be a positive integer" >&2
+            return 1
+          }
+    fi
+    if [[ -n "${!timeout_key+x}" ]]; then
+      [[ "${!timeout_key}" =~ ^[0-9]{1,4}$ ]] &&
+        awk -v value="${!timeout_key}" -v maximum="$FACTORY_CONFIG_MAX_TIMEOUT_MIN" \
+          'BEGIN { exit !(value > 0 && value <= maximum) }' || {
+            echo "envelope config $timeout_key must be a positive integer" >&2
+            return 1
+          }
+    fi
+  done
+}
+
+# Resolve a role's exact per-attempt values after the complete envelope has
+# passed validation. Missing role keys deliberately inherit the legacy defaults.
+factory_select_role_envelope() {
+  local role_key budget_key turns_key timeout_key
+  role_key="$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"
+  case "$role_key" in
+    PLANNER|NARRATOR|BUILDER|SPEC_LINTER|TEST_AUTHOR|REVIEWER) ;;
+    *) echo "envelope role is unsupported: $1" >&2; return 1 ;;
+  esac
+  budget_key="${role_key}_PER_RUN_BUDGET_USD"
+  turns_key="${role_key}_PER_RUN_MAX_TURNS"
+  timeout_key="${role_key}_PER_RUN_TIMEOUT_MIN"
+  PER_RUN_BUDGET_USD="${!budget_key:-$PER_RUN_BUDGET_USD}"
+  PER_RUN_MAX_TURNS="${!turns_key:-$PER_RUN_MAX_TURNS}"
+  PER_RUN_TIMEOUT_MIN="${!timeout_key:-$PER_RUN_TIMEOUT_MIN}"
 }
 
 factory_clear_plain_config_keys() {

@@ -62,10 +62,13 @@ PY
   json_error "FACTORY_PROJECT is required"
 
 manager() {
+  local -a policy_args=()
+  [[ -z "${FACTORY_MODEL_POLICY_FILE:-}" ]] ||
+    policy_args=(--policy-file "$FACTORY_MODEL_POLICY_FILE")
   python3 -B "$FACTORY_MODEL_MANAGER" "$1" \
     --state-root "$FACTORY_MODEL_STATE_ROOT" --project "$FACTORY_PROJECT" \
     --catalog "$FACTORY_MODEL_CATALOG" \
-    --profiles-file "$FACTORY_MODEL_PROFILES" "${@:2}"
+    --profiles-file "$FACTORY_MODEL_PROFILES" "${policy_args[@]}" "${@:2}"
 }
 
 load_machine_config() {
@@ -165,8 +168,41 @@ command_name="${1:-}"
 shift
 
 case "$command_name" in
-  profiles|status)
+  profiles|status|policy-candidates|reviewer-exception-contract)
     manager "$command_name" "$@" || json_error "$command_name failed"
+    ;;
+  policy-preview|policy-apply)
+    [[ "${FACTORY_ROOT:-}" == /* ]] ||
+      json_error "FACTORY_ROOT must be an absolute path"
+    product_root="$(cd "$FACTORY_ROOT" 2>/dev/null && pwd -P)" ||
+      json_error "FACTORY_ROOT is unavailable"
+    [[ "$product_root" == "$FACTORY_ROOT" ]] ||
+      json_error "FACTORY_ROOT must be physical"
+    git_top="$(git -C "$FACTORY_ROOT" rev-parse --show-toplevel 2>/dev/null)" ||
+      json_error "FACTORY_ROOT must be a git worktree"
+    git_top="$(cd "$git_top" && pwd -P)"
+    [[ "$git_top" == "$FACTORY_ROOT" ]] ||
+      json_error "FACTORY_ROOT must be the exact worktree root"
+    expected_policy="$FACTORY_ROOT/factory/model-policy.json"
+    [[ "$FACTORY_MODEL_POLICY_FILE" == "$expected_policy" ]] ||
+      json_error "model policy path must be product-owned factory/model-policy.json"
+    manager "$command_name" "$@" || json_error "$command_name failed"
+    ;;
+  ticket-status)
+    ticket=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ticket) [[ $# -ge 2 ]] || json_error "--ticket requires a value"; ticket="$2"; shift 2 ;;
+        *) json_error "unknown ticket-status argument: $1" ;;
+      esac
+    done
+    [[ "$ticket" =~ ^T-[0-9]+$ ]] || json_error "ticket must match T-NNN"
+    [[ "${FACTORY_ROOT:-}" == /* ]] ||
+      json_error "FACTORY_ROOT must be an absolute path"
+    ticket_file="$FACTORY_ROOT/factory/tickets/$ticket.md"
+    ticket_plan="$FACTORY_ROOT/factory/route-plans/$ticket.json"
+    manager ticket-status --ticket "$ticket" --ticket-file "$ticket_file" \
+      --ticket-plan "$ticket_plan" || json_error "ticket-status failed"
     ;;
   activate|disable|enable)
     manager "$command_name" "$@" || json_error "$command_name failed"
@@ -206,8 +242,9 @@ case "$command_name" in
         *) json_error "unknown migration argument: $1" ;;
       esac
     done
-    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ]] ||
-      json_error "route migration requires contract 1.4.0"
+    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ]] ||
+      json_error "route migration requires contract 1.4.0 or newer"
     if [[ "$command_name" == "migrate" ]]; then
       [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
         json_error "migration approval hash is invalid"
@@ -342,22 +379,35 @@ print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
     ;;
   fallback-plan|fallback)
-    ticket="" failed_run="" workdir="" reason=""
+    ticket="" failed_run="" workdir="" reason="" allow_reviewer_family=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --ticket) [[ $# -ge 2 ]] || json_error "--ticket requires a value"; ticket="$2"; shift 2 ;;
         --failed-run) [[ $# -ge 2 ]] || json_error "--failed-run requires a value"; failed_run="$2"; shift 2 ;;
         --workdir) [[ $# -ge 2 ]] || json_error "--workdir requires a value"; workdir="$2"; shift 2 ;;
         --reason) [[ $# -ge 2 ]] || json_error "--reason requires a value"; reason="$2"; shift 2 ;;
+        --allow-reviewer-family)
+          [[ $# -ge 2 ]] || json_error "--allow-reviewer-family requires a value"
+          allow_reviewer_family="$2"
+          shift 2
+          ;;
         *) json_error "unknown fallback argument: $1" ;;
       esac
     done
-    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ]] ||
-      json_error "mid-ticket fallback requires contract 1.4.0"
+    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ]] ||
+      json_error "mid-ticket fallback requires contract 1.4.0 or newer"
     [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
       json_error "failed run identifier is invalid"
     [[ "$reason" == "credits_exhausted" || "$reason" == "provider_unavailable" ]] ||
       json_error "fallback reason is invalid"
+    if [[ -n "$allow_reviewer_family" &&
+          ! "$allow_reviewer_family" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
+      json_error "Reviewer exception family is invalid"
+    fi
+    fallback_exception_args=()
+    [[ -z "$allow_reviewer_family" ]] ||
+      fallback_exception_args=(--allow-reviewer-family "$allow_reviewer_family")
     validate_control_workdir "$ticket" "$workdir" 1
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
       json_error "v2 ticket route journal is missing or unsafe"
@@ -395,6 +445,7 @@ PY
         --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
         --project "$FACTORY_PROJECT" --ticket "$ticket" \
         --failed-run "$failed_run" --reason "$reason" \
+        "${fallback_exception_args[@]}" \
         --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$preview_file"; then
         rm -f "$preview_file"
         json_error "fallback preview failed"
@@ -493,6 +544,7 @@ PY
       --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
       --project "$FACTORY_PROJECT" --ticket "$ticket" \
       --failed-run "$failed_run" --reason "$reason" \
+      "${fallback_exception_args[@]}" \
       --readiness "$readiness" --remote "$CONTROL_REMOTE" \
       --approval "$approval_file" > "$apply_file"; then
       rm -f "$apply_file" "$approval_file"

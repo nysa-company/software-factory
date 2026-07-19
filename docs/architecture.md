@@ -136,7 +136,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.4.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.5.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -144,6 +144,9 @@ Contract `1.2.0` adds sealed `models`, ticket-state, and ledger controls;
 contract `1.3.0` composes them with evidence-bound ticket attestations.
 Contract `1.4.0` adds route-journal migration and operator-approved mid-ticket
 model fallback.
+Contract `1.5.0` adds fixed operator snapshots, project-owned model policy,
+bounded envelope overrides, targeted attempt cancellation, and the loopback
+multi-project console.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -169,7 +172,7 @@ requires the exact merged commit on authoritative `origin/main`, all configured
 post-merge contexts successful on that commit, and projects accounting into a
 separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
-When concurrency is two, every attestation action also requires the matching
+When concurrency is greater than one, every attestation action also requires the matching
 unexpired opaque dispatcher lease through the trusted launcher environment;
 the lease is validated with the existing lease helper and never enters an
 attestation or command result. Done starts only from `HEAD == origin/main`,
@@ -229,12 +232,15 @@ terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
 journals automatically.
 
-`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and may
-be set only to `2`. At `2`, every sequencing and role launch requires the
-matching opaque record under `factory/.dispatch-leases/`. Claims are atomic,
-stale records are never reassigned automatically, and the product-level control
-lock serializes complete provider intervals. The global ledger lock remains an
-additional serialization and accounting boundary when a machine cap is configured.
+`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and accepts
+only integers from `1` through `4`. At any value above `1`, every sequencing and
+role launch requires the matching opaque record under
+`factory/.dispatch-leases/`. Claims are atomic and deterministically refuse once
+the configured capacity is full. Stale records continue to consume capacity and
+are never reassigned automatically. The product-level control lock still
+serializes complete provider intervals, so four leases do not mean four
+simultaneous model-provider calls. The global ledger lock remains an additional
+serialization and accounting boundary when a machine cap is configured.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
