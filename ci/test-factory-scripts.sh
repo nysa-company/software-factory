@@ -1819,6 +1819,7 @@ done
 KILL_PGID="$(sed -n 's/^pgid=//p' "$KILL_PID_FILE" 2>/dev/null | awk 'NR==1 {print; exit}')"
 FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL_SWITCH" "$KILL_ROOT" >/dev/null
 wait "$KILL_WRAPPER_PID" 2>/dev/null || true
+KILL_DESCENDANT_PID="$(awk 'NR==1 {print; exit}' "$DESCENDANT_PID_FILE" 2>/dev/null || true)"
 NEW_AFTER_KILL_STATUS=0
 FACTORY_ROOT="$KILL_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
@@ -1826,7 +1827,9 @@ FACTORY_ROOT="$KILL_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   "$RUN_AGENT" --role planner --ticket T-402 -- "must refuse" >/dev/null 2>&1 ||
   NEW_AFTER_KILL_STATUS=$?
 if [[ "$KILL_PGID" =~ ^[0-9]+$ ]] &&
-   ! kill -0 -- "-$KILL_PGID" 2>/dev/null &&
+   [[ "$KILL_DESCENDANT_PID" =~ ^[0-9]+$ ]] &&
+   ! kill -0 "$KILL_DESCENDANT_PID" 2>/dev/null &&
+   [[ -z "$(ls "$KILL_ROOT/factory/runs/"*.pid 2>/dev/null || true)" ]] &&
    [[ "$NEW_AFTER_KILL_STATUS" -eq 4 ]]; then
   pass "kill switch terminates process group and blocks new runs"
 else

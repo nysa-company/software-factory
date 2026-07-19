@@ -78,8 +78,13 @@ if [[ -d "$RUNS_DIR" ]]; then
         echo "terminating factory run group $PGID ($RUN_ID)"
         kill -TERM -- "-$PGID" 2>/dev/null || true
         sleep 2
-        kill -0 -- "-$PGID" 2>/dev/null &&
+        if kill -0 -- "-$PGID" 2>/dev/null; then
           kill -KILL -- "-$PGID" 2>/dev/null || true
+          for _drain_try in $(seq 1 100); do
+            kill -0 -- "-$PGID" 2>/dev/null || break
+            sleep 0.05
+          done
+        fi
       fi
       if kill -0 -- "-$PGID" 2>/dev/null; then
         echo "WARNING: process group $PGID survived; retaining $pidfile" >&2

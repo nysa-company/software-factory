@@ -46,6 +46,8 @@ helper output are not compatibility promises.
 - Adds an independent one-time pre-contract terminal-backfill schema for its
   exact authorized batch; absent historical evidence remains null and only a
   complete manual protected merge can satisfy terminal sequencing.
+- Waits for bounded process-group drain after kill-switch escalation before
+  classifying survivor state and retaining ownership records.
 
 ## 1.2.0 — 2026-07-15
 
