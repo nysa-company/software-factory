@@ -144,6 +144,7 @@ PRODUCT_REMOTE=""
 ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
+ADAPTER_GATE_OPENED=0
 RUN_STARTED_AT=""
 TERMINAL_AT=""
 RESERVED_USD=""
@@ -418,6 +419,7 @@ write_manifest() {
     echo "accounting_state=$(meta_value "$ACCOUNTING_STATE")"
     echo "reserved_usd=$(meta_value "$RESERVED_USD")"
     echo "go_issued=$(meta_value "$GO_ISSUED")"
+    echo "adapter_gate_opened=$(meta_value "$ADAPTER_GATE_OPENED")"
     echo "started_at=$(meta_value "$RUN_STARTED_AT")"
     echo "terminal_at=$(meta_value "$TERMINAL_AT")"
     echo "prompt_version=$(meta_value "$PROMPT_VERSION")"
@@ -1303,6 +1305,7 @@ else
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
       else
+        ADAPTER_GATE_OPENED=1
         rmdir "$LAUNCH_LOCK"
         HELD_LAUNCH_LOCK=0
         wait "$RUN_PID"

@@ -51,8 +51,9 @@ A task-bearing process is never silently retried. If it fails because credits
 are exhausted or the provider is unavailable, the operator may request a
 Contract 1.4 fallback:
 
-1. `models fallback-plan` verifies the latest failed GO attempt, current Git and
-   remote state, accounting, current route-journal head, and model readiness.
+1. `models fallback-plan` verifies the latest failed GO attempt whose adapter
+   gate opened, current Git and remote state, accounting, current route-journal
+   head, and model readiness.
 2. It excludes the exact failed route and resolves the failed role plus every
    remaining role.
 3. The operator posts the generated one-line approval comment in Linear.

@@ -110,6 +110,7 @@ class FallbackTest(unittest.TestCase):
         now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         manifest = {
             "accounting_state": "completed",
+            "adapter_gate_opened": "1",
             "exit_status": "75",
             "go_issued": "1",
             "kit_sha": "a" * 40,
@@ -137,8 +138,8 @@ class FallbackTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def command(self, action, *extra):
-        result = subprocess.run(
+    def command_result(self, action, *extra):
+        return subprocess.run(
             [
                 sys.executable, str(SCRIPT), action,
                 "--workdir", str(self.repo),
@@ -154,6 +155,9 @@ class FallbackTest(unittest.TestCase):
             text=True,
             capture_output=True,
         )
+
+    def command(self, action, *extra):
+        result = self.command_result(action, *extra)
         if result.returncode:
             self.fail(result.stderr)
         return json.loads(result.stdout)
@@ -223,6 +227,21 @@ class FallbackTest(unittest.TestCase):
         )
         preview = self.command("preview")
         self.assertEqual(preview["failed_run_id"], "run-failed-1")
+
+    def test_failure_before_adapter_gate_opened_is_ineligible(self):
+        manifest = self.product / "factory/runs/run-failed-1.meta"
+        values = {}
+        for line in manifest.read_text().splitlines():
+            key, value = line.split("=", 1)
+            values[key] = value
+        values["accounting_state"] = "abandoned_conservative"
+        values["adapter_gate_opened"] = "0"
+        manifest.write_text(
+            "".join(f"{key}={value}\n" for key, value in sorted(values.items()))
+        )
+        result = self.command_result("preview")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not an eligible terminal provider failure", result.stderr)
 
 
 if __name__ == "__main__":

@@ -1362,6 +1362,7 @@ if [[ "$GO_WRITE_STATUS" -eq 125 ]] &&
    grep -q 'could not persist GO marker' "$TMP/go-marker-write-failure.out" &&
    ! grep -q 'mock adapter ran task' "$GO_WRITE_FAIL/factory/runs/"*.out &&
    grep -q '^go_issued=1$' "$GO_WRITE_META" &&
+   grep -q '^adapter_gate_opened=0$' "$GO_WRITE_META" &&
    grep -q '^accounting_state=abandoned_conservative$' "$GO_WRITE_META" &&
    grep -q '^effective_cost=1.00$' "$GO_WRITE_META"; then
   pass "GO attempt stays charged when marker persistence keeps gate closed"

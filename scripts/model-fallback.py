@@ -134,6 +134,7 @@ def load_evidence(factory_root, ticket, failed_run):
     if (
         failed.get("ticket") != ticket
         or failed.get("go_issued") != "1"
+        or failed.get("adapter_gate_opened") != "1"
         or not re.fullmatch(r"[1-9][0-9]{0,2}", failed.get("exit_status", ""))
         or terminal_accounting not in {
             ("completed", "completed"),
