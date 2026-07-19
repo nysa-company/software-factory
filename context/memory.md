@@ -36,8 +36,18 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Route-plan provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management and evidence-bound ticket attestations are integrated under Hermes contract 1.3.
 - The Contract 1.3 cutover has two independent one-time formats: legacy-closeout for the exact authorized Contract 1.2 batch and terminal-backfill for the exact authorized pre-contract terminal-Done batch. Both are separate from normal attestations and route plans, become authoritative only through one manual protected product merge, and use the same fail-closed protected-main terminal reader; plain Done never suffices.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
+- The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
 
 ## Log
+
+## 2026-07-19 — Decision 44: Validated pre-submission checks get a bounded two-minute gate
+
+Category: System change
+
+Protected-history validation can legitimately exceed the original ten-second
+process-group acknowledgement window. The isolated wrapper now waits at most
+two minutes for the trusted controller's final GO gate; adapters still cannot
+start before acknowledgement, and a missing controller remains a hard timeout.
 
 ## 2026-07-18 — Decision 43: Pre-contract terminal evidence is a separate bounded batch
 
