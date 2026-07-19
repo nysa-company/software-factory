@@ -169,6 +169,14 @@ merges the single protected product PR. The same internal validator is used by
 effective-ticket reading, `next-stage`, and activation; plain Done and partial
 or conflicting evidence are invalid.
 
+`scripts/terminal-backfill.py` is a second non-launcher migration utility for
+the exact authorized pre-contract terminal-Done batch. It writes the separate
+`factory/migrations/contract-1.3-terminal-backfill/` evidence set, preserves
+historically absent bundles and Kit-SHAs as null, and binds both implementation
+and closeout PR ancestry plus each era's authentic app-owned checks. It shares
+the same manual protected-merge authority and fail-closed terminal reader, but
+does not alter or extend the first legacy-closeout batch.
+
 T-013 through T-016 predate separate `policy` and `app-tests` check jobs. Their
 only bounded migration class requires the authentic app-bound aggregate `ci`
 and `test-immutability` checks plus independent criteria-audit and current

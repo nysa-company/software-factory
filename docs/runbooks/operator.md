@@ -164,6 +164,27 @@ same-UID token exposure remains until a broker or OS isolation is used.
   restore the prior profile bundle, restart, and verify health before clearing
   maintenance.
 
+## One-time pre-contract terminal backfill
+
+- Notice: this is a second, independent bounded migration for exactly the
+  authorized pre-contract terminal-Done batch. It neither extends
+  `factory/migrations/contract-1.3/` nor permits arbitrary historical Done.
+- Do: generate from an exact clean protected-main basis with
+  `scripts/terminal-backfill.py --product <repo> --request <reviewed-request>`.
+  Review the exact repository, T-001–T-012 batch, target kit, cutoff, immutable
+  source ticket blobs, implementation and closeout PR ancestry, ledger rows,
+  and each implementation era's authentic app-owned successful checks.
+- Do: preserve absent historical evidence as null. A missing source bundle,
+  Kit-SHA, or route plan must never be reconstructed. Every source ticket must
+  already be Done.
+- Do: put `factory/migrations/contract-1.3-terminal-backfill/` and the target
+  `KIT_PIN` in one manual protected product PR. Disable auto-merge and bypass.
+  The evidence is inert until that exact protected merge.
+- Don't: hand-edit generated evidence, accept partial or extra receipt files,
+  reuse the authorization for another repository/basis/cutoff/kit, or invent
+  checks and approvals. Conflicts with normal attestations or the first legacy
+  batch fail closed.
+
 ## Test commit order before operator review
 
 - Notice: reviewer approved but CI fails the test-immutability gate because test commits came after implementation.

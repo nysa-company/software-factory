@@ -311,6 +311,45 @@ def required_check_names(classification, ticket):
     return REQUIRED_CHECK_NAMES
 
 
+def _terminal_companion_paths(repo, ref, authorization):
+    from terminal_backfill import (
+        AUTHORIZED_TICKETS as TERMINAL_TICKETS,
+        MIGRATION_DIR as TERMINAL_MIGRATION_DIR,
+    )
+
+    companion = json_at(
+        repo, ref, f"{TERMINAL_MIGRATION_DIR}/authorization.json",
+        "terminal companion authorization",
+    )
+    if companion is None:
+        return set()
+    if (
+        not isinstance(companion, dict)
+        or companion.get("repository") != authorization["repository"]
+        or companion.get("basis_kit_sha") != authorization["source_kit_sha"]
+        or companion.get("target_kit_sha") != authorization["target_kit_sha"]
+        or companion.get("candidate_contract") != authorization["candidate_contract"]
+        or companion.get("cutoff") != authorization["cutoff"]
+        or companion.get("protected_main_basis")
+        != authorization["protected_main_basis"]
+        or not isinstance(companion.get("tickets"), list)
+    ):
+        raise ValidationError("terminal companion does not match legacy closeout")
+    paths = {f"{TERMINAL_MIGRATION_DIR}/authorization.json"}
+    tickets = []
+    for entry in companion["tickets"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("ticket"), str):
+            raise ValidationError("terminal companion ticket is invalid")
+        ticket = entry["ticket"]
+        if entry.get("receipt") != f"{TERMINAL_MIGRATION_DIR}/{ticket}.json":
+            raise ValidationError("terminal companion receipt path is invalid")
+        tickets.append(ticket)
+        paths.add(entry["receipt"])
+    if tuple(sorted(tickets)) != TERMINAL_TICKETS:
+        raise ValidationError("terminal companion ticket batch is not exact")
+    return paths
+
+
 def _validate_ledger(repo, basis, ticket, ledger):
     exact(ledger, LEDGER_KEYS, "legacy ledger evidence")
     digest(ledger["sha256"], "legacy ledger sha256")
@@ -435,6 +474,7 @@ def _validate_legacy_documents(repo, ref, authorization, receipts):
         *expected_files,
         *(f"factory/tickets/{ticket}.md" for ticket in expected_receipts),
     }
+    expected_paths.update(_terminal_companion_paths(repo, ref, authorization))
     if migration_paths != expected_paths:
         raise ValidationError("legacy migration commit has missing or extra files")
     if text_at(repo, migration_commit, "factory/KIT_PIN") != authorization["target_kit_sha"] + "\n":
@@ -633,12 +673,22 @@ def validate_generated_legacy_batch(repo, authorization, receipts, ref):
 def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     if not isinstance(ticket, str) or not TICKET_ID.fullmatch(ticket):
         raise ValidationError("invalid ticket identifier")
+    from terminal_backfill import terminal_backfill_batch
+
     normal = _normal_terminal(Path(repo), ticket, ref)
     legacy = legacy_batch(Path(repo), ref)
-    if normal and ticket in legacy:
-        raise ValidationError("ticket has conflicting normal and legacy terminal evidence")
+    backfill = terminal_backfill_batch(Path(repo), ref)
+    evidence_count = sum((
+        normal is not None,
+        ticket in legacy,
+        ticket in backfill,
+    ))
+    if evidence_count > 1:
+        raise ValidationError("ticket has conflicting protected-main terminal evidence")
     if normal:
         return normal
     if ticket in legacy:
         return legacy[ticket]
+    if ticket in backfill:
+        return backfill[ticket]
     raise ValidationError("protected main lacks valid terminal evidence")

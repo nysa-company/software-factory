@@ -149,6 +149,10 @@ if [[ "$TERMINAL_BASIS" == "validated-legacy-closeout" ]]; then
   echo "COMPLETE validated legacy closeout is on protected main; no historical lease is implied"
   exit 0
 fi
+if [[ "$TERMINAL_BASIS" == "validated-terminal-backfill" ]]; then
+  echo "COMPLETE validated pre-contract terminal backfill is on protected main; no historical lease is implied"
+  exit 0
+fi
 if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   echo "REFUSE $FACTORY_DISPATCH_LEASE_ERROR"
   exit 1
