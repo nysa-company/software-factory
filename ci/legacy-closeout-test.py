@@ -206,6 +206,43 @@ class LegacyCloseoutTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             protected_terminal(self.repo, "T-013")
 
+    def test_exact_reintroduction_after_protected_revert_is_allowed(self):
+        self.assertEqual(self.generate().returncode, 0)
+        self.publish_generated()
+        migration = command(
+            "git", "-C", self.repo, "rev-parse", "HEAD"
+        ).stdout.strip()
+        command(
+            "git", "-C", self.repo, "-c", "user.name=test",
+            "-c", "user.email=test@example.com", "revert", "--no-edit", migration,
+        )
+        command("git", "-C", self.repo, "push", "-q", "origin", "main")
+        command("git", "-C", self.repo, "fetch", "-q", "origin")
+        self.basis = command(
+            "git", "-C", self.repo, "rev-parse", "HEAD"
+        ).stdout.strip()
+        self.tree = command(
+            "git", "-C", self.repo, "rev-parse", "HEAD^{tree}"
+        ).stdout.strip()
+        self.cutoff = datetime.now(timezone.utc).replace(
+            microsecond=0
+        ).isoformat().replace("+00:00", "Z")
+        value = json.loads(self.request.read_text())
+        value["cutoff"] = self.cutoff
+        value["protected_main_basis"] = {
+            "commit": self.basis,
+            "tree": self.tree,
+        }
+        self.request.write_text(json.dumps(value))
+        self.make_gh()
+        regenerated = self.generate()
+        self.assertEqual(regenerated.returncode, 0, regenerated.stderr)
+        self.publish_generated()
+        self.assertEqual(
+            protected_terminal(self.repo, "T-013")["basis"],
+            "validated-legacy-closeout",
+        )
+
     def test_plain_done_and_partial_or_conflicting_evidence_fail_closed(self):
         ticket = self.repo / "factory/tickets/T-013.md"
         ticket.write_text(ticket.read_text().replace("Review", "Done"))
