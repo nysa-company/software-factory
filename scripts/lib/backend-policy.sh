@@ -380,8 +380,8 @@ factory_resolve_role() {
 # Resolve a complete profile from non-task readiness probes. Each catalog route
 # is probed once, even when several roles share it.
 factory_resolve_model_profile() {
-  local profile_id="$1" output_plan="$2" disabled="${3:-}"
-  local tmp probes rows readiness plan_tmp route_id adapter selection expected
+  local profile_id="$1" output_plan="$2" disabled="${3:-}" readiness_output="${4:-}"
+  local tmp probes rows readiness plan_tmp readiness_tmp route_id adapter selection expected
   local disabled_route state reason version reported
   FACTORY_RESOLVE_ERROR=""
   [[ -n "$profile_id" && -n "$output_plan" ]] || {
@@ -486,6 +486,21 @@ PY
     FACTORY_RESOLVE_ERROR="readiness_generation_failed"
     return 2
   fi
+  if [[ -n "$readiness_output" ]]; then
+    readiness_tmp="$(mktemp "${readiness_output}.tmp.XXXXXX")" || {
+      rm -rf "$tmp"
+      FACTORY_RESOLVE_ERROR="readiness_output_temporary_file_failed"
+      return 2
+    }
+    cp "$tmp/readiness.json" "$readiness_tmp" &&
+      chmod 0600 "$readiness_tmp" &&
+      mv -f "$readiness_tmp" "$readiness_output" || {
+        rm -f "$readiness_tmp"
+        rm -rf "$tmp"
+        FACTORY_RESOLVE_ERROR="readiness_output_install_failed"
+        return 2
+      }
+  fi
 
   plan_tmp="$(mktemp "${output_plan}.tmp.XXXXXX")" || {
     rm -rf "$tmp"
@@ -549,7 +564,7 @@ print(d["profile_id"], ",".join(d["disabled_route_ids"]))' <<< "$context"
       return 2
     fi
   else
-    FACTORY_MODEL_PROFILE_ID="legacy-balanced-v1"
+    FACTORY_MODEL_PROFILE_ID="balanced-v2"
     FACTORY_DISABLED_ROUTE_IDS=""
   fi
   [[ -z "$override" ]] || FACTORY_MODEL_PROFILE_ID="$override"
@@ -621,6 +636,7 @@ factory_select_pinned_model_role() {
     return 2
   fi
   if ! values="$(python3 - "$ticket_plan" "$selection" <<'PY'
+import base64
 import hashlib
 import json
 import sys
@@ -629,13 +645,31 @@ with open(sys.argv[1], "rb") as handle:
     raw = handle.read()
 plan = json.loads(raw)
 value = json.loads(sys.argv[2])
+if plan.get("schema") == "ticket-model-route-plan/v1":
+    resolution = plan["resolution"]
+    revision = ""
+    revision_hash = ""
+    selection_reason = "pinned_route_plan"
+elif plan.get("schema") == "ticket-model-route-journal/v2":
+    revision_value = plan["revisions"][-1]
+    body = revision_value["body"]
+    if body["kind"] == "migration":
+        legacy = json.loads(base64.b64decode(body["legacy_plan_b64"]))
+        resolution = legacy["resolution"]
+    else:
+        resolution = body["new_resolution"]
+    revision = str(revision_value["revision"])
+    revision_hash = revision_value["revision_hash"]
+    selection_reason = "route_journal"
+else:
+    raise SystemExit(2)
 fields = (
     value["adapter"], value["provider_family"], value["selection_id"],
     value["effort"], value["adapter_version"], value["route_id"],
     value["gateway_id"], value["inference_provider_id"],
     value["account_route_id"], value["transport"],
-    plan["resolution"]["policy_hash"], value["reported_identity"],
-    hashlib.sha256(raw).hexdigest(),
+    resolution["policy_hash"], value["reported_identity"],
+    hashlib.sha256(raw).hexdigest(), revision, revision_hash, selection_reason,
 )
 if any(not isinstance(item, str) or "\x1f" in item or "\n" in item for item in fields):
     raise SystemExit(2)
@@ -651,8 +685,9 @@ PY
     FACTORY_SELECTED_PROVIDER_ID FACTORY_SELECTED_ACCOUNT_ROUTE_ID \
     FACTORY_SELECTED_TRANSPORT FACTORY_SELECTED_POLICY_HASH \
     FACTORY_SELECTED_REPORTED_IDENTITY FACTORY_SELECTED_ROUTE_PLAN_SHA256 \
+    FACTORY_SELECTED_ROUTE_REVISION FACTORY_SELECTED_ROUTE_REVISION_HASH \
+    FACTORY_SELECTION_REASON \
     <<< "$values"
-  FACTORY_SELECTION_REASON="pinned_route_plan"
   return 0
 }
 

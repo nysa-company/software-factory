@@ -2,6 +2,7 @@
 """Evidence-bound ticket approval, protected auto-merge, and closeout."""
 
 import argparse
+import base64
 import csv
 from datetime import datetime, timezone
 import hashlib
@@ -156,7 +157,14 @@ def successful_runs(product, ticket):
     return manifests
 
 
-def route_plan_evidence(workdir, ticket, kit_sha, manifests):
+def route_revision_hash(index, parent, body):
+    return hashlib.sha256(json.dumps(
+        {"body": body, "parent_hash": parent, "revision": index},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
     path = workdir / "factory" / "route-plans" / f"{ticket}.json"
     if not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1:
         raise Refusal("committed ticket route plan is missing or unsafe")
@@ -165,21 +173,66 @@ def route_plan_evidence(workdir, ticket, kit_sha, manifests):
         plan = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise Refusal("ticket route plan is malformed")
-    if (
-        set(plan) != {"schema", "ticket", "kit_sha", "created_at", "resolution"}
-        or plan.get("schema") != "ticket-model-route-plan/v1"
-        or plan.get("ticket") != ticket
-        or plan.get("kit_sha") != kit_sha
-    ):
+    if plan.get("ticket") != ticket or plan.get("kit_sha") != kit_sha:
         raise Refusal("ticket route plan does not match the attested ticket and kit")
-    resolution = plan.get("resolution")
+    revisions = {}
+    failed_digests = set()
+    if plan.get("schema") == "ticket-model-route-plan/v1":
+        if set(plan) != {"schema", "ticket", "kit_sha", "created_at", "resolution"}:
+            raise Refusal("legacy ticket route plan is malformed")
+        legacy = plan
+        resolution = plan.get("resolution")
+        legacy_raw = raw
+    elif plan.get("schema") == "ticket-model-route-journal/v2":
+        if set(plan) != {"schema", "ticket", "kit_sha", "revisions"}:
+            raise Refusal("ticket route journal is malformed")
+        parent = None
+        resolution = None
+        for index, revision_value in enumerate(plan.get("revisions", [])):
+            body = revision_value.get("body") if isinstance(revision_value, dict) else None
+            expected = route_revision_hash(index, parent, body)
+            if (
+                set(revision_value) != {"revision", "parent_hash", "body", "revision_hash"}
+                or revision_value.get("revision") != index
+                or revision_value.get("parent_hash") != parent
+                or revision_value.get("revision_hash") != expected
+            ):
+                raise Refusal("ticket route journal hash chain is invalid")
+            if index == 0 and body.get("kind") == "migration":
+                try:
+                    legacy_raw = base64.b64decode(body["legacy_plan_b64"], validate=True)
+                    legacy = json.loads(legacy_raw)
+                except (KeyError, ValueError, UnicodeError, json.JSONDecodeError):
+                    raise Refusal("ticket route migration provenance is malformed")
+                if (
+                    hashlib.sha256(legacy_raw).hexdigest() != body.get("legacy_plan_sha256")
+                    or legacy.get("ticket") != ticket
+                    or legacy.get("resolution", {}).get("policy_hash") != body.get("policy_hash")
+                ):
+                    raise Refusal("ticket route migration provenance does not match")
+                resolution = legacy["resolution"]
+            elif index > 0 and body.get("kind") == "fallback":
+                if body.get("prior_resolution") != resolution:
+                    raise Refusal("fallback revision does not extend the prior resolution")
+                resolution = body.get("new_resolution")
+                failed_digests.add(body.get("failed_manifest_digest"))
+            else:
+                raise Refusal("ticket route journal revision kind is invalid")
+            prefix = dict(plan)
+            prefix["revisions"] = plan["revisions"][:index + 1]
+            prefix_raw = (
+                json.dumps(prefix, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode("utf-8")
+            revisions[index] = (revision_value["revision_hash"], resolution, prefix_raw)
+            parent = revision_value["revision_hash"]
+        if resolution is None:
+            raise Refusal("ticket route journal has no active resolution")
+    else:
+        raise Refusal("unsupported ticket route evidence schema")
     selections = resolution.get("selections") if isinstance(resolution, dict) else None
-    if (
-        not isinstance(selections, dict)
-        or set(selections) != set(ROLES)
-        or not re.fullmatch(r"[0-9a-f]{64}", resolution.get("policy_hash", ""))
-    ):
-        raise Refusal("ticket route plan lacks a complete six-role policy")
+    if not isinstance(selections, dict) or set(selections) != set(ROLES):
+        raise Refusal("ticket route evidence lacks a complete six-role policy")
     digest = hashlib.sha256(raw).hexdigest()
     manifest_fields = {
         "adapter": "adapter",
@@ -195,7 +248,24 @@ def route_plan_evidence(workdir, ticket, kit_sha, manifests):
     }
     for manifest in manifests:
         role = manifest.get("role")
-        selection = selections.get(role)
+        reason = manifest.get("selection_reason")
+        if reason == "pinned_route_plan":
+            selected_resolution = legacy["resolution"]
+            expected_digest = hashlib.sha256(legacy_raw).hexdigest()
+            expected_kit = legacy["kit_sha"]
+        elif reason == "route_journal":
+            try:
+                number = int(manifest.get("route_revision", ""))
+                revision_hash, selected_resolution, revision_raw = revisions[number]
+            except (ValueError, KeyError):
+                raise Refusal("successful run references an unknown route revision")
+            if manifest.get("route_revision_hash") != revision_hash:
+                raise Refusal("successful run route revision hash does not match")
+            expected_digest = hashlib.sha256(revision_raw).hexdigest()
+            expected_kit = kit_sha
+        else:
+            raise Refusal("successful run has an unsupported route selection reason")
+        selection = selected_resolution["selections"].get(role)
         if not isinstance(selection, dict):
             raise Refusal("successful run references a role absent from the route plan")
         if any(
@@ -204,12 +274,24 @@ def route_plan_evidence(workdir, ticket, kit_sha, manifests):
         ):
             raise Refusal(f"successful {role} run does not match its pinned route")
         if (
-            manifest.get("selection_reason") != "pinned_route_plan"
-            or manifest.get("policy_hash") != resolution["policy_hash"]
-            or manifest.get("route_plan_sha256") != digest
-            or manifest.get("kit_sha") != kit_sha
+            manifest.get("policy_hash") != selected_resolution["policy_hash"]
+            or manifest.get("route_plan_sha256") != expected_digest
+            or manifest.get("kit_sha") != expected_kit
         ):
             raise Refusal(f"successful {role} run lacks pinned route provenance")
+    if failed_digests:
+        actual_failed = set()
+        runs = product / "factory" / "runs"
+        for manifest_path in runs.glob("*.meta"):
+            value = meta(manifest_path)
+            if (
+                value.get("ticket") == ticket
+                and value.get("go_issued") == "1"
+                and value.get("exit_status") not in ("", "0")
+            ):
+                actual_failed.add(hashlib.sha256(manifest_path.read_bytes()).hexdigest())
+        if not failed_digests.issubset(actual_failed):
+            raise Refusal("route journal references an unattested failed attempt")
     return {
         "policy_hash": resolution["policy_hash"],
         "route_plan_blob": git(workdir, "hash-object", str(path)).stdout.strip(),
@@ -766,7 +848,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     if not re.search(r"approve to merge", bundle_text, re.I):
         raise Refusal("evidence bundle lacks the operator approval question")
     manifests = successful_runs(product, args.ticket)
-    route_plan = route_plan_evidence(workdir, args.ticket, kit_sha, manifests)
+    route_plan = route_plan_evidence(workdir, product, args.ticket, kit_sha, manifests)
     reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
     allowed = {
         f"factory/tickets/{args.ticket}.md",

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import importlib.util
 import json
 import os
@@ -14,6 +15,14 @@ ROUTER_PATH = ROOT / "scripts" / "model-router.py"
 SPEC = importlib.util.spec_from_file_location("model_router", ROUTER_PATH)
 ROUTER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ROUTER)
+MANAGER_SPEC = importlib.util.spec_from_file_location("model_manager", MANAGER)
+MANAGER_MODULE = importlib.util.module_from_spec(MANAGER_SPEC)
+MANAGER_SPEC.loader.exec_module(MANAGER_MODULE)
+ATTEST_SPEC = importlib.util.spec_from_file_location(
+    "ticket_attest", ROOT / "scripts" / "ticket-attest.py"
+)
+ATTEST_MODULE = importlib.util.module_from_spec(ATTEST_SPEC)
+ATTEST_SPEC.loader.exec_module(ATTEST_MODULE)
 
 
 class ModelManagerTest(unittest.TestCase):
@@ -68,6 +77,16 @@ class ModelManagerTest(unittest.TestCase):
             "--approve-hash", self.profile_hash(profile_id),
             "--approved-by", "operator-1",
             project=project,
+        )
+
+    def test_route_revision_hash_matches_attestation_for_unicode(self):
+        body = {
+            "kind": "fallback",
+            "operator_note": "crédit épuisé",
+        }
+        self.assertEqual(
+            MANAGER_MODULE._revision_hash(3, "a" * 64, body),
+            ATTEST_MODULE.route_revision_hash(3, "a" * 64, body),
         )
 
     def pin(self, output, ticket="T-123", kit_sha="a" * 40, readiness=None):
@@ -286,7 +305,7 @@ class ModelManagerTest(unittest.TestCase):
 
     def test_probe_context_applies_scopes_and_uses_active_or_default_profile(self):
         initial = self.output("probe-context")
-        self.assertEqual(initial["profile_id"], "legacy-balanced-v1")
+        self.assertEqual(initial["profile_id"], "balanced-v2")
         self.assertEqual(initial["disabled_route_ids"], [])
 
         self.activate("claude-priority-v1")
@@ -354,6 +373,183 @@ class ModelManagerTest(unittest.TestCase):
 
         forbidden = {"token", "password", "secret", "api_key", "credential"}
         self.assertFalse({key.lower() for key in keys(pin)} & forbidden)
+
+    def test_explicit_v1_migration_preserves_exact_blob_and_provenance(self):
+        legacy_path = self.base / "legacy-plan.json"
+        legacy = self.pin(legacy_path, kit_sha="a" * 40)
+        original = legacy_path.read_bytes()
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            original,
+            "b" * 40,
+            "c" * 40,
+            "2026-07-18T12:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        MANAGER_MODULE.validate_journal(
+            journal, self.catalog, self.routes, self.profiles
+        )
+        body = journal["revisions"][0]["body"]
+        self.assertEqual(
+            __import__("base64").b64decode(body["legacy_plan_b64"]), original
+        )
+        self.assertEqual(body["pin_commit"], "b" * 40)
+        self.assertEqual(body["old_kit_sha"], "a" * 40)
+        self.assertEqual(body["new_kit_sha"], "c" * 40)
+        self.assertEqual(body["policy_hash"], legacy["resolution"]["policy_hash"])
+        self.assertEqual(
+            body["historical_selections"], legacy["resolution"]["selections"]
+        )
+
+    def test_migration_accepts_only_tuple_compatible_historical_catalog(self):
+        historical_catalog = copy.deepcopy(self.catalog)
+        historical_catalog["routes"] = [
+            route for route in historical_catalog["routes"]
+            if route["route_id"] != "cursor-claude-fable-5-thinking-medium"
+        ]
+        historical_routes = ROUTER.validate_catalog(historical_catalog)
+        historical_readiness = {
+            route_id: dict(value)
+            for route_id, value in self.readiness.items()
+            if route_id in historical_routes
+        }
+        resolution = ROUTER.resolve_policy(
+            historical_catalog,
+            historical_routes,
+            self.profiles["legacy-balanced-v1"],
+            historical_readiness,
+        )
+        legacy = {
+            "created_at": "2026-07-18T11:00:00Z",
+            "kit_sha": "a" * 40,
+            "resolution": resolution,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-123",
+        }
+        raw = (ROUTER.canonical_json(legacy) + "\n").encode()
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            raw,
+            "b" * 40,
+            "c" * 40,
+            "2026-07-18T12:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        MANAGER_MODULE.validate_journal(
+            journal, self.catalog, self.routes, self.profiles
+        )
+        tampered = copy.deepcopy(legacy)
+        tampered["resolution"]["selections"]["planner"]["selection_id"] = "auto"
+        tampered_raw = (ROUTER.canonical_json(tampered) + "\n").encode()
+        with self.assertRaisesRegex(MANAGER_MODULE.ManagerError, "tuple mismatch"):
+            MANAGER_MODULE.migrate_v1_plan(
+                tampered_raw,
+                "b" * 40,
+                "c" * 40,
+                "2026-07-18T12:00:00Z",
+                self.catalog,
+                self.routes,
+                self.profiles,
+            )
+
+    def test_append_only_fallback_revision_is_parent_hashed_and_selectable(self):
+        legacy_path = self.base / "legacy-plan.json"
+        legacy = self.pin(legacy_path)
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            legacy_path.read_bytes(),
+            "b" * 40,
+            "c" * 40,
+            "2026-07-18T12:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        before = copy.deepcopy(journal)
+        fallback = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            self.profiles[legacy["resolution"]["profile_id"]],
+            self.readiness,
+            legacy["resolution"],
+            "builder",
+            "codex-gpt-5.6-terra",
+            ["builder", "reviewer"],
+            {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
+        )
+        updated = MANAGER_MODULE.append_fallback_revision(
+            journal,
+            fallback,
+            "d" * 64,
+            "e" * 64,
+            "provider_unavailable",
+            {"operator_id": "operator-1", "receipt_id": "receipt-1"},
+            "2026-07-18T12:01:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        self.assertEqual(journal, before)
+        self.assertEqual(updated["revisions"][:1], journal["revisions"])
+        self.assertEqual(updated["revisions"][1]["revision"], 1)
+        self.assertEqual(
+            updated["revisions"][1]["parent_hash"],
+            updated["revisions"][0]["revision_hash"],
+        )
+        MANAGER_MODULE.validate_journal(
+            updated, self.catalog, self.routes, self.profiles
+        )
+
+        journal_path = self.base / "journal.json"
+        journal_path.write_text(ROUTER.canonical_json(updated) + "\n")
+        os.chmod(journal_path, 0o644)
+        selected = self.output(
+            "select",
+            "--ticket-plan", str(journal_path),
+            "--ticket", "T-123",
+            "--kit-sha", "c" * 40,
+            "--role", "builder",
+        )
+        self.assertEqual(selected, fallback["selections"]["builder"])
+
+    def test_journal_tampering_non_monotonic_revision_and_ineligible_reason_fail(self):
+        legacy_path = self.base / "legacy-plan.json"
+        self.pin(legacy_path)
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            legacy_path.read_bytes(),
+            "b" * 40,
+            "c" * 40,
+            "2026-07-18T12:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        for mutate in (
+            lambda value: value["revisions"][0].update(revision=1),
+            lambda value: value["revisions"][0]["body"].update(
+                historical_selections={}
+            ),
+        ):
+            tampered = copy.deepcopy(journal)
+            mutate(tampered)
+            with self.assertRaises(MANAGER_MODULE.ManagerError):
+                MANAGER_MODULE.validate_journal(
+                    tampered, self.catalog, self.routes, self.profiles
+                )
+        with self.assertRaisesRegex(MANAGER_MODULE.ManagerError, "not eligible"):
+            MANAGER_MODULE.append_fallback_revision(
+                journal,
+                {},
+                "d" * 64,
+                "e" * 64,
+                "model_error",
+                {},
+                "2026-07-18T12:01:00Z",
+                self.catalog,
+                self.routes,
+                self.profiles,
+            )
 
 
 if __name__ == "__main__":

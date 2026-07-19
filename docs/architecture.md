@@ -80,9 +80,13 @@ ticket boundary, the first portfolio that resolves all six roles is selected.
 `INVALID` or `UNKNOWN` hard-stops; only `UNAVAILABLE` advances to another
 candidate or portfolio. Every portfolio declares distinct production and
 checking families. The operator activates a profile by approving its exact
-preview hash. Without an activation record, `legacy-balanced-v1` is the
+preview hash. Without an activation record, `balanced-v2` is the
 default; its OpenAI-production/Anthropic-checking split is profile policy, not
-a fixed architectural requirement.
+a fixed architectural requirement. Contract 1.4 can append an
+operator-approved mid-ticket route revision after an eligible failed attempt;
+completed roles remain immutable and contributor-family history constrains
+every remaining role. See [model-routing.md](model-routing.md) for the exact
+default routes and fallback rules.
 
 ```bash
 # ~/.factory/global.env — no credentials in this file
@@ -132,12 +136,14 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.3.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.4.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
 Contract `1.2.0` adds sealed `models`, ticket-state, and ledger controls;
 contract `1.3.0` composes them with evidence-bound ticket attestations.
+Contract `1.4.0` adds route-journal migration and operator-approved mid-ticket
+model fallback.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -216,10 +222,12 @@ committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
 Before the first role, `models pin` resolves one exact six-role plan and records
 it with `Kit-SHA:` in one committed and pushed ticket-branch transaction. Every
 later preflight, sequencer call, and run refuses a different physical kit SHA;
-roles read only their pinned tuple and never re-resolve. A run re-probes only
-that exact route. After task submission, failure is terminal and never triggers
-retry or fallback. Activation does not migrate pins, so a drained ticket
-boundary and a scan of committed exact ticket branches remain required.
+roles read only their active journal resolution. A run re-probes only that exact
+route and never silently retries a task-bearing process. Contract 1.4 may
+migrate the v1 plan and append a fallback revision only after an eligible
+terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
+and full family-history resolution. Activation does not migrate pins or
+journals automatically.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and may
 be set only to `2`. At `2`, every sequencing and role launch requires the
@@ -243,7 +251,7 @@ all product, config, receipt, and activation validation. Fresh certification
 refreshes evidence only after the isolated suite, tracked-tree check, and sealed
 release verification pass. Product receipts bind the exact evidence ID/digest
 and cannot expire after that evidence.
-An activated contract 1.2 or 1.3 keeps that receipt as the runtime destination
+An activated contract 1.2, 1.3, or 1.4 keeps that receipt as the runtime destination
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.
 
@@ -271,11 +279,13 @@ implemented; referenced and rollback-eligible releases are retained.
 
 Planner, Builder, and Narrator use the selected portfolio's production family.
 Spec-linter, Test-author, and Reviewer use its distinct checking family.
-`legacy-balanced-v1` retains the historical OpenAI/Anthropic choices;
+`balanced-v2` is the no-record default; `legacy-balanced-v1` remains available
+for compatibility with prior activation records and migrations.
 `openai-priority-v1`, `claude-priority-v1`, and `cursor-priority-v1` provide
 explicit alternative ordering. Narrator converts verified results into the
 evidence bundle the operator approves. The exact lifecycle and failure routes
-live in [workflows/ticket-flow.md](workflows/ticket-flow.md).
+live in [workflows/ticket-flow.md](workflows/ticket-flow.md); exact model
+priority and fallback behavior lives in [model-routing.md](model-routing.md).
 
 Ticket-plan provenance records catalog/profile/policy hashes and every selected
 route tuple. It can support future provider, family, or model budgets, but
@@ -291,5 +301,5 @@ and the ledger schema is unchanged.
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
 - External agent frameworks may supply an execution or sandbox transport only behind `factory-launch`. They do not own sequencing, budgets, role selection, Git pushes, ticket state, evidence, or approval; every candidate is pinned and must pass the factory conformance boundary before product use.
 - The local plugin AI review is pre-publication hygiene for changes to this kit. It does not replace the factory's independent Reviewer, Narrator bundle, or human approval.
-- Factory-owned generic state transitions refuse while operator-owned overlay fields are pending. Contract 1.2 has no trusted bundle-attestation path, so an approval overlay is a stop condition. Contract 1.3 confines Awaiting Approval, Approved, auto-merge, and Done to evidence-validating `ticket-attest` actions.
+- Factory-owned generic state transitions refuse while operator-owned overlay fields are pending. Contract 1.2 has no trusted bundle-attestation path, so an approval overlay is a stop condition. Contracts 1.3 and 1.4 confine Awaiting Approval, Approved, auto-merge, and Done to evidence-validating `ticket-attest` actions.
 - Allowlisted machine configuration comes only from `global.env`; inherited values with the same names are cleared even when the file is absent.

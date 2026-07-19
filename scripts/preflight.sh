@@ -26,6 +26,7 @@ ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
 PROJECTED_TICKET_USD="${PROJECTED_TICKET_USD:-5.00}"
 TICKET_SOURCE="$CONTENT_ROOT/factory/tickets/$TICKET.md"
 TICKET_FILE="$TICKET_SOURCE"
+MONEY="$KIT_DIR/scripts/lib/money.py"
 
 FAIL=0
 pass() { echo "PASS: $*"; }
@@ -201,7 +202,7 @@ else
 fi
 
 # (b) daily budget — same spend computation as run-agent.sh, reserve = PROJECTED_TICKET_USD
-TODAY="$(date +%F)"
+TODAY="$(date -u +%F)"
 LEDGER_READY=1
 if [[ -L "$FACTORY_DIR/runs" ]] ||
    { [[ ! -d "$FACTORY_DIR/runs" ]] &&
@@ -217,11 +218,13 @@ if [[ -z "${FACTORY_LEDGER:-}" ]] &&
   LEDGER_READY=0
 fi
 if [[ "$LEDGER_READY" -eq 1 ]]; then
-  SPENT_TODAY="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$8} END {printf "%.4f", s+0}' "$LEDGER")"
+  SPENT_TODAY="$(python3 "$MONEY" sum-csv --csv "$LEDGER" --date "$TODAY" \
+    --date-column 0 --amount-column 7)"
 else
   SPENT_TODAY="0.0000"
 fi
-if awk -v s="$SPENT_TODAY" -v r="$PROJECTED_TICKET_USD" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+if python3 "$MONEY" exceeds --spent "$SPENT_TODAY" \
+    --reserve "$PROJECTED_TICKET_USD" --cap "$DAILY_CAP_USD"; then
   fail "repo daily cap insufficient (spent \$$SPENT_TODAY + reserve \$$PROJECTED_TICKET_USD > \$$DAILY_CAP_USD)"
 else
   pass "repo daily budget covers projected ticket (\$$SPENT_TODAY spent + \$$PROJECTED_TICKET_USD reserve <= \$$DAILY_CAP_USD)"
@@ -229,8 +232,10 @@ fi
 if [[ -n "$GLOBAL_LEDGER" && -n "${GLOBAL_DAILY_CAP_USD:-}" ]]; then
   mkdir -p "$(dirname "$GLOBAL_LEDGER")"
   [[ -f "$GLOBAL_LEDGER" ]] || echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" > "$GLOBAL_LEDGER"
-  SPENT_GLOBAL="$(awk -F, -v d="$TODAY" 'NR>1 && $1==d {s+=$9} END {printf "%.4f", s+0}' "$GLOBAL_LEDGER")"
-  if awk -v s="$SPENT_GLOBAL" -v r="$PROJECTED_TICKET_USD" -v cap="$GLOBAL_DAILY_CAP_USD" 'BEGIN{exit !((s+r)>cap)}'; then
+  SPENT_GLOBAL="$(python3 "$MONEY" sum-csv --csv "$GLOBAL_LEDGER" \
+    --date "$TODAY" --date-column 0 --amount-column 8)"
+  if python3 "$MONEY" exceeds --spent "$SPENT_GLOBAL" \
+      --reserve "$PROJECTED_TICKET_USD" --cap "$GLOBAL_DAILY_CAP_USD"; then
     fail "machine daily cap insufficient (spent \$$SPENT_GLOBAL + reserve \$$PROJECTED_TICKET_USD > \$$GLOBAL_DAILY_CAP_USD)"
   else
     pass "machine daily budget covers projected ticket (\$$SPENT_GLOBAL spent + \$$PROJECTED_TICKET_USD reserve <= \$$GLOBAL_DAILY_CAP_USD)"

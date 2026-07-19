@@ -17,35 +17,32 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 
 ## Worker model portfolios
 
-The catalog describes routes without conflating their layers: transport,
-gateway, inference provider, provider family, account route, selectable model
-ID, and provider-reported identity are separate fields. A route is one exact
-combination of those fields; the two Cursor models are therefore separate
-routes, not one model inherited from a shared adapter.
+There is no single global primary/secondary chain; each role has one. With no
+operator activation, `balanced-v2` is the default:
 
-Profiles contain ordered portfolios and ordered candidates for each of the six
-worker roles. At the ticket boundary the router probes candidates and accepts
-only a portfolio that resolves all six roles while keeping production and
-checking families distinct. The operator activates a profile by approving its
-preview hash. With no activation record, `legacy-balanced-v1` is the default:
-
-| Lane | Roles | Current first choices |
+| Role | Primary | Secondary |
 |---|---|---|
-| Production / OpenAI | Planner; Builder; Narrator | Codex GPT-5.6 Sol/high; GPT-5.6 Terra/medium; GPT-5.6 Terra/medium |
-| Checking / Anthropic | Spec-linter; Test-author; Reviewer | Claude Fable 5/medium; Fable 5/medium; Sonnet 5/medium |
+| Planner | Codex GPT-5.6 Sol, high effort | Cursor GPT-5.6 Sol High, high effort |
+| Builder; Narrator | Codex GPT-5.6 Terra, high effort | Cursor GPT-5.6 Sol High, high effort |
+| Spec-linter; Test-author | Claude Fable 5, medium effort | Cursor Claude Fable 5 Thinking, medium effort |
+| Reviewer | Claude Sonnet 5, high effort | Cursor Claude Sonnet 5 Thinking High, high effort |
 
-`openai-priority-v1` tries that portfolio then the family-swapped Claude
-production portfolio. `claude-priority-v1` uses the reverse order.
-`cursor-priority-v1` tries Cursor's exact OpenAI and Anthropic routes first in
-both portfolio orders. The route plan is pinned with the Kit-SHA on the ticket
-branch; later roles consume their exact tuple and never re-resolve. Fallback is
-pre-submission selection only, never a retry after a task-bearing process
-starts.
+Cursor is a separate route but not a separate model family: Cursor GPT remains
+OpenAI and Cursor Claude remains Anthropic. Before a ticket starts,
+`UNAVAILABLE` advances to the next candidate; `INVALID` or `UNKNOWN` stops. The
+complete six-role plan is pinned to the ticket branch.
 
-Kimi K2.6 is a disabled experimental route through Claude CLI, OpenRouter, and
-Moonshot. It is in no profile and has not had a live or billed pilot. Credential
-rotation is required before any pilot, and without a broker or OS isolation a
-same-UID process may still observe the token.
+Contract 1.4 adds operator-approved mid-ticket fallback for a terminal,
+accounted provider or credit failure. It excludes the exact failed route,
+preserves only validated role-authorized work, re-resolves all remaining roles
+against contributor-family history, and appends an auditable route-journal
+revision. The normal default transition is native Codex/Claude to its
+same-family Cursor route. If no complete family-separated assignment exists,
+the factory escalates instead of weakening review independence.
+
+Kimi K2.6 remains disabled experimental and is in no profile. See
+[Model routing and fallback](docs/model-routing.md) for the exact route order,
+profile alternatives, family rules, approval flow, and operator commands.
 
 ## Core rules (enforced by the kit, not by prompts)
 
@@ -54,7 +51,9 @@ same-UID process may still observe the token.
 3. Approval happens before merge, from a Narrator evidence bundle.
 4. Test author and reviewer run on a different model family than the builder.
 5. Two review rounds, then the ticket escalates to a human with a plain-language note.
-6. Route selection is pinned once at the ticket boundary; one role run submits its task to at most one agent process.
+6. One role attempt submits its task to at most one agent process. Any
+   mid-ticket route change requires the Contract 1.4 journal and one-use Linear
+   approval flow.
 
 ## How Linear and Markdown work together
 
@@ -109,7 +108,7 @@ The factory needs you at four points:
    or send it back with a concrete reason. Done is recorded after merge and
    staging confirmation.
 
-Contract 1.2 still stops in Review. Contract 1.3 implements the fourth step
+Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 implement the fourth step
 through the trusted `ticket-attest` command: it attests the exact bundle,
 consumes the one Linear approval, requests protected auto-merge, and records
 Done only after merge-commit deployment checks and closeout accounting pass.

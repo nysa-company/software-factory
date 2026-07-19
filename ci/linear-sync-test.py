@@ -632,6 +632,88 @@ class LinearSyncTest(unittest.TestCase):
         self.assertEqual(saved["_sync"]["last_error"], "offline")
         self.assertIn("failed_at", saved["_sync"])
 
+    def test_exact_unconsumed_comment_records_fallback_approval(self):
+        approval_hash = "a" * 64
+        nonce = "b" * 32
+        actual = {
+            "comments": {
+                "nodes": [
+                    {
+                        "id": "comment-1",
+                        "body": (
+                            f"FACTORY MODEL FALLBACK APPROVAL: {approval_hash} "
+                            "RUN: run-1 REASON: credits_exhausted "
+                            f"NONCE: {nonce}"
+                        ),
+                        "createdAt": "2026-07-18T12:00:00Z",
+                        "updatedAt": "2026-07-18T12:00:01Z",
+                        "user": {"id": "operator-1", "name": "Operator"},
+                    },
+                    {
+                        "id": "ignored",
+                        "body": "please retry",
+                        "createdAt": "2026-07-18T12:01:00Z",
+                        "updatedAt": "2026-07-18T12:01:00Z",
+                        "user": {"id": "operator-1", "name": "Operator"},
+                    },
+                ]
+            }
+        }
+        entry = {}
+        with patch.object(
+            LINEAR, "utc_now", return_value="2026-07-18T12:05:00+00:00"
+        ):
+            LINEAR.ingest_fallback_approval(actual, entry, False)
+        approval = entry["model_fallback_approval"]
+        self.assertEqual(approval["approval_hash"], approval_hash)
+        self.assertEqual(approval["failed_run_id"], "run-1")
+        self.assertEqual(approval["operator_id"], "operator-1")
+        self.assertEqual(approval["reason"], "credits_exhausted")
+        self.assertEqual(approval["nonce"], nonce)
+
+        actual["comments"]["nodes"].extend([
+            {
+                "id": "expired-newer",
+                "body": (
+                    f"FACTORY MODEL FALLBACK APPROVAL: {'c' * 64} "
+                    "RUN: run-1 REASON: credits_exhausted "
+                    f"NONCE: {'d' * 32}"
+                ),
+                "createdAt": "2026-07-18T11:00:00Z",
+                "updatedAt": "2026-07-18T12:06:00Z",
+                "user": {"id": "operator-1", "name": "Operator"},
+            },
+            {
+                "id": "wrong-newer",
+                "body": (
+                    f"FACTORY MODEL FALLBACK APPROVAL: {'e' * 64} "
+                    "RUN: run-1 REASON: credits_exhausted "
+                    f"NONCE: {'f' * 32}"
+                ),
+                "createdAt": "2026-07-18T12:06:00Z",
+                "updatedAt": "2026-07-18T12:06:00Z",
+                "user": {"id": "operator-1", "name": "Operator"},
+            },
+        ])
+        with patch.object(
+            LINEAR, "utc_now", return_value="2026-07-18T12:07:00+00:00"
+        ):
+            LINEAR.ingest_fallback_approval(actual, entry, False)
+        self.assertEqual(
+            entry["model_fallback_approval"]["comment_id"],
+            "comment-1",
+        )
+
+        consumed = {"consumed_model_fallback_comment_ids": ["comment-1"]}
+        with patch.object(
+            LINEAR, "utc_now", return_value="2026-07-18T12:07:00+00:00"
+        ):
+            LINEAR.ingest_fallback_approval(actual, consumed, False)
+        self.assertEqual(
+            consumed["model_fallback_approval"]["comment_id"],
+            "wrong-newer",
+        )
+
     def test_graphql_retries_rate_limit(self):
         limited = urllib.error.HTTPError(
             LINEAR.API_URL,

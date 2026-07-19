@@ -2,7 +2,9 @@
 """Strict per-project operator state for deterministic model routing."""
 
 import argparse
+import base64
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
@@ -19,7 +21,7 @@ SPEC = importlib.util.spec_from_file_location("model_router", ROUTER_PATH)
 ROUTER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ROUTER)
 
-DEFAULT_PROFILE = "legacy-balanced-v1"
+DEFAULT_PROFILE = "balanced-v2"
 MAX_FILE_SIZE = 1024 * 1024
 MAX_TTL_SECONDS = 7 * 24 * 60 * 60
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -38,6 +40,21 @@ OVERRIDE_KEYS = frozenset((
 PIN_KEYS = frozenset((
     "schema", "ticket", "kit_sha", "created_at", "resolution",
 ))
+JOURNAL_KEYS = frozenset(("schema", "ticket", "kit_sha", "revisions"))
+JOURNAL_REVISION_KEYS = frozenset((
+    "revision", "parent_hash", "body", "revision_hash",
+))
+MIGRATION_BODY_KEYS = frozenset((
+    "kind", "migrated_at", "legacy_plan_b64", "legacy_plan_sha256",
+    "pin_commit", "old_kit_sha", "new_kit_sha", "policy_hash",
+    "historical_selections",
+))
+FALLBACK_BODY_KEYS = frozenset((
+    "kind", "created_at", "failed_manifest_digest",
+    "approved_snapshot_digest", "reason", "approval_receipt",
+    "prior_resolution", "new_resolution", "contributor_families",
+))
+FALLBACK_REASONS = frozenset(("credits_exhausted", "provider_unavailable"))
 SCOPE_TYPES = frozenset(("account-route", "provider-family", "model", "route"))
 
 
@@ -307,7 +324,9 @@ def _parse_json_argument(value, location):
         raise ManagerError("cannot parse %s JSON: %s" % (location, exc))
 
 
-def _validate_pin(value, catalog, routes, profile_map):
+def _validate_pin(
+    value, catalog, routes, profile_map, allow_historical_catalog=False
+):
     _exact_keys(value, PIN_KEYS, "ticket plan")
     if value["schema"] != "ticket-model-route-plan/v1":
         raise ManagerError("unsupported ticket plan schema")
@@ -317,10 +336,249 @@ def _validate_pin(value, catalog, routes, profile_map):
         raise ManagerError("ticket plan has invalid kit SHA")
     _timestamp(value["created_at"], "ticket plan created_at")
     try:
-        ROUTER.validate_plan(value["resolution"], catalog, routes, profile_map)
+        ROUTER.validate_plan(
+            value["resolution"],
+            catalog,
+            routes,
+            profile_map,
+            allow_historical_catalog=allow_historical_catalog,
+        )
     except ROUTER.RouterError as exc:
         raise ManagerError("invalid embedded resolution: %s" % exc)
     return value
+
+
+def _digest(value, location):
+    if not isinstance(value, str) or not SHA256.fullmatch(value):
+        raise ManagerError("%s must be a SHA-256 hash" % location)
+
+
+def _revision_hash(revision, parent_hash, body):
+    return ROUTER.content_hash({
+        "body": body,
+        "parent_hash": parent_hash,
+        "revision": revision,
+    })
+
+
+def migrate_v1_plan(plan_blob, pin_commit, new_kit_sha, migrated_at,
+                    catalog, routes, profile_map):
+    """Create revision zero without changing one byte of v1 provenance."""
+    if not isinstance(plan_blob, bytes):
+        raise ManagerError("legacy plan blob must be bytes")
+    try:
+        value = json.loads(
+            plan_blob.decode("utf-8"),
+            object_pairs_hook=ROUTER._object_no_duplicates,
+        )
+    except (UnicodeError, json.JSONDecodeError, ROUTER.RouterError) as exc:
+        raise ManagerError("cannot parse legacy plan: %s" % exc)
+    _validate_pin(
+        value, catalog, routes, profile_map, allow_historical_catalog=True
+    )
+    if not isinstance(pin_commit, str) or not KIT_SHA.fullmatch(pin_commit):
+        raise ManagerError("pin commit must be 40 lowercase hex characters")
+    if not isinstance(new_kit_sha, str) or not KIT_SHA.fullmatch(new_kit_sha):
+        raise ManagerError("new kit SHA must be 40 lowercase hex characters")
+    _timestamp(migrated_at, "migration migrated_at")
+    body = {
+        "historical_selections": value["resolution"]["selections"],
+        "kind": "migration",
+        "legacy_plan_b64": base64.b64encode(plan_blob).decode("ascii"),
+        "legacy_plan_sha256": hashlib.sha256(plan_blob).hexdigest(),
+        "migrated_at": migrated_at,
+        "new_kit_sha": new_kit_sha,
+        "old_kit_sha": value["kit_sha"],
+        "pin_commit": pin_commit,
+        "policy_hash": value["resolution"]["policy_hash"],
+    }
+    revision = {
+        "body": body,
+        "parent_hash": None,
+        "revision": 0,
+    }
+    revision["revision_hash"] = _revision_hash(0, None, body)
+    return {
+        "kit_sha": new_kit_sha,
+        "revisions": [revision],
+        "schema": "ticket-model-route-journal/v2",
+        "ticket": value["ticket"],
+    }
+
+
+def active_resolution(journal):
+    body = journal["revisions"][-1]["body"]
+    if body["kind"] == "migration":
+        plan_blob = base64.b64decode(body["legacy_plan_b64"], validate=True)
+        return json.loads(
+            plan_blob.decode("utf-8"),
+            object_pairs_hook=ROUTER._object_no_duplicates,
+        )["resolution"]
+    return body["new_resolution"]
+
+
+def validate_journal(value, catalog, routes, profile_map):
+    _exact_keys(value, JOURNAL_KEYS, "route journal")
+    if value["schema"] != "ticket-model-route-journal/v2":
+        raise ManagerError("unsupported route journal schema")
+    if not isinstance(value["ticket"], str) or not TICKET.fullmatch(value["ticket"]):
+        raise ManagerError("route journal has invalid ticket")
+    if not isinstance(value["kit_sha"], str) or not KIT_SHA.fullmatch(value["kit_sha"]):
+        raise ManagerError("route journal has invalid kit SHA")
+    revisions = value["revisions"]
+    if not isinstance(revisions, list) or not revisions:
+        raise ManagerError("route journal revisions must be a non-empty array")
+    parent_hash = None
+    prior_resolution = None
+    for index, revision in enumerate(revisions):
+        location = "route journal revisions[%d]" % index
+        _exact_keys(revision, JOURNAL_REVISION_KEYS, location)
+        if revision["revision"] != index:
+            raise ManagerError("%s is not monotonic" % location)
+        if revision["parent_hash"] != parent_hash:
+            raise ManagerError("%s parent hash mismatch" % location)
+        expected_hash = _revision_hash(index, parent_hash, revision["body"])
+        if revision["revision_hash"] != expected_hash:
+            raise ManagerError("%s hash mismatch" % location)
+        body = revision["body"]
+        if index == 0:
+            _exact_keys(body, MIGRATION_BODY_KEYS, "%s.body" % location)
+            if body["kind"] != "migration":
+                raise ManagerError("route journal revision zero must be migration")
+            for key in ("pin_commit", "old_kit_sha", "new_kit_sha"):
+                if not isinstance(body[key], str) or not KIT_SHA.fullmatch(body[key]):
+                    raise ManagerError("migration %s is invalid" % key)
+            _timestamp(body["migrated_at"], "migration migrated_at")
+            _digest(body["legacy_plan_sha256"], "migration legacy plan digest")
+            _digest(body["policy_hash"], "migration policy hash")
+            try:
+                plan_blob = base64.b64decode(body["legacy_plan_b64"], validate=True)
+                legacy = json.loads(
+                    plan_blob.decode("utf-8"),
+                    object_pairs_hook=ROUTER._object_no_duplicates,
+                )
+            except (ValueError, UnicodeError, json.JSONDecodeError,
+                    ROUTER.RouterError) as exc:
+                raise ManagerError("invalid migration legacy plan: %s" % exc)
+            _validate_pin(
+                legacy,
+                catalog,
+                routes,
+                profile_map,
+                allow_historical_catalog=True,
+            )
+            if hashlib.sha256(plan_blob).hexdigest() != body["legacy_plan_sha256"]:
+                raise ManagerError("migration legacy plan digest mismatch")
+            if legacy["ticket"] != value["ticket"]:
+                raise ManagerError("migration ticket mismatch")
+            if legacy["kit_sha"] != body["old_kit_sha"]:
+                raise ManagerError("migration old kit SHA mismatch")
+            if body["new_kit_sha"] != value["kit_sha"]:
+                raise ManagerError("migration new kit SHA mismatch")
+            if legacy["resolution"]["policy_hash"] != body["policy_hash"]:
+                raise ManagerError("migration policy hash mismatch")
+            if legacy["resolution"]["selections"] != body["historical_selections"]:
+                raise ManagerError("migration historical selections mismatch")
+            prior_resolution = legacy["resolution"]
+        else:
+            _exact_keys(body, FALLBACK_BODY_KEYS, "%s.body" % location)
+            if body["kind"] != "fallback":
+                raise ManagerError("later route journal revisions must be fallback")
+            _timestamp(body["created_at"], "fallback created_at")
+            _digest(body["failed_manifest_digest"], "failed manifest digest")
+            _digest(body["approved_snapshot_digest"], "approved snapshot digest")
+            if body["reason"] not in FALLBACK_REASONS:
+                raise ManagerError("fallback reason is not eligible")
+            if not isinstance(body["approval_receipt"], dict):
+                raise ManagerError("fallback approval receipt must be an object")
+            if body["prior_resolution"] != prior_resolution:
+                raise ManagerError("fallback prior resolution mismatch")
+            try:
+                contributors = ROUTER.validate_contributor_families(
+                    body["contributor_families"]
+                )
+            except ROUTER.RouterError as exc:
+                raise ManagerError(str(exc))
+            new_resolution = body["new_resolution"]
+            if (
+                not isinstance(new_resolution, dict)
+                or new_resolution.get("schema") != "model-fallback-resolution/v2"
+                or new_resolution.get("contributor_families") != contributors
+            ):
+                raise ManagerError("fallback new resolution is invalid")
+            if new_resolution.get("prior_policy_hash") != prior_resolution["policy_hash"]:
+                raise ManagerError("fallback prior policy hash mismatch")
+            try:
+                ROUTER.validate_fallback_plan(
+                    new_resolution, catalog, routes, profile_map
+                )
+            except ROUTER.RouterError as exc:
+                raise ManagerError("invalid fallback resolution: %s" % exc)
+            prior_resolution = new_resolution
+        parent_hash = revision["revision_hash"]
+    return value
+
+
+def append_fallback_revision(journal, new_resolution, failed_manifest_digest,
+                             approved_snapshot_digest, reason, approval_receipt,
+                             created_at, catalog, routes, profile_map):
+    """Return a new journal value; never mutate or rewrite prior revisions."""
+    validate_journal(journal, catalog, routes, profile_map)
+    _timestamp(created_at, "fallback created_at")
+    _digest(failed_manifest_digest, "failed manifest digest")
+    _digest(approved_snapshot_digest, "approved snapshot digest")
+    if reason not in FALLBACK_REASONS:
+        raise ManagerError("fallback reason is not eligible")
+    if not isinstance(approval_receipt, dict):
+        raise ManagerError("fallback approval receipt must be an object")
+    if (
+        not isinstance(new_resolution, dict)
+        or new_resolution.get("schema") != "model-fallback-resolution/v2"
+    ):
+        raise ManagerError("new resolution must be a v2 fallback resolution")
+    try:
+        ROUTER.validate_fallback_plan(
+            new_resolution, catalog, routes, profile_map
+        )
+    except ROUTER.RouterError as exc:
+        raise ManagerError("invalid fallback resolution: %s" % exc)
+    if new_resolution["prior_policy_hash"] != active_resolution(journal)["policy_hash"]:
+        raise ManagerError("fallback resolution does not extend the journal head")
+    body = {
+        "approval_receipt": approval_receipt,
+        "approved_snapshot_digest": approved_snapshot_digest,
+        "contributor_families": new_resolution["contributor_families"],
+        "created_at": created_at,
+        "failed_manifest_digest": failed_manifest_digest,
+        "kind": "fallback",
+        "new_resolution": new_resolution,
+        "prior_resolution": active_resolution(journal),
+        "reason": reason,
+    }
+    result = dict(journal)
+    result["revisions"] = list(journal["revisions"])
+    number = len(result["revisions"])
+    parent_hash = result["revisions"][-1]["revision_hash"]
+    revision = {
+        "body": body,
+        "parent_hash": parent_hash,
+        "revision": number,
+    }
+    revision["revision_hash"] = _revision_hash(number, parent_hash, body)
+    result["revisions"].append(revision)
+    validate_journal(result, catalog, routes, profile_map)
+    return result
+
+
+def _load_plan_blob(path):
+    path = Path(path)
+    if not path.is_absolute():
+        raise ManagerError("legacy ticket plan path must be absolute")
+    _secure_file(path, expected_mode=0o644)
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ManagerError("cannot read legacy ticket plan: %s" % exc)
 
 
 def _common(parser):
@@ -373,6 +631,34 @@ def build_parser():
     select.add_argument("--ticket", required=True)
     select.add_argument("--kit-sha", required=True)
     select.add_argument("--role", required=True)
+    for name in ("migrate-plan", "migrate"):
+        migrate = commands.add_parser(name)
+        _common(migrate)
+        migrate.add_argument("--ticket-plan", required=True)
+        migrate.add_argument("--pin-commit", required=True)
+        migrate.add_argument("--kit-sha", required=True)
+        migrate.add_argument("--migrated-at", required=True)
+        if name == "migrate":
+            migrate.add_argument("--approve-hash", required=True)
+            migrate.add_argument("--output", required=True)
+    fallback_plan = commands.add_parser("fallback-plan")
+    _common(fallback_plan)
+    fallback_plan.add_argument("--ticket-plan", required=True)
+    fallback_plan.add_argument("--readiness", required=True)
+    fallback_plan.add_argument("--failed-role", required=True)
+    fallback_plan.add_argument("--failed-route", required=True)
+    fallback_plan.add_argument("--future-roles", required=True)
+    fallback_plan.add_argument("--contributors", required=True)
+    fallback = commands.add_parser("fallback")
+    _common(fallback)
+    fallback.add_argument("--ticket-plan", required=True)
+    fallback.add_argument("--resolution-file", required=True)
+    fallback.add_argument("--failed-manifest-digest", required=True)
+    fallback.add_argument("--snapshot-digest", required=True)
+    fallback.add_argument("--reason", required=True, choices=sorted(FALLBACK_REASONS))
+    fallback.add_argument("--approval-receipt", required=True)
+    fallback.add_argument("--created-at", required=True)
+    fallback.add_argument("--output", required=True)
     return parser
 
 
@@ -549,18 +835,111 @@ def run(args):
         }
         _atomic_write(output, value, mode=0o644)
         return value
+    if args.command in ("migrate-plan", "migrate"):
+        journal = migrate_v1_plan(
+            _load_plan_blob(args.ticket_plan),
+            args.pin_commit,
+            args.kit_sha,
+            args.migrated_at,
+            catalog,
+            routes,
+            profile_map,
+        )
+        preview_hash = ROUTER.content_hash(journal)
+        if args.command == "migrate-plan":
+            return {
+                "journal": journal,
+                "preview_hash": preview_hash,
+                "schema": "ticket-model-route-migration-preview/v1",
+            }
+        if args.approve_hash != preview_hash:
+            raise ManagerError("approved hash does not match migration preview")
+        output = Path(args.output)
+        if not output.is_absolute():
+            raise ManagerError("--output must be an absolute path")
+        existing = _load_secure_json(output, required=False, expected_mode=0o644)
+        if existing is not None:
+            if existing.get("schema") == "ticket-model-route-journal/v2":
+                validate_journal(existing, catalog, routes, profile_map)
+                if existing != journal:
+                    raise ManagerError("existing route journal differs from migration")
+                return existing
+            if output.resolve() != Path(args.ticket_plan).resolve():
+                raise ManagerError("migration may replace only its exact v1 plan")
+        _atomic_write(output, journal, mode=0o644)
+        return journal
+    if args.command == "fallback-plan":
+        journal = _load_secure_json(
+            Path(args.ticket_plan), expected_mode=0o644
+        )
+        validate_journal(journal, catalog, routes, profile_map)
+        prior = active_resolution(journal)
+        profile = profile_map.get(prior["profile_id"])
+        if profile is None:
+            raise ManagerError("journal references an unknown profile")
+        readiness = _parse_json_argument(args.readiness, "readiness")
+        future_roles = _parse_json_argument(args.future_roles, "future roles")
+        contributors = _parse_json_argument(args.contributors, "contributors")
+        try:
+            return ROUTER.resolve_fallback_policy(
+                catalog,
+                routes,
+                profile,
+                readiness,
+                prior,
+                args.failed_role,
+                args.failed_route,
+                future_roles,
+                contributors,
+            )
+        except ROUTER.RouterError as exc:
+            raise ManagerError(str(exc))
+    if args.command == "fallback":
+        journal_path = Path(args.ticket_plan)
+        journal = _load_secure_json(journal_path, expected_mode=0o644)
+        validate_journal(journal, catalog, routes, profile_map)
+        resolution = _load_secure_json(Path(args.resolution_file))
+        approval = _parse_json_argument(args.approval_receipt, "approval receipt")
+        result = append_fallback_revision(
+            journal,
+            resolution,
+            args.failed_manifest_digest,
+            args.snapshot_digest,
+            args.reason,
+            approval,
+            args.created_at,
+            catalog,
+            routes,
+            profile_map,
+        )
+        output = Path(args.output)
+        if output.resolve() != journal_path.resolve():
+            raise ManagerError("fallback output must replace the ticket journal")
+        _atomic_write(output, result, mode=0o644)
+        return result
     if args.command == "select":
         if args.role not in ROUTER.ROLES:
             raise ManagerError("unknown role: %s" % args.role)
         if not isinstance(args.ticket, str) or not TICKET.fullmatch(args.ticket):
             raise ManagerError("--ticket must match T-[0-9]+")
         value = _load_secure_json(Path(args.ticket_plan), expected_mode=0o644)
-        _validate_pin(value, catalog, routes, profile_map)
-        if value["ticket"] != args.ticket:
+        if value.get("schema") == "ticket-model-route-plan/v1":
+            _validate_pin(value, catalog, routes, profile_map)
+            resolution = value["resolution"]
+            ticket = value["ticket"]
+            kit_sha = value["kit_sha"]
+        elif value.get("schema") == "ticket-model-route-journal/v2":
+            validate_journal(value, catalog, routes, profile_map)
+            resolution = active_resolution(value)
+            ticket = value["ticket"]
+            kit_sha = value["kit_sha"]
+        else:
+            raise ManagerError("unsupported ticket route document schema")
+        if ticket != args.ticket:
             raise ManagerError("ticket plan ticket mismatch")
-        if value["kit_sha"] != args.kit_sha:
+        if kit_sha != args.kit_sha:
             raise ManagerError("ticket plan kit SHA mismatch")
-        return value["resolution"]["selections"][args.role]
+        return resolution["selections"][args.role]
     raise ManagerError("unsupported command")
 
 

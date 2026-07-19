@@ -5,6 +5,23 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.4.0 — 2026-07-18
+
+- Adds explicit v1 route-plan migration and append-only v2 route journals.
+- Adds read-only fallback previews and one-use Linear-approved fallback for the
+  latest terminal quota or provider-availability failure.
+- Preserves an approved failed-attempt snapshot in a trusted handoff commit,
+  charges every GO-issued attempt, and binds retries to monotonic revisions.
+- Enforces boundary-specific contributor-family separation; cross-family
+  producer continuation refuses unless a certified third family preserves the
+  downstream independent check.
+- Extends attestations to bind the complete revision and failed-attempt chain
+  while retaining contract-1.3 receipt validation.
+- Makes `balanced-v2` the no-record model profile with high-effort production
+  and Reviewer roles plus Cursor Fable Thinking Medium secondaries for
+  Spec-linter and Test-author. Historical catalog hashes remain migration-only
+  and require exact current route-tuple compatibility.
+
 ## 1.3.0 — 2026-07-17
 
 - Adds exact-grammar `ticket-attest` actions for bundle, Linear approval, and
