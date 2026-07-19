@@ -62,10 +62,13 @@ PY
   json_error "FACTORY_PROJECT is required"
 
 manager() {
+  local -a policy_args=()
+  [[ -z "${FACTORY_MODEL_POLICY_FILE:-}" ]] ||
+    policy_args=(--policy-file "$FACTORY_MODEL_POLICY_FILE")
   python3 -B "$FACTORY_MODEL_MANAGER" "$1" \
     --state-root "$FACTORY_MODEL_STATE_ROOT" --project "$FACTORY_PROJECT" \
     --catalog "$FACTORY_MODEL_CATALOG" \
-    --profiles-file "$FACTORY_MODEL_PROFILES" "${@:2}"
+    --profiles-file "$FACTORY_MODEL_PROFILES" "${policy_args[@]}" "${@:2}"
 }
 
 load_machine_config() {
@@ -165,8 +168,41 @@ command_name="${1:-}"
 shift
 
 case "$command_name" in
-  profiles|status)
+  profiles|status|policy-candidates|reviewer-exception-contract)
     manager "$command_name" "$@" || json_error "$command_name failed"
+    ;;
+  policy-preview|policy-apply)
+    [[ "${FACTORY_ROOT:-}" == /* ]] ||
+      json_error "FACTORY_ROOT must be an absolute path"
+    product_root="$(cd "$FACTORY_ROOT" 2>/dev/null && pwd -P)" ||
+      json_error "FACTORY_ROOT is unavailable"
+    [[ "$product_root" == "$FACTORY_ROOT" ]] ||
+      json_error "FACTORY_ROOT must be physical"
+    git_top="$(git -C "$FACTORY_ROOT" rev-parse --show-toplevel 2>/dev/null)" ||
+      json_error "FACTORY_ROOT must be a git worktree"
+    git_top="$(cd "$git_top" && pwd -P)"
+    [[ "$git_top" == "$FACTORY_ROOT" ]] ||
+      json_error "FACTORY_ROOT must be the exact worktree root"
+    expected_policy="$FACTORY_ROOT/factory/model-policy.json"
+    [[ "$FACTORY_MODEL_POLICY_FILE" == "$expected_policy" ]] ||
+      json_error "model policy path must be product-owned factory/model-policy.json"
+    manager "$command_name" "$@" || json_error "$command_name failed"
+    ;;
+  ticket-status)
+    ticket=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ticket) [[ $# -ge 2 ]] || json_error "--ticket requires a value"; ticket="$2"; shift 2 ;;
+        *) json_error "unknown ticket-status argument: $1" ;;
+      esac
+    done
+    [[ "$ticket" =~ ^T-[0-9]+$ ]] || json_error "ticket must match T-NNN"
+    [[ "${FACTORY_ROOT:-}" == /* ]] ||
+      json_error "FACTORY_ROOT must be an absolute path"
+    ticket_file="$FACTORY_ROOT/factory/tickets/$ticket.md"
+    ticket_plan="$FACTORY_ROOT/factory/route-plans/$ticket.json"
+    manager ticket-status --ticket "$ticket" --ticket-file "$ticket_file" \
+      --ticket-plan "$ticket_plan" || json_error "ticket-status failed"
     ;;
   activate|disable|enable)
     manager "$command_name" "$@" || json_error "$command_name failed"

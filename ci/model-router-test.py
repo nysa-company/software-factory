@@ -40,6 +40,23 @@ class ModelRouterTest(unittest.TestCase):
             readiness if readiness is not None else self.readiness(),
         )
 
+    def model_policy(self):
+        portfolio = self.profile_map["balanced-v2"]["portfolios"][0]
+        return {
+            "checking_family": portfolio["checking_family"],
+            "production_family": portfolio["production_family"],
+            "roles": {
+                role: {
+                    "effort": value["effort"],
+                    "primary_route_id": value["candidates"][0],
+                    "secondary_route_id": value["candidates"][1],
+                }
+                for role, value in portfolio["roles"].items()
+            },
+            "schema": "factory-model-policy/v1",
+            "version": 1,
+        }
+
     def test_catalog_has_exact_current_routes_and_disabled_experimental_kimi(self):
         self.assertEqual(
             set(self.routes),
@@ -325,6 +342,55 @@ class ModelRouterTest(unittest.TestCase):
             ROUTER.DEFAULT_PROFILES.read_text().strip(),
             ROUTER.canonical_json(self.profiles),
         )
+
+    def test_project_policy_enforces_routes_lanes_family_and_effort(self):
+        policy = self.model_policy()
+        profile = ROUTER.model_policy_profile(policy, self.routes)
+        plan = ROUTER.resolve_policy(
+            self.catalog, self.routes, profile, self.readiness(), policy
+        )
+        self.assertEqual(plan["schema"], "model-resolution-plan/v2")
+        ROUTER.validate_plan(plan, self.catalog, self.routes, self.profile_map)
+        for mutate, message in (
+            (
+                lambda value: value["roles"]["planner"].update(
+                    secondary_route_id="claude-sonnet"
+                ),
+                "secondary route",
+            ),
+            (
+                lambda value: value["roles"]["reviewer"].update(
+                    primary_route_id="codex-gpt-5.6-sol",
+                    secondary_route_id="cursor-gpt-5.6-sol-high",
+                ),
+                "outside",
+            ),
+            (
+                lambda value: value["roles"]["planner"].update(
+                    primary_route_id="claude-kimi-moonshotai-kimi-k2.6"
+                ),
+                "enabled stable",
+            ),
+            (
+                lambda value: value["roles"]["builder"].update(effort="auto"),
+                "unsupported",
+            ),
+        ):
+            with self.subTest(message=message):
+                malformed = copy.deepcopy(policy)
+                mutate(malformed)
+                with self.assertRaisesRegex(ROUTER.RouterError, message):
+                    ROUTER.validate_model_policy(malformed, self.routes)
+
+    def test_project_policy_resolution_is_readiness_fail_closed(self):
+        policy = self.model_policy()
+        profile = ROUTER.model_policy_profile(policy, self.routes)
+        readiness = self.readiness()
+        del readiness[policy["roles"]["planner"]["primary_route_id"]]
+        with self.assertRaisesRegex(ROUTER.RouterError, "UNKNOWN"):
+            ROUTER.resolve_policy(
+                self.catalog, self.routes, profile, readiness, policy
+            )
 
     def test_history_aware_fallback_excludes_failed_route_and_resolves_future_roles(self):
         prior = self.resolve()

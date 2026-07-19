@@ -106,6 +106,42 @@ class ModelControlTest(unittest.TestCase):
             self.fail("model-control failed: %s %s" % (result.stdout, result.stderr))
         return result
 
+    def model_policy(self):
+        return {
+            "checking_family": "anthropic",
+            "production_family": "openai",
+            "roles": {
+                "planner": {
+                    "effort": "high",
+                    "primary_route_id": "codex-gpt-5.6-sol",
+                    "secondary_route_id": "cursor-gpt-5.6-sol-high",
+                },
+                **{
+                    role: {
+                        "effort": "medium",
+                        "primary_route_id": "codex-gpt-5.6-terra",
+                        "secondary_route_id": "cursor-gpt-5.6-sol-high",
+                    }
+                    for role in ("builder", "narrator")
+                },
+                **{
+                    role: {
+                        "effort": "medium",
+                        "primary_route_id": "claude-fable",
+                        "secondary_route_id": "cursor-claude-fable-5-thinking-medium",
+                    }
+                    for role in ("spec-linter", "test-author")
+                },
+                "reviewer": {
+                    "effort": "high",
+                    "primary_route_id": "claude-sonnet",
+                    "secondary_route_id": "cursor-claude-sonnet-5-thinking-high",
+                },
+            },
+            "schema": "factory-model-policy/v1",
+            "version": 1,
+        }
+
     def test_plan_resolves_all_six_roles_and_honors_profile(self):
         default = json.loads(self.command("plan").stdout)
         selected = json.loads(
@@ -115,6 +151,40 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual(default["profile_id"], "balanced-v2")
         self.assertEqual(selected["profile_id"], "claude-priority-v1")
         self.assertEqual(selected["selections"]["planner"]["adapter"], "claude-code")
+
+    def test_policy_candidates_preview_cas_apply_and_ticket_status_api(self):
+        candidates = json.loads(self.command("policy-candidates").stdout)
+        self.assertFalse(candidates["reviewer_exception"]["supported"])
+        policy = json.dumps(self.model_policy(), sort_keys=True, separators=(",", ":"))
+        preview = json.loads(
+            self.command("policy-preview", "--policy", policy).stdout
+        )
+        stale = self.command(
+            "policy-apply",
+            "--policy", policy,
+            "--expected-current-hash", "0" * 64,
+            "--approve-hash", preview["preview_hash"],
+            check=False,
+        )
+        self.assertEqual(stale.returncode, 2)
+        applied = json.loads(
+            self.command(
+                "policy-apply",
+                "--policy", policy,
+                "--expected-current-hash", preview["current_policy_hash"],
+                "--approve-hash", preview["preview_hash"],
+            ).stdout
+        )
+        self.assertRegex(applied["policy_hash"], r"^[0-9a-f]{64}$")
+        plan = json.loads(self.command("plan").stdout)
+        self.assertEqual(plan["schema"], "model-resolution-plan/v2")
+        self.assertEqual(plan["profile_id"], "project-policy")
+
+        status = json.loads(
+            self.command("ticket-status", "--ticket", "T-901").stdout
+        )
+        self.assertEqual(status["state"], "Ready")
+        self.assertEqual(status["route_plan_status"], "absent")
 
     def test_pin_records_affinity_and_plan_in_one_commit_pushes_and_is_idempotent(self):
         before = subprocess.check_output(
