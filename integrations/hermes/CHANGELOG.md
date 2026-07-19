@@ -5,6 +5,17 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.5.0 — 2026-07-19
+
+- Adds fixed read-only operator snapshots for workflow, envelope, and spend.
+- Adds project-owned six-role model policy preview/apply and ticket status.
+- Adds role-specific envelope limits and bounded preview-hashed overrides.
+- Adds targeted pre/post-GO attempt cancellation with conservative accounting.
+- Allows a same-family Reviewer only through an exact one-use Linear-approved
+  fallback preview; normal family separation remains unchanged.
+- Adds the loopback-only multi-project operator console and retains project
+  isolation through the installed launcher.
+
 ## 1.4.0 — 2026-07-18
 
 - Adds explicit v1 route-plan migration and append-only v2 route journals.

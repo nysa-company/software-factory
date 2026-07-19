@@ -1,20 +1,20 @@
 ---
 name: factory-dispatch
-version: 1.4.0
+version: 1.5.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
 # Factory dispatch
 
 This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
-through `1.4.0`.
+through `1.5.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
 
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
-3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, or `1.4.0` and a supported Hermes version.
+3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, `1.4.0`, or `1.5.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
@@ -27,9 +27,9 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
-Contract `1.0.0`, and contracts `1.1.0` through `1.4.0` with
+Contract `1.0.0`, and contracts `1.1.0` through `1.5.0` with
 `max_concurrent_tickets: 1`, retain the original one-ticket flow below.
-Contracts `1.2.0` through `1.4.0` inherit `1.1.0` lease behavior unchanged. When one reports
+Contracts `1.2.0` through `1.5.0` inherit `1.1.0` lease behavior unchanged. When one reports
 `max_concurrent_tickets: 2`, claim each ticket before preflight:
 
 ```text

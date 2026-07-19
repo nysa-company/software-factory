@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|models|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -324,7 +324,7 @@ for key in required:
     if not isinstance(item, str) or not item or "\n" in item or "\r" in item or "\t" in item:
         raise SystemExit(1)
 optional = (value.get("receipt_id", ""), value.get("product_tree", ""))
-if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0"):
+if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0"):
     for item in optional:
         if not isinstance(item, str) or not item or any(ch in item for ch in "\n\r\t"):
             raise SystemExit(1)
@@ -363,13 +363,13 @@ EOF
 [[ "$KIT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
   die "active kit tree is not a lowercase full object ID"
 case "$ACTIVE_CONTRACT" in
-  1.0.0|1.1.0|1.2.0|1.3.0|1.4.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
+  1.0.0|1.1.0|1.2.0|1.3.0|1.4.0|1.5.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
   *) die "active Hermes contract is incompatible" ;;
 esac
 
 CERTIFIED_PRODUCT_ORIGIN=""
 if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
-      "$CONTRACT_VERSION" == "1.4.0" ]]; then
+      "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]]; then
   [[ "$RECEIPT_ID" =~ ^[0-9a-f]{64}$ ]] ||
     die "contract 1.2 active record lacks a valid receipt binding"
   [[ "$ACTIVE_PRODUCT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
@@ -538,6 +538,7 @@ HELPER_ENV=(
   "FACTORY_ROOT=$PRODUCT_ROOT"
   "FACTORY_MODEL_STATE_ROOT=$KITS_ROOT/projects"
   "FACTORY_PROJECT=$PROJECT"
+  "FACTORY_MODEL_POLICY_FILE=$PRODUCT_ROOT/factory/model-policy.json"
   "FACTORY_RELEASE_SHA=$KIT_SHA"
   "FACTORY_RELEASE_TREE=$KIT_TREE"
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
@@ -591,7 +592,7 @@ validate_ticket_command() {
   [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
   TICKET="$2"
   if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
-        "$CONTRACT_VERSION" == "1.4.0" ]] &&
+        "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] &&
      [[ -z "$TICKET_WORKDIR" ]]; then
     die "contract $CONTRACT_VERSION requires a ticket workdir"
   fi
@@ -605,7 +606,8 @@ validate_ticket_command() {
 add_dispatch_lease_env() {
   if [[ -n "${1:-}" ]]; then
     [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ||
-       "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ]] ||
+       "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
+       "$CONTRACT_VERSION" == "1.5.0" ]] ||
       die "dispatcher leases require contract 1.1.0 or newer"
     HELPER_ENV+=("FACTORY_DISPATCH_LEASE_ID=$1")
   fi
@@ -613,7 +615,7 @@ add_dispatch_lease_env() {
 
 add_certified_origin_env() {
   [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
-     "$CONTRACT_VERSION" == "1.4.0" ]] || return 0
+     "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] || return 0
   [[ -n "$CERTIFIED_PRODUCT_ORIGIN" ]] ||
     die "certified product origin is unavailable"
   HELPER_ENV+=("FACTORY_CERTIFIED_PRODUCT_ORIGIN=$CERTIFIED_PRODUCT_ORIGIN")
@@ -621,7 +623,8 @@ add_certified_origin_env() {
 
 validate_lease_command() {
   [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ||
-     "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ]] ||
+     "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
+     "$CONTRACT_VERSION" == "1.5.0" ]] ||
     die "dispatcher leases require contract 1.1.0 or newer"
   LEASE_ID=""
   if [[ "$1" == "claim" ]]; then
@@ -749,7 +752,7 @@ validate_ticket_worktree() {
     die "worktree branch does not match the requested ticket"
   if [[ "$allow_dirty" -ne 1 ]] &&
      [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
-        "$CONTRACT_VERSION" == "1.4.0" ]]; then
+        "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]]; then
     worktree_status="$(git -C "$RESOLVED_WORKDIR" status --porcelain \
       --untracked-files=all --ignore-submodules=none)" ||
       die "ticket worktree cannot be inspected"
@@ -891,7 +894,7 @@ PY
     ;;
   models)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
-       "$CONTRACT_VERSION" == "1.4.0" ]] ||
+       "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] ||
       die "models requires contract 1.2.0 or newer"
     [[ $# -ge 2 ]] || usage
     MODEL_ACTION="$1"
@@ -900,6 +903,39 @@ PY
       profiles|status)
         [[ $# -eq 2 && "$2" == "--json" ]] || usage
         MODEL_ARGS=("$MODEL_ACTION")
+        ;;
+      policy-candidates|reviewer-exception-contract)
+        [[ "$CONTRACT_VERSION" == "1.5.0" ]] ||
+          die "$MODEL_ACTION requires contract 1.5.0"
+        [[ $# -eq 2 && "$2" == "--json" ]] || usage
+        MODEL_ARGS=("$MODEL_ACTION")
+        ;;
+      ticket-status)
+        [[ "$CONTRACT_VERSION" == "1.5.0" ]] ||
+          die "model ticket status requires contract 1.5.0"
+        [[ $# -eq 4 && "$2" == "--ticket" && "$4" == "--json" ]] || usage
+        [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+        MODEL_ARGS=("$MODEL_ACTION" --ticket "$3")
+        ;;
+      policy-preview)
+        [[ "$CONTRACT_VERSION" == "1.5.0" ]] ||
+          die "model policy preview requires contract 1.5.0"
+        [[ $# -eq 4 && "$2" == "--policy" && "$4" == "--json" ]] || usage
+        [[ ${#3} -le 65536 ]] || die "model policy payload is oversized"
+        MODEL_ARGS=("$MODEL_ACTION" --policy "$3")
+        ;;
+      policy-apply)
+        [[ "$CONTRACT_VERSION" == "1.5.0" ]] ||
+          die "model policy apply requires contract 1.5.0"
+        [[ $# -eq 8 && "$2" == "--policy" &&
+           "$4" == "--expected-current-hash" &&
+           "$6" == "--approve-hash" && "$8" == "--json" ]] || usage
+        [[ ${#3} -le 65536 ]] || die "model policy payload is oversized"
+        [[ "$5" =~ ^[0-9a-f]{64}$ && "$7" =~ ^[0-9a-f]{64}$ ]] ||
+          die "model policy hashes are invalid"
+        MODEL_ARGS=("$MODEL_ACTION" --policy "$3" \
+          --expected-current-hash "$5" --approve-hash "$7")
+        MODEL_MUTATION=1
         ;;
       plan)
         if [[ $# -eq 2 && "$2" == "--json" ]]; then
@@ -964,8 +1000,8 @@ PY
         MODEL_MUTATION=1
         ;;
       migrate-plan)
-        [[ "$CONTRACT_VERSION" == "1.4.0" ]] ||
-          die "model route migration requires contract 1.4.0"
+        [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] ||
+          die "model route migration requires contract 1.4.0 or newer"
         [[ $# -eq 6 && "$2" == "--ticket" && "$4" == "--workdir" &&
            "$6" == "--json" ]] || usage
         [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
@@ -975,8 +1011,8 @@ PY
         add_certified_origin_env
         ;;
       migrate)
-        [[ "$CONTRACT_VERSION" == "1.4.0" ]] ||
-          die "model route migration requires contract 1.4.0"
+        [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] ||
+          die "model route migration requires contract 1.4.0 or newer"
         [[ $# -eq 10 && "$2" == "--ticket" && "$4" == "--workdir" &&
            "$6" == "--approve-hash" && "$8" == "--approved-by" &&
            "${10}" == "--json" ]] || usage
@@ -992,11 +1028,23 @@ PY
         MODEL_MUTATION=1
         ;;
       fallback-plan|fallback)
-        [[ "$CONTRACT_VERSION" == "1.4.0" ]] ||
-          die "mid-ticket model fallback requires contract 1.4.0"
-        [[ $# -eq 10 && "$2" == "--ticket" && "$4" == "--failed-run" &&
-           "$6" == "--workdir" && "$8" == "--reason" &&
-           "${10}" == "--json" ]] || usage
+        [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] ||
+          die "mid-ticket model fallback requires contract 1.4.0 or newer"
+        [[ ( $# -eq 10 || $# -eq 12 ) &&
+           "$2" == "--ticket" && "$4" == "--failed-run" &&
+           "$6" == "--workdir" && "$8" == "--reason" ]] || usage
+        if [[ $# -eq 10 ]]; then
+          [[ "${10}" == "--json" ]] || usage
+          MODEL_REVIEWER_EXCEPTION_ARGS=()
+        else
+          [[ "${10}" == "--allow-reviewer-family" && "${12}" == "--json" ]] ||
+            usage
+          [[ "${11}" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]] ||
+            die "invalid Reviewer exception family"
+          MODEL_REVIEWER_EXCEPTION_ARGS=(
+            --allow-reviewer-family "${11}"
+          )
+        fi
         [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
         [[ "$5" =~ ^[A-Za-z0-9._-]{1,200}$ ]] || die "invalid failed run identifier"
         [[ "$9" == "credits_exhausted" || "$9" == "provider_unavailable" ]] ||
@@ -1004,7 +1052,8 @@ PY
         resolve_product_workdir "$7"
         validate_ticket_worktree "$3" 1
         MODEL_ARGS=("$MODEL_ACTION" --ticket "$3" --failed-run "$5" \
-          --workdir "$RESOLVED_WORKDIR" --reason "$9")
+          --workdir "$RESOLVED_WORKDIR" --reason "$9" \
+          "${MODEL_REVIEWER_EXCEPTION_ARGS[@]}")
         add_certified_origin_env
         if [[ "$MODEL_ACTION" == "fallback" ]]; then
           MODEL_MUTATION=1
@@ -1037,6 +1086,189 @@ PY
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec "${MODEL_HELPER_ENV[@]}" /bin/bash "$MODEL_HELPER" "${MODEL_ARGS[@]}"
+    ;;
+  operator-snapshot)
+    [[ "$CONTRACT_VERSION" == "1.5.0" ]] ||
+      die "operator snapshots require contract 1.5.0"
+    [[ $# -eq 2 && "$1" =~ ^(workflow|envelope|spend)$ &&
+       "$2" == "--json" ]] || usage
+    SNAPSHOT_HELPER="$RELEASE_PATH/scripts/operator-state.py"
+    require_managed_file "$SNAPSHOT_HELPER" "active release operator snapshot helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$SNAPSHOT_HELPER" "$1"
+    ;;
+  envelope)
+    [[ "$CONTRACT_VERSION" == "1.5.0" ]] ||
+      die "envelope control requires contract 1.5.0"
+    [[ $# -ge 2 ]] || usage
+    ENVELOPE_ACTION="$1"
+    [[ "${!#}" == "--json" ]] || usage
+    set -- "${@:1:$(($# - 1))}"
+    shift
+    ENVELOPE_ARGS=("$ENVELOPE_ACTION" --factory-root "$PRODUCT_ROOT")
+    ENVELOPE_MUTATION=0
+    case "$ENVELOPE_ACTION" in
+      inspect)
+        [[ $# -eq 0 ]] || usage
+        ;;
+      plan|apply)
+        [[ "$ENVELOPE_ACTION" != "apply" ]] || ENVELOPE_MUTATION=1
+        ENVELOPE_SET_COUNT=0
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --set)
+              [[ $# -ge 2 && "$2" =~ ^[A-Z][A-Z0-9_]{0,99}=[0-9]{1,7}([.][0-9]{1,6})?$ ]] ||
+                die "invalid envelope setting"
+              ENVELOPE_ARGS+=(--set "$2")
+              ENVELOPE_SET_COUNT=$((ENVELOPE_SET_COUNT + 1))
+              shift 2
+              ;;
+            --approve-hash)
+              [[ "$ENVELOPE_ACTION" == "apply" && $# -ge 2 &&
+                 "$2" =~ ^[0-9a-f]{64}$ ]] || die "invalid envelope approval hash"
+              ENVELOPE_ARGS+=(--approve-hash "$2")
+              shift 2
+              ;;
+            *) usage ;;
+          esac
+        done
+        [[ "$ENVELOPE_SET_COUNT" -gt 0 ]] || die "envelope change is empty"
+        ;;
+      override-plan|override-apply)
+        [[ "$ENVELOPE_ACTION" != "override-apply" ]] || ENVELOPE_MUTATION=1
+        ENVELOPE_SCOPE=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --scope)
+              [[ $# -ge 2 && "$2" =~ ^(next-attempt|ticket|role|product-day|global-day)$ ]] ||
+                die "invalid envelope override scope"
+              ENVELOPE_SCOPE="$2"
+              ENVELOPE_ARGS+=(--scope "$2")
+              shift 2
+              ;;
+            --ticket)
+              [[ $# -ge 2 && "$2" =~ ^T-[0-9]+$ ]] ||
+                die "invalid envelope override ticket"
+              ENVELOPE_ARGS+=(--ticket "$2")
+              shift 2
+              ;;
+            --role)
+              [[ $# -ge 2 && "$2" =~ ^(planner|builder|narrator|spec-linter|test-author|reviewer)$ ]] ||
+                die "invalid envelope override role"
+              ENVELOPE_ARGS+=(--role "$2")
+              shift 2
+              ;;
+            --day)
+              [[ $# -ge 2 && "$2" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] ||
+                die "invalid envelope override day"
+              ENVELOPE_ARGS+=(--day "$2")
+              shift 2
+              ;;
+            --issued-at|--expires-at)
+              [[ $# -ge 2 && "$2" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+                die "invalid envelope override timestamp"
+              ENVELOPE_ARGS+=("$1" "$2")
+              shift 2
+              ;;
+            --operator-id)
+              [[ $# -ge 2 && "$2" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ &&
+                 "$2" != "auto" ]] || die "invalid envelope override operator"
+              ENVELOPE_ARGS+=(--operator-id "$2")
+              shift 2
+              ;;
+            --reason)
+              [[ $# -ge 2 && "$2" =~ ^(budget_exhausted|operator_requested)$ ]] ||
+                die "invalid envelope override reason"
+              ENVELOPE_ARGS+=(--reason "$2")
+              shift 2
+              ;;
+            --set)
+              [[ $# -ge 2 && "$2" =~ ^[A-Z][A-Z0-9_]{0,99}=[0-9]{1,7}([.][0-9]{1,6})?$ ]] ||
+                die "invalid envelope override setting"
+              ENVELOPE_ARGS+=(--set "$2")
+              shift 2
+              ;;
+            --approve-hash)
+              [[ "$ENVELOPE_ACTION" == "override-apply" && $# -ge 2 &&
+                 "$2" =~ ^[0-9a-f]{64}$ ]] ||
+                die "invalid envelope override approval hash"
+              ENVELOPE_ARGS+=(--approve-hash "$2")
+              shift 2
+              ;;
+            *) usage ;;
+          esac
+        done
+        [[ -n "$ENVELOPE_SCOPE" ]] || die "envelope override scope is required"
+        if [[ "$ENVELOPE_SCOPE" == "global-day" ]]; then
+          ENVELOPE_ARGS+=(--global-env "$HOME/.factory/global.env")
+        fi
+        ;;
+      *) usage ;;
+    esac
+    if [[ "$ENVELOPE_MUTATION" -eq 1 &&
+          -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]]; then
+      die "product is in maintenance; envelope mutation refused"
+    fi
+    ENVELOPE_HELPER="$RELEASE_PATH/scripts/envelope-control.py"
+    require_managed_file "$ENVELOPE_HELPER" "active release envelope-control helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \
+      "$ENVELOPE_HELPER" "${ENVELOPE_ARGS[@]}"
+    ;;
+  attempt)
+    [[ "$CONTRACT_VERSION" == "1.5.0" ]] ||
+      die "attempt control requires contract 1.5.0"
+    [[ $# -ge 8 ]] || usage
+    ATTEMPT_ACTION="$1"
+    [[ "$2" == "--ticket" && "$4" == "--run" &&
+       "$6" == "--reason" ]] || usage
+    [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid attempt ticket"
+    [[ "$5" =~ ^[A-Za-z0-9._-]{1,200}$ ]] || die "invalid attempt run"
+    [[ "$7" =~ ^(budget_exhausted|operator_requested)$ ]] ||
+      die "invalid attempt cancellation reason"
+    ATTEMPT_HELPER="$RELEASE_PATH/scripts/attempt-cancel.py"
+    require_managed_file "$ATTEMPT_HELPER" "active release attempt-control helper"
+    if [[ "$ATTEMPT_ACTION" == "cancel-plan" ]]; then
+      [[ $# -eq 8 && "$8" == "--json" ]] || usage
+      cleanup_runtime
+      trap - EXIT HUP INT TERM
+      exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$ATTEMPT_HELPER" preview \
+        --factory-root "$PRODUCT_ROOT" --ticket "$3" --run-id "$5" --reason "$7"
+    elif [[ "$ATTEMPT_ACTION" == "cancel" ]]; then
+      [[ $# -eq 10 && "$8" == "--approve-hash" && "${10}" == "--json" &&
+         "$9" =~ ^[0-9a-f]{64}$ ]] || usage
+      [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
+        die "product is in maintenance; attempt cancellation refused"
+      ATTEMPT_PLAN="$(mktemp "$SAFE_TMPDIR/.attempt-cancel.XXXXXX")" ||
+        die "could not allocate cancellation preview"
+      RAW_OUTPUT_FILE="$ATTEMPT_PLAN"
+      "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$ATTEMPT_HELPER" preview \
+        --factory-root "$PRODUCT_ROOT" --ticket "$3" --run-id "$5" --reason "$7" \
+        > "$ATTEMPT_PLAN" || die "attempt cancellation preview failed"
+      ATTEMPT_HASH="$("$PYTHON_BIN" -I -S - "$ATTEMPT_PLAN" <<'PY'
+import json, re, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+digest = value.get("preview_hash", "")
+if not re.fullmatch(r"[0-9a-f]{64}", digest):
+    raise SystemExit(2)
+print(digest)
+PY
+)" || die "attempt cancellation preview is malformed"
+      [[ "$ATTEMPT_HASH" == "$9" ]] || die "attempt cancellation preview changed"
+      RAW_OUTPUT_FILE=""
+      "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$ATTEMPT_HELPER" apply \
+        --factory-root "$PRODUCT_ROOT" --plan "$ATTEMPT_PLAN" \
+        --preview-hash "$9"
+      ATTEMPT_RC=$?
+      rm -f "$ATTEMPT_PLAN"
+      cleanup_runtime
+      trap - EXIT HUP INT TERM
+      exit "$ATTEMPT_RC"
+    else
+      usage
+    fi
     ;;
   preflight)
     validate_ticket_command "$@"
@@ -1080,7 +1312,7 @@ PY
     ;;
   ticket-state)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
-       "$CONTRACT_VERSION" == "1.4.0" ]] ||
+       "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] ||
       die "ticket-state requires contract 1.2.0 or newer"
     if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
           "$5" == "--action" && "$7" == "--json" ]]; then
@@ -1115,7 +1347,8 @@ PY
     fi
     ;;
   ticket-attest)
-    [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ]] ||
+    [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
+       "$CONTRACT_VERSION" == "1.5.0" ]] ||
       die "ticket-attest requires contract 1.3.0 or newer"
     ATTEST_LEASE=""
     if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
@@ -1160,7 +1393,7 @@ PY
     ;;
   project-ledger)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
-       "$CONTRACT_VERSION" == "1.4.0" ]] ||
+       "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ]] ||
       die "project-ledger requires contract 1.2.0 or newer"
     [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--workdir" && "$5" == "--json" ]] || usage
     PROJECT_TICKET="$2"

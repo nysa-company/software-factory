@@ -67,6 +67,14 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
 
 
+def emit(value):
+    project = os.environ.get("FACTORY_PROJECT")
+    if project:
+        value = dict(value)
+        value["project"] = project
+    print(canonical(value).decode())
+
+
 def digest(value):
     return hashlib.sha256(value).hexdigest()
 
@@ -447,12 +455,12 @@ def inspect_command(args):
         "schema": "factory-envelope-inspect/v1",
         "values": values,
     }
-    print(canonical(result).decode())
+    emit(result)
 
 
 def plan_command(args):
     _, preview, _, _ = envelope_preview(Path(args.factory_root), changes_from_args(args.set))
-    print(canonical(preview).decode())
+    emit(preview)
 
 
 def apply_command(args):
@@ -479,7 +487,7 @@ def apply_command(args):
             raise
         result = dict(preview)
         result["status"] = "applied"
-        print(canonical(result).decode())
+        emit(result)
     finally:
         if lock is not None:
             lock.rmdir()
@@ -566,7 +574,7 @@ def override_preview(args):
 
 def override_plan_command(args):
     _, preview = override_preview(args)
-    print(canonical(preview).decode())
+    emit(preview)
 
 
 def exclusive_record(path, content):
@@ -619,7 +627,7 @@ def override_apply_command(args):
             exclusive_record(path, canonical(preview["record"]))
         result = dict(preview)
         result["status"] = "applied"
-        print(canonical(result).decode())
+        emit(result)
     finally:
         launch_lock.rmdir()
 

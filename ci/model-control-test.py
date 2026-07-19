@@ -154,7 +154,7 @@ class ModelControlTest(unittest.TestCase):
 
     def test_policy_candidates_preview_cas_apply_and_ticket_status_api(self):
         candidates = json.loads(self.command("policy-candidates").stdout)
-        self.assertFalse(candidates["reviewer_exception"]["supported"])
+        self.assertTrue(candidates["reviewer_exception"]["supported"])
         policy = json.dumps(self.model_policy(), sort_keys=True, separators=(",", ":"))
         preview = json.loads(
             self.command("policy-preview", "--policy", policy).stdout

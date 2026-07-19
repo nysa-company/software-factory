@@ -68,7 +68,7 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.4.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.5.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
@@ -114,7 +114,7 @@ is enforced, and a one-use Linear comment binds the validated partial-work
 snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
-Contracts `1.1.0` through `1.4.0` keep one-ticket behavior by default. A product may set
+Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default. A product may set
 `MAX_CONCURRENT_TICKETS=2`; the dispatcher then uses `claim`, `renew`, and
 `release`, and supplies the matching `--lease` to preflight, next-stage, and
 run. Maintenance blocks claims and renewals but matching owners may still

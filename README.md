@@ -32,7 +32,7 @@ OpenAI and Cursor Claude remains Anthropic. Before a ticket starts,
 `UNAVAILABLE` advances to the next candidate; `INVALID` or `UNKNOWN` stops. The
 complete six-role plan is pinned to the ticket branch.
 
-Contract 1.4 adds operator-approved mid-ticket fallback for a terminal,
+Contract 1.4 and newer add operator-approved mid-ticket fallback for a terminal,
 accounted provider or credit failure. It excludes the exact failed route,
 preserves only validated role-authorized work, re-resolves all remaining roles
 against contributor-family history, and appends an auditable route-journal
@@ -44,6 +44,27 @@ Kimi K2.6 remains disabled experimental and is in no profile. See
 [Model routing and fallback](docs/model-routing.md) for the exact route order,
 profile alternatives, family rules, approval flow, and operator commands.
 
+## Local multi-project console
+
+Contract 1.5 adds a loopback-only control console for every project registered
+in the factory profile:
+
+```bash
+python3 scripts/operator-console.py
+```
+
+The printed one-use URL opens workflow, role/model/family/effort, envelope, and
+daily spend views. Model policy dropdowns contain only catalog-authorized
+routes and enforce distinct production/checking families. Envelope edits,
+temporary role/ticket/day overrides, and active-attempt cancellation use
+preview hashes: preview first, then explicitly apply the exact preview.
+
+Changing an active attempt never rewrites its budget or prior accounting.
+Cancel it, account it conservatively, approve the new envelope/model policy,
+and restart at the same role boundary. A same-family Reviewer is never a
+normal policy option; it requires an exact ticket-scoped, one-use Linear
+fallback exception.
+
 ## Core rules (enforced by the kit, not by prompts)
 
 1. Budgets live in the run wrapper and provider console caps. Agents cannot raise their own limits.
@@ -52,7 +73,7 @@ profile alternatives, family rules, approval flow, and operator commands.
 4. Test author and reviewer run on a different model family than the builder.
 5. Two review rounds, then the ticket escalates to a human with a plain-language note.
 6. One role attempt submits its task to at most one agent process. Any
-   mid-ticket route change requires the Contract 1.4 journal and one-use Linear
+   mid-ticket route change requires the Contract 1.4+ journal and one-use Linear
    approval flow.
 
 ## How Linear and Markdown work together
@@ -108,7 +129,7 @@ The factory needs you at four points:
    or send it back with a concrete reason. Done is recorded after merge and
    staging confirmation.
 
-Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 implement the fourth step
+Contract 1.2 still stops in Review. Contracts 1.3 through 1.5 implement the fourth step
 through the trusted `ticket-attest` command: it attests the exact bundle,
 consumes the one Linear approval, requests protected auto-merge, and records
 Done only after merge-commit deployment checks and closeout accounting pass.

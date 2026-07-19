@@ -57,6 +57,14 @@ ACTION_ROUTES = {
     "/api/actions/model-activate": "model-activate",
     "/api/actions/model-disable": "model-disable",
     "/api/actions/model-enable": "model-enable",
+    "/api/actions/model-policy-preview": "model-policy-preview",
+    "/api/actions/model-policy-apply": "model-policy-apply",
+    "/api/actions/envelope-plan": "envelope-plan",
+    "/api/actions/envelope-apply": "envelope-apply",
+    "/api/actions/envelope-override-plan": "envelope-override-plan",
+    "/api/actions/envelope-override-apply": "envelope-override-apply",
+    "/api/actions/attempt-cancel-plan": "attempt-cancel-plan",
+    "/api/actions/attempt-cancel": "attempt-cancel",
 }
 
 

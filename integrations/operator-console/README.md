@@ -30,22 +30,17 @@ project cannot provide paths or cached output for another.
 
 ## Launcher integration
 
-Model status works with the existing fixed form:
+Contract 1.5 provides the following fixed read-only forms:
 
 ```text
-factory-launch <project> models status --json
-```
-
-Workflow, envelope, and spend deliberately fail closed until the sealed
-launcher implements these fixed read-only forms:
-
-```text
+factory-launch <project> models policy-candidates --json
 factory-launch <project> operator-snapshot workflow --json
 factory-launch <project> operator-snapshot envelope --json
 factory-launch <project> operator-snapshot spend --json
 ```
 
-The backend also exposes CSRF-protected model activate/disable/enable endpoints
-using only the launcher's existing exact argument grammars. The current UI is
-read-only; an eventual control UI must call only those endpoints and must not
-add generic command, path, or argument parameters.
+The UI exposes CSRF-protected, preview-hashed controls for project model
+policy, envelope limits, temporary envelope overrides, and targeted attempt
+cancellation. It also retains model activate/disable/enable endpoints. Every
+request maps to an exact launcher grammar; browser-provided paths and arbitrary
+argument vectors are never accepted.
