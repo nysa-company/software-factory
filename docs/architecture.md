@@ -61,6 +61,31 @@ must share the kit repository, Git common directory, and HEAD. This exception
 exists for CI only. Live/external products and deployment certification require
 an explicit `KIT_PIN`.
 
+## Dynamic CI selection
+
+`bash ci/test-all.sh` always runs the complete canonical suite registry.
+`--changed BASE [HEAD]` classifies a committed diff, while `--shadow-changed`
+calculates the same recommendation but executes the full registry.
+`CI_FORCE_FULL=1` overrides either mode. Metadata-only diffs may skip behavioral
+suites because repository, secret, artifact, and immutability gates remain
+separate required checks.
+
+Selection fails closed to full for invalid or empty comparisons, additions,
+deletions, renames, unknown or shared paths, multiple components, dependencies,
+contracts, launchers, roles, CI or selector changes, malformed modes, and empty,
+duplicate, or unknown suite IDs. Only explicitly mapped single leaf components
+can recommend their direct and transitive suites plus CI-scope, immutability,
+and artifact-policy checks. Initial mappings remain `shadow`, so a recommendation
+does not reduce required CI.
+
+During shadow execution, an unselected failure fails CI and is rerun once. Only
+a repeated failure is recorded as `SHADOW_MISS`; a passing recheck is recorded
+as a flake. A component may become active only after three real shadowed diffs,
+zero reproducible misses, and same-runner median targeted time at most half of
+full with at least ten local minutes saved. Its first five active PRs retain a
+non-required full comparison. Any miss demotes the component to shadow and
+resets its evidence.
+
 Model policy is kit-owned and certified by the same `KIT_PIN`. The route catalog
 separates adapter, transport, gateway, inference provider, provider family,
 account route, selection ID, and expected reported identity. Selection ID is
