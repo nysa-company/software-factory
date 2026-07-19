@@ -870,9 +870,17 @@ def run(args):
     if args.command == "reviewer-exception-contract":
         return {
             "normal_policy_allowed": False,
-            "reason": "ticket-scoped one-use approval integration is not available",
+            "approval": "exact one-use Linear fallback approval",
+            "binding": [
+                "ticket",
+                "failed_run",
+                "route_journal_revision",
+                "builder_contributor_family",
+                "reviewer_route",
+                "preview_hash",
+            ],
             "schema": "factory-reviewer-exception-contract/v1",
-            "supported": False,
+            "supported": True,
             "ticket_scoped": True,
             "one_use": True,
         }

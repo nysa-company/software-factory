@@ -70,6 +70,12 @@ FALLBACK_PLAN_KEYS = frozenset((
     "failed_route_id", "future_roles", "contributor_families", "selections",
 ))
 FALLBACK_PROJECT_PLAN_KEYS = FALLBACK_PLAN_KEYS | frozenset(("model_policy",))
+FALLBACK_EXCEPTION_PLAN_KEYS = FALLBACK_PLAN_KEYS | frozenset(
+    ("boundary_exceptions",)
+)
+FALLBACK_PROJECT_EXCEPTION_PLAN_KEYS = (
+    FALLBACK_PROJECT_PLAN_KEYS | frozenset(("boundary_exceptions",))
+)
 
 
 class RouterError(ValueError):
@@ -551,15 +557,31 @@ def _fallback_role_policies(profile, role):
     return result
 
 
-def _validate_fallback_assignment(selections, contributors):
+def validate_boundary_exceptions(value, contributors, future_roles):
+    if value is None:
+        return {}
+    _exact_keys(value, frozenset(("reviewer",)), "boundary_exceptions")
+    family = value["reviewer"]
+    _safe_id(family, "boundary_exceptions.reviewer")
+    if "reviewer" not in future_roles:
+        raise RouterError("Reviewer exception requires a future Reviewer role")
+    if family not in contributors["B"]:
+        raise RouterError(
+            "Reviewer exception must name a Builder contributor family"
+        )
+    return {"reviewer": family}
+
+
+def _validate_fallback_assignment(selections, contributors, exceptions=None):
     effective = dict((key, list(value)) for key, value in contributors.items())
+    exceptions = exceptions or {}
     for role, boundary in BOUNDARY_PRODUCER.items():
         family = selections[role]["provider_family"]
         if family not in effective[boundary]:
             effective[boundary].append(family)
     for role, boundary in BOUNDARY_CHECKER.items():
         family = selections[role]["provider_family"]
-        if family in effective[boundary]:
+        if family in effective[boundary] and exceptions.get(role) != family:
             return None
     return effective
 
@@ -568,11 +590,15 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
     if not isinstance(plan, dict):
         raise RouterError("fallback plan must be an object")
     project_policy = plan.get("profile_id") == "project-policy"
-    _exact_keys(
-        plan,
-        FALLBACK_PROJECT_PLAN_KEYS if project_policy else FALLBACK_PLAN_KEYS,
-        "fallback plan",
-    )
+    has_exception = "boundary_exceptions" in plan
+    if project_policy:
+        keys = (
+            FALLBACK_PROJECT_EXCEPTION_PLAN_KEYS
+            if has_exception else FALLBACK_PROJECT_PLAN_KEYS
+        )
+    else:
+        keys = FALLBACK_EXCEPTION_PLAN_KEYS if has_exception else FALLBACK_PLAN_KEYS
+    _exact_keys(plan, keys, "fallback plan")
     if plan["schema"] != "model-fallback-resolution/v2":
         raise RouterError("unsupported fallback plan schema")
     for key in ("catalog_hash", "profile_hash", "prior_policy_hash", "policy_hash"):
@@ -603,6 +629,9 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
     ):
         raise RouterError("fallback plan future roles are invalid")
     contributors = validate_contributor_families(plan["contributor_families"])
+    exceptions = validate_boundary_exceptions(
+        plan.get("boundary_exceptions"), contributors, future_roles
+    )
     _exact_keys(plan["selections"], frozenset(ROLES), "fallback plan selections")
     authorized = {
         role: dict(_fallback_role_policies(profile, role)) for role in ROLES
@@ -626,7 +655,12 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
             raise RouterError("fallback plan route tuple mismatch for %s" % role)
         if role in future_roles and route_id == plan["failed_route_id"]:
             raise RouterError("fallback plan reuses the failed route")
-    if _validate_fallback_assignment(plan["selections"], contributors) != contributors:
+    if (
+        _validate_fallback_assignment(
+            plan["selections"], contributors, exceptions
+        )
+        != contributors
+    ):
         raise RouterError("fallback contributor-family constraints are invalid")
     without_hash = dict(plan)
     without_hash.pop("policy_hash")
@@ -645,6 +679,7 @@ def resolve_fallback_policy(
     failed_route_id,
     future_roles,
     contributor_families,
+    boundary_exceptions=None,
 ):
     """Resolve all remaining roles while preserving immutable role history.
 
@@ -685,6 +720,9 @@ def resolve_fallback_policy(
 
     normalized_readiness = validate_readiness(readiness, routes)
     contributors = validate_contributor_families(contributor_families)
+    exceptions = validate_boundary_exceptions(
+        boundary_exceptions, contributors, future_roles
+    )
     failed_boundary = BOUNDARY_PRODUCER.get(failed_role)
     failed_family = routes[failed_route_id]["provider_family"]
     if failed_boundary is not None and failed_family not in contributors[failed_boundary]:
@@ -714,7 +752,9 @@ def resolve_fallback_policy(
 
     def assign(index):
         if index == len(ordered_future):
-            return _validate_fallback_assignment(selections, contributors)
+            return _validate_fallback_assignment(
+                selections, contributors, exceptions
+            )
         role = ordered_future[index]
         for route_id, role_policy in choices[role]:
             state = normalized_readiness.get(route_id, {
@@ -762,6 +802,8 @@ def resolve_fallback_policy(
         "schema": "model-fallback-resolution/v2",
         "selections": selections,
     }
+    if exceptions:
+        fallback_policy["boundary_exceptions"] = exceptions
     if profile["profile_id"] == "project-policy":
         model_policy = prior_plan.get("model_policy")
         if model_policy is None:
