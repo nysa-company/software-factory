@@ -30,7 +30,8 @@ uses only helpers under that resolved physical release.
 Contract `1.0.0`, and contracts `1.1.0` through `1.5.0` with
 `max_concurrent_tickets: 1`, retain the original one-ticket flow below.
 Contracts `1.2.0` through `1.5.0` inherit `1.1.0` lease behavior unchanged. When one reports
-`max_concurrent_tickets: 2`, claim each ticket before preflight:
+`max_concurrent_tickets` from `2` through `4`, claim no more than that many
+distinct tickets and claim each one before preflight:
 
 ```text
 ~/.factory/bin/factory-launch <project> claim --ticket <T-NNN>
@@ -42,6 +43,9 @@ preflight, next-stage, and run, and release it when the ticket reaches Done or
 Blocked-Escalated. Never log, persist elsewhere, infer, retry, steal, or reuse
 a lease ID. A stale or mismatched lease is an escalation; only the operator
 may recover it under maintenance through `factory-kit recover-lease`.
+The product-wide provider lock continues to serialize complete provider
+intervals. Multiple leases permit concurrent control-plane ticket progress,
+not simultaneous model-provider calls.
 
 For the first launch of a ticket:
 
@@ -138,7 +142,7 @@ contracts 1.3 and 1.4 invoke `ticket-attest --action bundle`; after the newer ex
 Linear approval overlay appears invoke `--action approval`. This requests
 protected auto-merge but does not approve or merge directly. Refusals are
 escalations; never use a generic transition to manufacture these states.
-When concurrency is two, pass the matching in-memory
+When concurrency is greater than one, pass the matching in-memory
 `--lease <opaque-lease-id>` to every ticket-attest action exactly as for
 sequencing and runs. Never write or quote that value in a log or receipt.
 

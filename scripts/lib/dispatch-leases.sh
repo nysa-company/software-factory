@@ -8,12 +8,14 @@ import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 value = "1"
 seen = 0
-if path.is_file() and not path.is_symlink():
+if path.exists() or path.is_symlink():
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(1)
     for raw in path.read_text(errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        match = re.fullmatch(r"(?:export\s+)?MAX_CONCURRENT_TICKETS\s*=\s*([12])", line)
+        match = re.fullmatch(r"(?:export\s+)?MAX_CONCURRENT_TICKETS\s*=\s*([1-4])", line)
         if match:
             seen += 1
             value = match.group(1)
@@ -40,10 +42,10 @@ factory_dispatch_lease_file() {
 factory_dispatch_require_lease() {
   local root="$1" ticket="$2" lease_id="${3:-}" maximum file
   maximum="$(factory_dispatch_max_tickets "$root" 2>/dev/null)" || {
-    FACTORY_DISPATCH_LEASE_ERROR="MAX_CONCURRENT_TICKETS must be defined at most once as 1 or 2"
+    FACTORY_DISPATCH_LEASE_ERROR="MAX_CONCURRENT_TICKETS must be defined at most once as an integer from 1 through 4"
     return 1
   }
-  [[ "$maximum" == "2" ]] || return 0
+  [[ "$maximum" -gt 1 ]] || return 0
   [[ "$lease_id" =~ ^[0-9a-f]{64}$ ]] || {
     FACTORY_DISPATCH_LEASE_ERROR="a canonical dispatcher lease is required while concurrency is enabled"
     return 1

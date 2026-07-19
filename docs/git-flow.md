@@ -69,11 +69,11 @@ For every candidate that may reach production:
 Only one product activation or rollback may run at a time. Do not activate a
 second candidate while a ticket has a nonterminal lease, a run is active, or an
 activation journal is incomplete. Contract `1.1.0` remains single-ticket by
-default and permits an explicit two-ticket pilot only when the product sets
-`MAX_CONCURRENT_TICKETS=2`; each ticket keeps its own exact branch, linked
-worktree, opaque lease, and sequential role flow. Those leases may coexist,
-but a product-level control lock serializes provider intervals until an
-OS-enforced writer boundary makes parallel providers safe.
+default and permits an explicit bounded pilot from two through four tickets
+when the product sets `MAX_CONCURRENT_TICKETS` accordingly; each ticket keeps
+its own exact branch, linked worktree, opaque lease, and sequential role flow.
+Those leases may coexist, but a product-level control lock serializes provider
+intervals until an OS-enforced writer boundary makes parallel providers safe.
 
 ## Kit release lifecycle
 
@@ -104,8 +104,8 @@ wrapper, or reorder helper are compatibility-sensitive. Preserve contract
 migration plus retained rollback support.
 
 Contract `1.1.0` preserves 1.0 behavior when `MAX_CONCURRENT_TICKETS` is absent
-or `1`; the opt-in value `2` requires the 1.1 launcher, profile skill, and
-dispatcher role contract to move together. Contract `1.2.0` inherits that
+or `1`; opt-in values `2` through `4` require the 1.1 launcher, profile skill,
+and dispatcher role contract to move together. Contract `1.2.0` inherits that
 lease behavior unchanged while requiring ticket worktrees for preflight and
 sequencing.
 
