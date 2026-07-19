@@ -186,6 +186,21 @@ strict protected-main validator: plain `State: Done`, partial batches, extra
 files, conflicting normal attestations, or a receipt targeting another kit
 fail closed.
 
+A second one-time format,
+`factory/migrations/contract-1.3-terminal-backfill/`, is independently bounded
+to the exact authorized pre-contract terminal-Done batch. Its generator records
+missing historical bundle and Kit-SHA evidence as null and never synthesizes a
+route plan, approval, or check. Authorization binds the product repository,
+protected-main basis, target kit, cutoff, immutable current and closeout ticket
+blobs, historical implementation/closeout PR metadata and ancestry, ledger
+evidence, and the authentic app-owned successful checks available in each
+implementation era. It may share the first batch's exact atomic cutover commit;
+both validators then require the complete union of files. The complete batch
+remains inert until one manual protected product merge.
+The shared protected-main reader accepts exactly one of normal attestations,
+the first legacy-closeout receipt, or this terminal-backfill receipt; overlap,
+partial/extra batches, changed sources, or inconsistent ancestry fail closed.
+
 Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to

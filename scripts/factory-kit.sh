@@ -2118,6 +2118,7 @@ for ticket_id in sorted(ticket_ids):
             )
         if terminal.get("basis") not in (
             "attested-done", "validated-legacy-closeout",
+            "validated-terminal-backfill",
         ):
             raise SystemExit("%s has an unknown terminal basis" % ticket_id)
         continue

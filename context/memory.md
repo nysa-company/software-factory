@@ -34,10 +34,22 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The operator activates model profiles by exact preview hash and may add narrow TTL-bound `credits_exhausted` overrides; subscription quota telemetry is incomplete. Ticket pinning commits and pushes Kit-SHA plus the exact six-role plan atomically, roles never re-resolve, exact-route re-probe is allowed, and post-submission retry is forbidden.
 - Kimi K2.6 is disabled experimental through Claude CLI/OpenRouter/Moonshot, appears in no profile, and has not had a live or billed pilot. Credential rotation is required before a pilot, and direct same-UID token exposure remains without a broker or OS isolation.
 - Route-plan provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management and evidence-bound ticket attestations are integrated under Hermes contract 1.3.
-- The Contract 1.3 cutover has one bounded legacy-closeout format for an exact authorized Contract 1.2 batch. It is separate from normal attestations and route plans, becomes authoritative only through one manual protected product merge, and is validated by the same protected-main terminal reader used by sequencing and activation; plain Done never suffices.
+- The Contract 1.3 cutover has two independent one-time formats: legacy-closeout for the exact authorized Contract 1.2 batch and terminal-backfill for the exact authorized pre-contract terminal-Done batch. Both are separate from normal attestations and route plans, become authoritative only through one manual protected product merge, and use the same fail-closed protected-main terminal reader; plain Done never suffices.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 
 ## Log
+
+## 2026-07-18 — Decision 43: Pre-contract terminal evidence is a separate bounded batch
+
+Category: System change
+
+The T-001 through T-012 pre-contract terminal epoch uses an independent
+terminal-backfill schema and directory. Authorization binds the exact ticket
+batch, product repository, protected-main basis, target kit, cutoff, immutable
+source blobs, implementation and closeout PR ancestry, ledger rows, and
+authentic app-owned checks. Historically absent bundles and Kit-SHAs remain
+null. Only one manual protected product merge makes the complete batch
+authoritative, and overlap with normal or first-batch evidence fails closed.
 
 ## 2026-07-18 — Decision 42: Earliest legacy PRs bind their authentic check era
 

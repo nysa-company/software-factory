@@ -43,6 +43,9 @@ helper output are not compatibility promises.
 - Adds no launcher command for migration, but strengthens terminal sequencing
   so Done requires either the normal protected attestation chain or the
   separately validated, one-time protected-main Contract 1.2 legacy closeout.
+- Adds an independent one-time pre-contract terminal-backfill schema for its
+  exact authorized batch; absent historical evidence remains null and only a
+  complete manual protected merge can satisfy terminal sequencing.
 
 ## 1.2.0 — 2026-07-15
 
