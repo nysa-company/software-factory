@@ -574,6 +574,43 @@ class ModelRouterTest(unittest.TestCase):
             "cursor-claude-sonnet-5-thinking-high",
         )
 
+    def test_reviewer_same_family_requires_exact_boundary_exception(self):
+        prior = self.resolve()
+        contributors = {"P": ["openai"], "T": [], "B": ["anthropic"]}
+        with self.assertRaisesRegex(ROUTER.RouterError, "contributor-family"):
+            ROUTER.resolve_fallback_policy(
+                self.catalog,
+                self.routes,
+                self.profile_map["legacy-balanced-v1"],
+                self.readiness(),
+                prior,
+                "reviewer",
+                "claude-sonnet",
+                ["reviewer"],
+                contributors,
+            )
+        approved = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            self.profile_map["legacy-balanced-v1"],
+            self.readiness(),
+            prior,
+            "reviewer",
+            "claude-sonnet",
+            ["reviewer"],
+            contributors,
+            {"reviewer": "anthropic"},
+        )
+        self.assertEqual(
+            approved["selections"]["reviewer"]["provider_family"], "anthropic"
+        )
+        self.assertEqual(
+            approved["boundary_exceptions"], {"reviewer": "anthropic"}
+        )
+        ROUTER.validate_fallback_plan(
+            approved, self.catalog, self.routes, self.profile_map
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

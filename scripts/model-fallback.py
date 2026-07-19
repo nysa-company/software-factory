@@ -234,6 +234,10 @@ def calculate(args, nonce):
         failed["route_id"],
         future_roles,
         contributors,
+        (
+            {"reviewer": args.allow_reviewer_family}
+            if args.allow_reviewer_family else None
+        ),
     )
     payload = {
         "catalog_hash": resolution["catalog_hash"],
@@ -388,6 +392,7 @@ def parser():
     value.add_argument("--ticket", required=True)
     value.add_argument("--failed-run", required=True)
     value.add_argument("--reason", required=True, choices=sorted(REASONS))
+    value.add_argument("--allow-reviewer-family")
     value.add_argument("--readiness", required=True)
     value.add_argument("--remote", required=True)
     value.add_argument("--approval")

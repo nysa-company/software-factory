@@ -378,13 +378,18 @@ print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
     ;;
   fallback-plan|fallback)
-    ticket="" failed_run="" workdir="" reason=""
+    ticket="" failed_run="" workdir="" reason="" allow_reviewer_family=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --ticket) [[ $# -ge 2 ]] || json_error "--ticket requires a value"; ticket="$2"; shift 2 ;;
         --failed-run) [[ $# -ge 2 ]] || json_error "--failed-run requires a value"; failed_run="$2"; shift 2 ;;
         --workdir) [[ $# -ge 2 ]] || json_error "--workdir requires a value"; workdir="$2"; shift 2 ;;
         --reason) [[ $# -ge 2 ]] || json_error "--reason requires a value"; reason="$2"; shift 2 ;;
+        --allow-reviewer-family)
+          [[ $# -ge 2 ]] || json_error "--allow-reviewer-family requires a value"
+          allow_reviewer_family="$2"
+          shift 2
+          ;;
         *) json_error "unknown fallback argument: $1" ;;
       esac
     done
@@ -394,6 +399,13 @@ PY
       json_error "failed run identifier is invalid"
     [[ "$reason" == "credits_exhausted" || "$reason" == "provider_unavailable" ]] ||
       json_error "fallback reason is invalid"
+    if [[ -n "$allow_reviewer_family" &&
+          ! "$allow_reviewer_family" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
+      json_error "Reviewer exception family is invalid"
+    fi
+    fallback_exception_args=()
+    [[ -z "$allow_reviewer_family" ]] ||
+      fallback_exception_args=(--allow-reviewer-family "$allow_reviewer_family")
     validate_control_workdir "$ticket" "$workdir" 1
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
       json_error "v2 ticket route journal is missing or unsafe"
@@ -431,6 +443,7 @@ PY
         --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
         --project "$FACTORY_PROJECT" --ticket "$ticket" \
         --failed-run "$failed_run" --reason "$reason" \
+        "${fallback_exception_args[@]}" \
         --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$preview_file"; then
         rm -f "$preview_file"
         json_error "fallback preview failed"
@@ -474,6 +487,7 @@ PY
       --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
       --project "$FACTORY_PROJECT" --ticket "$ticket" \
       --failed-run "$failed_run" --reason "$reason" \
+      "${fallback_exception_args[@]}" \
       --readiness "$readiness" --remote "$CONTROL_REMOTE" \
       --approval "$approval_file" > "$apply_file"; then
       rm -f "$apply_file" "$approval_file"

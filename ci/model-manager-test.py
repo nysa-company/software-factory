@@ -445,7 +445,7 @@ class ModelManagerTest(unittest.TestCase):
         )
         self.assertEqual(selected, pin["resolution"]["selections"]["planner"])
 
-    def test_policy_candidates_constraints_and_reviewer_contract_fail_closed(self):
+    def test_policy_candidates_and_ticket_scoped_reviewer_exception_contract(self):
         values = self.output("policy-candidates")
         self.assertEqual(values["efforts"], ["low", "medium", "high"])
         self.assertTrue(values["routes"])
@@ -455,9 +455,12 @@ class ModelManagerTest(unittest.TestCase):
             for value in values["routes"]
         ))
         contract = self.output("reviewer-exception-contract")
-        self.assertFalse(contract["supported"])
+        self.assertTrue(contract["supported"])
         self.assertTrue(contract["ticket_scoped"])
         self.assertTrue(contract["one_use"])
+        self.assertEqual(
+            contract["approval"], "exact one-use Linear fallback approval"
+        )
 
         policy = self.model_policy()
         policy["roles"]["reviewer"]["primary_route_id"] = "codex-gpt-5.6-sol"
