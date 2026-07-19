@@ -3,6 +3,7 @@
 set -u
 export FACTORY_TEST_MODE=1
 export FACTORY_TRUSTED_TEST_HARNESS=1
+export FACTORY_MODEL_PROFILE_OVERRIDE=legacy-balanced-v1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_AGENT="$ROOT/scripts/run-agent.sh"
@@ -242,6 +243,16 @@ if [[ "$ROLE_MODELS" == $'planner:gpt-5.6-sol:high\nspec-linter:fable:medium\nte
   pass "role model and effort policy is explicit"
 else
   fail "role model and effort policy is explicit" "$ROLE_MODELS"
+fi
+
+NO_STATE_PROFILE="$(env -u FACTORY_MODEL_PROFILE_OVERRIDE \
+  -u FACTORY_MODEL_STATE_ROOT -u FACTORY_PROJECT \
+  bash -c 'source "$1"; factory_load_model_probe_context; printf "%s\n" "$FACTORY_MODEL_PROFILE_ID"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$NO_STATE_PROFILE" == "balanced-v2" ]]; then
+  pass "no-record backend context selects balanced-v2"
+else
+  fail "no-record backend context selects balanced-v2" "$NO_STATE_PROFILE"
 fi
 
 AUTO_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
