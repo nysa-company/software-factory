@@ -834,6 +834,7 @@ def run(args):
         result = ROUTER.model_policy_candidates(routes)
         result["current_policy"] = model_policy
         result["current_policy_hash"] = _policy_hash(model_policy)
+        result["project"] = args.project
         return result
     if args.command in ("policy-preview", "policy-apply"):
         if args.policy_file is None:
@@ -844,7 +845,9 @@ def run(args):
         except ROUTER.RouterError as exc:
             raise ManagerError("invalid proposed model policy: %s" % exc)
         if args.command == "policy-preview":
-            return _policy_preview(model_policy, proposed)
+            preview = _policy_preview(model_policy, proposed)
+            preview["project"] = args.project
+            return preview
         for value, location in (
             (args.expected_current_hash, "--expected-current-hash"),
             (args.approve_hash, "--approve-hash"),
@@ -865,6 +868,7 @@ def run(args):
             "policy_hash": ROUTER.content_hash(proposed),
             "previous_policy_hash": preview["current_policy_hash"],
             "preview_hash": preview["preview_hash"],
+            "project": args.project,
             "schema": "factory-model-policy-apply/v1",
         }
     if args.command == "reviewer-exception-contract":

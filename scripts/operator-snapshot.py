@@ -23,6 +23,13 @@ PROJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 SCOPE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 HASH_RE = re.compile(r"[0-9a-f]{64}")
+TICKET_RE = re.compile(r"T-[0-9]+")
+RUN_RE = re.compile(r"[A-Za-z0-9._-]{1,200}")
+SETTING_RE = re.compile(r"[A-Z][A-Z0-9_]{0,99}")
+VALUE_RE = re.compile(r"[0-9]{1,7}(?:\.[0-9]{1,6})?")
+UTC_RE = re.compile(
+    r"20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+)
 MAX_OUTPUT_BYTES = 1_048_576
 
 # Workflow, envelope, and spend intentionally target one future, fixed
@@ -30,7 +37,7 @@ MAX_OUTPUT_BYTES = 1_048_576
 # fail-closed "launcher unavailable" result rather than reading product paths.
 SNAPSHOT_COMMANDS = {
     "workflow": ("operator-snapshot", "workflow", "--json"),
-    "model": ("models", "status", "--json"),
+    "model": ("models", "policy-candidates", "--json"),
     "envelope": ("operator-snapshot", "envelope", "--json"),
     "spend": ("operator-snapshot", "spend", "--json"),
 }
@@ -93,6 +100,38 @@ def _scope(scope_type: Any, scope_id: Any) -> tuple[str, str]:
     return scope_type, scope_id
 
 
+def _hash(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not HASH_RE.fullmatch(value):
+        raise SnapshotError("invalid_action", f"invalid {label}")
+    return value
+
+
+def _settings(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, dict) or not value or len(value) > 30:
+        raise SnapshotError("invalid_action", "invalid envelope changes")
+    result = []
+    for key in sorted(value):
+        item = value[key]
+        if (
+            not isinstance(key, str)
+            or not SETTING_RE.fullmatch(key)
+            or not isinstance(item, str)
+            or not VALUE_RE.fullmatch(item)
+        ):
+            raise SnapshotError("invalid_action", "invalid envelope change")
+        result.extend(("--set", f"{key}={item}"))
+    return tuple(result)
+
+
+def _policy(value: Any) -> str:
+    if not isinstance(value, dict):
+        raise SnapshotError("invalid_action", "model policy must be an object")
+    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode()) > 65536:
+        raise SnapshotError("invalid_action", "model policy is oversized")
+    return encoded
+
+
 def mutation_command(action: str, payload: dict[str, Any]) -> tuple[str, ...]:
     """Build only launcher forms already allowlisted by the sealed boundary."""
     if action == "model-activate":
@@ -134,6 +173,99 @@ def mutation_command(action: str, payload: dict[str, Any]) -> tuple[str, ...]:
             "models", "enable", "--scope-type", scope_type, "--scope-id", scope_id,
             "--json",
         )
+    if action == "model-policy-preview":
+        if set(payload) != {"policy"}:
+            raise SnapshotError("invalid_action", "model policy preview fields mismatch")
+        return ("models", "policy-preview", "--policy", _policy(payload["policy"]), "--json")
+    if action == "model-policy-apply":
+        if set(payload) != {"policy", "expected_current_hash", "approve_hash"}:
+            raise SnapshotError("invalid_action", "model policy apply fields mismatch")
+        return (
+            "models", "policy-apply", "--policy", _policy(payload["policy"]),
+            "--expected-current-hash",
+            _hash(payload["expected_current_hash"], "current policy hash"),
+            "--approve-hash", _hash(payload["approve_hash"], "policy approval hash"),
+            "--json",
+        )
+    if action in {"envelope-plan", "envelope-apply"}:
+        expected = {"changes"} if action == "envelope-plan" else {"changes", "approve_hash"}
+        if set(payload) != expected:
+            raise SnapshotError("invalid_action", "envelope fields mismatch")
+        command = ["envelope", "plan" if action == "envelope-plan" else "apply"]
+        command.extend(_settings(payload["changes"]))
+        if action == "envelope-apply":
+            command.extend(("--approve-hash", _hash(payload["approve_hash"], "envelope approval hash")))
+        command.append("--json")
+        return tuple(command)
+    if action in {"envelope-override-plan", "envelope-override-apply"}:
+        required = {
+            "scope", "ticket", "role", "day", "issued_at", "expires_at",
+            "operator_id", "reason", "changes",
+        }
+        if action == "envelope-override-apply":
+            required.add("approve_hash")
+        if set(payload) != required:
+            raise SnapshotError("invalid_action", "envelope override fields mismatch")
+        scope = payload["scope"]
+        if scope not in {"next-attempt", "ticket", "role", "product-day", "global-day"}:
+            raise SnapshotError("invalid_action", "invalid envelope override scope")
+        command = [
+            "envelope",
+            "override-plan" if action.endswith("plan") else "override-apply",
+            "--scope", scope,
+        ]
+        ticket = payload["ticket"]
+        role = payload["role"]
+        day = payload["day"]
+        if ticket is not None:
+            if not isinstance(ticket, str) or not TICKET_RE.fullmatch(ticket):
+                raise SnapshotError("invalid_action", "invalid override ticket")
+            command.extend(("--ticket", ticket))
+        if role is not None:
+            if role not in {"planner", "builder", "narrator", "spec-linter", "test-author", "reviewer"}:
+                raise SnapshotError("invalid_action", "invalid override role")
+            command.extend(("--role", role))
+        if day is not None:
+            if not isinstance(day, str) or not re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}", day):
+                raise SnapshotError("invalid_action", "invalid override day")
+            command.extend(("--day", day))
+        for flag, key in (("--issued-at", "issued_at"), ("--expires-at", "expires_at")):
+            value = payload[key]
+            if not isinstance(value, str) or not UTC_RE.fullmatch(value):
+                raise SnapshotError("invalid_action", "invalid override timestamp")
+            command.extend((flag, value))
+        command.extend(("--operator-id", _safe_identifier(payload["operator_id"], "override operator")))
+        if payload["reason"] not in {"budget_exhausted", "operator_requested"}:
+            raise SnapshotError("invalid_action", "invalid override reason")
+        command.extend(("--reason", payload["reason"]))
+        command.extend(_settings(payload["changes"]))
+        if action == "envelope-override-apply":
+            command.extend(("--approve-hash", _hash(payload["approve_hash"], "override approval hash")))
+        command.append("--json")
+        return tuple(command)
+    if action in {"attempt-cancel-plan", "attempt-cancel"}:
+        expected = {"ticket", "run", "reason"}
+        if action == "attempt-cancel":
+            expected.add("approve_hash")
+        if set(payload) != expected:
+            raise SnapshotError("invalid_action", "attempt cancellation fields mismatch")
+        ticket = payload["ticket"]
+        run_id = payload["run"]
+        reason = payload["reason"]
+        if not isinstance(ticket, str) or not TICKET_RE.fullmatch(ticket):
+            raise SnapshotError("invalid_action", "invalid cancellation ticket")
+        if not isinstance(run_id, str) or not RUN_RE.fullmatch(run_id):
+            raise SnapshotError("invalid_action", "invalid cancellation run")
+        if reason not in {"budget_exhausted", "operator_requested"}:
+            raise SnapshotError("invalid_action", "invalid cancellation reason")
+        command = [
+            "attempt", "cancel-plan" if action.endswith("plan") else "cancel",
+            "--ticket", ticket, "--run", run_id, "--reason", reason,
+        ]
+        if action == "attempt-cancel":
+            command.extend(("--approve-hash", _hash(payload["approve_hash"], "cancellation approval hash")))
+        command.append("--json")
+        return tuple(command)
     raise SnapshotError("unknown_action", "unknown operator action")
 
 
@@ -186,7 +318,11 @@ class LauncherClient:
             raise SnapshotError("invalid_output", "launcher must return a JSON object")
         # Every console-facing response must bind itself to the selected
         # project.  This prevents accidental cross-project cache or adapter use.
-        if value.get("project") != project:
+        if "project" not in value:
+            # The validated launcher invocation itself binds the response to
+            # this project. Older fixed helpers do not echo that selector.
+            value["project"] = project
+        elif value.get("project") != project:
             raise SnapshotError(
                 "project_mismatch", "launcher response does not match selected project"
             )

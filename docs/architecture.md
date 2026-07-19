@@ -129,7 +129,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.4.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.5.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -137,6 +137,9 @@ Contract `1.2.0` adds sealed `models`, ticket-state, and ledger controls;
 contract `1.3.0` composes them with evidence-bound ticket attestations.
 Contract `1.4.0` adds route-journal migration and operator-approved mid-ticket
 model fallback.
+Contract `1.5.0` adds fixed operator snapshots, project-owned model policy,
+bounded envelope overrides, targeted attempt cancellation, and the loopback
+multi-project console.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

@@ -44,6 +44,66 @@
         <pre>Waiting for project…</pre>
       </article>
     </section>
+
+    <section class="controls" aria-label="Factory controls">
+      <article class="card control-card">
+        <header><span class="card-index">05</span><h2>Role model policy</h2></header>
+        <p>Options are supplied by the trusted policy engine. Same-family Reviewer routes require a ticket-scoped fallback approval.</p>
+        <div id="model-policy-editor"></div>
+        <div class="actions">
+          <button id="model-preview" type="button">Preview model policy</button>
+          <button id="model-apply" type="button" disabled>Apply approved policy</button>
+        </div>
+        <pre id="model-result">Load a project to edit policy.</pre>
+      </article>
+
+      <article class="card control-card">
+        <header><span class="card-index">06</span><h2>Envelope limits</h2></header>
+        <div class="field-grid">
+          <label>Per attempt USD<input id="cap-run" inputmode="decimal"></label>
+          <label>Per ticket USD<input id="cap-ticket" inputmode="decimal"></label>
+          <label>Product daily USD<input id="cap-daily" inputmode="decimal"></label>
+          <label>Builder attempt USD<input id="cap-builder" inputmode="decimal"></label>
+        </div>
+        <div class="actions">
+          <button id="envelope-preview" type="button">Preview envelope</button>
+          <button id="envelope-apply" type="button" disabled>Apply approved envelope</button>
+        </div>
+        <pre id="envelope-result">Load a project to edit limits.</pre>
+      </article>
+
+      <article class="card control-card">
+        <header><span class="card-index">07</span><h2>Temporary budget override</h2></header>
+        <div class="field-grid">
+          <label>Ticket<input id="override-ticket" placeholder="T-123"></label>
+          <label>Role<select id="override-role">
+            <option>planner</option><option>spec-linter</option>
+            <option>test-author</option><option selected>builder</option>
+            <option>reviewer</option><option>narrator</option>
+          </select></label>
+          <label>Per attempt USD<input id="override-budget" inputmode="decimal"></label>
+          <label>Operator ID<input id="override-operator" value="operator"></label>
+        </div>
+        <div class="actions">
+          <button id="override-preview" type="button">Preview 15-minute override</button>
+          <button id="override-apply" type="button" disabled>Apply approved override</button>
+        </div>
+        <pre id="override-result">Overrides never rewrite prior accounting.</pre>
+      </article>
+
+      <article class="card control-card">
+        <header><span class="card-index">08</span><h2>Active attempt</h2></header>
+        <div class="field-grid">
+          <label>Ticket<input id="cancel-ticket" placeholder="T-123"></label>
+          <label>Run ID<input id="cancel-run" placeholder="run-id"></label>
+        </div>
+        <div class="actions">
+          <button id="cancel-preview" type="button">Preview budget cancellation</button>
+          <button id="cancel-apply" type="button" disabled>Cancel and account</button>
+        </div>
+        <pre id="cancel-result">Post-GO cancellation retains conservative accounting.</pre>
+      </article>
+    </section>
   </main>
 
   <footer>

@@ -127,7 +127,7 @@ class OperatorConsoleTest(unittest.TestCase):
         self.assertEqual(
             self.invocations(),
             [
-                ["alpha", "models", "status", "--json"],
+                ["alpha", "models", "policy-candidates", "--json"],
                 ["bravo", "operator-snapshot", "workflow", "--json"],
             ],
         )
@@ -135,6 +135,56 @@ class OperatorConsoleTest(unittest.TestCase):
             client.snapshot("mismatch", "model")
         with self.assertRaises(CONSOLE.SNAPSHOT.SnapshotError):
             client.snapshot("../alpha", "model")
+
+    def test_control_actions_compile_to_fixed_launcher_argv(self):
+        policy = {"schema": "factory-model-policy/v1"}
+        digest = "a" * 64
+        self.assertEqual(
+            CONSOLE.SNAPSHOT.mutation_command(
+                "model-policy-apply",
+                {
+                    "policy": policy,
+                    "expected_current_hash": digest,
+                    "approve_hash": digest,
+                },
+            ),
+            (
+                "models", "policy-apply", "--policy",
+                '{"schema":"factory-model-policy/v1"}',
+                "--expected-current-hash", digest,
+                "--approve-hash", digest, "--json",
+            ),
+        )
+        envelope = CONSOLE.SNAPSHOT.mutation_command(
+            "envelope-apply",
+            {"changes": {"PER_RUN_BUDGET_USD": "8.00"}, "approve_hash": digest},
+        )
+        self.assertEqual(
+            envelope,
+            (
+                "envelope", "apply", "--set", "PER_RUN_BUDGET_USD=8.00",
+                "--approve-hash", digest, "--json",
+            ),
+        )
+        cancellation = CONSOLE.SNAPSHOT.mutation_command(
+            "attempt-cancel",
+            {
+                "ticket": "T-123", "run": "run-1",
+                "reason": "budget_exhausted", "approve_hash": digest,
+            },
+        )
+        self.assertEqual(
+            cancellation,
+            (
+                "attempt", "cancel", "--ticket", "T-123", "--run", "run-1",
+                "--reason", "budget_exhausted", "--approve-hash", digest, "--json",
+            ),
+        )
+        with self.assertRaises(CONSOLE.SNAPSHOT.SnapshotError):
+            CONSOLE.SNAPSHOT.mutation_command(
+                "envelope-plan",
+                {"changes": {"PER_RUN_BUDGET_USD": "8; touch /tmp/pwn"}},
+            )
 
     def test_bootstrap_is_one_time_and_routes_require_session(self):
         state, server = self.start_server()

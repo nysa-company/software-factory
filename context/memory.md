@@ -16,7 +16,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The required aggregate `ci` status always reports. A narrow fail-closed inert-metadata diff skips expensive suites while retaining Linux policy and test-immutability checks. Every other change runs Linux; shell/platform-sensitive PRs and every non-lightweight merged SHA also run macOS system-Bash verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `balanced-v2`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/high; Spec-linter and Test-author use Claude Fable 5/medium with Cursor Fable Thinking Medium secondary; Reviewer uses Claude Sonnet 5/high. `legacy-balanced-v1` remains compatibility policy; OpenAI-, Claude-, and Cursor-priority profiles remain explicit alternatives.
-- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.2 through 1.4 permit two exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Nysa T-013/T-014 and T-015/T-016 proved that lease-level concurrency while provider intervals remained serialized; provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.2 through 1.5 permit exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Provider intervals remain serialized; provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
@@ -24,10 +24,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Backward-compatible ledger reduction collapses a legacy durable reservation followed by its identity-matching terminal row; every other conflicting duplicate run ID fails closed.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
 - Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and records are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. A product-level control lock serializes provider intervals; any new or changed sibling manifest, persistent claim, owned manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
-- Hermes contract 1.4 adds append-only route journals and one-use Linear-approved mid-ticket fallback while retaining exact-worktree ticket attestation, protected auto-merge, ticket-state, ledger, and lease behavior and compatibility with active 1.0–1.3 releases.
+- Hermes contract 1.5 retains Contract 1.4 route journals and adds fixed operator snapshots, project-owned policy, bounded envelope overrides, and targeted attempt cancellation while preserving compatibility with active 1.0–1.4 releases.
 - Fresh ticket worktrees are created from protected main and pass through trusted materialization before preflight so their exact remote branch exists. Linear Project removal is represented explicitly in the ignored overlay and clears the effective initiative until reassignment.
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
-- Contracts 1.2 through 1.4 reject dirty exact ticket worktrees before ordinary ticket helpers. Contract 1.2 treats approval overlays as unsupported stops; contracts 1.3 and 1.4 consume merge approval only through an unchanged evidence-bound approval attestation.
+- Contracts 1.2 through 1.5 reject dirty exact ticket worktrees before ordinary ticket helpers. Contract 1.2 treats approval overlays as unsupported stops; contracts 1.3 through 1.5 consume merge approval only through an unchanged evidence-bound approval attestation.
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
 - Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch debounces transient owner-liveness misses but never reclaims stale or unsafe ownership; normal release atomically renames an owned lock before cleanup, and only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 - Open-source factory frameworks remain references, not replacement control planes: any adopted execution or sandbox component stays behind `factory-launch`, while sequencing, budgets, role separation, Git authority, evidence, and operator approval remain factory-owned. The first justified experiment is a pinned SWE-ReX local-container backend for one non-production role; E2B or Daytona becomes relevant only if that canary proves local isolation insufficient.
@@ -38,6 +38,18 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 
 ## Log
+
+## 2026-07-19 — Decision 45: Local multi-project operator control plane
+
+Category: Decision
+
+Contract 1.5 adds a loopback-only console that selects only registered projects
+and reaches product state through fixed launcher grammars. Project model policy,
+per-role envelope limits, bounded overrides, and targeted attempt cancellation
+are preview-hashed mutations; active budget changes use cancel, conservative
+accounting, and same-role restart rather than retroactive manifest edits.
+Normal Reviewer family separation remains mandatory, with only an exact
+ticket-scoped one-use Linear fallback exception.
 
 ## 2026-07-18 — Decision 44: Balanced v2 raises default effort and adds Cursor Fable
 

@@ -47,6 +47,20 @@ python3 scripts/envelope-control.py apply --factory-root /absolute/product --set
 python3 scripts/envelope-control.py override-plan --factory-root /absolute/product --scope next-attempt --ticket T-123 --role builder --issued-at 2026-07-19T01:00:00Z --expires-at 2026-07-19T01:15:00Z --operator-id operator-1 --reason budget_exhausted --set BUILDER_PER_RUN_TIMEOUT_MIN=60
 ```
 
+## Local control console
+
+Run `python3 scripts/operator-console.py`, then open the one-use loopback URL.
+The project selector lists only validated factory registry entries. Workflow,
+model candidates, effective envelope values, and daily spend are read through
+fixed Contract 1.5 launcher commands.
+
+Every mutation is two-step. Preview the exact policy, envelope, override, or
+cancellation; inspect its JSON; then apply that preview hash. If an active
+attempt needs more budget, preview and apply cancellation first. Pre-GO
+cancellation costs zero; post-GO cancellation retains the conservative
+reservation. Apply the bounded override and restart the same role. Never edit
+an in-flight manifest or backdate an override.
+
 ## Failed deploy / broken staging
 
 - Notice: staging URL errors, or a Narrator bundle says "preview broken".

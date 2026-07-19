@@ -333,7 +333,7 @@ def model_policy_candidates(routes):
         "efforts": list(EFFORTS),
         "reviewer_exception": {
             "normal_policy_allowed": False,
-            "supported": False,
+            "supported": True,
             "ticket_scoped_one_use_required": True,
         },
         "roles": [
