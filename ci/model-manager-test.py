@@ -18,6 +18,11 @@ SPEC.loader.exec_module(ROUTER)
 MANAGER_SPEC = importlib.util.spec_from_file_location("model_manager", MANAGER)
 MANAGER_MODULE = importlib.util.module_from_spec(MANAGER_SPEC)
 MANAGER_SPEC.loader.exec_module(MANAGER_MODULE)
+ATTEST_SPEC = importlib.util.spec_from_file_location(
+    "ticket_attest", ROOT / "scripts" / "ticket-attest.py"
+)
+ATTEST_MODULE = importlib.util.module_from_spec(ATTEST_SPEC)
+ATTEST_SPEC.loader.exec_module(ATTEST_MODULE)
 
 
 class ModelManagerTest(unittest.TestCase):
@@ -72,6 +77,16 @@ class ModelManagerTest(unittest.TestCase):
             "--approve-hash", self.profile_hash(profile_id),
             "--approved-by", "operator-1",
             project=project,
+        )
+
+    def test_route_revision_hash_matches_attestation_for_unicode(self):
+        body = {
+            "kind": "fallback",
+            "operator_note": "crédit épuisé",
+        }
+        self.assertEqual(
+            MANAGER_MODULE._revision_hash(3, "a" * 64, body),
+            ATTEST_MODULE.route_revision_hash(3, "a" * 64, body),
         )
 
     def pin(self, output, ticket="T-123", kit_sha="a" * 40, readiness=None):

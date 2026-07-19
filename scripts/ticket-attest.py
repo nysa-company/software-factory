@@ -157,6 +157,13 @@ def successful_runs(product, ticket):
     return manifests
 
 
+def route_revision_hash(index, parent, body):
+    return hashlib.sha256(json.dumps(
+        {"body": body, "parent_hash": parent, "revision": index},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
 def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
     path = workdir / "factory" / "route-plans" / f"{ticket}.json"
     if not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1:
@@ -183,10 +190,7 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
         resolution = None
         for index, revision_value in enumerate(plan.get("revisions", [])):
             body = revision_value.get("body") if isinstance(revision_value, dict) else None
-            expected = hashlib.sha256(json.dumps(
-                {"body": body, "parent_hash": parent, "revision": index},
-                ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-            ).encode()).hexdigest()
+            expected = route_revision_hash(index, parent, body)
             if (
                 set(revision_value) != {"revision", "parent_hash", "body", "revision_hash"}
                 or revision_value.get("revision") != index
@@ -217,9 +221,9 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
             prefix = dict(plan)
             prefix["revisions"] = plan["revisions"][:index + 1]
             prefix_raw = (
-                json.dumps(prefix, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                json.dumps(prefix, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 + "\n"
-            ).encode()
+            ).encode("utf-8")
             revisions[index] = (revision_value["revision_hash"], resolution, prefix_raw)
             parent = revision_value["revision_hash"]
         if resolution is None:
