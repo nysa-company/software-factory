@@ -455,28 +455,28 @@ def _validate_legacy_documents(repo, ref, authorization, receipts):
         raise ValidationError("legacy migration directory has missing or extra files")
     if set(receipts) != set(expected_receipts):
         raise ValidationError("legacy receipt batch is partial or contains extra tickets")
-    introduction = run(
-        repo, "log", "--format=%H", "--diff-filter=A", ref, "--",
-        f"{MIGRATION_DIR}/authorization.json",
-    ).stdout.splitlines()
-    if len(introduction) != 1:
-        raise ValidationError("legacy authorization must be introduced exactly once")
-    migration_commit = introduction[0]
-    parents = run(repo, "show", "-s", "--format=%P", migration_commit).stdout.split()
-    if parents != [basis["commit"]]:
-        raise ValidationError("legacy migration must be one atomic protected change from its basis")
-    migration_paths = set(run(
-        repo, "diff-tree", "--no-commit-id", "--name-only", "-r",
-        migration_commit,
-    ).stdout.splitlines())
     expected_paths = {
         "factory/KIT_PIN",
         *expected_files,
         *(f"factory/tickets/{ticket}.md" for ticket in expected_receipts),
     }
     expected_paths.update(_terminal_companion_paths(repo, ref, authorization))
-    if migration_paths != expected_paths:
-        raise ValidationError("legacy migration commit has missing or extra files")
+    matches = []
+    for commit in run(
+        repo, "log", "--format=%H", "--diff-filter=A", ref, "--",
+        f"{MIGRATION_DIR}/authorization.json",
+    ).stdout.splitlines():
+        parents = run(repo, "show", "-s", "--format=%P", commit).stdout.split()
+        paths = set(run(
+            repo, "diff-tree", "--no-commit-id", "--name-only", "-r", commit,
+        ).stdout.splitlines())
+        if parents == [basis["commit"]] and paths == expected_paths:
+            matches.append(commit)
+    if len(matches) != 1:
+        raise ValidationError(
+            "legacy migration must have one atomic protected introduction from its basis"
+        )
+    migration_commit = matches[0]
     if text_at(repo, migration_commit, "factory/KIT_PIN") != authorization["target_kit_sha"] + "\n":
         raise ValidationError("legacy migration commit is not pinned to the target kit")
     if timestamp(
