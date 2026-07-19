@@ -402,7 +402,9 @@ def generate(product, request_path):
             "receipt": f"{MIGRATION_DIR}/{ticket}.json",
             "implementation_pr_number": item["implementation_pr_number"],
             "closeout_pr_number": item["closeout_pr_number"],
-            "required_checks": sorted(checks, key=lambda value: value["name"]),
+            "required_checks": sorted(
+                item["required_checks"], key=lambda value: value["name"]
+            ),
         })
 
     authorization = {
