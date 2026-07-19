@@ -14,6 +14,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +53,15 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def git(repo, *args, input_bytes=None):
+def git(repo, *args, input_bytes=None, extra_env=None):
+    environment = {
+        **os.environ,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    if extra_env:
+        environment.update(extra_env)
     result = subprocess.run(
         [
             "git", "-C", str(repo),
@@ -65,16 +74,38 @@ def git(repo, *args, input_bytes=None):
         input=input_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={
-            **os.environ,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0",
-        },
+        env=environment,
     )
     if result.returncode:
         raise FallbackError(result.stderr.decode("utf-8", "replace").strip() or "Git failed")
     return result.stdout
+
+
+def atomic_replace(path, raw):
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    try:
+        os.fchmod(descriptor, 0o644)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def read_meta(path):
@@ -278,12 +309,15 @@ def preview(args):
 
 def recover_applied(args, approval):
     repo = Path(args.workdir)
-    path = repo / f"factory/route-plans/{args.ticket}.json"
+    relative = f"factory/route-plans/{args.ticket}.json"
+    path = repo / relative
     try:
-        journal = json.loads(path.read_text())
+        head = git(repo, "rev-parse", "HEAD").decode().strip()
+        committed = git(repo, "show", f"HEAD:{relative}")
+        journal = json.loads(committed)
         revision = journal["revisions"][-1]
         body = revision["body"]
-    except (OSError, KeyError, IndexError, json.JSONDecodeError):
+    except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         return None
     if (
         body.get("kind") != "fallback"
@@ -296,15 +330,36 @@ def recover_applied(args, approval):
     )
     if body.get("failed_manifest_digest") != digest(failed_raw):
         raise FallbackError("existing fallback revision references different failed evidence")
-    head = git(repo, "rev-parse", "HEAD").decode().strip()
     message = git(repo, "show", "-s", "--format=%B", "HEAD").decode()
     if f"Model-Route-Revision: {revision['revision_hash']}" not in message:
         raise FallbackError("existing fallback journal is not committed by its handoff")
-    committed = git(
-        repo, "show", f"HEAD:factory/route-plans/{args.ticket}.json"
-    )
-    if committed != path.read_bytes():
-        raise FallbackError("existing fallback journal differs from committed handoff")
+    descriptor, temporary_index = tempfile.mkstemp(prefix=".fallback-index.")
+    os.close(descriptor)
+    os.unlink(temporary_index)
+    try:
+        index_environment = {"GIT_INDEX_FILE": temporary_index}
+        git(repo, "read-tree", "HEAD", extra_env=index_environment)
+        status = git(
+            repo,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            extra_env=index_environment,
+        )
+    finally:
+        try:
+            os.unlink(temporary_index)
+        except FileNotFoundError:
+            pass
+    allowed_status = {
+        b"",
+        f" M {relative}\n".encode(),
+    }
+    if status not in allowed_status:
+        raise FallbackError("worktree drifted after the fallback handoff commit")
+    git(repo, "read-tree", "HEAD")
+    if path.read_bytes() != committed:
+        atomic_replace(path, committed)
     return {
         "approval_hash": approval["approval_hash"],
         "commit_sha": head,
@@ -354,9 +409,7 @@ def apply(args):
     ref = "refs/heads/" + result["handoff"].branch
     git(repo, "update-ref", ref, commit.commit, commit.parent)
     git(repo, "read-tree", commit.commit)
-    temporary = result["journal_path"].with_suffix(".json.tmp")
-    temporary.write_bytes(journal_raw)
-    os.replace(temporary, result["journal_path"])
+    atomic_replace(result["journal_path"], journal_raw)
     return {
         "approval_hash": result["approval_hash"],
         "commit_sha": commit.commit,

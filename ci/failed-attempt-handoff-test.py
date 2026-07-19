@@ -51,6 +51,7 @@ class HandoffTest(unittest.TestCase):
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-qm", "baseline")
         git(self.repo, "push", "-q", "-u", "origin", "main")
+        git(self.remote, "symbolic-ref", "HEAD", "refs/heads/main")
         self.head = git(self.repo, "rev-parse", "HEAD")
         self.policy = self.make_policy()
 

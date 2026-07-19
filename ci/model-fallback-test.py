@@ -158,6 +158,8 @@ class FallbackTest(unittest.TestCase):
 
     def test_preview_then_apply_commits_partial_work_and_journal_once(self):
         preview = self.command("preview")
+        journal_path = self.repo / "factory/route-plans/T-1.json"
+        initial_journal = journal_path.read_bytes()
         approval = Path(self.temp.name) / "approval.json"
         approval.write_text(json.dumps({
             "approval_hash": preview["approval_hash"],
@@ -181,6 +183,10 @@ class FallbackTest(unittest.TestCase):
         self.assertEqual(
             journal["revisions"][-1]["revision_hash"], applied["revision_hash"]
         )
+        # Simulate a crash after update-ref but before index/worktree journal
+        # publication. Retry must recognize and complete the committed handoff.
+        git(self.repo, "read-tree", "HEAD^")
+        journal_path.write_bytes(initial_journal)
         recovered = self.command("apply", "--approval", str(approval))
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
