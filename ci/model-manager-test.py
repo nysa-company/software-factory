@@ -65,6 +65,23 @@ class ModelManagerTest(unittest.TestCase):
     def profile_hash(self, profile_id):
         return ROUTER.profile_hash(self.profiles[profile_id])
 
+    def model_policy(self):
+        portfolio = self.profiles["balanced-v2"]["portfolios"][0]
+        return {
+            "checking_family": portfolio["checking_family"],
+            "production_family": portfolio["production_family"],
+            "roles": {
+                role: {
+                    "effort": value["effort"],
+                    "primary_route_id": value["candidates"][0],
+                    "secondary_route_id": value["candidates"][1],
+                }
+                for role, value in portfolio["roles"].items()
+            },
+            "schema": "factory-model-policy/v1",
+            "version": 1,
+        }
+
     def activate(self, profile_id="legacy-balanced-v1", project=None):
         return self.output(
             "activate",
@@ -358,6 +375,117 @@ class ModelManagerTest(unittest.TestCase):
 
         forbidden = {"token", "password", "secret", "api_key", "credential"}
         self.assertFalse({key.lower() for key in keys(pin)} & forbidden)
+
+    def test_project_policy_preview_cas_apply_drives_plan_and_preserves_old_pin(self):
+        policy_path = self.base / "model-policy.json"
+        policy = self.model_policy()
+        preview = self.output(
+            "policy-preview",
+            "--policy-file", str(policy_path),
+            "--policy", json.dumps(policy),
+        )
+        self.assertEqual(preview["current_policy_hash"], ROUTER.content_hash(None))
+        rejected = self.command(
+            "policy-apply",
+            "--policy-file", str(policy_path),
+            "--policy", json.dumps(policy),
+            "--expected-current-hash", "0" * 64,
+            "--approve-hash", preview["preview_hash"],
+            check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        applied = self.output(
+            "policy-apply",
+            "--policy-file", str(policy_path),
+            "--policy", json.dumps(policy),
+            "--expected-current-hash", preview["current_policy_hash"],
+            "--approve-hash", preview["preview_hash"],
+        )
+        self.assertEqual(applied["policy_hash"], ROUTER.content_hash(policy))
+        self.assertEqual(policy_path.stat().st_mode & 0o777, 0o644)
+
+        plan = self.output(
+            "plan",
+            "--policy-file", str(policy_path),
+            "--readiness", json.dumps(self.readiness),
+        )
+        self.assertEqual(plan["schema"], "model-resolution-plan/v2")
+        self.assertEqual(plan["model_policy"], policy)
+        pin_path = self.base / "project-pin.json"
+        pin = self.output(
+            "pin",
+            "--policy-file", str(policy_path),
+            "--ticket", "T-777",
+            "--kit-sha", "a" * 40,
+            "--readiness", json.dumps(self.readiness),
+            "--output", str(pin_path),
+        )
+
+        changed = copy.deepcopy(policy)
+        changed["roles"]["planner"]["effort"] = "medium"
+        second_preview = self.output(
+            "policy-preview",
+            "--policy-file", str(policy_path),
+            "--policy", json.dumps(changed),
+        )
+        self.output(
+            "policy-apply",
+            "--policy-file", str(policy_path),
+            "--policy", json.dumps(changed),
+            "--expected-current-hash", second_preview["current_policy_hash"],
+            "--approve-hash", second_preview["preview_hash"],
+        )
+        selected = self.output(
+            "select",
+            "--policy-file", str(policy_path),
+            "--ticket-plan", str(pin_path),
+            "--ticket", "T-777",
+            "--kit-sha", "a" * 40,
+            "--role", "planner",
+        )
+        self.assertEqual(selected, pin["resolution"]["selections"]["planner"])
+
+    def test_policy_candidates_constraints_and_reviewer_contract_fail_closed(self):
+        values = self.output("policy-candidates")
+        self.assertEqual(values["efforts"], ["low", "medium", "high"])
+        self.assertTrue(values["routes"])
+        self.assertTrue(all(
+            self.routes[value["route_id"]]["enabled"]
+            and self.routes[value["route_id"]]["lifecycle"] == "stable"
+            for value in values["routes"]
+        ))
+        contract = self.output("reviewer-exception-contract")
+        self.assertFalse(contract["supported"])
+        self.assertTrue(contract["ticket_scoped"])
+        self.assertTrue(contract["one_use"])
+
+        policy = self.model_policy()
+        policy["roles"]["reviewer"]["primary_route_id"] = "codex-gpt-5.6-sol"
+        policy["roles"]["reviewer"]["secondary_route_id"] = "cursor-gpt-5.6-sol-high"
+        rejected = self.command(
+            "policy-preview",
+            "--policy-file", str(self.base / "model-policy.json"),
+            "--policy", json.dumps(policy),
+            check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("outside", rejected.stderr)
+
+    def test_ticket_status_reads_state_and_validates_optional_pin(self):
+        ticket = self.base / "T-123.md"
+        ticket.write_text("# T-123\n\nState: Ready\n\nKit-SHA: %s\n" % ("a" * 40))
+        os.chmod(ticket, 0o644)
+        plan_path = self.base / "ticket-status-plan.json"
+        self.pin(plan_path)
+        status = self.output(
+            "ticket-status",
+            "--ticket", "T-123",
+            "--ticket-file", str(ticket),
+            "--ticket-plan", str(plan_path),
+        )
+        self.assertEqual(status["state"], "Ready")
+        self.assertEqual(status["route_plan_status"], "pinned")
+        self.assertRegex(status["route_plan_hash"], r"^[0-9a-f]{64}$")
 
     def test_explicit_v1_migration_preserves_exact_blob_and_provenance(self):
         legacy_path = self.base / "legacy-plan.json"

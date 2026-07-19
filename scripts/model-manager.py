@@ -4,6 +4,7 @@
 import argparse
 import base64
 import datetime
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,7 @@ import re
 import stat
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -56,6 +58,7 @@ FALLBACK_BODY_KEYS = frozenset((
 ))
 FALLBACK_REASONS = frozenset(("credits_exhausted", "provider_unavailable"))
 SCOPE_TYPES = frozenset(("account-route", "provider-family", "model", "route"))
+ABSENT_POLICY_HASH = ROUTER.content_hash(None)
 
 
 class ManagerError(ValueError):
@@ -173,6 +176,36 @@ def _load_secure_json(path, required=True, expected_mode=0o600):
         raise ManagerError("cannot load JSON %s: %s" % (path, exc))
 
 
+def _load_model_policy(path, routes, required=False):
+    if path is None:
+        if required:
+            raise ManagerError("--policy-file is required")
+        return None
+    policy = _load_secure_json(Path(path), required=required, expected_mode=0o644)
+    if policy is None:
+        return None
+    try:
+        return ROUTER.validate_model_policy(policy, routes)
+    except ROUTER.RouterError as exc:
+        raise ManagerError("invalid project model policy: %s" % exc)
+
+
+def _policy_hash(policy):
+    return ABSENT_POLICY_HASH if policy is None else ROUTER.content_hash(policy)
+
+
+def _policy_preview(current, proposed):
+    body = {
+        "current_policy_hash": _policy_hash(current),
+        "policy": proposed,
+    }
+    return {
+        **body,
+        "preview_hash": ROUTER.content_hash(body),
+        "schema": "factory-model-policy-preview/v1",
+    }
+
+
 def _atomic_write(path, value, mode=0o600):
     path = Path(path)
     _ensure_directory(path.parent)
@@ -208,6 +241,33 @@ def _atomic_write(path, value, mode=0o600):
                 temporary.unlink()
             except OSError:
                 pass
+
+
+@contextmanager
+def _exclusive_lock(path):
+    path = Path(path)
+    _ensure_directory(path.parent)
+    _check_no_symlink_components(path)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = None
+    try:
+        descriptor = os.open(str(path), flags, 0o600)
+        os.fchmod(descriptor, 0o600)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ManagerError("lock file is unsafe: %s" % path)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    except OSError as exc:
+        raise ManagerError("cannot lock %s: %s" % (path, exc))
+    finally:
+        if descriptor is not None:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
 
 def _state_paths(state_root, project):
@@ -304,17 +364,25 @@ def _load_overrides(path, project, routes):
     return _validate_overrides(value, project, routes)
 
 
-def _profile_for_plan(active_path, project, profile_map, requested=None):
+def _profile_for_plan(
+    active_path, project, profile_map, routes, requested=None, model_policy=None
+):
     if requested is not None:
         _safe_id(requested, "--profile")
+        if requested == "project-policy":
+            if model_policy is None:
+                raise ManagerError("project model policy is absent")
+            return ROUTER.model_policy_profile(model_policy, routes), model_policy
         if requested not in profile_map:
             raise ManagerError("unknown profile: %s" % requested)
-        return profile_map[requested]
+        return profile_map[requested], None
+    if model_policy is not None:
+        return ROUTER.model_policy_profile(model_policy, routes), model_policy
     active = _load_active(active_path, project, profile_map)
     profile_id = active["profile_id"] if active else DEFAULT_PROFILE
     if profile_id not in profile_map:
         raise ManagerError("default profile is absent")
-    return profile_map[profile_id]
+    return profile_map[profile_id], None
 
 
 def _parse_json_argument(value, location):
@@ -581,11 +649,64 @@ def _load_plan_blob(path):
         raise ManagerError("cannot read legacy ticket plan: %s" % exc)
 
 
+def _ticket_status(ticket, ticket_file, ticket_plan, catalog, routes, profile_map):
+    if not isinstance(ticket, str) or not TICKET.fullmatch(ticket):
+        raise ManagerError("--ticket must match T-[0-9]+")
+    path = Path(ticket_file)
+    if not path.is_absolute():
+        raise ManagerError("--ticket-file must be absolute")
+    _secure_file(path, expected_mode=0o644)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ManagerError("cannot read ticket file: %s" % exc)
+    states = re.findall(r"^[ \t]*(?:State|Status):[ \t]*([^\r\n]+?)[ \t]*$", text, re.M)
+    if len(states) != 1:
+        raise ManagerError("ticket must contain exactly one State or Status field")
+    kit_shas = re.findall(r"^[ \t]*Kit-SHA:[ \t]*([0-9a-f]{40})[ \t]*$", text, re.M)
+    if len(kit_shas) > 1:
+        raise ManagerError("ticket contains duplicate Kit-SHA fields")
+    plan_status = "absent"
+    plan_hash = None
+    if ticket_plan is not None:
+        plan_path = Path(ticket_plan)
+        if not plan_path.is_absolute():
+            raise ManagerError("--ticket-plan must be absolute")
+        value = _load_secure_json(plan_path, required=False, expected_mode=0o644)
+        if value is not None:
+            if value.get("schema") == "ticket-model-route-plan/v1":
+                _validate_pin(value, catalog, routes, profile_map)
+                plan_ticket, plan_kit = value["ticket"], value["kit_sha"]
+            elif value.get("schema") == "ticket-model-route-journal/v2":
+                validate_journal(value, catalog, routes, profile_map)
+                plan_ticket, plan_kit = value["ticket"], value["kit_sha"]
+            else:
+                raise ManagerError("unsupported ticket route document schema")
+            if plan_ticket != ticket:
+                raise ManagerError("ticket plan ticket mismatch")
+            if not kit_shas or plan_kit != kit_shas[0]:
+                raise ManagerError("ticket plan Kit-SHA mismatch")
+            plan_status = "pinned"
+            try:
+                plan_hash = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            except OSError as exc:
+                raise ManagerError("cannot hash ticket plan: %s" % exc)
+    return {
+        "kit_sha": kit_shas[0] if kit_shas else None,
+        "route_plan_hash": plan_hash,
+        "route_plan_status": plan_status,
+        "schema": "factory-ticket-status/v1",
+        "state": states[0].strip(),
+        "ticket": ticket,
+    }
+
+
 def _common(parser):
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--project", required=True)
     parser.add_argument("--catalog", default=str(ROUTER.DEFAULT_CATALOG))
     parser.add_argument("--profiles-file", default=str(ROUTER.DEFAULT_PROFILES))
+    parser.add_argument("--policy-file")
 
 
 def build_parser():
@@ -593,10 +714,30 @@ def build_parser():
     commands = parser.add_subparsers(dest="command", required=True)
     profiles = commands.add_parser("profiles")
     _common(profiles)
+    candidates = commands.add_parser("policy-candidates")
+    _common(candidates)
+    policy_preview = commands.add_parser("policy-preview")
+    _common(policy_preview)
+    policy_preview.add_argument("--policy", required=True)
+    policy_apply = commands.add_parser("policy-apply")
+    _common(policy_apply)
+    policy_apply.add_argument("--policy", required=True)
+    policy_apply.add_argument("--expected-current-hash", required=True)
+    policy_apply.add_argument("--approve-hash", required=True)
+    reviewer_contract = commands.add_parser("reviewer-exception-contract")
+    _common(reviewer_contract)
     status = commands.add_parser("status")
     _common(status)
+    ticket_status = commands.add_parser("ticket-status")
+    _common(ticket_status)
+    ticket_status.add_argument("--ticket", required=True)
+    ticket_status.add_argument("--ticket-file", required=True)
+    ticket_status.add_argument("--ticket-plan")
     probe_context = commands.add_parser("probe-context")
     _common(probe_context)
+    probe_list = commands.add_parser("probe-list")
+    _common(probe_list)
+    probe_list.add_argument("--profile")
     plan = commands.add_parser("plan")
     _common(plan)
     plan.add_argument("--readiness", required=True)
@@ -670,6 +811,7 @@ def run(args):
         )
     except ROUTER.RouterError as exc:
         raise ManagerError(str(exc))
+    model_policy = _load_model_policy(args.policy_file, routes)
 
     if args.command == "profiles":
         active = _load_active(active_path, args.project, profile_map)
@@ -685,6 +827,57 @@ def run(args):
             ],
             "schema": "model-manager-profiles/v1",
         }
+    if args.command == "policy-candidates":
+        result = ROUTER.model_policy_candidates(routes)
+        result["current_policy"] = model_policy
+        result["current_policy_hash"] = _policy_hash(model_policy)
+        return result
+    if args.command in ("policy-preview", "policy-apply"):
+        if args.policy_file is None:
+            raise ManagerError("--policy-file is required")
+        proposed = _parse_json_argument(args.policy, "policy")
+        try:
+            ROUTER.validate_model_policy(proposed, routes)
+        except ROUTER.RouterError as exc:
+            raise ManagerError("invalid proposed model policy: %s" % exc)
+        if args.command == "policy-preview":
+            return _policy_preview(model_policy, proposed)
+        for value, location in (
+            (args.expected_current_hash, "--expected-current-hash"),
+            (args.approve_hash, "--approve-hash"),
+        ):
+            if not isinstance(value, str) or not SHA256.fullmatch(value):
+                raise ManagerError("%s must be a SHA-256 hash" % location)
+        lock_path = active_path.parent / "model-policy.lock"
+        with _exclusive_lock(lock_path):
+            current = _load_model_policy(args.policy_file, routes)
+            preview = _policy_preview(current, proposed)
+            if args.expected_current_hash != preview["current_policy_hash"]:
+                raise ManagerError("model policy compare-and-swap conflict")
+            if args.approve_hash != preview["preview_hash"]:
+                raise ManagerError("approved hash does not match exact policy preview")
+            _atomic_write(Path(args.policy_file), proposed, mode=0o644)
+        return {
+            "policy": proposed,
+            "policy_hash": ROUTER.content_hash(proposed),
+            "previous_policy_hash": preview["current_policy_hash"],
+            "preview_hash": preview["preview_hash"],
+            "schema": "factory-model-policy-apply/v1",
+        }
+    if args.command == "reviewer-exception-contract":
+        return {
+            "normal_policy_allowed": False,
+            "reason": "ticket-scoped one-use approval integration is not available",
+            "schema": "factory-reviewer-exception-contract/v1",
+            "supported": False,
+            "ticket_scoped": True,
+            "one_use": True,
+        }
+    if args.command == "ticket-status":
+        return _ticket_status(
+            args.ticket, args.ticket_file, args.ticket_plan,
+            catalog, routes, profile_map,
+        )
     if args.command == "status":
         active = _load_active(active_path, args.project, profile_map)
         overrides = _load_overrides(overrides_path, args.project, routes)
@@ -695,14 +888,19 @@ def run(args):
                 value for value in overrides["overrides"]
                 if _timestamp(value["expires_at"], "override.expires_at") > now
             ],
+            "model_policy": model_policy,
+            "model_policy_hash": _policy_hash(model_policy),
             "project": args.project,
             "schema": "model-manager-status/v1",
         }
     if args.command == "probe-context":
         active = _load_active(active_path, args.project, profile_map)
         overrides = _load_overrides(overrides_path, args.project, routes)
-        profile_id = active["profile_id"] if active else DEFAULT_PROFILE
-        if profile_id not in profile_map:
+        profile_id = (
+            "project-policy" if model_policy is not None
+            else active["profile_id"] if active else DEFAULT_PROFILE
+        )
+        if profile_id not in profile_map and profile_id != "project-policy":
             raise ManagerError("default profile is absent")
         now = _now()
         disabled = set()
@@ -732,14 +930,28 @@ def run(args):
         return {
             "disabled_route_ids": sorted(disabled),
             "profile_id": profile_id,
+            "model_policy_hash": (
+                ROUTER.content_hash(model_policy) if model_policy is not None else None
+            ),
             "project": args.project,
             "schema": "model-manager-probe-context/v1",
         }
+    if args.command == "probe-list":
+        profile, _ = _profile_for_plan(
+            active_path, args.project, profile_map, routes,
+            args.profile, model_policy,
+        )
+        return ROUTER.probe_list(profile, routes)
     if args.command == "plan":
-        profile = _profile_for_plan(active_path, args.project, profile_map, args.profile)
+        profile, effective_policy = _profile_for_plan(
+            active_path, args.project, profile_map, routes,
+            args.profile, model_policy,
+        )
         readiness = _parse_json_argument(args.readiness, "readiness")
         try:
-            return ROUTER.resolve_policy(catalog, routes, profile, readiness)
+            return ROUTER.resolve_policy(
+                catalog, routes, profile, readiness, effective_policy
+            )
         except ROUTER.RouterError as exc:
             raise ManagerError(str(exc))
     if args.command == "activate":
@@ -820,10 +1032,15 @@ def run(args):
             except ROUTER.RouterError as exc:
                 raise ManagerError("invalid resolution file: %s" % exc)
         else:
-            profile = _profile_for_plan(active_path, args.project, profile_map)
+            profile, effective_policy = _profile_for_plan(
+                active_path, args.project, profile_map, routes,
+                model_policy=model_policy,
+            )
             readiness = _parse_json_argument(args.readiness, "readiness")
             try:
-                resolution = ROUTER.resolve_policy(catalog, routes, profile, readiness)
+                resolution = ROUTER.resolve_policy(
+                    catalog, routes, profile, readiness, effective_policy
+                )
             except ROUTER.RouterError as exc:
                 raise ManagerError(str(exc))
         value = {

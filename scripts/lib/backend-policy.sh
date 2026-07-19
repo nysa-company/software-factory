@@ -11,6 +11,7 @@ FACTORY_MODEL_ROUTER="${FACTORY_MODEL_ROUTER:-$FACTORY_POLICY_DIR/../model-route
 FACTORY_MODEL_MANAGER="${FACTORY_MODEL_MANAGER:-$FACTORY_POLICY_DIR/../model-manager.py}"
 FACTORY_MODEL_CATALOG="${FACTORY_MODEL_CATALOG:-$FACTORY_POLICY_DIR/../model-routing/catalog-v1.json}"
 FACTORY_MODEL_PROFILES="${FACTORY_MODEL_PROFILES:-$FACTORY_POLICY_DIR/../model-routing/profiles-v1.json}"
+FACTORY_MODEL_POLICY_FILE="${FACTORY_MODEL_POLICY_FILE:-${FACTORY_ROOT:+$FACTORY_ROOT/factory/model-policy.json}}"
 
 factory_role_group() {
   case "$1" in
@@ -401,9 +402,17 @@ factory_resolve_model_profile() {
   readiness="$tmp/readiness.tsv"
   : > "$readiness"
 
-  if ! python3 -B "$FACTORY_MODEL_ROUTER" probe-list "$profile_id" \
-      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES" \
-      > "$probes" 2>/dev/null; then
+  if [[ -n "${FACTORY_MODEL_STATE_ROOT:-}" && -n "${FACTORY_PROJECT:-}" &&
+        -n "$FACTORY_MODEL_POLICY_FILE" ]]; then
+    probe_command=(python3 -B "$FACTORY_MODEL_MANAGER" probe-list
+      --state-root "$FACTORY_MODEL_STATE_ROOT" --project "$FACTORY_PROJECT"
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles-file "$FACTORY_MODEL_PROFILES"
+      --policy-file "$FACTORY_MODEL_POLICY_FILE" --profile "$profile_id")
+  else
+    probe_command=(python3 -B "$FACTORY_MODEL_ROUTER" probe-list "$profile_id"
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES")
+  fi
+  if ! "${probe_command[@]}" > "$probes" 2>/dev/null; then
     rm -rf "$tmp"
     FACTORY_RESOLVE_ERROR="probe_list_invalid"
     return 2
@@ -507,9 +516,21 @@ PY
     FACTORY_RESOLVE_ERROR="output_temporary_file_failed"
     return 2
   }
-  if ! python3 -B "$FACTORY_MODEL_ROUTER" resolve "$profile_id" "$tmp/readiness.json" \
-      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES" \
-      > "$plan_tmp" 2>/dev/null; then
+  if [[ -n "${FACTORY_MODEL_STATE_ROOT:-}" && -n "${FACTORY_PROJECT:-}" &&
+        -n "$FACTORY_MODEL_POLICY_FILE" ]]; then
+    resolve_command=(python3 -B "$FACTORY_MODEL_MANAGER" plan
+      --state-root "$FACTORY_MODEL_STATE_ROOT" --project "$FACTORY_PROJECT"
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles-file "$FACTORY_MODEL_PROFILES"
+      --policy-file "$FACTORY_MODEL_POLICY_FILE"
+      --readiness "$(cat "$tmp/readiness.json")")
+    [[ "$profile_id" == "project-policy" ]] ||
+      resolve_command+=(--profile "$profile_id")
+  else
+    resolve_command=(python3 -B "$FACTORY_MODEL_ROUTER" resolve "$profile_id"
+      "$tmp/readiness.json" --catalog "$FACTORY_MODEL_CATALOG"
+      --profiles "$FACTORY_MODEL_PROFILES")
+  fi
+  if ! "${resolve_command[@]}" > "$plan_tmp" 2>/dev/null; then
     rm -f "$plan_tmp"
     rm -rf "$tmp"
     FACTORY_RESOLVE_ERROR="profile_resolution_failed"
@@ -534,6 +555,7 @@ PY
 # Load project routing state for probes, with no product or task content.
 factory_load_model_probe_context() {
   local context override="${FACTORY_MODEL_PROFILE_OVERRIDE:-}"
+  local -a policy_args=()
   FACTORY_RESOLVE_ERROR=""
   if [[ -n "$override" ]]; then
     if [[ "${FACTORY_TEST_MODE:-0}" != "1" ||
@@ -547,10 +569,13 @@ factory_load_model_probe_context() {
       FACTORY_RESOLVE_ERROR="model_state_context_incomplete"
       return 2
     fi
+    [[ -z "$FACTORY_MODEL_POLICY_FILE" ]] ||
+      policy_args=(--policy-file "$FACTORY_MODEL_POLICY_FILE")
     if ! context="$(python3 -B "$FACTORY_MODEL_MANAGER" probe-context \
         --state-root "$FACTORY_MODEL_STATE_ROOT" --project "$FACTORY_PROJECT" \
         --catalog "$FACTORY_MODEL_CATALOG" \
-        --profiles-file "$FACTORY_MODEL_PROFILES" 2>/dev/null)"; then
+        --profiles-file "$FACTORY_MODEL_PROFILES" \
+        "${policy_args[@]}" 2>/dev/null)"; then
       FACTORY_RESOLVE_ERROR="model_state_invalid"
       return 2
     fi
