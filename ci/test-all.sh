@@ -35,6 +35,7 @@ run_suite "runtime ledger regression suite" python3 "$ROOT/ci/ledger-view-test.p
 run_suite "model router regression suite" python3 "$ROOT/ci/model-router-test.py"
 run_suite "model manager regression suite" python3 "$ROOT/ci/model-manager-test.py"
 run_suite "model control regression suite" python3 "$ROOT/ci/model-control-test.py"
+run_suite "envelope control regression suite" python3 "$ROOT/ci/envelope-control-test.py"
 run_suite "disabled Claude Kimi adapter suite" python3 "$ROOT/ci/claude-kimi-adapter-test.py"
 run_suite "failed-attempt handoff suite" python3 "$ROOT/ci/failed-attempt-handoff-test.py"
 run_suite "model fallback approval suite" python3 "$ROOT/ci/model-fallback-approval-test.py"

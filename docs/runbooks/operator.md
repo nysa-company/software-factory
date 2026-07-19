@@ -14,6 +14,36 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: run `scripts/kill-switch.sh` immediately (safe — it stops, it doesn't break anything). Read `factory/runtime-ledger.csv` for today's effective rows and find the expensive role/ticket; tracked `factory/ledger.csv` is close-out history and may be stale during a live incident. That ticket goes to Blocked-Escalated; resume the rest by removing `factory/KILL`.
 - Don't: rotate API keys for a spend problem — that's for leaks, and it kills your own sessions too.
 
+## Envelope and cap control backend
+
+`scripts/envelope-control.py inspect` returns permanent defaults and each role's
+exact inherited attempt values. Permanent changes are two-step operations:
+`plan --set KEY=value` returns a deterministic `preview_hash`; repeat the same
+arguments with `apply --approve-hash <hash>`. Apply takes the product launch
+lock, compare-and-swaps the exact `ENVELOPE.env` and `ENVELOPE.md` inputs, and
+publishes each file atomically as a consistent pair (rolling back a failed
+second publication). It rejects symlinks, hard links, foreign
+ownership, writable-by-others paths, malformed limits, and stale previews.
+
+For a bounded exception, use `override-plan` and `override-apply` with one of
+`next-attempt`, `ticket`, `role`, `product-day`, or `global-day`. Ticket and
+role selectors narrow the record; day scopes require a UTC `--day YYYY-MM-DD`.
+Overrides are immutable JSON records. A next-attempt use writes a separate
+consumption receipt, so neither the authorization nor prior accounting is ever
+rewritten. Conflicting active records fail closed. `global-day` additionally
+requires `--global-env /absolute/path/to/global.env` and stores its record beside
+that machine configuration so every product using it observes the same cap.
+
+The sealed launcher must expose these commands explicitly before operators use
+them remotely. Direct backend examples for launcher integration:
+
+```bash
+python3 scripts/envelope-control.py inspect --factory-root /absolute/product
+python3 scripts/envelope-control.py plan --factory-root /absolute/product --set BUILDER_PER_RUN_BUDGET_USD=8.00
+python3 scripts/envelope-control.py apply --factory-root /absolute/product --set BUILDER_PER_RUN_BUDGET_USD=8.00 --approve-hash <preview-hash>
+python3 scripts/envelope-control.py override-plan --factory-root /absolute/product --scope next-attempt --ticket T-123 --role builder --set BUILDER_PER_RUN_TIMEOUT_MIN=60
+```
+
 ## Failed deploy / broken staging
 
 - Notice: staging URL errors, or a Narrator bundle says "preview broken".

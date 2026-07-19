@@ -152,6 +152,7 @@ build_sealed_release() {
 run_preflight() {
   local factory_root="$1" ticket="$2"
   shift 2
+  local role=""
   local env_args=(
     PATH="$STUB_BIN:$PATH"
     FACTORY_ROOT="$factory_root"
@@ -172,10 +173,15 @@ run_preflight() {
       --probe-trace) env_args+=(FACTORY_TEST_PROBE_TRACE="$2"); shift 2;;
       --adapter-override) env_args+=(FACTORY_ADAPTER_OVERRIDE="$2"); shift 2;;
       --timezone) env_args+=(TZ="$2"); shift 2;;
+      --role) role="$2"; shift 2;;
       *) echo "unknown run_preflight opt: $1" >&2; return 2;;
     esac
   done
-  env "${env_args[@]}" bash "$PREFLIGHT" --ticket "$ticket" 2>&1
+  if [[ -n "$role" ]]; then
+    env "${env_args[@]}" bash "$PREFLIGHT" --ticket "$ticket" --role "$role" 2>&1
+  else
+    env "${env_args[@]}" bash "$PREFLIGHT" --ticket "$ticket" 2>&1
+  fi
 }
 
 run_sealed_preflight() {
@@ -243,6 +249,21 @@ assert_preflight "all-pass" 0 "PREFLIGHT PASS" "$ALLPASS" "T-001" --global-env "
 assert_preflight "authenticated isolated mock route" 0 \
   "PASS: authenticated isolated mock route contract passed" \
   "$ALLPASS" "T-001" --global-env "$GLOBAL_ENV" --adapter-override mock
+cp "$ALLPASS/factory/ENVELOPE.env" "$TMP/allpass-envelope.clean"
+printf '%s\n' \
+  'PLANNER_PER_RUN_BUDGET_USD=2.25' \
+  'PLANNER_PER_RUN_MAX_TURNS=9' \
+  'PLANNER_PER_RUN_TIMEOUT_MIN=3' >> "$ALLPASS/factory/ENVELOPE.env"
+git -C "$ALLPASS" add factory/ENVELOPE.env
+git -C "$ALLPASS" commit -qm "role envelope fixture"
+git -C "$ALLPASS" push -q origin main
+assert_preflight "role envelope resolves exact attempt values" 0 \
+  'PASS: planner attempt envelope: budget $2.25, max turns 9, timeout 3m' \
+  "$ALLPASS" "T-001" --global-env "$GLOBAL_ENV" --role planner
+cp "$TMP/allpass-envelope.clean" "$ALLPASS/factory/ENVELOPE.env"
+git -C "$ALLPASS" add factory/ENVELOPE.env
+git -C "$ALLPASS" commit -qm "restore envelope fixture"
+git -C "$ALLPASS" push -q origin main
 
 # Product configuration is data, even when a launcher credential is present.
 # Reject executable content before it can read the credential or reach a probe.
