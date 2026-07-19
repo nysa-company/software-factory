@@ -213,6 +213,32 @@ class FallbackTest(unittest.TestCase):
             2,
         )
 
+    def test_handoff_preserves_role_commits_and_remaining_dirty_work(self):
+        git(self.repo, "add", "src/app.txt")
+        git(self.repo, "commit", "-m", "partial builder progress")
+        role_commit = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "src/app.txt").write_text("remaining handoff\n")
+
+        preview = self.command("preview")
+        approval = Path(self.temp.name) / "approval-with-commit.json"
+        approval.write_text(json.dumps({
+            "approval_hash": preview["approval_hash"],
+            "comment_id": "linear-comment-2",
+            "failed_run_id": "run-failed-1",
+            "nonce": preview["nonce"],
+            "operator_id": "linear-user-1",
+            "reason": "credits_exhausted",
+            "schema": "model-fallback-linear-approval/v1",
+        }))
+        applied = self.command("apply", "--approval", str(approval))
+
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD^"), role_commit)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+        self.assertEqual(
+            git(self.repo, "show", "HEAD:src/app.txt"), "remaining handoff"
+        )
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+
     def test_conservatively_accounted_completed_failure_is_eligible(self):
         manifest = self.product / "factory/runs/run-failed-1.meta"
         values = {}

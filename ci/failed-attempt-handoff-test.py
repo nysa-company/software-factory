@@ -175,6 +175,20 @@ class HandoffTest(unittest.TestCase):
                 provider_scan_base=self.head,
             )
 
+    def test_committed_role_work_obeys_the_same_boundary_policy(self):
+        (self.repo / "src/kept.txt").write_text("allowed commit\n")
+        git(self.repo, "add", "src/kept.txt")
+        git(self.repo, "commit", "-qm", "allowed role progress")
+        allowed_head = git(self.repo, "rev-parse", "HEAD")
+        self.preview(expected_head=allowed_head)
+
+        (self.repo / "outside.txt").write_text("forbidden commit\n")
+        git(self.repo, "add", "outside.txt")
+        git(self.repo, "commit", "-qm", "out-of-bound role progress")
+        forbidden_head = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(HandoffError, "outside"):
+            self.preview(expected_head=forbidden_head)
+
     def test_rejects_path_boundary_protected_binary_large_and_secret_content(self):
         cases = (
             ("outside.txt", b"text\n", self.policy, "outside"),

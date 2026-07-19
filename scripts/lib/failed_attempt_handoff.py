@@ -224,6 +224,7 @@ class HandoffPreview:
     remote_url: str
     remote_branch: str
     remote_head: str
+    provider_scan_base: Optional[str]
     index_digest: str
     policy_digest: str
     snapshot_digest: str
@@ -547,6 +548,62 @@ def _reject_provider_commits(repo, baseline, head, identities):
             raise HandoffError("provider-authored commit is forbidden")
 
 
+def _validate_committed_changes(repo, baseline, head, role, policy):
+    if baseline == head:
+        return
+    _git(repo, ["merge-base", "--is-ancestor", baseline, head])
+    baseline_tree = _parse_tree(
+        _git(repo, ["ls-tree", "-rz", "--full-tree", baseline])
+    )
+    head_tree = _parse_tree(
+        _git(repo, ["ls-tree", "-rz", "--full-tree", head])
+    )
+    changed = _git(
+        repo,
+        [
+            "-c",
+            "diff.renames=false",
+            "diff",
+            "--name-only",
+            "-z",
+            baseline,
+            head,
+            "--",
+        ],
+    )
+    allowed = policy.paths_for(role)
+    for raw_path in changed.split(b"\0"):
+        if not raw_path:
+            continue
+        path = _decode_path(raw_path)
+        _validate_path_text(path)
+        if _matches(path, policy.protected_paths):
+            raise HandoffError(f"protected path changed in committed work: {path}")
+        if not _matches(path, allowed):
+            raise HandoffError(
+                f"committed path is outside the {role} boundary: {path}"
+            )
+        if _matches(path, policy.forbidden_for(role)):
+            raise HandoffError(f"committed path is forbidden for {role}: {path}")
+        previous = baseline_tree.get(path)
+        current = head_tree.get(path)
+        if current is not None:
+            mode, oid = current
+            if mode not in ("100644", "100755"):
+                raise HandoffError(f"committed path has an unsafe mode: {path}")
+            content = _git(repo, ["cat-file", "blob", oid])
+            if len(content) > policy.max_file_bytes:
+                raise HandoffError(f"committed file exceeds size limit: {path}")
+            _validate_content(path, content, policy)
+        if re.fullmatch(r"factory/tickets/T-[0-9]+\.md", path):
+            if previous is None or current is None:
+                raise HandoffError("ticket file creation or deletion is forbidden")
+            prior_content = _git(repo, ["cat-file", "blob", previous[1]])
+            current_content = _git(repo, ["cat-file", "blob", current[1]])
+            if _ticket_evidence(prior_content) != _ticket_evidence(current_content):
+                raise HandoffError("protected ticket evidence changed")
+
+
 def _preview_payload(preview):
     return {
         "branch": preview.branch,
@@ -568,6 +625,7 @@ def _preview_payload(preview):
         "remote_branch": preview.remote_branch,
         "remote_head": preview.remote_head,
         "remote_url": preview.remote_url,
+        "provider_scan_base": preview.provider_scan_base,
         "repo": preview.repo,
         "role": preview.role,
         "schema": preview.schema,
@@ -608,6 +666,9 @@ def preview_handoff(
         raise HandoffError("remote branch drifted from the expected commit")
     _reject_provider_commits(
         root, provider_scan_base or expected_head, head, policy.provider_identities
+    )
+    _validate_committed_changes(
+        root, provider_scan_base or expected_head, head, role, policy
     )
     _filesystem_hazard_check(root)
 
@@ -675,6 +736,7 @@ def preview_handoff(
         remote_url=remote_url,
         remote_branch=remote_branch,
         remote_head=remote_head,
+        provider_scan_base=provider_scan_base,
         index_digest=_sha256(index_raw),
         policy_digest=policy.digest,
         snapshot_digest=snapshot_digest,
@@ -701,6 +763,7 @@ def revalidate_handoff(preview, policy):
         remote_branch=preview.remote_branch,
         expected_remote_head=preview.remote_head,
         remote_destination=preview.remote_destination,
+        provider_scan_base=preview.provider_scan_base,
     )
     if current != preview:
         raise HandoffError("handoff snapshot drifted after preview")

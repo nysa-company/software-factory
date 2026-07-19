@@ -214,7 +214,9 @@ def calculate(args, nonce):
         factory_root, args.ticket, args.failed_run
     )
     role = failed["role"]
-    expected_head = failed["role_head_before"]
+    role_head_before = failed["role_head_before"]
+    expected_head = git(repo, "rev-parse", "--verify", "HEAD").decode().strip()
+    git(repo, "merge-base", "--is-ancestor", role_head_before, expected_head)
     branch = git(repo, "symbolic-ref", "--quiet", "--short", "HEAD").decode().strip()
     remote_head = git(
         repo, "ls-remote", "--heads", "--", args.remote,
@@ -237,7 +239,7 @@ def calculate(args, nonce):
         remote_branch=branch,
         expected_remote_head=remote_head,
         remote_destination=args.remote,
-        provider_scan_base=expected_head,
+        provider_scan_base=role_head_before,
     )
     readiness = json.loads(Path(args.readiness).read_text())
     contributors = contributors_from(journal, manifests)
