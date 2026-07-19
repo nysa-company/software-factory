@@ -47,7 +47,9 @@ Category: System change
 Protected-history validation can legitimately exceed the original ten-second
 process-group acknowledgement window. The isolated wrapper now waits at most
 two minutes for the trusted controller's final GO gate; adapters still cannot
-start before acknowledgement, and a missing controller remains a hard timeout.
+start before acknowledgement, a missing controller remains a hard timeout, and
+kill, maintenance, and targeted cancellation are rechecked immediately before
+the gate opens.
 
 ## 2026-07-19 — Decision 45: Local multi-project operator control plane
 

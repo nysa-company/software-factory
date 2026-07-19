@@ -1370,6 +1370,36 @@ else
     "status $BEFORE_GO_STATUS"
 fi
 
+# A kill published during final validation still wins before the adapter gate.
+BEFORE_GATE_KILL="$TMP/kill-before-adapter-gate"
+write_envelope "$BEFORE_GATE_KILL"
+write_ticket "$BEFORE_GATE_KILL" T-299
+FACTORY_ROOT="$BEFORE_GATE_KILL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-299 -- "before adapter gate" \
+  > "$TMP/before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_KILL_PID=$!
+for _i in $(seq 1 500); do
+  if grep -q '^phase=spawned$' "$BEFORE_GATE_KILL/factory/runs/"*.meta \
+      2>/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+touch "$BEFORE_GATE_KILL/factory/KILL"
+wait "$BEFORE_GATE_KILL_PID"
+BEFORE_GATE_KILL_STATUS=$?
+if [[ "$BEFORE_GATE_KILL_STATUS" -eq 4 ]] &&
+   grep -q 'KILL file appeared before adapter gate' \
+     "$TMP/before-adapter-gate.out" &&
+   ! grep -q 'mock adapter ran task' "$BEFORE_GATE_KILL/factory/runs/"*.out; then
+  pass "kill before adapter gate prevents task submission"
+else
+  fail "kill before adapter gate prevents task submission" \
+    "status $BEFORE_GATE_KILL_STATUS"
+fi
+
 # The adapter gate never opens unless go_issued=1 reached durable storage.
 GO_WRITE_FAIL="$TMP/go-marker-write-failure"
 write_envelope "$GO_WRITE_FAIL"

@@ -33,8 +33,9 @@ The provider adapter starts inside a new process group only after a separate
 wrapper publishes its PID/PGID and receives the trusted controller's final GO
 acknowledgement. The acknowledgement wait is bounded at two minutes because
 protected-history validation can exceed ten seconds on migrated products. A
-timeout still exits without starting the adapter, while the longer bound leaves
-kill-switch and orphan prevention unchanged.
+timeout still exits without starting the adapter. Immediately before opening
+the gate, the controller rechecks kill, maintenance, and targeted cancellation
+state so none can lose a race during the longer validation window.
 
 Before creating a manifest, every run acquires a product-level control lock and
 holds it through provider exit and integrity verification. This temporarily

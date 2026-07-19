@@ -82,7 +82,8 @@ helper output are not compatibility promises.
   classifying survivor state and retaining ownership records.
 - Extends the pre-submission process-group acknowledgement window to two
   minutes so validated large-history checks can finish without starting or
-  orphaning a provider task.
+  orphaning a provider task, with kill, maintenance, and targeted cancellation
+  rechecked immediately before the adapter gate opens.
 
 ## 1.2.0 — 2026-07-15
 

@@ -597,6 +597,29 @@ terminate_run_group() {
   RUN_GROUP_TERMINATED=1
 }
 
+stop_before_adapter_gate() {
+  if [[ -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ]]; then
+    if load_cancellation_request; then
+      echo "targeted cancellation requested before adapter gate; no task was submitted" >&2
+      STATUS=130
+    else
+      echo "malformed targeted cancellation request before adapter gate; no task was submitted" >&2
+      STATUS=11
+    fi
+  elif [[ -f "$FACTORY_DIR/KILL" ]]; then
+    echo "KILL file appeared before adapter gate; no task was submitted" >&2
+    STATUS=4
+  elif [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+    echo "MAINTENANCE file appeared before adapter gate; no task was submitted" >&2
+    STATUS=4
+  else
+    return 1
+  fi
+  terminate_run_group
+  wait "$RUN_PID" 2>/dev/null
+  return 0
+}
+
 role_remote_head() {
   "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
     "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}'
@@ -1384,6 +1407,14 @@ else
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
+      elif {
+        if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+              "${FACTORY_TEST_BEFORE_GATE_SLEEP:-0}" != "0" ]]; then
+          sleep "$FACTORY_TEST_BEFORE_GATE_SLEEP"
+        fi
+        stop_before_adapter_gate
+      }; then
+        :
       elif ! : > "$RUN_GATE_FILE"; then
         echo "could not open adapter GO gate; no task was submitted" >&2
         terminate_run_group
