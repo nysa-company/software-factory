@@ -41,9 +41,11 @@ class FallbackTest(unittest.TestCase):
         base = Path(self.temp.name)
         self.repo = base / "ticket"
         self.remote = base / "remote.git"
+        self.fetch_remote = base / "fetch.git"
         self.product = base / "product"
         self.repo.mkdir()
         subprocess.run(["git", "init", "-q", "--bare", self.remote], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", self.fetch_remote], check=True)
         subprocess.run(["git", "init", "-q", "-b", "ticket/T-1", self.repo], check=True)
         git(self.repo, "config", "user.name", "Test")
         git(self.repo, "config", "user.email", "test@example.test")
@@ -92,6 +94,8 @@ class FallbackTest(unittest.TestCase):
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-m", "ticket start")
         git(self.repo, "push", "-u", "origin", "ticket/T-1")
+        git(self.repo, "config", "remote.origin.pushurl", str(self.remote))
+        git(self.repo, "config", "remote.origin.url", str(self.fetch_remote))
         self.head = git(self.repo, "rev-parse", "HEAD")
 
         failed = resolution["selections"]["builder"]
@@ -186,6 +190,20 @@ class FallbackTest(unittest.TestCase):
             )["revisions"]),
             2,
         )
+
+    def test_conservatively_accounted_completed_failure_is_eligible(self):
+        manifest = self.product / "factory/runs/run-failed-1.meta"
+        values = {}
+        for line in manifest.read_text().splitlines():
+            key, value = line.split("=", 1)
+            values[key] = value
+        values["accounting_state"] = "abandoned_conservative"
+        values["phase"] = "completed"
+        manifest.write_text(
+            "".join(f"{key}={value}\n" for key, value in sorted(values.items()))
+        )
+        preview = self.command("preview")
+        self.assertEqual(preview["failed_run_id"], "run-failed-1")
 
 
 if __name__ == "__main__":

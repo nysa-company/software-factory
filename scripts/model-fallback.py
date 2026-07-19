@@ -96,12 +96,19 @@ def load_evidence(factory_root, ticket, failed_run):
         raise FallbackError("failed run manifest is missing or unsafe")
     failed_raw = failed_path.read_bytes()
     failed = read_meta(failed_path)
+    terminal_accounting = (
+        failed.get("phase"),
+        failed.get("accounting_state"),
+    )
     if (
         failed.get("ticket") != ticket
         or failed.get("go_issued") != "1"
         or not re.fullmatch(r"[1-9][0-9]{0,2}", failed.get("exit_status", ""))
-        or failed.get("accounting_state") not in ("completed", "abandoned_conservative")
-        or failed.get("phase") != failed.get("accounting_state")
+        or terminal_accounting not in {
+            ("completed", "completed"),
+            ("completed", "abandoned_conservative"),
+            ("abandoned", "abandoned_conservative"),
+        }
         or failed.get("role_exit") != "provider_failed"
         or failed.get("role") not in ROLE_ORDER
         or not failed.get("route_id")
@@ -197,6 +204,7 @@ def calculate(args, nonce):
         remote="origin",
         remote_branch=branch,
         expected_remote_head=remote_head,
+        remote_destination=args.remote,
         provider_scan_base=expected_head,
     )
     readiness = json.loads(Path(args.readiness).read_text())

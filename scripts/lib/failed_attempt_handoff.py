@@ -220,6 +220,7 @@ class HandoffPreview:
     head: str
     branch: str
     remote: str
+    remote_destination: Optional[str]
     remote_url: str
     remote_branch: str
     remote_head: str
@@ -496,20 +497,32 @@ def _snapshot_digest(entries):
     return digest.hexdigest()
 
 
-def _remote_state(repo, remote, branch):
+def _remote_state(repo, remote, branch, destination=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote):
         raise HandoffError("remote name is invalid")
     _validate_path_text(branch)
     _git(repo, ["check-ref-format", f"refs/heads/{branch}"])
-    url = _git(repo, ["remote", "get-url", "--", remote]).decode().strip()
+    url = (
+        destination
+        if destination is not None
+        else _git(repo, ["remote", "get-url", "--", remote]).decode().strip()
+    )
     if (
-        not url
+        not isinstance(url, str)
+        or not url
         or any(ord(character) < 32 or ord(character) == 127 for character in url)
         or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]*@", url)
     ):
         raise HandoffError("remote URL is invalid")
     output = _git(
-        repo, ["ls-remote", "--heads", "--", remote, f"refs/heads/{branch}"]
+        repo,
+        [
+            "ls-remote",
+            "--heads",
+            "--",
+            destination or remote,
+            f"refs/heads/{branch}",
+        ],
     )
     records = [record for record in output.splitlines() if record]
     if len(records) != 1:
@@ -572,6 +585,7 @@ def preview_handoff(
     remote,
     remote_branch,
     expected_remote_head,
+    remote_destination=None,
     provider_scan_base=None,
 ):
     """Create a bound preview, refusing unsafe content and any expected-state drift."""
@@ -587,7 +601,9 @@ def preview_handoff(
         raise HandoffError("HEAD drifted from the expected commit")
     if branch != expected_branch:
         raise HandoffError("branch drifted from the expected branch")
-    remote_url, remote_head = _remote_state(root, remote, remote_branch)
+    remote_url, remote_head = _remote_state(
+        root, remote, remote_branch, remote_destination
+    )
     if remote_head != expected_remote_head:
         raise HandoffError("remote branch drifted from the expected commit")
     _reject_provider_commits(
@@ -655,6 +671,7 @@ def preview_handoff(
         head=head,
         branch=branch,
         remote=remote,
+        remote_destination=remote_destination,
         remote_url=remote_url,
         remote_branch=remote_branch,
         remote_head=remote_head,
@@ -683,6 +700,7 @@ def revalidate_handoff(preview, policy):
         remote=preview.remote,
         remote_branch=preview.remote_branch,
         expected_remote_head=preview.remote_head,
+        remote_destination=preview.remote_destination,
     )
     if current != preview:
         raise HandoffError("handoff snapshot drifted after preview")
