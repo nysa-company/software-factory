@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Factory Operator Console</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">LOCAL CONTROL PLANE</p>
+      <h1>Factory Operator Console</h1>
+    </div>
+    <div class="project-control">
+      <label for="project">Project</label>
+      <select id="project" disabled></select>
+      <button id="refresh" type="button" disabled>Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="status-strip" aria-live="polite">
+      <span id="status-dot" class="status-dot"></span>
+      <span id="status">Establishing local session…</span>
+      <span id="updated"></span>
+    </section>
+
+    <section class="snapshot-grid" aria-label="Project snapshots">
+      <article class="card" data-view="workflow">
+        <header><span class="card-index">01</span><h2>Workflow</h2></header>
+        <pre>Waiting for project…</pre>
+      </article>
+      <article class="card" data-view="model">
+        <header><span class="card-index">02</span><h2>Model routing</h2></header>
+        <pre>Waiting for project…</pre>
+      </article>
+      <article class="card" data-view="envelope">
+        <header><span class="card-index">03</span><h2>Envelope</h2></header>
+        <pre>Waiting for project…</pre>
+      </article>
+      <article class="card" data-view="spend">
+        <header><span class="card-index">04</span><h2>Spend</h2></header>
+        <pre>Waiting for project…</pre>
+      </article>
+    </section>
+  </main>
+
+  <footer>
+    Bound to this machine · one-time bootstrap · no project paths in browser requests
+  </footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>
