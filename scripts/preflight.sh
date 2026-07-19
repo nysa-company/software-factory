@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # preflight.sh — kickoff checks before a ticket's first launch.
 # The factory-launch preflight route runs this once per ticket before launch.
-# Usage: preflight.sh --ticket T-NNN
+# Usage: preflight.sh --ticket T-NNN [--role ROLE]
 # FACTORY_ROOT semantics match run-agent.sh (anchors factory/ under the repo root).
 set -euo pipefail
 
-TICKET="" LEASE_ID="" WORKDIR=""
+TICKET="" ROLE="" LEASE_ID="" WORKDIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2;;
+    --role) ROLE="$2"; shift 2;;
     --lease) LEASE_ID="$2"; shift 2;;
     --workdir) WORKDIR="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 2;;
@@ -97,8 +98,13 @@ fi
 unset PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS \
   PER_RUN_TIMEOUT_MIN DAILY_CAP_USD
 if ! factory_load_plain_config "$ENV_FILE" envelope \
-  "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_CONFIG_KEYS"; then
+  "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_REQUIRED_KEYS"; then
   fail "envelope config is unsafe or malformed"
+  echo "PREFLIGHT FAIL"
+  exit 1
+fi
+if [[ -n "$ROLE" ]] && ! factory_select_role_envelope "$ROLE"; then
+  fail "requested role envelope is invalid"
   echo "PREFLIGHT FAIL"
   exit 1
 fi
@@ -125,6 +131,28 @@ if ! factory_validate_runtime_overrides; then
   fail "$FACTORY_RUNTIME_OVERRIDE_ERROR"
   echo "PREFLIGHT FAIL"
   exit 1
+fi
+if [[ -n "$ROLE" ]]; then
+  EFFECTIVE_ENVELOPE="$(python3 -B "$KIT_DIR/scripts/envelope-control.py" effective \
+    --factory-root "$REPO_ROOT" --ticket "$TICKET" --role "$ROLE" \
+    --day "$(date -u +%F)" --global-env "$GLOBAL_ENV" --format shell)" || {
+      fail "effective role envelope or override records are unsafe"
+      echo "PREFLIGHT FAIL"
+      exit 1
+    }
+  while IFS='=' read -r ENVELOPE_KEY ENVELOPE_VALUE; do
+    case "$ENVELOPE_KEY" in
+      PER_RUN_BUDGET_USD|PER_TICKET_BUDGET_USD|PER_RUN_MAX_TURNS|PER_RUN_TIMEOUT_MIN|DAILY_CAP_USD|GLOBAL_DAILY_CAP_USD|FACTORY_ENVELOPE_OVERRIDE_IDS|FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS)
+        printf -v "$ENVELOPE_KEY" '%s' "$ENVELOPE_VALUE"
+        ;;
+      *)
+        fail "effective role envelope returned an unsupported value"
+        echo "PREFLIGHT FAIL"
+        exit 1
+        ;;
+    esac
+  done <<<"$EFFECTIVE_ENVELOPE"
+  pass "$ROLE attempt envelope: budget \$$PER_RUN_BUDGET_USD, max turns $PER_RUN_MAX_TURNS, timeout ${PER_RUN_TIMEOUT_MIN}m"
 fi
 # (a) backend routes — resolve without submitting any task. The authenticated
 # isolated harness fixes the mock adapter before this script starts, so it must

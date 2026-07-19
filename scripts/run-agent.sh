@@ -12,7 +12,7 @@
 #
 # Envelope (factory/ENVELOPE.env at the repo root):
 #   PER_RUN_BUDGET_USD, PER_TICKET_BUDGET_USD, PER_RUN_MAX_TURNS,
-#   PER_RUN_TIMEOUT_MIN, DAILY_CAP_USD
+#   PER_RUN_TIMEOUT_MIN, DAILY_CAP_USD, plus optional ROLE_PER_RUN_* values.
 set -euo pipefail
 
 ROLE="" TICKET="" PROMPT_FILE="" ADAPTER="" WORKDIR="" WORKDIR_SET=0
@@ -154,7 +154,23 @@ TURNS=0
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
+ENVELOPE_CONTROL="$KIT_DIR/scripts/envelope-control.py"
 SEQUENCER_ERROR=""
+
+load_effective_envelope() {
+  local key value output
+  output="$(python3 -B "$ENVELOPE_CONTROL" effective \
+    --factory-root "$REPO_ROOT" --ticket "$TICKET" --role "$ROLE" \
+    --day "$(date -u +%F)" --global-env "$GLOBAL_ENV" --format shell)" || return 1
+  while IFS='=' read -r key value; do
+    case "$key" in
+      PER_RUN_BUDGET_USD|PER_TICKET_BUDGET_USD|PER_RUN_MAX_TURNS|PER_RUN_TIMEOUT_MIN|DAILY_CAP_USD|GLOBAL_DAILY_CAP_USD|FACTORY_ENVELOPE_OVERRIDE_IDS|FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS)
+        printf -v "$key" '%s' "$value"
+        ;;
+      *) return 1 ;;
+    esac
+  done <<<"$output"
+}
 
 sequencer_allows_role() {
   local output rc=0
@@ -417,6 +433,12 @@ write_manifest() {
     echo "accounting_schema=$(meta_value "$ACCOUNTING_SCHEMA")"
     echo "accounting_state=$(meta_value "$ACCOUNTING_STATE")"
     echo "reserved_usd=$(meta_value "$RESERVED_USD")"
+    echo "envelope_per_run_budget_usd=$(meta_value "${PER_RUN_BUDGET_USD:-}")"
+    echo "envelope_per_ticket_budget_usd=$(meta_value "${PER_TICKET_BUDGET_USD:-}")"
+    echo "envelope_max_turns=$(meta_value "${PER_RUN_MAX_TURNS:-}")"
+    echo "envelope_timeout_min=$(meta_value "${PER_RUN_TIMEOUT_MIN:-}")"
+    echo "envelope_daily_cap_usd=$(meta_value "${DAILY_CAP_USD:-}")"
+    echo "envelope_override_ids=$(meta_value "${FACTORY_ENVELOPE_OVERRIDE_IDS:-}")"
     echo "go_issued=$(meta_value "$GO_ISSUED")"
     echo "started_at=$(meta_value "$RUN_STARTED_AT")"
     echo "terminal_at=$(meta_value "$TERMINAL_AT")"
@@ -713,8 +735,9 @@ fi
 unset PER_RUN_BUDGET_USD PER_TICKET_BUDGET_USD PER_RUN_MAX_TURNS \
   PER_RUN_TIMEOUT_MIN DAILY_CAP_USD
 factory_load_plain_config "$ENV_FILE" envelope \
-  "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_CONFIG_KEYS" || exit 3
+  "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_REQUIRED_KEYS" || exit 3
 PER_TICKET_BUDGET_USD="${PER_TICKET_BUDGET_USD:-$PER_RUN_BUDGET_USD}"
+factory_select_role_envelope "$ROLE" || exit 3
 
 # --- optional machine-level cap across all factories on this machine ---
 # ~/.factory/global.env defines GLOBAL_DAILY_CAP_USD; every run on the machine
@@ -734,6 +757,8 @@ if [[ -f "$GLOBAL_ENV" ]]; then
   GLOBAL_LOCK="$(dirname "$GLOBAL_ENV")/.ledger.lock"
   [[ -n "${GLOBAL_DAILY_CAP_USD:-}" ]] || { echo "global env $GLOBAL_ENV exists but GLOBAL_DAILY_CAP_USD is unset" >&2; exit 3; }
 fi
+FACTORY_ENVELOPE_OVERRIDE_IDS=""
+FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS=""
 export -n GLOBAL_LEDGER GLOBAL_DAILY_CAP_USD 2>/dev/null || true
 # Product and machine configuration are not trusted to supply launcher-only
 # authority, and adapters must never inherit it.
@@ -907,6 +932,13 @@ if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
   echo "MAINTENANCE file appeared after launch lock acquisition; no task was submitted" >&2
   exit 4
 fi
+# Re-resolve under the launch lock. Envelope-control apply and override-apply
+# take this same lock, so these are the exact values reserved and sent to the
+# adapter rather than a stale pre-lock observation.
+if ! load_effective_envelope; then
+  echo "effective envelope or override records are unsafe; no task was submitted" >&2
+  exit 3
+fi
 ACTIVE_RUNS_DIR="$LEDGER_DIR/.active-runs"
 GUARD_KEY="$(printf '%s.%s' "$TICKET" "$ROLE" | tr -c 'A-Za-z0-9._-' '_')"
 ACTIVE_RUN_FILE="$ACTIVE_RUNS_DIR/$GUARD_KEY.lock"
@@ -975,6 +1007,12 @@ RUN_STARTED_AT="$(date -u +%FT%TZ)"
 TODAY="${RUN_STARTED_AT%%T*}"
 RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
 RESERVED_USD="$PER_RUN_BUDGET_USD"
+if [[ -n "$FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS" ]] &&
+   ! python3 -B "$ENVELOPE_CONTROL" consume --factory-root "$REPO_ROOT" \
+     --record-ids "$FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS" --run-id "$RUN_ID" >/dev/null; then
+  echo "next-attempt envelope override could not be consumed; no task was submitted" >&2
+  exit 3
+fi
 [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]] && PROMPT_VERSION="$(grep -m1 '^Version:' "$PROMPT_FILE" | awk '{print $2}' || echo unversioned)"
 write_manifest "resolved"
 if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then

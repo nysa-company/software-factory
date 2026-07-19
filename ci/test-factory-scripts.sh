@@ -404,6 +404,27 @@ run_mock() {
     "$RUN_AGENT" --role "$2" --ticket "$3" -- "test task"
 }
 
+# Optional role values inherit independently and the selected exact values are
+# frozen into the run manifest that supplies adapter arguments.
+ROLE_ENVELOPE="$TMP/role-envelope"
+write_envelope "$ROLE_ENVELOPE"
+cat >> "$ROLE_ENVELOPE/factory/ENVELOPE.env" <<'ENV'
+PLANNER_PER_RUN_BUDGET_USD=2.25
+PLANNER_PER_RUN_MAX_TURNS=9
+PLANNER_PER_RUN_TIMEOUT_MIN=3
+ENV
+if run_mock "$ROLE_ENVELOPE" planner T-189 >/dev/null 2>&1 &&
+   grep -l 'envelope_per_run_budget_usd=2.25' \
+     "$ROLE_ENVELOPE/factory/runs"/*.meta >/dev/null 2>&1 &&
+   grep -l 'envelope_max_turns=9' \
+     "$ROLE_ENVELOPE/factory/runs"/*.meta >/dev/null 2>&1 &&
+   grep -l 'envelope_timeout_min=3' \
+     "$ROLE_ENVELOPE/factory/runs"/*.meta >/dev/null 2>&1; then
+  pass "role envelope values reach the exact run manifest"
+else
+  fail "role envelope values reach the exact run manifest"
+fi
+
 ledger_header() {
   printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version'
 }
