@@ -1512,6 +1512,37 @@ else
     "status $BEFORE_GATE_BAD_CANCEL_STATUS"
 fi
 
+# The isolated wrapper rechecks controls after observing the gate and before
+# spawning the adapter, which closes the controller-check-to-gate boundary.
+AT_GATE_KILL="$TMP/kill-at-adapter-boundary"
+write_envelope "$AT_GATE_KILL"
+write_ticket "$AT_GATE_KILL" T-303
+FACTORY_ROOT="$AT_GATE_KILL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_AFTER_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-303 -- "kill at adapter boundary" \
+  > "$TMP/kill-at-adapter-boundary.out" 2>&1 &
+AT_GATE_KILL_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$AT_GATE_KILL/factory/runs/".*.gate 2>/dev/null || true)" ]] &&
+    break
+  sleep 0.02
+done
+touch "$AT_GATE_KILL/factory/KILL"
+wait "$AT_GATE_KILL_PID"
+AT_GATE_KILL_STATUS=$?
+if [[ "$AT_GATE_KILL_STATUS" -eq 4 ]] &&
+   grep -q 'control stop appeared at adapter submission boundary' \
+     "$TMP/kill-at-adapter-boundary.out" &&
+   grep -q 'KILL file appeared before adapter gate' \
+     "$TMP/kill-at-adapter-boundary.out" &&
+   ! grep -q 'mock adapter ran task' "$AT_GATE_KILL/factory/runs/"*.out; then
+  pass "kill at adapter boundary prevents task submission"
+else
+  fail "kill at adapter boundary prevents task submission" \
+    "status $AT_GATE_KILL_STATUS"
+fi
+
 # The adapter gate never opens unless go_issued=1 reached durable storage.
 GO_WRITE_FAIL="$TMP/go-marker-write-failure"
 write_envelope "$GO_WRITE_FAIL"

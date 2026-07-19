@@ -83,7 +83,7 @@ helper output are not compatibility promises.
 - Extends the pre-submission process-group acknowledgement window to two
   minutes so validated large-history checks can finish without starting or
   orphaning a provider task, with kill, maintenance, and targeted cancellation
-  rechecked immediately before the adapter gate opens.
+  rechecked by both the controller and isolated wrapper before adapter spawn.
 
 ## 1.2.0 — 2026-07-15
 

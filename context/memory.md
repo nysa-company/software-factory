@@ -49,7 +49,9 @@ process-group acknowledgement window. The isolated wrapper now waits at most
 two minutes for the trusted controller's final GO gate; adapters still cannot
 start before acknowledgement, a missing controller remains a hard timeout, and
 kill, maintenance, and targeted cancellation are rechecked immediately before
-the gate opens.
+the gate opens and again by the isolated wrapper after it observes the gate.
+The wrapper's second check is the submission boundary; later controls use
+normal post-submission drain semantics.
 
 ## 2026-07-19 — Decision 45: Local multi-project operator control plane
 
