@@ -1400,6 +1400,118 @@ else
     "status $BEFORE_GATE_KILL_STATUS"
 fi
 
+# Maintenance published during final validation also wins before submission.
+BEFORE_GATE_MAINT="$TMP/maintenance-before-adapter-gate"
+write_envelope "$BEFORE_GATE_MAINT"
+write_ticket "$BEFORE_GATE_MAINT" T-300
+FACTORY_ROOT="$BEFORE_GATE_MAINT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-300 -- "maintenance before adapter gate" \
+  > "$TMP/maintenance-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_MAINT_PID=$!
+for _i in $(seq 1 500); do
+  if grep -q '^phase=spawned$' "$BEFORE_GATE_MAINT/factory/runs/"*.meta \
+      2>/dev/null; then
+    break
+  fi
+  sleep 0.02
+done
+touch "$BEFORE_GATE_MAINT/factory/MAINTENANCE"
+wait "$BEFORE_GATE_MAINT_PID"
+BEFORE_GATE_MAINT_STATUS=$?
+if [[ "$BEFORE_GATE_MAINT_STATUS" -eq 4 ]] &&
+   grep -q 'MAINTENANCE file appeared before adapter gate' \
+     "$TMP/maintenance-before-adapter-gate.out" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_MAINT/factory/runs/"*.out; then
+  pass "maintenance before adapter gate prevents task submission"
+else
+  fail "maintenance before adapter gate prevents task submission" \
+    "status $BEFORE_GATE_MAINT_STATUS"
+fi
+
+# A valid targeted cancellation during final validation prevents submission.
+BEFORE_GATE_CANCEL="$TMP/cancel-before-adapter-gate"
+write_envelope "$BEFORE_GATE_CANCEL"
+write_ticket "$BEFORE_GATE_CANCEL" T-301
+FACTORY_ROOT="$BEFORE_GATE_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=2 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-301 -- "cancel before adapter gate" \
+  > "$TMP/cancel-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_CANCEL_PID=$!
+BEFORE_GATE_CANCEL_RUN=""
+for _i in $(seq 1 500); do
+  BEFORE_GATE_CANCEL_META="$(ls "$BEFORE_GATE_CANCEL/factory/runs/"*.meta \
+    2>/dev/null || true)"
+  if [[ -n "$BEFORE_GATE_CANCEL_META" ]] &&
+     grep -q '^phase=spawned$' "$BEFORE_GATE_CANCEL_META"; then
+    BEFORE_GATE_CANCEL_RUN="$(basename "$BEFORE_GATE_CANCEL_META" .meta)"
+    break
+  fi
+  sleep 0.02
+done
+BEFORE_GATE_CANCEL_PLAN="$TMP/cancel-before-adapter-gate-plan.json"
+python3 "$ATTEMPT_CANCEL" preview --factory-root "$BEFORE_GATE_CANCEL" \
+  --ticket T-301 --run-id "$BEFORE_GATE_CANCEL_RUN" \
+  --reason operator_requested > "$BEFORE_GATE_CANCEL_PLAN"
+BEFORE_GATE_CANCEL_HASH="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' \
+  "$BEFORE_GATE_CANCEL_PLAN")"
+python3 "$ATTEMPT_CANCEL" apply --factory-root "$BEFORE_GATE_CANCEL" \
+  --plan "$BEFORE_GATE_CANCEL_PLAN" \
+  --preview-hash "$BEFORE_GATE_CANCEL_HASH" --timeout 10 \
+  > "$TMP/cancel-before-adapter-gate-receipt.json"
+wait "$BEFORE_GATE_CANCEL_PID" 2>/dev/null || true
+if grep -q 'targeted cancellation requested before adapter gate' \
+     "$TMP/cancel-before-adapter-gate.out" &&
+   grep -q '^role_exit=cancelled$' \
+     "$BEFORE_GATE_CANCEL/factory/runs/$BEFORE_GATE_CANCEL_RUN.meta" &&
+   grep -q '^task_submitted=0$' \
+     "$BEFORE_GATE_CANCEL/factory/runs/$BEFORE_GATE_CANCEL_RUN.meta" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_CANCEL/factory/runs/"*.out; then
+  pass "targeted cancellation before adapter gate prevents task submission"
+else
+  fail "targeted cancellation before adapter gate prevents task submission"
+fi
+
+# Malformed targeted cancellation remains a hard pre-submission failure.
+BEFORE_GATE_BAD_CANCEL="$TMP/malformed-cancel-before-adapter-gate"
+write_envelope "$BEFORE_GATE_BAD_CANCEL"
+write_ticket "$BEFORE_GATE_BAD_CANCEL" T-302
+FACTORY_ROOT="$BEFORE_GATE_BAD_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-302 -- "bad cancel before adapter gate" \
+  > "$TMP/malformed-cancel-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_BAD_CANCEL_PID=$!
+BEFORE_GATE_BAD_CANCEL_RUN=""
+for _i in $(seq 1 500); do
+  BEFORE_GATE_BAD_CANCEL_META="$(ls \
+    "$BEFORE_GATE_BAD_CANCEL/factory/runs/"*.meta 2>/dev/null || true)"
+  if [[ -n "$BEFORE_GATE_BAD_CANCEL_META" ]] &&
+     grep -q '^phase=spawned$' "$BEFORE_GATE_BAD_CANCEL_META"; then
+    BEFORE_GATE_BAD_CANCEL_RUN="$(basename "$BEFORE_GATE_BAD_CANCEL_META" .meta)"
+    break
+  fi
+  sleep 0.02
+done
+printf '{\n' > "$BEFORE_GATE_BAD_CANCEL/factory/runs/$BEFORE_GATE_BAD_CANCEL_RUN.cancel-request.json"
+wait "$BEFORE_GATE_BAD_CANCEL_PID"
+BEFORE_GATE_BAD_CANCEL_STATUS=$?
+if [[ "$BEFORE_GATE_BAD_CANCEL_STATUS" -eq 11 ]] &&
+   grep -q 'malformed targeted cancellation request before adapter gate' \
+     "$TMP/malformed-cancel-before-adapter-gate.out" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_BAD_CANCEL/factory/runs/"*.out; then
+  pass "malformed cancellation before adapter gate fails closed"
+else
+  fail "malformed cancellation before adapter gate fails closed" \
+    "status $BEFORE_GATE_BAD_CANCEL_STATUS"
+fi
+
 # The adapter gate never opens unless go_issued=1 reached durable storage.
 GO_WRITE_FAIL="$TMP/go-marker-write-failure"
 write_envelope "$GO_WRITE_FAIL"
