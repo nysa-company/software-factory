@@ -197,6 +197,12 @@ class FallbackTest(unittest.TestCase):
         recovered = self.command("apply", "--approval", str(approval))
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
+        consumed_recovery = self.command("recover")
+        self.assertTrue(consumed_recovery["recovered"])
+        self.assertEqual(
+            consumed_recovery["approval_receipt"]["comment_id"],
+            "linear-comment-1",
+        )
         self.assertEqual(
             len(json.loads(
                 git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")

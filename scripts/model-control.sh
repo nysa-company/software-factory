@@ -405,14 +405,17 @@ PY
     fi
     approval_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-approval.XXXXXX")" ||
       json_error "could not allocate approval input"
+    approval_available=1
     if ! python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" read \
       --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
       --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
       > "$approval_file"; then
-      rm -f "$approval_file"
-      json_error "exact unexpired Linear fallback approval is required"
+      approval_available=0
+      : > "$approval_file"
     fi
-    approval_hash="$(python3 - "$approval_file" <<'PY'
+    approval_hash=""
+    if [[ "$approval_available" -eq 1 ]]; then
+      approval_hash="$(python3 - "$approval_file" <<'PY'
 import json, re, sys
 value = json.load(open(sys.argv[1]))
 digest = value.get("approval_hash", "")
@@ -421,6 +424,7 @@ if not re.fullmatch(r"[0-9a-f]{64}", digest):
 print(digest)
 PY
 )" || json_error "fallback approval hash is invalid"
+    fi
     launch_lock="$FACTORY_ROOT/factory/.launch.lock"
     provider_lock="$FACTORY_ROOT/factory/.provider.lock"
     ledger_lock="$FACTORY_ROOT/factory/.ledger.lock"
@@ -432,6 +436,57 @@ PY
     expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
     [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
       json_error "remote tracking state is unavailable"
+    if [[ "$approval_available" -eq 0 ]]; then
+      recovery_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-recovery.XXXXXX")" ||
+        json_error "could not allocate fallback recovery result"
+      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" recover \
+        --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
+        --project "$FACTORY_PROJECT" --ticket "$ticket" \
+        --failed-run "$failed_run" --reason "$reason" \
+        --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$recovery_file"; then
+        rm -f "$recovery_file" "$approval_file"
+        json_error "fallback recovery validation failed"
+      fi
+      recovery_values="$(python3 - "$recovery_file" <<'PY'
+import json, re, sys
+value = json.load(open(sys.argv[1]))
+receipt = value.get("approval_receipt")
+if (
+    value.get("recovered") is not True
+    or not isinstance(receipt, dict)
+    or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("approval_hash", ""))
+    or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", receipt.get("comment_id", ""))
+):
+    raise SystemExit(2)
+print(receipt["approval_hash"] + "\t" + receipt["comment_id"])
+PY
+)" || {
+        rm -f "$recovery_file" "$approval_file"
+        json_error "exact unexpired or previously consumed fallback approval is required"
+      }
+      IFS=$'\t' read -r approval_hash approval_comment_id <<< "$recovery_values"
+      python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" verify-consumed \
+        --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+        --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
+        --approval-hash "$approval_hash" --comment-id "$approval_comment_id" \
+        >/dev/null || {
+          rm -f "$recovery_file" "$approval_file"
+          json_error "committed fallback approval consumption is not recorded"
+        }
+      commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+        "$CONTROL_REMOTE" "$expected_remote_head")"
+      rmdir "$FALLBACK_LAUNCH_LOCK"
+      FALLBACK_LAUNCH_LOCK=""
+      python3 - "$recovery_file" "$commit_sha" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+value["commit_sha"] = sys.argv[2]
+value.pop("approval_receipt", None)
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+      rm -f "$recovery_file" "$approval_file"
+      exit 0
+    fi
     apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
       json_error "could not allocate fallback result"
     if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" apply \

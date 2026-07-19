@@ -371,6 +371,30 @@ def recover_applied(args, approval):
     }
 
 
+def recover(args):
+    repo = Path(args.workdir)
+    relative = f"factory/route-plans/{args.ticket}.json"
+    try:
+        committed = git(repo, "show", f"HEAD:{relative}")
+        journal = json.loads(committed)
+        approval = journal["revisions"][-1]["body"]["approval_receipt"]
+    except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
+        return {
+            "recovered": False,
+            "schema": "ticket-model-fallback-recovery/v1",
+        }
+    if not isinstance(approval, dict):
+        raise FallbackError("committed fallback approval receipt is malformed")
+    result = recover_applied(args, approval)
+    if result is None:
+        return {
+            "recovered": False,
+            "schema": "ticket-model-fallback-recovery/v1",
+        }
+    result["approval_receipt"] = approval
+    return result
+
+
 def apply(args):
     approval = json.loads(Path(args.approval).read_text())
     recovered = recover_applied(args, approval)
@@ -422,7 +446,7 @@ def apply(args):
 
 def parser():
     value = argparse.ArgumentParser()
-    value.add_argument("action", choices=("preview", "apply"))
+    value.add_argument("action", choices=("preview", "apply", "recover"))
     value.add_argument("--workdir", required=True)
     value.add_argument("--factory-root", required=True)
     value.add_argument("--project", required=True)
@@ -449,7 +473,12 @@ def main():
     args = parser().parse_args()
     if args.action == "apply" and not args.approval:
         raise FallbackError("apply requires a Linear approval")
-    value = preview(args) if args.action == "preview" else apply(args)
+    if args.action == "preview":
+        value = preview(args)
+    elif args.action == "recover":
+        value = recover(args)
+    else:
+        value = apply(args)
     print(canonical(value))
 
 

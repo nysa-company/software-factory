@@ -130,17 +130,52 @@ def consume(mapping, path, mode, ticket, approval):
     atomic_write(path, mapping, mode)
 
 
+def verify_consumed(mapping, ticket, comment_id, approval_hash):
+    if (
+        not TICKET.fullmatch(ticket)
+        or not isinstance(comment_id, str)
+        or not comment_id
+        or not SHA256.fullmatch(approval_hash or "")
+    ):
+        raise ApprovalError("consumed approval identity is invalid")
+    entry = mapping["tickets"].get(ticket)
+    if not isinstance(entry, dict):
+        raise ApprovalError("ticket is absent from operator map")
+    consumed = entry.get("consumed_model_fallback_comment_ids", [])
+    if (
+        not isinstance(consumed, list)
+        or any(not isinstance(item, str) for item in consumed)
+        or comment_id not in consumed
+    ):
+        raise ApprovalError("committed fallback approval is not recorded as consumed")
+    return {
+        "approval_hash": approval_hash,
+        "comment_id": comment_id,
+        "schema": "model-fallback-consumed-approval/v1",
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("read", "consume"))
+    parser.add_argument("action", choices=("read", "consume", "verify-consumed"))
     parser.add_argument("--operator-map", required=True)
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--failed-run", required=True)
     parser.add_argument("--reason", required=True, choices=sorted(REASONS))
     parser.add_argument("--approval-hash")
+    parser.add_argument("--comment-id")
     args = parser.parse_args(argv)
     path = Path(args.operator_map)
     mapping, mode = load_map(path)
+    if args.action == "verify-consumed":
+        print(json.dumps(
+            verify_consumed(
+                mapping, args.ticket, args.comment_id, args.approval_hash
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+        return
     approval = approval_from_map(
         mapping, args.ticket, args.failed_run, args.reason, args.approval_hash
     )

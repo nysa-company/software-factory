@@ -72,6 +72,18 @@ class ApprovalTests(unittest.TestCase):
         self.assertNotIn("model_fallback_approval", entry)
         self.assertEqual(entry["consumed_model_fallback_comment_ids"], ["comment-1"])
         self.assertNotEqual(self.command("read", check=False).returncode, 0)
+        consumed = json.loads(self.command(
+            "verify-consumed",
+            "--approval-hash", self.approval_hash,
+            "--comment-id", "comment-1",
+        ).stdout)
+        self.assertEqual(consumed["comment_id"], "comment-1")
+        self.assertNotEqual(self.command(
+            "verify-consumed",
+            "--approval-hash", self.approval_hash,
+            "--comment-id", "comment-other",
+            check=False,
+        ).returncode, 0)
 
     def test_wrong_hash_expired_and_symlink_refuse(self):
         result = self.command("consume", "--approval-hash", "c" * 64, check=False)
