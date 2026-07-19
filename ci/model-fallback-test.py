@@ -101,6 +101,8 @@ class FallbackTest(unittest.TestCase):
         failed = resolution["selections"]["builder"]
         readiness[failed["route_id"]]["state"] = "UNAVAILABLE"
         readiness[failed["route_id"]]["reason"] = "credits_exhausted"
+        for value in readiness.values():
+            value["adapter_version"] = "tést-v1"
         self.readiness = base / "readiness.json"
         self.readiness.write_text(ROUTER.canonical_json(readiness) + "\n")
         runs = self.product / "factory/runs"
@@ -179,6 +181,11 @@ class FallbackTest(unittest.TestCase):
         journal = json.loads(
             git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
         )
+        journal_raw = git(
+            self.repo, "show", "HEAD:factory/route-plans/T-1.json"
+        )
+        self.assertIn("tést-v1", journal_raw)
+        self.assertEqual(journal_raw, ROUTER.canonical_json(journal))
         self.assertEqual(len(journal["revisions"]), 2)
         self.assertEqual(
             journal["revisions"][-1]["revision_hash"], applied["revision_hash"]

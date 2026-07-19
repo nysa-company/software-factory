@@ -43,7 +43,7 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _canonical_json(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _unique_object(pairs):
