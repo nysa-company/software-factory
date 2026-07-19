@@ -7,6 +7,7 @@ BASE="${1:-}"
 HEAD="${2:-HEAD}"
 GROUP=""
 SUITES=""
+STATE=""
 
 full() {
   printf 'full|%s|\n' "$1"
@@ -26,10 +27,14 @@ if (cd "$ROOT" && bash ci/lightweight-change.sh "$MERGE_BASE" "$HEAD"); then
 fi
 
 set_group() {
-  local next="$1" next_suites="$2"
+  local next_state="$1" next="$2" next_suites="$3"
   if [[ -n "$GROUP" && "$GROUP" != "$next" ]]; then
     full "multiple components"
   fi
+  if [[ -n "$STATE" && "$STATE" != "$next_state" ]]; then
+    full "inconsistent component state"
+  fi
+  STATE="$next_state"
   GROUP="$next"
   SUITES="$next_suites"
 }
@@ -42,55 +47,23 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
       conformance/SHAKEDOWN-REPORT.md)
       ;;
     scripts/linear-sync.py)
-      set_group linear "linear"
+      set_group shadow linear "linear"
       ;;
-    scripts/lib/effective_ticket.py)
-      set_group effective-ticket "effective-ticket"
-      ;;
-    scripts/ledger-view.py)
-      set_group ledger "ledger"
-      ;;
-    scripts/attempt-cancel.py)
-      set_group attempt-cancel "attempt-cancel operator-console"
-      ;;
-    scripts/operator-console.py|scripts/operator-snapshot.py|scripts/operator-state.py|\
-      integrations/operator-console/*)
-      set_group operator-console "operator-console"
-      ;;
-    scripts/model-router.py|scripts/model-manager.py|scripts/model-control.sh|\
-      scripts/model-fallback.py|scripts/model-routing/*|\
-      scripts/lib/model-fallback-approval.py|scripts/lib/cursor-model-families.txt)
-      set_group model-routing \
-        "model-router model-manager model-control failed-handoff fallback-approval model-fallback"
-      ;;
-    scripts/envelope-control.py|envelope/*)
-      set_group envelope-control "envelope-control operator-console"
+    scripts/operator-console.py|scripts/operator-snapshot.py)
+      set_group shadow operator-console "operator-console"
       ;;
     scripts/adapters/claude-kimi.sh|scripts/lib/claude-kimi-output.py|\
       scripts/lib/claude-kimi-secret.py)
-      set_group claude-kimi "claude-kimi"
+      set_group shadow claude-kimi "claude-kimi"
       ;;
     scripts/lib/failed_attempt_handoff.py)
-      set_group failed-handoff "failed-handoff model-fallback"
-      ;;
-    scripts/dispatch-lease.sh|scripts/lib/dispatch-leases.sh)
-      set_group dispatch-leases "dispatch-leases preflight factory-scripts hermes-contract"
+      set_group shadow failed-handoff "failed-handoff model-fallback"
       ;;
     scripts/reorder-test-fixes.sh|scripts/lib/reorder_test_fixes.py)
-      set_group reorder-test-fixes "reorder-test-fixes hermes-contract"
+      set_group shadow reorder-test-fixes "reorder-test-fixes hermes-contract"
       ;;
-    scripts/ticket-state.sh|scripts/ticket-attest.py|scripts/ticket-attest.sh)
-      set_group ticket-evidence "ticket-state ticket-attest hermes-contract"
-      ;;
-    scripts/legacy-closeout.py|scripts/lib/legacy-closeout.py|\
-      scripts/terminal-backfill.py|scripts/lib/terminal-backfill.py)
-      set_group migrations "effective-ticket legacy-closeout terminal-backfill hermes-contract"
-      ;;
-    conformance/app/package.json)
-      full "dependency manifest"
-      ;;
-    conformance/app/*)
-      set_group conformance "conformance"
+    conformance/app/server.js|conformance/app/tests/*)
+      set_group shadow conformance "conformance"
       ;;
     *)
       full "unknown or shared path"
@@ -99,4 +72,4 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
 done < <(git -C "$ROOT" diff --name-status -z --no-renames "$MERGE_BASE" "$HEAD")
 
 [[ -n "$GROUP" ]] || full "no recognized component"
-printf 'targeted|%s|%s ci-scope immutability artifact-policy\n' "$GROUP" "$SUITES"
+printf '%s|%s|%s ci-scope immutability artifact-policy\n' "$STATE" "$GROUP" "$SUITES"

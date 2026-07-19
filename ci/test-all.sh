@@ -14,6 +14,7 @@ REASON="explicit full suite"
 SHADOW=0
 CHANGE_BASE="${BASE_REF:-origin/main}"
 trap 'rm -rf "$TMP"' EXIT
+. "$ROOT/ci/suite-registry.sh"
 
 summary() {
   printf '%s\n' "$*"
@@ -21,6 +22,24 @@ summary() {
     printf -- '- %s\n' "$*" >> "$CI_SUMMARY_FILE"
   fi
 }
+
+ALL_IDS=" "
+REGISTRY_ERROR=""
+collect_suite() {
+  local id="$1"
+  if [[ ! "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    REGISTRY_ERROR="malformed suite ID"
+  elif [[ "$ALL_IDS" == *" $id "* ]]; then
+    REGISTRY_ERROR="duplicate suite ID: $id"
+  else
+    ALL_IDS="$ALL_IDS$id "
+  fi
+}
+suite_registry collect_suite
+if [[ -n "$REGISTRY_ERROR" ]]; then
+  echo "invalid suite registry: $REGISTRY_ERROR" >&2
+  exit 2
+fi
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
@@ -41,23 +60,44 @@ EOF
   esac
 fi
 
-ALL_IDS=" linear effective-ticket ledger attempt-cancel operator-console model-router model-manager model-control envelope-control claude-kimi failed-handoff fallback-approval model-fallback ci-scope factory-scripts dispatch-leases reorder-test-fixes preflight ticket-state ticket-attest legacy-closeout terminal-backfill hermes-contract factory-kit conformance immutability artifact-policy "
 case "$PLANNED_MODE" in
   full) SELECTED="" ;;
-  metadata) [[ -z "$SELECTED" ]] || PLANNED_MODE="full" ;;
-  targeted)
+  metadata)
+    if [[ -n "$SELECTED" ]]; then
+      PLANNED_MODE="full" REASON="metadata selection returned suites" SELECTED=""
+    fi
+    ;;
+  targeted|shadow)
+    if [[ -z "$SELECTED" ]]; then
+      PLANNED_MODE="full" REASON="selector returned empty selection" SELECTED=""
+    fi
+    NORMALIZED=" "
     for id in $SELECTED; do
-      [[ "$ALL_IDS" == *" $id "* ]] || { PLANNED_MODE="full"; REASON="selector returned unknown suite"; SELECTED=""; break; }
+      if [[ "$ALL_IDS" != *" $id "* ]]; then
+        PLANNED_MODE="full" REASON="selector returned unknown suite: $id" SELECTED=""
+        break
+      fi
+      if [[ "$NORMALIZED" == *" $id "* ]]; then
+        PLANNED_MODE="full" REASON="selector returned duplicate suite: $id" SELECTED=""
+        break
+      fi
+      NORMALIZED="$NORMALIZED$id "
     done
     ;;
   *) PLANNED_MODE="full"; REASON="selector returned unknown mode"; SELECTED="" ;;
 esac
 MODE="$PLANNED_MODE"
-[[ "$SHADOW" -eq 0 ]] || MODE="full"
+COMPARE="$SHADOW"
+if [[ "$PLANNED_MODE" == "shadow" ]]; then
+  MODE="full"
+  COMPARE=1
+elif [[ "$SHADOW" -eq 1 ]]; then
+  MODE="full"
+fi
 DISPLAY_SUITES="$SELECTED"
 [[ "$PLANNED_MODE" != "full" ]] || DISPLAY_SUITES="all"
 [[ "$PLANNED_MODE" != "metadata" ]] || DISPLAY_SUITES="none"
-summary "CI selection: planned=$PLANNED_MODE executed=$MODE reason=$REASON suites=$DISPLAY_SUITES"
+summary "CI selection: component_state=$PLANNED_MODE executed=$MODE reason=$REASON suites=$DISPLAY_SUITES"
 
 selected() {
   [[ "$PLANNED_MODE" == "full" || " $SELECTED " == *" $1 "* ]]
@@ -79,9 +119,16 @@ run_suite() {
     summary "FAIL: $LABEL ($((SECONDS - SUITE_STARTED))s)"
     awk '{print}' "$OUTPUT" >&2
     FAIL=1
-    if [[ "$SHADOW" -eq 1 ]] && ! selected "$ID"; then
-      summary "SHADOW_MISS: $ID was not selected"
-      SHADOW_MISS=1
+    if [[ "$COMPARE" -eq 1 ]] && ! selected "$ID"; then
+      RECHECK_OUTPUT="$TMP/${LABEL// /-}.recheck.out"
+      summary "SHADOW_RECHECK: reproducing unselected failure for $ID"
+      if "$@" > "$RECHECK_OUTPUT" 2>&1; then
+        summary "SHADOW_FLAKE: $ID passed its immediate recheck"
+      else
+        awk '{print}' "$RECHECK_OUTPUT" >&2
+        summary "SHADOW_MISS: $ID was not selected and failed its immediate recheck"
+        SHADOW_MISS=1
+      fi
     fi
   fi
 }
@@ -95,33 +142,7 @@ run_immutability() {
     bash "$ROOT/ci/test-immutability-check.sh"
 }
 
-run_suite linear "Linear reconciler regression suite" python3 "$ROOT/ci/linear-sync-test.py"
-run_suite effective-ticket "effective ticket overlay suite" python3 "$ROOT/ci/effective-ticket-test.py"
-run_suite ledger "runtime ledger regression suite" python3 "$ROOT/ci/ledger-view-test.py"
-run_suite attempt-cancel "targeted attempt cancellation suite" python3 "$ROOT/ci/attempt-cancel-test.py"
-run_suite operator-console "operator console security suite" python3 "$ROOT/ci/operator-console-test.py"
-run_suite model-router "model router regression suite" python3 "$ROOT/ci/model-router-test.py"
-run_suite model-manager "model manager regression suite" python3 "$ROOT/ci/model-manager-test.py"
-run_suite model-control "model control regression suite" python3 "$ROOT/ci/model-control-test.py"
-run_suite envelope-control "envelope control regression suite" python3 "$ROOT/ci/envelope-control-test.py"
-run_suite claude-kimi "disabled Claude Kimi adapter suite" python3 "$ROOT/ci/claude-kimi-adapter-test.py"
-run_suite failed-handoff "failed-attempt handoff suite" python3 "$ROOT/ci/failed-attempt-handoff-test.py"
-run_suite fallback-approval "model fallback approval suite" python3 "$ROOT/ci/model-fallback-approval-test.py"
-run_suite model-fallback "model fallback transaction suite" python3 "$ROOT/ci/model-fallback-test.py"
-run_suite ci-scope "selective CI scope" bash "$ROOT/ci/ci-scope-test.sh"
-run_suite factory-scripts "factory script regression suite" bash "$ROOT/ci/test-factory-scripts.sh"
-run_suite dispatch-leases "dispatcher lease suite" bash "$ROOT/ci/dispatch-leases-test.sh"
-run_suite reorder-test-fixes "reorder test-fixes suite" bash "$ROOT/ci/reorder-test-fixes-test.sh"
-run_suite preflight "preflight suite" bash "$ROOT/ci/preflight-test.sh"
-run_suite ticket-state "ticket-state suite" bash "$ROOT/ci/ticket-state-test.sh"
-run_suite ticket-attest "ticket attestation suite" python3 "$ROOT/ci/ticket-attest-test.py"
-run_suite legacy-closeout "legacy closeout suite" python3 "$ROOT/ci/legacy-closeout-test.py"
-run_suite terminal-backfill "terminal backfill suite" python3 "$ROOT/ci/terminal-backfill-test.py"
-run_suite hermes-contract "Hermes contract suite" bash "$ROOT/ci/hermes-contract-test.sh"
-run_suite factory-kit "factory kit release suite" bash "$ROOT/ci/factory-kit-test.sh"
-run_suite conformance "conformance app suite" run_conformance
-run_suite immutability "test immutability suite" run_immutability
-run_suite artifact-policy "artifact policy self-test" "$ROOT/scripts/artifact-check" --self-test
+suite_registry run_suite
 
 if [[ "$FAIL" -eq 0 ]]; then
   summary "PASS: $MODE test suite ($((SECONDS - STARTED))s)"

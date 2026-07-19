@@ -105,17 +105,20 @@ expect_status 0 "$MACOS" "$RENAME_REPO" "$RENAME_BASE" "$RENAME_HEAD" \
 SELECT_REPO="$TMP/selection"
 new_repo "$SELECT_REPO"
 mkdir -p "$SELECT_REPO/ci" "$SELECT_REPO/docs" "$SELECT_REPO/scripts/lib" \
-  "$SELECT_REPO/scripts/adapters" "$SELECT_REPO/scripts/model-routing" \
-  "$SELECT_REPO/integrations/operator-console" "$SELECT_REPO/conformance/app" \
-  "$SELECT_REPO/envelope"
+  "$SELECT_REPO/scripts/adapters" "$SELECT_REPO/integrations/operator-console" \
+  "$SELECT_REPO/conformance/app/tests" "$SELECT_REPO/envelope" "$SELECT_REPO/roles"
 cp "$SELECTOR" "$LIGHTWEIGHT" "$SELECT_REPO/ci/"
 for path in \
-  scripts/linear-sync.py scripts/lib/effective_ticket.py scripts/ledger-view.py \
-  scripts/attempt-cancel.py scripts/operator-console.py scripts/model-router.py \
-  scripts/envelope-control.py scripts/adapters/claude-kimi.sh \
-  scripts/lib/failed_attempt_handoff.py scripts/dispatch-lease.sh \
-  scripts/reorder-test-fixes.sh scripts/ticket-state.sh scripts/legacy-closeout.py \
-  conformance/app/server.js scripts/run-agent.sh ci/test-all.sh; do
+  scripts/linear-sync.py scripts/operator-console.py scripts/operator-snapshot.py \
+  scripts/adapters/claude-kimi.sh scripts/lib/claude-kimi-output.py \
+  scripts/lib/claude-kimi-secret.py scripts/lib/failed_attempt_handoff.py \
+  scripts/reorder-test-fixes.sh scripts/lib/reorder_test_fixes.py \
+  conformance/app/server.js conformance/app/tests/server.test.js \
+  scripts/lib/effective_ticket.py scripts/ledger-view.py scripts/attempt-cancel.py \
+  scripts/operator-state.py integrations/operator-console/app.js scripts/model-router.py \
+  scripts/envelope-control.py scripts/dispatch-lease.sh scripts/ticket-state.sh \
+  scripts/legacy-closeout.py conformance/app/package.json conformance/app/app.js \
+  scripts/run-agent.sh roles/builder.md ci/test-all.sh; do
   mkdir -p "$SELECT_REPO/$(dirname "$path")"
   printf 'initial\n' > "$SELECT_REPO/$path"
 done
@@ -132,29 +135,31 @@ selection_case() {
 
 POLICY="ci-scope immutability artifact-policy"
 selection_case docs/guide.md "metadata|inert metadata|" "metadata selection"
-selection_case scripts/linear-sync.py "targeted|linear|linear $POLICY" "linear selection"
-selection_case scripts/lib/effective_ticket.py "targeted|effective-ticket|effective-ticket $POLICY" "effective ticket selection"
-selection_case scripts/ledger-view.py "targeted|ledger|ledger $POLICY" "ledger selection"
-selection_case scripts/attempt-cancel.py "targeted|attempt-cancel|attempt-cancel operator-console $POLICY" "cancellation selection"
-selection_case scripts/operator-console.py "targeted|operator-console|operator-console $POLICY" "operator console selection"
-selection_case scripts/model-router.py "targeted|model-routing|model-router model-manager model-control failed-handoff fallback-approval model-fallback $POLICY" "model selection"
-selection_case scripts/envelope-control.py "targeted|envelope-control|envelope-control operator-console $POLICY" "envelope selection"
-selection_case scripts/adapters/claude-kimi.sh "targeted|claude-kimi|claude-kimi $POLICY" "adapter selection"
-selection_case scripts/lib/failed_attempt_handoff.py "targeted|failed-handoff|failed-handoff model-fallback $POLICY" "handoff selection"
-selection_case scripts/dispatch-lease.sh "targeted|dispatch-leases|dispatch-leases preflight factory-scripts hermes-contract $POLICY" "lease selection"
-selection_case scripts/reorder-test-fixes.sh "targeted|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder selection"
-selection_case scripts/ticket-state.sh "targeted|ticket-evidence|ticket-state ticket-attest hermes-contract $POLICY" "ticket evidence selection"
-selection_case scripts/legacy-closeout.py "targeted|migrations|effective-ticket legacy-closeout terminal-backfill hermes-contract $POLICY" "migration selection"
-selection_case conformance/app/server.js "targeted|conformance|conformance $POLICY" "conformance selection"
+selection_case scripts/linear-sync.py "shadow|linear|linear $POLICY" "linear selection"
+selection_case scripts/operator-console.py "shadow|operator-console|operator-console $POLICY" "operator console selection"
+selection_case scripts/operator-snapshot.py "shadow|operator-console|operator-console $POLICY" "operator snapshot selection"
+selection_case scripts/adapters/claude-kimi.sh "shadow|claude-kimi|claude-kimi $POLICY" "adapter wrapper selection"
+selection_case scripts/lib/claude-kimi-output.py "shadow|claude-kimi|claude-kimi $POLICY" "adapter output selection"
+selection_case scripts/lib/claude-kimi-secret.py "shadow|claude-kimi|claude-kimi $POLICY" "adapter secret selection"
+selection_case scripts/lib/failed_attempt_handoff.py "shadow|failed-handoff|failed-handoff model-fallback $POLICY" "handoff selection"
+selection_case scripts/reorder-test-fixes.sh "shadow|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder wrapper selection"
+selection_case scripts/lib/reorder_test_fixes.py "shadow|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder implementation selection"
+selection_case conformance/app/server.js "shadow|conformance|conformance $POLICY" "conformance server selection"
+selection_case conformance/app/tests/server.test.js "shadow|conformance|conformance $POLICY" "conformance test selection"
+
+for path in scripts/lib/effective_ticket.py scripts/ledger-view.py scripts/attempt-cancel.py \
+  scripts/operator-state.py integrations/operator-console/app.js scripts/model-router.py \
+  scripts/envelope-control.py scripts/dispatch-lease.sh scripts/ticket-state.sh \
+  scripts/legacy-closeout.py conformance/app/package.json conformance/app/app.js \
+  scripts/run-agent.sh roles/builder.md ci/test-all.sh; do
+  selection_case "$path" "full|unknown or shared path|" "unsafe path $path"
+done
 
 MIXED_BASE="$(git -C "$SELECT_REPO" rev-parse HEAD)"
 printf 'mixed\n' >> "$SELECT_REPO/scripts/linear-sync.py"
-printf 'mixed\n' >> "$SELECT_REPO/scripts/ledger-view.py"
+printf 'mixed\n' >> "$SELECT_REPO/scripts/operator-snapshot.py"
 MIXED_HEAD="$(commit_all "$SELECT_REPO" "mixed components")"
 expect_selection "full|multiple components|" "$SELECT_REPO" "$MIXED_BASE" "$MIXED_HEAD" "mixed selection"
-selection_case scripts/run-agent.sh "full|unknown or shared path|" "shared runtime selection"
-selection_case ci/test-all.sh "full|unknown or shared path|" "CI self-change selection"
-
 UNKNOWN_BASE="$(git -C "$SELECT_REPO" rev-parse HEAD)"
 printf 'new\n' > "$SELECT_REPO/scripts/new-tool.py"
 UNKNOWN_HEAD="$(commit_all "$SELECT_REPO" "unknown new path")"
@@ -168,10 +173,72 @@ expect_selection "full|added, deleted, renamed, or type-changed path|" \
   "$SELECT_REPO" "$DELETE_BASE" "$DELETE_HEAD" "deleted path selection"
 expect_selection "full|empty diff|" "$SELECT_REPO" "$DELETE_HEAD" "$DELETE_HEAD" "empty diff selection"
 expect_selection "full|invalid base|" "$SELECT_REPO" missing "$DELETE_HEAD" "invalid ref selection"
+
+RENAME_BASE="$(git -C "$SELECT_REPO" rev-parse HEAD)"
+git -C "$SELECT_REPO" mv scripts/operator-console.py scripts/operator-console-renamed.py
+RENAME_HEAD="$(commit_all "$SELECT_REPO" "renamed path")"
+expect_selection "full|added, deleted, renamed, or type-changed path|" \
+  "$SELECT_REPO" "$RENAME_BASE" "$RENAME_HEAD" "renamed path selection"
+
 FORCED="$(cd "$SELECT_REPO" && CI_FORCE_FULL=1 bash ci/changed-test-suites.sh "$DELETE_BASE" "$DELETE_HEAD")"
 if [[ "$FORCED" != "full|CI_FORCE_FULL|" ]]; then
   printf 'FAIL: force-full selection (got %s)\n' "$FORCED" >&2
   exit 1
 fi
+
+REGISTRY_IDS=" "
+REGISTRY_ERROR=""
+registry_check() {
+  local id="$1"
+  if [[ "$REGISTRY_IDS" == *" $id "* ]]; then
+    REGISTRY_ERROR="duplicate suite ID: $id"
+  fi
+  REGISTRY_IDS="$REGISTRY_IDS$id "
+}
+. "$ROOT/ci/suite-registry.sh"
+suite_registry registry_check
+set -- $REGISTRY_IDS
+if [[ -n "$REGISTRY_ERROR" || "$#" -eq 0 ]]; then
+  printf 'FAIL: canonical suite registry (%s IDs; %s)\n' "$#" "$REGISTRY_ERROR" >&2
+  exit 1
+fi
+
+RUNNER="$TMP/runner"
+mkdir -p "$RUNNER/ci"
+cp "$ROOT/ci/test-all.sh" "$RUNNER/ci/"
+printf '%s\n' '#!/usr/bin/env bash' 'suite_registry() {' \
+  '  local callback="$1"' \
+  '  "$callback" pass "pass suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" fail "fail suite" bash "$ROOT/ci/fail.sh"' \
+  '}' > "$RUNNER/ci/suite-registry.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' \
+  'cat "$ROOT/selection"' > "$RUNNER/ci/changed-test-suites.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$RUNNER/ci/pass.sh"
+printf '%s\n' '#!/usr/bin/env bash' '[[ "${FAIL_SECOND:-0}" != "1" ]]' > "$RUNNER/ci/fail.sh"
+
+runner_case() {
+  local selection="$1" fail_second="$2" expected_status="$3" fragment="$4" label="$5"
+  local output status=0
+  printf '%s\n' "$selection" > "$RUNNER/selection"
+  output="$(cd "$RUNNER" && FAIL_SECOND="$fail_second" bash ci/test-all.sh --changed base head 2>&1)" || status=$?
+  if [[ "$status" -ne "$expected_status" || "$output" != *"$fragment"* ]]; then
+    printf 'FAIL: %s (status %s; output %s)\n' "$label" "$status" "$output" >&2
+    exit 1
+  fi
+}
+
+runner_case 'targeted|fixture|pass' 1 0 'component_state=targeted executed=targeted' \
+  'active selection runs only selected suites'
+runner_case 'targeted|fixture|unknown' 0 0 'selector returned unknown suite: unknown' \
+  'unknown suite fails closed to full'
+runner_case 'targeted|fixture|pass pass' 0 0 'selector returned duplicate suite: pass' \
+  'duplicate suite fails closed to full'
+runner_case 'targeted|fixture|' 0 0 'selector returned empty selection' \
+  'empty selection fails closed to full'
+runner_case 'invalid|fixture|pass' 0 0 'selector returned unknown mode' \
+  'unknown mode fails closed to full'
+runner_case 'shadow|fixture|pass' 1 1 'SHADOW_MISS: fail was not selected and failed its immediate recheck' \
+  'shadow miss is reproducible and fails'
 
 printf 'PASS: CI scope classification\n'
