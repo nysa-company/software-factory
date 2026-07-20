@@ -2081,7 +2081,20 @@ from effective_ticket import ticket_branch_prefix
 from legacy_closeout import ValidationError, protected_terminal
 
 def protected_legacy_approval(ticket_id, lease, source_ref, text):
-    if source_ref != "HEAD":
+    ticket_path = "factory/tickets/%s.md" % ticket_id
+    source_blob = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", source_ref + ":" + ticket_path],
+        text=True, capture_output=True,
+    )
+    protected_blob = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD:" + ticket_path],
+        text=True, capture_output=True,
+    )
+    if (
+        source_blob.returncode
+        or protected_blob.returncode
+        or source_blob.stdout.strip() != protected_blob.stdout.strip()
+    ):
         return False
     approvals = re.findall(r"(?mi)^Operator-Approval:\s*(.*?)\s*$", text)
     if approvals != ["Linear"]:

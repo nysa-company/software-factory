@@ -1221,6 +1221,8 @@ path.write_text(json.dumps({
 PY
 commit_all "$PRODUCT_ONE" "protect old approved ticket evidence"
 push_main "$PRODUCT_ONE"
+git -C "$PRODUCT_ONE" branch ticket/T-005
+git -C "$PRODUCT_ONE" push -q -u origin ticket/T-005
 expect_success "clean ticket tuple recertifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 RECEIPT_A="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
@@ -1453,6 +1455,9 @@ expect_failure "fault injection interrupts after receipt claim" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_B"
 unset FACTORY_KIT_FAIL_AFTER_PHASE
+[[ "$LAST_OUTPUT" == *"injected failure after phase receipt_claimed"* ]] &&
+  pass "merged approved ticket branch permits activation validation" ||
+  fail "merged approved ticket branch permits activation validation" "$LAST_OUTPUT"
 RECEIPT_B_ID="$(json_value "$RECEIPT_B" receipt_id)"
 if [[ "$(json_value "$ACTIVE_ALPHA" kit_sha)" == "$SHA_A" &&
       -f "$STATE/receipts/consumed/$RECEIPT_B_ID.json" ]]; then
