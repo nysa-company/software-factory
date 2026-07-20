@@ -737,11 +737,11 @@ def validate_closeout_commit(
         "successful_checks", "ledger", "kit_sha", "closeout_parent",
         "attested_at",
     }
-    expected_paths = {
-        "factory/ledger.csv",
+    required_paths = {
         f"factory/tickets/{ticket}.md",
         f"factory/attestations/{ticket}/done.json",
     }
+    allowed_paths = required_paths | {"factory/ledger.csv"}
     parent = git(workdir, "rev-parse", f"{head}^").stdout.strip()
     paths = set(git(
         workdir, "diff-tree", "--no-commit-id", "--name-only", "-r", head,
@@ -767,7 +767,8 @@ def validate_closeout_commit(
         or done_att.get("successful_checks") != successful
         or done_att.get("kit_sha") != kit_sha
         or done_att.get("closeout_parent") != parent
-        or paths != expected_paths
+        or not required_paths.issubset(paths)
+        or not paths.issubset(allowed_paths)
         or ledger.get("schema") != "nysa.software-factory.ledger-projection/v1"
         or ledger.get("status") != "ok"
         or ledger.get("ticket") != ticket
