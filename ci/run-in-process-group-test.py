@@ -28,7 +28,7 @@ class Gate:
 class ReadinessGateTests(unittest.TestCase):
     def test_slow_validated_controller_may_acknowledge_after_ten_seconds(self):
         with mock.patch.object(
-            MODULE.time, "monotonic", side_effect=(0, 11)
+            MODULE.time, "monotonic", side_effect=(0, 11, 12)
         ):
             with mock.patch.object(MODULE.time, "sleep"):
                 MODULE.wait_for_gate(Gate(opens=True))
@@ -43,6 +43,19 @@ class ReadinessGateTests(unittest.TestCase):
                     "wrapper did not acknowledge process-group readiness",
                 ):
                     MODULE.wait_for_gate(Gate())
+
+    def test_gate_after_deadline_is_not_accepted(self):
+        late_gate = Gate(opens=True)
+        with mock.patch.object(
+            MODULE.time, "monotonic", side_effect=(0, 121)
+        ):
+            with mock.patch.object(MODULE.time, "sleep"):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "wrapper did not acknowledge process-group readiness",
+                ):
+                    MODULE.wait_for_gate(late_gate)
+        self.assertEqual(late_gate.calls, 0)
 
 
 if __name__ == "__main__":

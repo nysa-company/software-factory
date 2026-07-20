@@ -15,10 +15,11 @@ READINESS_TIMEOUT_SECONDS = 120
 
 def wait_for_gate(go_path: Path) -> None:
     deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
-    while not go_path.exists():
-        if time.monotonic() >= deadline:
-            raise SystemExit("wrapper did not acknowledge process-group readiness")
+    while time.monotonic() < deadline:
+        if go_path.exists():
+            return
         time.sleep(0.01)
+    raise SystemExit("wrapper did not acknowledge process-group readiness")
 
 
 def group_members() -> list[int]:
