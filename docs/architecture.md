@@ -229,6 +229,20 @@ revalidates the same remote commit. Only valid attested Done on protected main
 produces sequencer action `COMPLETE`, after which the dispatcher releases the
 lease; closeout PR creation is never terminal evidence.
 
+The Done receipt always binds the hash of the complete projected ledger. Its
+closeout commit includes `factory/ledger.csv` only when projection changes the
+tracked bytes; a prior concurrent closeout may already have projected the same
+terminal run set. Ticket and Done-attestation files remain mandatory in every
+closeout commit, and no other paths are allowed.
+
+A control-plane release may close an already-approved ticket from its older
+ticket-pinned release. Done validates the protected bundle and approval against
+that canonical ticket `Kit-SHA` and records the same SHA in its receipt; legacy
+ticket files without the field retain their already-protected bundle SHA. It
+does not reinterpret prior role evidence as belonging to the newly active
+release. Bundle and approval actions still require the active physical release
+exactly.
+
 A one-time Contract 1.2 migration may instead use the separate
 `factory/migrations/contract-1.3/` legacy-closeout format. It does not create or
 satisfy ordinary bundle, approval, Done, or route-plan attestations. The local

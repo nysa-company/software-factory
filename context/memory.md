@@ -41,6 +41,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
+- 2026-07-20: Concurrent Done closeouts may project an identical ledger after an earlier closeout already captured every terminal run. The trusted Done validator now permits `factory/ledger.csv` to be absent from that later closeout commit while still binding and checking the complete ledger hash; ticket and Done-attestation paths remain mandatory and exclusive.
+- 2026-07-20: A patched control-plane release may finish Done for already-approved evidence from an older ticket-pinned release. The closeout validates and records the ticket's canonical `Kit-SHA`; bundle and approval remain bound to the active release, so prior role evidence is never relabeled.
+
 ## 2026-07-19 — Decision 49: Validated pre-submission checks get a bounded two-minute gate
 
 Category: System change

@@ -737,11 +737,11 @@ def validate_closeout_commit(
         "successful_checks", "ledger", "kit_sha", "closeout_parent",
         "attested_at",
     }
-    expected_paths = {
-        "factory/ledger.csv",
+    required_paths = {
         f"factory/tickets/{ticket}.md",
         f"factory/attestations/{ticket}/done.json",
     }
+    allowed_paths = required_paths | {"factory/ledger.csv"}
     parent = git(workdir, "rev-parse", f"{head}^").stdout.strip()
     paths = set(git(
         workdir, "diff-tree", "--no-commit-id", "--name-only", "-r", head,
@@ -767,7 +767,8 @@ def validate_closeout_commit(
         or done_att.get("successful_checks") != successful
         or done_att.get("kit_sha") != kit_sha
         or done_att.get("closeout_parent") != parent
-        or paths != expected_paths
+        or not required_paths.issubset(paths)
+        or not paths.issubset(allowed_paths)
         or ledger.get("schema") != "nysa.software-factory.ledger-projection/v1"
         or ledger.get("status") != "ok"
         or ledger.get("ticket") != ticket
@@ -1024,14 +1025,22 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
         raise Refusal("merged PR lacks an exact merge commit")
     if git(workdir, "merge-base", "--is-ancestor", merge, "origin/main", check=False).returncode:
         raise Refusal("PR merge commit is not reachable from authoritative origin/main")
+    ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    text = ticket_path.read_text()
+    pins = re.findall(r"^Kit-SHA:\s*(.*?)\s*$", text, re.I | re.M)
+    if len(pins) > 1:
+        raise Refusal("closeout ticket has ambiguous Kit-SHA fields")
+    bundle_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
+    bundle_value = json.loads(bundle_path.read_text())
+    evidence_kit_sha = pins[0] if pins else bundle_value.get("kit_sha", "")
+    if not valid_oid(evidence_kit_sha):
+        raise Refusal("closeout ticket lacks a canonical Kit-SHA")
     bundle_att, approval_att, approval_head, evidence_blobs = (
         protected_approval_evidence(
-            workdir, args.ticket, repo, ticket_branch, kit_sha, method, pr,
+            workdir, args.ticket, repo, ticket_branch, evidence_kit_sha, method, pr,
         )
     )
     successful = successful_post_merge_checks(repo, merge, checks)
-    ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
-    text = ticket_path.read_text()
     if (
         field(text, "State").lower() != "approved"
         or field(text, "Operator-Approval").lower() != "linear"
@@ -1040,7 +1049,7 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     if retry:
         validate_closeout_commit(
             workdir, args.ticket, head, done_att, repo, pr, merge, checks,
-            successful, kit_sha, method, bundle_att, approval_att,
+            successful, evidence_kit_sha, method, bundle_att, approval_att,
             approval_head, evidence_blobs,
         )
         if pending_push:
@@ -1073,7 +1082,7 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
             "required_checks": checks,
             "successful_checks": successful,
             "ledger": ledger_result,
-            "kit_sha": kit_sha,
+            "kit_sha": evidence_kit_sha,
             "closeout_parent": head,
             "attested_at": now(),
         }
@@ -1085,7 +1094,7 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
         )
         validate_closeout_commit(
             workdir, args.ticket, head, done_att, repo, pr, merge, checks,
-            successful, kit_sha, method, bundle_att, approval_att,
+            successful, evidence_kit_sha, method, bundle_att, approval_att,
             approval_head, evidence_blobs,
         )
     closeout_pr = ensure_closeout_pr(

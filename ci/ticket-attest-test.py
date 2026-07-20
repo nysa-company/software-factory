@@ -480,6 +480,48 @@ else:
             "reviews, and merge policy remain authoritative.",
         )
 
+    def test_done_accepts_an_unchanged_preprojected_ledger(self):
+        self.prepare_done()
+        command(
+            sys.executable, str(ROOT / "scripts/ledger-view.py"), "project",
+            "--factory-root", str(self.product), "--workdir", str(self.workdir),
+            "--ticket", "T-700", env=self.env,
+        )
+        command("git", "add", "factory/ledger.csv", cwd=self.workdir)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "preproject concurrent ledger", cwd=self.workdir,
+        )
+        command(
+            "git", "push", "-q", "origin", "HEAD:main", "HEAD:chore/t700-closeout",
+            cwd=self.workdir,
+        )
+
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        changed = command(
+            "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
+            cwd=self.workdir,
+        ).stdout.splitlines()
+        self.assertNotIn("factory/ledger.csv", changed)
+
+    def test_done_accepts_evidence_from_the_ticket_pinned_release(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Priority: normal\n", f"Priority: normal\nKit-SHA: {KIT_SHA}\n",
+        ))
+        self.commit("pin ticket release")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.prepare_done()
+        self.env["FACTORY_RELEASE_SHA"] = "b" * 40
+
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(
+            (self.workdir / "factory/attestations/T-700/done.json").read_text()
+        )
+        self.assertEqual(receipt["kit_sha"], KIT_SHA)
+
     def test_done_retries_create_failure_without_new_commit_or_projection(self):
         self.prepare_done(create_fail=True)
         failed = self.attest("done")
