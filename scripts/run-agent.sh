@@ -229,6 +229,27 @@ registered_tracked_content() {
     "$FACTORY_TRUSTED_GIT_BIN" hash-object --stdin
 }
 
+registered_status_after_run() {
+  local status
+  status="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
+    status --porcelain --untracked-files=all 2>/dev/null)" || return 1
+  if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 ]]; then
+    printf '%s' "$status"
+    return 0
+  fi
+  printf '%s\n' "$status" | python3 -c '
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+allowed = {str(Path(value).relative_to(root)) for value in sys.argv[2:]}
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if len(line) < 4 or line[3:] not in allowed:
+        print(line)
+' "$REPO_ROOT" "$FACTORY_DIR/KILL" "$FACTORY_DIR/MAINTENANCE" \
+    "$CANCEL_REQUEST_FILE"
+}
+
 process_start_identity() {
   ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print; exit}'
 }
@@ -1439,37 +1460,32 @@ else
             STATUS=11
           fi
         fi
-        if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 ]] &&
-           ! printf '%s' "$RUNS_META_SNAPSHOT" | \
+        if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
             python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
           CONTROL_PLANE_MUTATION=1
           STATUS=11
         fi
-        if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 &&
-              "$(active_claim_snapshot 2>/dev/null || true)" != "$ACTIVE_RUN_SNAPSHOT" ]]; then
+        if [[ "$(active_claim_snapshot 2>/dev/null || true)" != "$ACTIVE_RUN_SNAPSHOT" ]]; then
           echo "role_exit_control_plane_mutation: run claim changed during provider execution" >&2
           CONTROL_PLANE_MUTATION=1
           STATUS=11
         fi
-        if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 ]] &&
-           ! provider_lock_is_owned; then
+        if ! provider_lock_is_owned; then
           echo "role_exit_control_plane_mutation: provider lock changed during provider execution" >&2
           CONTROL_PLANE_MUTATION=1
           STATUS=11
         fi
         GLOBAL_STATE_MUTATED=0
-        if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 &&
-              -n "$GLOBAL_LEDGER_SNAPSHOT" ]] &&
+        if [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]] &&
            { ! restore_global_if_changed || [[ "$GLOBAL_STATE_MUTATED" -eq 1 ]]; }; then
           echo "role_exit_control_plane_mutation: global ledger or lock changed during provider execution" >&2
           CONTROL_PLANE_MUTATION=1
           STATUS=11
         fi
-        if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 &&
-              ( "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
+        if [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
               "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)" != "$REGISTERED_HEAD_BEFORE" ||
-              "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" status --porcelain --untracked-files=all 2>/dev/null || true)" != "$REGISTERED_STATUS_BEFORE" ||
-              "$(registered_tracked_content 2>/dev/null || true)" != "$REGISTERED_CONTENT_BEFORE" ) ]]; then
+              "$(registered_status_after_run 2>/dev/null || true)" != "$REGISTERED_STATUS_BEFORE" ||
+              "$(registered_tracked_content 2>/dev/null || true)" != "$REGISTERED_CONTENT_BEFORE" ]]; then
           echo "role_exit_control_plane_mutation: registered checkout changed during provider execution" >&2
           CONTROL_PLANE_MUTATION=1
           STATUS=11

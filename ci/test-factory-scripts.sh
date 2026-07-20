@@ -1543,6 +1543,36 @@ else
     "status $AT_GATE_KILL_STATUS"
 fi
 
+# A legitimate boundary stop exempts only its exact control record; unrelated
+# checkout mutation remains an integrity failure.
+AT_GATE_MUTATION="$TMP/stop-plus-mutation-at-adapter-boundary"
+write_envelope "$AT_GATE_MUTATION"
+write_ticket "$AT_GATE_MUTATION" T-304
+FACTORY_ROOT="$AT_GATE_MUTATION" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_AFTER_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-304 -- "stop plus mutation" \
+  > "$TMP/stop-plus-mutation-at-adapter-boundary.out" 2>&1 &
+AT_GATE_MUTATION_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$AT_GATE_MUTATION/factory/runs/".*.gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$AT_GATE_MUTATION/factory/KILL"
+touch "$AT_GATE_MUTATION/unexpected-control-mutation"
+wait "$AT_GATE_MUTATION_PID"
+AT_GATE_MUTATION_STATUS=$?
+if [[ "$AT_GATE_MUTATION_STATUS" -eq 11 ]] &&
+   grep -q 'registered checkout changed during provider execution' \
+     "$TMP/stop-plus-mutation-at-adapter-boundary.out" &&
+   ! grep -q 'mock adapter ran task' "$AT_GATE_MUTATION/factory/runs/"*.out; then
+  pass "boundary stop cannot mask unrelated checkout mutation"
+else
+  fail "boundary stop cannot mask unrelated checkout mutation" \
+    "status $AT_GATE_MUTATION_STATUS"
+fi
+
 # The adapter gate never opens unless go_issued=1 reached durable storage.
 GO_WRITE_FAIL="$TMP/go-marker-write-failure"
 write_envelope "$GO_WRITE_FAIL"

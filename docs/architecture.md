@@ -38,6 +38,9 @@ the gate, the controller rechecks kill, maintenance, and targeted cancellation
 state. After observing the gate, the isolated wrapper checks those controls
 again before spawning the adapter; that second check is the submission
 boundary, and later controls follow normal post-submission drain semantics.
+When that boundary stops a launch, integrity checks still run and exempt only
+the exact kill, maintenance, or targeted-cancellation record that caused it;
+any concurrent manifest, claim, lock, ledger, or checkout mutation still fails.
 
 Before creating a manifest, every run acquires a product-level control lock and
 holds it through provider exit and integrity verification. This temporarily
