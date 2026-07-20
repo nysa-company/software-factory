@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -18,11 +19,13 @@ REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v1"
 IMAGE = "registry.example/worker@sha256:" + "a" * 64
 
 FAKE_RUNTIME = r"""#!/usr/bin/env python3
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
+import tarfile
 
 args = sys.argv[1:]
 with Path(os.environ["FAKE_RUNTIME_LOG"]).open("a", encoding="utf-8") as handle:
@@ -30,20 +33,36 @@ with Path(os.environ["FAKE_RUNTIME_LOG"]).open("a", encoding="utf-8") as handle:
 if args[0] == "create":
     print("fake-container-id")
 elif args[0] == "start":
+    print("fake-container-id")
+elif args[0] == "exec" and "-i" in args:
+    pass
+elif args[0] == "exec" and "tar" in args and "-c" in args:
+    output = io.BytesIO()
+    mode = os.environ.get("FAKE_ARTIFACT_MODE", "normal")
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        directory = tarfile.TarInfo("artifacts")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o700
+        archive.addfile(directory)
+        if mode == "symlink":
+            linked = tarfile.TarInfo("artifacts/escape")
+            linked.type = tarfile.SYMTYPE
+            linked.linkname = "/etc/passwd"
+            archive.addfile(linked)
+        else:
+            raw = b"x" * 1024 if mode == "oversized" else b'{"ok":true}\n'
+            item = tarfile.TarInfo(
+                "artifacts/large" if mode == "oversized" else "artifacts/answer.json"
+            )
+            item.size = len(raw)
+            item.mode = 0o600
+            archive.addfile(item, io.BytesIO(raw))
+    sys.stdout.buffer.write(output.getvalue())
+elif args[0] == "exec":
     sys.stdout.write("O" * int(os.environ.get("FAKE_STDOUT_BYTES", "2")))
     sys.stderr.write("E" * int(os.environ.get("FAKE_STDERR_BYTES", "2")))
     raise SystemExit(int(os.environ.get("FAKE_RETURN_CODE", "0")))
-elif args[0] == "cp" and ":" in args[1]:
-    destination = Path(args[2])
-    destination.mkdir(parents=True, exist_ok=True)
-    mode = os.environ.get("FAKE_ARTIFACT_MODE", "normal")
-    if mode == "normal":
-        (destination / "answer.json").write_text('{"ok":true}\n')
-    elif mode == "symlink":
-        (destination / "escape").symlink_to("/etc/passwd")
-    elif mode == "oversized":
-        (destination / "large").write_bytes(b"x" * 1024)
-elif args[0] in ("cp", "rm"):
+elif args[0] == "rm":
     pass
 else:
     raise SystemExit("unsupported fake runtime invocation")
@@ -77,12 +96,16 @@ class ProviderExecutorTest(unittest.TestCase):
     def request(self, **changes):
         value = {
             "attempt_id": "attempt-1",
-            "base_id": "base-abc123",
+            "base_sha": "b" * 40,
             "command": ["provider-worker", "--input", "../input"],
             "image": IMAGE,
             "input": str(self.input),
+            "policy_sha256": "c" * 64,
+            "role": "builder",
+            "route_id": "route-1",
             "schema": REQUEST_SCHEMA,
             "source": str(self.source),
+            "ticket": "T-123",
         }
         value.update(changes)
         path = self.root / f"request-{len(list(self.root.glob('request-*')))}.json"
@@ -125,11 +148,19 @@ class ProviderExecutorTest(unittest.TestCase):
         self.assertEqual(value["mode"], "isolated-v1")
         self.assertEqual(value["return_code"], 0)
         self.assertEqual(value["image_digest"], "a" * 64)
+        self.assertEqual(value["base_sha"], "b" * 40)
+        self.assertEqual(value["policy_sha256"], "c" * 64)
+        self.assertEqual(value["ticket"], "T-123")
+        self.assertEqual(value["role"], "builder")
+        self.assertEqual(value["route_id"], "route-1")
         self.assertEqual(value["artifact_bytes"], len('{"ok":true}\n'))
         self.assertRegex(value["binding_sha256"], r"^[0-9a-f]{64}$")
 
         calls = self.calls()
-        self.assertEqual([call[0] for call in calls], ["create", "cp", "start", "cp", "rm"])
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["create", "start", "exec", "exec", "exec", "rm"],
+        )
         create = calls[0]
         self.assertIn("none", create)
         self.assertIn("--read-only", create)
@@ -142,11 +173,9 @@ class ProviderExecutorTest(unittest.TestCase):
         forbidden = ("--privileged", "--mount", "-v", "/var/run/docker.sock", ".git")
         self.assertFalse(any(item in create for item in forbidden), create)
         self.assertFalse(any("/home/" in item or "/factory/" in item for item in create))
-        self.assertEqual(calls[1][-1], value["container_name"] + ":/workspace/payload")
-        self.assertEqual(calls[2], ["start", "--attach", value["container_name"]])
-        self.assertEqual(
-            calls[3][1], value["container_name"] + ":/workspace/artifacts/."
-        )
+        self.assertEqual(calls[1], ["start", value["container_name"]])
+        self.assertEqual(calls[2][:4], ["exec", "-i", value["container_name"], "tar"])
+        self.assertEqual(calls[4][:4], ["exec", value["container_name"], "tar", "-c"])
         self.assertTrue((self.attempts / "attempt-1/artifacts/answer.json").is_file())
         self.assertFalse((self.attempts / "attempt-1/payload/source/.git").exists())
 
@@ -177,7 +206,7 @@ class ProviderExecutorTest(unittest.TestCase):
         environment = {**self.environment, "FAKE_ARTIFACT_MODE": "symlink"}
         result = self.execute(env=environment)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("symlink or unsafe file", result.stderr)
+        self.assertIn("non-regular entry", result.stderr)
         self.assertEqual(self.calls()[-1][0], "rm")
         self.assertFalse((self.attempts / "attempt-1/result.json").exists())
 
@@ -197,7 +226,7 @@ class ProviderExecutorTest(unittest.TestCase):
         self.assertIn("artifact output exceeds", result.stderr)
         self.assertEqual(self.calls()[-1][0], "rm")
 
-    def test_replay_requires_same_attempt_base_input_source_and_image(self):
+    def test_replay_requires_same_bound_attempt_identity(self):
         first = self.execute()
         self.assertEqual(first.returncode, 0, first.stderr)
         first_calls = len(self.calls())
@@ -207,7 +236,9 @@ class ProviderExecutorTest(unittest.TestCase):
         self.assertEqual(len(self.calls()), first_calls)
 
         for field, value in (
-            ("base_id", "different-base"),
+            ("base_sha", "d" * 40),
+            ("policy_sha256", "e" * 64),
+            ("route_id", "route-2"),
             ("image", "registry.example/other@sha256:" + "b" * 64),
         ):
             mismatch = self.execute(self.request(**{field: value}))
@@ -228,6 +259,29 @@ class ProviderExecutorTest(unittest.TestCase):
         self.assertNotEqual(mismatch.returncode, 0)
         self.assertIn("replay result mismatch", mismatch.stderr)
         self.assertEqual(len(self.calls()), first_calls)
+
+    def test_concurrent_identical_execution_creates_only_one_container(self):
+        request = self.request()
+        barrier = threading.Barrier(3)
+        results = []
+
+        def run():
+            barrier.wait()
+            results.append(self.execute(request))
+
+        workers = [threading.Thread(target=run) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join()
+
+        self.assertEqual(sorted(result.returncode for result in results), [0, 0])
+        self.assertEqual(json.loads(results[0].stdout), json.loads(results[1].stdout))
+        self.assertEqual(
+            [call[0] for call in self.calls()],
+            ["create", "start", "exec", "exec", "exec", "rm"],
+        )
 
     def test_stdout_stderr_are_bounded_and_legacy_behavior_remains_available(self):
         environment = {

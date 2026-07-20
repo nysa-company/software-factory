@@ -13,8 +13,13 @@ helper output are not compatibility promises.
   of `1` through `4`.
 - Defines that setting as coupled ticket-worktree and provider-call capacity;
   no second provider-capacity setting is introduced.
-- Retains the product-wide provider lock, so actual parallel provider execution
-  remains gated on isolated runtime integration.
+- Defines the transactional `prepared → reserved → GO → submitted → terminal`
+  provider lifecycle and immutable worker identity binding.
+- Adds the fail-closed SQLite coordinator, unprivileged digest-pinned container
+  executor, and coupled runtime with conservative cancellation and replay.
+- Retains the product-wide provider lock in `run-agent.sh`; production parallel
+  provider execution remains disabled until brokered credentials, provider-only
+  egress, artifact application, recovery, and the legacy barrier are integrated.
 
 ## 1.5.0 — 2026-07-19
 

@@ -7,6 +7,7 @@ import argparse
 import errno
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -27,10 +29,15 @@ RESULT_SCHEMA = "nysa.software-factory.provider-execution-result/v1"
 IDENTITY_SCHEMA = "nysa.software-factory.provider-container-identity/v1"
 MODES = ("legacy-serialized", "isolated-v1")
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+TICKET_ID = re.compile(r"T-[0-9]{1,12}\Z")
+GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 PINNED_IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:+-]*@sha256:([0-9a-f]{64})\Z")
 REQUEST_KEYS = frozenset(
-    ("attempt_id", "base_id", "command", "image", "input", "schema", "source")
+    (
+        "attempt_id", "base_sha", "command", "image", "input",
+        "policy_sha256", "role", "route_id", "schema", "source", "ticket",
+    )
 )
 DEFAULT_SOURCE_BYTES = 16 * 1024 * 1024
 DEFAULT_INPUT_BYTES = 1024 * 1024
@@ -98,9 +105,18 @@ def write_exclusive(path: Path, raw: bytes) -> None:
 def validate_request(value: dict[str, Any], mode: str) -> None:
     if set(value) != REQUEST_KEYS or value.get("schema") != REQUEST_SCHEMA:
         raise ExecutorError("request schema or fields are invalid")
-    for field in ("attempt_id", "base_id"):
+    for field in ("attempt_id", "role", "route_id"):
         if not isinstance(value.get(field), str) or not SAFE_ID.fullmatch(value[field]):
             raise ExecutorError(f"invalid {field}")
+    if not isinstance(value.get("ticket"), str) or not TICKET_ID.fullmatch(value["ticket"]):
+        raise ExecutorError("invalid ticket")
+    if not isinstance(value.get("base_sha"), str) or not GIT_SHA.fullmatch(value["base_sha"]):
+        raise ExecutorError("invalid base_sha")
+    if (
+        not isinstance(value.get("policy_sha256"), str)
+        or not SHA256.fullmatch(value["policy_sha256"])
+    ):
+        raise ExecutorError("invalid policy_sha256")
     command = value.get("command")
     if (
         not isinstance(command, list)
@@ -245,18 +261,82 @@ def validate_artifacts(root: Path, maximum: int) -> tuple[int, str]:
     return total, digest(b"".join(hashed))
 
 
+def payload_archive(payload: Path) -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for entry in sorted(payload.rglob("*")):
+            info = entry.lstat()
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise ExecutorError("prepared payload contains an unsafe entry")
+            archive.add(
+                entry,
+                arcname=entry.relative_to(payload).as_posix(),
+                recursive=False,
+            )
+    return output.getvalue()
+
+
+def extract_artifact_archive(raw: bytes, destination: Path, maximum: int) -> Path:
+    if len(raw) > maximum + 1024 * 1024:
+        raise ExecutorError("artifact archive exceeds configured size limit")
+    if any(destination.iterdir()):
+        raise ExecutorError("artifact extraction directory is not empty")
+    os.chmod(destination, 0o700)
+    total = 0
+    entries = 0
+    seen: set[str] = set()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as archive:
+            for member in archive:
+                entries += 1
+                if entries > MAX_TREE_ENTRIES:
+                    raise ExecutorError("artifact archive contains too many entries")
+                path = Path(member.name)
+                parts = path.parts
+                if (
+                    not parts
+                    or parts[0] != "artifacts"
+                    or any(part in ("", ".", "..") for part in parts)
+                    or path.is_absolute()
+                    or member.name in seen
+                ):
+                    raise ExecutorError("artifact archive contains an unsafe path")
+                seen.add(member.name)
+                output = destination.joinpath(*parts)
+                if member.isdir():
+                    output.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    continue
+                if not member.isfile():
+                    raise ExecutorError("artifact archive contains a non-regular entry")
+                total += member.size
+                if total > maximum:
+                    raise ExecutorError("artifact output exceeds configured size limit")
+                source = archive.extractfile(member)
+                if source is None:
+                    raise ExecutorError("artifact archive member cannot be read")
+                output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                write_exclusive(output, source.read())
+    except (tarfile.TarError, EOFError) as error:
+        raise ExecutorError("artifact archive is invalid") from error
+    root = destination / "artifacts"
+    if not root.is_dir():
+        raise ExecutorError("artifact archive is missing its root directory")
+    return root
+
+
 def bounded_process(
     command: list[str],
     *,
     cwd: Path | None,
     timeout: float,
     output_limit: int,
+    input_data: bytes | None = None,
 ) -> tuple[int, bytes, bytes, bool, bool]:
     try:
         process = subprocess.Popen(
             command,
             cwd=cwd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -285,6 +365,10 @@ def bounded_process(
     for thread in threads:
         thread.start()
     try:
+        if input_data is not None:
+            assert process.stdin is not None
+            process.stdin.write(input_data)
+            process.stdin.close()
         return_code = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
@@ -310,9 +394,11 @@ def runtime_call(
     timeout: float,
     output_limit: int,
     check: bool = True,
+    input_data: bytes | None = None,
 ) -> tuple[int, bytes, bytes, bool, bool]:
     result = bounded_process(
-        [runtime, *arguments], cwd=None, timeout=timeout, output_limit=output_limit
+        [runtime, *arguments], cwd=None, timeout=timeout,
+        output_limit=output_limit, input_data=input_data,
     )
     if check and result[0] != 0:
         message = result[2].decode("utf-8", "replace").strip()
@@ -327,13 +413,17 @@ def identity_for(
     assert image_match is not None
     core = {
         "attempt_id": request["attempt_id"],
-        "base_id": request["base_id"],
+        "base_sha": request["base_sha"],
         "command": request["command"],
         "image": request["image"],
         "image_digest": image_match.group(1),
         "input_sha256": input_hash,
+        "policy_sha256": request["policy_sha256"],
+        "role": request["role"],
+        "route_id": request["route_id"],
         "schema": IDENTITY_SCHEMA,
         "source_sha256": source_hash,
+        "ticket": request["ticket"],
     }
     binding = digest(canonical(core))
     return {
@@ -361,19 +451,23 @@ def result_value(
         "artifact_bytes": artifact_bytes,
         "artifact_sha256": artifact_hash,
         "attempt_id": identity["attempt_id"],
-        "base_id": identity["base_id"],
+        "base_sha": identity["base_sha"],
         "binding_sha256": identity["binding_sha256"],
         "container_name": identity.get("container_name"),
         "image_digest": identity.get("image_digest"),
         "input_sha256": identity["input_sha256"],
         "mode": mode,
+        "policy_sha256": identity["policy_sha256"],
         "return_code": return_code,
+        "role": identity["role"],
+        "route_id": identity["route_id"],
         "schema": RESULT_SCHEMA,
         "source_sha256": identity["source_sha256"],
         "stderr": stderr.decode("utf-8", "replace"),
         "stderr_truncated": stderr_truncated,
         "stdout": stdout.decode("utf-8", "replace"),
         "stdout_truncated": stdout_truncated,
+        "ticket": identity["ticket"],
     }
 
 
@@ -432,6 +526,8 @@ def prepare_attempt(
         write_exclusive(payload / "input", input_raw)
         os.chmod(payload / "input", 0o444)
         identity = identity_for(request, input_hash, source_hash)
+        write_exclusive(payload / "identity.json", canonical(identity))
+        os.chmod(payload / "identity.json", 0o444)
         write_exclusive(staging / "identity.json", canonical(identity))
         try:
             staging.rename(attempt)
@@ -450,7 +546,9 @@ def prepare_attempt(
             shutil.rmtree(staging)
 
 
-def isolated_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[str, Any]:
+def isolated_execute_locked(
+    args: argparse.Namespace, request: dict[str, Any]
+) -> dict[str, Any]:
     requested_source = Path(request["source"])
     if requested_source.is_symlink():
         raise ExecutorError("source must not be a symlink")
@@ -471,9 +569,12 @@ def isolated_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[
     name = identity["container_name"]
     labels = [
         "--label", f"nysa.factory.attempt={identity['attempt_id']}",
-        "--label", f"nysa.factory.base={identity['base_id']}",
+        "--label", f"nysa.factory.base={identity['base_sha']}",
         "--label", f"nysa.factory.binding={identity['binding_sha256']}",
         "--label", f"nysa.factory.image={identity['image_digest']}",
+        "--label", f"nysa.factory.role={identity['role']}",
+        "--label", f"nysa.factory.route={identity['route_id']}",
+        "--label", f"nysa.factory.ticket={identity['ticket']}",
     ]
     create = [
         "create", "--name", name, *labels,
@@ -487,8 +588,11 @@ def isolated_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[
         "--cpus", str(args.cpus),
         "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
         "--tmpfs", "/workspace:rw,noexec,nosuid,nodev,size=64m,mode=1777",
-        "--workdir", "/workspace/payload/source",
-        request["image"], *request["command"],
+        "--workdir", "/workspace",
+        request["image"],
+        "/bin/sh", "-c",
+        "mkdir -p /workspace/payload /workspace/artifacts || exit 125; "
+        "trap 'exit 0' TERM INT; while :; do sleep 3600; done",
     ]
     created = False
     try:
@@ -498,30 +602,58 @@ def isolated_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[
         )
         created = True
         runtime_call(
-            args.runtime,
-            ["cp", str(attempt / "payload") + "/.", f"{name}:/workspace/payload"],
+            args.runtime, ["start", name],
             timeout=args.runtime_timeout,
             output_limit=args.output_bytes,
         )
+        runtime_call(
+            args.runtime,
+            [
+                "exec", "-i", name, "tar", "--no-same-owner",
+                "--no-same-permissions", "-x", "-f", "-",
+                "-C", "/workspace/payload",
+            ],
+            timeout=args.runtime_timeout,
+            output_limit=args.output_bytes,
+            input_data=payload_archive(attempt / "payload"),
+        )
         code, stdout, stderr, stdout_truncated, stderr_truncated = runtime_call(
-            args.runtime, ["start", "--attach", name], timeout=args.timeout,
+            args.runtime,
+            ["exec", "--workdir", "/workspace/payload/source", name, *request["command"]],
+            timeout=args.timeout,
             output_limit=args.output_bytes, check=False,
         )
         temporary = Path(tempfile.mkdtemp(prefix=".artifact-", dir=attempt))
         try:
-            runtime_call(
+            (
+                archive_code,
+                artifact_archive,
+                archive_stderr,
+                archive_stdout_truncated,
+                _,
+            ) = runtime_call(
                 args.runtime,
-                ["cp", f"{name}:/workspace/artifacts/.", str(temporary)],
+                [
+                    "exec", name, "tar", "-c", "-f", "-",
+                    "-C", "/workspace", "artifacts",
+                ],
                 timeout=args.runtime_timeout,
-                output_limit=args.output_bytes,
+                output_limit=args.artifact_bytes + 1024 * 1024,
+                check=False,
+            )
+            if archive_code != 0 or archive_stdout_truncated:
+                message = archive_stderr.decode("utf-8", "replace").strip()
+                raise ExecutorError(f"artifact copy-out failed: {message}")
+            copied_artifacts = extract_artifact_archive(
+                artifact_archive, temporary, args.artifact_bytes
             )
             artifact_bytes, artifact_hash = validate_artifacts(
-                temporary, args.artifact_bytes
+                copied_artifacts, args.artifact_bytes
             )
             artifacts = attempt / "artifacts"
             if artifacts.exists() or artifacts.is_symlink():
                 raise ExecutorError("artifact destination already exists")
-            temporary.rename(artifacts)
+            copied_artifacts.rename(artifacts)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
@@ -550,6 +682,22 @@ def isolated_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[
             )
 
 
+def isolated_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[str, Any]:
+    root = checked_attempt_root(args.attempt_root)
+    lock_path = root / f".{request['attempt_id']}.execution.lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    with os.fdopen(descriptor, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            raise ExecutorError("attempt execution lock is unsafe")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        return isolated_execute_locked(args, request)
+
+
 def legacy_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[str, Any]:
     requested_source = Path(request["source"])
     if requested_source.is_symlink():
@@ -563,12 +711,16 @@ def legacy_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[st
         shutil.rmtree(temporary)
     core = {
         "attempt_id": request["attempt_id"],
-        "base_id": request["base_id"],
+        "base_sha": request["base_sha"],
         "command": request["command"],
         "image": request["image"],
         "input_sha256": input_hash,
+        "policy_sha256": request["policy_sha256"],
+        "role": request["role"],
+        "route_id": request["route_id"],
         "schema": IDENTITY_SCHEMA,
         "source_sha256": source_hash,
+        "ticket": request["ticket"],
     }
     identity = {**core, "binding_sha256": digest(canonical(core))}
     root = checked_attempt_root(args.attempt_root)

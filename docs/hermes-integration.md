@@ -132,7 +132,18 @@ occupies capacity. This one product setting is the coupled ticket-worktree and
 provider-call capacity; there is no separate provider-capacity setting. The
 product-wide provider lock remains held for each full provider interval, so
 increasing capacity does not enable simultaneous model-provider calls until
-isolated runtime integration is enabled. Under
+all isolated runtime activation gates are enabled.
+
+Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
+the owner-only SQLite coordinator and ephemeral container executor. Admission
+uses a short `BEGIN IMMEDIATE` transaction and states
+`prepared → reserved → GO → submitted → terminal`. The worker receives a
+sanitized source snapshot and immutable input; its identity binds ticket, role,
+attempt, base SHA, route, policy, image, input, source, and command. Unknown
+post-GO outcomes retain the reservation and slot. Production use remains
+disabled until credential brokering, provider-only egress, controller-side
+artifact application, recovery, and coexistence with legacy serialized runs
+are complete. Under
 maintenance, recover a stale record explicitly with:
 
 ```bash

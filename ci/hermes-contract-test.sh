@@ -2039,6 +2039,24 @@ assert contract["concurrency"]["capacity_scope"] == \
     "coupled ticket-worktree and provider-call capacity"
 assert "provider lock" in contract["concurrency"]["parallel_execution_gate"]
 assert contract["concurrency"]["lease_required_when_greater_than"] == 1
+provider_execution = contract["provider_execution"]
+assert provider_execution["contract_1_6_mode"] == "isolated-v1"
+assert provider_execution["runtime_authority"] == "scripts/provider-runtime.py"
+assert provider_execution["state_machine"] == [
+    "prepared", "reserved", "GO", "submitted", "terminal",
+]
+assert "disabled until" in provider_execution["activation_gate"]
+assert "1.0.0 through 1.5.0" in provider_execution["legacy_contracts"]
+assert provider_execution["coordinator"]["transaction"] == "BEGIN IMMEDIATE"
+assert provider_execution["coordinator"]["database"].endswith("state-v2.sqlite3")
+assert provider_execution["worker"]["request_schema"] == \
+    "nysa.software-factory.provider-execution-request/v1"
+assert provider_execution["worker"]["identity_binding"] == [
+    "ticket", "role", "attempt_id", "base_sha", "input_sha256", "route_id",
+    "policy_sha256", "image_digest", "source_sha256", "command",
+]
+assert "provider-only egress" in provider_execution["worker"]["network"]
+assert "no isolated-v1 admission" in provider_execution["legacy_barrier"]
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
     "<T-NNN>",
@@ -2123,6 +2141,9 @@ assert contract["launcher"]["active_record"]["contract_1_2_required_fields"] == 
 assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 for surface in [
+    "scripts/provider-coordinator.py",
+    "scripts/provider-executor.py",
+    "scripts/provider-runtime.py",
     "scripts/model-control.sh",
     "scripts/model-manager.py",
     "scripts/model-router.py",

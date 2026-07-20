@@ -473,6 +473,63 @@
     "lease_ttl_seconds": 900,
     "stale_policy": "never reassigned automatically; recover explicitly through factory-kit under maintenance after active-run validation"
   },
+  "provider_execution": {
+    "contract_1_6_mode": "isolated-v1",
+    "activation_gate": "disabled until a digest-pinned worker image, owner-only provider policy, transactional coordinator, credential broker, provider-only egress, artifact validator, cancellation reconciliation, and legacy barrier are all configured",
+    "legacy_contracts": "contracts 1.0.0 through 1.5.0 retain interval-wide serialized provider execution",
+    "runtime_authority": "scripts/provider-runtime.py",
+    "state_machine": [
+      "prepared",
+      "reserved",
+      "GO",
+      "submitted",
+      "terminal"
+    ],
+    "coordinator": {
+      "authority": "scripts/provider-coordinator.py",
+      "database": "~/.factory/accounting/state-v2.sqlite3",
+      "transaction": "BEGIN IMMEDIATE",
+      "policy": "~/.factory/provider-policy.json",
+      "unknown_outcome": "retain the full reservation and provider slot for explicit reconciliation"
+    },
+    "worker": {
+      "authority": "scripts/provider-executor.py",
+      "request_schema": "nysa.software-factory.provider-execution-request/v1",
+      "identity_schema": "nysa.software-factory.provider-container-identity/v1",
+      "result_schema": "nysa.software-factory.provider-execution-result/v1",
+      "identity_binding": [
+        "ticket",
+        "role",
+        "attempt_id",
+        "base_sha",
+        "input_sha256",
+        "route_id",
+        "policy_sha256",
+        "image_digest",
+        "source_sha256",
+        "command"
+      ],
+      "source_transport": "sanitized copy-in with no host Git metadata, control state, sibling worktrees, credentials, process namespace, or container socket",
+      "artifact_transport": "size-bounded copy-out bound to the immutable worker identity",
+      "container": "ephemeral unprivileged digest-pinned image with read-only root, dropped capabilities, no-new-privileges, PID/CPU/memory limits, and attempt-local scratch",
+      "network": "provider-only egress through the configured credential broker; unrestricted egress and direct host credentials are not certified"
+    },
+    "controller": {
+      "exclusive_authority": [
+        "leases",
+        "provider slots",
+        "budgets and accounting",
+        "cancellation records",
+        "artifact validation and application",
+        "Git metadata",
+        "commits",
+        "pushes",
+        "approvals"
+      ],
+      "apply_rule": "revalidate the exact ticket branch and base SHA, validate protected paths and artifact identity, then apply under a per-ticket lock"
+    },
+    "legacy_barrier": "no isolated-v1 admission while any legacy provider interval is active, and no legacy provider interval starts while isolated-v1 attempts are active"
+  },
   "status_categories": [
     "ok",
     "warning",
@@ -496,6 +553,9 @@
     "scripts/preflight.sh",
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
+    "scripts/provider-coordinator.py",
+    "scripts/provider-executor.py",
+    "scripts/provider-runtime.py",
     "scripts/ticket-state.sh",
     "scripts/ticket-attest.py",
     "scripts/ticket-attest.sh",

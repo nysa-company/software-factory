@@ -193,7 +193,15 @@ model fallback.
 Contract `1.5.0` adds fixed operator snapshots, project-owned model policy,
 bounded envelope overrides, targeted attempt cancellation, and the loopback
 multi-project console.
-Contract `1.6.0` expands only the active bounded capacity to six.
+Contract `1.6.0` expands bounded coupled capacity to six and defines a
+transactional isolated-worker protocol. The provider coordinator serializes
+only short SQLite admission and terminalization transactions. The executor
+copies a sanitized source and immutable input into an unprivileged,
+digest-pinned ephemeral container and streams only bounded artifacts back.
+Worker identity binds ticket, role, attempt, base SHA, route, policy, image,
+input, source, and command. Production activation remains gated on brokered
+credentials, provider-only egress, controller-side artifact application,
+recovery, and legacy-barrier integration.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -301,9 +309,11 @@ requires the matching opaque record under
 the configured capacity is full. Stale records continue to consume capacity and
 are never reassigned automatically. This is the single coupled ticket-worktree
 and provider-call capacity setting. The product-level control lock is retained
-and still serializes complete provider intervals until isolated runtime
-integration enables parallel execution. The global ledger lock remains an additional
-serialization and accounting boundary when a machine cap is configured.
+and still serializes complete `run-agent.sh` provider intervals until all
+Contract 1.6 activation gates are satisfied. The isolated runtime primitives
+have proved six concurrent local containers, but do not yet bypass that lock.
+The legacy global ledger remains an additional serialization and accounting
+boundary when a machine cap is configured.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
