@@ -148,6 +148,7 @@ ACCOUNTING_STATE=""
 GO_ISSUED=0
 TASK_SUBMITTED=0
 ADAPTER_BOUNDARY_STOPPED=0
+ADAPTER_BOUNDARY_STOP_PATH=""
 RUN_STARTED_AT=""
 TERMINAL_AT=""
 RESERVED_USD=""
@@ -237,17 +238,17 @@ registered_status_after_run() {
     printf '%s' "$status"
     return 0
   fi
+  [[ -n "$ADAPTER_BOUNDARY_STOP_PATH" ]] || return 1
   printf '%s\n' "$status" | python3 -c '
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
-allowed = {str(Path(value).relative_to(root)) for value in sys.argv[2:]}
+allowed = str(Path(sys.argv[2]).relative_to(root))
 for line in sys.stdin:
     line = line.rstrip("\n")
-    if len(line) < 4 or line[3:] not in allowed:
+    if len(line) < 4 or line[3:] != allowed:
         print(line)
-' "$REPO_ROOT" "$FACTORY_DIR/KILL" "$FACTORY_DIR/MAINTENANCE" \
-    "$CANCEL_REQUEST_FILE"
+' "$REPO_ROOT" "$ADAPTER_BOUNDARY_STOP_PATH"
 }
 
 process_start_identity() {
@@ -621,6 +622,7 @@ terminate_run_group() {
 
 stop_before_adapter_gate() {
   if [[ -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ]]; then
+    ADAPTER_BOUNDARY_STOP_PATH="$CANCEL_REQUEST_FILE"
     if load_cancellation_request; then
       echo "targeted cancellation requested before adapter gate; no task was submitted" >&2
       STATUS=130
@@ -629,9 +631,11 @@ stop_before_adapter_gate() {
       STATUS=11
     fi
   elif [[ -f "$FACTORY_DIR/KILL" ]]; then
+    ADAPTER_BOUNDARY_STOP_PATH="$FACTORY_DIR/KILL"
     echo "KILL file appeared before adapter gate; no task was submitted" >&2
     STATUS=4
   elif [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+    ADAPTER_BOUNDARY_STOP_PATH="$FACTORY_DIR/MAINTENANCE"
     echo "MAINTENANCE file appeared before adapter gate; no task was submitted" >&2
     STATUS=4
   else

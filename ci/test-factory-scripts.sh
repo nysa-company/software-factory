@@ -1573,6 +1573,36 @@ else
     "status $AT_GATE_MUTATION_STATUS"
 fi
 
+# Only the selected stop record is exempt; a concurrent second control remains
+# visible to checkout-integrity validation.
+AT_GATE_CONTROLS="$TMP/concurrent-controls-at-adapter-boundary"
+write_envelope "$AT_GATE_CONTROLS"
+write_ticket "$AT_GATE_CONTROLS" T-305
+FACTORY_ROOT="$AT_GATE_CONTROLS" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_AFTER_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-305 -- "concurrent controls" \
+  > "$TMP/concurrent-controls-at-adapter-boundary.out" 2>&1 &
+AT_GATE_CONTROLS_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$AT_GATE_CONTROLS/factory/runs/".*.gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$AT_GATE_CONTROLS/factory/KILL"
+touch "$AT_GATE_CONTROLS/factory/MAINTENANCE"
+wait "$AT_GATE_CONTROLS_PID"
+AT_GATE_CONTROLS_STATUS=$?
+if [[ "$AT_GATE_CONTROLS_STATUS" -eq 11 ]] &&
+   grep -q 'registered checkout changed during provider execution' \
+     "$TMP/concurrent-controls-at-adapter-boundary.out" &&
+   ! grep -q 'mock adapter ran task' "$AT_GATE_CONTROLS/factory/runs/"*.out; then
+  pass "boundary stop exempts only its exact control record"
+else
+  fail "boundary stop exempts only its exact control record" \
+    "status $AT_GATE_CONTROLS_STATUS"
+fi
+
 # The adapter gate never opens unless go_issued=1 reached durable storage.
 GO_WRITE_FAIL="$TMP/go-marker-write-failure"
 write_envelope "$GO_WRITE_FAIL"
