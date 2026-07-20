@@ -1394,10 +1394,8 @@ FACTORY_ROOT="$BEFORE_GATE_KILL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   > "$TMP/before-adapter-gate.out" 2>&1 &
 BEFORE_GATE_KILL_PID=$!
 for _i in $(seq 1 500); do
-  if grep -q '^phase=spawned$' "$BEFORE_GATE_KILL/factory/runs/"*.meta \
-      2>/dev/null; then
-    break
-  fi
+  [[ -n "$(ls "$BEFORE_GATE_KILL/factory/runs/".*.before-gate \
+    2>/dev/null || true)" ]] && break
   sleep 0.02
 done
 touch "$BEFORE_GATE_KILL/factory/KILL"
@@ -1410,7 +1408,37 @@ if [[ "$BEFORE_GATE_KILL_STATUS" -eq 4 ]] &&
   pass "kill before adapter gate prevents task submission"
 else
   fail "kill before adapter gate prevents task submission" \
-    "status $BEFORE_GATE_KILL_STATUS"
+    "status $BEFORE_GATE_KILL_STATUS: $(tr '\n' ' ' < "$TMP/before-adapter-gate.out")"
+fi
+
+# A controller-observed stop still runs the shared integrity checks.
+BEFORE_GATE_MUTATION="$TMP/controller-stop-plus-mutation"
+write_envelope "$BEFORE_GATE_MUTATION"
+write_ticket "$BEFORE_GATE_MUTATION" T-306
+FACTORY_ROOT="$BEFORE_GATE_MUTATION" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-306 -- "controller stop plus mutation" \
+  > "$TMP/controller-stop-plus-mutation.out" 2>&1 &
+BEFORE_GATE_MUTATION_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$BEFORE_GATE_MUTATION/factory/runs/".*.before-gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$BEFORE_GATE_MUTATION/factory/KILL"
+touch "$BEFORE_GATE_MUTATION/unexpected-control-mutation"
+wait "$BEFORE_GATE_MUTATION_PID"
+BEFORE_GATE_MUTATION_STATUS=$?
+if [[ "$BEFORE_GATE_MUTATION_STATUS" -eq 11 ]] &&
+   grep -q 'registered checkout changed during provider execution' \
+     "$TMP/controller-stop-plus-mutation.out" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_MUTATION/factory/runs/"*.out; then
+  pass "controller boundary stop cannot mask checkout mutation"
+else
+  fail "controller boundary stop cannot mask checkout mutation" \
+    "status $BEFORE_GATE_MUTATION_STATUS"
 fi
 
 # Maintenance published during final validation also wins before submission.
@@ -1424,10 +1452,8 @@ FACTORY_ROOT="$BEFORE_GATE_MAINT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   > "$TMP/maintenance-before-adapter-gate.out" 2>&1 &
 BEFORE_GATE_MAINT_PID=$!
 for _i in $(seq 1 500); do
-  if grep -q '^phase=spawned$' "$BEFORE_GATE_MAINT/factory/runs/"*.meta \
-      2>/dev/null; then
-    break
-  fi
+  [[ -n "$(ls "$BEFORE_GATE_MAINT/factory/runs/".*.before-gate \
+    2>/dev/null || true)" ]] && break
   sleep 0.02
 done
 touch "$BEFORE_GATE_MAINT/factory/MAINTENANCE"
@@ -1441,7 +1467,7 @@ if [[ "$BEFORE_GATE_MAINT_STATUS" -eq 4 ]] &&
   pass "maintenance before adapter gate prevents task submission"
 else
   fail "maintenance before adapter gate prevents task submission" \
-    "status $BEFORE_GATE_MAINT_STATUS"
+    "status $BEFORE_GATE_MAINT_STATUS: $(tr '\n' ' ' < "$TMP/maintenance-before-adapter-gate.out")"
 fi
 
 # A valid targeted cancellation during final validation prevents submission.
@@ -1458,8 +1484,9 @@ BEFORE_GATE_CANCEL_RUN=""
 for _i in $(seq 1 500); do
   BEFORE_GATE_CANCEL_META="$(ls "$BEFORE_GATE_CANCEL/factory/runs/"*.meta \
     2>/dev/null || true)"
-  if [[ -n "$BEFORE_GATE_CANCEL_META" ]] &&
-     grep -q '^phase=spawned$' "$BEFORE_GATE_CANCEL_META"; then
+  if [[ -n "$BEFORE_GATE_CANCEL_META" &&
+        -n "$(ls "$BEFORE_GATE_CANCEL/factory/runs/".*.before-gate \
+          2>/dev/null || true)" ]]; then
     BEFORE_GATE_CANCEL_RUN="$(basename "$BEFORE_GATE_CANCEL_META" .meta)"
     break
   fi
@@ -1504,8 +1531,9 @@ BEFORE_GATE_BAD_CANCEL_RUN=""
 for _i in $(seq 1 500); do
   BEFORE_GATE_BAD_CANCEL_META="$(ls \
     "$BEFORE_GATE_BAD_CANCEL/factory/runs/"*.meta 2>/dev/null || true)"
-  if [[ -n "$BEFORE_GATE_BAD_CANCEL_META" ]] &&
-     grep -q '^phase=spawned$' "$BEFORE_GATE_BAD_CANCEL_META"; then
+  if [[ -n "$BEFORE_GATE_BAD_CANCEL_META" &&
+        -n "$(ls "$BEFORE_GATE_BAD_CANCEL/factory/runs/".*.before-gate \
+          2>/dev/null || true)" ]]; then
     BEFORE_GATE_BAD_CANCEL_RUN="$(basename "$BEFORE_GATE_BAD_CANCEL_META" .meta)"
     break
   fi
