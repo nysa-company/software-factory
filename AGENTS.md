@@ -5,6 +5,7 @@ Product-agnostic kit for running an AI software factory. Read `docs/product-brie
 ## Run checks
 
 - Full suite: `bash ci/test-all.sh`
+- Dynamic preview: `bash ci/test-all.sh --changed origin/main HEAD`; required CI remains in shadow/full mode until its evidence gate passes.
 - Target the smallest relevant shell test while iterating, then run the full suite before completion.
 
 ## Conventions
@@ -35,7 +36,7 @@ Append an entry to `context/memory.md` for significant decisions, reversals, inc
 <!-- nysa-agents:repo-standard:start -->
 ## Repository baseline (managed)
 
-- Verification: run `bash ci/test-all.sh` plus `scripts/repo-check` and `scripts/secret-scan` before declaring a code change complete.
+- Verification: run `bash ci/test-all.sh --changed-or-defer origin/main HEAD` plus `scripts/repo-check` and `scripts/secret-scan` before declaring a code change complete. When enabled, remote full CI records broad verification as deferred rather than passed.
 - The protected default branch is `main`. Create short-lived branches matching `^(feat|fix|docs|chore|refactor|test|hotfix|spike)/[a-z0-9]+(?:-[a-z0-9]+)*$`; never push or merge without explicit approval.
 - Never print credentials or raw secret-bearing configuration. Redact values by key name and credential-bearing URL before sharing output.
 - Put disposable agent scratch and generated reports in gitignored `.context/`.

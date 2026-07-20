@@ -8,12 +8,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Durable decisions in this repository use their own numbering, beginning at Decision 1.
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
-- The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, config-review, and full local PR gates enabled. The canonical verification command is `bash ci/test-all.sh`.
+- The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, and config-review enabled. `bash ci/test-all.sh` remains the unconditional full command; managed local readiness uses `bash ci/test-all.sh --changed-or-defer origin/main HEAD`.
+- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components are active locally and in Linux/applicable macOS pull-request CI. Broad local verification may defer to required GitHub CI after policy gates; both platforms remain full on `main`, and ambiguous or shared surfaces remain full.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
-- Install records owner-only, expiring kit-suite evidence for the exact sealed release. Certification reuses it only when every release, physical-tree, host, platform, suite-definition, tool-version, and configured-lifetime binding matches; product certification and product/config/receipt validation always rerun, and receipt expiry cannot outlive suite proof.
+- Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence may replace duplicate local full execution after a sandboxed platform smoke; missing evidence falls back full. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
-- The required aggregate `ci` status always reports. A narrow fail-closed inert-metadata diff skips expensive suites while retaining Linux policy and test-immutability checks. Every other change runs Linux; shell/platform-sensitive PRs and every non-lightweight merged SHA also run macOS system-Bash verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
+- The required aggregate `ci` status always reports. Inert metadata skips behavioral suites while retaining policy gates; mapped leaf changes run targeted suites on Linux and applicable macOS, and ambiguous changes run full. Every merged SHA runs complete Linux and macOS verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `balanced-v2`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/high; Spec-linter and Test-author use Claude Fable 5/medium with Cursor Fable Thinking Medium secondary; Reviewer uses Claude Sonnet 5/high. `legacy-balanced-v1` remains compatibility policy; OpenAI-, Claude-, and Cursor-priority profiles remain explicit alternatives.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit a configured maximum of four exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Nysa T-013/T-014 and T-015/T-016 proved initial lease-level concurrency; the product-wide lock still serializes every provider interval, and provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
@@ -38,6 +39,32 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 
 ## Log
+
+## 2026-07-19 — Decision 48: Targeted PR CI and remote full-suite reuse
+
+Category: Decision
+
+Linux and applicable macOS pull-request jobs execute the same fail-closed
+component selector in parallel; protected `main` remains complete on both
+platforms. Local readiness may explicitly defer only broad behavioral work to
+required GitHub CI after policy checks. Installation corroborates the exact
+main SHA against authenticated GitHub Actions push-run jobs and runs a local
+sandboxed platform smoke instead of repeating the hour-long suite. Missing or
+invalid remote evidence falls back to the full local suite, and
+`CI_FORCE_FULL=1` disables both deferral and reuse.
+
+## 2026-07-19 — Decision 47: Shadow fail-closed dynamic CI selection
+
+Category: Decision
+
+Committed diffs classify by dependency surface rather than line count. Six
+audited leaf components are active for local changed-file selection; additions, deletions, renames, unknown
+or shared paths, multiple components, and invalid comparisons run full. Each
+component needs three real shadowed diffs, zero reproducible misses, and a median
+targeted duration at most half of full with at least ten local minutes saved.
+This shadow requirement was superseded by Decision 48 after the six mappings
+met their activation evidence. Any reproducible miss still demotes that
+component to shadow and resets its evidence.
 
 ## 2026-07-19 — Decision 45: Local multi-project operator control plane
 
