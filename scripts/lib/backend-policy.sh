@@ -134,7 +134,7 @@ factory_probe_adapter() {
   local installed installed_version help model expected_family actual_family
   local claude_bin secret_file minimal_path required_flag
   local cursor_bin="${CURSOR_AGENT_BIN:-agent}"
-  local probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-10}"
+  local probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-30}"
   PROBE_STATE="UNKNOWN"
   PROBE_REASON="unclassified"
   PROBE_VERSION=""
@@ -195,13 +195,17 @@ factory_probe_adapter() {
       if [[ "$installed" != *"${CLAUDE_CODE_PINNED:-2.1.207}"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
       fi
-      help="$(timeout "$probe_timeout" claude --help 2>/dev/null || true)"
-      if [[ "$help" != *"--max-budget-usd"* ||
-            "$help" != *"--output-format"* ||
-            "$help" != *"--append-system-prompt"* ||
-            "$help" != *"--model"* || "$help" != *"--effort"* ]]; then
-        PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
+      if ! help="$(timeout "$probe_timeout" claude --help 2>/dev/null)"; then
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="help_probe_failed"; return 0
       fi
+      for required_flag in --max-budget-usd --output-format \
+        --append-system-prompt --model --effort; do
+        if [[ "$help" != *"$required_flag"* ]]; then
+          PROBE_STATE="INVALID"
+          PROBE_REASON="contract_mismatch_missing_${required_flag#--}"
+          return 0
+        fi
+      done
       if ! timeout "$probe_timeout" claude auth status >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
