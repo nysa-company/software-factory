@@ -6,16 +6,18 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = ROOT / "scripts/provider-executor.py"
-REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v1"
+REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v2"
 IMAGE = "registry.example/worker@sha256:" + "a" * 64
 
 FAKE_RUNTIME = r"""#!/usr/bin/env python3
@@ -26,6 +28,7 @@ from pathlib import Path
 import shutil
 import sys
 import tarfile
+import time
 
 args = sys.argv[1:]
 with Path(os.environ["FAKE_RUNTIME_LOG"]).open("a", encoding="utf-8") as handle:
@@ -59,6 +62,7 @@ elif args[0] == "exec" and "tar" in args and "-c" in args:
             archive.addfile(item, io.BytesIO(raw))
     sys.stdout.buffer.write(output.getvalue())
 elif args[0] == "exec":
+    time.sleep(float(os.environ.get("FAKE_EXEC_SLEEP", "0")))
     sys.stdout.write("O" * int(os.environ.get("FAKE_STDOUT_BYTES", "2")))
     sys.stderr.write("E" * int(os.environ.get("FAKE_STDERR_BYTES", "2")))
     raise SystemExit(int(os.environ.get("FAKE_RETURN_CODE", "0")))
@@ -72,7 +76,7 @@ else:
 class ProviderExecutorTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.source = self.root / "source"
         self.source.mkdir()
         (self.source / "main.txt").write_text("safe source\n")
@@ -254,6 +258,16 @@ class ProviderExecutorTest(unittest.TestCase):
         self.assertNotEqual(mismatch.returncode, 0)
         self.assertIn("replay identity mismatch", mismatch.stderr)
         (self.source / "main.txt").write_text("safe source\n")
+        (self.source / "empty").mkdir()
+        mismatch = self.execute(self.request())
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("replay identity mismatch", mismatch.stderr)
+        (self.source / "empty").rmdir()
+        (self.source / "main.txt").chmod(0o755)
+        mismatch = self.execute(self.request())
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("replay identity mismatch", mismatch.stderr)
+        (self.source / "main.txt").chmod(0o644)
         (self.attempts / "attempt-1/artifacts/answer.json").write_text("tampered\n")
         mismatch = self.execute(self.request())
         self.assertNotEqual(mismatch.returncode, 0)
@@ -282,6 +296,40 @@ class ProviderExecutorTest(unittest.TestCase):
             [call[0] for call in self.calls()],
             ["create", "start", "exec", "exec", "exec", "rm"],
         )
+
+    def test_signal_during_isolated_execution_removes_bound_container(self):
+        request = self.request()
+        command = [
+            sys.executable,
+            str(EXECUTOR),
+            "--runtime",
+            str(self.runtime),
+            "--attempt-root",
+            str(self.attempts),
+            "execute",
+            "--mode",
+            "isolated-v1",
+            "--request",
+            str(request),
+        ]
+        environment = {**self.environment, "FAKE_EXEC_SLEEP": "60"}
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        for _ in range(200):
+            calls = self.calls()
+            if len(calls) >= 4 and calls[-1][0] == "exec":
+                break
+            time.sleep(0.025)
+        self.assertGreaterEqual(len(self.calls()), 4)
+        process.terminate()
+        process.wait(timeout=10)
+        process.communicate(timeout=1)
+        self.assertEqual(self.calls()[-1][0:2], ["rm", "--force"])
 
     def test_stdout_stderr_are_bounded_and_legacy_behavior_remains_available(self):
         environment = {
@@ -312,6 +360,56 @@ class ProviderExecutorTest(unittest.TestCase):
         value = json.loads(result.stdout)
         self.assertEqual(value["mode"], "legacy-serialized")
         self.assertEqual(value["stdout"], "safe source\n")
+
+    def test_legacy_adapter_shares_and_terminates_with_executor_process_group(self):
+        marker = self.root / "legacy-process.json"
+        legacy = self.request(
+            attempt_id="legacy-signal",
+            image=None,
+            command=[
+                sys.executable,
+                "-c",
+                (
+                    "import json,os,pathlib,time;"
+                    f"pathlib.Path({str(marker)!r}).write_text("
+                    "json.dumps({'pid':os.getpid(),'pgid':os.getpgrp()}));"
+                    "time.sleep(60)"
+                ),
+            ],
+        )
+        command = [
+            sys.executable,
+            str(EXECUTOR),
+            "--runtime",
+            str(self.runtime),
+            "--attempt-root",
+            str(self.attempts),
+            "execute",
+            "--mode",
+            "legacy-serialized",
+            "--request",
+            str(legacy),
+        ]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.environment,
+            start_new_session=True,
+        )
+        for _ in range(100):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        self.assertTrue(marker.exists())
+        identity = json.loads(marker.read_text())
+        self.assertEqual(identity["pgid"], process.pid)
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=10)
+        process.communicate(timeout=1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(identity["pid"], 0)
 
     def test_bound_container_identity_supports_targeted_cancellation(self):
         result = self.execute()

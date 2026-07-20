@@ -490,11 +490,12 @@
       "database": "~/.factory/accounting/state-v2.sqlite3",
       "transaction": "BEGIN IMMEDIATE",
       "policy": "~/.factory/provider-policy.json",
+      "financial_accounting": "integer micro-USD machine-day, product-day, and ticket caps count active reservations plus terminal charges in the admission transaction",
       "unknown_outcome": "retain the full reservation and provider slot for explicit reconciliation"
     },
     "worker": {
       "authority": "scripts/provider-executor.py",
-      "request_schema": "nysa.software-factory.provider-execution-request/v1",
+      "request_schema": "nysa.software-factory.provider-execution-request/v2",
       "identity_schema": "nysa.software-factory.provider-container-identity/v1",
       "result_schema": "nysa.software-factory.provider-execution-result/v1",
       "identity_binding": [

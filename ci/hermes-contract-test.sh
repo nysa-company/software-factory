@@ -2049,8 +2049,10 @@ assert "disabled until" in provider_execution["activation_gate"]
 assert "1.0.0 through 1.5.0" in provider_execution["legacy_contracts"]
 assert provider_execution["coordinator"]["transaction"] == "BEGIN IMMEDIATE"
 assert provider_execution["coordinator"]["database"].endswith("state-v2.sqlite3")
+assert "integer micro-USD" in \
+    provider_execution["coordinator"]["financial_accounting"]
 assert provider_execution["worker"]["request_schema"] == \
-    "nysa.software-factory.provider-execution-request/v1"
+    "nysa.software-factory.provider-execution-request/v2"
 assert provider_execution["worker"]["identity_binding"] == [
     "ticket", "role", "attempt_id", "base_sha", "input_sha256", "route_id",
     "policy_sha256", "image_digest", "source_sha256", "command",

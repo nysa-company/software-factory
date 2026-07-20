@@ -90,7 +90,7 @@ class ProviderRuntimeTest(unittest.TestCase):
             "policy_sha256": policy_hash or self.policy_hash,
             "role": "builder",
             "route_id": "mock-route",
-            "schema": "nysa.software-factory.provider-execution-request/v1",
+            "schema": "nysa.software-factory.provider-execution-request/v2",
             "source": str(self.root),
             "ticket": "T-123",
         }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
@@ -122,6 +122,11 @@ class ProviderRuntimeTest(unittest.TestCase):
             "--provider-family", "mock",
             "--account-route", "local",
             "--reserve-micro-usd", "1000",
+            "--product-id", "product-a",
+            "--budget-day", "2026-07-20",
+            "--product-daily-cap-micro-usd", "1000000",
+            "--ticket-cap-micro-usd", "1000000",
+            "--machine-daily-cap-micro-usd", "1000000",
             mode=mode,
         )
 

@@ -86,7 +86,10 @@ class ProviderCoordinatorTest(unittest.TestCase):
 
     def reserve(
         self, attempt, operation=None, now=1000, family="openai",
-        account="account-a", check=True,
+        account="account-a", check=True, reserve_micro_usd=1_250_000,
+        product="product-a", ticket="T-123", budget_day="2026-07-20",
+        product_cap=100_000_000, ticket_cap=100_000_000,
+        machine_cap=100_000_000,
     ):
         return self.json_command(
             "reserve",
@@ -94,20 +97,29 @@ class ProviderCoordinatorTest(unittest.TestCase):
             "--attempt-id", attempt,
             "--provider-family", family,
             "--account-route", account,
-            "--reserve-micro-usd", 1_250_000,
+            "--reserve-micro-usd", reserve_micro_usd,
+            "--product-id", product,
+            "--ticket-id", ticket,
+            "--budget-day", budget_day,
+            "--product-daily-cap-micro-usd", product_cap,
+            "--ticket-cap-micro-usd", ticket_cap,
+            "--machine-daily-cap-micro-usd", machine_cap,
             "--policy", self.policy,
             "--now", now,
             check=check,
         )
 
     def transition(self, command, attempt, version, operation, now, *extra):
+        arguments = list(extra)
+        if command == "terminalize" and "--charge-micro-usd" not in arguments:
+            arguments.extend(("--charge-micro-usd", "500000"))
         return self.json_command(
             command,
             "--operation-id", operation,
             "--attempt-id", attempt,
             "--expected-version", version,
             "--now", now,
-            *extra,
+            *arguments,
         )
 
     def test_six_way_coupled_limit_and_terminal_release(self):
@@ -232,6 +244,12 @@ class ProviderCoordinatorTest(unittest.TestCase):
                 "--provider-family", "openai",
                 "--account-route", "account-a",
                 "--reserve-micro-usd", 1,
+                "--product-id", "product-a",
+                "--ticket-id", "T-123",
+                "--budget-day", "2026-07-20",
+                "--product-daily-cap-micro-usd", "100000000",
+                "--ticket-cap-micro-usd", "100000000",
+                "--machine-daily-cap-micro-usd", "100000000",
                 "--now", 100,
             )
         barrier = threading.Barrier(3)
@@ -255,6 +273,79 @@ class ProviderCoordinatorTest(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(sorted(item["admitted"] for item in outputs), [False, True])
+
+    def test_seven_simultaneous_reservations_admit_exactly_six(self):
+        barrier = threading.Barrier(8)
+        outputs = []
+
+        def reserve(number):
+            barrier.wait()
+            outputs.append(self.reserve(
+                f"parallel-{number}",
+                operation=f"parallel-reserve-{number}",
+                now=200,
+            ))
+
+        threads = [threading.Thread(target=reserve, args=(number,)) for number in range(7)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(
+            sorted(item["admitted"] for item in outputs),
+            [False, True, True, True, True, True, True],
+        )
+        status = self.json_command("status")
+        self.assertEqual(status["counts"], {"prepared": 1, "reserved": 6})
+
+    def test_parallel_budget_reservations_prevent_overspend(self):
+        barrier = threading.Barrier(4)
+        outputs = []
+
+        def reserve(number):
+            barrier.wait()
+            outputs.append(self.reserve(
+                f"budget-{number}",
+                operation=f"budget-reserve-{number}",
+                reserve_micro_usd=100,
+                ticket=f"T-{200 + number}",
+                product_cap=200,
+                ticket_cap=200,
+                machine_cap=1000,
+            ))
+
+        threads = [threading.Thread(target=reserve, args=(number,)) for number in range(3)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(
+            sorted(item["admitted"] for item in outputs), [False, True, True]
+        )
+        denied = next(item for item in outputs if not item["admitted"])
+        self.assertIn(
+            {"limit": "budget_micro_usd", "scope": "product_day"},
+            denied["denials"],
+        )
+
+        admitted = [item["attempt"]["attempt_id"] for item in outputs if item["admitted"]]
+        self.transition(
+            "terminalize", admitted[0], 2, "budget-terminal", 201,
+            "--result", "succeeded", "--charge-micro-usd", "0",
+        )
+        blocked_attempt = denied["attempt"]["attempt_id"]
+        retry = self.json_command(
+            "admit",
+            "--operation-id", "budget-retry",
+            "--attempt-id", blocked_attempt,
+            "--expected-version", 1,
+            "--policy", self.policy,
+            "--now", 202,
+        )
+        self.assertTrue(retry["admitted"])
 
     def test_database_and_policy_paths_fail_closed(self):
         self.reserve("secure")

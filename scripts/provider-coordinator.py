@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import datetime
 import hashlib
 import json
 import os
@@ -20,7 +21,10 @@ POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 OUTPUT_SCHEMA = "factory-provider-coordinator/v1"
 APPLICATION_ID = 0x4E595343
 ACTIVE_STATES = ("reserved", "GO", "submitted")
-SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}$")
+TERMINAL_RESULTS = frozenset(
+    ("succeeded", "cancelled", "failed_pre_go", "failed", "capacity_denied")
+)
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$")
 OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 MAX_MONEY = 10**15
 MAX_WINDOW = 7 * 24 * 60 * 60
@@ -53,6 +57,18 @@ def validate_money(value):
         raise CoordinatorError("reserve_micro_usd must be an integer")
     if value < 0 or value > MAX_MONEY:
         raise CoordinatorError("reserve_micro_usd is out of range")
+    return value
+
+
+def validate_day(value):
+    if not isinstance(value, str):
+        raise CoordinatorError("budget_day is invalid")
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise CoordinatorError("budget_day is invalid") from exc
+    if parsed.isoformat() != value:
+        raise CoordinatorError("budget_day is invalid")
     return value
 
 
@@ -207,6 +223,23 @@ CREATE INDEX IF NOT EXISTS attempts_active
   ON attempts(state, provider_family, account_route);
 CREATE INDEX IF NOT EXISTS attempts_starts
   ON attempts(admitted_at, provider_family, account_route);
+CREATE TABLE IF NOT EXISTS attempt_budgets (
+  attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+  product_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  budget_day TEXT NOT NULL,
+  product_daily_cap_micro_usd INTEGER NOT NULL,
+  ticket_cap_micro_usd INTEGER NOT NULL,
+  machine_daily_cap_micro_usd INTEGER NOT NULL,
+  charge_micro_usd INTEGER,
+  CHECK(length(budget_day) = 10),
+  CHECK(product_daily_cap_micro_usd BETWEEN 0 AND 1000000000000000),
+  CHECK(ticket_cap_micro_usd BETWEEN 0 AND 1000000000000000),
+  CHECK(machine_daily_cap_micro_usd BETWEEN 0 AND 1000000000000000),
+  CHECK(charge_micro_usd IS NULL OR charge_micro_usd BETWEEN 0 AND 1000000000000000)
+) STRICT;
+CREATE INDEX IF NOT EXISTS attempt_budgets_scope
+  ON attempt_budgets(budget_day, product_id, ticket_id);
 CREATE TABLE IF NOT EXISTS operations (
   operation_id TEXT PRIMARY KEY,
   command TEXT NOT NULL,
@@ -274,10 +307,16 @@ def row_result(row):
 
 def attempt(connection, attempt_id):
     row = connection.execute(
-        """SELECT attempt_id,provider_family,account_route,reserve_micro_usd,
-                  state,version,prepared_at,admitted_at,go_at,submitted_at,
-                  terminal_at,terminal_result,policy_sha256,updated_at
-           FROM attempts WHERE attempt_id=?""",
+        """SELECT a.attempt_id,a.provider_family,a.account_route,
+                  a.reserve_micro_usd,a.state,a.version,a.prepared_at,
+                  a.admitted_at,a.go_at,a.submitted_at,a.terminal_at,
+                  a.terminal_result,a.policy_sha256,a.updated_at,
+                  b.product_id,b.ticket_id,b.budget_day,
+                  b.product_daily_cap_micro_usd,b.ticket_cap_micro_usd,
+                  b.machine_daily_cap_micro_usd,b.charge_micro_usd
+           FROM attempts AS a
+           JOIN attempt_budgets AS b ON b.attempt_id=a.attempt_id
+           WHERE a.attempt_id=?""",
         (attempt_id,),
     ).fetchone()
     if row is None:
@@ -328,6 +367,24 @@ def prepare_mutation(connection, values, now):
         )
         if expected != actual:
             raise CoordinatorError("attempt_id conflicts with an existing attempt")
+        existing_budget = connection.execute(
+            "SELECT * FROM attempt_budgets WHERE attempt_id=?",
+            (values["attempt_id"],),
+        ).fetchone()
+        expected_budget = (
+            values["product_id"], values["ticket_id"], values["budget_day"],
+            values["product_daily_cap_micro_usd"], values["ticket_cap_micro_usd"],
+            values["machine_daily_cap_micro_usd"],
+        )
+        actual_budget = (
+            existing_budget["product_id"], existing_budget["ticket_id"],
+            existing_budget["budget_day"],
+            existing_budget["product_daily_cap_micro_usd"],
+            existing_budget["ticket_cap_micro_usd"],
+            existing_budget["machine_daily_cap_micro_usd"],
+        )
+        if expected_budget != actual_budget:
+            raise CoordinatorError("attempt_id conflicts with an existing budget binding")
         return row_result(attempt(connection, values["attempt_id"]))
     connection.execute(
         """INSERT INTO attempts(
@@ -337,6 +394,19 @@ def prepare_mutation(connection, values, now):
         (
             values["attempt_id"], values["provider_family"], values["account_route"],
             values["reserve_micro_usd"], now, now,
+        ),
+    )
+    connection.execute(
+        """INSERT INTO attempt_budgets(
+             attempt_id,product_id,ticket_id,budget_day,
+             product_daily_cap_micro_usd,ticket_cap_micro_usd,
+             machine_daily_cap_micro_usd)
+           VALUES(?,?,?,?,?,?,?)""",
+        (
+            values["attempt_id"], values["product_id"], values["ticket_id"],
+            values["budget_day"], values["product_daily_cap_micro_usd"],
+            values["ticket_cap_micro_usd"],
+            values["machine_daily_cap_micro_usd"],
         ),
     )
     return row_result(attempt(connection, values["attempt_id"]))
@@ -383,6 +453,34 @@ def limit_checks(connection, policy, provider_family, account_route, now):
     return denials
 
 
+def budget_checks(connection, row):
+    scopes = [
+        ("machine_day", "", (), row["machine_daily_cap_micro_usd"]),
+        ("product_day", " AND b.product_id=?", (row["product_id"],),
+         row["product_daily_cap_micro_usd"]),
+        ("ticket", " AND b.product_id=? AND b.ticket_id=?",
+         (row["product_id"], row["ticket_id"]), row["ticket_cap_micro_usd"]),
+    ]
+    denials = []
+    for name, predicate, values, cap in scopes:
+        spent = connection.execute(
+            """SELECT coalesce(sum(
+                   CASE WHEN a.state='terminal'
+                        THEN b.charge_micro_usd ELSE a.reserve_micro_usd END
+                 ),0)
+               FROM attempts AS a
+               JOIN attempt_budgets AS b ON b.attempt_id=a.attempt_id
+               WHERE b.budget_day=?
+                 AND (a.state IN ('reserved','GO','submitted')
+                      OR (a.state='terminal' AND b.charge_micro_usd IS NOT NULL))"""
+            + predicate,
+            (row["budget_day"], *values),
+        ).fetchone()[0]
+        if spent + row["reserve_micro_usd"] > cap:
+            denials.append({"limit": "budget_micro_usd", "scope": name})
+    return denials
+
+
 def admit_mutation(connection, attempt_id, expected_version, policy, policy_hash, now):
     row = attempt(connection, attempt_id)
     if row["state"] != "prepared":
@@ -392,6 +490,7 @@ def admit_mutation(connection, attempt_id, expected_version, policy, policy_hash
     denials = limit_checks(
         connection, policy, row["provider_family"], row["account_route"], now
     )
+    denials.extend(budget_checks(connection, row))
     if denials:
         return {
             "admitted": False,
@@ -416,7 +515,9 @@ def admit_mutation(connection, attempt_id, expected_version, policy, policy_hash
     }
 
 
-def transition_mutation(connection, attempt_id, expected_version, target, now, result=None):
+def transition_mutation(
+    connection, attempt_id, expected_version, target, now, result=None, charge=None
+):
     row = attempt(connection, attempt_id)
     allowed = {
         "GO": ("reserved",),
@@ -427,6 +528,8 @@ def transition_mutation(connection, attempt_id, expected_version, target, now, r
         raise CoordinatorError("attempt version compare-and-swap failed")
     if row["state"] not in allowed:
         raise CoordinatorError(f"attempt cannot transition from {row['state']} to {target}")
+    if target == "terminal":
+        charge = row["reserve_micro_usd"] if charge is None else validate_money(charge)
     timestamps = {
         "GO": ("go_at",),
         "submitted": ("submitted_at",),
@@ -445,6 +548,14 @@ def transition_mutation(connection, attempt_id, expected_version, target, now, r
     ).rowcount
     if changed != 1:
         raise CoordinatorError("attempt changed during transition")
+    if target == "terminal":
+        changed = connection.execute(
+            """UPDATE attempt_budgets SET charge_micro_usd=?
+               WHERE attempt_id=? AND charge_micro_usd IS NULL""",
+            (charge, attempt_id),
+        ).rowcount
+        if changed != 1:
+            raise CoordinatorError("attempt charge changed during transition")
     return row_result(attempt(connection, attempt_id))
 
 
@@ -454,6 +565,16 @@ def common_attempt_values(args):
         "provider_family": validate_id(args.provider_family, "provider_family"),
         "account_route": validate_id(args.account_route, "account_route"),
         "reserve_micro_usd": validate_money(args.reserve_micro_usd),
+        "product_id": validate_id(args.product_id, "product_id"),
+        "ticket_id": validate_id(args.ticket_id, "ticket_id"),
+        "budget_day": validate_day(args.budget_day),
+        "product_daily_cap_micro_usd": validate_money(
+            args.product_daily_cap_micro_usd
+        ),
+        "ticket_cap_micro_usd": validate_money(args.ticket_cap_micro_usd),
+        "machine_daily_cap_micro_usd": validate_money(
+            args.machine_daily_cap_micro_usd
+        ),
     }
 
 
@@ -512,16 +633,20 @@ def transition_command(connection, args, target):
     attempt_id = validate_id(args.attempt_id, "attempt_id")
     now = now_value(args)
     result = getattr(args, "result", None)
-    if result is not None:
-        validate_id(result, "terminal result")
+    if result is not None and result not in TERMINAL_RESULTS:
+        raise CoordinatorError("terminal result is unsupported")
+    charge = getattr(args, "charge_micro_usd", None)
+    if charge is not None:
+        charge = validate_money(charge)
     request = {
         "attempt_id": attempt_id, "expected_version": args.expected_version,
-        "now": args.now, "target": target, "result": result,
+        "now": args.now, "target": target, "result": result, "charge": charge,
     }
     return mutate(
         connection, args.operation_id, target.lower(), request,
         lambda: transition_mutation(
-            connection, attempt_id, args.expected_version, target, now, result
+            connection, attempt_id, args.expected_version, target, now, result,
+            charge,
         ),
     )
 
@@ -530,12 +655,12 @@ def status_command(connection, args):
     if args.attempt_id:
         rows = [attempt(connection, validate_id(args.attempt_id, "attempt_id"))]
     else:
-        rows = connection.execute(
-            """SELECT attempt_id,provider_family,account_route,reserve_micro_usd,
-                      state,version,prepared_at,admitted_at,go_at,submitted_at,
-                      terminal_at,terminal_result,policy_sha256,updated_at
-               FROM attempts ORDER BY attempt_id"""
-        ).fetchall()
+        rows = [
+            attempt(connection, row[0])
+            for row in connection.execute(
+                "SELECT attempt_id FROM attempts ORDER BY attempt_id"
+            ).fetchall()
+        ]
     counts = dict(
         connection.execute(
             "SELECT state,count(*) FROM attempts GROUP BY state ORDER BY state"
@@ -573,7 +698,7 @@ def reconcile_command(connection, args):
             raise CoordinatorError("reconciliation repeats an attempt")
         seen.add(attempt_id)
         outcome = item["outcome"]
-        if outcome not in {"succeeded", "terminal", "cancelled", "failed", "unknown"}:
+        if outcome not in {"succeeded", "cancelled", "failed", "unknown"}:
             raise CoordinatorError("reconciliation outcome is invalid")
         if isinstance(item["expected_version"], bool) or not isinstance(item["expected_version"], int):
             raise CoordinatorError("reconciliation expected_version is invalid")
@@ -632,6 +757,16 @@ def parser():
         command.add_argument("--provider-family", required=True)
         command.add_argument("--account-route", required=True)
         command.add_argument("--reserve-micro-usd", required=True, type=int)
+        command.add_argument("--product-id", required=True)
+        command.add_argument("--ticket-id", required=True)
+        command.add_argument("--budget-day", required=True)
+        command.add_argument(
+            "--product-daily-cap-micro-usd", required=True, type=int
+        )
+        command.add_argument("--ticket-cap-micro-usd", required=True, type=int)
+        command.add_argument(
+            "--machine-daily-cap-micro-usd", required=True, type=int
+        )
     prepare.set_defaults(handler=prepare_command)
     reserve.add_argument("--policy", required=True)
     reserve.set_defaults(handler=reserve_command)
@@ -655,6 +790,7 @@ def parser():
     terminal.add_argument("--attempt-id", required=True)
     terminal.add_argument("--expected-version", required=True, type=int)
     terminal.add_argument("--result", required=True)
+    terminal.add_argument("--charge-micro-usd", required=True, type=int)
     terminal.set_defaults(
         handler=lambda connection, args:
         transition_command(connection, args, "terminal")

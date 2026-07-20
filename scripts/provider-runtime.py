@@ -15,7 +15,7 @@ from typing import Any
 
 
 OUTPUT_SCHEMA = "nysa.software-factory.provider-runtime/v1"
-REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v1"
+REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v2"
 MAX_JSON = 1_000_000
 
 
@@ -111,6 +111,12 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "--provider-family", args.provider_family,
         "--account-route", args.account_route,
         "--reserve-micro-usd", str(args.reserve_micro_usd),
+        "--product-id", args.product_id,
+        "--ticket-id", request["ticket"],
+        "--budget-day", args.budget_day,
+        "--product-daily-cap-micro-usd", str(args.product_daily_cap_micro_usd),
+        "--ticket-cap-micro-usd", str(args.ticket_cap_micro_usd),
+        "--machine-daily-cap-micro-usd", str(args.machine_daily_cap_micro_usd),
         "--policy", str(args.policy),
     )
     if not reservation.get("admitted"):
@@ -158,6 +164,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "--attempt-id", attempt_id,
         "--expected-version", "4",
         "--result", terminal_result,
+        "--charge-micro-usd", str(args.reserve_micro_usd),
     )
     return {
         "admitted": True,
@@ -208,6 +215,7 @@ def cancel(args: argparse.Namespace) -> dict[str, Any]:
         "--attempt-id", args.attempt_id,
         "--expected-version", str(attempt["version"]),
         "--result", "cancelled",
+        "--charge-micro-usd", str(attempt["reserve_micro_usd"]),
     )
     return {
         "attempt_id": args.attempt_id,
@@ -235,6 +243,11 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--provider-family", required=True)
     run.add_argument("--account-route", required=True)
     run.add_argument("--reserve-micro-usd", required=True, type=int)
+    run.add_argument("--product-id", required=True)
+    run.add_argument("--budget-day", required=True)
+    run.add_argument("--product-daily-cap-micro-usd", required=True, type=int)
+    run.add_argument("--ticket-cap-micro-usd", required=True, type=int)
+    run.add_argument("--machine-daily-cap-micro-usd", required=True, type=int)
     run.add_argument("--runtime-timeout", type=float, default=30)
     run.add_argument("--timeout", type=float, default=900)
     run.add_argument("--memory", default="1g")

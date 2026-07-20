@@ -24,7 +24,7 @@ import time
 from typing import Any
 
 
-REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v1"
+REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v2"
 RESULT_SCHEMA = "nysa.software-factory.provider-execution-result/v1"
 IDENTITY_SCHEMA = "nysa.software-factory.provider-container-identity/v1"
 MODES = ("legacy-serialized", "isolated-v1")
@@ -73,7 +73,11 @@ def digest(raw: bytes) -> str:
 
 def read_json(path: Path, maximum: int) -> tuple[dict[str, Any], bytes]:
     before = path.lstat()
-    if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_size > maximum
+    ):
         raise ExecutorError(f"{path.name} is missing, unsafe, or oversized")
     raw = path.read_bytes()
     after = path.lstat()
@@ -81,6 +85,8 @@ def read_json(path: Path, maximum: int) -> tuple[dict[str, Any], bytes]:
         before.st_dev != after.st_dev
         or before.st_ino != after.st_ino
         or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_ctime_ns != after.st_ctime_ns
     ):
         raise ExecutorError(f"{path.name} changed while reading")
     try:
@@ -144,14 +150,26 @@ def validate_request(value: dict[str, Any], mode: str) -> None:
 
 def regular_file(path: Path, maximum: int) -> tuple[bytes, str]:
     before = path.lstat()
-    if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_size > maximum
+    ):
         raise ExecutorError(f"{path.name} is unsafe or oversized")
     raw = path.read_bytes()
     after = path.lstat()
-    if (before.st_dev, before.st_ino, before.st_size) != (
+    if (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    ) != (
         after.st_dev,
         after.st_ino,
         after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
     ):
         raise ExecutorError(f"{path.name} changed while reading")
     return raw, digest(raw)
@@ -162,7 +180,9 @@ def copy_source(source: Path, destination: Path, maximum: int) -> str:
     if not stat.S_ISDIR(root_info.st_mode):
         raise ExecutorError("source must be a real directory")
     destination.mkdir(mode=0o755)
-    hashed: list[bytes] = []
+    hashed: list[bytes] = [
+        b"D" + (0).to_bytes(8, "big") + (root_info.st_mode & 0o777).to_bytes(4, "big")
+    ]
     total = 0
     entries = 0
     for current, directories, files in os.walk(source, topdown=True, followlinks=False):
@@ -172,7 +192,8 @@ def copy_source(source: Path, destination: Path, maximum: int) -> str:
             if not stat.S_ISDIR((current_path / ".git").lstat().st_mode):
                 raise ExecutorError("source contains an unsafe .git entry")
             directories.remove(".git")
-        for name in list(directories):
+        directories.sort()
+        for name in directories:
             entries += 1
             if entries > MAX_TREE_ENTRIES:
                 raise ExecutorError("source contains too many entries")
@@ -180,6 +201,13 @@ def copy_source(source: Path, destination: Path, maximum: int) -> str:
             info = candidate.lstat()
             if not stat.S_ISDIR(info.st_mode):
                 raise ExecutorError(f"source contains unsafe directory entry: {candidate}")
+            relative_directory = candidate.relative_to(source).as_posix().encode("utf-8")
+            hashed.append(
+                b"D"
+                + len(relative_directory).to_bytes(8, "big")
+                + relative_directory
+                + (info.st_mode & 0o777).to_bytes(4, "big")
+            )
         target_directory = destination / relative
         target_directory.mkdir(mode=0o755, parents=True, exist_ok=True)
         for name in sorted(files):
@@ -188,17 +216,25 @@ def copy_source(source: Path, destination: Path, maximum: int) -> str:
                 raise ExecutorError("source contains too many entries")
             candidate = current_path / name
             info = candidate.lstat()
-            if not stat.S_ISREG(info.st_mode):
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise ExecutorError(f"source contains unsafe file entry: {candidate}")
             total += info.st_size
             if total > maximum:
                 raise ExecutorError("source exceeds configured size limit")
             raw = candidate.read_bytes()
             after = candidate.lstat()
-            if (info.st_dev, info.st_ino, info.st_size) != (
+            if (
+                info.st_dev,
+                info.st_ino,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            ) != (
                 after.st_dev,
                 after.st_ino,
                 after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
             ):
                 raise ExecutorError(f"source changed while copying: {candidate}")
             relative_file = candidate.relative_to(source)
@@ -208,8 +244,10 @@ def copy_source(source: Path, destination: Path, maximum: int) -> str:
             os.chmod(output, info.st_mode & 0o111 | 0o444)
             relative_raw = relative_file.as_posix().encode("utf-8")
             hashed.append(
-                len(relative_raw).to_bytes(8, "big")
+                b"F"
+                + len(relative_raw).to_bytes(8, "big")
                 + relative_raw
+                + (info.st_mode & 0o777).to_bytes(4, "big")
                 + len(raw).to_bytes(8, "big")
                 + raw
             )
@@ -314,8 +352,11 @@ def extract_artifact_archive(raw: bytes, destination: Path, maximum: int) -> Pat
                 source = archive.extractfile(member)
                 if source is None:
                     raise ExecutorError("artifact archive member cannot be read")
+                content = source.read()
+                if len(content) != member.size:
+                    raise ExecutorError("artifact archive member is truncated")
                 output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                write_exclusive(output, source.read())
+                write_exclusive(output, content)
     except (tarfile.TarError, EOFError) as error:
         raise ExecutorError("artifact archive is invalid") from error
     root = destination / "artifacts"
@@ -331,6 +372,7 @@ def bounded_process(
     timeout: float,
     output_limit: int,
     input_data: bytes | None = None,
+    new_session: bool = True,
 ) -> tuple[int, bytes, bytes, bool, bool]:
     try:
         process = subprocess.Popen(
@@ -339,7 +381,7 @@ def bounded_process(
             stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,
+            start_new_session=new_session,
         )
     except OSError as error:
         raise ExecutorError(f"could not launch command: {error}") from error
@@ -364,6 +406,26 @@ def bounded_process(
     ]
     for thread in threads:
         thread.start()
+
+    def terminate_child() -> None:
+        if process.poll() is not None:
+            return
+        try:
+            if new_session:
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+            process.wait(timeout=min(2.0, timeout))
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            try:
+                if new_session:
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            process.wait()
+
     try:
         if input_data is not None:
             assert process.stdin is not None
@@ -371,16 +433,11 @@ def bounded_process(
             process.stdin.close()
         return_code = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=min(2.0, timeout))
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
+        terminate_child()
         raise ExecutorError("provider execution timed out")
+    except BaseException:
+        terminate_child()
+        raise
     finally:
         for thread in threads:
             thread.join(timeout=2)
@@ -472,10 +529,19 @@ def result_value(
 
 
 def checked_attempt_root(root: Path) -> Path:
+    if not root.is_absolute():
+        raise ExecutorError("attempt root must be absolute")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not stat.S_ISDIR(root.lstat().st_mode):
+    info = root.lstat()
+    resolved = root.resolve(strict=True)
+    if (
+        resolved != root
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o022
+    ):
         raise ExecutorError("attempt root is unsafe")
-    return root.resolve(strict=True)
+    return resolved
 
 
 def replay(
@@ -729,7 +795,7 @@ def legacy_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[st
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         code, stdout, stderr, stdout_truncated, stderr_truncated = bounded_process(
             request["command"], cwd=source, timeout=args.timeout,
-            output_limit=args.output_bytes,
+            output_limit=args.output_bytes, new_session=False,
         )
     return result_value(
         mode="legacy-serialized",
@@ -815,6 +881,11 @@ def positive_settings(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    def interrupted(signum: int, _frame: Any) -> None:
+        raise ExecutorError(f"interrupted by signal {signum}")
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     args = parser().parse_args()
     positive_settings(args)
     if args.action == "cancel":

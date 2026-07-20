@@ -195,7 +195,9 @@ bounded envelope overrides, targeted attempt cancellation, and the loopback
 multi-project console.
 Contract `1.6.0` expands bounded coupled capacity to six and defines a
 transactional isolated-worker protocol. The provider coordinator serializes
-only short SQLite admission and terminalization transactions. The executor
+only short SQLite admission and terminalization transactions. Those
+transactions enforce machine-day, product-day, and ticket caps in integer
+micro-USD using active reservations plus terminal charges. The executor
 copies a sanitized source and immutable input into an unprivileged,
 digest-pinned ephemeral container and streams only bounded artifacts back.
 Worker identity binds ticket, role, attempt, base SHA, route, policy, image,
