@@ -159,6 +159,7 @@ TURNS=0
 CANCEL_REQUEST_FILE=""
 CANCELLATION_REASON=""
 CANCELLATION_PREVIEW_HASH=""
+CANCELLATION_ACCEPTED=0
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
@@ -1548,10 +1549,14 @@ printf '%s\n' "$RESULT" | \
   python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUNS_DIR/$RUN_ID.out"
 
 PROVIDER_STATUS="$STATUS"
-if [[ -n "$CANCELLATION_REASON" ]]; then
-  ROLE_EXIT_STATUS="cancelled"
-elif [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
+if [[ "$CONTROL_PLANE_MUTATION" -eq 0 &&
+      -n "$CANCELLATION_REASON" ]]; then
+  CANCELLATION_ACCEPTED=1
+fi
+if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+elif [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
+  ROLE_EXIT_STATUS="cancelled"
 elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
@@ -1634,12 +1639,12 @@ if [[ "$TELEMETRY_INVALID" -eq 1 ]]; then
   TURNS=0
   COST_BASIS=""
 fi
-if [[ -n "$CANCELLATION_REASON" && "$GO_ISSUED" -eq 0 ]]; then
+if [[ "$CANCELLATION_ACCEPTED" -eq 1 && "$GO_ISSUED" -eq 0 ]]; then
   COST="0"
   TURNS="0"
   COST_BASIS="launch_void"
   FINAL_ACCOUNTING_STATE="launch_void"
-elif [[ -n "$CANCELLATION_REASON" ]]; then
+elif [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
   COST="$RESERVED_USD"
   TURNS="${TURNS:-0}"
   COST_BASIS="conservative_reservation"
@@ -1674,7 +1679,7 @@ if ! provider_lock_is_owned; then
   STATUS=11
 fi
 FINAL_PHASE="completed"
-[[ -z "$CANCELLATION_REASON" ]] || FINAL_PHASE="$FINAL_ACCOUNTING_STATE"
+[[ "$CANCELLATION_ACCEPTED" -eq 0 ]] || FINAL_PHASE="$FINAL_ACCOUNTING_STATE"
 finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" "$STATUS" "$COST_BASIS" "$FINAL_PHASE"
 
 # Refresh the materialized view under the same lock used by budget checks.
@@ -1692,7 +1697,7 @@ else
 fi
 
 finalize_global_ledger
-if [[ -n "$CANCELLATION_REASON" ]]; then
+if [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
   if ! python3 "$KIT_DIR/scripts/attempt-cancel.py" receipt \
       --factory-root "$REPO_ROOT" --ticket "$TICKET" --run-id "$RUN_ID" >/dev/null; then
     echo "WARNING: cancellation receipt could not be emitted; provider lock retained" >&2

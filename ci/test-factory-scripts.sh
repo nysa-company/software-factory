@@ -1517,6 +1517,61 @@ else
   fail "targeted cancellation before adapter gate prevents task submission"
 fi
 
+# Control-plane mutation outranks a simultaneously valid cancellation.
+BEFORE_GATE_CANCEL_MUTATION="$TMP/cancel-plus-mutation-before-adapter-gate"
+write_envelope "$BEFORE_GATE_CANCEL_MUTATION"
+write_ticket "$BEFORE_GATE_CANCEL_MUTATION" T-307
+FACTORY_ROOT="$BEFORE_GATE_CANCEL_MUTATION" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=2 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-307 -- "cancel plus mutation" \
+  > "$TMP/cancel-plus-mutation-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_CANCEL_MUTATION_PID=$!
+BEFORE_GATE_CANCEL_MUTATION_RUN=""
+for _i in $(seq 1 500); do
+  BEFORE_GATE_CANCEL_MUTATION_META="$(ls \
+    "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/"*.meta 2>/dev/null || true)"
+  if [[ -n "$BEFORE_GATE_CANCEL_MUTATION_META" &&
+        -n "$(ls \
+          "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/".*.before-gate \
+          2>/dev/null || true)" ]]; then
+    BEFORE_GATE_CANCEL_MUTATION_RUN="$(
+      basename "$BEFORE_GATE_CANCEL_MUTATION_META" .meta
+    )"
+    break
+  fi
+  sleep 0.02
+done
+BEFORE_GATE_CANCEL_MUTATION_PLAN="$TMP/cancel-plus-mutation-plan.json"
+python3 "$ATTEMPT_CANCEL" preview \
+  --factory-root "$BEFORE_GATE_CANCEL_MUTATION" \
+  --ticket T-307 --run-id "$BEFORE_GATE_CANCEL_MUTATION_RUN" \
+  --reason operator_requested > "$BEFORE_GATE_CANCEL_MUTATION_PLAN"
+BEFORE_GATE_CANCEL_MUTATION_HASH="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' \
+  "$BEFORE_GATE_CANCEL_MUTATION_PLAN")"
+touch "$BEFORE_GATE_CANCEL_MUTATION/unexpected-control-mutation"
+BEFORE_GATE_CANCEL_MUTATION_APPLY=0
+python3 "$ATTEMPT_CANCEL" apply \
+  --factory-root "$BEFORE_GATE_CANCEL_MUTATION" \
+  --plan "$BEFORE_GATE_CANCEL_MUTATION_PLAN" \
+  --preview-hash "$BEFORE_GATE_CANCEL_MUTATION_HASH" --timeout 10 \
+  > "$TMP/cancel-plus-mutation-receipt.json" 2>/dev/null ||
+  BEFORE_GATE_CANCEL_MUTATION_APPLY=$?
+wait "$BEFORE_GATE_CANCEL_MUTATION_PID" 2>/dev/null || true
+if [[ "$BEFORE_GATE_CANCEL_MUTATION_APPLY" -ne 0 ]] &&
+   grep -q '^role_exit=role_exit_control_plane_mutation$' \
+     "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/$BEFORE_GATE_CANCEL_MUTATION_RUN.meta" &&
+   [[ ! -e "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/$BEFORE_GATE_CANCEL_MUTATION_RUN.cancel.json" ]] &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/"*.out; then
+  pass "control-plane mutation outranks boundary cancellation"
+else
+  fail "control-plane mutation outranks boundary cancellation" \
+    "apply status $BEFORE_GATE_CANCEL_MUTATION_APPLY"
+fi
+
 # Malformed targeted cancellation remains a hard pre-submission failure.
 BEFORE_GATE_BAD_CANCEL="$TMP/malformed-cancel-before-adapter-gate"
 write_envelope "$BEFORE_GATE_BAD_CANCEL"
