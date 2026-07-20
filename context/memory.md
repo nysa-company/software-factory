@@ -386,3 +386,9 @@ The launcher durably publishes GO before opening the adapter gate, binds output 
 Category: System change
 
 Preflight durably initializes the ignored runs root. Ticket-and-role `mkdir` claims are never reclaimed by launch and cleanup removes only its exact owner; a configured global cap holds and validates its ledger across the complete provider interval, serializing globally capped runs and restoring an owned snapshot after mutation. These are portable integrity checks, not hostile same-UID isolation, which requires an OS boundary.
+
+## 2026-07-19 — Decision 23: Claude preflight distinguishes liveness from contract drift
+
+Category: System change
+
+The sealed Claude readiness probe allows 30 seconds for local CLI startup. A timeout or nonzero help probe is unavailable, while successful help output missing a required flag is invalid and names that flag. Both states still fail pinned-route verification; the distinction prevents slow startup from being misreported as CLI contract drift.
