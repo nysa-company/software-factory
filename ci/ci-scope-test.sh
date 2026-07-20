@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CI_FORCE_FULL controls the outer suite only. Fixture cases set it explicitly
+# when they are testing forced selection.
+unset CI_FORCE_FULL
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"

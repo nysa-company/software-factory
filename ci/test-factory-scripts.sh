@@ -109,8 +109,11 @@ case "${1:-}" in
     exit "${STUB_CLAUDE_VERSION_STATUS:-0}"
     ;;
   --help)
-    printf '%s\n' --max-budget-usd --output-format --append-system-prompt --model --effort
-    exit 0 ;;
+    if [[ "${STUB_CLAUDE_HELP_EMPTY:-0}" != "1" ]]; then
+      printf '%s\n' --max-budget-usd --output-format --append-system-prompt --model
+      [[ "${STUB_CLAUDE_MISSING_EFFORT:-0}" == "1" ]] || printf '%s\n' --effort
+    fi
+    exit "${STUB_CLAUDE_HELP_STATUS:-0}" ;;
   auth) [[ "${2:-}" == "status" ]] && exit 0 ;;
   -p)
     [[ -z "${FACTORY_TEST_TRACE:-}" ]] || echo "claude-task" >> "$FACTORY_TEST_TRACE"
@@ -397,12 +400,22 @@ EMPTY_CLAUDE_VERSION_PROBE="$(PATH="$STUB_BIN:$PATH" CLAUDE_CODE_PINNED=2.1.207 
   STUB_CLAUDE_VERSION_EMPTY=1 STUB_CLAUDE_VERSION_STATUS=124 \
   bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
   _ "$ROOT/scripts/lib/backend-policy.sh")"
+MISSING_CLAUDE_FLAG_PROBE="$(PATH="$STUB_BIN:$PATH" CLAUDE_CODE_PINNED=2.1.207 \
+  STUB_CLAUDE_MISSING_EFFORT=1 \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+FAILED_CLAUDE_HELP_PROBE="$(PATH="$STUB_BIN:$PATH" CLAUDE_CODE_PINNED=2.1.207 \
+  STUB_CLAUDE_HELP_EMPTY=1 STUB_CLAUDE_HELP_STATUS=124 \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
 if [[ "$EMPTY_CODEX_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" &&
-      "$EMPTY_CLAUDE_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" ]]; then
+      "$EMPTY_CLAUDE_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" &&
+      "$MISSING_CLAUDE_FLAG_PROBE" == "INVALID:contract_mismatch_missing_effort" &&
+      "$FAILED_CLAUDE_HELP_PROBE" == "UNAVAILABLE:help_probe_failed" ]]; then
   pass "empty primary version probes permit startup fallback"
 else
   fail "empty primary version probes permit startup fallback" \
-    "codex=$EMPTY_CODEX_VERSION_PROBE claude=$EMPTY_CLAUDE_VERSION_PROBE"
+    "codex=$EMPTY_CODEX_VERSION_PROBE claude=$EMPTY_CLAUDE_VERSION_PROBE missing=$MISSING_CLAUDE_FLAG_PROBE help=$FAILED_CLAUDE_HELP_PROBE"
 fi
 
 run_mock() {
