@@ -2074,11 +2074,60 @@ require_maintenance_after_lock() {
 validate_ticket_leases() {
   local product="$1" sha="$2" origin="$3"
   python3 - "$product/factory" "$sha" "$SCRIPT_ROOT/scripts/lib" "$origin" <<'PY'
-import pathlib, re, subprocess, sys
+import json, pathlib, re, subprocess, sys
 factory, candidate, lib, origin = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 sys.path.insert(0, sys.argv[3])
 from effective_ticket import ticket_branch_prefix
 from legacy_closeout import ValidationError, protected_terminal
+
+def protected_legacy_approval(ticket_id, lease, source_ref, text):
+    if source_ref != "HEAD":
+        return False
+    approvals = re.findall(r"(?mi)^Operator-Approval:\s*(.*?)\s*$", text)
+    if approvals != ["Linear"]:
+        return False
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    remote_main = subprocess.check_output([
+        "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
+        "refs/heads/main",
+    ], text=True).split()
+    if not remote_main or remote_main[0] != head:
+        return False
+    root = "factory/attestations/%s" % ticket_id
+    values = []
+    for name in ("bundle.json", "approval.json"):
+        path = root + "/" + name
+        result = subprocess.run(
+            ["git", "-C", str(repo), "show", "HEAD:" + path],
+            text=True, capture_output=True,
+        )
+        if result.returncode:
+            return False
+        try:
+            values.append(json.loads(result.stdout))
+        except json.JSONDecodeError:
+            return False
+    bundle, approval = values
+    branch = prefix + ticket_id
+    bundle_blob = subprocess.check_output([
+        "git", "-C", str(repo), "rev-parse", "HEAD:" + root + "/bundle.json",
+    ], text=True).strip()
+    return (
+        bundle.get("schema") == "nysa.software-factory.ticket-bundle/v1"
+        and approval.get("schema") == "nysa.software-factory.ticket-approval/v1"
+        and bundle.get("ticket") == approval.get("ticket") == ticket_id
+        and bundle.get("branch") == approval.get("branch") == branch
+        and bundle.get("kit_sha") == approval.get("kit_sha") == lease
+        and bundle.get("repository") == approval.get("repository")
+        and bundle.get("pr_number") == approval.get("pr_number")
+        and bundle.get("reviewed_sha") == approval.get("reviewed_sha")
+        and bundle.get("bundle_blob") == approval.get("bundle_blob")
+        and approval.get("bundle_attestation_blob") == bundle_blob
+        and re.fullmatch(r"[0-9a-f]{40}", bundle.get("reviewed_sha", ""))
+        and re.fullmatch(r"[0-9a-f]{40}", bundle.get("bundle_blob", ""))
+    )
 
 tickets = factory / "tickets"
 repo = factory.parent
@@ -2191,6 +2240,10 @@ for ticket_id in sorted(ticket_ids):
         continue
     if lease:
         if lease != candidate:
+            if state.lower() == "approved" and protected_legacy_approval(
+                ticket_id, lease, source_ref, text,
+            ):
+                continue
             raise SystemExit("%s from %s is nonterminal and leased to a different kit" % (ticket_id, source_ref))
     elif state.lower() not in ("ready", "backlog", "blocked-escalated"):
         raise SystemExit("%s from %s is in progress without a Kit-SHA lease" % (ticket_id, source_ref))

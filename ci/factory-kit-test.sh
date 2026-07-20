@@ -1183,6 +1183,44 @@ expect_failure "plain Done without protected terminal evidence blocks activation
 printf '%s\n' 'State: Backlog' > "$PRODUCT_ONE/factory/tickets/T-003.md"
 commit_all "$PRODUCT_ONE" "restore nonterminal backlog fixture"
 push_main "$PRODUCT_ONE"
+printf '%s\n' '# T-005' 'State: Approved' 'Operator-Approval: Linear' \
+  "Kit-SHA: $SHA_A" > "$PRODUCT_ONE/factory/tickets/T-005.md"
+mkdir -p "$PRODUCT_ONE/factory/attestations/T-005"
+python3 - "$PRODUCT_ONE/factory/attestations/T-005/bundle.json" "$SHA_A" <<'PY'
+import json, pathlib, sys
+path, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
+path.write_text(json.dumps({
+    "schema": "nysa.software-factory.ticket-bundle/v1",
+    "ticket": "T-005",
+    "repository": "example/product-one",
+    "branch": "ticket/T-005",
+    "pr_number": 5,
+    "kit_sha": sha,
+    "reviewed_sha": "1" * 40,
+    "bundle_blob": "2" * 40,
+}, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+APPROVED_BUNDLE_BLOB="$(git -C "$PRODUCT_ONE" hash-object \
+  "$PRODUCT_ONE/factory/attestations/T-005/bundle.json")"
+python3 - "$PRODUCT_ONE/factory/attestations/T-005/approval.json" \
+  "$SHA_A" "$APPROVED_BUNDLE_BLOB" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+sha, attestation_blob = sys.argv[2:]
+path.write_text(json.dumps({
+    "schema": "nysa.software-factory.ticket-approval/v1",
+    "ticket": "T-005",
+    "repository": "example/product-one",
+    "branch": "ticket/T-005",
+    "pr_number": 5,
+    "kit_sha": sha,
+    "reviewed_sha": "1" * 40,
+    "bundle_blob": "2" * 40,
+    "bundle_attestation_blob": attestation_blob,
+}, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+commit_all "$PRODUCT_ONE" "protect old approved ticket evidence"
+push_main "$PRODUCT_ONE"
 expect_success "clean ticket tuple recertifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 RECEIPT_A="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
@@ -1321,6 +1359,8 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
   fail "first active generation is release a"
 
 set_ticket_lease "$PRODUCT_ONE" "$SHA_B"
+printf '%s\n' '# T-009' 'State: Approved' 'Operator-Approval: Linear' \
+  "Kit-SHA: $SHA_A" > "$PRODUCT_ONE/factory/tickets/T-009.md"
 commit_all "$PRODUCT_ONE" "lease registered planning ticket to release b"
 push_main "$PRODUCT_ONE"
 LEASE_BRANCH_WORKTREE="$TMP/product-one-ticket-T-006"
@@ -1331,6 +1371,16 @@ printf '%s\n' '# T-006' 'State: Planning' "Kit-SHA: $SHA_A" > \
 commit_all "$LEASE_BRANCH_WORKTREE" "add branch-only ticket lease fixture"
 git -C "$LEASE_BRANCH_WORKTREE" push -q -u origin ticket/T-006
 set_pin "$PRODUCT_ONE" "$SHA_B"
+expect_success "candidate with unattested old approved ticket can certify" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
+RECEIPT_UNATTESTED_APPROVED="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_failure "old approved ticket without protected attestations blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_UNATTESTED_APPROVED"
+
+git -C "$PRODUCT_ONE" rm -q factory/tickets/T-009.md
+commit_all "$PRODUCT_ONE" "remove unattested approved ticket fixture"
+push_main "$PRODUCT_ONE"
 expect_success "candidate with old ticket lease can certify" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_WRONG_LEASE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
