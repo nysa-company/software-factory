@@ -17,23 +17,24 @@ directly. Begin each session by selecting the named project and running:
 ~/.factory/bin/factory-launch <project> doctor --json
 ```
 
-Contracts `1.2.0` through `1.5.0` require the exact ticket worktree for every decision:
+Contracts `1.2.0` through `1.6.0` require the exact ticket worktree for every decision:
 
 ```text
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json
 ~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --role <next-stage-role> --workdir <ticket-worktree> --json
 ```
 
-Contract `1.5.0` requires the exact next-stage role in preflight so its displayed
+Contracts `1.5.0` and `1.6.0` require the exact next-stage role in preflight so its displayed
 envelope matches the values reserved by `run`.
 
-Contracts `1.2.0` through `1.5.0` inherit contract `1.1.0` lease behavior unchanged. If one
-reports a concurrency limit of two, use its claim, renew, and release commands
-and pass the matching opaque lease to every preflight, next-stage, and run
-command and every contract-1.3-or-newer ticket attestation. Never persist or disclose a
-lease ID.
+Contracts `1.2.0` through `1.5.0` retain contract `1.1.0` lease behavior
+unchanged and accept no capacity above four. Contract `1.6.0` accepts up to six.
+When one reports a concurrency limit greater than one, use its claim, renew,
+and release commands and pass the matching opaque lease to every preflight,
+next-stage, and run command and every contract-1.3-or-newer ticket attestation.
+Never persist or disclose a lease ID.
 
-Under contracts `1.2.0` through `1.5.0`, invoke only the launcher's trusted mutation commands:
+Under contracts `1.2.0` through `1.6.0`, invoke only the launcher's trusted mutation commands:
 
 ```text
 ~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action materialize --json
@@ -46,7 +47,9 @@ Use `ticket-state` only for ordinary reconciled operator fields or
 sequencer-directed role stages; it refuses evidence-sensitive transitions.
 Contract 1.3 uses `ticket-attest` for bundle, approval/auto-merge, and Done
 closeout. Pass the matching in-memory lease when concurrency is greater than
-one. Multiple leases do not bypass the product-wide provider lock. These
+one. The ticket setting is the coupled worktree/provider capacity; there is no
+second provider-capacity setting. Multiple leases do not bypass the retained
+product-wide provider lock until isolated runtime integration is enabled. These
 commands own their artifacts; never hand-edit ticket state or
 ledger rows. Done also owns the exact factory metadata/accounting PR and its
 protected auto-merge request; there is no second business approval or manual

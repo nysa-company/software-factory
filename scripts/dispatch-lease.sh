@@ -46,7 +46,7 @@ acquire() {
 }
 
 MAXIMUM="$(factory_dispatch_max_tickets "$ROOT" 2>/dev/null)" || {
-  echo "MAX_CONCURRENT_TICKETS must be defined at most once as an integer from 1 through 4" >&2
+  factory_dispatch_capacity_error >&2
   exit 3
 }
 [[ "$MAXIMUM" -gt 1 ]] || { echo "bounded dispatcher concurrency is not enabled" >&2; exit 3; }

@@ -68,7 +68,7 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.5.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.6.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
@@ -82,7 +82,7 @@ Contract versions `1.0.0` through `1.5.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Under Contract 1.5, pass the exact role returned by `next-stage` to `preflight`;
+Under Contracts 1.5 and 1.6, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the
 one reserved by `run`.
 
@@ -118,18 +118,21 @@ is enforced, and a one-use Linear comment binds the validated partial-work
 snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
-Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default. A product may set
-`MAX_CONCURRENT_TICKETS` to an integer from `2` through `4`; the dispatcher
-then uses `claim`, `renew`, and `release`, and supplies the matching `--lease`
-to preflight, next-stage, run, and ticket-attest. Capacity refusal is
-deterministic, and duplicate ticket or lease identity fails closed.
+Contracts `1.1.0` through `1.6.0` keep one-ticket behavior by default.
+Contracts 1.1 through 1.5 accept `MAX_CONCURRENT_TICKETS` only from `1` through
+`4`; Contract 1.6 accepts `1` through `6`. Above one, the dispatcher uses
+`claim`, `renew`, and `release`, and supplies the matching `--lease` to
+preflight, next-stage, run, and ticket-attest. Capacity refusal is deterministic,
+and duplicate ticket or lease identity fails closed.
 Maintenance blocks claims and renewals but matching owners may still release
 leases so the product can drain. Activation and rollback refuse until all
 leases are gone. Leases expire after 15 minutes unless renewed, but expiration
 never makes them available to another dispatcher and a stale record still
-occupies capacity. The product-wide provider lock remains held for each full
-provider interval, so increasing this setting does not enable simultaneous
-model-provider calls. Under
+occupies capacity. This one product setting is the coupled ticket-worktree and
+provider-call capacity; there is no separate provider-capacity setting. The
+product-wide provider lock remains held for each full provider interval, so
+increasing capacity does not enable simultaneous model-provider calls until
+isolated runtime integration is enabled. Under
 maintenance, recover a stale record explicitly with:
 
 ```bash

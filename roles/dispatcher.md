@@ -74,3 +74,4 @@ Ticket T-102 sits in Ready. Correct dispatch: resolve the project contract, crea
 - v14: contract 1.3 adds evidence-bound bundle, Linear approval/protected auto-merge, and post-merge Done closeout attestations.
 - v15: sealed model portfolios are operator-owned and pinned with Kit-SHA as one pushed ticket transaction; roles consume exact routes and never re-resolve or retry post-submission.
 - v16: bounded dispatcher capacity accepts two through four ticket leases while the product-wide provider interval remains serialized.
+- v17: Contract 1.6 expands the single coupled worktree/provider capacity to six while retaining the provider lock until isolated runtime integration.

@@ -1,11 +1,28 @@
 #!/usr/bin/env bash
 # Shared validation for bounded dispatcher ticket leases.
 
+factory_dispatch_capacity_limit() {
+  local contract="${1:-${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}}"
+  if [[ "$contract" == "1.6.0" ]]; then
+    printf '6\n'
+  else
+    printf '4\n'
+  fi
+}
+
+factory_dispatch_capacity_error() {
+  local contract="${1:-}"
+  printf 'MAX_CONCURRENT_TICKETS must be defined at most once as an integer from 1 through %s\n' \
+    "$(factory_dispatch_capacity_limit "$contract")"
+}
+
 factory_dispatch_max_tickets() {
-  python3 - "$1/factory/PROJECT.env" <<'PY'
+  local contract="${2:-}"
+  python3 - "$1/factory/PROJECT.env" "$(factory_dispatch_capacity_limit "$contract")" <<'PY'
 import pathlib, re, sys
 
 path = pathlib.Path(sys.argv[1])
+maximum = int(sys.argv[2])
 value = "1"
 seen = 0
 if path.exists() or path.is_symlink():
@@ -15,8 +32,10 @@ if path.exists() or path.is_symlink():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        match = re.fullmatch(r"(?:export\s+)?MAX_CONCURRENT_TICKETS\s*=\s*([1-4])", line)
+        match = re.fullmatch(r"(?:export\s+)?MAX_CONCURRENT_TICKETS\s*=\s*([1-9][0-9]*)", line)
         if match:
+            if int(match.group(1)) > maximum:
+                raise SystemExit(1)
             seen += 1
             value = match.group(1)
         elif re.match(r"(?:export\s+)?MAX_CONCURRENT_TICKETS\s*=", line):
@@ -42,7 +61,7 @@ factory_dispatch_lease_file() {
 factory_dispatch_require_lease() {
   local root="$1" ticket="$2" lease_id="${3:-}" maximum file
   maximum="$(factory_dispatch_max_tickets "$root" 2>/dev/null)" || {
-    FACTORY_DISPATCH_LEASE_ERROR="MAX_CONCURRENT_TICKETS must be defined at most once as an integer from 1 through 4"
+    FACTORY_DISPATCH_LEASE_ERROR="$(factory_dispatch_capacity_error)"
     return 1
   }
   [[ "$maximum" -gt 1 ]] || return 0

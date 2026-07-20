@@ -160,7 +160,8 @@ print(json.load(open(sys.argv[1]))["contract_version"])
 PY
 )"
   if [[ "$contract" == "1.2.0" || "$contract" == "1.3.0" ||
-        "$contract" == "1.4.0" || "$contract" == "1.5.0" ]]; then
+        "$contract" == "1.4.0" || "$contract" == "1.5.0" ||
+        "$contract" == "1.6.0" ]]; then
     origin="$(git -C "$product" remote get-url --push origin)"
     product_tree="$(git -C "$product" rev-parse 'HEAD^{tree}')"
     receipt_id="$(printf '%s' "$sha|$tree|$product|$origin" | shasum -a 256 | awk '{print $1}')"
@@ -244,7 +245,7 @@ run_launcher() {
 }
 
 create_test_release() {
-  local release="$1" label="$2" action="$3" contract="${4:-1.5.0}"
+  local release="$1" label="$2" action="$3" contract="${4:-1.6.0}"
   mkdir -p "$release/integrations/hermes" "$release/scripts/lib" "$release/roles"
   printf '*.out\n' > "$release/.gitignore"
   printf 'tracked ignored release evidence\n' > "$release/tracked.out"
@@ -261,7 +262,7 @@ PY
 import pathlib, sys
 path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
 text = path.read_text()
-old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.5.0}"'
+old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.6.0}"'
 new = f'CONTRACT_VERSION="${{FACTORY_RELEASE_CONTRACT_VERSION:-{contract}}}"'
 if text.count(old) != 1:
     raise SystemExit("factory-doctor contract fixture is ambiguous")
@@ -518,7 +519,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.5.0"
+assert data["contract_version"] == "1.6.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -1870,7 +1871,7 @@ REAL_MANIFEST="$(awk -F= '$1=="ticket" && $2=="T-777" {print FILENAME}' \
   "$LAUNCH_PRODUCT/factory/runs/"*.meta | tail -1)"
 grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release SHA"
 grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release tree"
-grep -qF "contract_version=1.5.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
+grep -qF "contract_version=1.6.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
 grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" || fail "real sealed run manifest omitted physical release path"
 grep -qF "role=planner" "$REAL_MANIFEST" || fail "real sealed run did not use the sequencer-authorized role"
 grep -qF "adapter=mock" "$REAL_MANIFEST" || fail "isolated launcher did not enforce the mock adapter"
@@ -1929,7 +1930,7 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.5.0"
+assert contract["contract_version"] == "1.6.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
@@ -2031,9 +2032,12 @@ assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert contract["concurrency"]["default"] == 1
-assert contract["concurrency"]["maximum"] == 4
+assert contract["concurrency"]["maximum"] == 6
 assert contract["concurrency"]["enabled_value"] == 2
-assert contract["concurrency"]["enabled_values"] == [2, 3, 4]
+assert contract["concurrency"]["enabled_values"] == [2, 3, 4, 5, 6]
+assert contract["concurrency"]["capacity_scope"] == \
+    "coupled ticket-worktree and provider-call capacity"
+assert "provider lock" in contract["concurrency"]["parallel_execution_gate"]
 assert contract["concurrency"]["lease_required_when_greater_than"] == 1
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
@@ -2153,7 +2157,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
+assert "## 1.6.0" in changelog and "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [
@@ -2180,8 +2184,11 @@ skill = open(
     encoding="utf-8",
 ).read()
 assert "factory-launch <project> reorder-test-fixes" in skill
-assert "version: 1.5.0" in skill
-assert "Contracts `1.2.0` through `1.5.0` inherit `1.1.0` lease behavior unchanged" in skill
+assert "version: 1.6.0" in skill
+assert "Contracts `1.2.0` through `1.5.0` retain `1.1.0` lease behavior unchanged" in skill
+assert re.search(
+    r"Contract `1\.6\.0` accepts a capacity from `1`\s+through `6`", skill
+)
 assert "preflight --ticket <T-NNN> --role <next-stage-role>" in skill
 assert "factory-launch <project> ticket-state" in skill
 assert "factory-launch <project> ticket-attest" in skill
@@ -2193,7 +2200,11 @@ assert "--workdir <absolute-product-worktree>" in skill
 soul = open(
     os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
 ).read()
-assert "Contracts `1.2.0` through `1.5.0` inherit contract `1.1.0` lease behavior unchanged" in soul
+assert re.search(
+    r"Contracts `1\.2\.0` through `1\.5\.0` retain contract `1\.1\.0` lease behavior\s+unchanged",
+    soul,
+)
+assert "Contract `1.6.0` accepts up to six" in soul
 assert "preflight --ticket <T-NNN> --role <next-stage-role>" in soul
 assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
 assert "factory-launch <project> ticket-state" in soul

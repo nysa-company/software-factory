@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.5.0",
+  "contract_version": "1.6.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -46,7 +46,7 @@
           "--ticket",
           "<T-NNN>"
         ],
-        "output": "one opaque ticket lease record; available when MAX_CONCURRENT_TICKETS is 2, 3, or 4"
+        "output": "one opaque ticket lease record; available when MAX_CONCURRENT_TICKETS is 2 through 6"
       },
       "renew": {
         "arguments": [
@@ -457,13 +457,17 @@
     "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
     "key": "MAX_CONCURRENT_TICKETS",
     "default": 1,
-    "maximum": 4,
+    "maximum": 6,
     "enabled_value": 2,
     "enabled_values": [
       2,
       3,
-      4
+      4,
+      5,
+      6
     ],
+    "capacity_scope": "coupled ticket-worktree and provider-call capacity",
+    "parallel_execution_gate": "the retained product-wide provider lock continues to serialize provider intervals until isolated runtime integration is enabled",
     "lease_required_when_greater_than": 1,
     "state": "PRODUCT_ROOT/factory/.dispatch-leases/<T-NNN>.json",
     "lease_ttl_seconds": 900,

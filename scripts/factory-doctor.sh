@@ -3,7 +3,7 @@
 # Public interface: factory-doctor.sh [--json] [--project <slug>]
 set -u
 
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.5.0}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.6.0}"
 DOCTOR_SCHEMA="nysa.software-factory.hermes-doctor/v1"
 SUPPORTED_HERMES_AGENT="0.18.2"
 SUPPORTED_HERMES_BUILD="2026.7.7.2"
@@ -364,7 +364,7 @@ PY
   fi
   # shellcheck disable=SC1091
   if source "$KIT_DIR/scripts/lib/dispatch-leases.sh" 2>/dev/null &&
-     MAX_CONCURRENT_TICKETS="$(factory_dispatch_max_tickets "$PRODUCT_ROOT" 2>/dev/null)"; then
+     MAX_CONCURRENT_TICKETS="$(factory_dispatch_max_tickets "$PRODUCT_ROOT" "$CONTRACT_VERSION" 2>/dev/null)"; then
     LEASE_DATA="$(python3 - "$FACTORY_DIR/.dispatch-leases" <<'PY'
 import json, pathlib, re, stat, sys, time
 

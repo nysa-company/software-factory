@@ -136,7 +136,7 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
 fi
 TERMINAL_BASIS=""
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-      "$CONTRACT_VERSION" == "1.5.0" ]]; then
+      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]]; then
   TERMINAL_BASIS="$(python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
     --terminal-basis 2>/dev/null || true)"
@@ -168,7 +168,7 @@ if [[ -n "$TERMINAL_BASIS" ]]; then
   exit 0
 fi
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-      "$CONTRACT_VERSION" == "1.5.0" ]]; then
+      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]]; then
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
   if [[ "$COMMITTED_STATE" == "done" ]]; then

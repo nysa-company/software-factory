@@ -1,20 +1,21 @@
 ---
 name: factory-dispatch
-version: 1.5.0
+version: 1.6.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
 # Factory dispatch
 
 This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
-through `1.5.0`.
+through `1.6.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
 
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
-3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, `1.4.0`, or `1.5.0` and a supported Hermes version.
+3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, `1.4.0`,
+   `1.5.0`, or `1.6.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
@@ -27,11 +28,13 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
-Contract `1.0.0`, and contracts `1.1.0` through `1.5.0` with
+Contract `1.0.0`, and contracts `1.1.0` through `1.6.0` with
 `max_concurrent_tickets: 1`, retain the original one-ticket flow below.
-Contracts `1.2.0` through `1.5.0` inherit `1.1.0` lease behavior unchanged. When one reports
-`max_concurrent_tickets` from `2` through `4`, claim no more than that many
-distinct tickets and claim each one before preflight:
+Contracts `1.2.0` through `1.5.0` retain `1.1.0` lease behavior unchanged and
+accept no capacity above four. Contract `1.6.0` accepts a capacity from `1`
+through `6`. When a supported contract reports `max_concurrent_tickets`
+greater than one, claim no more than that many distinct tickets and claim each
+one before preflight:
 
 ```text
 ~/.factory/bin/factory-launch <project> claim --ticket <T-NNN>
@@ -43,9 +46,11 @@ preflight, next-stage, and run, and release it when the ticket reaches Done or
 Blocked-Escalated. Never log, persist elsewhere, infer, retry, steal, or reuse
 a lease ID. A stale or mismatched lease is an escalation; only the operator
 may recover it under maintenance through `factory-kit recover-lease`.
-The product-wide provider lock continues to serialize complete provider
-intervals. Multiple leases permit concurrent control-plane ticket progress,
-not simultaneous model-provider calls.
+`MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity
+setting; do not infer a second provider-capacity setting. The product-wide
+provider lock remains in place, so multiple leases permit concurrent
+control-plane ticket progress but not simultaneous model-provider calls until
+isolated runtime integration enables it.
 
 For the first launch of a ticket:
 
@@ -75,7 +80,7 @@ Then preflight the exact authorized role:
 ~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --role <next-stage-role> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
 
-Contract `1.5.0` requires the exact role authorized by `next-stage` so preflight
+Contracts `1.5.0` and `1.6.0` require the exact role authorized by `next-stage` so preflight
 resolves the same role envelope used by `run`. For contract `1.2.0` or `1.3.0`,
 `--workdir <absolute-product-worktree>` is required
 immediately before `--json` in both commands. It must be the same exact ticket

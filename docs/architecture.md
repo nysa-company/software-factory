@@ -182,7 +182,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.5.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.6.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -193,6 +193,7 @@ model fallback.
 Contract `1.5.0` adds fixed operator snapshots, project-owned model policy,
 bounded envelope overrides, targeted attempt cancellation, and the loopback
 multi-project console.
+Contract `1.6.0` expands only the active bounded capacity to six.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -292,14 +293,16 @@ terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
 journals automatically.
 
-`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and accepts
-only integers from `1` through `4`. At any value above `1`, every sequencing and
-role launch requires the matching opaque record under
+`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1`. Contracts
+1.1 through 1.5 accept only integers from `1` through `4`; Contract 1.6 accepts
+`1` through `6`. At any value above `1`, every sequencing and role launch
+requires the matching opaque record under
 `factory/.dispatch-leases/`. Claims are atomic and deterministically refuse once
 the configured capacity is full. Stale records continue to consume capacity and
-are never reassigned automatically. The product-level control lock still
-serializes complete provider intervals, so four leases do not mean four
-simultaneous model-provider calls. The global ledger lock remains an additional
+are never reassigned automatically. This is the single coupled ticket-worktree
+and provider-call capacity setting. The product-level control lock is retained
+and still serializes complete provider intervals until isolated runtime
+integration enables parallel execution. The global ledger lock remains an additional
 serialization and accounting boundary when a machine cap is configured.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback

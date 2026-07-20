@@ -72,11 +72,13 @@ For every candidate that may reach production:
 Only one product activation or rollback may run at a time. Do not activate a
 second candidate while a ticket has a nonterminal lease, a run is active, or an
 activation journal is incomplete. Contract `1.1.0` remains single-ticket by
-default and permits an explicit bounded pilot from two through four tickets
-when the product sets `MAX_CONCURRENT_TICKETS` accordingly; each ticket keeps
+default. Contracts 1.1 through 1.5 permit an explicit bounded pilot up to four
+tickets, and Contract 1.6 permits up to six, when the product sets
+`MAX_CONCURRENT_TICKETS` accordingly; each ticket keeps
 its own exact branch, linked worktree, opaque lease, and sequential role flow.
-Those leases may coexist, but a product-level control lock serializes provider
-intervals until an OS-enforced writer boundary makes parallel providers safe.
+Those leases may coexist. The setting is coupled worktree/provider capacity,
+but a product-level control lock remains until isolated runtime integration
+makes parallel providers safe.
 
 ## Kit release lifecycle
 
@@ -110,7 +112,8 @@ Contract `1.1.0` preserves 1.0 behavior when `MAX_CONCURRENT_TICKETS` is absent
 or `1`; opt-in values `2` through `4` require the 1.1 launcher, profile skill,
 and dispatcher role contract to move together. Contract `1.2.0` inherits that
 lease behavior unchanged while requiring ticket worktrees for preflight and
-sequencing.
+sequencing. Contracts through `1.5.0` retain the bound of four; only Contract
+`1.6.0` accepts values `5` and `6`.
 
 **Use a repository ruleset, not classic branch protection.** Verified by live probe (2026-07-12, dispatcher trial setup): a write deploy key pushed straight through classic branch protection to `main`, and also through a ruleset whose bypass list included the repository-admin *role* (deploy keys inherit it). Deploy keys — how agent machines authenticate — are only blocked by a ruleset whose bypass list contains **no repository roles**. Probes to run after any change to these settings: agent key pushes to `main` (must be rejected), agent key pushes a ticket branch (must succeed).
 
