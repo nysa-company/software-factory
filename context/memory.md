@@ -37,8 +37,24 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Route-journal provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management, fallback, and evidence-bound ticket attestations are integrated under Hermes contract 1.4.
 - The Contract 1.3 cutover has two independent one-time formats: legacy-closeout for the exact authorized Contract 1.2 batch and terminal-backfill for the exact authorized pre-contract terminal-Done batch. Both are separate from normal attestations and route plans, become authoritative only through one manual protected product merge, and use the same fail-closed protected-main terminal reader; plain Done never suffices.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
+- The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
 
 ## Log
+
+## 2026-07-19 — Decision 49: Validated pre-submission checks get a bounded two-minute gate
+
+Category: System change
+
+Protected-history validation can legitimately exceed the original ten-second
+process-group acknowledgement window. The isolated wrapper now waits at most
+two minutes for the trusted controller's final GO gate; adapters still cannot
+start before acknowledgement, a missing controller remains a hard timeout, and
+kill, maintenance, and targeted cancellation are rechecked immediately before
+the gate opens and again by the isolated wrapper after it observes the gate.
+The wrapper's second check is the submission boundary; later controls use
+normal post-submission drain semantics. A boundary stop exempts only its exact
+control record from checkout comparison; all manifest, claim, lock, ledger, and
+unrelated checkout integrity checks still run.
 
 ## 2026-07-19 — Decision 48: Targeted PR CI and remote full-suite reuse
 

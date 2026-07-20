@@ -19,6 +19,10 @@ helper output are not compatibility promises.
 - Retains one-ticket defaults, opaque per-ticket lease validation, deterministic
   capacity refusal, stale-record recovery policy, and the product-wide provider
   interval lock; this does not enable simultaneous model-provider calls.
+- Extends the pre-submission process-group acknowledgement window to two
+  minutes so validated large-history checks can finish without starting or
+  orphaning a provider task, with kill, maintenance, and targeted cancellation
+  rechecked by both the controller and isolated wrapper before adapter spawn.
 
 ## 1.4.0 — 2026-07-18
 

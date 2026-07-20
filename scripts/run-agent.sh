@@ -147,6 +147,8 @@ ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
 TASK_SUBMITTED=0
+ADAPTER_BOUNDARY_STOPPED=0
+ADAPTER_BOUNDARY_STOP_PATH=""
 RUN_STARTED_AT=""
 TERMINAL_AT=""
 RESERVED_USD=""
@@ -157,6 +159,7 @@ TURNS=0
 CANCEL_REQUEST_FILE=""
 CANCELLATION_REASON=""
 CANCELLATION_PREVIEW_HASH=""
+CANCELLATION_ACCEPTED=0
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
@@ -226,6 +229,33 @@ meta_value() {
 registered_tracked_content() {
   "$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" diff --binary HEAD -- |
     "$FACTORY_TRUSTED_GIT_BIN" hash-object --stdin
+}
+
+registered_status_after_run() {
+  local status relative line
+  status="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
+    status --porcelain --untracked-files=all 2>/dev/null)" || return 1
+  if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 ]]; then
+    printf '%s' "$status"
+    return 0
+  fi
+  [[ -n "$ADAPTER_BOUNDARY_STOP_PATH" ]] || return 1
+  relative="$ADAPTER_BOUNDARY_STOP_PATH"
+  while IFS= read -r line; do
+    if [[ "${#line}" -ge 4 && "${line:3}" == "$relative" ]]; then
+      printf '%s' "$status"
+      return 0
+    fi
+  done <<EOF
+$REGISTERED_STATUS_BEFORE
+EOF
+  while IFS= read -r line; do
+    if [[ "${#line}" -lt 4 || "${line:3}" != "$relative" ]]; then
+      printf '%s\n' "$line"
+    fi
+  done <<EOF
+$status
+EOF
 }
 
 process_start_identity() {
@@ -595,6 +625,73 @@ terminate_run_group() {
     return 1
   fi
   RUN_GROUP_TERMINATED=1
+}
+
+stop_before_adapter_gate() {
+  if [[ -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ]]; then
+    ADAPTER_BOUNDARY_STOP_PATH="factory/runs/$RUN_ID.cancel-request.json"
+    if load_cancellation_request; then
+      echo "targeted cancellation requested before adapter gate; no task was submitted" >&2
+      STATUS=130
+    else
+      echo "malformed targeted cancellation request before adapter gate; no task was submitted" >&2
+      STATUS=11
+    fi
+  elif [[ -f "$FACTORY_DIR/KILL" ]]; then
+    ADAPTER_BOUNDARY_STOP_PATH="factory/KILL"
+    echo "KILL file appeared before adapter gate; no task was submitted" >&2
+    STATUS=4
+  elif [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+    ADAPTER_BOUNDARY_STOP_PATH="factory/MAINTENANCE"
+    echo "MAINTENANCE file appeared before adapter gate; no task was submitted" >&2
+    STATUS=4
+  else
+    return 1
+  fi
+  ADAPTER_BOUNDARY_STOPPED=1
+  terminate_run_group
+  wait "$RUN_PID" 2>/dev/null
+  return 0
+}
+
+verify_control_interval_integrity() {
+  local registered_status_after
+  if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
+      python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
+    CONTROL_PLANE_MUTATION=1
+    STATUS=11
+  fi
+  if [[ "$(active_claim_snapshot 2>/dev/null || true)" != "$ACTIVE_RUN_SNAPSHOT" ]]; then
+    echo "role_exit_control_plane_mutation: run claim changed during provider execution" >&2
+    CONTROL_PLANE_MUTATION=1
+    STATUS=11
+  fi
+  if ! provider_lock_is_owned; then
+    echo "role_exit_control_plane_mutation: provider lock changed during provider execution" >&2
+    CONTROL_PLANE_MUTATION=1
+    STATUS=11
+  fi
+  GLOBAL_STATE_MUTATED=0
+  if [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]] &&
+     { ! restore_global_if_changed || [[ "$GLOBAL_STATE_MUTATED" -eq 1 ]]; }; then
+    echo "role_exit_control_plane_mutation: global ledger or lock changed during provider execution" >&2
+    CONTROL_PLANE_MUTATION=1
+    STATUS=11
+  fi
+  registered_status_after="$(registered_status_after_run 2>/dev/null || true)"
+  if [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
+        "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)" != "$REGISTERED_HEAD_BEFORE" ||
+        "$registered_status_after" != "$REGISTERED_STATUS_BEFORE" ||
+        "$(registered_tracked_content 2>/dev/null || true)" != "$REGISTERED_CONTENT_BEFORE" ]]; then
+    if [[ "${FACTORY_TEST_MODE:-0}" == "1" ]]; then
+      printf 'test checkout status before=%q after=%q trigger=%q\n' \
+        "$REGISTERED_STATUS_BEFORE" "$registered_status_after" \
+        "$ADAPTER_BOUNDARY_STOP_PATH" >&2
+    fi
+    echo "role_exit_control_plane_mutation: registered checkout changed during provider execution" >&2
+    CONTROL_PLANE_MUTATION=1
+    STATUS=11
+  fi
 }
 
 role_remote_head() {
@@ -1258,7 +1355,9 @@ RUN_OUTPUT_TEMP=""
 # task-bearing adapters must never inherit mutation-capable state paths.
 unset FACTORY_MODEL_STATE_ROOT FACTORY_PROJECT
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
-  "$RUN_READY_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE" "$ADAPTER_SH" \
+  "$RUN_READY_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE" \
+  "$FACTORY_DIR/KILL" "$FACTORY_DIR/MAINTENANCE" "$CANCEL_REQUEST_FILE" \
+  "$ADAPTER_SH" \
   "${ADAPTER_ARGS[@]}" \
   -- "$TASK" 8<&- >&9 2>&1 &
 RUN_PID=$!
@@ -1384,6 +1483,16 @@ else
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
+      elif {
+        if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+              "${FACTORY_TEST_BEFORE_GATE_SLEEP:-0}" != "0" ]]; then
+          : > "$RUNS_DIR/.$RUN_ID.before-gate"
+          sleep "$FACTORY_TEST_BEFORE_GATE_SLEEP"
+          rm -f "$RUNS_DIR/.$RUN_ID.before-gate"
+        fi
+        stop_before_adapter_gate
+      }; then
+        verify_control_interval_integrity
       elif ! : > "$RUN_GATE_FILE"; then
         echo "could not open adapter GO gate; no task was submitted" >&2
         terminate_run_group
@@ -1397,36 +1506,13 @@ else
         if [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]]; then
           TASK_SUBMITTED=1
         fi
-        if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
-            python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
-          CONTROL_PLANE_MUTATION=1
-          STATUS=11
+        if [[ "$STATUS" -eq 123 && "$TASK_SUBMITTED" -eq 0 ]]; then
+          if ! stop_before_adapter_gate; then
+            echo "adapter boundary stopped without a valid control record" >&2
+            STATUS=11
+          fi
         fi
-        if [[ "$(active_claim_snapshot 2>/dev/null || true)" != "$ACTIVE_RUN_SNAPSHOT" ]]; then
-          echo "role_exit_control_plane_mutation: run claim changed during provider execution" >&2
-          CONTROL_PLANE_MUTATION=1
-          STATUS=11
-        fi
-        if ! provider_lock_is_owned; then
-          echo "role_exit_control_plane_mutation: provider lock changed during provider execution" >&2
-          CONTROL_PLANE_MUTATION=1
-          STATUS=11
-        fi
-        GLOBAL_STATE_MUTATED=0
-        if [[ -n "$GLOBAL_LEDGER_SNAPSHOT" ]] &&
-           { ! restore_global_if_changed || [[ "$GLOBAL_STATE_MUTATED" -eq 1 ]]; }; then
-          echo "role_exit_control_plane_mutation: global ledger or lock changed during provider execution" >&2
-          CONTROL_PLANE_MUTATION=1
-          STATUS=11
-        fi
-        if [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
-              "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)" != "$REGISTERED_HEAD_BEFORE" ||
-              "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" status --porcelain --untracked-files=all 2>/dev/null || true)" != "$REGISTERED_STATUS_BEFORE" ||
-              "$(registered_tracked_content 2>/dev/null || true)" != "$REGISTERED_CONTENT_BEFORE" ]]; then
-          echo "role_exit_control_plane_mutation: registered checkout changed during provider execution" >&2
-          CONTROL_PLANE_MUTATION=1
-          STATUS=11
-        fi
+        verify_control_interval_integrity
       fi
     fi
   fi
@@ -1463,10 +1549,14 @@ printf '%s\n' "$RESULT" | \
   python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUNS_DIR/$RUN_ID.out"
 
 PROVIDER_STATUS="$STATUS"
-if [[ -n "$CANCELLATION_REASON" ]]; then
-  ROLE_EXIT_STATUS="cancelled"
-elif [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
+if [[ "$CONTROL_PLANE_MUTATION" -eq 0 &&
+      -n "$CANCELLATION_REASON" ]]; then
+  CANCELLATION_ACCEPTED=1
+fi
+if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+elif [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
+  ROLE_EXIT_STATUS="cancelled"
 elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
@@ -1549,12 +1639,12 @@ if [[ "$TELEMETRY_INVALID" -eq 1 ]]; then
   TURNS=0
   COST_BASIS=""
 fi
-if [[ -n "$CANCELLATION_REASON" && "$GO_ISSUED" -eq 0 ]]; then
+if [[ "$CANCELLATION_ACCEPTED" -eq 1 && "$GO_ISSUED" -eq 0 ]]; then
   COST="0"
   TURNS="0"
   COST_BASIS="launch_void"
   FINAL_ACCOUNTING_STATE="launch_void"
-elif [[ -n "$CANCELLATION_REASON" ]]; then
+elif [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
   COST="$RESERVED_USD"
   TURNS="${TURNS:-0}"
   COST_BASIS="conservative_reservation"
@@ -1589,7 +1679,7 @@ if ! provider_lock_is_owned; then
   STATUS=11
 fi
 FINAL_PHASE="completed"
-[[ -z "$CANCELLATION_REASON" ]] || FINAL_PHASE="$FINAL_ACCOUNTING_STATE"
+[[ "$CANCELLATION_ACCEPTED" -eq 0 ]] || FINAL_PHASE="$FINAL_ACCOUNTING_STATE"
 finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" "$STATUS" "$COST_BASIS" "$FINAL_PHASE"
 
 # Refresh the materialized view under the same lock used by budget checks.
@@ -1607,7 +1697,7 @@ else
 fi
 
 finalize_global_ledger
-if [[ -n "$CANCELLATION_REASON" ]]; then
+if [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
   if ! python3 "$KIT_DIR/scripts/attempt-cancel.py" receipt \
       --factory-root "$REPO_ROOT" --ticket "$TICKET" --run-id "$RUN_ID" >/dev/null; then
     echo "WARNING: cancellation receipt could not be emitted; provider lock retained" >&2

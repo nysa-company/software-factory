@@ -1383,6 +1383,322 @@ else
     "status $BEFORE_GO_STATUS"
 fi
 
+# A kill published during final validation still wins before the adapter gate.
+BEFORE_GATE_KILL="$TMP/kill-before-adapter-gate"
+write_envelope "$BEFORE_GATE_KILL"
+write_ticket "$BEFORE_GATE_KILL" T-299
+FACTORY_ROOT="$BEFORE_GATE_KILL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-299 -- "before adapter gate" \
+  > "$TMP/before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_KILL_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$BEFORE_GATE_KILL/factory/runs/".*.before-gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$BEFORE_GATE_KILL/factory/KILL"
+wait "$BEFORE_GATE_KILL_PID"
+BEFORE_GATE_KILL_STATUS=$?
+if [[ "$BEFORE_GATE_KILL_STATUS" -eq 4 ]] &&
+   grep -q 'KILL file appeared before adapter gate' \
+     "$TMP/before-adapter-gate.out" &&
+   ! grep -q 'mock adapter ran task' "$BEFORE_GATE_KILL/factory/runs/"*.out; then
+  pass "kill before adapter gate prevents task submission"
+else
+  fail "kill before adapter gate prevents task submission" \
+    "status $BEFORE_GATE_KILL_STATUS: $(tr '\n' ' ' < "$TMP/before-adapter-gate.out")"
+fi
+
+# A controller-observed stop still runs the shared integrity checks.
+BEFORE_GATE_MUTATION="$TMP/controller-stop-plus-mutation"
+write_envelope "$BEFORE_GATE_MUTATION"
+write_ticket "$BEFORE_GATE_MUTATION" T-306
+FACTORY_ROOT="$BEFORE_GATE_MUTATION" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-306 -- "controller stop plus mutation" \
+  > "$TMP/controller-stop-plus-mutation.out" 2>&1 &
+BEFORE_GATE_MUTATION_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$BEFORE_GATE_MUTATION/factory/runs/".*.before-gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$BEFORE_GATE_MUTATION/factory/KILL"
+touch "$BEFORE_GATE_MUTATION/unexpected-control-mutation"
+wait "$BEFORE_GATE_MUTATION_PID"
+BEFORE_GATE_MUTATION_STATUS=$?
+if [[ "$BEFORE_GATE_MUTATION_STATUS" -eq 11 ]] &&
+   grep -q 'registered checkout changed during provider execution' \
+     "$TMP/controller-stop-plus-mutation.out" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_MUTATION/factory/runs/"*.out; then
+  pass "controller boundary stop cannot mask checkout mutation"
+else
+  fail "controller boundary stop cannot mask checkout mutation" \
+    "status $BEFORE_GATE_MUTATION_STATUS"
+fi
+
+# Maintenance published during final validation also wins before submission.
+BEFORE_GATE_MAINT="$TMP/maintenance-before-adapter-gate"
+write_envelope "$BEFORE_GATE_MAINT"
+write_ticket "$BEFORE_GATE_MAINT" T-300
+FACTORY_ROOT="$BEFORE_GATE_MAINT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-300 -- "maintenance before adapter gate" \
+  > "$TMP/maintenance-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_MAINT_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$BEFORE_GATE_MAINT/factory/runs/".*.before-gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$BEFORE_GATE_MAINT/factory/MAINTENANCE"
+wait "$BEFORE_GATE_MAINT_PID"
+BEFORE_GATE_MAINT_STATUS=$?
+if [[ "$BEFORE_GATE_MAINT_STATUS" -eq 4 ]] &&
+   grep -q 'MAINTENANCE file appeared before adapter gate' \
+     "$TMP/maintenance-before-adapter-gate.out" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_MAINT/factory/runs/"*.out; then
+  pass "maintenance before adapter gate prevents task submission"
+else
+  fail "maintenance before adapter gate prevents task submission" \
+    "status $BEFORE_GATE_MAINT_STATUS: $(tr '\n' ' ' < "$TMP/maintenance-before-adapter-gate.out")"
+fi
+
+# A valid targeted cancellation during final validation prevents submission.
+BEFORE_GATE_CANCEL="$TMP/cancel-before-adapter-gate"
+write_envelope "$BEFORE_GATE_CANCEL"
+write_ticket "$BEFORE_GATE_CANCEL" T-301
+FACTORY_ROOT="$BEFORE_GATE_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=2 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-301 -- "cancel before adapter gate" \
+  > "$TMP/cancel-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_CANCEL_PID=$!
+BEFORE_GATE_CANCEL_RUN=""
+for _i in $(seq 1 500); do
+  BEFORE_GATE_CANCEL_META="$(ls "$BEFORE_GATE_CANCEL/factory/runs/"*.meta \
+    2>/dev/null || true)"
+  if [[ -n "$BEFORE_GATE_CANCEL_META" &&
+        -n "$(ls "$BEFORE_GATE_CANCEL/factory/runs/".*.before-gate \
+          2>/dev/null || true)" ]]; then
+    BEFORE_GATE_CANCEL_RUN="$(basename "$BEFORE_GATE_CANCEL_META" .meta)"
+    break
+  fi
+  sleep 0.02
+done
+BEFORE_GATE_CANCEL_PLAN="$TMP/cancel-before-adapter-gate-plan.json"
+python3 "$ATTEMPT_CANCEL" preview --factory-root "$BEFORE_GATE_CANCEL" \
+  --ticket T-301 --run-id "$BEFORE_GATE_CANCEL_RUN" \
+  --reason operator_requested > "$BEFORE_GATE_CANCEL_PLAN"
+BEFORE_GATE_CANCEL_HASH="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' \
+  "$BEFORE_GATE_CANCEL_PLAN")"
+python3 "$ATTEMPT_CANCEL" apply --factory-root "$BEFORE_GATE_CANCEL" \
+  --plan "$BEFORE_GATE_CANCEL_PLAN" \
+  --preview-hash "$BEFORE_GATE_CANCEL_HASH" --timeout 10 \
+  > "$TMP/cancel-before-adapter-gate-receipt.json"
+wait "$BEFORE_GATE_CANCEL_PID" 2>/dev/null || true
+if grep -q 'targeted cancellation requested before adapter gate' \
+     "$TMP/cancel-before-adapter-gate.out" &&
+   grep -q '^role_exit=cancelled$' \
+     "$BEFORE_GATE_CANCEL/factory/runs/$BEFORE_GATE_CANCEL_RUN.meta" &&
+   grep -q '^task_submitted=0$' \
+     "$BEFORE_GATE_CANCEL/factory/runs/$BEFORE_GATE_CANCEL_RUN.meta" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_CANCEL/factory/runs/"*.out; then
+  pass "targeted cancellation before adapter gate prevents task submission"
+else
+  fail "targeted cancellation before adapter gate prevents task submission"
+fi
+
+# Control-plane mutation outranks a simultaneously valid cancellation.
+BEFORE_GATE_CANCEL_MUTATION="$TMP/cancel-plus-mutation-before-adapter-gate"
+write_envelope "$BEFORE_GATE_CANCEL_MUTATION"
+write_ticket "$BEFORE_GATE_CANCEL_MUTATION" T-307
+FACTORY_ROOT="$BEFORE_GATE_CANCEL_MUTATION" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=2 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-307 -- "cancel plus mutation" \
+  > "$TMP/cancel-plus-mutation-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_CANCEL_MUTATION_PID=$!
+BEFORE_GATE_CANCEL_MUTATION_RUN=""
+for _i in $(seq 1 500); do
+  BEFORE_GATE_CANCEL_MUTATION_META="$(ls \
+    "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/"*.meta 2>/dev/null || true)"
+  if [[ -n "$BEFORE_GATE_CANCEL_MUTATION_META" &&
+        -n "$(ls \
+          "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/".*.before-gate \
+          2>/dev/null || true)" ]]; then
+    BEFORE_GATE_CANCEL_MUTATION_RUN="$(
+      basename "$BEFORE_GATE_CANCEL_MUTATION_META" .meta
+    )"
+    break
+  fi
+  sleep 0.02
+done
+BEFORE_GATE_CANCEL_MUTATION_PLAN="$TMP/cancel-plus-mutation-plan.json"
+python3 "$ATTEMPT_CANCEL" preview \
+  --factory-root "$BEFORE_GATE_CANCEL_MUTATION" \
+  --ticket T-307 --run-id "$BEFORE_GATE_CANCEL_MUTATION_RUN" \
+  --reason operator_requested > "$BEFORE_GATE_CANCEL_MUTATION_PLAN"
+BEFORE_GATE_CANCEL_MUTATION_HASH="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' \
+  "$BEFORE_GATE_CANCEL_MUTATION_PLAN")"
+touch "$BEFORE_GATE_CANCEL_MUTATION/unexpected-control-mutation"
+BEFORE_GATE_CANCEL_MUTATION_APPLY=0
+python3 "$ATTEMPT_CANCEL" apply \
+  --factory-root "$BEFORE_GATE_CANCEL_MUTATION" \
+  --plan "$BEFORE_GATE_CANCEL_MUTATION_PLAN" \
+  --preview-hash "$BEFORE_GATE_CANCEL_MUTATION_HASH" --timeout 10 \
+  > "$TMP/cancel-plus-mutation-receipt.json" 2>/dev/null ||
+  BEFORE_GATE_CANCEL_MUTATION_APPLY=$?
+wait "$BEFORE_GATE_CANCEL_MUTATION_PID" 2>/dev/null || true
+if [[ "$BEFORE_GATE_CANCEL_MUTATION_APPLY" -ne 0 ]] &&
+   grep -q '^role_exit=role_exit_control_plane_mutation$' \
+     "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/$BEFORE_GATE_CANCEL_MUTATION_RUN.meta" &&
+   [[ ! -e "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/$BEFORE_GATE_CANCEL_MUTATION_RUN.cancel.json" ]] &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_CANCEL_MUTATION/factory/runs/"*.out; then
+  pass "control-plane mutation outranks boundary cancellation"
+else
+  fail "control-plane mutation outranks boundary cancellation" \
+    "apply status $BEFORE_GATE_CANCEL_MUTATION_APPLY"
+fi
+
+# Malformed targeted cancellation remains a hard pre-submission failure.
+BEFORE_GATE_BAD_CANCEL="$TMP/malformed-cancel-before-adapter-gate"
+write_envelope "$BEFORE_GATE_BAD_CANCEL"
+write_ticket "$BEFORE_GATE_BAD_CANCEL" T-302
+FACTORY_ROOT="$BEFORE_GATE_BAD_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-302 -- "bad cancel before adapter gate" \
+  > "$TMP/malformed-cancel-before-adapter-gate.out" 2>&1 &
+BEFORE_GATE_BAD_CANCEL_PID=$!
+BEFORE_GATE_BAD_CANCEL_RUN=""
+for _i in $(seq 1 500); do
+  BEFORE_GATE_BAD_CANCEL_META="$(ls \
+    "$BEFORE_GATE_BAD_CANCEL/factory/runs/"*.meta 2>/dev/null || true)"
+  if [[ -n "$BEFORE_GATE_BAD_CANCEL_META" &&
+        -n "$(ls "$BEFORE_GATE_BAD_CANCEL/factory/runs/".*.before-gate \
+          2>/dev/null || true)" ]]; then
+    BEFORE_GATE_BAD_CANCEL_RUN="$(basename "$BEFORE_GATE_BAD_CANCEL_META" .meta)"
+    break
+  fi
+  sleep 0.02
+done
+printf '{\n' > "$BEFORE_GATE_BAD_CANCEL/factory/runs/$BEFORE_GATE_BAD_CANCEL_RUN.cancel-request.json"
+wait "$BEFORE_GATE_BAD_CANCEL_PID"
+BEFORE_GATE_BAD_CANCEL_STATUS=$?
+if [[ "$BEFORE_GATE_BAD_CANCEL_STATUS" -eq 11 ]] &&
+   grep -q 'malformed targeted cancellation request before adapter gate' \
+     "$TMP/malformed-cancel-before-adapter-gate.out" &&
+   ! grep -q 'mock adapter ran task' \
+     "$BEFORE_GATE_BAD_CANCEL/factory/runs/"*.out; then
+  pass "malformed cancellation before adapter gate fails closed"
+else
+  fail "malformed cancellation before adapter gate fails closed" \
+    "status $BEFORE_GATE_BAD_CANCEL_STATUS"
+fi
+
+# The isolated wrapper rechecks controls after observing the gate and before
+# spawning the adapter, which closes the controller-check-to-gate boundary.
+AT_GATE_KILL="$TMP/kill-at-adapter-boundary"
+write_envelope "$AT_GATE_KILL"
+write_ticket "$AT_GATE_KILL" T-303
+FACTORY_ROOT="$AT_GATE_KILL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_AFTER_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-303 -- "kill at adapter boundary" \
+  > "$TMP/kill-at-adapter-boundary.out" 2>&1 &
+AT_GATE_KILL_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$AT_GATE_KILL/factory/runs/".*.gate 2>/dev/null || true)" ]] &&
+    break
+  sleep 0.02
+done
+touch "$AT_GATE_KILL/factory/KILL"
+wait "$AT_GATE_KILL_PID"
+AT_GATE_KILL_STATUS=$?
+if [[ "$AT_GATE_KILL_STATUS" -eq 4 ]] &&
+   grep -q 'control stop appeared at adapter submission boundary' \
+     "$TMP/kill-at-adapter-boundary.out" &&
+   grep -q 'KILL file appeared before adapter gate' \
+     "$TMP/kill-at-adapter-boundary.out" &&
+   ! grep -q 'mock adapter ran task' "$AT_GATE_KILL/factory/runs/"*.out; then
+  pass "kill at adapter boundary prevents task submission"
+else
+  fail "kill at adapter boundary prevents task submission" \
+    "status $AT_GATE_KILL_STATUS"
+fi
+
+# A legitimate boundary stop exempts only its exact control record; unrelated
+# checkout mutation remains an integrity failure.
+AT_GATE_MUTATION="$TMP/stop-plus-mutation-at-adapter-boundary"
+write_envelope "$AT_GATE_MUTATION"
+write_ticket "$AT_GATE_MUTATION" T-304
+FACTORY_ROOT="$AT_GATE_MUTATION" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_AFTER_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-304 -- "stop plus mutation" \
+  > "$TMP/stop-plus-mutation-at-adapter-boundary.out" 2>&1 &
+AT_GATE_MUTATION_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$AT_GATE_MUTATION/factory/runs/".*.gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$AT_GATE_MUTATION/factory/KILL"
+touch "$AT_GATE_MUTATION/unexpected-control-mutation"
+wait "$AT_GATE_MUTATION_PID"
+AT_GATE_MUTATION_STATUS=$?
+if [[ "$AT_GATE_MUTATION_STATUS" -eq 11 ]] &&
+   grep -q 'registered checkout changed during provider execution' \
+     "$TMP/stop-plus-mutation-at-adapter-boundary.out" &&
+   ! grep -q 'mock adapter ran task' "$AT_GATE_MUTATION/factory/runs/"*.out; then
+  pass "boundary stop cannot mask unrelated checkout mutation"
+else
+  fail "boundary stop cannot mask unrelated checkout mutation" \
+    "status $AT_GATE_MUTATION_STATUS"
+fi
+
+# Only the selected stop record is exempt; a concurrent second control remains
+# visible to checkout-integrity validation.
+AT_GATE_CONTROLS="$TMP/concurrent-controls-at-adapter-boundary"
+write_envelope "$AT_GATE_CONTROLS"
+write_ticket "$AT_GATE_CONTROLS" T-305
+FACTORY_ROOT="$AT_GATE_CONTROLS" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_AFTER_GATE_SLEEP=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-305 -- "concurrent controls" \
+  > "$TMP/concurrent-controls-at-adapter-boundary.out" 2>&1 &
+AT_GATE_CONTROLS_PID=$!
+for _i in $(seq 1 500); do
+  [[ -n "$(ls "$AT_GATE_CONTROLS/factory/runs/".*.gate \
+    2>/dev/null || true)" ]] && break
+  sleep 0.02
+done
+touch "$AT_GATE_CONTROLS/factory/KILL"
+touch "$AT_GATE_CONTROLS/factory/MAINTENANCE"
+wait "$AT_GATE_CONTROLS_PID"
+AT_GATE_CONTROLS_STATUS=$?
+if [[ "$AT_GATE_CONTROLS_STATUS" -eq 11 ]] &&
+   grep -q 'registered checkout changed during provider execution' \
+     "$TMP/concurrent-controls-at-adapter-boundary.out" &&
+   ! grep -q 'mock adapter ran task' "$AT_GATE_CONTROLS/factory/runs/"*.out; then
+  pass "boundary stop exempts only its exact control record"
+else
+  fail "boundary stop exempts only its exact control record" \
+    "status $AT_GATE_CONTROLS_STATUS"
+fi
+
 # The adapter gate never opens unless go_issued=1 reached durable storage.
 GO_WRITE_FAIL="$TMP/go-marker-write-failure"
 write_envelope "$GO_WRITE_FAIL"

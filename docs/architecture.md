@@ -29,6 +29,19 @@ artifact. Missing, malformed, or oversized telemetry cannot reduce spend: a
 post-GO run keeps the full reservation and zero turns when its cost data is not
 usable.
 
+The provider adapter starts inside a new process group only after a separate
+wrapper publishes its PID/PGID and receives the trusted controller's final GO
+acknowledgement. The acknowledgement wait is bounded at two minutes because
+protected-history validation can exceed ten seconds on migrated products. A
+timeout still exits without starting the adapter. Immediately before opening
+the gate, the controller rechecks kill, maintenance, and targeted cancellation
+state. After observing the gate, the isolated wrapper checks those controls
+again before spawning the adapter; that second check is the submission
+boundary, and later controls follow normal post-submission drain semantics.
+When that boundary stops a launch, integrity checks still run and exempt only
+the exact kill, maintenance, or targeted-cancellation record that caused it;
+any concurrent manifest, claim, lock, ledger, or checkout mutation still fails.
+
 Before creating a manifest, every run acquires a product-level control lock and
 holds it through provider exit and integrity verification. This temporarily
 serializes all provider intervals even when two dispatcher ticket leases are

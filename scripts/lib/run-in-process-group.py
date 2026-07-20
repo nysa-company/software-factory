@@ -10,6 +10,17 @@ import sys
 import time
 from pathlib import Path
 
+READINESS_TIMEOUT_SECONDS = 120
+
+
+def wait_for_gate(go_path: Path) -> None:
+    deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if go_path.exists():
+            return
+        time.sleep(0.01)
+    raise SystemExit("wrapper did not acknowledge process-group readiness")
+
 
 def group_members() -> list[int]:
     group = os.getpgrp()
@@ -52,14 +63,16 @@ def terminate_remaining_members() -> None:
 
 
 def main() -> int:
-    if len(sys.argv) < 5:
+    if len(sys.argv) < 8:
         raise SystemExit(
             "usage: run-in-process-group.py READY_FILE GO_FILE "
-            "SUBMITTED_FILE COMMAND [ARG ...]"
+            "SUBMITTED_FILE KILL_FILE MAINTENANCE_FILE CANCEL_FILE "
+            "COMMAND [ARG ...]"
         )
     ready_path = Path(sys.argv[1])
     go_path = Path(sys.argv[2])
     submitted_path = Path(sys.argv[3])
+    stop_paths = tuple(Path(value) for value in sys.argv[4:7])
     os.setsid()
     ready_tmp = ready_path.with_name(f"{ready_path.name}.{os.getpid()}.tmp")
     ready_tmp.write_text(f"pid={os.getpid()}\npgid={os.getpgrp()}\n")
@@ -67,14 +80,18 @@ def main() -> int:
 
     # The wrapper publishes the validated PID/PGID record before acknowledging.
     # If it crashes, no task is submitted.
-    deadline = time.monotonic() + 10
-    while not go_path.exists():
-        if time.monotonic() >= deadline:
-            raise SystemExit("wrapper did not acknowledge process-group readiness")
-        time.sleep(0.01)
+    wait_for_gate(go_path)
+    if (
+        os.environ.get("FACTORY_TEST_MODE") == "1"
+        and os.environ.get("FACTORY_TEST_AFTER_GATE_SLEEP")
+    ):
+        time.sleep(float(os.environ["FACTORY_TEST_AFTER_GATE_SLEEP"]))
+    if any(path.exists() or path.is_symlink() for path in stop_paths):
+        print("control stop appeared at adapter submission boundary", file=sys.stderr)
+        return 123
 
     try:
-        child = subprocess.Popen(sys.argv[4:])
+        child = subprocess.Popen(sys.argv[7:])
     except OSError as error:
         print(f"could not start adapter: {error}", file=sys.stderr)
         return 126
