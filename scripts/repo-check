@@ -326,6 +326,9 @@ def validate(root: Path) -> Check:
     if enabled(features, "local_pr_workflow"):
         check.require(enabled(features, "artifact_check"), "local_pr_workflow requires artifact_check")
         check.require(enabled(features, "pull_request_template"), "local_pr_workflow requires pull_request_template")
+    if enabled(features, "remote_full_ci"):
+        check.require(enabled(features, "local_pr_workflow"), "remote_full_ci requires local_pr_workflow")
+        check.require(enabled(features, "github_ci"), "remote_full_ci requires github_ci")
 
     if enabled(features, "artifact_check"):
         artifact = root / "scripts/artifact-check"

@@ -1,6 +1,6 @@
-# Live CI for this repo, instantiated from ci/github-actions-ci.template.yml.
-# The "product" here is the Relay conformance app; when the kit is
-# instantiated for a real product, that repo gets its own copy.
+# Live CI for the factory repository. Pull requests use fail-closed dynamic
+# selection; protected main always receives complete Linux and macOS proof.
+# Managed local verification: bash ci/test-all.sh --changed-or-defer origin/main HEAD
 name: ci
 
 on:
@@ -8,41 +8,58 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
-  linux:
+  scope:
     runs-on: ubuntu-latest
     outputs:
-      full: ${{ steps.scope.outputs.full }}
-      macos: ${{ steps.scope.outputs.macos }}
+      behavioral: ${{ steps.classify.outputs.behavioral }}
+      macos: ${{ steps.classify.outputs.macos }}
+      base: ${{ steps.classify.outputs.base }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: classify change
-        id: scope
+      - name: classify complete diff
+        id: classify
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if bash ci/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
-            echo "full=false" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          if test "$GITHUB_EVENT_NAME" = push; then
+            echo "behavioral=true" >> "$GITHUB_OUTPUT"
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          elif bash ci/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
+            echo "behavioral=false" >> "$GITHUB_OUTPUT"
             echo "macos=false" >> "$GITHUB_OUTPUT"
           else
-            echo "full=true" >> "$GITHUB_OUTPUT"
+            echo "behavioral=true" >> "$GITHUB_OUTPUT"
             if bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
               echo "macos=true" >> "$GITHUB_OUTPUT"
             else
               echo "macos=false" >> "$GITHUB_OUTPUT"
             fi
           fi
+
+  linux:
+    needs: scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
-        if: steps.scope.outputs.full == 'true'
+        if: needs.scope.outputs.behavioral == 'true'
         with:
           node-version: 22
       - uses: actions/setup-python@v5
-        if: steps.scope.outputs.full == 'true'
+        if: needs.scope.outputs.behavioral == 'true'
         with:
           python-version: "3.12"
       - name: repository baseline
@@ -51,22 +68,29 @@ jobs:
         run: scripts/secret-scan
       - name: artifact policy
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ needs.scope.outputs.base }}
         run: scripts/artifact-check --base "$BASE_SHA"
-      - name: full verification with dynamic-selection shadow
-        if: steps.scope.outputs.full == 'true'
+      - name: selected pull-request verification
+        if: github.event_name == 'pull_request' && needs.scope.outputs.behavioral == 'true'
         env:
           BASE_REF: origin/main
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ needs.scope.outputs.base }}
+          CI_FORCE_FULL: ${{ vars.CI_FORCE_FULL || '0' }}
         run: >-
           CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY"
-          bash ci/test-all.sh --shadow-changed "$BASE_SHA" "$GITHUB_SHA"
+          bash ci/test-all.sh --changed "$BASE_SHA" "$GITHUB_SHA"
+      - name: complete main verification
+        if: github.event_name == 'push'
+        env:
+          BASE_REF: origin/main
+          CI_FORCE_FULL: "1"
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh
 
   macos-bash-3:
-    needs: linux
+    needs: scope
     if: >-
-      needs.linux.outputs.full == 'true' &&
-      (github.event_name == 'push' || needs.linux.outputs.macos == 'true')
+      needs.scope.outputs.behavioral == 'true' &&
+      (github.event_name == 'push' || needs.scope.outputs.macos == 'true')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -77,33 +101,44 @@ jobs:
           node-version: 22
       - name: install GNU timeout
         run: brew install coreutils
-      - name: full suite under system Bash
-        run: /bin/bash ci/test-all.sh
+      - name: selected pull-request verification under system Bash
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/main
+          BASE_SHA: ${{ needs.scope.outputs.base }}
+          CI_FORCE_FULL: ${{ vars.CI_FORCE_FULL || '0' }}
+        run: >-
+          CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY"
+          /bin/bash ci/test-all.sh --changed "$BASE_SHA" "$GITHUB_SHA"
+      - name: complete main suite under system Bash
+        if: github.event_name == 'push'
+        env:
+          CI_FORCE_FULL: "1"
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh
 
-  # Keep the required "ci" context stable. It accepts intentional skips only
-  # after Linux classifies the complete diff.
+  # Keep the required context stable while Linux and macOS execute in parallel.
   ci:
     if: always()
-    needs: [linux, macos-bash-3]
+    needs: [scope, linux, macos-bash-3]
     runs-on: ubuntu-latest
     steps:
       - name: require applicable verification
         env:
           EVENT_NAME: ${{ github.event_name }}
-          FULL_REQUIRED: ${{ needs.linux.outputs.full }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          BEHAVIORAL: ${{ needs.scope.outputs.behavioral }}
           LINUX_RESULT: ${{ needs.linux.result }}
-          MACOS_REQUIRED: ${{ needs.linux.outputs.macos }}
+          MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
         run: |
+          test "$SCOPE_RESULT" = success
           test "$LINUX_RESULT" = success
-          if test "$FULL_REQUIRED" = false; then
+          if test "$BEHAVIORAL" = false; then
             test "$MACOS_REQUIRED" = false
             test "$MACOS_RESULT" = skipped
           elif test "$EVENT_NAME" = push || test "$MACOS_REQUIRED" = true; then
             test "$MACOS_RESULT" = success
           else
-            test "$FULL_REQUIRED" = true
-            test "$MACOS_REQUIRED" = false
             test "$MACOS_RESULT" = skipped
           fi
 
@@ -112,7 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # the check walks every commit on the branch
+          fetch-depth: 0
       - name: builder commits must not touch tests
         run: bash ci/test-immutability-check.sh
         env:

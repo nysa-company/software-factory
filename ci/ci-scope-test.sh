@@ -2,6 +2,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+WORKFLOW="$ROOT/.github/workflows/ci.yml"
+[[ "$(grep -c -- '--changed "\$BASE_SHA" "\$GITHUB_SHA"' "$WORKFLOW")" -eq 2 ]] || {
+  echo "FAIL: Linux and macOS PR jobs must use changed-file selection" >&2
+  exit 1
+}
+[[ "$(grep -c 'CI_FORCE_FULL: "1"' "$WORKFLOW")" -eq 2 ]] || {
+  echo "FAIL: both protected-main platform jobs must force the full suite" >&2
+  exit 1
+}
+[[ "$(grep -c '^    needs: scope$' "$WORKFLOW")" -eq 2 ]] || {
+  echo "FAIL: platform jobs must depend only on classification so they can run in parallel" >&2
+  exit 1
+}
 LIGHTWEIGHT="$ROOT/ci/lightweight-change.sh"
 MACOS="$ROOT/ci/macos-required-change.sh"
 SELECTOR="$ROOT/ci/changed-test-suites.sh"
@@ -210,6 +224,9 @@ printf '%s\n' '#!/usr/bin/env bash' 'suite_registry() {' \
   '  local callback="$1"' \
   '  "$callback" pass "pass suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" fail "fail suite" bash "$ROOT/ci/fail.sh"' \
+  '  "$callback" ci-scope "scope suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" immutability "immutability suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" artifact-policy "artifact suite" bash "$ROOT/ci/pass.sh"' \
   '}' > "$RUNNER/ci/suite-registry.sh"
 printf '%s\n' '#!/usr/bin/env bash' \
   'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' \
@@ -240,5 +257,48 @@ runner_case 'invalid|fixture|pass' 0 0 'selector returned unknown mode' \
   'unknown mode fails closed to full'
 runner_case 'shadow|fixture|pass' 1 1 'SHADOW_MISS: fail was not selected and failed its immediate recheck' \
   'shadow miss is reproducible and fails'
+
+git -C "$RUNNER" init -q -b main
+git -C "$RUNNER" config user.name "Runner test"
+git -C "$RUNNER" config user.email "runner@example.invalid"
+printf 'base\n' > "$RUNNER/code.txt"
+git -C "$RUNNER" add .
+git -C "$RUNNER" commit -qm base
+RUNNER_BASE="$(git -C "$RUNNER" rev-parse HEAD)"
+printf 'broad\n' >> "$RUNNER/code.txt"
+git -C "$RUNNER" add code.txt
+git -C "$RUNNER" commit -qm broad
+RUNNER_HEAD="$(git -C "$RUNNER" rev-parse HEAD)"
+printf '%s\n' 'full|unknown or shared path|' > "$RUNNER/selection"
+status=0
+output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$RUNNER_BASE" "$RUNNER_HEAD" 2>&1)" || status=$?
+if [[ "$status" -ne 75 || "$output" != *"CI_FULL_DEFERRED:"* ]]; then
+  printf 'FAIL: broad local verification defers with status 75 (status %s; output %s)\n' \
+    "$status" "$output" >&2
+  exit 1
+fi
+printf '%s\n' 'invalid|fixture|pass' > "$RUNNER/selection"
+status=0
+output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$RUNNER_BASE" "$RUNNER_HEAD" 2>&1)" || status=$?
+if [[ "$status" -ne 0 || "$output" == *"CI_FULL_DEFERRED:"* ||
+      "$output" != *"selector returned unknown mode"* ]]; then
+  printf 'FAIL: malformed selection remains local full (status %s; output %s)\n' \
+    "$status" "$output" >&2
+  exit 1
+fi
+printf '%s\n' 'full|unknown or shared path|' > "$RUNNER/selection"
+TRUST_BASE="$RUNNER_HEAD"
+printf '# trust-root change\n' >> "$RUNNER/ci/suite-registry.sh"
+git -C "$RUNNER" add ci/suite-registry.sh
+git -C "$RUNNER" commit -qm trust-root
+TRUST_HEAD="$(git -C "$RUNNER" rev-parse HEAD)"
+status=0
+output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$TRUST_BASE" "$TRUST_HEAD" 2>&1)" || status=$?
+if [[ "$status" -ne 0 || "$output" == *"CI_FULL_DEFERRED:"* ||
+      "$output" != *"executed=full"* ]]; then
+  printf 'FAIL: trust-root change remains local full (status %s; output %s)\n' \
+    "$status" "$output" >&2
+  exit 1
+fi
 
 printf 'PASS: CI scope classification\n'

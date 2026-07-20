@@ -12,6 +12,9 @@ PLANNED_MODE="full"
 SELECTED=""
 REASON="explicit full suite"
 SHADOW=0
+DEFER_FULL=0
+DEFER_AFTER=0
+SELECTOR_VALID=1
 CHANGE_BASE="${BASE_REF:-origin/main}"
 trap 'rm -rf "$TMP"' EXIT
 . "$ROOT/ci/suite-registry.sh"
@@ -43,9 +46,10 @@ fi
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    --changed|--shadow-changed)
+    --changed|--shadow-changed|--changed-or-defer)
       [[ "$1" != "--shadow-changed" ]] || SHADOW=1
-      [[ $# -ge 2 && $# -le 3 ]] || { echo "usage: ci/test-all.sh [--changed|--shadow-changed BASE [HEAD]]" >&2; exit 2; }
+      [[ "$1" != "--changed-or-defer" ]] || DEFER_FULL=1
+      [[ $# -ge 2 && $# -le 3 ]] || { echo "usage: ci/test-all.sh [--changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
       CHANGE_BASE="$2"
       CHANGE_HEAD="${3:-HEAD}"
       SELECTION="$(bash "$ROOT/ci/changed-test-suites.sh" "$CHANGE_BASE" "$CHANGE_HEAD")" || SELECTION="full|selector failed|"
@@ -54,7 +58,7 @@ $SELECTION
 EOF
       ;;
     *)
-      echo "usage: ci/test-all.sh [--changed|--shadow-changed BASE [HEAD]]" >&2
+      echo "usage: ci/test-all.sh [--changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2
       exit 2
       ;;
   esac
@@ -65,26 +69,30 @@ case "$PLANNED_MODE" in
   metadata)
     if [[ -n "$SELECTED" ]]; then
       PLANNED_MODE="full" REASON="metadata selection returned suites" SELECTED=""
+      SELECTOR_VALID=0
     fi
     ;;
   targeted|shadow)
     if [[ -z "$SELECTED" ]]; then
       PLANNED_MODE="full" REASON="selector returned empty selection" SELECTED=""
+      SELECTOR_VALID=0
     fi
     NORMALIZED=" "
     for id in $SELECTED; do
       if [[ "$ALL_IDS" != *" $id "* ]]; then
         PLANNED_MODE="full" REASON="selector returned unknown suite: $id" SELECTED=""
+        SELECTOR_VALID=0
         break
       fi
       if [[ "$NORMALIZED" == *" $id "* ]]; then
         PLANNED_MODE="full" REASON="selector returned duplicate suite: $id" SELECTED=""
+        SELECTOR_VALID=0
         break
       fi
       NORMALIZED="$NORMALIZED$id "
     done
     ;;
-  *) PLANNED_MODE="full"; REASON="selector returned unknown mode"; SELECTED="" ;;
+  *) PLANNED_MODE="full"; REASON="selector returned unknown mode"; SELECTED=""; SELECTOR_VALID=0 ;;
 esac
 MODE="$PLANNED_MODE"
 COMPARE="$SHADOW"
@@ -94,8 +102,28 @@ if [[ "$PLANNED_MODE" == "shadow" ]]; then
 elif [[ "$SHADOW" -eq 1 ]]; then
   MODE="full"
 fi
+
+trust_root_changed() {
+  local merge_base
+  merge_base="$(git -C "$ROOT" merge-base "$CHANGE_BASE" "$CHANGE_HEAD" 2>/dev/null)" || return 0
+  git -C "$ROOT" diff --quiet --no-renames "$merge_base" "$CHANGE_HEAD" -- \
+    .agents/repo-standard.json .github/workflows \
+    ci/test-all.sh ci/suite-registry.sh ci/changed-test-suites.sh \
+    ci/lightweight-change.sh ci/macos-required-change.sh \
+    ci/test-immutability-check.sh scripts/repo-check scripts/secret-scan \
+    scripts/artifact-check
+  [[ "$?" -ne 0 ]]
+}
+
+if [[ "$DEFER_FULL" -eq 1 && "$SELECTOR_VALID" -eq 1 && "$PLANNED_MODE" == "full" &&
+      "${CI_FORCE_FULL:-0}" != "1" ]] && ! trust_root_changed; then
+  MODE="targeted"
+  SELECTED="ci-scope immutability artifact-policy"
+  DEFER_AFTER=1
+  REASON="deferred to required GitHub full CI: $REASON"
+fi
 DISPLAY_SUITES="$SELECTED"
-[[ "$PLANNED_MODE" != "full" ]] || DISPLAY_SUITES="all"
+[[ "$PLANNED_MODE" != "full" || "$DEFER_AFTER" -eq 1 ]] || DISPLAY_SUITES="all"
 [[ "$PLANNED_MODE" != "metadata" ]] || DISPLAY_SUITES="none"
 summary "CI selection: component_state=$PLANNED_MODE executed=$MODE reason=$REASON suites=$DISPLAY_SUITES"
 
@@ -150,4 +178,8 @@ else
   summary "FAIL: $MODE test suite ($((SECONDS - STARTED))s)"
 fi
 [[ "$SHADOW_MISS" -eq 0 ]] || summary "SHADOW_MISS: full verification exposed an unselected failure"
+if [[ "$DEFER_AFTER" -eq 1 && "$FAIL" -eq 0 ]]; then
+  summary "CI_FULL_DEFERRED: reason=$REASON"
+  exit 75
+fi
 exit "$FAIL"

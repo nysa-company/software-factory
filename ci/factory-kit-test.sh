@@ -588,7 +588,8 @@ if [[ -f "$EVIDENCE_A" && ! -L "$EVIDENCE_A" ]] &&
    [[ "$(json_value "$EVIDENCE_A" status)" == "pass" ]] &&
    [[ "$(json_value "$EVIDENCE_A" kit_sha)" == "$SHA_A" ]] &&
    [[ "$(json_value "$EVIDENCE_A" release_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" ]] &&
-   [[ "$(json_value "$EVIDENCE_A" suite_definition)" == "factory-kit-suite-v1" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" suite_definition)" == "factory-kit-suite-v2" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" verification_source)" == "local-full" ]] &&
    [[ "$(json_value "$EVIDENCE_A" evidence_ttl_seconds)" == "86400" ]]; then
   pass "install publishes bound reusable kit-suite evidence"
 else
@@ -693,9 +694,23 @@ fi
 
 PUBLISH_TRACE="$TMP/publish-order.jsonl"
 export FACTORY_KIT_TEST_PUBLISH_TRACE="$PUBLISH_TRACE"
+export FACTORY_KIT_TEST_REMOTE_FULL_CI=1
+export FACTORY_KIT_TEST_SUITE_FAIL=1
+export CI_FORCE_FULL=1
+expect_failure "force-full ignores reusable remote CI evidence" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+unset CI_FORCE_FULL
 expect_success "second exact release publishes portably" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
 unset FACTORY_KIT_TEST_PUBLISH_TRACE
+unset FACTORY_KIT_TEST_REMOTE_FULL_CI
+unset FACTORY_KIT_TEST_SUITE_FAIL
+if [[ "$(json_value "$STATE/manifests/$SHA_B.suite.json" verification_source)" == "github-actions-full" ]] &&
+   [[ "$(json_value "$STATE/manifests/$SHA_B.suite.json" remote_evidence_id)" =~ ^[0-9a-f]{64}$ ]]; then
+  pass "verified remote full CI replaces only the local full suite"
+else
+  fail "verified remote full CI replaces only the local full suite"
+fi
 if python3 - "$PUBLISH_TRACE" <<'PY'
 import json, pathlib, sys
 rows = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
@@ -820,11 +835,18 @@ fi
 set_evidence_value "$EVIDENCE_A" created_epoch 1
 set_evidence_value "$EVIDENCE_A" expires_epoch 86401
 : > "$CERTIFICATION_TRACE"
-expect_success "stale suite evidence reruns the suite" \
+export FACTORY_KIT_TEST_REMOTE_FULL_CI=1
+export FACTORY_KIT_TEST_SUITE_FAIL=1
+expect_success "stale suite evidence refreshes from remote full CI" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
-grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
-  pass "stale evidence is never reused" ||
-  fail "stale evidence is never reused"
+unset FACTORY_KIT_TEST_REMOTE_FULL_CI
+unset FACTORY_KIT_TEST_SUITE_FAIL
+if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+   [[ "$(json_value "$EVIDENCE_A" verification_source)" == "github-actions-full" ]]; then
+  pass "stale evidence uses remote proof plus smoke instead of local full"
+else
+  fail "stale evidence uses remote proof plus smoke instead of local full"
+fi
 
 for binding in host os architecture; do
   set_evidence_value "$EVIDENCE_A" "$binding" '"mismatch"'
@@ -835,6 +857,17 @@ for binding in host os architecture; do
     pass "$binding mismatch is never reused" ||
     fail "$binding mismatch is never reused"
 done
+
+set_evidence_value "$EVIDENCE_A" verification_source '"untrusted"'
+: > "$CERTIFICATION_TRACE"
+expect_success "unknown verification source reruns the suite" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
+   [[ "$(json_value "$EVIDENCE_A" verification_source)" == "local-full" ]]; then
+  pass "unknown verification source is never reused"
+else
+  fail "unknown verification source is never reused"
+fi
 
 set_evidence_value "$EVIDENCE_A" release_tree '"0000000000000000000000000000000000000000"'
 : > "$CERTIFICATION_TRACE"
