@@ -8,6 +8,7 @@ suite_registry() {
   "$callback" ledger "runtime ledger regression suite" python3 "$ROOT/ci/ledger-view-test.py"
   "$callback" attempt-cancel "targeted attempt cancellation suite" python3 "$ROOT/ci/attempt-cancel-test.py"
   "$callback" provider-executor "isolated provider executor suite" python3 "$ROOT/ci/provider-executor-test.py"
+  "$callback" provider-coordinator "provider coordinator concurrency suite" python3 "$ROOT/ci/provider-coordinator-test.py"
   "$callback" operator-console "operator console security suite" python3 "$ROOT/ci/operator-console-test.py"
   "$callback" model-router "model router regression suite" python3 "$ROOT/ci/model-router-test.py"
   "$callback" model-manager "model manager regression suite" python3 "$ROOT/ci/model-manager-test.py"
