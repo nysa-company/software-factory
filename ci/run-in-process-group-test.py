@@ -27,21 +27,22 @@ class Gate:
 
 class ReadinessGateTests(unittest.TestCase):
     def test_slow_validated_controller_may_acknowledge_after_ten_seconds(self):
-        with (
-            mock.patch.object(MODULE.time, "monotonic", side_effect=(0, 11)),
-            mock.patch.object(MODULE.time, "sleep"),
+        with mock.patch.object(
+            MODULE.time, "monotonic", side_effect=(0, 11)
         ):
-            MODULE.wait_for_gate(Gate(opens=True))
+            with mock.patch.object(MODULE.time, "sleep"):
+                MODULE.wait_for_gate(Gate(opens=True))
 
     def test_missing_controller_acknowledgement_still_times_out(self):
-        with (
-            mock.patch.object(MODULE.time, "monotonic", side_effect=(0, 121)),
-            mock.patch.object(MODULE.time, "sleep"),
+        with mock.patch.object(
+            MODULE.time, "monotonic", side_effect=(0, 121)
         ):
-            with self.assertRaisesRegex(
-                SystemExit, "wrapper did not acknowledge process-group readiness"
-            ):
-                MODULE.wait_for_gate(Gate())
+            with mock.patch.object(MODULE.time, "sleep"):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "wrapper did not acknowledge process-group readiness",
+                ):
+                    MODULE.wait_for_gate(Gate())
 
 
 if __name__ == "__main__":
