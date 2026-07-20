@@ -21,10 +21,11 @@ allowlist. In this kit that includes the documentation roots plus `AGENTS.md`,
 conformance shakedown report. Repository baseline, secret, artifact, and
 test-immutability checks still run.
 
-Every non-lightweight change runs the Linux suite. On pull requests, the macOS
-system-Bash suite is additionally required for shell files, CI, deployment,
-shared scripts, and the Hermes launcher. Every non-lightweight push to `main`
-runs both Linux and macOS so release verification remains bound to a fully
+Every behavioral pull request runs fail-closed component selection on Linux.
+Applicable shell/platform-sensitive pull requests run the same selection under
+macOS system Bash in parallel. Unknown, shared, mixed, dependency, CI, selector,
+addition, deletion, and rename changes resolve to full. Every push to `main`
+runs both complete suites so release verification remains bound to a fully
 tested merged SHA. Instantiated product workflows may skip expensive product
 checks for allowlisted PRs, but every product push to `main` runs its full
 verification so deployment evidence remains bound to the merged SHA.
@@ -49,8 +50,10 @@ git fetch origin main
 git worktree add ../sf-worktrees/<feature> -b feat/<feature> origin/main
 ```
 
-Each worktree owns one coherent change, runs the full local suite, and opens its
-own protected PR. Never share uncommitted files, a branch, or a worktree between
+Each worktree owns one coherent change, runs the managed local selector, and
+opens its own protected PR. Broad verification may be explicitly deferred to
+required GitHub CI; targeted checks and policy gates are never reported as
+deferred. Never share uncommitted files, a branch, or a worktree between
 features. Rebase or merge the latest protected `main` before final checks when
 another PR lands first. A merge produces one independently addressable
 candidate SHA; it does not update any live product.

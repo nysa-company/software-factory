@@ -14,21 +14,22 @@
     "github_ci": true,
     "local_pr_workflow": true,
     "pull_request_template": true,
+    "remote_full_ci": true,
     "repo_check": true,
     "secret_scan": true
   },
   "managed": {
     "blocks": {
       ".gitignore": "c58171d8dc5fe3318c38df004e7bb1d7cc1ce56b7fe745e23a92757575a35508",
-      "AGENTS.md": "ab7bc6b19454163a702f7533d96c2366a1cc64884a3109e4c2063589799cb414"
+      "AGENTS.md": "624ac1f07f3d9d6a1e1dd7e98b2f43dcb3ac0059c07bcba7633768c159933cc9"
     },
     "files": {
-      "scripts/repo-check": "e90eb6918057d7766d4a2ef22df3426ff8957e3b17dfdef7bbdc6f362fce82c5",
-      "scripts/secret-scan": "9ffe80b07abff9f17031ba6a786a2de17952523759f731dc5d8b9d728e526895"
+      "scripts/repo-check": "f2cfa8999b72b7e0ac278ea854d6ffce369d08ecdec421f2e022cdb87fbdbe01",
+      "scripts/secret-scan": "9b5fbf12a2c3629fc33df4f72aca66fd5cfc82359ffda108515b23eb0202e3bb"
     }
   },
   "profile": "toolkit",
   "schema_version": 1,
   "scoped_agents": [],
-  "verification_command": "bash ci/test-all.sh"
+  "verification_command": "bash ci/test-all.sh --changed-or-defer origin/main HEAD"
 }

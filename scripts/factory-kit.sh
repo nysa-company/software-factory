@@ -15,10 +15,10 @@ CONSUMED_DIR="$RECEIPTS_DIR/consumed"
 CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
 INSTALL_MANIFEST_SCHEMA=1
-SUITE_EVIDENCE_SCHEMA=1
+SUITE_EVIDENCE_SCHEMA=2
 CERTIFICATION_TOOL_VERSION=2
 # Bump whenever run_kit_checks_isolated command composition or semantics change.
-KIT_SUITE_DEFINITION="factory-kit-suite-v1"
+KIT_SUITE_DEFINITION="factory-kit-suite-v2"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
 DEFAULT_SUITE_EVIDENCE_TTL="${FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS:-86400}"
 
@@ -522,6 +522,72 @@ PY
     die "required GitHub checks are not successful for $sha"
 }
 
+verified_remote_full_ci() {
+  local sha="$1" tree="$2" data
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+    [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI:-0}" == "1" ]] || return 1
+    printf '%s\n' "$(printf '%s' "test-remote-full-ci|$sha|$tree" | shasum -a 256 | awk '{print $1}')"
+    return 0
+  fi
+  require_command gh
+  data="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-remote-ci.XXXXXX")"
+  remember_temp "$data"
+  gh api --paginate --slurp \
+    "repos/nysa-company/software-factory/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&status=completed&branch=main&per_page=100" \
+    > "$data/runs.json" || return 1
+  python3 - "$data/runs.json" "$sha" <<'PY' > "$data/run-id" || return 1
+import json, sys
+pages = json.load(open(sys.argv[1]))
+runs = []
+for page in pages:
+    runs.extend(page.get("workflow_runs", []))
+valid = [run for run in runs if (
+    run.get("head_sha") == sys.argv[2] and run.get("event") == "push" and
+    run.get("head_branch") == "main" and run.get("status") == "completed" and
+    run.get("conclusion") == "success" and
+    run.get("path") == ".github/workflows/ci.yml"
+)]
+if not valid:
+    raise SystemExit(1)
+run = max(valid, key=lambda value: int(value.get("id", 0)))
+print("%s\t%s" % (run["id"], run.get("run_attempt", 1)))
+PY
+  local run_id run_attempt
+  run_id="$(awk -F'\t' '{print $1}' "$data/run-id")"
+  run_attempt="$(awk -F'\t' '{print $2}' "$data/run-id")"
+  gh api --paginate --slurp \
+    "repos/nysa-company/software-factory/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
+    > "$data/jobs.json" || return 1
+  python3 - "$data/jobs.json" "$sha" "$tree" "$run_id" "$run_attempt" <<'PY'
+import hashlib, json, sys
+pages = json.load(open(sys.argv[1]))
+jobs = []
+for page in pages:
+    jobs.extend(page.get("jobs", []))
+latest = {}
+for job in jobs:
+    name = job.get("name")
+    if name and (name not in latest or int(job.get("id", 0)) > int(latest[name].get("id", 0))):
+        latest[name] = job
+required = ("linux", "macos-bash-3", "ci", "test-immutability")
+if any(latest.get(name, {}).get("conclusion") != "success" for name in required):
+    raise SystemExit(1)
+value = {
+    "repository": "nysa-company/software-factory",
+    "workflow": ".github/workflows/ci.yml",
+    "event": "push",
+    "ref": "refs/heads/main",
+    "sha": sys.argv[2],
+    "tree": sys.argv[3],
+    "run_id": int(sys.argv[4]),
+    "run_attempt": int(sys.argv[5]),
+    "successful_jobs": list(required),
+}
+payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+print(hashlib.sha256(payload).hexdigest())
+PY
+}
+
 process_start_identity() {
   local pid="$1"
   ps -o lstart= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}'
@@ -900,6 +966,7 @@ remove_symlinked_suite_evidence() {
 
 write_suite_evidence() {
   local sha="$1" origin="$2" tree="$3" release="$4"
+  local verification_source="${5:-local-full}" remote_evidence_id="${6:-}"
   local evidence created expires
   evidence="$(suite_evidence_file_for "$sha")"
   created="$(now_epoch)"
@@ -908,10 +975,12 @@ write_suite_evidence() {
     "$(host_name)" "$(uname -s)" "$(uname -m)" "$KIT_SUITE_DEFINITION" \
     "$CERTIFICATION_TOOL_VERSION" "$created" "$expires" \
     "$DEFAULT_SUITE_EVIDENCE_TTL" "$SUITE_EVIDENCE_SCHEMA" \
+    "$verification_source" "$remote_evidence_id" \
     <<'PY' | atomic_json_from_stdin "$evidence"
 import hashlib, json, sys, time
 (sha, origin, tree, release, release_tree, host, os_name, architecture,
- suite_definition, tool_version, created, expires, ttl, schema) = sys.argv[1:]
+ suite_definition, tool_version, created, expires, ttl, schema,
+ verification_source, remote_evidence_id) = sys.argv[1:]
 value = {
     "schema_version": int(schema),
     "status": "pass",
@@ -930,6 +999,8 @@ value = {
     "expires_epoch": int(expires),
     "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(expires))),
     "evidence_ttl_seconds": int(ttl),
+    "verification_source": verification_source,
+    "remote_evidence_id": remote_evidence_id or None,
 }
 payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 value["evidence_id"] = hashlib.sha256(payload).hexdigest()
@@ -974,6 +1045,16 @@ try:
     }
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         raise ValueError
+    source = value.get("verification_source")
+    remote_id = value.get("remote_evidence_id")
+    if source == "local-full":
+        if remote_id is not None:
+            raise ValueError
+    elif source == "github-actions-full":
+        if not isinstance(remote_id, str) or len(remote_id) != 64 or any(c not in "0123456789abcdef" for c in remote_id):
+            raise ValueError
+    else:
+        raise ValueError
     created = value.get("created_epoch")
     expires = value.get("expires_epoch")
     if (not isinstance(created, int) or isinstance(created, bool) or
@@ -991,7 +1072,7 @@ try:
     digest = hashlib.sha256(raw).hexdigest()
 except (OSError, ValueError, TypeError, json.JSONDecodeError):
     raise SystemExit(1)
-print("%s\t%s\t%s\t%s" % (evidence_id, digest, created, expires))
+print("%s\t%s\t%s\t%s\t%s" % (evidence_id, digest, created, expires, source))
 PY
 }
 
@@ -1203,7 +1284,8 @@ PY
 
 run_kit_checks_isolated() {
   local checkout="$1" home="$2" scratch="$3" workspace="$4" phase="$5"
-  shift 5
+  local check_mode="${6:-full}"
+  shift 6
   local status=0
   local raw="$scratch/kit-checks.raw" redacted="$scratch/kit-checks.redacted"
   if [[ "${FACTORY_KIT_TEST_SUITE_FAIL:-0}" != "0" ||
@@ -1219,11 +1301,11 @@ run_kit_checks_isolated() {
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
     "${FACTORY_KIT_TEST_SUITE_FAIL:-0}" \
-    "${FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS:-0}" <<'PY' || status=$?
+    "${FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS:-0}" "$check_mode" <<'PY' || status=$?
 import os, pathlib, subprocess, sys
 (
     checkout, home, scratch, output, sandbox_exec, profile, sandbox_ps, dirty,
-    capture, deny_sibling, deny_home, test_fail, test_sleep,
+    capture, deny_sibling, deny_home, test_fail, test_sleep, check_mode,
 ) = sys.argv[1:]
 root = pathlib.Path(checkout)
 prefix = [sandbox_exec, "-f", profile] if profile else []
@@ -1286,8 +1368,14 @@ if test_fail != "0":
 if test_sleep != "0":
     environment["FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS"] = test_sleep
 commands = []
-if (root / "ci/test-all.sh").is_file():
+if check_mode == "full" and (root / "ci/test-all.sh").is_file():
     commands.append(["bash", "ci/test-all.sh"])
+elif check_mode == "platform-smoke":
+    syntax_paths = [path for path in ("ci/test-all.sh", "scripts/factory-kit.sh") if (root / path).is_file()]
+    if syntax_paths:
+        commands.append(["bash", "-n"] + syntax_paths)
+else:
+    raise SystemExit("invalid kit check mode")
 if (root / "scripts/repo-check").is_file():
     commands.append(["scripts/repo-check", "--root", checkout])
 if (root / "scripts/secret-scan").is_file():
@@ -1842,6 +1930,10 @@ validate_receipt_snapshot() {
      "$(json_get "$receipt" kit_suite_evidence.certification_tool_version)" == "$CERTIFICATION_TOOL_VERSION" &&
      "$(json_get "$receipt" kit_suite_evidence.evidence_ttl_seconds)" == "$DEFAULT_SUITE_EVIDENCE_TTL" ]] ||
     die "receipt kit-suite evidence environment binding is invalid"
+  case "$(json_get "$receipt" kit_suite_evidence.verification_source)" in
+    local-full|github-actions-full) ;;
+    *) die "receipt kit-suite evidence verification source is invalid" ;;
+  esac
   evidence_created="$(json_get "$receipt" kit_suite_evidence.created_epoch)"
   evidence_expires="$(json_get "$receipt" kit_suite_evidence.expires_epoch)"
   [[ "$evidence_created" =~ ^[0-9]+$ && "$evidence_expires" =~ ^[0-9]+$ &&
@@ -2299,10 +2391,17 @@ cmd_install() {
   git -C "$checkout" checkout -q --detach "$sha"
   prepare_pinned_scanner "$source_top" "$checkout" "$workspace/tmp" ||
     die "could not stage the pinned scanner for isolated checks"
+  local remote_evidence_id="" verification_source="local-full" check_mode="full"
+  if [[ "${CI_FORCE_FULL:-0}" != "1" ]] &&
+     remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)"; then
+    verification_source="github-actions-full"
+    check_mode="platform-smoke"
+    say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
+  fi
   run_kit_checks_isolated "$checkout" "$workspace/home" "$workspace/tmp" \
-    "$workspace" "install" "$source_top" ||
+    "$workspace" "install" "$check_mode" "$source_top" ||
     die "kit checks failed in disposable checkout"
-  record_certification_trace "kit-suite:install"
+  record_certification_trace "kit-suite:install:$verification_source"
   # Checks run in a disposable workspace and may create caches or reports.
   # Only tracked-tree mutation is disqualifying; the sealed release is built
   # afterward from the verified Git object, never from this workspace.
@@ -2344,7 +2443,8 @@ cmd_install() {
   record_publish_phase manifest_written "$release" "$release" "$manifest"
   verify_release_from_manifest "$sha" >/dev/null
   validate_suite_evidence_ttl
-  write_suite_evidence "$sha" "$origin_identity" "$kit_tree" "$release"
+  write_suite_evidence "$sha" "$origin_identity" "$kit_tree" "$release" \
+    "$verification_source" "$remote_evidence_id"
   release_lock "$lock"
   say "INSTALL OK: $sha ($origin)"
 }
@@ -2354,7 +2454,8 @@ cmd_certify() {
   local product_top release kit_tree pin product_git_tree product_repo contract manifest_values
   local writable writable_head script created expires receipt_id receipt previous_generation workspace
   local kit_pin_hash project_env_hash kit_origin lock evidence_values evidence_id
-  local evidence_digest evidence_created evidence_expires suite_reused
+  local evidence_digest evidence_created evidence_expires evidence_source suite_reused
+  local refresh_source refresh_mode refresh_remote_id
   validate_slug "$slug"
   validate_sha "$sha"
   validate_suite_evidence_ttl
@@ -2392,10 +2493,19 @@ cmd_certify() {
     record_certification_trace "kit-suite:reused"
   else
     suite_reused=false
+    refresh_source="local-full"
+    refresh_mode="full"
+    refresh_remote_id=""
+    if [[ "${CI_FORCE_FULL:-0}" != "1" ]] &&
+       refresh_remote_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)"; then
+      refresh_source="github-actions-full"
+      refresh_mode="platform-smoke"
+      say "REMOTE CI VERIFIED: $sha; refreshing evidence with local platform smoke only"
+    fi
     prepare_pinned_scanner "$release" "$writable" "$workspace/tmp" ||
       die "could not stage the pinned scanner for isolated certification"
     run_kit_checks_isolated "$writable" "$ISOLATED_HOME" "$workspace/tmp" \
-      "$workspace" "certification" "$product_top" "$release" ||
+      "$workspace" "certification" "$refresh_mode" "$product_top" "$release" ||
       die "kit certification checks failed"
     record_certification_trace "kit-suite:certification"
     git -C "$writable" diff --quiet &&
@@ -2404,7 +2514,8 @@ cmd_certify() {
     [[ "$(git -C "$writable" rev-parse HEAD)" == "$writable_head" ]] ||
       die "kit certification checks changed the candidate commit"
     verify_release_from_manifest "$sha" >/dev/null
-    write_suite_evidence "$sha" "$kit_origin" "$kit_tree" "$release"
+    write_suite_evidence "$sha" "$kit_origin" "$kit_tree" "$release" \
+      "$refresh_source" "$refresh_remote_id"
     evidence_values="$(validated_suite_evidence \
       "$sha" "$kit_origin" "$kit_tree" "$release")" ||
       die "fresh kit-suite evidence failed validation"
@@ -2413,6 +2524,7 @@ cmd_certify() {
   evidence_digest="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $2}')"
   evidence_created="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $3}')"
   evidence_expires="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $4}')"
+  evidence_source="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $5}')"
   release_lock "$lock"
   run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
     "$workspace" "$product_top" "$release" ||
@@ -2450,14 +2562,14 @@ cmd_certify() {
     "$created" "$expires" "$receipt_id" "$previous_generation" \
     "$CERTIFICATION_TOOL_VERSION" "$evidence_id" "$evidence_digest" \
     "$evidence_created" "$evidence_expires" "$DEFAULT_SUITE_EVIDENCE_TTL" \
-    "$KIT_SUITE_DEFINITION" "$suite_reused" "$release" \
+    "$KIT_SUITE_DEFINITION" "$suite_reused" "$release" "$evidence_source" \
     <<'PY' | atomic_json_from_stdin "$receipt"
 import json, sys, time
 (slug, sha, kit_tree, kit_origin, product_path, product_origin, product_tree,
  kit_pin_hash, project_env_hash, contract, host, os_name, architecture,
  created, expires, receipt_id, previous_generation, tool_version, evidence_id,
  evidence_digest, evidence_created, evidence_expires, evidence_ttl,
- suite_definition, suite_reused, release) = sys.argv[1:]
+ suite_definition, suite_reused, release, evidence_source) = sys.argv[1:]
 value = {
     "schema_version": 2,
     "certification_tool_version": int(tool_version),
@@ -2501,6 +2613,7 @@ value = {
         "created_epoch": int(evidence_created),
         "expires_epoch": int(evidence_expires),
         "reused": suite_reused == "true",
+        "verification_source": evidence_source,
     },
     "checks": {
         "kit_suite": "pass",
