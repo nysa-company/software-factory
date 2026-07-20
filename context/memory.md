@@ -392,3 +392,9 @@ Preflight durably initializes the ignored runs root. Ticket-and-role `mkdir` cla
 Category: System change
 
 The sealed Claude readiness probe allows 30 seconds for local CLI startup. A timeout or nonzero help probe is unavailable, while successful help output missing a required flag is invalid and names that flag. Both states still fail pinned-route verification; the distinction prevents slow startup from being misreported as CLI contract drift.
+
+## 2026-07-19 — Decision 24: Selector fixtures isolate the full-suite control flag
+
+Category: System change
+
+The selective-CI self-test clears the outer `CI_FORCE_FULL` controller flag for ordinary fixture cases and retains a separate explicit force-full assertion. Protected-main full verification can therefore exercise selector behavior without forcing every nested fixture to report the controller mode.
