@@ -11,6 +11,7 @@ import argparse
 import csv
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -413,6 +414,7 @@ def normalize_md(text):
     lines = []
     for line in (text or "").splitlines():
         line = re.sub(r"^(\s*)\*(\s)", r"\1-\2", line)
+        line = re.sub(r"(\[[^\]\n]*\]\()<([^<>\n]+)>(\))", r"\1\2\3", line)
         lines.append(line.rstrip())
     return "\n".join(lines).strip()
 
@@ -661,16 +663,67 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
 
 
 def fetch_issue(key, issue_id):
-    return gql(
+    issue = gql(
         key,
         """query($id: String!) { issue(id: $id) {
              id identifier title description priority updatedAt
              state { id name } project { id } labels { nodes { id name } }
              assignee { id }
-             comments { nodes { id body createdAt updatedAt user { id name } } }
+             comments(last: 100) {
+               nodes { id body createdAt updatedAt user { id name } }
+               pageInfo { hasPreviousPage startCursor }
+             }
            } }""",
         {"id": issue_id},
     )["issue"]
+    comments = issue.get("comments")
+    if (
+        not isinstance(comments, dict)
+        or not isinstance(comments.get("nodes"), list)
+        or not isinstance(comments.get("pageInfo"), dict)
+        or "hasPreviousPage" not in comments["pageInfo"]
+    ):
+        raise RuntimeError("Linear comment history is incomplete")
+    nodes = list(comments["nodes"])
+    page_info = comments["pageInfo"]
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+        seconds=FALLBACK_APPROVAL_TTL_SECONDS
+    )
+
+    def covers_approval_window():
+        for comment in nodes:
+            try:
+                created = dt.datetime.fromisoformat(
+                    (comment.get("createdAt") or "").replace("Z", "+00:00")
+                )
+            except (AttributeError, ValueError):
+                continue
+            if created.tzinfo is not None and created <= cutoff:
+                return True
+        return page_info.get("hasPreviousPage") is False
+
+    while not covers_approval_window():
+        cursor = page_info.get("startCursor")
+        if not isinstance(cursor, str) or not cursor:
+            raise RuntimeError("Linear comment history is incomplete: missing cursor")
+        page = gql(
+            key,
+            """query($id: String!, $before: String!) { issue(id: $id) {
+                 comments(last: 100, before: $before) {
+                   nodes { id body createdAt updatedAt user { id name } }
+                   pageInfo { hasPreviousPage startCursor }
+                 }
+               } }""",
+            {"id": issue_id, "before": cursor},
+        )["issue"]["comments"]
+        if not isinstance(page, dict) or not isinstance(page.get("nodes"), list):
+            raise RuntimeError("Linear comment history is incomplete")
+        nodes[:0] = page["nodes"]
+        page_info = page.get("pageInfo") or {}
+        if "hasPreviousPage" not in page_info:
+            raise RuntimeError("Linear comment history is incomplete")
+    issue["comments"] = {"nodes": nodes, "pageInfo": page_info}
+    return issue
 
 
 def ingest_fallback_approval(actual, entry, dry):
@@ -820,11 +873,13 @@ def post_comment(key, issue_id, body, dry):
         return
     if len(body) > MAX_COMMENT_CHARS:
         body = body[:MAX_COMMENT_CHARS] + "\n\n*[truncated by linear-sync]*"
-    gql(
+    result = gql(
         key,
         "mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
         {"input": {"issueId": issue_id, "body": body}},
     )
+    if result.get("commentCreate", {}).get("success") is not True:
+        raise RuntimeError("Linear commentCreate did not succeed")
 
 
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
@@ -854,7 +909,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 "issue_id": None,
                 "identifier": None,
                 "log_cursor": 0,
-                "bundle_posted": False,
+                "bundle_digest": None,
                 "operator_fields_initialized": False,
             }
             if not dry:
@@ -914,7 +969,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
             if desired_state_id and actual["state"]["id"] != desired_state_id:
                 patch["stateId"] = desired_state_id
             if (
-                ticket["state"] == "blocked-escalated"
+                ticket["state"] in {"blocked-escalated", "awaiting approval"}
                 and viewer_id
                 and (actual.get("assignee") or {}).get("id") != viewer_id
             ):
@@ -935,11 +990,13 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 if dry:
                     log(f"{ticket['id']}: DRY would patch {sorted(patch)}")
                 else:
-                    gql(
+                    result = gql(
                         key,
                         "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
                         {"id": entry["issue_id"], "input": patch},
                     )
+                    if result.get("issueUpdate", {}).get("success") is not True:
+                        raise RuntimeError("Linear issueUpdate did not succeed")
                     log(f"{ticket['id']}: patched {sorted(patch)}")
             if not dry and not entry.get("operator_fields_initialized"):
                 entry["operator_fields_initialized"] = True
@@ -956,8 +1013,12 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
         bundle_text, _bundle_ref = committed_factory_file(
             factory_dir, ticket["id"], bundle.name
         )
+        bundle_digest = (
+            hashlib.sha256(bundle_text.encode()).hexdigest()
+            if bundle_text is not None else None
+        )
         if (
-            not entry.get("bundle_posted")
+            entry.get("bundle_digest") != bundle_digest
             and entry.get("issue_id")
             and (
                 ticket["state"] in ("awaiting approval", "approved", "done")
@@ -970,7 +1031,8 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
         ):
             post_comment(key, entry["issue_id"], "**Evidence bundle**\n\n" + bundle_text, dry)
             if not dry:
-                entry["bundle_posted"] = True
+                entry["bundle_digest"] = bundle_digest
+                entry.pop("bundle_posted", None)
                 save_map(map_path, mapping)
 
 

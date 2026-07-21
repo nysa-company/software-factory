@@ -43,7 +43,7 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 
 Set up the shared Software Factory team per `docs/workflows/linear.md`: compact phase-level workflow states, the factory issue template, risk/external labels, and one Linear Project per file in `factory/initiatives/`.
 
-Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Blocked-Escalated tickets.
+Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Awaiting Approval and Blocked-Escalated tickets.
 
 ## Step 5 — Hermes release boundary
 
