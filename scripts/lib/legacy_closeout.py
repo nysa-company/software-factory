@@ -701,6 +701,13 @@ def _terminal_backfill_batch_at(repo, commit):
     return terminal_backfill_batch(Path(repo), commit)
 
 
+@lru_cache(maxsize=64)
+def _protected_merge_reconciliation_batch_at(repo, commit):
+    from protected_merge_reconciliation import reconciliation_batch
+
+    return reconciliation_batch(Path(repo), commit)
+
+
 def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     if not isinstance(ticket, str) or not TICKET_ID.fullmatch(ticket):
         raise ValidationError("invalid ticket identifier")
@@ -710,10 +717,12 @@ def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     normal = _normal_terminal(repo, ticket, commit)
     legacy = _legacy_batch_at(str(repo), commit)
     backfill = _terminal_backfill_batch_at(str(repo), commit)
+    reconciliation = _protected_merge_reconciliation_batch_at(str(repo), commit)
     evidence_count = sum((
         normal is not None,
         ticket in legacy,
         ticket in backfill,
+        ticket in reconciliation,
     ))
     if evidence_count > 1:
         raise ValidationError("ticket has conflicting protected-main terminal evidence")
@@ -723,4 +732,6 @@ def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
         return dict(legacy[ticket])
     if ticket in backfill:
         return dict(backfill[ticket])
+    if ticket in reconciliation:
+        return dict(reconciliation[ticket])
     raise ValidationError("protected main lacks valid terminal evidence")
