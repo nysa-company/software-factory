@@ -237,6 +237,8 @@ for session_file in cli-config.json auth.json; do
 done
 grep -Fq 'com.apple.securityd' "$cursor_root/runtime/cursor.sb" ||
   fail "Cursor profile does not deny Keychain access"
+grep -Fq '(allow file-ioctl)' "$cursor_root/runtime/cursor.sb" ||
+  fail "Cursor profile does not permit browser-login terminal control"
 bad_hash="${approval_hash%?}0"
 [[ "$bad_hash" != "$approval_hash" ]] || bad_hash="${approval_hash%?}1"
 expect_failure "wrong cursor approval hash" cursor_env bash "$LANE" cursor-run \

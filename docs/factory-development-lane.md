@@ -23,7 +23,7 @@ bash scripts/factory-dev-lane.sh cursor-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-`cursor-plan` creates an owner-only CLI configuration and browser-authenticated session inside the disposable home; it does not read the normal Cursor profile and Keychain access remains denied. It binds the one-use approval to both session files, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. Cleanup deletes the session. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
+`cursor-plan` creates an owner-only CLI configuration and browser-authenticated session inside the disposable home; it does not read the normal Cursor profile and Keychain access remains denied. Cursor mode permits terminal ioctl only for the interactive login. It binds the one-use approval to both session files, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. Cleanup deletes the session. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
 
 ## Cleanup and boundaries
 

@@ -242,7 +242,8 @@ base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow signal (target same-sandbox))\n',
          '(deny mach-lookup (global-name "com.apple.securityd"))\n']
 pathlib.Path(root, "runtime/mock.sb").write_text("".join(base) + "(deny network*)\n")
-cursor_network = ('(allow network-bind (local ip "localhost:*"))\n'
+cursor_network = ('(allow file-ioctl)\n'
+                  '(allow network-bind (local ip "localhost:*"))\n'
                   '(allow network-inbound (local ip "localhost:*"))\n'
                   '(allow network-outbound (remote ip "localhost:*"))\n'
                   '(allow network-outbound)\n')
