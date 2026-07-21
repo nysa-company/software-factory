@@ -146,9 +146,12 @@ if [[ -z "$TERMINAL_BASIS" ]] &&
   echo "REFUSE $FACTORY_TICKET_KIT_ERROR"
   exit 1
 fi
-if [[ "$TERMINAL_BASIS" == "validated-legacy-closeout" ||
-      "$TERMINAL_BASIS" == "validated-protected-merge-reconciliation" ]]; then
+if [[ "$TERMINAL_BASIS" == "validated-legacy-closeout" ]]; then
   echo "COMPLETE validated legacy closeout is on protected main; no historical lease is implied"
+  exit 0
+fi
+if [[ "$TERMINAL_BASIS" == "validated-protected-merge-reconciliation" ]]; then
+  echo "COMPLETE validated protected-merge reconciliation is on protected main; no historical lease is implied"
   exit 0
 fi
 if [[ "$TERMINAL_BASIS" == "validated-terminal-backfill" ]]; then
