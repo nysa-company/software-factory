@@ -43,6 +43,7 @@ cursor_env() {
   FACTORY_DEV_LANE_UNAME=Darwin \
   FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
   FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
+  FACTORY_DEV_LANE_CURSOR_SESSION_ROOT="$CALLER_HOME/.cursor" \
   HOME="$CALLER_HOME" \
   TMPDIR="$TMP/lanes" \
   "$@"
@@ -50,11 +51,14 @@ cursor_env() {
 
 clean_cmd() { TMPDIR="$TMP/lanes" bash "$LANE" clean --root "$1"; }
 
-mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" \
+mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" "$CALLER_HOME/.cursor" \
   "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents"
 printf 'factory production sentinel\n' >"$CALLER_HOME/.factory/sentinel"
 printf 'profile production sentinel\n' >"$CALLER_HOME/.hermes/profiles/factory/sentinel"
 printf 'service production sentinel\n' >"$CALLER_HOME/Library/LaunchAgents/sentinel"
+printf '{"accessToken":"test","refreshToken":"test"}\n' >"$CALLER_HOME/.cursor/auth.json"
+printf '{}\n' >"$CALLER_HOME/.cursor/cli-config.json"
+chmod 600 "$CALLER_HOME/.cursor/"*.json
 sentinels_before="$(cksum "$CALLER_HOME/.factory/sentinel" \
   "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
   "$CALLER_HOME/Library/LaunchAgents/sentinel")"
@@ -72,7 +76,6 @@ case "${1:-}" in
   --version) printf '2026.07.17-test\n' ;;
   --help) printf '%s\n' --print --output-format --workspace --model --force --trust ;;
   status) [[ -f "$HOME/.cursor/auth.json" ]] || exit 1; printf '{"authenticated":true}\n' ;;
-  login) printf '{"accessToken":"test","refreshToken":"test"}\n' > "$HOME/.cursor/auth.json" ;;
   models) printf '%s\n' gpt-5.6-sol-high claude-fable-5-thinking-medium \
     claude-sonnet-5-thinking-high ;;
   *) exit 42 ;;
@@ -229,16 +232,19 @@ approval_hash="$(sed -n 's/^APPROVE_HASH=//p' "$OUT")"
 [[ "$cursor_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "cursor plan returned an unsafe root"
 [[ "$approval_hash" =~ ^[0-9a-f]{64}$ ]] || fail "cursor plan returned an invalid approval hash"
 for session_file in cli-config.json auth.json; do
-  [[ -f "$cursor_root/home/.cursor/$session_file" &&
-     ! -L "$cursor_root/home/.cursor/$session_file" ]] ||
-    fail "Cursor session file is not lane-local: $session_file"
-  [[ "$(stat -f '%Lp' "$cursor_root/home/.cursor/$session_file")" == 600 ]] ||
-    fail "Cursor session file is not owner-only: $session_file"
+  [[ -L "$cursor_root/home/.cursor/$session_file" ]] ||
+    fail "Cursor session bridge is not a symlink: $session_file"
+  [[ "$(python3 - "$cursor_root/home/.cursor/$session_file" <<'PY'
+import os,sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)" == "$CALLER_HOME/.cursor/$session_file" ]] ||
+    fail "Cursor session bridge target changed: $session_file"
 done
-grep -Fq 'com.apple.securityd' "$cursor_root/runtime/cursor.sb" ||
-  fail "Cursor profile does not deny Keychain access"
-grep -Fq '(allow file-ioctl)' "$cursor_root/runtime/cursor.sb" ||
-  fail "Cursor profile does not permit browser-login terminal control"
+grep -Fq 'com.apple.securityd' "$cursor_root/runtime/mock.sb" ||
+  fail "mock profile does not deny Keychain access"
+grep -Fq 'com.apple.securityd' "$cursor_root/runtime/cursor.sb" &&
+  fail "Cursor profile blocks its existing CLI session"
 bad_hash="${approval_hash%?}0"
 [[ "$bad_hash" != "$approval_hash" ]] || bad_hash="${approval_hash%?}1"
 expect_failure "wrong cursor approval hash" cursor_env bash "$LANE" cursor-run \

@@ -194,10 +194,10 @@ PY
 }
 
 write_seatbelt_profiles() {
-  local root="$1" cursor="$2"
-  python3 - "$root" "$cursor" <<'PY'
+  local root="$1" cursor="$2" session_root="${3:-}"
+  python3 - "$root" "$cursor" "$session_root" <<'PY'
 import json, os, pathlib, sys
-root, cursor = sys.argv[1:]
+root, cursor, session_root = sys.argv[1:]
 system = [
     "/System", "/bin", "/sbin", "/usr/bin", "/usr/lib", "/usr/libexec",
     "/usr/share", "/etc", "/private/etc", "/private/var/db/timezone",
@@ -217,7 +217,9 @@ for entry in pathlib.Path(root, "home").iterdir():
             item=developer / relative
             if item.is_dir() and str(item) not in tools: tools.append(str(item))
 reads=[]
-for item in system + tools + [root]:
+session=[] if not session_root else [str(pathlib.Path(session_root, name).resolve())
+                                     for name in ("auth.json", "cli-config.json")]
+for item in system + tools + [root] + session:
     if item not in reads: reads.append(item)
 metadata={"/"}
 for item in reads:
@@ -239,11 +241,11 @@ base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow file-read-metadata (literal "/dev"))\n',
          '(allow file-read* (subpath "/dev/fd"))\n',
          '(allow file-write* (subpath "/dev/fd"))\n',
-         '(allow signal (target same-sandbox))\n',
-         '(deny mach-lookup (global-name "com.apple.securityd"))\n']
-pathlib.Path(root, "runtime/mock.sb").write_text("".join(base) + "(deny network*)\n")
-cursor_network = ('(allow file-ioctl)\n'
-                  '(allow network-bind (local ip "localhost:*"))\n'
+         '(allow signal (target same-sandbox))\n']
+pathlib.Path(root, "runtime/mock.sb").write_text(
+    "".join(base) + '(deny mach-lookup (global-name "com.apple.securityd"))\n'
+    + "(deny network*)\n")
+cursor_network = ('(allow network-bind (local ip "localhost:*"))\n'
                   '(allow network-inbound (local ip "localhost:*"))\n'
                   '(allow network-outbound (remote ip "localhost:*"))\n'
                   '(allow network-outbound)\n')
@@ -253,7 +255,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent
+  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent session_root
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -345,8 +347,17 @@ EOF
   git -C "$root/worktrees/$TICKET" push -q -u origin "ticket/$TICKET"
   if [[ "$mode" == cursor ]]; then
     mkdir -p "$root/home/.cursor"
-    printf '{}\n' > "$root/home/.cursor/cli-config.json"
-    chmod 600 "$root/home/.cursor/cli-config.json"
+    session_root="$ACCOUNT_HOME/.cursor"
+    if [[ "$TEST_MODE" -eq 1 && -n "${FACTORY_DEV_LANE_CURSOR_SESSION_ROOT:-}" ]]; then
+      session_root="$FACTORY_DEV_LANE_CURSOR_SESSION_ROOT"
+    fi
+    session_root="$(physical "$session_root")" || die "Cursor CLI session directory is unavailable"
+    refuse_production_path "$session_root"
+    for tool in auth.json cli-config.json; do
+      [[ -f "$session_root/$tool" && ! -L "$session_root/$tool" ]] ||
+        die "Cursor CLI session file is unavailable: $tool"
+      ln -s "$session_root/$tool" "$root/home/.cursor/$tool"
+    done
     cursor="$(cursor_bin)"
     timeout_bin="$(command -v timeout 2>/dev/null || true)"
     [[ "$timeout_bin" == /* && -x "$timeout_bin" ]] ||
@@ -358,9 +369,10 @@ PY
 )" "$root/home/timeout"
   else
     cursor=/usr/bin/true
+    session_root=""
   fi
   ln -s "$cursor" "$root/home/agent"
-  write_seatbelt_profiles "$root" "$cursor"
+  write_seatbelt_profiles "$root" "$cursor" "$session_root"
   python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
     "$tmp_parent" <<'PY'
 import json, os, sys
@@ -464,13 +476,9 @@ run_mock_internal() {
 cursor_probe_and_pin() {
   local root="$1" version openai anthropic route_plan approval_hash
   require_lane_mode "$root" cursor
-  if ! "$root/home/agent" status >/dev/null 2>&1; then
-    "$root/home/agent" login || die "Cursor browser login failed"
-  fi
   "$root/home/agent" status >/dev/null 2>&1 || die "Cursor CLI session is not authenticated"
-  [[ -f "$root/home/.cursor/auth.json" && ! -L "$root/home/.cursor/auth.json" ]] ||
-    die "Cursor browser login did not create a lane-local session"
-  chmod 600 "$root/home/.cursor/auth.json"
+  [[ -L "$root/home/.cursor/auth.json" && -L "$root/home/.cursor/cli-config.json" ]] ||
+    die "Cursor CLI session bridge is unavailable"
   version="$("$root/home/agent" --version | awk 'NF {print $NF; exit}')"
   [[ -n "$version" ]] || die "Cursor version probe was empty"
   openai="$(python3 - "$root/kit/scripts/model-routing/catalog-v1.json" <<'PY'
