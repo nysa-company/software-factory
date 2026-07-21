@@ -255,6 +255,24 @@ same-UID token exposure remains until a broker or OS isolation is used.
   checks and approvals. Conflicts with normal attestations or the first legacy
   batch fail closed.
 
+## One-time protected-merge reconciliation
+
+- Notice: this is a migration-only adoption of an exact authorized batch whose
+  product changes already reached protected main but whose older factory
+  evidence cannot be refreshed safely. It is not ordinary in-flight migration,
+  normal Done closeout, or a reusable compatibility mode.
+- Do: generate from a reviewed request and clean protected-main basis with
+  `scripts/protected-merge-reconciliation.py --product <repo> --request
+  <reviewed-request.json>`. Review the authorization, exact receipt set,
+  immutable per-ticket `evidence_head`, source/review/merge/check evidence,
+  current product blobs, basis and target kits, and fresh operator adoption.
+- Do: commit the complete authorization, receipts, Done/Migration ticket
+  projections, and target `KIT_PIN` together. Disable auto-merge and bypass;
+  only the manual protected merge of that exact product head grants authority.
+- Don't: migrate or repin the reconciled tickets, synthesize missing approval,
+  accept a partial/extra batch, hand-edit generated evidence, or use the format
+  for later tickets. Any protected-basis or batch drift requires regeneration.
+
 ## Test commit order before operator review
 
 - Notice: reviewer approved but CI fails the test-immutability gate because test commits came after implementation.
@@ -312,45 +330,54 @@ same-UID token exposure remains until a broker or OS isolation is used.
 
 ## Preparing and activating a release
 
-1. Confirm the candidate full SHA is on `origin/main` and the required
-   aggregate `ci` check passed on Linux and macOS.
-2. Inventory every nonterminal ticket and its committed `Kit-SHA`. Finish it
-   on its current release or prepare the exact protected-main in-flight
-   authorization described below. Do not migrate its pin or route journal yet.
-3. For an active execution computer, publish managed maintenance, stop new
+1. Confirm the candidate full SHA is the current `origin/main` and its exact
+   authenticated push run has all three Linux shards, all three macOS shards,
+   aggregate `ci`, and `test-immutability` successful.
+2. Install that exact sealed candidate. Reuse only the protected-main evidence
+   from step 1 and run the local sandboxed host smoke; never substitute a local
+   complete factory suite.
+3. Inventory every nonterminal ticket and its committed `Kit-SHA`. Finish it
+   on its current release or prepare the applicable exact protected-main
+   migration evidence. Do not migrate its pin or route journal yet.
+4. For an active execution computer, publish managed maintenance, stop new
    dispatch, and drain every run and dispatcher lease before changing
    user-scoped tools. For an inactive replacement computer, keep its
    dispatcher, reconciler, and LaunchAgent disabled.
-4. On the computer that will execute factory roles, verify the configured
+5. From current product `origin/main`, prepare one clean canonical product
+   checkout and commit the candidate `KIT_PIN`, operator-approved envelope
+   values, and complete migration evidence on one migration branch. The tree
+   proposed for the product PR must be the exact tree certified below.
+6. On the computer that will execute factory roles, verify the configured
    `CODEX_PINNED`, `CLAUDE_CODE_PINNED`, and `CURSOR_AGENT_VERSION` values,
    controlled physical CLI paths, and `scripts/adapters/contract-test.sh
    --routes`. Update and verify the Nysa Agents plugin for both Codex and
    Claude, restart agent sessions, and plan the repository baseline before
    certification. A baseline diff is a separate product change, not migration
    drift.
-5. Verify Node 22 and any product certification dependency, including the
-   product's configured local PostgreSQL endpoint, then run `factory-kit.sh
-   install` and `certify`. Record the receipt ID and expiry.
-6. Complete the real-Hermes canary with a separate sandbox product and
+7. Verify Node 22 and any product certification dependency, including the
+   product's configured local PostgreSQL endpoint, then certify the exact
+   committed canonical product path and tree. Record the receipt ID and expiry.
+8. Complete the real-Hermes canary with a separate sandbox product and
    profile. Never copy the production `.env`, secrets, board mapping, registry,
    ledger, or LaunchAgent.
-7. Confirm no active runs and no unauthorized nonterminal ticket with a
+9. Confirm no active runs and no unauthorized nonterminal ticket with a
    different `Kit-SHA`. Activation scans committed local, tracking, and live
    remote ticket sources; a Done claim also requires a valid normal attestation
    chain or protected-main legacy closeout.
-8. Merge the product's candidate `KIT_PIN` through the protected PR. Include
-   only the exact in-flight authorization when step 2 requires it, then verify
-   the merged product tree still matches the receipt.
-9. At replacement-host cutover, publish maintenance on the old host and wait
+10. Open the already-certified product commit as a protected PR and stop for
+    operator approval. Include only the exact complete migration evidence
+    required by step 3. After merge, require canonical protected main's tracked
+    tree to match the certification receipt exactly.
+11. At replacement-host cutover, publish maintenance on the old host and wait
    for its runs and leases to drain. Confirm the old dispatcher is stopped;
    if that cannot be proven, revoke its execution access before proceeding.
-10. Run `factory-kit.sh plan`. It must report `No files were changed.`
-11. Stop only the product factory profile and reconciler. Leave the dashboard
+12. Run `factory-kit.sh plan`. It must report `No files were changed.`
+13. Stop only the product factory profile and reconciler. Leave the dashboard
    and primary Hermes profile alone.
-12. Run `factory-kit.sh activate`, restart the factory services, then collect
+14. Run `factory-kit.sh activate`, restart the factory services, then collect
    doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
    probes.
-13. For an authorized in-flight cutover, keep maintenance while reviewing each
+15. For an authorized in-flight cutover, keep maintenance while reviewing each
    sealed `models migrate-plan`, then remove maintenance and apply only its
    operator-approved `models migrate`; claim fresh leases afterward. Without
    in-flight tickets, remove maintenance only after every acceptance check
