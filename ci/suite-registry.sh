@@ -35,6 +35,7 @@ suite_registry() {
   "$callback" ticket-attest "ticket attestation suite" python3 "$ROOT/ci/ticket-attest-test.py"
   "$callback" legacy-closeout "legacy closeout suite" python3 "$ROOT/ci/legacy-closeout-test.py"
   "$callback" terminal-backfill "terminal backfill suite" python3 "$ROOT/ci/terminal-backfill-test.py"
+  "$callback" protected-merge-reconciliation "protected merge reconciliation suite" python3 "$ROOT/ci/protected-merge-reconciliation-test.py"
   "$callback" hermes-contract "Hermes contract suite" bash "$ROOT/ci/hermes-contract-test.sh"
   "$callback" factory-kit "factory kit release suite" bash "$ROOT/ci/factory-kit-test.sh"
   "$callback" conformance "conformance app suite" run_conformance

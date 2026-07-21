@@ -279,6 +279,8 @@ PY
   cp "$ROOT/scripts/operator-state.py" "$release/scripts/operator-state.py"
   cp -R "$ROOT/scripts/model-routing" "$release/scripts/model-routing"
   cp "$ROOT/scripts/lib/backend-policy.sh" "$release/scripts/lib/backend-policy.sh"
+  cp "$ROOT/scripts/lib/cursor-model-families.txt" \
+    "$release/scripts/lib/cursor-model-families.txt"
   cp "$ROOT/scripts/lib/kit-pin.sh" "$release/scripts/lib/kit-pin.sh"
   cp "$ROOT/scripts/lib/plain-config.sh" "$release/scripts/lib/plain-config.sh"
   cp "$ROOT/scripts/lib/product-remote.sh" "$release/scripts/lib/product-remote.sh"

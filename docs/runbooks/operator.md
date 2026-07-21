@@ -267,11 +267,13 @@ same-UID token exposure remains until a broker or OS isolation is used.
   immutable per-ticket `evidence_head`, source/review/merge/check evidence,
   current product blobs, basis and target kits, and fresh operator adoption.
 - Do: commit the complete authorization, receipts, Done/Migration ticket
-  projections, and target `KIT_PIN` together. Disable auto-merge and bypass;
-  only the manual protected merge of that exact product head grants authority.
+  projections, target `KIT_PIN`, and any explicitly authorized companion
+  path/blob entries together. Disable auto-merge and bypass; only the manual
+  protected merge of that exact product head grants authority.
 - Don't: migrate or repin the reconciled tickets, synthesize missing approval,
-  accept a partial/extra batch, hand-edit generated evidence, or use the format
-  for later tickets. Any protected-basis or batch drift requires regeneration.
+  accept a partial/extra batch or an unbound companion, hand-edit generated
+  evidence, or use the format for later tickets. Any protected-basis or batch
+  drift requires regeneration.
 
 ## Test commit order before operator review
 

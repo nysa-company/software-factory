@@ -52,7 +52,9 @@ this exact order:
    {{PRODUCT_REPO_ABSOLUTE_PATH}} --request <reviewed-request.json>`. Require
    one authorization, the complete exact receipt batch for T-024, T-030, and
    T-031, their Done/Migration ticket projections, and the new `KIT_PIN` in
-   the same product commit. T-024 uses `reviewed-clean-history-adoption`;
+   the same product commit. Bind the already-reviewed T-032 ticket and ruling
+   as exact companion path/blob entries; any other companion is forbidden.
+   T-024 uses `reviewed-clean-history-adoption`;
    T-030 and T-031 use `merged-adoption`. Preserve authentic approval evidence
    exactly as required by the source state. Bind each ticket's immutable
    `evidence_head`; for T-024 require its ancestry into the original reviewed
