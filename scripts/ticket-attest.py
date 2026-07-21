@@ -467,6 +467,23 @@ def reviewer_sequences(text):
     return verdicts, voids
 
 
+REFRESH_RECEIPT_KEYS = {
+    "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
+    "prior_reviewer_runs", "prior_approve_verdicts",
+    "prior_request_changes_verdicts", "prior_narrator_runs",
+    "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
+}
+
+
+def unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+
 def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer, narrator):
     relative = f"factory/attestations/{ticket}/refresh.json"
     path = workdir / relative
@@ -480,32 +497,24 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
     if not safe_optional_attestation(path):
         raise Refusal("refresh receipt is unsafe")
 
-    def unique_object(pairs):
-        value = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError("duplicate key")
-            value[key] = item
-        return value
-
     try:
-        receipt = json.loads(path.read_text(), object_pairs_hook=unique_object)
+        receipt = json.loads(path.read_text(), object_pairs_hook=unique_json_object)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         raise Refusal("refresh receipt is malformed")
-    expected = {
-        "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
-        "prior_reviewer_runs", "prior_approve_verdicts",
-        "prior_request_changes_verdicts", "prior_narrator_runs",
-        "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
-    }
+    if not isinstance(receipt, dict):
+        raise Refusal("refresh receipt is malformed")
     counts = [receipt.get(name) for name in (
         "prior_reviewer_runs", "prior_approve_verdicts",
         "prior_request_changes_verdicts", "prior_narrator_runs",
     )]
+    generation = receipt.get("generation")
     if (
-        set(receipt) != expected
+        set(receipt) != REFRESH_RECEIPT_KEYS
         or receipt.get("schema") != "nysa.software-factory.ticket-refresh/v1"
         or receipt.get("ticket") != ticket
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
         or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts)
         or counts[0] != counts[1] + counts[2]
         or not all(valid_oid(receipt.get(name)) for name in ("old_head", "base_head", "merge_head"))
@@ -517,6 +526,35 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
     parents = git(workdir, "rev-list", "--parents", "-n", "1", receipt_commit).stdout.split()
     if parents != [receipt_commit, receipt["merge_head"]]:
         raise Refusal("refresh receipt commit topology is invalid")
+    merge_parents = git(
+        workdir, "rev-list", "--parents", "-n", "1", receipt["merge_head"],
+    ).stdout.split()
+    if merge_parents != [
+        receipt["merge_head"], receipt["old_head"], receipt["base_head"],
+    ]:
+        raise Refusal("refresh merge topology is invalid")
+    previous_result = git(
+        workdir, "show", f"{receipt['old_head']}:{relative}", check=False,
+    )
+    expected_generation = 1
+    if previous_result.returncode == 0:
+        try:
+            previous = json.loads(previous_result.stdout, object_pairs_hook=unique_json_object)
+            previous_generation = previous.get("generation")
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            raise Refusal("prior refresh receipt is malformed")
+        if (
+            set(previous) != REFRESH_RECEIPT_KEYS
+            or previous.get("schema") != "nysa.software-factory.ticket-refresh/v1"
+            or previous.get("ticket") != ticket
+            or isinstance(previous_generation, bool)
+            or not isinstance(previous_generation, int)
+            or previous_generation < 1
+        ):
+            raise Refusal("prior refresh generation is invalid")
+        expected_generation = previous_generation + 1
+    if generation != expected_generation:
+        raise Refusal("refresh generation is not continuous")
     old_ticket = git(
         workdir, "show", f"{receipt['old_head']}:factory/tickets/{ticket}.md",
     ).stdout
@@ -1237,16 +1275,17 @@ def refresh(args, product, workdir, repo, prefix, remote):
     ).stdout.strip():
         raise Refusal("historical refresh receipt is missing from the ticket head")
     if had_previous:
-        previous = json.loads(previous_path.read_text())
-        expected_refresh_keys = {
-            "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
-            "prior_reviewer_runs", "prior_approve_verdicts",
-            "prior_request_changes_verdicts", "prior_narrator_runs",
-            "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
-        }
+        try:
+            previous = json.loads(
+                previous_path.read_text(), object_pairs_hook=unique_json_object,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise Refusal("existing refresh receipt is malformed")
+        if not isinstance(previous, dict):
+            raise Refusal("existing refresh receipt is malformed")
         previous_generation = previous.get("generation")
         if (
-            set(previous) != expected_refresh_keys
+            set(previous) != REFRESH_RECEIPT_KEYS
             or previous.get("schema") != "nysa.software-factory.ticket-refresh/v1"
             or previous.get("ticket") != args.ticket
             or isinstance(previous_generation, bool)

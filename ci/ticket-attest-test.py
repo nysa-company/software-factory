@@ -723,6 +723,91 @@ else:
         command("git", "push", "-q", "origin", "main", cwd=updater)
         self.assertIn("historical refresh receipt", self.attest("refresh").stderr)
 
+    def test_bundle_refuses_forged_refresh_generation_and_topology(self):
+        old_head = self.head()
+        receipt = self.product / "factory/attestations/T-700/refresh.json"
+        receipt.parent.mkdir(parents=True)
+        forged = {
+            "schema": "nysa.software-factory.ticket-refresh/v1",
+            "ticket": "T-700",
+            "generation": 0,
+            "old_head": old_head,
+            "base_head": command(
+                "git", "rev-parse", "origin/main", cwd=self.product,
+            ).stdout.strip(),
+            "merge_head": old_head,
+            "prior_reviewer_runs": 1,
+            "prior_approve_verdicts": 1,
+            "prior_request_changes_verdicts": 0,
+            "prior_narrator_runs": 1,
+            "prior_bundle_blob": None,
+            "prior_approval_blob": None,
+            "refreshed_at": "2026-07-17T14:00:00Z",
+        }
+        receipt.write_text(json.dumps(forged, indent=2, sort_keys=True) + "\n")
+        self.commit("forge refresh receipt")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.assertIn("identity or baselines", self.attest("bundle").stderr)
+
+        forged["generation"] = 1
+        receipt.write_text(json.dumps(forged, indent=2, sort_keys=True) + "\n")
+        command("git", "add", str(receipt), cwd=self.product)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "--amend", "-qm", "forge refresh receipt", cwd=self.product,
+        )
+        command("git", "push", "-q", "--force", "origin", "ticket/T-700", cwd=self.product)
+        self.assertIn("refresh merge topology", self.attest("bundle").stderr)
+
+    def test_bundle_refuses_noncontinuous_refresh_generation(self):
+        updater = self.temp / "generation-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.assertEqual(self.attest("refresh").returncode, 0)
+        receipt = self.product / "factory/attestations/T-700/refresh.json"
+        value = json.loads(receipt.read_text())
+        value["generation"] = 2
+        receipt.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        command("git", "add", str(receipt), cwd=self.product)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "--amend", "-qm", "record ticket refresh", cwd=self.product,
+        )
+        command("git", "push", "-q", "--force", "origin", "ticket/T-700", cwd=self.product)
+        self.assertIn("generation is not continuous", self.attest("bundle").stderr)
+
+    def test_refresh_refuses_duplicate_generation_in_prior_receipt(self):
+        updater = self.temp / "duplicate-generation-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("first protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.assertEqual(self.attest("refresh").returncode, 0)
+        receipt = self.product / "factory/attestations/T-700/refresh.json"
+        receipt.write_text(receipt.read_text().replace(
+            '  "generation": 1,\n', '  "generation": 1,\n  "generation": 7,\n',
+        ))
+        self.commit("duplicate refresh generation")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        (updater / "main-2.txt").write_text("second protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main again", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.assertIn("existing refresh receipt is malformed", self.attest("refresh").stderr)
+
     def prepare_done(self, **state):
         self.bundle()
         self.approval_overlay()
