@@ -24,6 +24,8 @@ Perform the software-factory kit release for candidate SHA {{SHA}}
 The execution computer is {{EXECUTION_HOST}} and this is an
 {{HOST_MODE: "active in-place" | "inactive replacement"}} migration. The
 approved Nysa Agents plugin version is {{NYSA_AGENTS_PLUGIN_VERSION}}.
+The approved CLI versions are Codex {{CODEX_CLI_VERSION}}, Claude Code
+{{CLAUDE_CODE_CLI_VERSION}}, and Cursor Agent {{CURSOR_AGENT_VERSION}}.
 
 Follow docs/runbooks/operator.md § "Preparing and activating a release"
 exactly, in order:
@@ -40,11 +42,15 @@ exactly, in order:
    and drain all runs and dispatcher leases before changing user-scoped tools.
    If it is an inactive replacement, keep its dispatcher, reconciler, and
    LaunchAgent disabled.
-4. Read the candidate machine pins `CODEX_PINNED`, `CLAUDE_CODE_PINNED`, and
-   `CURSOR_AGENT_VERSION`; install those exact CLI versions through the normal
-   controlled-path mechanism. Verify `codex --version`, `claude --version`,
-   `agent --version`, the physical targets under `~/.factory/bin`, and
-   `scripts/adapters/contract-test.sh --routes`. Stop on any mismatch.
+4. Require the candidate machine's `~/.factory/global.env` to pin
+   `CODEX_PINNED={{CODEX_CLI_VERSION}}`,
+   `CLAUDE_CODE_PINNED={{CLAUDE_CODE_CLI_VERSION}}`, and
+   `CURSOR_AGENT_VERSION={{CURSOR_AGENT_VERSION}}`. Install those exact CLI
+   versions through the normal controlled-path mechanism. Verify
+   `codex --version`, `claude --version`, `agent --version`, the physical
+   targets under `~/.factory/bin`, and
+   `scripts/adapters/contract-test.sh --routes`. Stop on any missing pin or
+   mismatch. Do not copy credentials from another computer.
 5. Upgrade and verify Nysa Agents on this execution computer:
    - `codex plugin marketplace upgrade nysa-agents-plugin`, then require
      `codex plugin list` to show Nysa Agents enabled at
