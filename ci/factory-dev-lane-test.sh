@@ -112,6 +112,22 @@ reported_elapsed="$(sed -n 's/^ELAPSED_SECONDS=//p' "$OUT")"
   fail "mock exceeded the 15-minute ceiling"
 
 [[ -f "$lane_root/marker.json" ]] || fail "lane ownership marker is missing"
+python3 - "$lane_root" "$TMP/lanes" <<'PY' || fail "lane ownership marker is not bound to its root"
+import json, os, stat, sys
+root, tmp_parent = sys.argv[1:]
+r = os.lstat(root)
+m = os.lstat(os.path.join(root, "marker.json"))
+v = json.load(open(os.path.join(root, "marker.json"), encoding="utf-8"))
+assert set(v) == {"schema", "root", "nonce", "kit_sha", "kit_tree", "mode",
+                  "uid", "root_dev", "root_ino", "tmp_parent"}
+assert v["root"] == root and v["uid"] == os.getuid()
+assert v["root_dev"] == r.st_dev and v["root_ino"] == r.st_ino
+assert v["tmp_parent"] == tmp_parent == os.path.dirname(root)
+assert stat.S_ISDIR(r.st_mode) and stat.S_IMODE(r.st_mode) == 0o700
+assert stat.S_ISREG(m.st_mode) and stat.S_IMODE(m.st_mode) == 0o600
+assert m.st_uid == r.st_uid == os.getuid() and m.st_dev == r.st_dev and m.st_nlink == 1
+assert m.st_ino != r.st_ino
+PY
 [[ -d "$lane_root/kit/.git" || -f "$lane_root/kit/.git" ]] || fail "lane-local kit is missing"
 if find "$lane_root" -type f \( -name active.json -o -path '*/receipts/*.json' \) -print -quit |
    grep -q .; then
@@ -144,6 +160,14 @@ with open(sys.argv[1], encoding="utf-8") as paths:
         actual.append(values["role"])
 assert sorted(actual) == sorted(expected), actual
 PY
+python3 - "$lane_root/product/factory/runtime-ledger.csv" <<'PY' || fail "runtime ledger role order changed"
+import csv, sys
+expected = ["planner", "spec-linter", "test-author", "builder", "reviewer", "narrator"]
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    rows = list(csv.DictReader(handle))
+assert [row["role"] for row in rows] == expected, rows
+assert all(row["exit_status"] == "0" for row in rows), rows
+PY
 
 profile="$lane_root/runtime/mock.sb"
 [[ -f "$profile" ]] || fail "Seatbelt profile was not retained"
@@ -154,6 +178,30 @@ for forbidden in "$CALLER_HOME/.factory" "$CALLER_HOME/.hermes/profiles/factory"
   "$CALLER_HOME/Library/LaunchAgents" "/Users/sofiagonzalez/Projects/nysa-company/nysa-app"; do
   grep -Fq "$forbidden" "$profile" && fail "mock profile names production path: $forbidden"
 done
+
+chmod 755 "$lane_root"
+expect_failure "root mode drift cleanup" clean_cmd "$lane_root"
+chmod 700 "$lane_root"
+chmod 644 "$lane_root/marker.json"
+expect_failure "marker mode drift cleanup" clean_cmd "$lane_root"
+chmod 600 "$lane_root/marker.json"
+
+ln "$lane_root/marker.json" "$TMP/marker.link"
+expect_failure "marker link-count drift cleanup" clean_cmd "$lane_root"
+rm "$TMP/marker.link"
+
+root_saved="$TMP/root.saved"
+mv "$lane_root" "$root_saved"
+mkdir -m 700 "$lane_root"
+mv "$root_saved/marker.json" "$lane_root/marker.json"
+expect_failure "root inode drift cleanup" clean_cmd "$lane_root"
+mv "$lane_root/marker.json" "$root_saved/marker.json"
+rmdir "$lane_root"
+mv "$root_saved" "$lane_root"
+
+mkdir "$TMP/other-parent"
+expect_failure "TMP parent drift cleanup" env TMPDIR="$TMP/other-parent" \
+  bash "$LANE" clean --root "$lane_root"
 
 clean_cmd "$lane_root"
 [[ ! -e "$lane_root" ]] || fail "clean retained the lane"
@@ -189,6 +237,14 @@ bad_hash="${approval_hash%?}0"
 [[ "$bad_hash" != "$approval_hash" ]] || bad_hash="${approval_hash%?}1"
 expect_failure "wrong cursor approval hash" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$bad_hash"
+cp "$FAKE_CURSOR" "$TMP/cursor-original"
+printf '\n# changed after approval\n' >>"$FAKE_CURSOR"
+expect_failure "Cursor binary byte drift" cursor_env bash "$LANE" cursor-run \
+  --root "$cursor_root" --approve-hash "$approval_hash"
+[[ -f "$cursor_root/runtime/cursor-approval" ]] ||
+  fail "Cursor binary drift consumed the approval"
+cp "$TMP/cursor-original" "$FAKE_CURSOR"
+chmod +x "$FAKE_CURSOR"
 # The fake provider fails after authorization. The approval must still be
 # consumed so a post-submission failure cannot be replayed.
 expect_failure "fake cursor execution" cursor_env bash "$LANE" cursor-run \
