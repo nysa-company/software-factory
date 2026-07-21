@@ -85,6 +85,9 @@ if [[ -s "$PROMPT_FILE" ]]; then
 
 $TASK"
 fi
+FULL_TASK="$FULL_TASK
+
+Cursor CLI control: stay in the default execution mode. Do not switch to Plan or Ask mode, invoke createPlan, or merely describe intended work. Execute the supplied role contract now while preserving its mutation limits."
 
 NORMALIZED="$(mktemp "${TMPDIR:-/tmp}/factory-cursor-metrics.XXXXXX")"
 cleanup_cursor() {
