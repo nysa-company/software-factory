@@ -972,6 +972,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
    [[ "$(awk -F, '$3=="T-211" {print $8}' "$FALLBACK/factory/runtime-ledger.csv")" == "1.00" ]] &&
    [[ "$(wc -l < "$FALLBACK_TRACE" | tr -d ' ')" == "1" ]] &&
    grep -q -- '--model gpt-5.6-sol-high' "$FALLBACK_ARGS" &&
+   tail -n 1 "$FALLBACK_ARGS" | grep -Fqx -- 'Cursor CLI control: stay in the default execution mode. Do not switch to Plan or Ask mode, invoke createPlan, or merely describe intended work. Execute the supplied role contract now while preserving its mutation limits.' &&
    grep -q '^cursor-task$' "$FALLBACK_TRACE"; then
   FALLBACK_OUT="$(ls "$FALLBACK/factory/runs/"*.out)"
   FALLBACK_META="$(ls "$FALLBACK/factory/runs/"*.meta)"
