@@ -610,6 +610,41 @@ else:
         operator = json.loads((self.product / "factory/linear-map.json").read_text())["tickets"]["T-700"]["operator"]
         self.assertEqual(operator, {"priority": "urgent"})
         self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
+        refreshed = self.head()
+        plan_digest = hashlib.sha256(
+            (self.product / "factory/route-plans/T-700.json").read_bytes()
+        ).hexdigest()
+        ledger = self.product / "factory/runtime-ledger.csv"
+        rows = ledger.read_text()
+        for index, role, role_head in (
+            (3, "reviewer", refreshed),
+            (4, "narrator", None),
+        ):
+            if role == "narrator":
+                ticket_path = self.product / "factory/tickets/T-700.md"
+                ticket_path.write_text(ticket_path.read_text() + "\nreviewer round 2: APPROVE\n")
+                self.commit("fresh reviewer verdict")
+                role_head = self.head()
+            run_id = f"{role}-2"
+            (self.product / f"factory/runs/{run_id}.meta").write_text(
+                f"run_id={run_id}\naccounting_schema=1\naccounting_state=completed\n"
+                "exit_status=0\nticket=T-700\n"
+                f"role={role}\nrole_head_before={role_head}\n"
+                "adapter=mock\nprovider_family=anthropic\nmodel_id=mock\neffort=medium\n"
+                "selection_reason=pinned_route_plan\nadapter_version=1\n"
+                "route_id=mock-route\ngateway_id=direct\n"
+                "inference_provider_id=test-provider\naccount_route_id=test-account\n"
+                "transport=test\n"
+                f"policy_hash={'d' * 64}\nroute_plan_sha256={plan_digest}\nkit_sha={KIT_SHA}\n"
+                f"terminal_at=2026-07-17T13:0{index}:00Z\n"
+            )
+            rows += (
+                f"2026-07-17,13:0{index}:00,T-700,{role},mock,1,1,0.1,0,{run_id},"
+                "anthropic,mock,pinned_route_plan,reported,1\n"
+            )
+        ledger.write_text(rows)
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.bundle()
         self.assertIn("already based", self.attest("refresh").stderr)
 
     def test_refresh_refuses_symlink_attestation_path(self):
