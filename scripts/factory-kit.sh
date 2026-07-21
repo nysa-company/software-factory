@@ -2073,12 +2073,165 @@ require_maintenance_after_lock() {
 
 validate_ticket_leases() {
   local product="$1" sha="$2" origin="$3"
-  python3 - "$product/factory" "$sha" "$SCRIPT_ROOT/scripts/lib" "$origin" <<'PY'
-import json, pathlib, re, subprocess, sys
-factory, candidate, lib, origin = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+  python3 - "$product/factory" "$sha" "$SCRIPT_ROOT/scripts/lib" \
+    "$RELEASES_DIR/$sha/scripts" "$origin" <<'PY'
+import importlib.util, json, pathlib, re, subprocess, sys
+factory, candidate, lib, candidate_scripts, origin = (
+    pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3]),
+    pathlib.Path(sys.argv[4]), sys.argv[5],
+)
 sys.path.insert(0, sys.argv[3])
 from effective_ticket import ticket_branch_prefix
 from legacy_closeout import ValidationError, protected_terminal
+
+authorization = None
+authorized = {}
+used_authorizations = set()
+migration_policy = None
+
+def load_migration_policy():
+    global migration_policy
+    if migration_policy is not None:
+        return migration_policy
+    spec = importlib.util.spec_from_file_location(
+        "factory_inflight_model_manager", candidate_scripts / "model-manager.py",
+    )
+    if spec is None or spec.loader is None:
+        raise SystemExit("candidate model migration validator is unavailable")
+    manager = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(manager)
+        catalog, routes, _, profiles = manager.ROUTER.load_policy(
+            candidate_scripts / "model-routing" / "catalog-v1.json",
+            candidate_scripts / "model-routing" / "profiles-v1.json",
+        )
+    except Exception:
+        raise SystemExit("candidate model migration policy is invalid")
+    migration_policy = manager, catalog, routes, profiles
+    return migration_policy
+
+def no_duplicates(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+def load_inflight_authorization():
+    global authorization, authorized
+    if authorization is not None:
+        return
+    relative = "factory/migrations/inflight-release/%s.json" % candidate
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", "HEAD:" + relative],
+        text=True, capture_output=True,
+    )
+    if result.returncode:
+        raise SystemExit("nonterminal ticket uses another kit without an exact in-flight release authorization")
+    if len(result.stdout.encode("utf-8")) > 1024 * 1024:
+        raise SystemExit("in-flight release authorization is malformed")
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    remote_main = subprocess.check_output([
+        "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
+        "refs/heads/main",
+    ], text=True).split()
+    if not remote_main or remote_main[0] != head:
+        raise SystemExit("in-flight release authorization is not on protected main")
+
+    try:
+        value = json.loads(result.stdout, object_pairs_hook=no_duplicates)
+    except (json.JSONDecodeError, ValueError):
+        raise SystemExit("in-flight release authorization is malformed")
+    expected = {
+        "schema", "repository", "source_kit_sha", "target_kit_sha", "tickets",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected
+        or value.get("schema") != "nysa.software-factory.inflight-release-authorization/v1"
+    ):
+        raise SystemExit("in-flight release authorization is malformed")
+    project = factory / "PROJECT.env"
+    repositories = []
+    for raw in project.read_text().splitlines():
+        match = re.fullmatch(
+            r"\s*(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*",
+            raw,
+        )
+        if match:
+            repositories.append(match.group(1))
+    if repositories != [value.get("repository")]:
+        raise SystemExit("in-flight release authorization repository does not match the product")
+    source = value.get("source_kit_sha", "")
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", source)
+        or source == candidate
+        or value.get("target_kit_sha") != candidate
+        or not isinstance(value.get("tickets"), list)
+        or not value["tickets"]
+    ):
+        raise SystemExit("in-flight release authorization kit binding is invalid")
+    entries = {}
+    ordered = []
+    allowed_states = {"Planning", "Building", "Review", "Awaiting Approval", "Approved"}
+    for item in value["tickets"]:
+        if not isinstance(item, dict) or set(item) != {"ticket", "branch", "head", "state"}:
+            raise SystemExit("in-flight release authorization ticket entry is malformed")
+        ticket_id = item.get("ticket", "")
+        if (
+            not re.fullmatch(r"T-[0-9]+", ticket_id)
+            or item.get("branch") != prefix + ticket_id
+            or not re.fullmatch(r"[0-9a-f]{40}", item.get("head", ""))
+            or item.get("state") not in allowed_states
+            or ticket_id in entries
+        ):
+            raise SystemExit("in-flight release authorization ticket entry is invalid")
+        entries[ticket_id] = item
+        ordered.append(ticket_id)
+    if ordered != sorted(ordered):
+        raise SystemExit("in-flight release authorization tickets are not canonical")
+    authorization = value
+    authorized = entries
+
+def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
+    load_inflight_authorization()
+    item = authorized.get(ticket_id)
+    if (
+        lease != authorization["source_kit_sha"]
+        or not remote_tip
+        or source_ref == "HEAD"
+        or item is None
+        or item["branch"] != branch
+        or item["head"] != remote_tip
+        or item["state"] != state
+    ):
+        raise SystemExit("nonterminal ticket does not match its exact in-flight release authorization")
+    plan_path = "factory/route-plans/%s.json" % ticket_id
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", remote_tip + ":" + plan_path],
+        text=True, capture_output=True,
+    )
+    if result.returncode or len(result.stdout.encode("utf-8")) > 1024 * 1024:
+        raise SystemExit("authorized in-flight ticket lacks a safe migratable v1 route plan")
+    try:
+        plan = json.loads(result.stdout, object_pairs_hook=no_duplicates)
+        manager, catalog, routes, profiles = load_migration_policy()
+        if (
+            set(plan) != {"schema", "ticket", "kit_sha", "created_at", "resolution"}
+            or plan.get("schema") != "ticket-model-route-plan/v1"
+            or plan.get("ticket") != ticket_id
+            or plan.get("kit_sha") != authorization["source_kit_sha"]
+        ):
+            raise ValueError("route plan identity mismatch")
+        manager._validate_pin(
+            plan, catalog, routes, profiles, allow_historical_catalog=True,
+        )
+    except Exception:
+        raise SystemExit("authorized in-flight ticket route plan is not migratable by the candidate")
+    used_authorizations.add(ticket_id)
 
 def protected_legacy_approval(ticket_id, lease, source_ref, text):
     if source_ref != "HEAD":
@@ -2244,9 +2397,13 @@ for ticket_id in sorted(ticket_ids):
                 ticket_id, lease, source_ref, text,
             ):
                 continue
-            raise SystemExit("%s from %s is nonterminal and leased to a different kit" % (ticket_id, source_ref))
+            authorize_inflight(
+                ticket_id, branch, remote_tip, source_ref, state, lease,
+            )
     elif state.lower() not in ("ready", "backlog", "blocked-escalated"):
         raise SystemExit("%s from %s is in progress without a Kit-SHA lease" % (ticket_id, source_ref))
+if authorization is not None and used_authorizations != set(authorized):
+    raise SystemExit("in-flight release authorization contains an unused ticket")
 PY
 }
 

@@ -196,10 +196,60 @@ Priority: normal
             )
         (self.product / "factory/runtime-ledger.csv").write_text(fields + "".join(rows))
 
+    def add_legacy_planner(self):
+        old_kit = "e" * 40
+        run_id = "1700000000-100"
+        legacy = self.product / f"factory/runs/{run_id}.meta"
+        legacy.write_text(
+            f"run_id={run_id}\nphase=completed\naccounting_schema=1\n"
+            "accounting_state=completed\nreserved_usd=1\ngo_issued=1\n"
+            "started_at=2026-07-17T10:57:00Z\nterminal_at=2026-07-17T10:58:00Z\n"
+            "prompt_version=1\nturns=1\neffective_cost=0.1\nexit_status=0\n"
+            "cost_basis=reported\nticket=T-700\nrole=planner\nadapter=mock\n"
+            "provider_family=anthropic\nmodel_id=mock\neffort=medium\n"
+            "selection_reason=primary_ready\nadapter_version=1\n"
+            "primary_probe=READY:local_contract_ready\n"
+            f"kit_sha={old_kit}\nkit_tree={'b' * 40}\nproduct_tree={'c' * 40}\n"
+            f"ticket_kit_sha={old_kit}\ncontract_version=1.2.0\n"
+            f"physical_kit_path=/factory/releases/{old_kit}\n"
+            "kit_provenance_mode=sealed\npid=100\npgid=100\nprocess_start=test\n"
+            "role_exit=ok\nrole_branch_before=ticket/T-700\n"
+            f"role_head_before={self.reviewed}\nrole_remote_before={self.reviewed}\n"
+            "updated_at=2026-07-17T10:58:00Z\n"
+        )
+        plan_digest = hashlib.sha256(
+            (self.product / "factory/route-plans/T-700.json").read_bytes()
+        ).hexdigest()
+        pinned_id = "planner-pinned-1"
+        (self.product / f"factory/runs/{pinned_id}.meta").write_text(
+            f"run_id={pinned_id}\naccounting_schema=1\naccounting_state=completed\n"
+            "exit_status=0\nticket=T-700\nrole=planner\nadapter=mock\n"
+            "provider_family=anthropic\nmodel_id=mock\neffort=medium\n"
+            "selection_reason=pinned_route_plan\nadapter_version=1\n"
+            "route_id=mock-route\ngateway_id=direct\n"
+            "inference_provider_id=test-provider\naccount_route_id=test-account\n"
+            "transport=test\n"
+            f"policy_hash={'d' * 64}\nroute_plan_sha256={plan_digest}\nkit_sha={KIT_SHA}\n"
+            f"role_head_before={self.reviewed}\nterminal_at=2026-07-17T11:59:00Z\n"
+        )
+        ledger = self.product / "factory/runtime-ledger.csv"
+        header, rows = ledger.read_text().split("\n", 1)
+        legacy_row = (
+            f"2026-07-17,10:58:00,T-700,planner,mock,1,1,0.1,0,{run_id},"
+            "anthropic,mock,primary_ready,reported,1\n"
+        )
+        pinned_row = (
+            f"2026-07-17,11:59:00,T-700,planner,mock,1,1,0.1,0,{pinned_id},"
+            "anthropic,mock,pinned_route_plan,reported,1\n"
+        )
+        ledger.write_text(header + "\n" + legacy_row + pinned_row + rows)
+        return legacy
+
     def write_state(self, **updates):
         value = {
             "duplicate": False, "wrong_head": False, "merge_fail": False,
-            "auto_merge": True, "merged": False, "merge_sha": "b" * 40,
+            "auto_merge": True, "draft": True, "merged": False, "merge_sha": "b" * 40,
+            "merge_on_second_open": False, "open_list_count": 0,
             "pr_head": None, "checks": {"ci": True, "deploy-production": True},
             "check_runs": {},
             "closeout_pr": "absent", "closeout_duplicate": False,
@@ -240,12 +290,19 @@ if a[:2] == ["pr", "list"]:
                     "mergeCommit": {"oid": "e" * 40} if s["closeout_pr"] == "merged" else None}
             print(json.dumps([item, dict(item, number=15)] if s["closeout_duplicate"] else [item]))
     else:
+        if state == "open":
+            s["open_list_count"] = s.get("open_list_count", 0) + 1
+            Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
+            if s.get("merge_on_second_open") and s["open_list_count"] >= 2:
+                print("[]"); raise SystemExit(0)
         item = {"number": 7, "headRefName": "ticket/T-700", "baseRefName": "main",
                 "headRefOid": ("c" * 40 if s["wrong_head"] else (s.get("pr_head") or head)), "url": "https://example.invalid/pr/7",
+                "isDraft": s["draft"],
                 "state": "MERGED" if state == "all" and s["merged"] else "OPEN",
                 "mergedAt": "2026-07-17T18:00:00Z" if s["merged"] else None,
                 "mergeCommit": {"oid": s["merge_sha"]} if s["merged"] else None}
-        print(json.dumps([item, dict(item, number=8)] if s["duplicate"] else [item]))
+        print(json.dumps([] if state == "open" and s["merged"] else
+                         ([item, dict(item, number=8)] if s["duplicate"] else [item])))
 elif a[:2] == ["pr", "create"]:
     if s["create_fail"]: print("create unavailable", file=sys.stderr); raise SystemExit(1)
     s["closeout_pr"] = "open"
@@ -256,9 +313,16 @@ elif a[:2] == ["pr", "create"]:
     print("https://example.invalid/pr/14")
 elif a[:2] == ["pr", "merge"]:
     closeout = a[2] == "14"
+    if not closeout and "--disable-auto" not in a and s["draft"]:
+        print("draft pull request", file=sys.stderr); raise SystemExit(1)
     if (closeout and s["closeout_merge_fail"]) or (not closeout and s["merge_fail"]):
         print("auto-merge unavailable", file=sys.stderr); raise SystemExit(1)
+    if not closeout and "--disable-auto" in a:
+        s["auto_merge"] = False
     s["closeout_merge_argv" if closeout else "merge_argv"] = a
+    Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
+elif a[:2] == ["pr", "ready"]:
+    s["draft"] = "--undo" in a
     Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
 elif a[:2] == ["pr", "view"]:
     closeout = a[2] == "14"
@@ -269,8 +333,10 @@ elif a[:2] == ["pr", "view"]:
                           "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["closeout_auto_merge"] else None}))
     else:
-        print(json.dumps({"number": 7, "headRefOid": head, "state": "OPEN",
+        print(json.dumps({"number": 7, "headRefName": "ticket/T-700",
+                          "baseRefName": "main", "headRefOid": head, "state": "OPEN",
                           "mergeStateStatus": "BLOCKED",
+                          "isDraft": s["draft"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
 elif a[:1] == ["api"]:
     if a[1].endswith("/status"):
@@ -314,6 +380,7 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("State: Approved", (self.product / "factory/tickets/T-700.md").read_text())
         state = json.loads(self.state.read_text())
+        self.assertFalse(state["draft"])
         self.assertIn("--squash", state["merge_argv"])
         self.assertNotIn("--merge", state["merge_argv"])
 
@@ -341,6 +408,65 @@ else:
             manifest.read_text().replace("route_id=mock-route", "route_id=other-route")
         )
         self.assertIn("does not match its pinned route", self.attest("bundle").stderr)
+
+    def test_bundle_accepts_one_superseded_legacy_planner_and_binds_digest(self):
+        legacy = self.add_legacy_planner()
+        expected = hashlib.sha256(legacy.read_bytes()).hexdigest()
+
+        self.bundle()
+
+        receipt = json.loads(
+            (self.product / "factory/attestations/T-700/bundle.json").read_text()
+        )
+        self.assertEqual(receipt["schema"], "nysa.software-factory.ticket-bundle/v2")
+        self.assertEqual(receipt["legacy_planner_manifest_sha256"], expected)
+
+    def test_bundle_refuses_primary_ready_for_a_non_planner(self):
+        legacy = self.add_legacy_planner()
+        legacy.write_text(legacy.read_text().replace("role=planner", "role=builder"))
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text(ledger.read_text().replace(
+            "T-700,planner,mock,1,1,0.1,0,1700000000-100,",
+            "T-700,builder,mock,1,1,0.1,0,1700000000-100,",
+        ))
+
+        self.assertIn("must be a Planner", self.attest("bundle").stderr)
+
+    def test_bundle_refuses_legacy_planner_without_pinned_supersession(self):
+        self.add_legacy_planner()
+        (self.product / "factory/runs/planner-pinned-1.meta").unlink()
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text("\n".join(
+            line for line in ledger.read_text().splitlines()
+            if ",planner-pinned-1," not in line
+        ) + "\n")
+
+        self.assertIn("later pinned Planner", self.attest("bundle").stderr)
+
+    def test_bundle_refuses_multiple_legacy_planners(self):
+        legacy = self.add_legacy_planner()
+        second = legacy.with_name("1700000000-101.meta")
+        second.write_text(legacy.read_text().replace(
+            "run_id=1700000000-100", "run_id=1700000000-101",
+        ))
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text(ledger.read_text() + (
+            "2026-07-17,11:58:00,T-700,planner,mock,1,1,0.1,0,1700000000-101,"
+            "anthropic,mock,primary_ready,reported,1\n"
+        ))
+
+        self.assertIn("exactly one", self.attest("bundle").stderr)
+
+    def test_bundle_refuses_legacy_planner_route_mismatch(self):
+        legacy = self.add_legacy_planner()
+        legacy.write_text(legacy.read_text().replace("model_id=mock", "model_id=other"))
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text(ledger.read_text().replace(
+            "1700000000-100,anthropic,mock,primary_ready,",
+            "1700000000-100,anthropic,other,primary_ready,",
+        ))
+
+        self.assertIn("does not match the pinned Planner route", self.attest("bundle").stderr)
 
     def test_later_request_changes_overrides_earlier_approve(self):
         ticket = self.product / "factory/tickets/T-700.md"
@@ -431,6 +557,99 @@ else:
         self.approval_overlay()
         self.write_state(auto_merge=False)
         self.assertIn("did not confirm", self.attest("approval").stderr)
+
+    def test_refresh_retires_stale_approval_and_binds_exact_main_merge(self):
+        self.bundle()
+        self.approval_overlay()
+        self.assertEqual(self.attest("approval").returncode, 0)
+        self.approval_overlay()
+        mapping = json.loads((self.product / "factory/linear-map.json").read_text())
+        mapping["tickets"]["T-700"]["operator"]["priority"] = "urgent"
+        (self.product / "factory/linear-map.json").write_text(json.dumps(mapping))
+        old_head = self.head()
+        approval = self.product / "factory/attestations/T-700/approval.json"
+        old_approval_blob = command(
+            "git", "hash-object", str(approval), cwd=self.product,
+        ).stdout.strip()
+        updater = self.temp / "main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("protected update\n")
+        main_ticket = updater / "factory/tickets/T-700.md"
+        main_ticket.write_text(main_ticket.read_text().replace(
+            "Priority: normal\n", "Priority: normal\nProtected-main note.\n",
+        ))
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        base_head = self.head_at(updater)
+
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ticket = (self.product / "factory/tickets/T-700.md").read_text()
+        self.assertIn("State: Review", ticket)
+        self.assertIn("- [ ] Evidence bundle posted", ticket)
+        self.assertIn("- [ ] Operator approved", ticket)
+        self.assertIn("Protected-main note.", ticket)
+        self.assertFalse(approval.exists())
+        self.assertFalse((approval.parent / "bundle.json").exists())
+        receipt = json.loads((approval.parent / "refresh.json").read_text())
+        self.assertEqual(receipt["old_head"], old_head)
+        self.assertEqual(receipt["base_head"], base_head)
+        self.assertEqual(receipt["prior_approval_blob"], old_approval_blob)
+        self.assertEqual(receipt["prior_reviewer_runs"], 1)
+        self.assertEqual(receipt["prior_approve_verdicts"], 1)
+        parents = command(
+            "git", "rev-list", "--parents", "-n", "1", receipt["merge_head"],
+            cwd=self.product,
+        ).stdout.split()
+        self.assertEqual(parents, [receipt["merge_head"], old_head, base_head])
+        self.assertFalse(json.loads(self.state.read_text())["auto_merge"])
+        operator = json.loads((self.product / "factory/linear-map.json").read_text())["tickets"]["T-700"]["operator"]
+        self.assertEqual(operator, {"priority": "urgent"})
+        self.assertIn("already based", self.attest("refresh").stderr)
+
+    def test_refresh_refuses_symlink_attestation_path(self):
+        attestation = self.product / "factory/attestations/T-700"
+        attestation.mkdir(parents=True)
+        external = self.temp / "external.json"
+        external.write_text("unchanged\n")
+        (attestation / "refresh.json").symlink_to(external)
+        self.commit("malicious refresh symlink")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        updater = self.temp / "symlink-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+
+        self.assertIn("attestation path is unsafe", self.attest("refresh").stderr)
+        self.assertEqual(external.read_text(), "unchanged\n")
+
+    def test_refresh_detects_pr_merge_race_after_push(self):
+        updater = self.temp / "race-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.write_state(merge_on_second_open=True)
+
+        result = self.attest("refresh")
+
+        self.assertIn("expected exactly one open PR", result.stderr)
+        self.assertTrue((
+            self.product / "factory/attestations/T-700/refresh.json"
+        ).is_file())
 
     def prepare_done(self, **state):
         self.bundle()

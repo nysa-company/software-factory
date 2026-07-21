@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -136,6 +137,8 @@ def successful_runs(product, ticket):
             and value.get("accounting_state") == "completed"
             and value.get("exit_status") == "0"
         ):
+            value["_manifest_name"] = path.name
+            value["_manifest_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
             manifests.append(value)
     ledger = product / "factory" / "runtime-ledger.csv"
     if not ledger.is_file() or ledger.is_symlink():
@@ -149,11 +152,11 @@ def successful_runs(product, ticket):
         run_id = row.get("run_id")
         if not run_id or run_id in successful_ids:
             raise Refusal("successful ledger run IDs are missing or ambiguous")
-        successful_ids[run_id] = index
+        successful_ids[run_id] = (index, row)
     for value in manifests:
         if value.get("run_id") not in successful_ids:
             raise Refusal(f"successful manifest {value.get('run_id')} is absent from ledger")
-        value["_ledger_index"] = successful_ids[value["run_id"]]
+        value["_ledger_index"], value["_ledger_row"] = successful_ids[value["run_id"]]
     return manifests
 
 
@@ -246,9 +249,14 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
         "account_route_id": "account_route_id",
         "transport": "transport",
     }
+    legacy_planners = []
+    pinned_planners = []
     for manifest in manifests:
         role = manifest.get("role")
         reason = manifest.get("selection_reason")
+        if reason == "primary_ready":
+            legacy_planners.append(manifest)
+            continue
         if reason == "pinned_route_plan":
             selected_resolution = legacy["resolution"]
             expected_digest = hashlib.sha256(legacy_raw).hexdigest()
@@ -279,6 +287,98 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
             or manifest.get("kit_sha") != expected_kit
         ):
             raise Refusal(f"successful {role} run lacks pinned route provenance")
+        if role == "planner":
+            pinned_planners.append(manifest)
+    legacy_digest = None
+    if legacy_planners:
+        if len(legacy_planners) != 1:
+            raise Refusal("exactly one legacy pre-pin Planner manifest is supported")
+        manifest = legacy_planners[0]
+        legacy_fields = {
+            "run_id", "phase", "accounting_schema", "accounting_state",
+            "reserved_usd", "go_issued", "started_at", "terminal_at",
+            "prompt_version", "turns", "effective_cost", "exit_status",
+            "cost_basis", "ticket", "role", "adapter", "provider_family",
+            "model_id", "effort", "selection_reason", "adapter_version",
+            "primary_probe", "kit_sha", "kit_tree", "product_tree",
+            "ticket_kit_sha", "contract_version", "physical_kit_path",
+            "kit_provenance_mode", "pid", "pgid", "process_start",
+            "role_exit", "role_branch_before", "role_head_before",
+            "role_remote_before", "updated_at", "_manifest_name",
+            "_manifest_sha256", "_ledger_index", "_ledger_row",
+        }
+        current_branch = git(
+            workdir, "symbolic-ref", "--quiet", "--short", "HEAD",
+        ).stdout.strip()
+        old_kit = manifest.get("kit_sha", "")
+        head = manifest.get("role_head_before", "")
+        ledger_row = manifest.get("_ledger_row", {})
+        ledger_fields = (
+            "ticket", "role", "adapter", "exit_status", "run_id",
+            "provider_family", "model_id", "selection_reason", "cost_basis",
+            "adapter_version",
+        )
+        if manifest.get("role") != "planner":
+            raise Refusal("legacy pre-pin run must be a Planner")
+        if (
+            set(manifest) != legacy_fields
+            or manifest.get("phase") != "completed"
+            or manifest.get("accounting_schema") != "1"
+            or manifest.get("accounting_state") != "completed"
+            or manifest.get("go_issued") != "1"
+            or manifest.get("exit_status") != "0"
+            or manifest.get("selection_reason") != "primary_ready"
+            or manifest.get("primary_probe") != "READY:local_contract_ready"
+            or manifest.get("contract_version") != "1.2.0"
+            or manifest.get("kit_provenance_mode") != "sealed"
+            or manifest.get("role_exit") != "ok"
+            or old_kit == kit_sha
+            or not valid_oid(old_kit)
+            or manifest.get("ticket_kit_sha") != old_kit
+            or not valid_oid(manifest.get("kit_tree"))
+            or not valid_oid(manifest.get("product_tree"))
+            or not Path(manifest.get("physical_kit_path", "")).is_absolute()
+            or Path(manifest.get("physical_kit_path", "")).name != old_kit
+            or not re.fullmatch(r"\d+-\d+", manifest.get("run_id", ""))
+            or manifest.get("_manifest_name") != f"{manifest.get('run_id')}.meta"
+            or not re.fullmatch(r"[1-9]\d*", manifest.get("pid", ""))
+            or manifest.get("pgid") != manifest.get("pid")
+            or manifest.get("role_branch_before") != current_branch
+            or not valid_oid(head)
+            or manifest.get("role_remote_before") != head
+            or any(manifest.get(field) != ledger_row.get(field) for field in ledger_fields)
+        ):
+            raise Refusal("legacy pre-pin Planner manifest provenance is invalid")
+        started = timestamp(manifest.get("started_at"), "legacy Planner start")
+        terminal = timestamp(manifest.get("terminal_at"), "legacy Planner completion")
+        plan_created = timestamp(legacy.get("created_at"), "legacy route plan creation")
+        if (
+            terminal <= started
+            or terminal >= plan_created
+            or manifest.get("updated_at") != manifest.get("terminal_at")
+        ):
+            raise Refusal("legacy pre-pin Planner timestamps are invalid")
+        selection = resolution["selections"]["planner"]
+        legacy_route_fields = {
+            "adapter": "adapter",
+            "provider_family": "provider_family",
+            "model_id": "selection_id",
+            "effort": "effort",
+            "adapter_version": "adapter_version",
+        }
+        if any(
+            manifest.get(field) != selection.get(selected)
+            for field, selected in legacy_route_fields.items()
+        ):
+            raise Refusal("legacy pre-pin Planner does not match the pinned Planner route")
+        later = [
+            item for item in pinned_planners
+            if item["_ledger_index"] > manifest["_ledger_index"]
+            and timestamp(item.get("terminal_at"), "pinned Planner completion") > terminal
+        ]
+        if not later:
+            raise Refusal("legacy pre-pin Planner lacks a later pinned Planner supersession")
+        legacy_digest = manifest["_manifest_sha256"]
     if failed_digests:
         actual_failed = set()
         runs = product / "factory" / "runs"
@@ -292,12 +392,15 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
                 actual_failed.add(hashlib.sha256(manifest_path.read_bytes()).hexdigest())
         if not failed_digests.issubset(actual_failed):
             raise Refusal("route journal references an unattested failed attempt")
-    return {
+    evidence = {
         "policy_hash": resolution["policy_hash"],
         "route_plan_blob": git(workdir, "hash-object", str(path)).stdout.strip(),
         "route_plan_path": str(path.relative_to(workdir)),
         "route_plan_sha256": digest,
     }
+    if legacy_digest:
+        evidence["legacy_planner_manifest_sha256"] = legacy_digest
+    return evidence
 
 
 def review_evidence(text, manifests, workdir):
@@ -348,7 +451,7 @@ def review_evidence(text, manifests, workdir):
 
 
 def exact_pr(repo, branch, state):
-    fields = "number,headRefName,baseRefName,headRefOid,url,state,mergedAt,mergeCommit"
+    fields = "number,headRefName,baseRefName,headRefOid,url,state,isDraft,mergedAt,mergeCommit"
     result = json.loads(gh(
         "pr", "list", "--repo", repo, "--state", state, "--head", branch,
         "--base", "main", "--json", fields,
@@ -464,6 +567,20 @@ def check_item(text, label):
     return text
 
 
+def uncheck_item(text, label):
+    pattern = rf"^- \[[ xX]\] {re.escape(label)}\s*$"
+    if re.search(pattern, text, re.M):
+        return re.sub(pattern, f"- [ ] {label}", text, count=1, flags=re.M)
+    return text
+
+
+def remove_field(text, name):
+    return re.sub(
+        rf"^{re.escape(name)}:\s*.*\n?", "", text,
+        count=1, flags=re.I | re.M,
+    )
+
+
 def set_link(text, label, value):
     pattern = rf"^- {re.escape(label)}:\s*.*$"
     if re.search(pattern, text, re.M):
@@ -494,15 +611,27 @@ def valid_oid(value):
 
 
 def validate_bundle_attestation(value, ticket, repo, branch, kit_sha, workdir):
-    expected_keys = {
+    base_keys = {
         "schema", "ticket", "repository", "branch", "branch_head",
         "reviewed_sha", "bundle_path", "bundle_blob", "pr_number", "pr_url",
         "reviewer_run_id", "narrator_run_id", "kit_sha", "policy_hash",
         "route_plan_path", "route_plan_blob", "route_plan_sha256", "attested_at",
     }
+    schema = value.get("schema")
+    if schema == "nysa.software-factory.ticket-bundle/v1":
+        expected_keys = base_keys
+        legacy_digest_valid = "legacy_planner_manifest_sha256" not in value
+    elif schema == "nysa.software-factory.ticket-bundle/v2":
+        expected_keys = base_keys | {"legacy_planner_manifest_sha256"}
+        legacy_digest_valid = bool(re.fullmatch(
+            r"[0-9a-f]{64}", value.get("legacy_planner_manifest_sha256", ""),
+        ))
+    else:
+        expected_keys = set()
+        legacy_digest_valid = False
     if (
         set(value) != expected_keys
-        or value.get("schema") != "nysa.software-factory.ticket-bundle/v1"
+        or not legacy_digest_valid
         or value.get("ticket") != ticket
         or value.get("repository") != repo
         or value.get("branch") != branch
@@ -831,6 +960,268 @@ def consume_overlay(product, ticket, expected_version):
     os.replace(temporary, path)
 
 
+def stale_approval_overlay_version(product, ticket):
+    path = product / "factory" / "linear-map.json"
+    if not path.is_file():
+        return None
+    operator = json.loads(path.read_text()).get("tickets", {}).get(ticket, {}).get("operator")
+    if not (
+        operator
+        and operator.get("state") == "Approved"
+        and operator.get("approval") == "Linear"
+        and operator.get("state_base") == "awaiting approval"
+    ):
+        return None
+    return hashlib.sha256(json.dumps(
+        {key: operator[key] for key in (
+            "state", "approval", "state_base", "observed_at", "linear_updated_at",
+        ) if key in operator},
+        sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+
+
+def consume_stale_approval_overlay(product, ticket, expected_version):
+    path = product / "factory" / "linear-map.json"
+    data = json.loads(path.read_text())
+    operator = data.get("tickets", {}).get(ticket, {}).get("operator") or {}
+    actual = stale_approval_overlay_version(product, ticket)
+    if actual != expected_version:
+        raise Refusal("stale approval overlay changed before consumption")
+    for key in ("state", "approval", "state_base", "observed_at", "linear_updated_at"):
+        operator.pop(key, None)
+    if not operator:
+        data.get("tickets", {}).get(ticket, {}).pop("operator", None)
+    fd, temporary = tempfile.mkstemp(prefix=".linear-map.", dir=path.parent)
+    with os.fdopen(fd, "w") as output:
+        json.dump(data, output, indent=2, sort_keys=True)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+
+
+def safe_optional_attestation(path):
+    if not os.path.lexists(path):
+        return False
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise Refusal(f"attestation path is unsafe: {path.name}")
+    return True
+
+
+def refresh_baselines(text, manifests):
+    reviewers = sorted(
+        (item for item in manifests if item.get("role") == "reviewer"),
+        key=lambda item: item["_ledger_index"],
+    )
+    narrators = [item for item in manifests if item.get("role") == "narrator"]
+    voids = set()
+    for match in re.finditer(
+        r"^\s*OPERATOR NOTE:\s*reviewer run\s+(\d+)\s+void[^A-Za-z0-9]*duplicate\s*$",
+        text, re.I | re.M,
+    ):
+        ordinal = int(match.group(1))
+        if 1 <= ordinal <= len(reviewers):
+            voids.add(ordinal)
+    verdicts = re.findall(
+        r"^\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+        text, re.I | re.M,
+    )
+    approvals = sum(value.upper() == "APPROVE" for value in verdicts)
+    requests = len(verdicts) - approvals
+    reviewer_count = len(reviewers) - len(voids)
+    if reviewer_count != len(verdicts):
+        raise Refusal("reviewer runs and verdicts must be complete before base refresh")
+    return reviewer_count, approvals, requests, len(narrators)
+
+
+def refresh(args, product, workdir, repo, prefix, remote):
+    branch = f"{prefix}{args.ticket}"
+    old_head = ensure_clean_branch(product, workdir, branch)
+    ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    text = ticket_path.read_text()
+    if field(text, "State").lower() not in {"review", "awaiting approval", "approved"}:
+        raise Refusal("refresh requires ticket State Review, Awaiting Approval, or Approved")
+    pr = exact_pr(repo, branch, "open")
+    if pr.get("headRefOid") != old_head:
+        raise Refusal("PR head does not match the exact ticket branch")
+    configured = git(product, "remote", "get-url", "--push", "--all", "origin").stdout.splitlines()
+    if configured != [remote]:
+        raise Refusal("configured origin no longer matches the certified product origin")
+    observed = git(workdir, "ls-remote", "--heads", "--", remote, "refs/heads/main").stdout.split()
+    if len(observed) != 2 or not valid_oid(observed[0]) or observed[1] != "refs/heads/main":
+        raise Refusal("certified protected main tip is missing or ambiguous")
+    base_head = observed[0]
+    git(workdir, "fetch", "--no-tags", "--", remote, "refs/heads/main")
+    if git(workdir, "rev-parse", "FETCH_HEAD").stdout.strip() != base_head:
+        raise Refusal("fetched protected main does not match its certified remote tip")
+    if not git(workdir, "merge-base", "--is-ancestor", base_head, old_head, check=False).returncode:
+        raise Refusal("ticket branch is already based on protected main")
+
+    view = json.loads(gh(
+        "pr", "view", str(pr["number"]), "--repo", repo,
+        "--json", "number,headRefName,baseRefName,headRefOid,autoMergeRequest,state,isDraft,mergeStateStatus",
+    ).stdout)
+    if (
+        view.get("number") != pr["number"]
+        or view.get("headRefName") != branch
+        or view.get("baseRefName") != "main"
+        or view.get("headRefOid") != old_head
+        or view.get("state") != "OPEN"
+        or view.get("mergeStateStatus") not in {"BEHIND", "BLOCKED", "DIRTY"}
+    ):
+        raise Refusal("GitHub did not confirm the exact open PR before refresh")
+    if view.get("autoMergeRequest"):
+        gh("pr", "merge", str(pr["number"]), "--repo", repo, "--disable-auto")
+        confirmed = json.loads(gh(
+            "pr", "view", str(pr["number"]), "--repo", repo,
+            "--json", "number,headRefName,baseRefName,headRefOid,autoMergeRequest,state,isDraft,mergeStateStatus",
+        ).stdout)
+        if (
+            confirmed.get("number") != pr["number"]
+            or confirmed.get("headRefName") != branch
+            or confirmed.get("baseRefName") != "main"
+            or confirmed.get("headRefOid") != old_head
+            or confirmed.get("state") != "OPEN"
+            or confirmed.get("autoMergeRequest") is not None
+        ):
+            raise Refusal("GitHub did not disable auto-merge for the exact stale PR head")
+        view = confirmed
+    if not view.get("isDraft"):
+        gh("pr", "ready", str(pr["number"]), "--repo", repo, "--undo")
+        draft = json.loads(gh(
+            "pr", "view", str(pr["number"]), "--repo", repo,
+            "--json", "number,headRefName,baseRefName,headRefOid,autoMergeRequest,state,isDraft,mergeStateStatus",
+        ).stdout)
+        if (
+            draft.get("number") != pr["number"]
+            or draft.get("headRefName") != branch
+            or draft.get("baseRefName") != "main"
+            or draft.get("headRefOid") != old_head
+            or draft.get("state") != "OPEN"
+            or not draft.get("isDraft")
+            or draft.get("autoMergeRequest") is not None
+        ):
+            raise Refusal("GitHub did not make the exact stale PR head a draft")
+
+    manifests = successful_runs(product, args.ticket)
+    reviewers, approvals, requests, narrators = refresh_baselines(text, manifests)
+    bundle_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
+    approval_path = bundle_path.with_name("approval.json")
+    attestation_dir = bundle_path.parent
+    for directory in (attestation_dir.parent, attestation_dir):
+        if os.path.lexists(directory) and (
+            directory.is_symlink() or not directory.is_dir()
+        ):
+            raise Refusal("ticket attestation directory is unsafe")
+    had_bundle = safe_optional_attestation(bundle_path)
+    had_approval = safe_optional_attestation(approval_path)
+    prior_bundle = blob_id(workdir, bundle_path) if had_bundle else None
+    prior_approval = blob_id(workdir, approval_path) if had_approval else None
+    previous_path = bundle_path.with_name("refresh.json")
+    generation = 1
+    had_previous = safe_optional_attestation(previous_path)
+    prior_refresh = blob_id(workdir, previous_path) if had_previous else None
+    if had_previous:
+        previous = json.loads(previous_path.read_text())
+        expected_refresh_keys = {
+            "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
+            "prior_reviewer_runs", "prior_approve_verdicts",
+            "prior_request_changes_verdicts", "prior_narrator_runs",
+            "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
+        }
+        previous_generation = previous.get("generation")
+        if (
+            set(previous) != expected_refresh_keys
+            or previous.get("schema") != "nysa.software-factory.ticket-refresh/v1"
+            or previous.get("ticket") != args.ticket
+            or isinstance(previous_generation, bool)
+            or not isinstance(previous_generation, int)
+            or previous_generation < 1
+        ):
+            raise Refusal("existing refresh receipt is malformed")
+        generation = previous_generation + 1
+
+    merged = git(
+        workdir, "-c", "user.name=Software Factory", "-c",
+        "user.email=factory@local", "merge", "--no-ff", "--no-edit", base_head,
+        check=False,
+    )
+    if merged.returncode:
+        git(workdir, "merge", "--abort", check=False)
+        if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
+            raise Refusal("base refresh conflict could not restore the ticket head")
+        raise Refusal("protected main conflicts with the ticket branch; refresh aborted")
+    merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+    parents = git(workdir, "rev-list", "--parents", "-n", "1", merge_head).stdout.split()
+    if parents != [merge_head, old_head, base_head]:
+        raise Refusal("base refresh did not create the required two-parent merge")
+
+    for directory in (attestation_dir.parent, attestation_dir):
+        if os.path.lexists(directory) and (
+            directory.is_symlink() or not directory.is_dir()
+        ):
+            raise Refusal("protected main introduced an unsafe attestation directory")
+    if safe_optional_attestation(bundle_path) != had_bundle or \
+       safe_optional_attestation(approval_path) != had_approval:
+        raise Refusal("protected main changed stale attestation evidence during refresh")
+    if (
+        (had_bundle and blob_id(workdir, bundle_path) != prior_bundle)
+        or (had_approval and blob_id(workdir, approval_path) != prior_approval)
+    ):
+        raise Refusal("protected main changed stale attestation evidence during refresh")
+    if safe_optional_attestation(previous_path) != had_previous:
+        raise Refusal("protected main changed refresh evidence during refresh")
+    if had_previous and blob_id(workdir, previous_path) != prior_refresh:
+        raise Refusal("protected main changed refresh evidence during refresh")
+
+    merged_text = ticket_path.read_text()
+    merged_text = replace_field(merged_text, "State", "Review")
+    merged_text = remove_field(merged_text, "Operator-Approval")
+    merged_text = uncheck_item(merged_text, "Evidence bundle posted")
+    merged_text = uncheck_item(merged_text, "Operator approved")
+    ticket_path.write_text(merged_text)
+    for stale in (bundle_path, approval_path):
+        if stale.exists():
+            stale.unlink()
+    receipt = {
+        "schema": "nysa.software-factory.ticket-refresh/v1",
+        "ticket": args.ticket,
+        "generation": generation,
+        "old_head": old_head,
+        "base_head": base_head,
+        "merge_head": merge_head,
+        "prior_reviewer_runs": reviewers,
+        "prior_approve_verdicts": approvals,
+        "prior_request_changes_verdicts": requests,
+        "prior_narrator_runs": narrators,
+        "prior_bundle_blob": prior_bundle,
+        "prior_approval_blob": prior_approval,
+        "refreshed_at": now(),
+    }
+    write_json(previous_path, receipt)
+    changed_paths = [ticket_path, previous_path]
+    if had_bundle:
+        changed_paths.append(bundle_path)
+    if had_approval:
+        changed_paths.append(approval_path)
+    result_head = commit_push(
+        product, workdir, remote, branch, f"{args.ticket}: refresh protected base evidence",
+        changed_paths,
+    )
+    refreshed_pr = exact_pr(repo, branch, "open")
+    if (
+        refreshed_pr.get("number") != pr["number"]
+        or refreshed_pr.get("headRefOid") != result_head
+        or not refreshed_pr.get("isDraft")
+    ):
+        raise Refusal("GitHub did not confirm the exact refreshed draft PR head")
+    overlay = stale_approval_overlay_version(product, args.ticket)
+    if overlay:
+        consume_stale_approval_overlay(product, args.ticket, overlay)
+    return {"action": "refresh", "head": result_head, "attestation": receipt}
+
+
 def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     branch = f"{prefix}{args.ticket}"
     head = ensure_clean_branch(product, workdir, branch)
@@ -864,7 +1255,11 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     blob = git(workdir, "hash-object", str(bundle_path)).stdout.strip()
     attestation_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     attestation = {
-        "schema": "nysa.software-factory.ticket-bundle/v1",
+        "schema": (
+            "nysa.software-factory.ticket-bundle/v2"
+            if "legacy_planner_manifest_sha256" in route_plan
+            else "nysa.software-factory.ticket-bundle/v1"
+        ),
         "ticket": args.ticket,
         "repository": repo,
         "branch": branch,
@@ -976,6 +1371,15 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     current = exact_pr(repo, branch, "open")
     if current.get("number") != approval_att["pr_number"] or current.get("headRefOid") != head:
         raise Refusal("PR head changed before auto-merge request")
+    if current.get("isDraft"):
+        gh("pr", "ready", str(current["number"]), "--repo", repo)
+        current = exact_pr(repo, branch, "open")
+        if (
+            current.get("number") != approval_att["pr_number"]
+            or current.get("headRefOid") != head
+            or current.get("isDraft")
+        ):
+            raise Refusal("GitHub did not mark the exact approved PR head ready")
     gh(
         "pr", "merge", str(current["number"]), "--repo", repo, "--auto",
         f"--{method}",
@@ -1114,7 +1518,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--workdir", required=True)
-    parser.add_argument("--action", choices=("bundle", "approval", "done"), required=True)
+    parser.add_argument(
+        "--action", choices=("bundle", "approval", "refresh", "done"), required=True,
+    )
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
@@ -1131,6 +1537,8 @@ def main():
         result = approval(
             args, product, workdir, repo, prefix, remote, kit_sha, method,
         )
+    elif args.action == "refresh":
+        result = refresh(args, product, workdir, repo, prefix, remote)
     else:
         result = done(
             args, product, workdir, repo, prefix, remote, checks, kit_sha, method,

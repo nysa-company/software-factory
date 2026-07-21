@@ -195,6 +195,7 @@ same-UID token exposure remains until a broker or OS isolation is used.
 ## Trusted approval and close-out PR
 
 - Notice: under contract 1.3, move only Awaiting Approval → Approved in Linear after reviewing the exact bundle. The trusted approval action commits the binding and requests protected GitHub auto-merge. If it refuses stale evidence, a changed head, conflicts, unavailable auto-merge, or failed checks, investigate the named condition; never manually imitate the attestation.
+- Notice: if main advances, use sealed `ticket-attest --action refresh` on the exact ticket worktree. It disables stale auto-merge, merges protected main without force, retires the old receipts, and makes fresh Reviewer, Narrator, bundle, and Linear approval evidence mandatory.
 - Notice: after the ticket PR merges, the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes `ticket-attest --action done`. It verifies the merge and configured post-merge contexts, projects the ledger once, commits Done plus closeout evidence, creates or reuses the exact factory-owned closeout PR, and requests protected auto-merge. No operator approval or manual GitHub merge is required. After protected main contains valid Done, sequencing returns `COMPLETE` and the dispatcher releases the lease. Projection refuses any active or ambiguous claim.
 - Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Confirm the factory-owned close-out PR entered protected auto-merge; do not supply another business approval or manual merge.
 - Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
@@ -333,6 +334,22 @@ same-UID token exposure remains until a broker or OS isolation is used.
    doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
    probes.
 10. Remove `MAINTENANCE` only after every acceptance check passes.
+
+For an explicitly approved in-flight cutover, first merge one protected product
+PR containing the target `KIT_PIN` and
+`factory/migrations/inflight-release/<target-kit-sha>.json`. The authorization
+must name the product repository, old and target kit SHAs, and a sorted exact
+list of ticket branch heads and states. Each exact head must still contain its
+old-kit v1 route plan; activation validates that the candidate's existing
+`models migrate` can consume it. Publish maintenance, recover only the named
+stale leases after proving there are no active runs, and leave zero lease
+records before activation. After activation, keep maintenance while reviewing
+each read-only `models migrate-plan` preview; remove maintenance before applying
+each operator-approved `models migrate`, then claim fresh leases before
+resuming.
+Any branch-head, state, source-kit, candidate-kit, repository, ticket-set, or
+protected-main drift requires a new protected authorization. Never preserve or
+copy an opaque lease into the authorization.
 
 If a dispatcher lease is stale, keep maintenance published and run
 `factory-kit.sh recover-lease --project <project> --product <path> --ticket

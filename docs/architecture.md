@@ -218,6 +218,13 @@ requires the exact merged commit on authoritative `origin/main`, all configured
 post-merge contexts successful on that commit, and projects accounting into a
 separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
+If protected main advances after review, `refresh` first disables any stale
+auto-merge request, non-force merges the exact certified main tip, removes the
+old bundle and approval receipts, resets the ticket to Review, and commits a
+receipt binding the two-parent merge and prior role/verdict baselines. The
+sequencer then requires a new Reviewer verdict and a later Narrator run before
+another bundle and Linear approval. A malformed or stale refresh receipt
+refuses sequencing.
 When concurrency is greater than one, every attestation action also requires the matching
 unexpired opaque dispatcher lease through the trusted launcher environment;
 the lease is validated with the existing lease helper and never enters an
@@ -242,6 +249,30 @@ ticket files without the field retain their already-protected bundle SHA. It
 does not reinterpret prior role evidence as belonging to the newly active
 release. Bundle and approval actions still require the active physical release
 exactly.
+
+One authentic Contract 1.2 `primary_ready` Planner manifest may coexist with a
+later fully pinned Planner run. It remains legacy accounting evidence rather
+than route-plan authority: every historical invariant and shared route field
+must match, and its exact manifest digest is bound in a v2 bundle receipt.
+Normal tickets continue to emit and validate v1 receipts; every broader legacy
+shape is refused.
+
+An exceptional in-flight release cutover requires a protected-main
+`factory/migrations/inflight-release/<target-kit-sha>.json` authorization. Its
+v1 schema binds the product `repository`, one `source_kit_sha`, the exact
+`target_kit_sha`, and a sorted nonempty `tickets` list whose entries contain
+only `ticket`, exact ticket `branch`, remote `head`, and current `state`.
+Activation accepts only Planning, Building, Review, Awaiting Approval, or
+Approved remote ticket heads that match every authorized field, and refuses an
+unused or extra entry. Every exact head must also contain a v1 ticket route plan
+whose ticket and Kit-SHA match the authorization and whose complete resolution
+passes the candidate's existing historical-plan migration validator. The normal
+maintenance, zero-active-run, and zero-dispatcher-lease barriers still apply.
+After activation, the operator uses the existing preview-hash-bound `models
+migrate` flow to preserve the old v1 plan inside a v2 route journal and update
+the ticket Kit-SHA before reclaiming work. This authorization never changes
+ticket state, migrates a branch, renews a lease, or permits an unprotected-main
+record.
 
 A one-time Contract 1.2 migration may instead use the separate
 `factory/migrations/contract-1.3/` legacy-closeout format. It does not create or
