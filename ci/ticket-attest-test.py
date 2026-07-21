@@ -611,6 +611,12 @@ else:
         self.assertEqual(operator, {"priority": "urgent"})
         self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
         refreshed = self.head()
+        ticket_path = self.product / "factory/tickets/T-700.md"
+        ticket_path.write_text(
+            ticket_path.read_text() + "\nOPERATOR NOTE: reviewer run 1 void — duplicate\n"
+        )
+        self.commit("try to remap stale reviewer verdict")
+        void_head = self.head()
         plan_digest = hashlib.sha256(
             (self.product / "factory/route-plans/T-700.json").read_bytes()
         ).hexdigest()
@@ -618,13 +624,8 @@ else:
         rows = ledger.read_text()
         for index, role, role_head in (
             (3, "reviewer", refreshed),
-            (4, "narrator", None),
+            (4, "narrator", void_head),
         ):
-            if role == "narrator":
-                ticket_path = self.product / "factory/tickets/T-700.md"
-                ticket_path.write_text(ticket_path.read_text() + "\nreviewer round 2: APPROVE\n")
-                self.commit("fresh reviewer verdict")
-                role_head = self.head()
             run_id = f"{role}-2"
             (self.product / f"factory/runs/{run_id}.meta").write_text(
                 f"run_id={run_id}\naccounting_schema=1\naccounting_state=completed\n"
@@ -643,6 +644,14 @@ else:
                 "anthropic,mock,pinned_route_plan,reported,1\n"
             )
         ledger.write_text(rows)
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.assertIn("new post-refresh Reviewer verdict", self.attest("bundle").stderr)
+        ticket_path.write_text(
+            ticket_path.read_text().replace(
+                "\nOPERATOR NOTE: reviewer run 1 void — duplicate\n", "",
+            ) + "\nreviewer round 2: APPROVE\n"
+        )
+        self.commit("fresh reviewer verdict")
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.bundle()
         self.assertIn("already based", self.attest("refresh").stderr)
@@ -705,6 +714,14 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
 
         self.assertIn("refresh receipt is missing", self.attest("bundle").stderr)
+        (updater / "main-2.txt").write_text("second protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main again", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.assertIn("historical refresh receipt", self.attest("refresh").stderr)
 
     def prepare_done(self, **state):
         self.bundle()

@@ -531,6 +531,12 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         or current_voids[:len(old_voids)] != old_voids
     ):
         raise Refusal("refresh historical review evidence changed")
+    old_raw_reviewers = len(old_verdicts) + len(old_voids)
+    if (
+        len(current_verdicts) <= len(old_verdicts)
+        or any(value <= old_raw_reviewers for value in current_voids[len(old_voids):])
+    ):
+        raise Refusal("a new post-refresh Reviewer verdict is required")
     reviewers = sorted(
         (item for item in manifests if item.get("role") == "reviewer"),
         key=lambda item: item["_ledger_index"],
@@ -539,7 +545,7 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         reviewer_ordinal = reviewers.index(reviewer) + 1
     except ValueError:
         raise Refusal("post-refresh Reviewer evidence is missing")
-    if reviewer_ordinal <= len(old_verdicts) + len(old_voids):
+    if reviewer_ordinal <= old_raw_reviewers:
         raise Refusal("post-refresh Reviewer evidence is required")
     for role, manifest in (("Reviewer", reviewer), ("Narrator", narrator)):
         head = manifest.get("role_head_before", "")
@@ -1225,6 +1231,11 @@ def refresh(args, product, workdir, repo, prefix, remote):
     generation = 1
     had_previous = safe_optional_attestation(previous_path)
     prior_refresh = blob_id(workdir, previous_path) if had_previous else None
+    if not had_previous and git(
+        workdir, "log", "-1", "--format=%H", "HEAD", "--",
+        str(previous_path.relative_to(workdir)),
+    ).stdout.strip():
+        raise Refusal("historical refresh receipt is missing from the ticket head")
     if had_previous:
         previous = json.loads(previous_path.read_text())
         expected_refresh_keys = {
