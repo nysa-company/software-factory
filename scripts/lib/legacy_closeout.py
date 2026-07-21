@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -670,14 +671,27 @@ def validate_generated_legacy_batch(repo, authorization, receipts, ref):
     return _validate_legacy_documents(Path(repo), ref, authorization, receipts)
 
 
+@lru_cache(maxsize=64)
+def _legacy_batch_at(repo, commit):
+    return legacy_batch(Path(repo), commit)
+
+
+@lru_cache(maxsize=64)
+def _terminal_backfill_batch_at(repo, commit):
+    from terminal_backfill import terminal_backfill_batch
+
+    return terminal_backfill_batch(Path(repo), commit)
+
+
 def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     if not isinstance(ticket, str) or not TICKET_ID.fullmatch(ticket):
         raise ValidationError("invalid ticket identifier")
-    from terminal_backfill import terminal_backfill_batch
-
-    normal = _normal_terminal(Path(repo), ticket, ref)
-    legacy = legacy_batch(Path(repo), ref)
-    backfill = terminal_backfill_batch(Path(repo), ref)
+    repo = Path(repo).resolve(strict=True)
+    commit = run(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
+    oid(commit, "protected-main commit")
+    normal = _normal_terminal(repo, ticket, commit)
+    legacy = _legacy_batch_at(str(repo), commit)
+    backfill = _terminal_backfill_batch_at(str(repo), commit)
     evidence_count = sum((
         normal is not None,
         ticket in legacy,
@@ -688,7 +702,7 @@ def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     if normal:
         return normal
     if ticket in legacy:
-        return legacy[ticket]
+        return dict(legacy[ticket])
     if ticket in backfill:
-        return backfill[ticket]
+        return dict(backfill[ticket])
     raise ValidationError("protected main lacks valid terminal evidence")
