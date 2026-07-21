@@ -18,14 +18,14 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 ## Worker model portfolios
 
 There is no single global primary/secondary chain; each role has one. With no
-operator activation, `balanced-v2` is the default:
+operator activation, `cursor-balanced-v2` is the default:
 
 | Role | Primary | Secondary |
 |---|---|---|
-| Planner | Codex GPT-5.6 Sol, high effort | Cursor GPT-5.6 Sol High, high effort |
-| Builder; Narrator | Codex GPT-5.6 Terra, high effort | Cursor GPT-5.6 Sol High, high effort |
-| Spec-linter; Test-author | Claude Fable 5, medium effort | Cursor Claude Fable 5 Thinking, medium effort |
-| Reviewer | Claude Sonnet 5, high effort | Cursor Claude Sonnet 5 Thinking High, high effort |
+| Planner | Cursor GPT-5.6 Sol High, high effort | Codex GPT-5.6 Sol, high effort |
+| Builder; Narrator | Cursor GPT-5.6 Sol High, high effort | Codex GPT-5.6 Terra, high effort |
+| Spec-linter; Test-author | Cursor Claude Fable 5 Thinking, medium effort | Claude Fable 5, medium effort |
+| Reviewer | Cursor Claude Sonnet 5 Thinking High, high effort | Claude Sonnet 5, high effort |
 
 Cursor is a separate route but not a separate model family: Cursor GPT remains
 OpenAI and Cursor Claude remains Anthropic. Before a ticket starts,
@@ -36,8 +36,8 @@ Contract 1.4 and newer add operator-approved mid-ticket fallback for a terminal,
 accounted provider or credit failure. It excludes the exact failed route,
 preserves only validated role-authorized work, re-resolves all remaining roles
 against contributor-family history, and appends an auditable route-journal
-revision. The normal default transition is native Codex/Claude to its
-same-family Cursor route. If no complete family-separated assignment exists,
+revision. The normal default transition is Cursor to its same-family native
+Codex/Claude route. If no complete family-separated assignment exists,
 the factory escalates instead of weakening review independence.
 
 Kimi K2.6 remains disabled experimental and is in no profile. See

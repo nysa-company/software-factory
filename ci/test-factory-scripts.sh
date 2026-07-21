@@ -253,10 +253,10 @@ NO_STATE_PROFILE="$(env -u FACTORY_MODEL_PROFILE_OVERRIDE \
   -u FACTORY_MODEL_STATE_ROOT -u FACTORY_PROJECT \
   bash -c 'source "$1"; factory_load_model_probe_context; printf "%s\n" "$FACTORY_MODEL_PROFILE_ID"' \
   _ "$ROOT/scripts/lib/backend-policy.sh")"
-if [[ "$NO_STATE_PROFILE" == "balanced-v2" ]]; then
-  pass "no-record backend context selects balanced-v2"
+if [[ "$NO_STATE_PROFILE" == "cursor-balanced-v2" ]]; then
+  pass "no-record backend context selects cursor-balanced-v2"
 else
-  fail "no-record backend context selects balanced-v2" "$NO_STATE_PROFILE"
+  fail "no-record backend context selects cursor-balanced-v2" "$NO_STATE_PROFILE"
 fi
 
 AUTO_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \

@@ -218,7 +218,7 @@ The catalog treats transport, gateway, inference provider, provider family,
 account route, selection ID, and reported identity as separate route fields.
 Profiles contain ordered portfolios and ordered per-role candidates; a valid
 ticket pin resolves all six roles and keeps production and checking families
-distinct. With no activation record, `balanced-v2` is the default.
+distinct. With no activation record, `cursor-balanced-v2` is the default.
 
 You may inspect:
 

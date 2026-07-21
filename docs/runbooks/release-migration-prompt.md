@@ -26,6 +26,9 @@ The execution computer is {{EXECUTION_HOST}} and this is an
 approved Nysa Agents plugin version is {{NYSA_AGENTS_PLUGIN_VERSION}}.
 The approved CLI versions are Codex {{CODEX_CLI_VERSION}}, Claude Code
 {{CLAUDE_CODE_CLI_VERSION}}, and Cursor Agent {{CURSOR_AGENT_VERSION}}.
+The approved model profile is {{MODEL_PROFILE_ID}} (use `cursor-balanced-v2`
+for Nysa) and the operator-approved per-ticket budget is USD
+{{PER_TICKET_BUDGET_USD}} (use `100.00` for Nysa).
 
 Follow docs/runbooks/operator.md § "Preparing and activating a release"
 exactly, in order:
@@ -84,31 +87,42 @@ exactly, in order:
 11. For a replacement-host cutover, publish maintenance on the old host and
     drain it now. Confirm its dispatcher is stopped; if that cannot be proven,
     revoke its provider and Linear execution access before enabling this host.
+    Only after its Linear reconciler is also stopped, transfer the production
+    `factory/linear-map.json` over a secure channel to the same product path on
+    the replacement host with owner-only permissions. Never print or commit
+    its contents, and never copy it into the canary.
 12. factory-kit.sh plan — it must report "No files were changed." If not, stop.
 13. Stop only the product factory profile and reconciler (leave the dashboard
    and primary Hermes profile running).
-14. factory-kit.sh activate, restart the factory services, then collect doctor
-   JSON, sandbox smoke, PID, Linear freshness, and repeated health probes.
-15. For authorized in-flight tickets, keep maintenance while reviewing every
-   sealed `models migrate-plan` preview. Remove maintenance before applying
-   only the exact operator-approved `models migrate`, then claim fresh leases.
-   With no in-flight tickets, remove maintenance only after every acceptance
-   check passes.
+14. factory-kit.sh activate, but keep dispatch and Linear reconciliation
+   stopped. Collect doctor JSON, sandbox smoke, PID, and repeated health probes.
+15. After every acceptance check passes, remove maintenance while dispatch
+   remains stopped. Run `models plan --profile {{MODEL_PROFILE_ID}} --json`,
+   verify all six exact route/effort selections, and activate only that exact
+   returned profile hash with the operator ID. Run `envelope inspect --json`;
+   require `PER_TICKET_BUDGET_USD={{PER_TICKET_BUDGET_USD}}`. If it differs,
+   use the normal `envelope plan --set` and exact-hash `envelope apply` flow,
+   then require both `ENVELOPE.env` and `ENVELOPE.md` to agree at that value.
+16. For authorized in-flight tickets, review every sealed `models
+   migrate-plan` preview and apply only the exact operator-approved `models
+   migrate`. Existing committed route plans remain authoritative; do not
+   repin them to {{MODEL_PROFILE_ID}}. Start the Linear reconciler, verify
+   freshness, then start dispatch and claim fresh leases.
 
 Then prove the release works by running two real tickets end to end:
 
-16. Select two Ready tickets that are low or medium risk, have `External: no`,
+17. Select two Ready tickets that are low or medium risk, have `External: no`,
     and have no overlapping file ownership. If none are Ready, stop and ask me
     to stage two.
-17. Run each ticket's full lifecycle through the trusted launcher
+18. Run each ticket's full lifecycle through the trusted launcher
     (~/.factory/bin/factory-launch {{PROJECT_SLUG}} run) to the contract's
     Review/evidence-bundle boundary — planner, spec-linter, test-author,
     builder, CI, reviewer, narrator. Do not merge; contract 1.2 stops at the
     documented evidence gate.
-18. Concurrency: use no more than the product's configured
+19. Concurrency: use no more than the product's configured
     MAX_CONCURRENT_TICKETS and select tickets with non-overlapping ownership.
     Never invent a capacity override or authorization.
-19. Acceptance evidence per ticket: every role launch accepted by the
+20. Acceptance evidence per ticket: every role launch accepted by the
     sequencer under the new Kit-SHA, ledger and manifest rows consistent
     (reservation ≤ per-run budget, settled cost recorded), reviewer verdict
     recorded, evidence bundle posted, doctor healthy afterward.
@@ -121,5 +135,5 @@ values whose key matches key|token|secret|password|url|dsn|conn|auth.
 
 Report at the end: receipt ID + expiry, canary result (or the skip
 justification), activation journal entry, doctor summary, per-ticket evidence
-from step 19, and any deviations.
+from step 20, and any deviations.
 ```

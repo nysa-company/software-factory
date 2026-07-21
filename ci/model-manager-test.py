@@ -322,7 +322,7 @@ class ModelManagerTest(unittest.TestCase):
 
     def test_probe_context_applies_scopes_and_uses_active_or_default_profile(self):
         initial = self.output("probe-context")
-        self.assertEqual(initial["profile_id"], "balanced-v2")
+        self.assertEqual(initial["profile_id"], "cursor-balanced-v2")
         self.assertEqual(initial["disabled_route_ids"], [])
 
         self.activate("claude-priority-v1")
@@ -605,7 +605,7 @@ class ModelManagerTest(unittest.TestCase):
             self.readiness,
             legacy["resolution"],
             "builder",
-            "codex-gpt-5.6-terra",
+            legacy["resolution"]["selections"]["builder"]["route_id"],
             ["builder", "reviewer"],
             {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
         )

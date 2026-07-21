@@ -147,12 +147,13 @@ Use only the selected release through the sealed launcher:
 ```
 
 `models plan --json` previews the active profile, or default
-`balanced-v2` when none is active. Activation accepts only the exact
+`cursor-balanced-v2` when none is active. Activation accepts only the exact
 profile hash shown by preview. `openai-priority-v1` tries OpenAI production
 first, then Anthropic production; `claude-priority-v1` reverses those
 portfolios. `cursor-priority-v1` tries exact Cursor OpenAI/Anthropic routes
-before native routes in both portfolio orders. Legacy has one native-first
-OpenAI-production/Anthropic-checking portfolio.
+before native routes in both portfolio orders with the older effort policy.
+`balanced-v2` retains the high-effort native-first portfolio. Legacy has one
+native-first OpenAI-production/Anthropic-checking portfolio.
 
 Use `disable` only for confirmed temporary credit exhaustion. It can target an
 account route, provider family, selectable model ID, or exact route for 1 to

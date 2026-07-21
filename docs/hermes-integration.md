@@ -104,11 +104,12 @@ Model policy is task-free and sealed:
 ```
 
 The operator activates only the exact profile hash returned by preview.
-`balanced-v2` is used when no active record exists; `legacy-balanced-v1`
-remains available for compatibility.
+`cursor-balanced-v2` is used when no active record exists; `balanced-v2` and
+`legacy-balanced-v1` remain available for compatibility.
 `openai-priority-v1` orders OpenAI-production then Anthropic-production
 portfolios; `claude-priority-v1` reverses them. `cursor-priority-v1` has both
-orders with exact Cursor routes first. Each portfolio has ordered per-role
+orders with exact Cursor routes first and the older effort policy.
+`balanced-v2` retains the high-effort native-first portfolio. Each portfolio has ordered per-role
 candidates and distinct production/checking families; no partial plan is
 valid. Temporary overrides accept only reason `credits_exhausted`, a TTL from
 1 through 604800 seconds, and scope `account-route`, `provider-family`,
