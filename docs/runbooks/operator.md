@@ -195,6 +195,7 @@ same-UID token exposure remains until a broker or OS isolation is used.
 ## Trusted approval and close-out PR
 
 - Notice: under contract 1.3, move only Awaiting Approval → Approved in Linear after reviewing the exact bundle. The trusted approval action commits the binding and requests protected GitHub auto-merge. If it refuses stale evidence, a changed head, conflicts, unavailable auto-merge, or failed checks, investigate the named condition; never manually imitate the attestation.
+- Notice: if main advances, use sealed `ticket-attest --action refresh` on the exact ticket worktree. It disables stale auto-merge, merges protected main without force, retires the old receipts, and makes fresh Reviewer, Narrator, bundle, and Linear approval evidence mandatory.
 - Notice: after the ticket PR merges, the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes `ticket-attest --action done`. It verifies the merge and configured post-merge contexts, projects the ledger once, commits Done plus closeout evidence, creates or reuses the exact factory-owned closeout PR, and requests protected auto-merge. No operator approval or manual GitHub merge is required. After protected main contains valid Done, sequencing returns `COMPLETE` and the dispatcher releases the lease. Projection refuses any active or ambiguous claim.
 - Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Confirm the factory-owned close-out PR entered protected auto-merge; do not supply another business approval or manual merge.
 - Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
@@ -313,9 +314,8 @@ same-UID token exposure remains until a broker or OS isolation is used.
 1. Confirm the candidate full SHA is on `origin/main` and the required
    aggregate `ci` check passed on Linux and macOS.
 2. Inventory every nonterminal ticket and its committed `Kit-SHA`. Finish it
-   on its current release or, at a no-active-run boundary, use the sealed
-   `models migrate-plan` and approved `models migrate` routes. Never edit a
-   ticket pin or route journal manually.
+   on its current release or prepare the exact protected-main in-flight
+   authorization described below. Do not migrate its pin or route journal yet.
 3. For an active execution computer, publish managed maintenance, stop new
    dispatch, and drain every run and dispatcher lease before changing
    user-scoped tools. For an inactive replacement computer, keep its
@@ -333,11 +333,12 @@ same-UID token exposure remains until a broker or OS isolation is used.
 6. Complete the real-Hermes canary with a separate sandbox product and
    profile. Never copy the production `.env`, secrets, board mapping, registry,
    ledger, or LaunchAgent.
-7. Confirm no active runs and no nonterminal ticket with a different
-   `Kit-SHA`. Activation scans committed local, tracking, and live remote
-   ticket sources; a Done claim also requires a valid normal attestation chain
-   or protected-main legacy closeout.
-8. Merge the product's candidate `KIT_PIN` through the protected PR and verify
+7. Confirm no active runs and no unauthorized nonterminal ticket with a
+   different `Kit-SHA`. Activation scans committed local, tracking, and live
+   remote ticket sources; a Done claim also requires a valid normal attestation
+   chain or protected-main legacy closeout.
+8. Merge the product's candidate `KIT_PIN` through the protected PR. Include
+   only the exact in-flight authorization when step 2 requires it, then verify
    the merged product tree still matches the receipt.
 9. At replacement-host cutover, publish maintenance on the old host and wait
    for its runs and leases to drain. Confirm the old dispatcher is stopped;
@@ -348,11 +349,31 @@ same-UID token exposure remains until a broker or OS isolation is used.
 12. Run `factory-kit.sh activate`, restart the factory services, then collect
    doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
    probes.
-13. Remove `MAINTENANCE` only after every acceptance check passes.
+13. For an authorized in-flight cutover, keep maintenance while reviewing each
+   sealed `models migrate-plan`, then remove maintenance and apply only its
+   operator-approved `models migrate`; claim fresh leases afterward. Without
+   in-flight tickets, remove maintenance only after every acceptance check
+   passes.
 
 The run wrapper checks maintenance before taking the launch lock, after taking
 it, and before GO. Never enable the replacement while the old host can still
 dispatch.
+
+For an explicitly approved in-flight cutover, first merge one protected product
+PR containing the target `KIT_PIN` and
+`factory/migrations/inflight-release/<target-kit-sha>.json`. The authorization
+must name the product repository, old and target kit SHAs, and a sorted exact
+list of ticket branch heads and states. Each exact head must still contain its
+old-kit v1 route plan; activation validates that the candidate's existing
+`models migrate` can consume it. Publish maintenance, recover only the named
+stale leases after proving there are no active runs, and leave zero lease
+records before activation. After activation, keep maintenance while reviewing
+each read-only `models migrate-plan` preview; remove maintenance before applying
+each operator-approved `models migrate`, then claim fresh leases before
+resuming.
+Any branch-head, state, source-kit, candidate-kit, repository, ticket-set, or
+protected-main drift requires a new protected authorization. Never preserve or
+copy an opaque lease into the authorization.
 
 If a dispatcher lease is stale, keep maintenance published and run
 `factory-kit.sh recover-lease --project <project> --product <path> --ticket

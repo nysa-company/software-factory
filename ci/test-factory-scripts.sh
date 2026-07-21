@@ -458,6 +458,22 @@ ledger_row() {
   printf '2026-07-13,06:00:00,%s,%s,mock,test,1,0.10,0,,,,,,\n' "$1" "$2"
 }
 
+ledger_row_run() {
+  printf '2026-07-13,06:00:00,%s,%s,mock,test,1,0.10,0,%s,,,,,\n' "$1" "$2" "$3"
+}
+
+write_run_manifest() {
+  local root="$1" ticket="$2" role="$3" run_id="$4" head="$5"
+  mkdir -p "$root/factory/runs"
+  printf '%s\n' \
+    "run_id=$run_id" \
+    'accounting_state=completed' \
+    'exit_status=0' \
+    "ticket=$ticket" \
+    "role=$role" \
+    "role_head_before=$head" > "$root/factory/runs/$run_id.meta"
+}
+
 expect_stage() {
   local expected="$1" root="$2" ticket="$3" actual status certified_origin
   mkdir -p "$root/factory/runs"
@@ -2443,6 +2459,242 @@ printf 'State: Approved\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
   "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
+
+# A sealed base refresh invalidates the old reviewer approval and narrator.
+REFRESH_ROOT="$TMP/refresh-sequence"
+write_envelope "$REFRESH_ROOT"
+cat > "$REFRESH_ROOT/factory/tickets/T-510.md" <<TICKET
+# T-510
+State: Awaiting Approval
+Kit-SHA: $KIT_SHA
+reviewer round 1: APPROVE
+OPERATOR NOTE: reviewer run 2 void — duplicate
+TICKET
+{
+  ledger_header
+  ledger_row T-510 planner
+  ledger_row T-510 test-author
+  ledger_row T-510 builder
+  ledger_row T-510 reviewer
+  ledger_row T-510 reviewer
+  ledger_row T-510 narrator
+} > "$REFRESH_ROOT/factory/ledger.csv"
+git -C "$REFRESH_ROOT" add factory
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "pre-refresh evidence"
+REFRESH_OLD_HEAD="$(git -C "$REFRESH_ROOT" rev-parse HEAD)"
+REFRESH_BRANCH="$(git -C "$REFRESH_ROOT" branch --show-current)"
+git -C "$REFRESH_ROOT" checkout -qb refresh-base
+printf 'protected base advanced\n' > "$REFRESH_ROOT/base.txt"
+git -C "$REFRESH_ROOT" add base.txt
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "protected base"
+REFRESH_BASE_HEAD="$(git -C "$REFRESH_ROOT" rev-parse HEAD)"
+git -C "$REFRESH_ROOT" checkout -q "$REFRESH_BRANCH"
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  merge -q --no-ff refresh-base -m "refresh protected base"
+REFRESH_MERGE_HEAD="$(git -C "$REFRESH_ROOT" rev-parse HEAD)"
+mkdir -p "$REFRESH_ROOT/factory/attestations/T-510"
+python3 - "$REFRESH_ROOT/factory/attestations/T-510/refresh.json" \
+  "$REFRESH_OLD_HEAD" "$REFRESH_BASE_HEAD" "$REFRESH_MERGE_HEAD" <<'PY'
+import json
+import sys
+json.dump({
+    "schema": "nysa.software-factory.ticket-refresh/v1",
+    "ticket": "T-510",
+    "generation": 1,
+    "old_head": sys.argv[2],
+    "base_head": sys.argv[3],
+    "merge_head": sys.argv[4],
+    "prior_reviewer_runs": 1,
+    "prior_approve_verdicts": 1,
+    "prior_request_changes_verdicts": 0,
+    "prior_narrator_runs": 1,
+    "prior_bundle_blob": None,
+    "prior_approval_blob": None,
+    "refreshed_at": "2026-07-21T12:00:00Z",
+}, open(sys.argv[1], "w", encoding="utf-8"), sort_keys=True)
+PY
+sed 's/^State: Awaiting Approval$/State: Review/' \
+  "$REFRESH_ROOT/factory/tickets/T-510.md" > "$TMP/T-510-refreshed.md"
+mv "$TMP/T-510-refreshed.md" "$REFRESH_ROOT/factory/tickets/T-510.md"
+git -C "$REFRESH_ROOT" add factory/attestations/T-510/refresh.json \
+  factory/tickets/T-510.md
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "record refresh receipt"
+REFRESH_COMMIT="$(git -C "$REFRESH_ROOT" rev-parse HEAD)"
+cp "$REFRESH_ROOT/factory/attestations/T-510/refresh.json" "$TMP/refresh.json"
+REFRESH_OK=1
+expect_stage "RUN reviewer" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+
+# Equal verdict totals cannot hide reordering across the refresh boundary.
+git -C "$REFRESH_ROOT" checkout -qb swapped-refresh-verdict "$REFRESH_COMMIT"
+sed 's/^reviewer round 1: APPROVE$/reviewer round 1: REQUEST CHANGES — forged/' \
+  "$REFRESH_ROOT/factory/tickets/T-510.md" > "$TMP/T-510-swapped.md"
+printf 'reviewer round 2: APPROVE\n' >> "$TMP/T-510-swapped.md"
+mv "$TMP/T-510-swapped.md" "$REFRESH_ROOT/factory/tickets/T-510.md"
+git -C "$REFRESH_ROOT" add factory/tickets/T-510.md
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "swap old and new reviewer verdicts"
+expect_stage "REFUSE old reviewer verdict" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+git -C "$REFRESH_ROOT" checkout -q "$REFRESH_BRANCH"
+
+# Removing an authenticated old duplicate-run note cannot turn that row fresh.
+git -C "$REFRESH_ROOT" checkout -qb removed-refresh-void "$REFRESH_COMMIT"
+grep -v '^OPERATOR NOTE: reviewer run 2 void — duplicate$' \
+  "$REFRESH_ROOT/factory/tickets/T-510.md" > "$TMP/T-510-no-void.md"
+mv "$TMP/T-510-no-void.md" "$REFRESH_ROOT/factory/tickets/T-510.md"
+git -C "$REFRESH_ROOT" add factory/tickets/T-510.md
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "remove old reviewer void note"
+expect_stage "REFUSE old reviewer verdict or void-note sequence" \
+  "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+git -C "$REFRESH_ROOT" checkout -q "$REFRESH_BRANCH"
+
+# A new ledger row cannot reuse a manifest bound to the pre-refresh head.
+ledger_row_run T-510 reviewer forged-refresh-reviewer >> \
+  "$REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$REFRESH_ROOT" T-510 reviewer forged-refresh-reviewer \
+  "$REFRESH_OLD_HEAD"
+printf 'reviewer round 2: APPROVE\n' >> \
+  "$REFRESH_ROOT/factory/tickets/T-510.md"
+expect_stage "REFUSE post-refresh run manifest" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+sed '$d' "$REFRESH_ROOT/factory/ledger.csv" > "$TMP/refresh-ledger-clean.csv"
+mv "$TMP/refresh-ledger-clean.csv" "$REFRESH_ROOT/factory/ledger.csv"
+sed '$d' "$REFRESH_ROOT/factory/tickets/T-510.md" > "$TMP/refresh-ticket-clean.md"
+mv "$TMP/refresh-ticket-clean.md" "$REFRESH_ROOT/factory/tickets/T-510.md"
+rm "$REFRESH_ROOT/factory/runs/forged-refresh-reviewer.meta"
+
+# Exact topology cannot authenticate forged zero baselines; the old ticket can.
+git -C "$REFRESH_ROOT" checkout -qb forged-refresh "$REFRESH_MERGE_HEAD"
+mkdir -p "$REFRESH_ROOT/factory/attestations/T-510"
+cp "$TMP/refresh.json" "$REFRESH_ROOT/factory/attestations/T-510/refresh.json"
+python3 - "$REFRESH_ROOT/factory/attestations/T-510/refresh.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+for name in ("prior_reviewer_runs", "prior_approve_verdicts", "prior_narrator_runs"):
+    value[name] = 0
+json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+sed 's/^State: Awaiting Approval$/State: Review/' \
+  "$REFRESH_ROOT/factory/tickets/T-510.md" > "$TMP/T-510-forged.md"
+mv "$TMP/T-510-forged.md" "$REFRESH_ROOT/factory/tickets/T-510.md"
+git -C "$REFRESH_ROOT" add factory/attestations/T-510/refresh.json \
+  factory/tickets/T-510.md
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "forge zero refresh baselines"
+expect_stage "REFUSE refresh receipt baselines do not match" \
+  "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+git -C "$REFRESH_ROOT" checkout -q "$REFRESH_BRANCH"
+
+# The same receipt on a history that does not contain its merge is stale.
+git -C "$REFRESH_ROOT" checkout -qb stale-refresh "$REFRESH_OLD_HEAD"
+mkdir -p "$REFRESH_ROOT/factory/attestations/T-510"
+cp "$TMP/refresh.json" "$REFRESH_ROOT/factory/attestations/T-510/refresh.json"
+sed 's/^State: Awaiting Approval$/State: Review/' \
+  "$REFRESH_ROOT/factory/tickets/T-510.md" > "$TMP/T-510-stale.md"
+mv "$TMP/T-510-stale.md" "$REFRESH_ROOT/factory/tickets/T-510.md"
+git -C "$REFRESH_ROOT" add factory/attestations/T-510/refresh.json \
+  factory/tickets/T-510.md
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "stale refresh receipt"
+expect_stage "REFUSE stale refresh receipt" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+git -C "$REFRESH_ROOT" checkout -q "$REFRESH_BRANCH"
+
+# A narrator completed before the fresh reviewer cannot satisfy narration.
+ledger_row_run T-510 narrator refresh-narrator-before >> \
+  "$REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$REFRESH_ROOT" T-510 narrator refresh-narrator-before \
+  "$REFRESH_COMMIT"
+expect_stage "RUN reviewer" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+ledger_row_run T-510 reviewer refresh-reviewer >> "$REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$REFRESH_ROOT" T-510 reviewer refresh-reviewer "$REFRESH_COMMIT"
+expect_stage "REFUSE reviewer has" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+printf 'reviewer round 2: APPROVE\n' >> \
+  "$REFRESH_ROOT/factory/tickets/T-510.md"
+git -C "$REFRESH_ROOT" add factory/tickets/T-510.md
+git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "fresh reviewer approval"
+expect_stage "RUN narrator" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+REFRESH_REVIEW_HEAD="$(git -C "$REFRESH_ROOT" rev-parse HEAD)"
+ledger_row_run T-510 narrator forged-refresh-narrator >> \
+  "$REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$REFRESH_ROOT" T-510 narrator forged-refresh-narrator \
+  "$REFRESH_OLD_HEAD"
+expect_stage "REFUSE post-refresh run manifest" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+sed '$d' "$REFRESH_ROOT/factory/ledger.csv" > "$TMP/refresh-ledger-clean.csv"
+mv "$TMP/refresh-ledger-clean.csv" "$REFRESH_ROOT/factory/ledger.csv"
+rm "$REFRESH_ROOT/factory/runs/forged-refresh-narrator.meta"
+ledger_row_run T-510 narrator refresh-narrator-after >> \
+  "$REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$REFRESH_ROOT" T-510 narrator refresh-narrator-after \
+  "$REFRESH_REVIEW_HEAD"
+expect_stage "AWAIT-OPERATOR" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
+[[ "$REFRESH_OK" -eq 1 ]] && pass "refresh requires fresh review then fresh narration"
+
+# A Review ticket whose reset is byte-for-byte a no-op legitimately commits
+# only the refresh receipt.
+NOOP_REFRESH_ROOT="$TMP/noop-refresh-sequence"
+write_envelope "$NOOP_REFRESH_ROOT"
+cat > "$NOOP_REFRESH_ROOT/factory/tickets/T-511.md" <<TICKET
+# T-511
+State: Review
+Kit-SHA: $KIT_SHA
+- [ ] Evidence bundle posted
+- [ ] Operator approved
+TICKET
+{
+  ledger_header
+  ledger_row T-511 planner
+  ledger_row T-511 test-author
+  ledger_row T-511 builder
+} > "$NOOP_REFRESH_ROOT/factory/ledger.csv"
+git -C "$NOOP_REFRESH_ROOT" add factory
+git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "pre-refresh Review ticket"
+NOOP_OLD_HEAD="$(git -C "$NOOP_REFRESH_ROOT" rev-parse HEAD)"
+NOOP_BRANCH="$(git -C "$NOOP_REFRESH_ROOT" branch --show-current)"
+git -C "$NOOP_REFRESH_ROOT" checkout -qb noop-refresh-base
+printf 'new protected base\n' > "$NOOP_REFRESH_ROOT/base.txt"
+printf '\nProtected-main note: harmless context.\n' >> \
+  "$NOOP_REFRESH_ROOT/factory/tickets/T-511.md"
+git -C "$NOOP_REFRESH_ROOT" add base.txt factory/tickets/T-511.md
+git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "advance protected base"
+NOOP_BASE_HEAD="$(git -C "$NOOP_REFRESH_ROOT" rev-parse HEAD)"
+git -C "$NOOP_REFRESH_ROOT" checkout -q "$NOOP_BRANCH"
+git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  merge -q --no-ff noop-refresh-base -m "refresh protected base"
+NOOP_MERGE_HEAD="$(git -C "$NOOP_REFRESH_ROOT" rev-parse HEAD)"
+mkdir -p "$NOOP_REFRESH_ROOT/factory/attestations/T-511"
+python3 - "$NOOP_REFRESH_ROOT/factory/attestations/T-511/refresh.json" \
+  "$NOOP_OLD_HEAD" "$NOOP_BASE_HEAD" "$NOOP_MERGE_HEAD" <<'PY'
+import json
+import sys
+json.dump({
+    "schema": "nysa.software-factory.ticket-refresh/v1",
+    "ticket": "T-511",
+    "generation": 1,
+    "old_head": sys.argv[2],
+    "base_head": sys.argv[3],
+    "merge_head": sys.argv[4],
+    "prior_reviewer_runs": 0,
+    "prior_approve_verdicts": 0,
+    "prior_request_changes_verdicts": 0,
+    "prior_narrator_runs": 0,
+    "prior_bundle_blob": None,
+    "prior_approval_blob": None,
+    "refreshed_at": "2026-07-21T12:00:00Z",
+}, open(sys.argv[1], "w", encoding="utf-8"), sort_keys=True)
+PY
+git -C "$NOOP_REFRESH_ROOT" add factory/attestations/T-511/refresh.json
+git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "record no-op refresh receipt"
+if expect_stage "RUN reviewer" "$NOOP_REFRESH_ROOT" T-511; then
+  pass "refresh accepts an authenticated no-op Review ticket reset"
+fi
 
 COMMITTED_APPROVAL_ROOT="$TMP/committed-approval"
 write_envelope "$COMMITTED_APPROVAL_ROOT"

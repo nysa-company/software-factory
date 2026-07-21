@@ -178,6 +178,27 @@ path.write_text(text)
 PY
 }
 
+write_inflight_authorization() {
+  local product="$1" source="$2" target="$3" ticket="$4" head="$5" state="$6"
+  local path="$product/factory/migrations/inflight-release/$target.json"
+  mkdir -p "$(dirname "$path")"
+  python3 - "$path" "$source" "$target" "$ticket" "$head" "$state" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+source, target, ticket, head, state = sys.argv[2:]
+path.write_text(json.dumps({
+    "repository": "example/test-product",
+    "schema": "nysa.software-factory.inflight-release-authorization/v1",
+    "source_kit_sha": source,
+    "target_kit_sha": target,
+    "tickets": [{
+        "branch": "ticket/" + ticket, "head": head,
+        "state": state, "ticket": ticket,
+    }],
+}, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+}
+
 restore_product_tuple() {
   local product="$1" sha="$2"
   printf '%s\n' "$sha" > "$product/factory/KIT_PIN"
@@ -196,6 +217,7 @@ make_product() {
   mkdir -p "$path/factory/tickets"
   cat > "$path/factory/PROJECT.env" <<'EOF'
 PROJECT_NAME=test-product
+GH_REPO=example/test-product
 CERTIFY_SCRIPT=factory/certify.sh
 EOF
   cat > "$path/factory/certify.sh" <<'EOF'
@@ -236,6 +258,8 @@ factory/.launch.lock/
 factory/.provider.lock/
 factory/.active-runs/
 factory/runs/
+factory/.dispatch-leases/
+factory/.dispatch-leases.lock/
 EOF
   cat > "$path/factory/tickets/T-001.md" <<'EOF'
 State: Ready
@@ -321,6 +345,12 @@ git init --bare -q "$CANONICAL"
 git init -q -b main "$KIT_REPO"
 git -C "$KIT_REPO" remote add origin "$CANONICAL"
 mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts"
+mkdir -p "$KIT_REPO/scripts/model-routing"
+cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
+  "$KIT_REPO/scripts/"
+cp "$ROOT/scripts/model-routing/catalog-v1.json" \
+  "$ROOT/scripts/model-routing/profiles-v1.json" \
+  "$KIT_REPO/scripts/model-routing/"
 cat > "$KIT_REPO/ci/test-all.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eu
@@ -1395,6 +1425,31 @@ git -C "$PRODUCT_ONE" worktree add -q -b ticket/T-006 \
   "$LEASE_BRANCH_WORKTREE" main
 printf '%s\n' '# T-006' 'State: Planning' "Kit-SHA: $SHA_A" > \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+mkdir -p "$LEASE_BRANCH_WORKTREE/factory/route-plans"
+python3 - "$ROOT/scripts/model-router.py" \
+  "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$SHA_A" <<'PY'
+import importlib.util, json, pathlib, sys
+spec = importlib.util.spec_from_file_location("fixture_router", sys.argv[1])
+router = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(router)
+catalog, routes, _, profiles = router.load_policy()
+readiness = {
+    route_id: {
+        "adapter_version": "test-v1", "reason": "test",
+        "reported_identity": route["expected_reported_identity"], "state": "READY",
+    }
+    for route_id, route in routes.items() if route["enabled"]
+}
+resolution = router.resolve_policy(
+    catalog, routes, profiles["legacy-balanced-v1"], readiness,
+)
+path = pathlib.Path(sys.argv[2])
+path.write_text(json.dumps({
+    "created_at": "2026-07-21T00:00:00Z", "kit_sha": sys.argv[3],
+    "resolution": resolution, "schema": "ticket-model-route-plan/v1",
+    "ticket": "T-006",
+}, sort_keys=True, separators=(",", ":")) + "\n")
+PY
 commit_all "$LEASE_BRANCH_WORKTREE" "add branch-only ticket lease fixture"
 git -C "$LEASE_BRANCH_WORKTREE" push -q -u origin ticket/T-006
 set_pin "$PRODUCT_ONE" "$SHA_B"
@@ -1468,12 +1523,108 @@ expect_failure "ticket branch missing its canonical file blocks activation" \
   --receipt "$RECEIPT_WRONG_LEASE"
 git -C "$PRODUCT_ONE" push -q origin --delete ticket/T-008
 git -C "$PRODUCT_ONE" branch -D ticket/T-008 >/dev/null
-expect_success "upgraded product tuple certifies" \
+
+# A protected-main authorization may bridge only the exact old pinned branch
+# heads named for one candidate. It does not relax the lease drain barrier.
+sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_A/" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
+mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "restore old ticket for authorized migration"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+INFLIGHT_AUTH="$PRODUCT_ONE/factory/migrations/inflight-release/$SHA_B.json"
+write_inflight_authorization \
+  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$(printf '0%.0s' {1..40})" Planning
+commit_all "$PRODUCT_ONE" "add wrong-head in-flight authorization fixture"
+push_main "$PRODUCT_ONE"
+expect_success "wrong-head in-flight tuple certifies" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
+RECEIPT_WRONG_AUTH="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_failure "wrong authorized remote head blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_AUTH"
+
+VALID_INFLIGHT_PLAN="$TMP/t006-valid-route-plan.json"
+cp "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$VALID_INFLIGHT_PLAN"
+git -C "$LEASE_BRANCH_WORKTREE" rm -q factory/route-plans/T-006.json
+commit_all "$LEASE_BRANCH_WORKTREE" "remove in-flight route plan fixture"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+INFLIGHT_HEAD="$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
+write_inflight_authorization \
+  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Planning
+commit_all "$PRODUCT_ONE" "authorize missing in-flight route plan fixture"
+push_main "$PRODUCT_ONE"
+expect_success "missing-plan in-flight tuple certifies" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
+RECEIPT_MISSING_PLAN="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_failure "authorized ticket missing its v1 route plan blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_MISSING_PLAN"
+
+mkdir -p "$LEASE_BRANCH_WORKTREE/factory/route-plans"
+printf '{"kit_sha":"%s","revisions":[],"schema":"ticket-model-route-journal/v2","ticket":"T-006"}\n' \
+  "$SHA_A" > "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json"
+commit_all "$LEASE_BRANCH_WORKTREE" "add v2 in-flight route journal fixture"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+INFLIGHT_HEAD="$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
+write_inflight_authorization \
+  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Planning
+commit_all "$PRODUCT_ONE" "authorize v2 in-flight route journal fixture"
+push_main "$PRODUCT_ONE"
+expect_success "v2-plan in-flight tuple certifies" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
+RECEIPT_V2_PLAN="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_failure "authorized ticket with a v2 plan blocks v1 migration cutover" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_V2_PLAN"
+
+cp "$VALID_INFLIGHT_PLAN" \
+  "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json"
+python3 - "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$SHA_B" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["kit_sha"] = sys.argv[2]
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+commit_all "$LEASE_BRANCH_WORKTREE" "add wrong-source in-flight route plan fixture"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+INFLIGHT_HEAD="$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
+write_inflight_authorization \
+  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Planning
+commit_all "$PRODUCT_ONE" "authorize wrong-source in-flight route plan fixture"
+push_main "$PRODUCT_ONE"
+expect_success "wrong-source-plan in-flight tuple certifies" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
+RECEIPT_WRONG_PLAN_SOURCE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_failure "authorized route plan from another source kit blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_PLAN_SOURCE"
+
+cp "$VALID_INFLIGHT_PLAN" \
+  "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json"
+commit_all "$LEASE_BRANCH_WORKTREE" "restore migratable in-flight route plan"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+INFLIGHT_HEAD="$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
+write_inflight_authorization \
+  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Planning
+commit_all "$PRODUCT_ONE" "authorize exact in-flight ticket head"
+push_main "$PRODUCT_ONE"
+expect_success "authorized in-flight product tuple certifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_B="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 [[ "$(json_value "$RECEIPT_B" expected_previous_generation)" == "1" ]] &&
   pass "receipt binds expected previous generation" ||
   fail "receipt binds expected previous generation"
+
+mkdir -p "$PRODUCT_ONE/factory/.dispatch-leases"
+printf '{}\n' > "$PRODUCT_ONE/factory/.dispatch-leases/T-006.json"
+expect_failure "in-flight authorization cannot retain a dispatcher lease" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_B"
+rm "$PRODUCT_ONE/factory/.dispatch-leases/T-006.json"
+rmdir "$PRODUCT_ONE/factory/.dispatch-leases"
 
 export FACTORY_KIT_FAIL_AFTER_PHASE=receipt_claimed
 expect_failure "fault injection interrupts after receipt claim" \
@@ -1493,6 +1644,16 @@ expect_success "reconcile completes claimed pre-pointer transaction" \
   pass "reconcile commits release b" ||
   fail "reconcile commits release b"
 
+# Existing sealed models migrate performs this step after activation; the
+# factory-kit fixture changes only the same two affinity bytes it validates.
+sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_B/" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
+mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "simulate sealed ticket route migration"
+git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+
 expect_failure "rollback refuses unreverted product tuple" \
   rollback --project alpha --product "$PRODUCT_ONE"
 sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_A/" \
@@ -1502,6 +1663,8 @@ mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
 commit_all "$LEASE_BRANCH_WORKTREE" "restore authoritative ticket lease for rollback"
 git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+git -C "$PRODUCT_ONE" rm -q \
+  "factory/migrations/inflight-release/$SHA_B.json"
 restore_product_tuple "$PRODUCT_ONE" "$SHA_A"
 printf '%s\n\n' "$SHA_A" > "$PRODUCT_ONE/factory/KIT_PIN"
 expect_failure "rollback rejects KIT_PIN blank-line extras" \

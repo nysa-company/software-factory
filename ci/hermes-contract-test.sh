@@ -2049,8 +2049,10 @@ assert commands["ticket-state"]["transition_states"] == [
 assert commands["ticket-attest"]["arguments"] == [
     "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]",
     "--workdir", "<absolute-worktree>",
-    "--action", "<bundle|approval|done>", "--json"
+    "--action", "<bundle|approval|refresh|done>", "--json"
 ]
+assert any("fresh review" in item and "stale bundle" in item
+           for item in commands["ticket-attest"]["validation"])
 assert any("closeout PR" in item and "protected auto-merge" in item
            for item in commands["ticket-attest"]["validation"])
 assert commands["project-ledger"]["arguments"] == [

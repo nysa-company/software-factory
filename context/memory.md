@@ -469,3 +469,9 @@ The sealed Claude readiness probe allows 30 seconds for local CLI startup. A tim
 Category: System change
 
 The selective-CI self-test clears the outer `CI_FORCE_FULL` controller flag for ordinary fixture cases and retains a separate explicit force-full assertion. Protected-main full verification can therefore exercise selector behavior without forcing every nested fixture to report the controller mode.
+
+## 2026-07-21 — Decision 25: In-flight release refresh remains evidence-bound
+
+Category: System change
+
+A protected-main authorization may bridge only exact named old-kit ticket branch heads across an exceptional release activation; maintenance, active-run, and dispatcher-lease drain barriers remain unchanged. After sealed route migration, a non-force base refresh retires old bundle and approval receipts and records role/verdict baselines so fresh Reviewer, Narrator, bundle, and Linear approval evidence is mandatory. One authentic superseded Contract 1.2 Planner manifest is retained only as digest-bound legacy accounting evidence, never as modern route authority.

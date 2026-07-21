@@ -31,9 +31,11 @@ exactly, in order:
 1. Confirm the full SHA is on origin/main and the required aggregate `ci`
    check passed on Linux and macOS.
 2. Inventory every nonterminal ticket and its committed Kit-SHA. Finish each
-   on its current release or, at a no-active-run boundary, use the sealed
-   `models migrate-plan` and operator-approved `models migrate` routes. Never
-   edit Kit-SHA or a route journal manually.
+   on its current release or prepare the protected-main
+   `factory/migrations/inflight-release/{{SHA}}.json` authorization with the
+   exact repository, source/target SHAs, sorted ticket branch heads, and states.
+   Each authorized head must retain its old-kit v1 route plan. Do not migrate a
+   pin, route journal, or lease yet.
 3. If this is the active in-place host, stop new dispatch, publish maintenance,
    and drain all runs and dispatcher leases before changing user-scoped tools.
    If it is an inactive replacement, keep its dispatcher, reconciler, and
@@ -67,8 +69,10 @@ exactly, in order:
    production .env, secrets, board mapping, registry, ledger, or LaunchAgent
    into the sandbox." | "No compatibility-sensitive surface changed between
    {{LAST_ACTIVATED_SHA}} and {{SHA}}; the canary may be skipped."}}
-9. Confirm no active runs and no nonterminal ticket with a different Kit-SHA.
-10. Open the product PR that changes ONLY factory/KIT_PIN to the full SHA.
+9. Confirm no active runs, no dispatcher leases, and no unauthorized
+   nonterminal ticket with a different Kit-SHA.
+10. Open the product PR that changes `factory/KIT_PIN` to the full SHA and, only
+   when step 2 identified in-flight tickets, adds the exact authorization file.
    Stop and wait for my approval before merging it. After merge, verify the
    product tree still matches the certification receipt.
 11. For a replacement-host cutover, publish maintenance on the old host and
@@ -79,7 +83,11 @@ exactly, in order:
    and primary Hermes profile running).
 14. factory-kit.sh activate, restart the factory services, then collect doctor
    JSON, sandbox smoke, PID, Linear freshness, and repeated health probes.
-15. Remove MAINTENANCE only after every acceptance check passes.
+15. For authorized in-flight tickets, keep maintenance while reviewing every
+   sealed `models migrate-plan` preview. Remove maintenance before applying
+   only the exact operator-approved `models migrate`, then claim fresh leases.
+   With no in-flight tickets, remove maintenance only after every acceptance
+   check passes.
 
 Then prove the release works by running two real tickets end to end:
 
