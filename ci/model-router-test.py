@@ -143,6 +143,29 @@ class ModelRouterTest(unittest.TestCase):
             )
             self.assertEqual(fallback["selections"][role]["effort"], "medium")
 
+    def test_cursor_balanced_v2_reverses_only_candidate_order(self):
+        native = self.profile_map["balanced-v2"]["portfolios"][0]
+        cursor = self.profile_map["cursor-balanced-v2"]["portfolios"][0]
+        for role in ROUTER.ROLES:
+            self.assertEqual(cursor["roles"][role]["effort"], native["roles"][role]["effort"])
+            self.assertEqual(cursor["roles"][role]["candidates"], list(reversed(native["roles"][role]["candidates"])))
+
+        selected = self.resolve("cursor-balanced-v2")["selections"]
+        self.assertTrue(all(value["adapter"].startswith("cursor-") for value in selected.values()))
+
+        readiness = self.readiness()
+        for route_id in (
+            "cursor-gpt-5.6-sol-high",
+            "cursor-claude-fable-5-thinking-medium",
+            "cursor-claude-sonnet-5-thinking-high",
+        ):
+            readiness[route_id]["state"] = "UNAVAILABLE"
+        fallback = self.resolve("cursor-balanced-v2", readiness)["selections"]
+        self.assertEqual(
+            {role: fallback[role]["route_id"] for role in ROUTER.ROLES},
+            {role: self.resolve("balanced-v2")["selections"][role]["route_id"] for role in ROUTER.ROLES},
+        )
+
     def test_hashes_and_resolution_are_deterministic(self):
         profile = self.profile_map["legacy-balanced-v1"]
         profile_hashes = [ROUTER.profile_hash(profile) for _ in range(5)]

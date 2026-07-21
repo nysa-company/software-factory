@@ -6,16 +6,16 @@ role, what “fallback” means, and when the factory must stop.
 ## Default model order
 
 If the operator has not activated another profile, the factory uses
-`balanced-v2`. Its primary and secondary routes are:
+`cursor-balanced-v2`. Its primary and secondary routes are:
 
 | Role | Lane | Primary route | Secondary route | Effort |
 |---|---|---|---|---|
-| Planner | Production | Codex CLI — GPT-5.6 Sol | Cursor CLI — GPT-5.6 Sol High | High |
-| Builder | Production | Codex CLI — GPT-5.6 Terra | Cursor CLI — GPT-5.6 Sol High | High |
-| Narrator | Production | Codex CLI — GPT-5.6 Terra | Cursor CLI — GPT-5.6 Sol High | High |
-| Spec-linter | Checking | Claude CLI — Fable 5 | Cursor CLI — Claude Fable 5 Thinking Medium | Medium |
-| Test-author | Checking | Claude CLI — Fable 5 | Cursor CLI — Claude Fable 5 Thinking Medium | Medium |
-| Reviewer | Checking | Claude CLI — Sonnet 5 | Cursor CLI — Claude Sonnet 5 Thinking High | High |
+| Planner | Production | Cursor CLI — GPT-5.6 Sol High | Codex CLI — GPT-5.6 Sol | High |
+| Builder | Production | Cursor CLI — GPT-5.6 Sol High | Codex CLI — GPT-5.6 Terra | High |
+| Narrator | Production | Cursor CLI — GPT-5.6 Sol High | Codex CLI — GPT-5.6 Terra | High |
+| Spec-linter | Checking | Cursor CLI — Claude Fable 5 Thinking Medium | Claude CLI — Fable 5 | Medium |
+| Test-author | Checking | Cursor CLI — Claude Fable 5 Thinking Medium | Claude CLI — Fable 5 | Medium |
+| Reviewer | Checking | Cursor CLI — Claude Sonnet 5 Thinking High | Claude CLI — Sonnet 5 | High |
 
 “Secondary” is a same-family transport/account alternative, not an independent
 review family. Cursor GPT remains in the OpenAI family; Cursor Claude remains in
@@ -90,10 +90,10 @@ Contract 1.4 fallback:
    partial work, appends a route-journal revision, commits and pushes the
    handoff, then consumes the approval.
 
-The usual default-profile result is native CLI → same-family Cursor:
+The usual default-profile result is Cursor → same-family native CLI:
 
-- failed Codex route → Cursor GPT route;
-- failed Claude route → Cursor Claude route.
+- failed Cursor GPT route → Codex route;
+- failed Cursor Claude route → Claude route.
 
 This is not guaranteed. The resolver must find one complete valid assignment.
 If the failed route was already the last ready same-family candidate, the
@@ -131,7 +131,10 @@ The operator may activate a different profile before pinning:
 - `claude-priority-v1`: tries Anthropic production with OpenAI checking first,
   then the reverse.
 - `cursor-priority-v1`: gives the exact Cursor routes priority over native
-  routes in both portfolio orders.
+  routes in both portfolio orders while retaining the older medium-effort
+  policy.
+- `balanced-v2`: preserves the high-effort native-first policy for explicit
+  activation and existing records.
 - `legacy-balanced-v1`: preserves the previous medium-effort
   Builder/Narrator/Reviewer policy and Sonnet Cursor fallback for existing
   activation records and pinned-plan migration.

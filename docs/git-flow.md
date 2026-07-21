@@ -21,21 +21,24 @@ allowlist. In this kit that includes the documentation roots plus `AGENTS.md`,
 conformance shakedown report. Repository baseline, secret, artifact, and
 test-immutability checks still run.
 
-Every behavioral pull request runs fail-closed component selection on Linux.
-Applicable shell/platform-sensitive pull requests run the same selection under
-macOS system Bash in parallel. Unknown, shared, mixed, dependency, CI, selector,
-addition, deletion, and rename changes resolve to full. Every push to `main`
-runs both complete suites so release verification remains bound to a fully
-tested merged SHA. Instantiated product workflows may skip expensive product
-checks for allowlisted PRs, but every product push to `main` runs its full
-verification so deployment evidence remains bound to the merged SHA.
+Every behavioral pull request runs fail-closed targeted-or-deferred selection
+on Linux and macOS system Bash. Mapped leaf changes execute their applicable
+suites. Unknown, shared, mixed, dependency, CI, selector, addition, deletion,
+and rename changes run policy gates and defer complete coverage. Every push to
+`main` runs all three shards on both platforms so release verification remains
+bound to a fully tested merged SHA. Instantiated product workflows may skip
+expensive product checks for allowlisted PRs, but every product push to `main`
+runs its full verification so deployment evidence remains bound to the merged
+SHA.
 
 Do not infer safety from commit size, commit messages, or a Markdown suffix:
-one-line code and executable Markdown prompt changes require full CI. Do not
-put `paths-ignore` on a required workflow; GitHub leaves its check pending
+one-line code and executable Markdown prompt changes require full post-merge
+CI before release. Do not put `paths-ignore` on a required workflow; GitHub
+leaves its check pending
 instead of reporting success. Mixed changes, renames from outside the
-allowlist, and executable Markdown all run at least Linux CI; missing
-comparison commits and classifier errors run both platforms. Each product owns
+allowlist, executable Markdown, missing comparison commits, and classifier
+errors run both platform policy jobs and defer to complete `main`
+verification. Each product owns
 its instantiated helper and must review any allowlist change against paths
 that can affect its runtime.
 
@@ -71,12 +74,15 @@ For every candidate that may reach production:
 
 Only one product activation or rollback may run at a time. Do not activate a
 second candidate while a ticket has a nonterminal lease, a run is active, or an
-activation journal is incomplete. Contract `1.1.0` remains single-ticket by
-default and permits an explicit bounded pilot from two through four tickets
-when the product sets `MAX_CONCURRENT_TICKETS` accordingly; each ticket keeps
+activation journal is incomplete. Contracts 1.1 through 1.5 remain
+single-ticket by default and permit an explicit bounded pilot up to four.
+Contract 1.6 defaults to four and permits up to six through
+`MAX_CONCURRENT_TICKETS`; each ticket keeps
 its own exact branch, linked worktree, opaque lease, and sequential role flow.
-Those leases may coexist, but a product-level control lock serializes provider
-intervals until an OS-enforced writer boundary makes parallel providers safe.
+Those leases may coexist. The setting is coupled worktree/provider capacity.
+The product-level control lock remains for native subscription, Cursor CLI, and
+every other legacy route; only an exact owner-activated Contract 1.6 API route
+may use isolated parallel admission.
 
 ## Kit release lifecycle
 
@@ -110,7 +116,8 @@ Contract `1.1.0` preserves 1.0 behavior when `MAX_CONCURRENT_TICKETS` is absent
 or `1`; opt-in values `2` through `4` require the 1.1 launcher, profile skill,
 and dispatcher role contract to move together. Contract `1.2.0` inherits that
 lease behavior unchanged while requiring ticket worktrees for preflight and
-sequencing.
+sequencing. Contracts through `1.5.0` retain the bound of four; only Contract
+`1.6.0` accepts values `5` and `6`.
 
 **Use a repository ruleset, not classic branch protection.** Verified by live probe (2026-07-12, dispatcher trial setup): a write deploy key pushed straight through classic branch protection to `main`, and also through a ruleset whose bypass list included the repository-admin *role* (deploy keys inherit it). Deploy keys — how agent machines authenticate — are only blocked by a ruleset whose bypass list contains **no repository roles**. Probes to run after any change to these settings: agent key pushes to `main` (must be rejected), agent key pushes a ticket branch (must succeed).
 
@@ -118,9 +125,9 @@ sequencing.
 
 - Require a pull request before merging; no direct pushes.
 - Required status checks: `ci` and `test-immutability`, strict (branch up to
-  date). The `ci` context is an aggregate job that succeeds only when both the
-  Linux suite and the macOS system-Bash suite succeed. A separate green Linux
-  or macOS job is not sufficient.
+  date). The `ci` context is an aggregate job that succeeds only when all three
+  Linux shards and all three macOS system-Bash shards succeed. A separate
+  green platform shard is not sufficient.
 - Block force pushes and deletion.
 - Bypass list: **empty**. The release verifier fails closed on any bypass actor,
   including organization admins, because the certified commit must be proven to

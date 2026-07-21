@@ -23,7 +23,7 @@ SPEC = importlib.util.spec_from_file_location("model_router", ROUTER_PATH)
 ROUTER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ROUTER)
 
-DEFAULT_PROFILE = "balanced-v2"
+DEFAULT_PROFILE = "cursor-balanced-v2"
 MAX_FILE_SIZE = 1024 * 1024
 MAX_TTL_SECONDS = 7 * 24 * 60 * 60
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")

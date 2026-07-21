@@ -593,7 +593,7 @@ print(d["profile_id"], ",".join(d["disabled_route_ids"]))' <<< "$context"
       return 2
     fi
   else
-    FACTORY_MODEL_PROFILE_ID="balanced-v2"
+    FACTORY_MODEL_PROFILE_ID="cursor-balanced-v2"
     FACTORY_DISABLED_ROUTE_IDS=""
   fi
   [[ -z "$override" ]] || FACTORY_MODEL_PROFILE_ID="$override"

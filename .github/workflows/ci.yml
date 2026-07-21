@@ -1,5 +1,5 @@
-# Live CI for the factory repository. Pull requests use fail-closed dynamic
-# selection; protected main always receives complete Linux and macOS proof.
+# Live CI for the factory repository. Pull requests receive targeted/policy
+# proof; protected main receives complete Linux and macOS proof.
 # Managed local verification: bash ci/test-all.sh --changed-or-defer origin/main HEAD
 name: ci
 
@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       behavioral: ${{ steps.classify.outputs.behavioral }}
-      macos: ${{ steps.classify.outputs.macos }}
       base: ${{ steps.classify.outputs.base }}
+      shards: ${{ steps.classify.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,22 +34,23 @@ jobs:
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
           if test "$GITHUB_EVENT_NAME" = push; then
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
-            echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo 'shards=["factory","hermes","release"]' >> "$GITHUB_OUTPUT"
           elif bash ci/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
             echo "behavioral=false" >> "$GITHUB_OUTPUT"
-            echo "macos=false" >> "$GITHUB_OUTPUT"
+            echo 'shards=["pr"]' >> "$GITHUB_OUTPUT"
           else
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
-            if bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
-              echo "macos=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "macos=false" >> "$GITHUB_OUTPUT"
-            fi
+            echo 'shards=["pr"]' >> "$GITHUB_OUTPUT"
           fi
 
   linux:
+    name: linux-${{ matrix.shard }}
     needs: scope
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.scope.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,28 +71,27 @@ jobs:
         env:
           BASE_SHA: ${{ needs.scope.outputs.base }}
         run: scripts/artifact-check --base "$BASE_SHA"
-      - name: selected pull-request verification
+      - name: targeted or deferred pull-request verification
         if: github.event_name == 'pull_request' && needs.scope.outputs.behavioral == 'true'
         env:
-          BASE_REF: origin/main
           BASE_SHA: ${{ needs.scope.outputs.base }}
-          CI_FORCE_FULL: ${{ vars.CI_FORCE_FULL || '0' }}
-        run: >-
-          CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY"
-          bash ci/test-all.sh --changed "$BASE_SHA" "$GITHUB_SHA"
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh --changed-or-defer "$BASE_SHA" "$GITHUB_SHA"
       - name: complete main verification
         if: github.event_name == 'push'
         env:
           BASE_REF: origin/main
           CI_FORCE_FULL: "1"
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh --shard "${{ matrix.shard }}"
 
   macos-bash-3:
+    name: macos-bash-3-${{ matrix.shard }}
     needs: scope
-    if: >-
-      needs.scope.outputs.behavioral == 'true' &&
-      (github.event_name == 'push' || needs.scope.outputs.macos == 'true')
+    if: needs.scope.outputs.behavioral == 'true'
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.scope.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,22 +101,18 @@ jobs:
           node-version: 22
       - name: install GNU timeout
         run: brew install coreutils
-      - name: selected pull-request verification under system Bash
+      - name: targeted or deferred pull-request verification under system Bash
         if: github.event_name == 'pull_request'
         env:
-          BASE_REF: origin/main
           BASE_SHA: ${{ needs.scope.outputs.base }}
-          CI_FORCE_FULL: ${{ vars.CI_FORCE_FULL || '0' }}
-        run: >-
-          CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY"
-          /bin/bash ci/test-all.sh --changed "$BASE_SHA" "$GITHUB_SHA"
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --changed-or-defer "$BASE_SHA" "$GITHUB_SHA"
       - name: complete main suite under system Bash
         if: github.event_name == 'push'
         env:
           CI_FORCE_FULL: "1"
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --shard "${{ matrix.shard }}"
 
-  # Keep the required context stable while Linux and macOS execute in parallel.
+  # Keep the required context stable while all six platform shards execute.
   ci:
     if: always()
     needs: [scope, linux, macos-bash-3]
@@ -124,22 +120,17 @@ jobs:
     steps:
       - name: require applicable verification
         env:
-          EVENT_NAME: ${{ github.event_name }}
           SCOPE_RESULT: ${{ needs.scope.result }}
           BEHAVIORAL: ${{ needs.scope.outputs.behavioral }}
           LINUX_RESULT: ${{ needs.linux.result }}
-          MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$LINUX_RESULT" = success
           if test "$BEHAVIORAL" = false; then
-            test "$MACOS_REQUIRED" = false
             test "$MACOS_RESULT" = skipped
-          elif test "$EVENT_NAME" = push || test "$MACOS_REQUIRED" = true; then
-            test "$MACOS_RESULT" = success
           else
-            test "$MACOS_RESULT" = skipped
+            test "$MACOS_RESULT" = success
           fi
 
   test-immutability:

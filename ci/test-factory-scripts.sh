@@ -253,10 +253,10 @@ NO_STATE_PROFILE="$(env -u FACTORY_MODEL_PROFILE_OVERRIDE \
   -u FACTORY_MODEL_STATE_ROOT -u FACTORY_PROJECT \
   bash -c 'source "$1"; factory_load_model_probe_context; printf "%s\n" "$FACTORY_MODEL_PROFILE_ID"' \
   _ "$ROOT/scripts/lib/backend-policy.sh")"
-if [[ "$NO_STATE_PROFILE" == "balanced-v2" ]]; then
-  pass "no-record backend context selects balanced-v2"
+if [[ "$NO_STATE_PROFILE" == "cursor-balanced-v2" ]]; then
+  pass "no-record backend context selects cursor-balanced-v2"
 else
-  fail "no-record backend context selects balanced-v2" "$NO_STATE_PROFILE"
+  fail "no-record backend context selects cursor-balanced-v2" "$NO_STATE_PROFILE"
 fi
 
 AUTO_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
@@ -512,7 +512,7 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.5.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_RUN_STATUS=0
 env \
@@ -523,7 +523,7 @@ env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.5.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -532,7 +532,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.5.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -543,7 +543,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.5.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.6.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
@@ -559,7 +559,7 @@ FORGED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$TMP" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.5.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)" ||
   FORGED_STAGE_STATUS=$?
 if [[ "$FORGED_STAGE_STATUS" -eq 1 &&
@@ -985,7 +985,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.5.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.6.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
@@ -2431,6 +2431,11 @@ printf 'reviewer round 1: APPROVE because it looks good\n' >> \
   "$WALK/factory/tickets/T-500.md"
 expect_stage "REFUSE" "$WALK" T-500 || WALK_OK=0
 printf 'reviewer round 1: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
+expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
+ledger_row T-500 builder >> "$WALK/factory/ledger.csv"
+expect_stage "RUN reviewer" "$WALK" T-500 || WALK_OK=0
+ledger_row T-500 reviewer >> "$WALK/factory/ledger.csv"
+printf 'reviewer round 2: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 narrator >> "$WALK/factory/ledger.csv"
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0

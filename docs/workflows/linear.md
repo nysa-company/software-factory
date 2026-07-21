@@ -62,7 +62,8 @@ see the active stage without opening an issue.
 
 The operator's daily scan is two lists: **Blocked-Escalated** (decide something)
 and **Awaiting Approval** (approve or send back). Everything else is agent
-territory.
+territory. The reconciler assigns both queues to the API-key owner so Linear
+sends native operator notifications.
 
 Legal happy-path transitions are:
 
@@ -154,4 +155,7 @@ schedule `scripts/launchd/com.factory.linear-sync.plist.template` every three
 minutes. `--dry-run` performs reads and prints both pull and push actions
 without changing Linear or local files. Sync health is recorded under
 `_sync` in `factory/linear-map.json`; investigate a stale timestamp before
-trusting the board.
+trusting the board. Evidence comments are keyed by a content digest and are
+posted again only when the committed bundle changes. Fallback approvals read
+the complete current 15-minute comment window and fail closed if pagination or
+a Linear mutation is incomplete.

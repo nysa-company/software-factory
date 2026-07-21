@@ -243,7 +243,8 @@ case "$command_name" in
       esac
     done
     [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ]] ||
       json_error "route migration requires contract 1.4.0 or newer"
     if [[ "$command_name" == "migrate" ]]; then
       [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
@@ -395,7 +396,8 @@ PY
       esac
     done
     [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ]] ||
       json_error "mid-ticket fallback requires contract 1.4.0 or newer"
     [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
       json_error "failed run identifier is invalid"

@@ -6,7 +6,7 @@ Product-agnostic kit for running an AI software factory. Read `docs/product-brie
 
 - Full suite: `bash ci/test-all.sh`
 - Dynamic preview: `bash ci/test-all.sh --changed origin/main HEAD`; required CI remains in shadow/full mode until its evidence gate passes.
-- Target the smallest relevant shell test while iterating, then run the full suite before completion.
+- Target the smallest relevant check while iterating, then run managed local readiness; GitHub owns complete-suite verification.
 
 ## Conventions
 

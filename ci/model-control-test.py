@@ -148,7 +148,7 @@ class ModelControlTest(unittest.TestCase):
             self.command("plan", "--profile", "claude-priority-v1").stdout
         )
         self.assertEqual(len(default["selections"]), 6)
-        self.assertEqual(default["profile_id"], "balanced-v2")
+        self.assertEqual(default["profile_id"], "cursor-balanced-v2")
         self.assertEqual(selected["profile_id"], "claude-priority-v1")
         self.assertEqual(selected["selections"]["planner"]["adapter"], "claude-code")
 

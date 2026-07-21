@@ -9,15 +9,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, and config-review enabled. `bash ci/test-all.sh` remains the unconditional full command; managed local readiness uses `bash ci/test-all.sh --changed-or-defer origin/main HEAD`.
-- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components are active locally and in Linux/applicable macOS pull-request CI. Broad local verification may defer to required GitHub CI after policy gates; both platforms remain full on `main`, and ambiguous or shared surfaces remain full.
+- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in three Linux and three macOS shards.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
-- Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence may replace duplicate local full execution after a sandboxed platform smoke; missing evidence falls back full. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
+- Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
-- The required aggregate `ci` status always reports. Inert metadata skips behavioral suites while retaining policy gates; mapped leaf changes run targeted suites on Linux and applicable macOS, and ambiguous changes run full. Every merged SHA runs complete Linux and macOS verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
+- The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
-- The no-record default is `balanced-v2`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/high; Spec-linter and Test-author use Claude Fable 5/medium with Cursor Fable Thinking Medium secondary; Reviewer uses Claude Sonnet 5/high. `legacy-balanced-v1` remains compatibility policy; OpenAI-, Claude-, and Cursor-priority profiles remain explicit alternatives.
-- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit a configured maximum of four exact-worktree ticket leases with atomic budget reservations and opaque leases confined to trusted helpers. Nysa T-013/T-014 and T-015/T-016 proved initial lease-level concurrency; the product-wide lock still serializes every provider interval, and provider-call concurrency still requires OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
+- The no-record default is `cursor-balanced-v2`: it preserves `balanced-v2` models and effort levels while trying the matching Cursor route before native Codex/Claude CLI. Explicit active profiles and committed ticket route plans remain authoritative; `balanced-v2`, `legacy-balanced-v1`, and the earlier priority profiles remain available for compatibility.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Native subscription and Cursor CLI routes retain the legacy serialized path; invalid or disabled activation fails closed to that path.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
@@ -25,10 +25,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Backward-compatible ledger reduction collapses a legacy durable reservation followed by its identity-matching terminal row; every other conflicting duplicate run ID fails closed.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
 - Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and records are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. A product-level control lock serializes provider intervals; any new or changed sibling manifest, persistent claim, owned manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
-- Hermes contract 1.5 retains Contract 1.4 route journals and adds fixed operator snapshots, project-owned policy, bounded envelope overrides, and targeted attempt cancellation while preserving compatibility with active 1.0–1.4 releases.
+- Hermes contract 1.6 changes its omitted capacity default to four and expands its active bound to six while preserving active 1.0–1.5 defaults and bounds.
 - Fresh ticket worktrees are created from protected main and pass through trusted materialization before preflight so their exact remote branch exists. Linear Project removal is represented explicitly in the ignored overlay and clears the effective initiative until reassignment.
+- Contract 1.6 ticket PRs wait on required exact-head GitHub checks without launching a role, expose completed failures to Reviewer, and revalidate successful checks plus Reviewer lineage before Narrator. Any later Builder or Test-author run forces a fresh Reviewer.
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
-- Contracts 1.2 through 1.5 reject dirty exact ticket worktrees before ordinary ticket helpers. Contract 1.2 treats approval overlays as unsupported stops; contracts 1.3 through 1.5 consume merge approval only through an unchanged evidence-bound approval attestation.
+- Contracts 1.2 through 1.6 reject dirty exact ticket worktrees before ordinary ticket helpers. Contract 1.2 treats approval overlays as unsupported stops; contracts 1.3 through 1.6 consume merge approval only through an unchanged evidence-bound approval attestation.
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
 - Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch debounces transient owner-liveness misses but never reclaims stale or unsafe ownership; normal release atomically renames an owned lock before cleanup, and only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 - Open-source factory frameworks remain references, not replacement control planes: any adopted execution or sandbox component stays behind `factory-launch`, while sequencing, budgets, role separation, Git authority, evidence, and operator approval remain factory-owned. The first justified experiment is a pinned SWE-ReX local-container backend for one non-production role; E2B or Daytona becomes relevant only if that canary proves local isolation insufficient.
@@ -36,15 +37,91 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Kimi K2.6 is disabled experimental through Claude CLI/OpenRouter/Moonshot, appears in no profile, and has not had a live or billed pilot. Credential rotation is required before a pilot, and direct same-UID token exposure remains without a broker or OS isolation.
 - Route-journal provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management, fallback, and evidence-bound ticket attestations are integrated under Hermes contract 1.4.
 - The Contract 1.3 cutover has two independent one-time formats: legacy-closeout for the exact authorized Contract 1.2 batch and terminal-backfill for the exact authorized pre-contract terminal-Done batch. Both are separate from normal attestations and route plans, become authoritative only through one manual protected product merge, and use the same fail-closed protected-main terminal reader; plain Done never suffices.
+- Protected-merge reconciliation is a separate migration-only complete-batch adoption path for already-merged product changes whose old evidence cannot be refreshed safely. Its generated authorization, exact receipts, Done/Migration projections, and target pin become authoritative only through one manual protected product merge; it is never ordinary in-flight migration or normal Done closeout.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 - The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
 
 ## Log
 
+- 2026-07-21: Release migration now verifies the exact protected factory SHA's six shards plus aggregate/immutability, installs the inert candidate, prepares one clean canonical product tree with pin/budget/migration evidence, updates CLIs/plugins, certifies that exact tree, and only then opens the product PR and activates. The Nysa cutover reconciles T-024/T-030/T-031 as one protected batch and proves the release with T-032 alone before parallel dispatch.
+- 2026-07-21: Software Factory pull requests run targeted or policy-only deferred checks; only protected `main` runs the complete suite, split into three balanced shards per platform. The aggregate remains the release gate, and install/certification require all six successful protected-main shard jobs plus aggregate/immutability evidence and local smoke. Host migration verifies pinned CLIs and both Nysa Agents plugin installations before certification.
+- 2026-07-21: Cursor-first `cursor-balanced-v2` becomes the no-record model default without lowering role effort. Release migration explicitly activates its exact hash for Nysa, validates the operator-approved $100 ticket budget, and transfers the ignored production Linear map only after the old reconciler stops. Linear reconciliation caches immutable protected-main migration batches, treats equivalent Markdown as unchanged, tracks evidence by digest, verifies mutation success, paginates recent fallback approvals, and assigns both operator queues.
+- 2026-07-21: Contract 1.6 now defaults the single coupled ticket-worktree/provider capacity to four. Contracts 1.1–1.5 retain their default of one.
 - 2026-07-21: Normal Done validation anchors the receipt's complete-ledger digest to the unique immutable closeout commit, then requires protected main's current ledger to preserve those bytes as an unchanged prefix. Later ticket rows may append without invalidating earlier terminal evidence; historical ledger rewrites still fail closed.
 
+## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
+
+Category: Decision
+
+`cursor-balanced-v2` reverses only the primary/secondary transport order from
+`balanced-v2`; every role keeps the same model tier and effort. It is the
+no-record default, while explicit active profiles and committed ticket plans
+remain unchanged. Nysa activates it only through the later release migration,
+with exact CLI/plugin pins and an operator-approved $100 per-ticket envelope.
+
+## 2026-07-21 — Decision 55: Linear synchronization is snapshot-idempotent
+
+Category: System change
+
+Protected terminal migration batches are validated once per physical repository
+and immutable protected commit while per-ticket conflict checks remain exact.
+Linear projection canonicalizes equivalent Markdown, advances local markers only
+after confirmed mutations, identifies posted evidence by content digest, reads a
+complete fallback-approval window, and assigns both Awaiting Approval and
+Blocked-Escalated to the configured operator. Git remains execution authority;
+webhooks, new workflow states, and speculative API batching remain deferred.
+
+## 2026-07-21 — Decision 53: Full factory verification is GitHub-owned
+
+Category: System change
+
+Local readiness and pull requests run focused or policy-only checks and record
+broad coverage as deferred. Every protected-main commit runs the complete
+Linux and macOS registry across three shards per platform. Installation and
+certification require exact successful main evidence and local platform smoke;
+they never fall back to the complete local suite. Migration verifies the
+execution host's pinned CLIs and Codex/Claude Nysa Agents plugins before
+certification.
+- 2026-07-20: Contract 1.6 adds one-shot autonomous dispatch, exact worktree and lease claiming, early idempotent ticket PR creation at the Reviewer boundary, and activation-gated isolated API-route execution. The supervisor remains an inert Hermes profile skill until an operator enables the existing scheduler; this host has no real-provider activation because its dedicated broker credentials and TLS configuration are absent.
+- 2026-07-20: Contract 1.6 expands the coupled worktree/provider capacity to six while retaining a default of one. Contracts 1.1–1.5 remain bounded at four and Contract 1.0 remains unchanged; Decision 51 records the completed isolated-runtime gate while preserving serialization for legacy routes.
 - 2026-07-20: Concurrent Done closeouts may project an identical ledger after an earlier closeout already captured every terminal run. The trusted Done validator now permits `factory/ledger.csv` to be absent from that later closeout commit while still binding and checking the complete ledger hash; ticket and Done-attestation paths remain mandatory and exclusive.
 - 2026-07-20: A patched control-plane release may finish Done for already-approved evidence from an older ticket-pinned release. The closeout validates and records the ticket's canonical `Kit-SHA`; bundle and approval remain bound to the active release, so prior role evidence is never relabeled.
+
+## 2026-07-21 — Decision 52: Contract 1.6 defaults coupled capacity to four
+
+Category: System change
+
+When `MAX_CONCURRENT_TICKETS` is absent, Contract 1.6 admits four concurrent
+ticket worktrees and provider calls. It remains the only product capacity
+setting; explicit values `1` through `6` remain valid, and Contracts 1.1 through
+1.5 keep their default of one.
+
+## 2026-07-20 — Decision 51: Isolated routes and autonomous dispatch remain explicitly gated
+
+Category: System change
+
+Contract 1.6 admits parallel provider work only for an exact owner-activated API
+route through the transactional coordinator, short-lived credential broker,
+networkless digest-pinned worker, and trusted artifact controller. Every native
+subscription or Cursor CLI route stays behind the legacy product-wide lock, and
+missing or malformed activation fails closed. Hermes autonomous operation is a
+one-claim supervisor invocation over the stable launcher: it deterministically
+waits at capacity, creates or reuses one exact open PR only when Reviewer is the
+next stage, delegates one ephemeral dispatcher child, and never approves,
+merges, loops, scans mutable tickets, or installs its own scheduler. Autonomous
+claiming requires configured capacity above one because a capacity-one run has
+no lease capability to transfer to the child.
+
+## 2026-07-20 — Decision 50: Contract 1.6 couples capacity at six (default superseded by Decision 52)
+
+Category: System change
+
+`MAX_CONCURRENT_TICKETS` remains the only product capacity setting and defaults
+to `1`. Active Contract 1.6 accepts `1` through `6`; Contracts 1.1 through 1.5
+remain bounded at `4`, and Contract 1.0 semantics are unchanged. The setting
+couples exact-worktree ticket leases with eventual provider-call capacity, but
+the product-wide provider lock remains for legacy routes; Decision 51 defines
+the exact activation gate for isolated API-route parallelism.
 
 ## 2026-07-19 — Decision 49: Validated pre-submission checks get a bounded two-minute gate
 
@@ -61,7 +138,7 @@ normal post-submission drain semantics. A boundary stop exempts only its exact
 control record from checkout comparison; all manifest, claim, lock, ledger, and
 unrelated checkout integrity checks still run.
 
-## 2026-07-19 — Decision 48: Targeted PR CI and remote full-suite reuse
+## 2026-07-19 — Decision 48: Targeted PR CI and remote full-suite reuse (superseded by Decision 53)
 
 Category: Decision
 

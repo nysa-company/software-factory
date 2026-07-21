@@ -14,12 +14,13 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
 - Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid. Set `AUTO_MERGE_METHOD=squash`, `merge`, or `rebase` to the repository's protected merge strategy.
-- Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Contracts
-  1.1 through 1.4 accept only integers from `1` through `4`; set a value above
-  `1` only after a bounded concurrency pilot is approved. Up to that many
-  ticket leases may progress, but the product-level control lock serializes
-  their provider intervals. A value of `4` therefore permits four in-flight
-  ticket leases, not four simultaneous model-provider calls.
+- Leave `MAX_CONCURRENT_TICKETS` absent to use the contract default. Contracts
+  1.1 through 1.5 default to `1` and accept integers through `4`; Contract 1.6
+  defaults to `4` and accepts `1` through `6`. Set a value above `1` only after a bounded
+  concurrency pilot is approved. This is the one coupled worktree/provider
+  capacity setting. The retained product-level control lock serializes native
+  subscription, Cursor CLI, and every other legacy route. An API route may use
+  isolated parallel admission only after exact Contract 1.6 owner activation.
 - Copy exactly three CI files (GitHub requires workflows and helpers to live in the repo they run on): `ci/test-immutability-check.sh` and `ci/lightweight-change.sh` → `.github/scripts/`, and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`. Set `TEST_PATHS` from `PROJECT.env` and review the helper's narrow inert-metadata allowlist for the product. Existing product repositories must receive template updates explicitly; kit updates do not rewrite instantiated CI.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. Optional `<ROLE>_PER_RUN_BUDGET_USD`, `<ROLE>_PER_RUN_MAX_TURNS`, and `<ROLE>_PER_RUN_TIMEOUT_MIN` keys override one role's attempt limits; normalize role hyphens to underscores, and omit a key to inherit its default. Money values are capped at $1,000,000 with six decimal places, turns at 1,000, and timeout at 1,440 minutes. The validator checks the two files agree. `ENVELOPE.env` and `~/.factory/global.env` are parsed as whitelisted data and must never contain shell commands or expansions.
 - If `GLOBAL_DAILY_CAP_USD` is configured, keep its global-ledger parent as a real local directory. The wrapper validates the ledger and holds its exact-owner lock across each complete provider interval, so all globally capped runs on that machine are intentionally serialized.
@@ -42,7 +43,7 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 
 Set up the shared Software Factory team per `docs/workflows/linear.md`: compact phase-level workflow states, the factory issue template, risk/external labels, and one Linear Project per file in `factory/initiatives/`.
 
-Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Blocked-Escalated tickets.
+Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Awaiting Approval and Blocked-Escalated tickets.
 
 ## Step 5 — Hermes release boundary
 
@@ -73,12 +74,11 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
     --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
   ```
   A fresh install records 24-hour owner-only kit-suite evidence by default.
-  For an exact protected-main SHA, authenticated successful GitHub Actions
-  evidence for the full Linux, macOS, aggregate, and immutability jobs replaces
-  the duplicate local full suite; installation still runs a sandboxed host
-  smoke check. If that evidence cannot be corroborated, installation falls back
-  to the complete local suite. Expired certification evidence follows the same
-  refresh path. Set `CI_FORCE_FULL=1` to force the local-full fallback.
+  Authenticated successful GitHub Actions evidence for the exact protected-main
+  SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;
+  installation then runs a sandboxed host smoke check. Missing evidence fails
+  closed and never launches the complete suite locally. Expired certification
+  evidence follows the same remote-proof and local-smoke refresh path.
   Repeated certification of the exact unchanged sealed release may reuse it,
   while product certification and all product/config/receipt checks still run.
   Set `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS` only as explicit machine policy;
@@ -87,7 +87,7 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
 - Review model policy through the sealed launcher. Run `models profiles --json`,
   preview the intended profile with `models plan [--profile <id>] --json`, and
   activate only with that profile's exact returned hash and an operator ID.
-  `balanced-v2` is the no-record default.
+  `cursor-balanced-v2` is the no-record default.
 
 - Create a separate sandbox product and Hermes canary profile. Do not copy the
   production `.env`, secret files, registry, ledger, board mapping, or
@@ -117,7 +117,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
 - [ ] The active contract 1.2/1.3/1.4 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
 - [ ] `~/.factory/bin/factory-launch` and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
-- [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `balanced-v2`
+- [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-balanced-v2`
 - [ ] A clean sample ticket passed `models pin --ticket <T-NNN> --workdir <exact-worktree> --json`, creating one pushed commit containing both `Kit-SHA` and the exact six-role route plan
 - [ ] Kimi remains disabled and absent from every profile; no live/billed-pilot claim is recorded, and credential rotation plus broker/OS isolation are prerequisites to a pilot
 - [ ] Factory Hermes profile, project registry, and factory gateway LaunchAgent are separate from the dashboard and primary Hermes profile

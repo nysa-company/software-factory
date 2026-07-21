@@ -147,12 +147,13 @@ Use only the selected release through the sealed launcher:
 ```
 
 `models plan --json` previews the active profile, or default
-`balanced-v2` when none is active. Activation accepts only the exact
+`cursor-balanced-v2` when none is active. Activation accepts only the exact
 profile hash shown by preview. `openai-priority-v1` tries OpenAI production
 first, then Anthropic production; `claude-priority-v1` reverses those
 portfolios. `cursor-priority-v1` tries exact Cursor OpenAI/Anthropic routes
-before native routes in both portfolio orders. Legacy has one native-first
-OpenAI-production/Anthropic-checking portfolio.
+before native routes in both portfolio orders with the older effort policy.
+`balanced-v2` retains the high-effort native-first portfolio. Legacy has one
+native-first OpenAI-production/Anthropic-checking portfolio.
 
 Use `disable` only for confirmed temporary credit exhaustion. It can target an
 account route, provider family, selectable model ID, or exact route for 1 to
@@ -254,6 +255,26 @@ same-UID token exposure remains until a broker or OS isolation is used.
   checks and approvals. Conflicts with normal attestations or the first legacy
   batch fail closed.
 
+## One-time protected-merge reconciliation
+
+- Notice: this is a migration-only adoption of an exact authorized batch whose
+  product changes already reached protected main but whose older factory
+  evidence cannot be refreshed safely. It is not ordinary in-flight migration,
+  normal Done closeout, or a reusable compatibility mode.
+- Do: generate from a reviewed request and clean protected-main basis with
+  `scripts/protected-merge-reconciliation.py --product <repo> --request
+  <reviewed-request.json>`. Review the authorization, exact receipt set,
+  immutable per-ticket `evidence_head`, source/review/merge/check evidence,
+  current product blobs, basis and target kits, and fresh operator adoption.
+- Do: commit the complete authorization, receipts, Done/Migration ticket
+  projections, target `KIT_PIN`, and any explicitly authorized companion
+  path/blob entries together. Disable auto-merge and bypass; only the manual
+  protected merge of that exact product head grants authority.
+- Don't: migrate or repin the reconciled tickets, synthesize missing approval,
+  accept a partial/extra batch or an unbound companion, hand-edit generated
+  evidence, or use the format for later tickets. Any protected-basis or batch
+  drift requires regeneration.
+
 ## Test commit order before operator review
 
 - Notice: reviewer approved but CI fails the test-immutability gate because test commits came after implementation.
@@ -271,11 +292,13 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Do: serialize every product `KIT_PIN` change, activation, and rollback. Begin
   only at a ticket boundary with no active run, no conflicting nonterminal
   lease, no maintenance anomaly, and no incomplete activation journal.
-- Do: keep contract `1.0.0` and default contract `1.1.0` at one live ticket.
-  An explicit `MAX_CONCURRENT_TICKETS=2`, `3`, or `4` pilot uses one dispatcher
-  holding no more than that many matching leases; parallel kit development
-  alone does not enable it, and the product-wide provider lock still permits
-  only one model-provider interval at a time.
+- Do: keep contracts 1.0 through 1.5 at their default of one live ticket.
+  Contract 1.6 defaults to four; contracts 1.1 through 1.5 permit an explicit
+  capacity up to four, and Contract 1.6 permits up to six. One dispatcher holds no more than that many
+  matching leases. This is the coupled worktree/provider capacity. The retained
+  product-wide provider lock serializes native subscription, Cursor CLI, and
+  other legacy routes; only an exact owner-activated Contract 1.6 API route may
+  use isolated parallel admission.
 - Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
   combine unrelated candidates into one unreviewed release, or overlap two
   activation/rollback operations.
@@ -309,31 +332,62 @@ same-UID token exposure remains until a broker or OS isolation is used.
 
 ## Preparing and activating a release
 
-1. Confirm the candidate full SHA is on `origin/main` and the required
-   aggregate `ci` check passed on Linux and macOS.
-2. Run `factory-kit.sh install`, then `certify`. Record the receipt ID and
-   expiry.
-3. Complete the real-Hermes canary with a separate sandbox product and
+1. Confirm the candidate full SHA is the current `origin/main` and its exact
+   authenticated push run has all three Linux shards, all three macOS shards,
+   aggregate `ci`, and `test-immutability` successful.
+2. Install that exact sealed candidate. Reuse only the protected-main evidence
+   from step 1 and run the local sandboxed host smoke; never substitute a local
+   complete factory suite.
+3. Inventory every nonterminal ticket and its committed `Kit-SHA`. Finish it
+   on its current release or prepare the applicable exact protected-main
+   migration evidence. Do not migrate its pin or route journal yet.
+4. For an active execution computer, publish managed maintenance, stop new
+   dispatch, and drain every run and dispatcher lease before changing
+   user-scoped tools. For an inactive replacement computer, keep its
+   dispatcher, reconciler, and LaunchAgent disabled.
+5. From current product `origin/main`, prepare one clean canonical product
+   checkout and commit the candidate `KIT_PIN`, operator-approved envelope
+   values, and complete migration evidence on one migration branch. The tree
+   proposed for the product PR must be the exact tree certified below.
+6. On the computer that will execute factory roles, verify the configured
+   `CODEX_PINNED`, `CLAUDE_CODE_PINNED`, and `CURSOR_AGENT_VERSION` values,
+   controlled physical CLI paths, and `scripts/adapters/contract-test.sh
+   --routes`. Update and verify the Nysa Agents plugin for both Codex and
+   Claude, restart agent sessions, and plan the repository baseline before
+   certification. A baseline diff is a separate product change, not migration
+   drift.
+7. Verify Node 22 and any product certification dependency, including the
+   product's configured local PostgreSQL endpoint, then certify the exact
+   committed canonical product path and tree. Record the receipt ID and expiry.
+8. Complete the real-Hermes canary with a separate sandbox product and
    profile. Never copy the production `.env`, secrets, board mapping, registry,
    ledger, or LaunchAgent.
-4. Confirm no active runs and no nonterminal ticket with a different
-   `Kit-SHA`. Activation scans committed local, tracking, and live remote
-   ticket sources; a Done claim also requires a valid normal attestation chain
-   or protected-main legacy closeout.
-5. Merge the product's candidate `KIT_PIN` through the protected PR and verify
-   the merged product tree still matches the receipt.
-6. Publish managed maintenance with `factory-kit.sh pause` before touching
-   `.launch.lock`. New claims and renewals stop while matching owners may
-   release; wait for existing runs and every dispatcher lease to drain. The
-   run wrapper checks maintenance before taking the lock, after taking it, and
-   before GO.
-7. Run `factory-kit.sh plan`. It must report `No files were changed.`
-8. Stop only the product factory profile and reconciler. Leave the dashboard
+9. Confirm no active runs and no unauthorized nonterminal ticket with a
+   different `Kit-SHA`. Activation scans committed local, tracking, and live
+   remote ticket sources; a Done claim also requires a valid normal attestation
+   chain or protected-main legacy closeout.
+10. Open the already-certified product commit as a protected PR and stop for
+    operator approval. Include only the exact complete migration evidence
+    required by step 3. After merge, require canonical protected main's tracked
+    tree to match the certification receipt exactly.
+11. At replacement-host cutover, publish maintenance on the old host and wait
+   for its runs and leases to drain. Confirm the old dispatcher is stopped;
+   if that cannot be proven, revoke its execution access before proceeding.
+12. Run `factory-kit.sh plan`. It must report `No files were changed.`
+13. Stop only the product factory profile and reconciler. Leave the dashboard
    and primary Hermes profile alone.
-9. Run `factory-kit.sh activate`, restart the factory services, then collect
+14. Run `factory-kit.sh activate`, restart the factory services, then collect
    doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
    probes.
-10. Remove `MAINTENANCE` only after every acceptance check passes.
+15. For an authorized in-flight cutover, keep maintenance while reviewing each
+   sealed `models migrate-plan`, then remove maintenance and apply only its
+   operator-approved `models migrate`; claim fresh leases afterward. Without
+   in-flight tickets, remove maintenance only after every acceptance check
+   passes.
+
+The run wrapper checks maintenance before taking the launch lock, after taking
+it, and before GO. Never enable the replacement while the old host can still
+dispatch.
 
 For an explicitly approved in-flight cutover, first merge one protected product
 PR containing the target `KIT_PIN` and
@@ -357,10 +411,11 @@ If a dispatcher lease is stale, keep maintenance published and run
 replace the lease by hand.
 
 The planned control-plane outage starts when maintenance is created and ends
-when maintenance is removed. Target: 5 minutes or less. Candidate preparation,
-certification, and canarying happen before maintenance and should cause no
-outage. Relay generation 1 did not establish this target; its activation-to-clear
-interval alone was 5m50s and its full maintenance interval was longer.
+when maintenance is removed. Target: 5 minutes or less. An inactive replacement
+can prepare, certify, and canary before cutover; an active in-place host remains
+in maintenance while its user-scoped tools are updated and certified. Relay
+generation 1 did not establish this target; its activation-to-clear interval
+alone was 5m50s and its full maintenance interval was longer.
 
 ## Interrupted activation
 

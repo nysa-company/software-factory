@@ -136,7 +136,7 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
 fi
 TERMINAL_BASIS=""
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-      "$CONTRACT_VERSION" == "1.5.0" ]]; then
+      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]]; then
   TERMINAL_BASIS="$(python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
     --terminal-basis 2>/dev/null || true)"
@@ -148,6 +148,10 @@ if [[ -z "$TERMINAL_BASIS" ]] &&
 fi
 if [[ "$TERMINAL_BASIS" == "validated-legacy-closeout" ]]; then
   echo "COMPLETE validated legacy closeout is on protected main; no historical lease is implied"
+  exit 0
+fi
+if [[ "$TERMINAL_BASIS" == "validated-protected-merge-reconciliation" ]]; then
+  echo "COMPLETE validated protected-merge reconciliation is on protected main; no historical lease is implied"
   exit 0
 fi
 if [[ "$TERMINAL_BASIS" == "validated-terminal-backfill" ]]; then
@@ -387,7 +391,7 @@ if [[ -n "$TERMINAL_BASIS" ]]; then
   exit 0
 fi
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-      "$CONTRACT_VERSION" == "1.5.0" ]]; then
+      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]]; then
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
   if [[ "$COMMITTED_STATE" == "done" ]]; then
@@ -625,6 +629,23 @@ if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
   done <<< "$FRESH_REVIEW_ROWS"$'\n'"$FRESH_NARRATOR_ROWS"
 fi
 
+# A Builder or Test-author run after the latest non-void Reviewer invalidates
+# that review, including after a protected-base evidence refresh.
+FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
+  BEGIN { voids="," void_list ","; reviewer_run=0 }
+  NR>1 && $3==t && $9=="0" {
+    if ($4=="reviewer") {
+      reviewer_run++
+      if (index(voids, "," reviewer_run ",")==0) { last_r=NR; fix=0 }
+    }
+    else if (($4=="builder" || $4=="test-author") && last_r>0) fix=1
+  }
+  END { print fix+0 }' "$LEDGER")"
+if [[ "$FIX_AFTER" -eq 1 ]]; then
+  echo "RUN reviewer"
+  exit 0
+fi
+
 if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
   FRESH_REVIEWERS=$((REVIEWER_RUNS - REFRESH_REVIEWERS))
   FRESH_APPROVES=$((A - REFRESH_APPROVES))
@@ -687,21 +708,4 @@ if [[ "$RC" -ge 2 ]]; then
   fi
 fi
 
-# After the latest rejection, was a fix (test-author or builder success) completed
-# after the last successful reviewer run? Ledger order = completion order.
-FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
-  BEGIN { voids="," void_list ","; reviewer_run=0 }
-  NR>1 && $3==t && $9=="0" {
-    if ($4=="reviewer") {
-      reviewer_run++
-      if (index(voids, "," reviewer_run ",")==0) { last_r=NR; fix=0 }
-    }
-    else if (($4=="builder" || $4=="test-author") && last_r>0) fix=1
-  }
-  END { print fix+0 }' "$LEDGER")"
-
-if [[ "$FIX_AFTER" -eq 1 ]]; then
-  echo "RUN reviewer"
-else
-  echo "FIX builder-or-test-author"
-fi
+echo "FIX builder-or-test-author"

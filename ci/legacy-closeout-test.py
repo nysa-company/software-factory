@@ -9,10 +9,12 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
+import legacy_closeout  # noqa: E402
 from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
 
 OLD_KIT = "1" * 40
@@ -340,6 +342,53 @@ class LegacyCloseoutTests(unittest.TestCase):
         command("git", "-C", self.repo, "fetch", "-q", "origin")
         with self.assertRaises(ValidationError):
             protected_terminal(self.repo, "T-013")
+
+    def test_protected_terminal_caches_batches_per_exact_protected_commit(self):
+        first = command(
+            "git", "-C", self.repo, "rev-parse", "refs/remotes/origin/main"
+        ).stdout.strip()
+        terminals = {
+            ticket: {"basis": "test", "ticket": ticket, "text": "State: Done\n"}
+            for ticket in ("T-013", "T-014")
+        }
+        with (
+            mock.patch.object(
+                legacy_closeout, "_normal_terminal",
+                side_effect=(None, terminals["T-014"], None),
+            ) as normal,
+            mock.patch.object(
+                legacy_closeout, "legacy_batch", return_value=terminals
+            ) as legacy,
+            mock.patch(
+                "terminal_backfill.terminal_backfill_batch", return_value={}
+            ) as backfill,
+        ):
+            self.assertEqual(
+                protected_terminal(self.repo, "T-013")["ticket"], "T-013"
+            )
+            with self.assertRaises(ValidationError):
+                protected_terminal(self.repo, "T-014")
+            self.assertEqual(legacy.call_count, 1)
+            self.assertEqual(backfill.call_count, 1)
+            self.assertEqual(normal.call_count, 2)
+            self.assertEqual(legacy.call_args.args[1], first)
+            self.assertEqual(normal.call_args_list[0].args[2], first)
+
+            (self.repo / "later").write_text("protected main advanced\n")
+            self.commit("advance protected main")
+            command("git", "-C", self.repo, "push", "-q", "origin", "main")
+            command("git", "-C", self.repo, "fetch", "-q", "origin")
+            second = command(
+                "git", "-C", self.repo, "rev-parse", "refs/remotes/origin/main"
+            ).stdout.strip()
+            self.assertNotEqual(first, second)
+            self.assertEqual(
+                protected_terminal(self.repo, "T-013")["ticket"], "T-013"
+            )
+            self.assertEqual(legacy.call_count, 2)
+            self.assertEqual(backfill.call_count, 2)
+            self.assertEqual(legacy.call_args.args[1], second)
+            self.assertEqual(normal.call_args_list[-1].args[2], second)
 
 
 if __name__ == "__main__":

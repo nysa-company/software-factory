@@ -5,6 +5,36 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.6.0 — 2026-07-20
+
+- Adds an atomic `dispatch-plan` launcher command and a bounded
+  `factory-supervisor` skill that starts at most one ephemeral dispatcher per
+  scheduled wakeup through the existing Hermes gateway.
+- Adds idempotent early ticket-PR preparation at the sequencer-authorized
+  Reviewer boundary without approval or merge authority.
+- Expands the one product-owned `MAX_CONCURRENT_TICKETS` capacity to accept
+  `1` through `6`, with an omitted-value default of `4`.
+- Preserves the Contract 1.0 flow and the exact Contract 1.1–1.5 capacity bound
+  of `1` through `4`.
+- Defines that setting as coupled ticket-worktree and provider-call capacity;
+  no second provider-capacity setting is introduced.
+- Defines the transactional `prepared → reserved → GO → submitted → terminal`
+  provider lifecycle and immutable worker identity binding.
+- Adds the fail-closed SQLite coordinator, unprivileged digest-pinned container
+  executor, and coupled runtime with conservative cancellation and replay.
+- Adds an owner-only credential broker that issues expiring attempt/route/model/
+  budget-bound tokens and substitutes raw credentials only for exact approved
+  provider endpoints.
+- Adds the release-owned worker image lock and trusted patch-artifact controller
+  with immutable identity, base/path/mode, temporary-index, and replay checks.
+- Wires activated API routes through transactional admission, a host-loopback
+  broker, networkless workers, persisted cancellation, conservative recovery,
+  redacted doctor status, and an evidence-preserving rollback gate.
+- Retains the product-wide provider lock for native subscription, Cursor CLI,
+  and other legacy routes. Only an exact owner-activated API route may enter
+  the isolated runtime; each production route remains disabled until its local
+  canaries and dedicated real-provider certification pass.
+
 ## 1.5.0 — 2026-07-19
 
 - Adds fixed read-only operator snapshots for workflow, envelope, and spend.

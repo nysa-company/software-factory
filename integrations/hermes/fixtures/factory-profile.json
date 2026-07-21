@@ -11,6 +11,7 @@
     "files": [
       "SOUL.md",
       "skills/factory-dispatch/SKILL.md",
+      "skills/factory-supervisor/SKILL.md",
       "projects/relay.env",
       ".env"
     ],

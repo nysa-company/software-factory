@@ -8,8 +8,9 @@ unset CI_FORCE_FULL
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
-[[ "$(grep -c -- '--changed "\$BASE_SHA" "\$GITHUB_SHA"' "$WORKFLOW")" -eq 2 ]] || {
-  echo "FAIL: Linux and macOS PR jobs must use changed-file selection" >&2
+[[ "$(grep -c 'targeted or deferred pull-request verification' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc -- '--changed-or-defer "$BASE_SHA" "$GITHUB_SHA"' "$WORKFLOW")" -eq 2 ]] || {
+  echo "FAIL: behavioral Linux and macOS PR jobs must run targeted-or-deferred verification" >&2
   exit 1
 }
 [[ "$(grep -c 'CI_FORCE_FULL: "1"' "$WORKFLOW")" -eq 2 ]] || {
@@ -20,6 +21,20 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: platform jobs must depend only on classification so they can run in parallel" >&2
   exit 1
 }
+[[ "$(grep -Fc 'shard: ${{ fromJSON(needs.scope.outputs.shards) }}' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc -- '--shard "${{ matrix.shard }}"' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'shards=["factory","hermes","release"]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'shards=["pr"]' "$WORKFLOW")" -eq 2 ]] || {
+  echo "FAIL: only main may expand Linux and macOS into complete-suite shards" >&2
+  exit 1
+}
+for job in linux-factory linux-hermes linux-release \
+  macos-bash-3-factory macos-bash-3-hermes macos-bash-3-release; do
+  grep -q "\"$job\"" "$ROOT/scripts/factory-kit.sh" || {
+    echo "FAIL: release evidence must require $job" >&2
+    exit 1
+  }
+done
 LIGHTWEIGHT="$ROOT/ci/lightweight-change.sh"
 MACOS="$ROOT/ci/macos-required-change.sh"
 SELECTOR="$ROOT/ci/changed-test-suites.sh"
@@ -226,6 +241,8 @@ mkdir -p "$RUNNER/ci"
 cp "$ROOT/ci/test-all.sh" "$RUNNER/ci/"
 printf '%s\n' '#!/usr/bin/env bash' 'suite_registry() {' \
   '  local callback="$1"' \
+  '  "$callback" factory-scripts "factory suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" hermes-contract "hermes suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" pass "pass suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" fail "fail suite" bash "$ROOT/ci/fail.sh"' \
   '  "$callback" ci-scope "scope suite" bash "$ROOT/ci/pass.sh"' \
@@ -262,6 +279,21 @@ runner_case 'invalid|fixture|pass' 0 0 'selector returned unknown mode' \
 runner_case 'shadow|fixture|pass' 1 1 'SHADOW_MISS: fail was not selected and failed its immediate recheck' \
   'shadow miss is reproducible and fails'
 
+shard_case() {
+  local shard="$1" expected="$2" forbidden="$3" output status=0
+  output="$(cd "$RUNNER" && bash ci/test-all.sh --shard "$shard" 2>&1)" || status=$?
+  if [[ "$status" -ne 0 || "$output" != *"$expected"* || "$output" == *"$forbidden"* ]]; then
+    printf 'FAIL: %s shard selection (status %s; output %s)\n' "$shard" "$status" "$output" >&2
+    exit 1
+  fi
+}
+shard_case factory 'PASS: factory suite' 'PASS: hermes suite'
+shard_case hermes 'PASS: hermes suite' 'PASS: factory suite'
+shard_case release 'PASS: pass suite' 'PASS: factory suite'
+status=0
+(cd "$RUNNER" && bash ci/test-all.sh --shard unknown >/dev/null 2>&1) || status=$?
+[[ "$status" -eq 2 ]] || { echo "FAIL: unknown shard must be rejected" >&2; exit 1; }
+
 git -C "$RUNNER" init -q -b main
 git -C "$RUNNER" config user.name "Runner test"
 git -C "$RUNNER" config user.email "runner@example.invalid"
@@ -276,17 +308,17 @@ RUNNER_HEAD="$(git -C "$RUNNER" rev-parse HEAD)"
 printf '%s\n' 'full|unknown or shared path|' > "$RUNNER/selection"
 status=0
 output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$RUNNER_BASE" "$RUNNER_HEAD" 2>&1)" || status=$?
-if [[ "$status" -ne 75 || "$output" != *"CI_FULL_DEFERRED:"* ]]; then
-  printf 'FAIL: broad local verification defers with status 75 (status %s; output %s)\n' \
+if [[ "$status" -ne 0 || "$output" != *"CI_FULL_DEFERRED:"* ]]; then
+  printf 'FAIL: broad local verification defers successfully (status %s; output %s)\n' \
     "$status" "$output" >&2
   exit 1
 fi
 printf '%s\n' 'invalid|fixture|pass' > "$RUNNER/selection"
 status=0
 output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$RUNNER_BASE" "$RUNNER_HEAD" 2>&1)" || status=$?
-if [[ "$status" -ne 0 || "$output" == *"CI_FULL_DEFERRED:"* ||
+if [[ "$status" -ne 0 || "$output" != *"CI_FULL_DEFERRED:"* ||
       "$output" != *"selector returned unknown mode"* ]]; then
-  printf 'FAIL: malformed selection remains local full (status %s; output %s)\n' \
+  printf 'FAIL: malformed selection defers to GitHub full CI (status %s; output %s)\n' \
     "$status" "$output" >&2
   exit 1
 fi
@@ -298,9 +330,9 @@ git -C "$RUNNER" commit -qm trust-root
 TRUST_HEAD="$(git -C "$RUNNER" rev-parse HEAD)"
 status=0
 output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$TRUST_BASE" "$TRUST_HEAD" 2>&1)" || status=$?
-if [[ "$status" -ne 0 || "$output" == *"CI_FULL_DEFERRED:"* ||
-      "$output" != *"executed=full"* ]]; then
-  printf 'FAIL: trust-root change remains local full (status %s; output %s)\n' \
+if [[ "$status" -ne 0 || "$output" != *"CI_FULL_DEFERRED:"* ||
+      "$output" != *"executed=targeted"* ]]; then
+  printf 'FAIL: trust-root change defers to GitHub full CI (status %s; output %s)\n' \
     "$status" "$output" >&2
   exit 1
 fi

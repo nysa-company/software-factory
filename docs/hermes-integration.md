@@ -68,13 +68,16 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.5.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.6.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
+~/.factory/bin/factory-launch <project> dispatch-plan --shadow --json
+~/.factory/bin/factory-launch <project> dispatch-plan --claim --json
+~/.factory/bin/factory-launch <project> ticket-pr --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> preflight --ticket T-123 --role planner --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> ticket-state --ticket T-123 --workdir /absolute/ticket-worktree --action materialize --json
@@ -82,7 +85,7 @@ Contract versions `1.0.0` through `1.5.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Under Contract 1.5, pass the exact role returned by `next-stage` to `preflight`;
+Under Contracts 1.5 and 1.6, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the
 one reserved by `run`.
 
@@ -101,11 +104,12 @@ Model policy is task-free and sealed:
 ```
 
 The operator activates only the exact profile hash returned by preview.
-`balanced-v2` is used when no active record exists; `legacy-balanced-v1`
-remains available for compatibility.
+`cursor-balanced-v2` is used when no active record exists; `balanced-v2` and
+`legacy-balanced-v1` remain available for compatibility.
 `openai-priority-v1` orders OpenAI-production then Anthropic-production
 portfolios; `claude-priority-v1` reverses them. `cursor-priority-v1` has both
-orders with exact Cursor routes first. Each portfolio has ordered per-role
+orders with exact Cursor routes first and the older effort policy.
+`balanced-v2` retains the high-effort native-first portfolio. Each portfolio has ordered per-role
 candidates and distinct production/checking families; no partial plan is
 valid. Temporary overrides accept only reason `credits_exhausted`, a TTL from
 1 through 604800 seconds, and scope `account-route`, `provider-family`,
@@ -118,18 +122,53 @@ is enforced, and a one-use Linear comment binds the validated partial-work
 snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
-Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default. A product may set
-`MAX_CONCURRENT_TICKETS` to an integer from `2` through `4`; the dispatcher
-then uses `claim`, `renew`, and `release`, and supplies the matching `--lease`
-to preflight, next-stage, run, and ticket-attest. Capacity refusal is
-deterministic, and duplicate ticket or lease identity fails closed.
+Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default and accept
+`MAX_CONCURRENT_TICKETS` only from `1` through `4`. Contract 1.6 defaults to
+`4` and accepts `1` through `6`. Above one, the dispatcher uses
+`claim`, `renew`, and `release`, and supplies the matching `--lease` to
+preflight, next-stage, run, and ticket-attest. Capacity refusal is deterministic,
+and duplicate ticket or lease identity fails closed.
 Maintenance blocks claims and renewals but matching owners may still release
 leases so the product can drain. Activation and rollback refuse until all
 leases are gone. Leases expire after 15 minutes unless renewed, but expiration
 never makes them available to another dispatcher and a stale record still
-occupies capacity. The product-wide provider lock remains held for each full
-provider interval, so increasing this setting does not enable simultaneous
-model-provider calls. Under
+occupies capacity. This one product setting is the coupled ticket-worktree and
+provider-call capacity; there is no separate provider-capacity setting. The
+product-wide provider lock remains held for native subscription, Cursor CLI,
+and every other legacy provider interval. An exact Contract 1.6 API route may
+bypass it only when selected by the owner-only isolated-v1 activation file;
+missing or malformed activation never enables parallel provider work.
+
+The `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
+wakeup claims at most one ticket and starts at most one ephemeral dispatcher
+child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque
+lease can remain in memory and accompany the child. `WAIT` and `ESCALATE` never
+prepare a worktree or start a child. When `next-stage` first authorizes Reviewer,
+`ticket-pr` creates or reuses exactly one open PR at the clean pushed branch
+head before review and reports `wait` without launching a role while required
+checks are pending. Completed failures are Reviewer evidence, not approval.
+Before Narrator, the dispatcher invokes it again and requires `ready`; the
+helper binds successful required checks and latest Reviewer evidence to the
+exact current head. It cannot approve or merge.
+
+Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
+the owner-only SQLite coordinator and ephemeral container executor. Admission
+uses a short `BEGIN IMMEDIATE` transaction and states
+`prepared → reserved → GO → submitted → terminal`. The worker receives a
+sanitized source snapshot and immutable input; its identity binds ticket, role,
+attempt, base SHA, route, policy, image, input, source, and command. Unknown
+post-GO outcomes retain the reservation and slot. The owner-only credential
+broker substitutes provider credentials at an exact configured HTTPS endpoint
+using a short-lived token bound to attempt, route, model, reservation, expiry,
+and request count. The trusted runtime consumes the token and relays only the
+bounded result into the networkless worker. Broker status never reports tokens
+or raw credentials, and terminalization revokes the token. A release-owned lock
+pins the worker image digest. Successful patch output is not trusted directly:
+the host artifact controller verifies its executor hash, full identity,
+telemetry, base, paths, protected-path policy, and temporary-index application,
+then applies and commits it under a per-ticket lock. Each route remains
+disabled until its activation evidence and owner configuration are installed;
+legacy serialized runs remain available for non-activated routes. Under
 maintenance, recover a stale record explicitly with:
 
 ```bash

@@ -79,7 +79,7 @@ an explicit `KIT_PIN`.
 `bash ci/test-all.sh` always runs the complete canonical suite registry.
 `--changed BASE [HEAD]` classifies a committed diff, while `--shadow-changed`
 calculates the same recommendation but executes the full registry.
-`CI_FORCE_FULL=1` overrides either mode. Metadata-only diffs may skip behavioral
+`CI_FORCE_FULL=1` overrides changed or shadow selection. Metadata-only diffs may skip behavioral
 suites because repository, secret, artifact, and immutability gates remain
 separate required checks.
 
@@ -88,10 +88,16 @@ deletions, renames, unknown or shared paths, multiple components, dependencies,
 contracts, launchers, roles, CI or selector changes, malformed modes, and empty,
 duplicate, or unknown suite IDs. Only explicitly mapped single leaf components
 can recommend their direct and transitive suites plus CI-scope, immutability,
-and artifact-policy checks. The six audited leaf mappings are active for
-`--changed`. Pull-request Linux and applicable macOS jobs use the same selector
-and execute in parallel. Pushes to `main` remain full on both platforms so
-release evidence covers the exact merged SHA.
+and artifact-policy checks. The six audited leaf mappings remain available for
+focused local work. Pull requests run the same targeted-or-deferred selection
+on Linux and macOS: mapped leaf changes execute their suites, while broad work
+runs policy gates and defers complete coverage. Pushes to `main` partition the
+complete registry into three named shards per platform so the slow
+factory-script, Hermes-contract, and release groups run in parallel. Release
+evidence requires all six shard jobs plus the aggregate and immutability jobs
+for the exact merged SHA. Historical runs with no shard jobs retain their
+legacy two-platform proof for rollback; any partial shard topology fails
+closed.
 
 During shadow execution, an unselected failure fails CI and is rerun once. Only
 a repeated failure is recorded as `SHADOW_MISS`; a passing recheck is recorded
@@ -102,17 +108,19 @@ non-required full comparison. Any miss demotes the component to shadow and
 resets its evidence.
 
 Local pre-PR verification uses `--changed-or-defer`. Targeted and metadata
-changes complete locally; broad changes run the unconditional policy suites and
-record full behavioral verification as deferred to required GitHub CI. Selector,
-workflow, registry, baseline, or policy changes remain local-full trust roots,
-and `CI_FORCE_FULL=1` restores unconditional local execution immediately.
+changes complete locally; every broad change, including selector, workflow,
+registry, baseline, and policy changes, runs only CI-scope, immutability, and
+artifact-policy locally and records full behavioral verification as deferred
+to required GitHub CI. The command succeeds when those local policy gates pass.
+An explicit argument-free `bash ci/test-all.sh` remains the complete local
+command; GitHub `main` divides that same registry across its six shard jobs.
 
-Installation accepts remote full-suite reuse only for an exact `origin/main`
-SHA with a successful authenticated GitHub Actions push run whose Linux,
-macOS, aggregate, and immutability jobs all passed. It then runs a sandboxed
-host smoke check locally. Missing, malformed, or unavailable remote evidence
-falls back to the complete isolated local suite. Expired certification evidence
-uses the same corroboration and smoke path before a local full rerun.
+Installation requires remote full-suite evidence for an exact `origin/main`
+SHA with a successful authenticated GitHub Actions push run whose three Linux,
+three macOS, aggregate, and immutability jobs all passed. It then runs a
+sandboxed host smoke check locally. Missing, malformed, or unavailable remote
+evidence fails closed without running the complete suite locally. Expired
+certification evidence uses the same corroboration and smoke path.
 
 Model policy is kit-owned and certified by the same `KIT_PIN`. The route catalog
 separates adapter, transport, gateway, inference provider, provider family,
@@ -126,7 +134,7 @@ ticket boundary, the first portfolio that resolves all six roles is selected.
 `INVALID` or `UNKNOWN` hard-stops; only `UNAVAILABLE` advances to another
 candidate or portfolio. Every portfolio declares distinct production and
 checking families. The operator activates a profile by approving its exact
-preview hash. Without an activation record, `balanced-v2` is the
+preview hash. Without an activation record, `cursor-balanced-v2` is the
 default; its OpenAI-production/Anthropic-checking split is profile policy, not
 a fixed architectural requirement. Contract 1.4 can append an
 operator-approved mid-ticket route revision after an eligible failed attempt;
@@ -182,7 +190,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.5.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.6.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -193,6 +201,22 @@ model fallback.
 Contract `1.5.0` adds fixed operator snapshots, project-owned model policy,
 bounded envelope overrides, targeted attempt cancellation, and the loopback
 multi-project console.
+Contract `1.6.0` expands bounded coupled capacity to six and defines a
+transactional isolated-worker protocol. The provider coordinator serializes
+only short SQLite admission and terminalization transactions. Those
+transactions enforce machine-day, product-day, and ticket caps in integer
+micro-USD using active reservations plus terminal charges. The executor
+copies a sanitized source and immutable input into an unprivileged,
+digest-pinned ephemeral container and streams only bounded artifacts back.
+Worker identity binds ticket, role, attempt, base SHA, route, policy, image,
+input, source, and command. The release-owned image lock pins the exact worker
+digest. For patch artifacts, the host controller independently checks the
+artifact-tree hash, immutable identity, telemetry, base SHA, manifest paths,
+protected paths, file modes, and a temporary-index application before applying
+and committing the patch under a per-ticket lock. Production activation remains gated on
+staged local four-worker canaries and dedicated real-provider API-route
+certification. Native subscription/Cursor CLI routes remain on the serialized
+legacy path.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -326,19 +350,46 @@ terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
 journals automatically.
 
-`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` and accepts
-only integers from `1` through `4`. At any value above `1`, every sequencing and
-role launch requires the matching opaque record under
+`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` for
+Contracts 1.1 through 1.5 and `4` for Contract 1.6. The older contracts accept
+integers through `4`; Contract 1.6 accepts `1` through `6`. At any value above `1`, every sequencing and role launch
+requires the matching opaque record under
 `factory/.dispatch-leases/`. Claims are atomic and deterministically refuse once
 the configured capacity is full. Stale records continue to consume capacity and
-are never reassigned automatically. The product-level control lock still
-serializes complete provider intervals, so four leases do not mean four
-simultaneous model-provider calls. The global ledger lock remains an additional
-serialization and accounting boundary when a machine cap is configured.
+are never reassigned automatically. This is the single coupled ticket-worktree
+and provider-call capacity setting. The product-level control lock still
+serializes native subscription, Cursor CLI, and every other legacy provider
+interval. Only an exact API route selected by the owner-only Contract 1.6
+activation file may use transactional isolated admission and bypass that lock;
+missing or invalid activation selects the legacy path or refuses, never an
+implicit isolated run.
+The legacy global ledger remains an additional serialization and accounting
+boundary when a machine cap is configured.
+Contract 1.6 workers have no network and never receive provider credentials or
+broker tokens. The owner-local credential broker keeps credentials in a
+mode-0600 configuration and exchanges an attempt token for credentials only
+while the trusted runtime proxies an exact approved HTTPS path. The runtime
+relays only the bounded provider result into the worker. Tokens bind the
+attempt, route, model, reserved budget, expiry, and bounded request count;
+revocation, expiry, wrong-model requests, redirects, and unconfigured
+destinations fail closed. Only token-free, credential-free state is exposed by
+status reporting.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
 lease state after stopping recorded runs.
+
+The Contract 1.6 Hermes supervisor is deliberately one-shot: one invocation
+asks the stable launcher for one deterministic claim, starts at most one
+ephemeral dispatcher child on `START`, and exits on `WAIT` or `ESCALATE`.
+Autonomous claiming requires configured capacity above one so the lease can be
+transferred in memory to that child. At the first sequencer-authorized Reviewer
+boundary, the trusted ticket-PR helper creates or reuses exactly one open PR for
+the clean pushed ticket head. It waits without launching a role while required
+checks are pending, supplies completed failures to Reviewer, and revalidates
+successful exact-head checks and Reviewer lineage before Narrator. A later
+Builder or Test-author run forces fresh review. The helper has no approval or
+merge authority.
 
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
@@ -379,10 +430,11 @@ implemented; referenced and rollback-eligible releases are retained.
 
 Planner, Builder, and Narrator use the selected portfolio's production family.
 Spec-linter, Test-author, and Reviewer use its distinct checking family.
-`balanced-v2` is the no-record default; `legacy-balanced-v1` remains available
-for compatibility with prior activation records and migrations.
-`openai-priority-v1`, `claude-priority-v1`, and `cursor-priority-v1` provide
-explicit alternative ordering. Narrator converts verified results into the
+`cursor-balanced-v2` is the no-record default; `balanced-v2` and
+`legacy-balanced-v1` remain available for compatibility with prior activation
+records and migrations.
+`balanced-v2`, `openai-priority-v1`, `claude-priority-v1`, and
+`cursor-priority-v1` provide explicit alternative ordering. Narrator converts verified results into the
 evidence bundle the operator approves. The exact lifecycle and failure routes
 live in [workflows/ticket-flow.md](workflows/ticket-flow.md); exact model
 priority and fallback behavior lives in [model-routing.md](model-routing.md).

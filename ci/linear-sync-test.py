@@ -29,6 +29,8 @@ class FakeLinear:
         self.counter = 0
         self.viewer_id = "viewer-1"
         self.viewer_error = False
+        self.issue_update_success = True
+        self.comment_create_success = True
 
     def __call__(self, _key, query, variables=None):
         variables = variables or {}
@@ -108,12 +110,15 @@ class FakeLinear:
                 "project": {"id": data["projectId"]} if data.get("projectId") else None,
                 "labels": {"nodes": [{"id": item, "name": item} for item in data.get("labelIds", [])]},
                 "assignee": {"id": data["assigneeId"]} if data.get("assigneeId") else None,
+                "comments": {"nodes": [], "pageInfo": {"hasPreviousPage": False, "startCursor": None}},
             }
             self.issues[issue_id] = issue
             return {"issueCreate": {"issue": {"id": issue_id, "identifier": issue["identifier"]}}}
         if "issue(id:" in query:
             return {"issue": self.issues[variables["id"]]}
         if "issueUpdate" in query:
+            if not self.issue_update_success:
+                return {"issueUpdate": {"success": False}}
             issue = self.issues[variables["id"]]
             data = variables["input"]
             for key in ("title", "description", "priority"):
@@ -129,6 +134,8 @@ class FakeLinear:
                 issue["assignee"] = {"id": data["assigneeId"]}
             return {"issueUpdate": {"success": True}}
         if "commentCreate" in query:
+            if not self.comment_create_success:
+                return {"commentCreate": {"success": False}}
             self.comments.append(variables["input"]["body"])
             return {"commentCreate": {"success": True}}
         raise AssertionError(f"Unhandled GraphQL operation: {query}")
@@ -352,6 +359,14 @@ class LinearSyncTest(unittest.TestCase):
         updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
         self.assertEqual(updates_before, updates_after)
 
+    def test_awaiting_approval_ticket_is_assigned_to_viewer(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("State: Backlog", "State: Awaiting Approval"))
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        self.assertEqual(issue["assignee"], {"id": "viewer-1"})
+
     def test_viewer_lookup_failure_does_not_block_state_patch(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"
@@ -440,6 +455,19 @@ class LinearSyncTest(unittest.TestCase):
         updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
         self.assertEqual(updates_before, updates_after)
 
+    def test_linear_link_wrappers_do_not_trigger_description_rewrite(self):
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("Build it.", "See [spec](https://example.com/spec)."))
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["description"] = issue["description"].replace(
+            "](https://example.com/spec)", "](<https://example.com/spec>)"
+        )
+        updates_before = sum("issueUpdate" in query for query, _variables in self.fake.calls)
+        self.reconcile()
+        updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
+        self.assertEqual(updates_before, updates_after)
+
     def test_review_bundle_posts_once_after_successful_narrator(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"
@@ -447,7 +475,7 @@ class LinearSyncTest(unittest.TestCase):
         (self.factory / "tickets" / "T-001-bundle.md").write_text("Verified bundle\n")
 
         self.reconcile()
-        self.assertFalse(self.mapping["tickets"]["T-001"]["bundle_posted"])
+        self.assertIsNone(self.mapping["tickets"]["T-001"]["bundle_digest"])
         self.assertFalse(any(body.startswith("**Evidence bundle**") for body in self.fake.comments))
 
         with (self.factory / "ledger.csv").open("a") as handle:
@@ -457,13 +485,59 @@ class LinearSyncTest(unittest.TestCase):
             body for body in self.fake.comments if body.startswith("**Evidence bundle**")
         ]
         self.assertEqual(evidence, ["**Evidence bundle**\n\nVerified bundle\n"])
-        self.assertTrue(self.mapping["tickets"]["T-001"]["bundle_posted"])
+        first_digest = self.mapping["tickets"]["T-001"]["bundle_digest"]
+        self.assertRegex(first_digest, r"^[0-9a-f]{64}$")
 
         self.reconcile()
         self.assertEqual(
             len([body for body in self.fake.comments if body.startswith("**Evidence bundle**")]),
             1,
         )
+
+        (self.factory / "tickets" / "T-001-bundle.md").write_text("Updated bundle\n")
+        self.reconcile()
+        self.assertNotEqual(self.mapping["tickets"]["T-001"]["bundle_digest"], first_digest)
+        self.assertEqual(
+            len([body for body in self.fake.comments if body.startswith("**Evidence bundle**")]),
+            2,
+        )
+
+    def test_legacy_bundle_boolean_causes_one_corrective_post(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("State: Backlog", "State: Awaiting Approval"))
+        (self.factory / "tickets" / "T-001-bundle.md").write_text("Verified bundle\n")
+        entry = self.mapping["tickets"]["T-001"]
+        entry.pop("bundle_digest", None)
+        entry["bundle_posted"] = True
+        self.reconcile()
+        self.assertNotIn("bundle_posted", entry)
+        self.assertRegex(entry["bundle_digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(len(self.fake.comments), 1)
+
+    def test_failed_comments_do_not_advance_log_or_bundle_markers(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Awaiting Approval")
+            .replace("## Log\n", "## Log\n\n- needs attention\n")
+        )
+        (self.factory / "tickets" / "T-001-bundle.md").write_text("Verified bundle\n")
+        self.fake.comment_create_success = False
+        with self.assertRaisesRegex(RuntimeError, "commentCreate did not succeed"):
+            self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        self.assertEqual(entry["log_cursor"], 0)
+        self.assertIsNone(entry["bundle_digest"])
+
+    def test_failed_issue_update_is_reported(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(path.read_text().replace("State: Backlog", "State: Review"))
+        self.fake.issue_update_success = False
+        with self.assertRaisesRegex(RuntimeError, "issueUpdate did not succeed"):
+            self.reconcile()
 
     def test_non_factory_labels_are_preserved(self):
         self.reconcile()
@@ -713,6 +787,51 @@ class LinearSyncTest(unittest.TestCase):
             consumed["model_fallback_approval"]["comment_id"],
             "wrong-newer",
         )
+
+    def test_fetch_issue_paginates_complete_comment_history(self):
+        approval_hash = "a" * 64
+        nonce = "b" * 32
+        issue = {
+            "comments": {
+                "nodes": [],
+                "pageInfo": {"hasPreviousPage": True, "startCursor": "page-1"},
+            }
+        }
+        approval = {
+            "id": "comment-2",
+            "body": (
+                f"FACTORY MODEL FALLBACK APPROVAL: {approval_hash} "
+                f"RUN: run-1 REASON: provider_unavailable NONCE: {nonce}"
+            ),
+            "createdAt": "2026-07-18T12:00:00Z",
+            "updatedAt": "2026-07-18T12:00:00Z",
+            "user": {"id": "operator-1", "name": "Operator"},
+        }
+        responses = [
+            {"issue": issue},
+            {"issue": {"comments": {
+                "nodes": [approval],
+                "pageInfo": {"hasPreviousPage": False, "startCursor": None},
+            }}},
+        ]
+        with patch.object(LINEAR, "gql", side_effect=responses) as query:
+            actual = LINEAR.fetch_issue("key", "issue-1")
+        self.assertEqual(query.call_count, 2)
+        entry = {}
+        with patch.object(LINEAR, "utc_now", return_value="2026-07-18T12:05:00+00:00"):
+            LINEAR.ingest_fallback_approval(actual, entry, False)
+        self.assertEqual(entry["model_fallback_approval"]["comment_id"], "comment-2")
+
+    def test_fetch_issue_rejects_incomplete_comment_pagination(self):
+        response = {"issue": {"comments": {
+            "nodes": [],
+            "pageInfo": {"hasPreviousPage": True, "startCursor": None},
+        }}}
+        with (
+            patch.object(LINEAR, "gql", return_value=response),
+            self.assertRaisesRegex(RuntimeError, "missing cursor"),
+        ):
+            LINEAR.fetch_issue("key", "issue-1")
 
     def test_graphql_retries_rate_limit(self):
         limited = urllib.error.HTTPError(

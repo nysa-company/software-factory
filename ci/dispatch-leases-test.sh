@@ -10,6 +10,7 @@ KILL="$ROOT/scripts/kill-switch.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-leases-test.XXXXXX")"
 PRODUCT="$TMP/product"
 FAILURES=0
+export FACTORY_HERMES_CONTRACT_VERSION=1.6.0
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT HUP INT TERM
@@ -17,7 +18,7 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s%s\n' "$1" "${2:+ — $2}" >&2; FAILURES=$((FAILURES + 1)); }
 
 mkdir -p "$PRODUCT/factory/tickets" "$PRODUCT/factory/runs"
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$PRODUCT/factory/PROJECT.env"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=6' > "$PRODUCT/factory/PROJECT.env"
 printf '%s\n' \
   'PER_RUN_BUDGET_USD=1.00' \
   'PER_TICKET_BUDGET_USD=10.00' \
@@ -37,7 +38,7 @@ printf '%s\n' \
   'factory/.ledger.lock/' \
   'factory/.dispatch-leases/' \
   'factory/.dispatch-leases.lock/' > "$PRODUCT/.gitignore"
-for ticket in T-901 T-902 T-903 T-904 T-905 T-906 T-907; do
+for ticket in T-901 T-902 T-903 T-904 T-905 T-906 T-907 T-908 T-909; do
   printf '# %s\n\nState: Ready\n' "$ticket" > "$PRODUCT/factory/tickets/$ticket.md"
 done
 git -C "$PRODUCT" init -q -b main
@@ -47,7 +48,7 @@ git -C "$PRODUCT" add .gitignore factory
 git -C "$PRODUCT" commit -qm fixture
 
 pids=""
-for ticket in T-901 T-902 T-903 T-904 T-905; do
+for ticket in T-901 T-902 T-903 T-904 T-905 T-906 T-907; do
   FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket "$ticket" \
     > "$TMP/$ticket.json" 2> "$TMP/$ticket.err" &
   pids="$pids $!"
@@ -56,15 +57,15 @@ successes=0
 for pid in $pids; do
   wait "$pid" && successes=$((successes + 1))
 done
-if [[ "$successes" -eq 4 && "$(find "$PRODUCT/factory/.dispatch-leases" -type f | wc -l | tr -d ' ')" -eq 4 ]]; then
-  pass "atomic claims cap five simultaneous tickets at four"
+if [[ "$successes" -eq 6 && "$(find "$PRODUCT/factory/.dispatch-leases" -type f | wc -l | tr -d ' ')" -eq 6 ]]; then
+  pass "Contract 1.6 atomic claims cap seven simultaneous tickets at six"
 else
-  fail "atomic claims cap five simultaneous tickets at four" "successes=$successes"
+  fail "Contract 1.6 atomic claims cap seven simultaneous tickets at six" "successes=$successes"
 fi
 if grep -Fqx "dispatcher capacity is full" "$TMP"/T-*.err; then
-  pass "fifth concurrent lease gets deterministic capacity refusal"
+  pass "seventh concurrent lease gets deterministic capacity refusal"
 else
-  fail "fifth concurrent lease gets deterministic capacity refusal"
+  fail "seventh concurrent lease gets deterministic capacity refusal"
 fi
 
 CLAIMED="$(python3 - "$TMP" <<'PY'
@@ -85,6 +86,10 @@ THIRD_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==3 {print $1}')"
 THIRD_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==3 {print $2}')"
 FOURTH_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==4 {print $1}')"
 FOURTH_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==4 {print $2}')"
+FIFTH_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==5 {print $1}')"
+FIFTH_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==5 {print $2}')"
+SIXTH_TICKET="$(printf '%s\n' "$CLAIMED" | awk 'NR==6 {print $1}')"
+SIXTH_ID="$(printf '%s\n' "$CLAIMED" | awk 'NR==6 {print $2}')"
 
 DUPLICATE_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket "$FIRST_TICKET" >/dev/null 2>&1 || DUPLICATE_RC=$?
@@ -141,7 +146,7 @@ else
 fi
 
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null
-RECLAIMED="$(FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-906)"
+RECLAIMED="$(FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-908)"
 RECLAIMED_ID="$(printf '%s\n' "$RECLAIMED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
 python3 - "$PRODUCT/factory/.dispatch-leases/$SECOND_TICKET.json" <<'PY'
 import json, pathlib, time, sys
@@ -152,7 +157,7 @@ value["expires_epoch"] = int(time.time()) - 1
 path.write_text(json.dumps(value) + "\n")
 PY
 RECLAIM_RC=0
-FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-907 > "$TMP/stale-capacity.out" 2>&1 || RECLAIM_RC=$?
+FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-909 > "$TMP/stale-capacity.out" 2>&1 || RECLAIM_RC=$?
 if [[ "$RECLAIM_RC" -ne 0 ]] &&
    grep -Fqx "dispatcher capacity is full" "$TMP/stale-capacity.out"; then
   pass "release reclaims one slot and stale records still consume capacity"
@@ -166,7 +171,9 @@ FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$SECOND_TICKET" --lease "$SECON
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$SECOND_TICKET" --lease "$SECOND_ID" >/dev/null
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$THIRD_TICKET" --lease "$THIRD_ID" >/dev/null
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FOURTH_TICKET" --lease "$FOURTH_ID" >/dev/null
-FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket T-906 --lease "$RECLAIMED_ID" >/dev/null
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIFTH_TICKET" --lease "$FIFTH_ID" >/dev/null
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$SIXTH_TICKET" --lease "$SIXTH_ID" >/dev/null
+FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket T-908 --lease "$RECLAIMED_ID" >/dev/null
 if [[ "$RENEW_RC" -eq 4 && -z "$(find "$PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]]; then
   pass "maintenance blocks renewal while permitting lease drain"
 else
@@ -174,20 +181,30 @@ else
 fi
 rm "$PRODUCT/factory/MAINTENANCE"
 
-for maximum in 1 2 3 4; do
+for maximum in 1 2 3 4 5 6; do
   printf 'MAX_CONCURRENT_TICKETS=%s\n' "$maximum" > "$PRODUCT/factory/PROJECT.env"
   parsed="$(bash -c '. "$1"; factory_dispatch_max_tickets "$2"' _ \
     "$ROOT/scripts/lib/dispatch-leases.sh" "$PRODUCT")"
   [[ "$parsed" == "$maximum" ]] ||
     fail "project concurrency value $maximum is accepted" "parsed=$parsed"
 done
-pass "project concurrency values 1 through 4 are accepted"
+pass "Contract 1.6 project concurrency values 1 through 6 are accepted"
 
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=5' > "$PRODUCT/factory/PROJECT.env"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=7' > "$PRODUCT/factory/PROJECT.env"
 INVALID_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 || INVALID_RC=$?
 [[ "$INVALID_RC" -eq 3 ]] && pass "invalid concurrency configuration fails closed" || fail "invalid concurrency configuration fails closed" "status=$INVALID_RC"
-printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$PRODUCT/factory/PROJECT.env"
+FACTORY_HERMES_CONTRACT_VERSION=1.5.0
+export FACTORY_HERMES_CONTRACT_VERSION
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=5' > "$PRODUCT/factory/PROJECT.env"
+LEGACY_INVALID_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 || LEGACY_INVALID_RC=$?
+[[ "$LEGACY_INVALID_RC" -eq 3 ]] &&
+  pass "Contract 1.5 retains the 1 through 4 capacity bound" ||
+  fail "Contract 1.5 retains the 1 through 4 capacity bound" "status=$LEGACY_INVALID_RC"
+FACTORY_HERMES_CONTRACT_VERSION=1.6.0
+export FACTORY_HERMES_CONTRACT_VERSION
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=6' > "$PRODUCT/factory/PROJECT.env"
 mv "$PRODUCT/factory/PROJECT.env" "$PRODUCT/factory/PROJECT.env.real"
 ln -s PROJECT.env.real "$PRODUCT/factory/PROJECT.env"
 UNSAFE_PROJECT_RC=0
