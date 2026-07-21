@@ -74,12 +74,11 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
     --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
   ```
   A fresh install records 24-hour owner-only kit-suite evidence by default.
-  For an exact protected-main SHA, authenticated successful GitHub Actions
-  evidence for the full Linux, macOS, aggregate, and immutability jobs replaces
-  the duplicate local full suite; installation still runs a sandboxed host
-  smoke check. If that evidence cannot be corroborated, installation falls back
-  to the complete local suite. Expired certification evidence follows the same
-  refresh path. Set `CI_FORCE_FULL=1` to force the local-full fallback.
+  Authenticated successful GitHub Actions evidence for the exact protected-main
+  SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;
+  installation then runs a sandboxed host smoke check. Missing evidence fails
+  closed and never launches the complete suite locally. Expired certification
+  evidence follows the same remote-proof and local-smoke refresh path.
   Repeated certification of the exact unchanged sealed release may reuse it,
   while product certification and all product/config/receipt checks still run.
   Set `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS` only as explicit machine policy;

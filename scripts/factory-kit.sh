@@ -2444,13 +2444,10 @@ cmd_install() {
   git -C "$checkout" checkout -q --detach "$sha"
   prepare_pinned_scanner "$source_top" "$checkout" "$workspace/tmp" ||
     die "could not stage the pinned scanner for isolated checks"
-  local remote_evidence_id="" verification_source="local-full" check_mode="full"
-  if [[ "${CI_FORCE_FULL:-0}" != "1" ]] &&
-     remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)"; then
-    verification_source="github-actions-full"
-    check_mode="platform-smoke"
-    say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
-  fi
+  local remote_evidence_id verification_source="github-actions-full" check_mode="platform-smoke"
+  remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
+    die "exact successful main GitHub CI evidence is required for install: $sha"
+  say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
   run_kit_checks_isolated "$checkout" "$workspace/home" "$workspace/tmp" \
     "$workspace" "install" "$check_mode" "$source_top" ||
     die "kit checks failed in disposable checkout"
@@ -2546,15 +2543,11 @@ cmd_certify() {
     record_certification_trace "kit-suite:reused"
   else
     suite_reused=false
-    refresh_source="local-full"
-    refresh_mode="full"
-    refresh_remote_id=""
-    if [[ "${CI_FORCE_FULL:-0}" != "1" ]] &&
-       refresh_remote_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)"; then
-      refresh_source="github-actions-full"
-      refresh_mode="platform-smoke"
-      say "REMOTE CI VERIFIED: $sha; refreshing evidence with local platform smoke only"
-    fi
+    refresh_source="github-actions-full"
+    refresh_mode="platform-smoke"
+    refresh_remote_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
+      die "exact successful main GitHub CI evidence is required to refresh certification: $sha"
+    say "REMOTE CI VERIFIED: $sha; refreshing evidence with local platform smoke only"
     prepare_pinned_scanner "$release" "$writable" "$workspace/tmp" ||
       die "could not stage the pinned scanner for isolated certification"
     run_kit_checks_isolated "$writable" "$ISOLATED_HOME" "$workspace/tmp" \

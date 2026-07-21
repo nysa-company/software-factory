@@ -144,7 +144,11 @@ child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque
 lease can remain in memory and accompany the child. `WAIT` and `ESCALATE` never
 prepare a worktree or start a child. When `next-stage` first authorizes Reviewer,
 `ticket-pr` creates or reuses exactly one open PR at the clean pushed branch
-head before review; it cannot approve or merge.
+head before review and reports `wait` without launching a role while required
+checks are pending. Completed failures are Reviewer evidence, not approval.
+Before Narrator, the dispatcher invokes it again and requires `ready`; the
+helper binds successful required checks and latest Reviewer evidence to the
+exact current head. It cannot approve or merge.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission

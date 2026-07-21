@@ -97,7 +97,7 @@
           "--ticket <T-NNN> --lease <opaque-lease-id> --workdir <exact-ticket-worktree> --json"
         ],
         "output_schema": "nysa.software-factory.ticket-pr/v1",
-        "authority": "create or reuse one exact open ticket PR only at the sequencer-authorized Reviewer boundary; never approve or merge"
+        "authority": "create or reuse one exact open ticket PR at the Reviewer boundary and require exact-head GitHub checks before Reviewer and Narrator; never approve or merge"
       },
       "models": {
         "minimum_contract_version": "1.2.0",

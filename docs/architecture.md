@@ -79,7 +79,7 @@ an explicit `KIT_PIN`.
 `bash ci/test-all.sh` always runs the complete canonical suite registry.
 `--changed BASE [HEAD]` classifies a committed diff, while `--shadow-changed`
 calculates the same recommendation but executes the full registry.
-`CI_FORCE_FULL=1` overrides either mode. Metadata-only diffs may skip behavioral
+`CI_FORCE_FULL=1` overrides changed or shadow selection. Metadata-only diffs may skip behavioral
 suites because repository, secret, artifact, and immutability gates remain
 separate required checks.
 
@@ -88,9 +88,9 @@ deletions, renames, unknown or shared paths, multiple components, dependencies,
 contracts, launchers, roles, CI or selector changes, malformed modes, and empty,
 duplicate, or unknown suite IDs. Only explicitly mapped single leaf components
 can recommend their direct and transitive suites plus CI-scope, immutability,
-and artifact-policy checks. The six audited leaf mappings are active for
-`--changed`. Pull-request Linux and applicable macOS jobs use the same selector
-and execute in parallel. Pushes to `main` remain full on both platforms so
+and artifact-policy checks. The six audited leaf mappings remain available for
+focused local work. Behavioral pull requests run the complete registry on
+Linux and macOS in parallel. Pushes to `main` remain full on both platforms so
 release evidence covers the exact merged SHA.
 
 During shadow execution, an unselected failure fails CI and is rerun once. Only
@@ -102,17 +102,19 @@ non-required full comparison. Any miss demotes the component to shadow and
 resets its evidence.
 
 Local pre-PR verification uses `--changed-or-defer`. Targeted and metadata
-changes complete locally; broad changes run the unconditional policy suites and
-record full behavioral verification as deferred to required GitHub CI. Selector,
-workflow, registry, baseline, or policy changes remain local-full trust roots,
-and `CI_FORCE_FULL=1` restores unconditional local execution immediately.
+changes complete locally; every broad change, including selector, workflow,
+registry, baseline, and policy changes, runs only CI-scope, immutability, and
+artifact-policy locally and records full behavioral verification as deferred
+to required GitHub CI. The command succeeds when those local policy gates pass.
+An explicit argument-free `bash ci/test-all.sh` remains the complete command
+used by GitHub.
 
-Installation accepts remote full-suite reuse only for an exact `origin/main`
+Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose Linux,
 macOS, aggregate, and immutability jobs all passed. It then runs a sandboxed
 host smoke check locally. Missing, malformed, or unavailable remote evidence
-falls back to the complete isolated local suite. Expired certification evidence
-uses the same corroboration and smoke path before a local full rerun.
+fails closed without running the complete suite locally. Expired certification
+evidence uses the same corroboration and smoke path.
 
 Model policy is kit-owned and certified by the same `KIT_PIN`. The route catalog
 separates adapter, transport, gateway, inference provider, provider family,
@@ -343,7 +345,11 @@ ephemeral dispatcher child on `START`, and exits on `WAIT` or `ESCALATE`.
 Autonomous claiming requires configured capacity above one so the lease can be
 transferred in memory to that child. At the first sequencer-authorized Reviewer
 boundary, the trusted ticket-PR helper creates or reuses exactly one open PR for
-the clean pushed ticket head; it has no approval or merge authority.
+the clean pushed ticket head. It waits without launching a role while required
+checks are pending, supplies completed failures to Reviewer, and revalidates
+successful exact-head checks and Reviewer lineage before Narrator. A later
+Builder or Test-author run forces fresh review. The helper has no approval or
+merge authority.
 
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,

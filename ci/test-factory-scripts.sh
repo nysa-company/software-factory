@@ -2416,6 +2416,11 @@ printf 'reviewer round 1: APPROVE because it looks good\n' >> \
 expect_stage "REFUSE" "$WALK" T-500 || WALK_OK=0
 printf 'reviewer round 1: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
+ledger_row T-500 builder >> "$WALK/factory/ledger.csv"
+expect_stage "RUN reviewer" "$WALK" T-500 || WALK_OK=0
+ledger_row T-500 reviewer >> "$WALK/factory/ledger.csv"
+printf 'reviewer round 2: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
+expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 narrator >> "$WALK/factory/ledger.csv"
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
 printf '%s\n' \

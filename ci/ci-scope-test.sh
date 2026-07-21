@@ -8,8 +8,9 @@ unset CI_FORCE_FULL
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
-[[ "$(grep -c -- '--changed "\$BASE_SHA" "\$GITHUB_SHA"' "$WORKFLOW")" -eq 2 ]] || {
-  echo "FAIL: Linux and macOS PR jobs must use changed-file selection" >&2
+[[ "$(grep -c 'complete pull-request verification' "$WORKFLOW")" -eq 2 ]] &&
+  ! grep -q -- '--changed "\$BASE_SHA" "\$GITHUB_SHA"' "$WORKFLOW" || {
+  echo "FAIL: behavioral Linux and macOS PR jobs must run complete suites" >&2
   exit 1
 }
 [[ "$(grep -c 'CI_FORCE_FULL: "1"' "$WORKFLOW")" -eq 2 ]] || {
@@ -276,17 +277,17 @@ RUNNER_HEAD="$(git -C "$RUNNER" rev-parse HEAD)"
 printf '%s\n' 'full|unknown or shared path|' > "$RUNNER/selection"
 status=0
 output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$RUNNER_BASE" "$RUNNER_HEAD" 2>&1)" || status=$?
-if [[ "$status" -ne 75 || "$output" != *"CI_FULL_DEFERRED:"* ]]; then
-  printf 'FAIL: broad local verification defers with status 75 (status %s; output %s)\n' \
+if [[ "$status" -ne 0 || "$output" != *"CI_FULL_DEFERRED:"* ]]; then
+  printf 'FAIL: broad local verification defers successfully (status %s; output %s)\n' \
     "$status" "$output" >&2
   exit 1
 fi
 printf '%s\n' 'invalid|fixture|pass' > "$RUNNER/selection"
 status=0
 output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$RUNNER_BASE" "$RUNNER_HEAD" 2>&1)" || status=$?
-if [[ "$status" -ne 0 || "$output" == *"CI_FULL_DEFERRED:"* ||
+if [[ "$status" -ne 0 || "$output" != *"CI_FULL_DEFERRED:"* ||
       "$output" != *"selector returned unknown mode"* ]]; then
-  printf 'FAIL: malformed selection remains local full (status %s; output %s)\n' \
+  printf 'FAIL: malformed selection defers to GitHub full CI (status %s; output %s)\n' \
     "$status" "$output" >&2
   exit 1
 fi
@@ -298,9 +299,9 @@ git -C "$RUNNER" commit -qm trust-root
 TRUST_HEAD="$(git -C "$RUNNER" rev-parse HEAD)"
 status=0
 output="$(cd "$RUNNER" && bash ci/test-all.sh --changed-or-defer "$TRUST_BASE" "$TRUST_HEAD" 2>&1)" || status=$?
-if [[ "$status" -ne 0 || "$output" == *"CI_FULL_DEFERRED:"* ||
-      "$output" != *"executed=full"* ]]; then
-  printf 'FAIL: trust-root change remains local full (status %s; output %s)\n' \
+if [[ "$status" -ne 0 || "$output" != *"CI_FULL_DEFERRED:"* ||
+      "$output" != *"executed=targeted"* ]]; then
+  printf 'FAIL: trust-root change defers to GitHub full CI (status %s; output %s)\n' \
     "$status" "$output" >&2
   exit 1
 fi

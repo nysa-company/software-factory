@@ -11,7 +11,7 @@
 - [ ] Ran `scripts/repo-check`.
 - [ ] Ran `scripts/secret-scan`.
 - [ ] Ran `scripts/artifact-check`.
-- [ ] Ran `bash ci/test-all.sh`.
+- [ ] Ran `bash ci/test-all.sh --changed-or-defer origin/main HEAD`; any `CI_FULL_DEFERRED` result will be verified by GitHub.
 - [ ] Local AI review passed.
 - Checks and results:
 

@@ -21,48 +21,80 @@ Perform the software-factory kit release for candidate SHA {{SHA}}
 ({{SHORT_DESCRIPTION}}, PRs: {{PR_LIST}}) and activate it for the
 {{PROJECT_SLUG}} product (product repo: {{PRODUCT_REPO_ABSOLUTE_PATH}}).
 
+The execution computer is {{EXECUTION_HOST}} and this is an
+{{HOST_MODE: "active in-place" | "inactive replacement"}} migration. The
+approved Nysa Agents plugin version is {{NYSA_AGENTS_PLUGIN_VERSION}}.
+
 Follow docs/runbooks/operator.md § "Preparing and activating a release"
 exactly, in order:
 
 1. Confirm the full SHA is on origin/main and the required aggregate `ci`
    check passed on Linux and macOS.
-2. bash scripts/factory-kit.sh install --repo {{KIT_CHECKOUT_PATH}} --sha
-   {{SHA}}, then certify against the product. Record the receipt ID and
-   expiry in your report.
-3. {{CANARY_LINE: "Run the real-Hermes canary with a separate sandbox product
+2. Inventory every nonterminal ticket and its committed Kit-SHA. Finish each
+   on its current release or, at a no-active-run boundary, use the sealed
+   `models migrate-plan` and operator-approved `models migrate` routes. Never
+   edit Kit-SHA or a route journal manually.
+3. If this is the active in-place host, stop new dispatch, publish maintenance,
+   and drain all runs and dispatcher leases before changing user-scoped tools.
+   If it is an inactive replacement, keep its dispatcher, reconciler, and
+   LaunchAgent disabled.
+4. Read the candidate machine pins `CODEX_PINNED`, `CLAUDE_CODE_PINNED`, and
+   `CURSOR_AGENT_VERSION`; install those exact CLI versions through the normal
+   controlled-path mechanism. Verify `codex --version`, `claude --version`,
+   `agent --version`, the physical targets under `~/.factory/bin`, and
+   `scripts/adapters/contract-test.sh --routes`. Stop on any mismatch.
+5. Upgrade and verify Nysa Agents on this execution computer:
+   - `codex plugin marketplace upgrade nysa-agents-plugin`, then require
+     `codex plugin list` to show Nysa Agents enabled at
+     {{NYSA_AGENTS_PLUGIN_VERSION}}.
+   - `claude plugin marketplace update nysa-agents-plugin`, then
+     `claude plugin update nysa-agents@nysa-agents-plugin`; require
+     `claude plugin list` to show {{NYSA_AGENTS_PLUGIN_VERSION}} and retain
+     marketplace `autoUpdate: true`.
+   - Restart Codex and Claude sessions so no old process keeps old plugin code.
+   Run the plugin's repository-baseline plan. If it proposes tracked changes,
+   stop: that is a separate product change to review before certification.
+6. Verify Node 22 and the product certification dependencies. For nysa-app,
+   require PostgreSQL to be reachable at `127.0.0.1:55432` before certifying.
+7. Run `bash scripts/factory-kit.sh install --repo {{KIT_CHECKOUT_PATH}} --sha
+   {{SHA}}`, then certify against the product. These commands must reuse the
+   exact successful main GitHub run and perform only local smoke for the kit;
+   never substitute a local factory full suite. Record the host-bound receipt
+   ID and expiry. A receipt from another computer is invalid here.
+8. {{CANARY_LINE: "Run the real-Hermes canary with a separate sandbox product
    and profile — MANDATORY for this release because it changes a
    compatibility-sensitive surface ({{SURFACES_TOUCHED}}). Never copy the
    production .env, secrets, board mapping, registry, ledger, or LaunchAgent
    into the sandbox." | "No compatibility-sensitive surface changed between
    {{LAST_ACTIVATED_SHA}} and {{SHA}}; the canary may be skipped."}}
-4. Confirm no active runs and no nonterminal ticket with a different Kit-SHA.
-5. Open the product PR that changes ONLY factory/KIT_PIN to the full SHA.
+9. Confirm no active runs and no nonterminal ticket with a different Kit-SHA.
+10. Open the product PR that changes ONLY factory/KIT_PIN to the full SHA.
    Stop and wait for my approval before merging it. After merge, verify the
    product tree still matches the certification receipt.
-6. Publish maintenance with factory-kit.sh pause; wait for runs and all
-   dispatcher leases to drain.
-7. factory-kit.sh plan — it must report "No files were changed." If not, stop.
-8. Stop only the product factory profile and reconciler (leave the dashboard
+11. For a replacement-host cutover, publish maintenance on the old host and
+    drain it now. Confirm its dispatcher is stopped; if that cannot be proven,
+    revoke its provider and Linear execution access before enabling this host.
+12. factory-kit.sh plan — it must report "No files were changed." If not, stop.
+13. Stop only the product factory profile and reconciler (leave the dashboard
    and primary Hermes profile running).
-9. factory-kit.sh activate, restart the factory services, then collect doctor
+14. factory-kit.sh activate, restart the factory services, then collect doctor
    JSON, sandbox smoke, PID, Linear freshness, and repeated health probes.
-10. Remove MAINTENANCE only after every acceptance check passes.
+15. Remove MAINTENANCE only after every acceptance check passes.
 
 Then prove the release works by running two real tickets end to end:
 
-11. Select two Ready tickets that are low or medium risk, have `External: no`,
+16. Select two Ready tickets that are low or medium risk, have `External: no`,
     and have no overlapping file ownership. If none are Ready, stop and ask me
     to stage two.
-12. Run each ticket's full lifecycle through the trusted launcher
+17. Run each ticket's full lifecycle through the trusted launcher
     (~/.factory/bin/factory-launch {{PROJECT_SLUG}} run) to the contract's
     Review/evidence-bundle boundary — planner, spec-linter, test-author,
     builder, CI, reviewer, narrator. Do not merge; contract 1.2 stops at the
     documented evidence gate.
-13. Concurrency: run them as two concurrent leases ONLY if the product's
-    MAX_CONCURRENT_TICKETS is 2 AND a current operator waiver covers this
-    pair (check factory/ for the dated authorization record). Otherwise run
-    them sequentially — never grant yourself the waiver.
-14. Acceptance evidence per ticket: every role launch accepted by the
+18. Concurrency: use no more than the product's configured
+    MAX_CONCURRENT_TICKETS and select tickets with non-overlapping ownership.
+    Never invent a capacity override or authorization.
+19. Acceptance evidence per ticket: every role launch accepted by the
     sequencer under the new Kit-SHA, ledger and manifest rows consistent
     (reservation ≤ per-run budget, settled cost recorded), reviewer verdict
     recorded, evidence bundle posted, doctor healthy afterward.
@@ -75,5 +107,5 @@ values whose key matches key|token|secret|password|url|dsn|conn|auth.
 
 Report at the end: receipt ID + expiry, canary result (or the skip
 justification), activation journal entry, doctor summary, per-ticket evidence
-from step 14, and any deviations.
+from step 19, and any deviations.
 ```

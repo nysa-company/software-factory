@@ -102,9 +102,18 @@ prepare or reuse the exact open ticket PR:
 ```
 
 Renew the lease immediately before this call when concurrency is enabled.
-Require schema `nysa.software-factory.ticket-pr/v1`, status `prepared`, and the
-exact ticket branch/head. The helper never approves or merges. Any refusal
+Require schema `nysa.software-factory.ticket-pr/v1` and the exact ticket
+branch/head. On status `wait`, launch no role and check again only after GitHub
+state changes. On `failed`, run Reviewer with the completed failures as
+mandatory request-changes evidence. Only `prepared` or that bounded `failed`
+result authorizes Reviewer. The helper never approves or merges. Any refusal
 stops dispatch.
+
+When `next-stage` authorizes Narrator, invoke the same `ticket-pr` command
+again. Require status `ready`, which binds successful required checks and the
+latest successful Reviewer to the exact current head. Pending or failed checks
+launch no Narrator; any later Builder or Test-author run requires Reviewer
+again.
 
 ```text
 ~/.factory/bin/factory-launch <project> run \

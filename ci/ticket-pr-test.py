@@ -42,7 +42,8 @@ class TicketPrTest(unittest.TestCase):
             f"# T-100\n\nState: Building\nInitiative: I-1\nPriority: normal\n"
             f"Kit-SHA: {KIT_SHA}\nSPEC-LINT: PASS\n"
         )
-        self.ledger = factory / "ledger.csv"
+        (self.product / ".gitignore").write_text("factory/runtime-ledger.csv\nfactory/runs/\n")
+        self.ledger = factory / "runtime-ledger.csv"
         self.write_ledger(("planner", "spec-linter", "test-author", "builder"))
         subprocess.run(["git", "-C", self.product, "add", "."], check=True)
         subprocess.run(["git", "-C", self.product, "commit", "-qm", "builder output"], check=True)
@@ -71,6 +72,10 @@ elif args[:2] == ['pr', 'create']:
         'state': 'OPEN',
     }]
     state.write_text(json.dumps(prs))
+elif args[:2] == ['pr', 'checks']:
+    bucket = os.environ.get('FAKE_CHECK_BUCKET', 'pass')
+    print(json.dumps([{'name': 'ci', 'state': bucket, 'bucket': bucket}]))
+    raise SystemExit(8 if bucket == 'pending' else 1 if bucket != 'pass' else 0)
 else:
     raise SystemExit(2)
 """
@@ -89,7 +94,7 @@ else:
             )
         self.ledger.write_text("\n".join(rows) + "\n")
 
-    def command(self, expected=0):
+    def command(self, expected=0, bucket="pass"):
         head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
@@ -106,6 +111,7 @@ else:
                 "FAKE_PR_STATE": str(self.state),
                 "FAKE_PR_TRACE": str(self.trace),
                 "FAKE_PR_HEAD": head,
+                "FAKE_CHECK_BUCKET": bucket,
             },
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
@@ -117,17 +123,61 @@ else:
         self.assertEqual(first["pr_number"], second["pr_number"])
         self.assertEqual(self.trace.read_text().count("pr create"), 1)
         self.write_ledger(("planner", "spec-linter", "test-author"))
-        subprocess.run(["git", "-C", self.product, "add", self.ledger], check=True)
-        subprocess.run(
-            ["git", "-C", self.product, "commit", "-qm", "rewind builder evidence"],
-            check=True,
+        refused = self.command(expected=2)
+        self.assertIn("reviewer or narrator stage", refused["error"])
+
+    def test_required_checks_gate_reviewer_and_narrator(self):
+        pending = self.command(bucket="pending")
+        self.assertEqual(pending["status"], "wait")
+        failed = self.command(bucket="fail")
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["checks"], ["ci"])
+        self.assertEqual(self.command()["status"], "prepared")
+
+        reviewed = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        runs = self.product / "factory/runs"
+        runs.mkdir()
+        (runs / "run-5.meta").write_text(
+            "accounting_state=completed\nexit_status=0\nrole=reviewer\n"
+            f"role_head_before={reviewed}\nrun_id=run-5\nticket=T-100\n"
         )
+        self.write_ledger(("planner", "spec-linter", "test-author", "builder", "reviewer"))
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text() + "Reviewer round 1: APPROVE\n")
+        subprocess.run(["git", "-C", self.product, "add", "factory/tickets/T-100.md"], check=True)
+        subprocess.run(["git", "-C", self.product, "commit", "-qm", "record review"], check=True)
         subprocess.run(
             ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
             check=True,
         )
+        current = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        prs = json.loads(self.state.read_text())
+        prs[0]["headRefOid"] = current
+        self.state.write_text(json.dumps(prs))
+        self.assertEqual(self.command()["status"], "ready")
+
+        (self.product / "implementation.txt").write_text("changed after review\n")
+        subprocess.run(["git", "-C", self.product, "add", "implementation.txt"], check=True)
+        subprocess.run(["git", "-C", self.product, "commit", "-qm", "late implementation"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
+        current = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        prs = json.loads(self.state.read_text())
+        prs[0]["headRefOid"] = current
+        self.state.write_text(json.dumps(prs))
         refused = self.command(expected=2)
-        self.assertIn("reviewer stage", refused["error"])
+        self.assertIn("implementation changed", refused["error"])
 
 
 if __name__ == "__main__":

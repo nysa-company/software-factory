@@ -56,6 +56,7 @@ run_kit() {
   TMPDIR="$TEST_TMP" \
   FACTORY_KITS_ROOT="$STATE" \
   FACTORY_KIT_TEST_MODE=1 \
+  FACTORY_KIT_TEST_REMOTE_FULL_CI="${FACTORY_KIT_TEST_REMOTE_FULL_CI:-1}" \
   FACTORY_KIT_TEST_PINNED_SCANNER="$PINNED_SCANNER_STUB" \
   FACTORY_KIT_CANONICAL_ORIGIN="$CANONICAL" \
   FACTORY_KIT_GH_TRACE="$GH_TRACE" \
@@ -70,6 +71,7 @@ run_kit_with_state() {
   TMPDIR="$TEST_TMP" \
   FACTORY_KITS_ROOT="$state" \
   FACTORY_KIT_TEST_MODE=1 \
+  FACTORY_KIT_TEST_REMOTE_FULL_CI="${FACTORY_KIT_TEST_REMOTE_FULL_CI:-1}" \
   FACTORY_KIT_TEST_PINNED_SCANNER="$PINNED_SCANNER_STUB" \
   FACTORY_KIT_CANONICAL_ORIGIN="$CANONICAL" \
   FACTORY_KIT_GH_TRACE="$GH_TRACE" \
@@ -356,6 +358,18 @@ cat > "$KIT_REPO/scripts/repo-check" <<'EOF'
 #!/usr/bin/env bash
 set -eu
 [[ "${1:-}" == "--root" && -d "${2:-}" ]]
+if [[ -n "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" ]] &&
+   /bin/cat "$FACTORY_KIT_SANDBOX_DENY_SIBLING" >/dev/null 2>&1; then
+  echo "sandbox read sibling secret" >&2
+  exit 45
+fi
+if [[ -n "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" ]] &&
+   /bin/cat "$FACTORY_KIT_SANDBOX_DENY_HOME" >/dev/null 2>&1; then
+  echo "sandbox read real home secret" >&2
+  exit 46
+fi
+[[ "${FACTORY_FIXTURE_DIRTY:-0}" != "1" ]] || printf 'mutated by smoke\n' > payload.txt
+[[ "${FACTORY_KIT_TEST_SUITE_FAIL:-0}" == "0" ]] || exit 47
 EOF
 cat > "$KIT_REPO/scripts/secret-scan" <<'EOF'
 #!/usr/bin/env bash
@@ -589,7 +603,7 @@ if [[ -f "$EVIDENCE_A" && ! -L "$EVIDENCE_A" ]] &&
    [[ "$(json_value "$EVIDENCE_A" kit_sha)" == "$SHA_A" ]] &&
    [[ "$(json_value "$EVIDENCE_A" release_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" ]] &&
    [[ "$(json_value "$EVIDENCE_A" suite_definition)" == "factory-kit-suite-v2" ]] &&
-   [[ "$(json_value "$EVIDENCE_A" verification_source)" == "local-full" ]] &&
+   [[ "$(json_value "$EVIDENCE_A" verification_source)" == "github-actions-full" ]] &&
    [[ "$(json_value "$EVIDENCE_A" evidence_ttl_seconds)" == "86400" ]]; then
   pass "install publishes bound reusable kit-suite evidence"
 else
@@ -694,17 +708,20 @@ fi
 
 PUBLISH_TRACE="$TMP/publish-order.jsonl"
 export FACTORY_KIT_TEST_PUBLISH_TRACE="$PUBLISH_TRACE"
-export FACTORY_KIT_TEST_REMOTE_FULL_CI=1
-export FACTORY_KIT_TEST_SUITE_FAIL=1
-export CI_FORCE_FULL=1
-expect_failure "force-full ignores reusable remote CI evidence" \
+export FACTORY_KIT_TEST_REMOTE_FULL_CI=0
+expect_failure "install refuses missing remote CI evidence without running local full" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
-unset CI_FORCE_FULL
+if [[ "$LAST_OUTPUT" == *"exact successful main GitHub CI evidence is required"* &&
+      "$LAST_OUTPUT" != *"fixture suite failed"* ]]; then
+  pass "missing install evidence fails before local suite execution"
+else
+  fail "missing install evidence fails before local suite execution" "$LAST_OUTPUT"
+fi
+export FACTORY_KIT_TEST_REMOTE_FULL_CI=1
 expect_success "second exact release publishes portably" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
 unset FACTORY_KIT_TEST_PUBLISH_TRACE
 unset FACTORY_KIT_TEST_REMOTE_FULL_CI
-unset FACTORY_KIT_TEST_SUITE_FAIL
 if [[ "$(json_value "$STATE/manifests/$SHA_B.suite.json" verification_source)" == "github-actions-full" ]] &&
    [[ "$(json_value "$STATE/manifests/$SHA_B.suite.json" remote_evidence_id)" =~ ^[0-9a-f]{64}$ ]]; then
   pass "verified remote full CI replaces only the local full suite"
@@ -800,8 +817,20 @@ fi
 printf '{malformed\n' > "$EVIDENCE_A"
 chmod 600 "$EVIDENCE_A"
 : > "$CERTIFICATION_TRACE"
+export FACTORY_KIT_TEST_REMOTE_FULL_CI=0
+expect_failure "malformed suite evidence and unavailable GitHub proof fail closed" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if [[ "$LAST_OUTPUT" == *"exact successful main GitHub CI evidence is required"* &&
+      "$LAST_OUTPUT" != *"fixture suite failed"* &&
+      ! -s "$CERTIFICATION_TRACE" ]]; then
+  pass "missing certification evidence fails before local suite execution"
+else
+  fail "missing certification evidence fails before local suite execution" "$LAST_OUTPUT"
+fi
+export FACTORY_KIT_TEST_REMOTE_FULL_CI=1
 expect_success "malformed suite evidence falls back to a fresh suite" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+unset FACTORY_KIT_TEST_REMOTE_FULL_CI
 if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
    [[ "$(json_value "$EVIDENCE_A" status)" == "pass" ]]; then
   pass "fresh suite refreshes malformed evidence"
@@ -836,11 +865,9 @@ set_evidence_value "$EVIDENCE_A" created_epoch 1
 set_evidence_value "$EVIDENCE_A" expires_epoch 86401
 : > "$CERTIFICATION_TRACE"
 export FACTORY_KIT_TEST_REMOTE_FULL_CI=1
-export FACTORY_KIT_TEST_SUITE_FAIL=1
 expect_success "stale suite evidence refreshes from remote full CI" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 unset FACTORY_KIT_TEST_REMOTE_FULL_CI
-unset FACTORY_KIT_TEST_SUITE_FAIL
 if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
    [[ "$(json_value "$EVIDENCE_A" verification_source)" == "github-actions-full" ]]; then
   pass "stale evidence uses remote proof plus smoke instead of local full"
@@ -863,7 +890,7 @@ set_evidence_value "$EVIDENCE_A" verification_source '"untrusted"'
 expect_success "unknown verification source reruns the suite" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 if grep -qx 'kit-suite:certification' "$CERTIFICATION_TRACE" &&
-   [[ "$(json_value "$EVIDENCE_A" verification_source)" == "local-full" ]]; then
+   [[ "$(json_value "$EVIDENCE_A" verification_source)" == "github-actions-full" ]]; then
   pass "unknown verification source is never reused"
 else
   fail "unknown verification source is never reused"

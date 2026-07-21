@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Create or reuse the exact ticket PR before independent review."""
+"""Create or reuse the exact ticket PR and gate review evidence on its checks."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,99 @@ def project_repo(factory: Path) -> str:
     return values[0]
 
 
+def latest_reviewer_head(product: Path, ticket: str) -> str:
+    runs = product / "factory" / "runs"
+    if not runs.is_dir() or runs.is_symlink():
+        raise Refusal("reviewer run evidence is missing")
+    reviewers = {}
+    for path in sorted(runs.glob("*.meta")):
+        if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+            raise Refusal("reviewer run evidence is unsafe")
+        values = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key in values:
+                raise Refusal("reviewer run evidence is malformed")
+            values[key] = value
+        if (
+            values.get("ticket") == ticket
+            and values.get("role") == "reviewer"
+            and values.get("accounting_state") == "completed"
+            and values.get("exit_status") == "0"
+        ):
+            run_id = values.get("run_id", "")
+            if not run_id or run_id in reviewers:
+                raise Refusal("reviewer run evidence is ambiguous")
+            reviewers[run_id] = values
+    ledger = Path(os.environ.get(
+        "FACTORY_LEDGER", product / "factory" / "runtime-ledger.csv"
+    ))
+    if not ledger.is_file() or ledger.is_symlink():
+        raise Refusal("reviewer ledger evidence is missing")
+    with ledger.open(newline="", encoding="utf-8") as handle:
+        rows = [
+            row for row in csv.DictReader(handle)
+            if row.get("ticket") == ticket
+            and row.get("role") == "reviewer"
+            and row.get("exit_status") == "0"
+        ]
+    if not rows:
+        raise Refusal("successful reviewer run evidence is missing")
+    run_id = rows[-1].get("run_id", "")
+    if run_id not in reviewers:
+        raise Refusal("latest successful reviewer manifest is missing")
+    head = reviewers[run_id].get("role_head_before", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise Refusal("reviewer head evidence is invalid")
+    return head
+
+
+def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str) -> None:
+    reviewed = latest_reviewer_head(product, ticket)
+    run(["git", "-C", str(workdir), "merge-base", "--is-ancestor", reviewed, head])
+    changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").splitlines())
+    if changed - {f"factory/tickets/{ticket}.md"}:
+        raise Refusal("ticket implementation changed after the latest successful review")
+
+
+def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
+    result = subprocess.run(
+        [
+            "gh", "pr", "checks", str(number), "--repo", repo, "--required",
+            "--json", "name,state,bucket",
+        ],
+        text=True, capture_output=True, check=False,
+    )
+    if result.returncode not in (0, 1, 8):
+        raise Refusal(result.stderr.strip() or "GitHub required-check query failed")
+    try:
+        checks = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise Refusal("GitHub returned invalid required-check evidence") from error
+    if not isinstance(checks, list):
+        raise Refusal("GitHub returned invalid required-check evidence")
+    if not checks:
+        return "wait", ["required checks not reported"]
+    if any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("name"), str)
+        or not item["name"]
+        for item in checks
+    ):
+        raise Refusal("GitHub returned malformed required-check evidence")
+    buckets = {item.get("bucket") for item in checks if isinstance(item, dict)}
+    if len(buckets) == 0 or not buckets <= {"pass", "fail", "pending", "skipping", "cancel"}:
+        raise Refusal("GitHub returned unknown required-check state")
+    if buckets & {"pending"}:
+        return "wait", sorted(str(item.get("name")) for item in checks if item.get("bucket") == "pending")
+    if buckets & {"fail", "skipping", "cancel"}:
+        return "failed", sorted(
+            str(item.get("name")) for item in checks
+            if item.get("bucket") in {"fail", "skipping", "cancel"}
+        )
+    return "pass", []
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticket", required=True)
@@ -78,8 +172,12 @@ def main() -> None:
                 "--ticket", args.ticket, "--workdir", str(workdir),
             ]
         ).stdout.strip()
-        if not stage.startswith("RUN reviewer"):
-            raise Refusal("ticket PR preparation requires the reviewer stage")
+        if stage.startswith("RUN reviewer"):
+            boundary = "reviewer"
+        elif stage.startswith("RUN narrator"):
+            boundary = "narrator"
+        else:
+            raise Refusal("ticket PR verification requires the reviewer or narrator stage")
         repo = project_repo(factory)
         fields = "number,headRefName,baseRefName,headRefOid,url,state"
 
@@ -93,7 +191,7 @@ def main() -> None:
             return value
 
         prs = candidates()
-        if not prs:
+        if not prs and boundary == "reviewer":
             run([
                 "gh", "pr", "create", "--repo", repo, "--head", branch,
                 "--base", "main", "--title", f"{args.ticket}: implementation",
@@ -112,12 +210,22 @@ def main() -> None:
             or pr["number"] <= 0
         ):
             raise Refusal("ticket PR branch, base, head, or state is invalid")
+        check_status, checks = required_check_status(repo, pr["number"])
+        if boundary == "narrator":
+            validate_review_lineage(product, workdir, args.ticket, head)
+        status = (
+            "ready" if boundary == "narrator" and check_status == "pass"
+            else "prepared" if check_status == "pass"
+            else check_status
+        )
         print(json.dumps({
+            "boundary": boundary,
             "branch": branch,
+            "checks": checks,
             "head": head,
             "pr_number": pr["number"],
             "schema": SCHEMA,
-            "status": "prepared",
+            "status": status,
             "ticket": args.ticket,
             "url": pr.get("url"),
         }, sort_keys=True, separators=(",", ":")))

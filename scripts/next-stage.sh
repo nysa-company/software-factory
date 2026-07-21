@@ -311,6 +311,23 @@ if [[ "$REVIEWER_RUNS" -lt "$VERDICTS" ]]; then
   exit 1
 fi
 
+# Was Builder or Test-author completed after the latest non-void Reviewer?
+FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
+  BEGIN { voids="," void_list ","; reviewer_run=0 }
+  NR>1 && $3==t && $9=="0" {
+    if ($4=="reviewer") {
+      reviewer_run++
+      if (index(voids, "," reviewer_run ",")==0) { last_r=NR; fix=0 }
+    }
+    else if (($4=="builder" || $4=="test-author") && last_r>0) fix=1
+  }
+  END { print fix+0 }' "$LEDGER")"
+
+if [[ "$FIX_AFTER" -eq 1 ]]; then
+  echo "RUN reviewer"
+  exit 0
+fi
+
 if [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
@@ -341,21 +358,4 @@ if [[ "$RC" -ge 2 ]]; then
   fi
 fi
 
-# After the latest rejection, was a fix (test-author or builder success) completed
-# after the last successful reviewer run? Ledger order = completion order.
-FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
-  BEGIN { voids="," void_list ","; reviewer_run=0 }
-  NR>1 && $3==t && $9=="0" {
-    if ($4=="reviewer") {
-      reviewer_run++
-      if (index(voids, "," reviewer_run ",")==0) { last_r=NR; fix=0 }
-    }
-    else if (($4=="builder" || $4=="test-author") && last_r>0) fix=1
-  }
-  END { print fix+0 }' "$LEDGER")"
-
-if [[ "$FIX_AFTER" -eq 1 ]]; then
-  echo "RUN reviewer"
-else
-  echo "FIX builder-or-test-author"
-fi
+echo "FIX builder-or-test-author"
