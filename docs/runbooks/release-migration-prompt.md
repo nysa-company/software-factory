@@ -114,10 +114,11 @@ this exact order:
 
 Prove the release with exactly one real ticket:
 
-14. Run T-032 alone. Require Ready, `External: no`, no overlapping active
-    ownership, and the canonical meeting-summary-renderer contract already
-    committed on its ticket branch. Do not claim another ticket until T-032 is
-    protected-main Done.
+14. Run T-032 alone. Require its Backlog ticket and operator ruling on
+    protected main, `External: no`, and no overlapping active ownership. Keep
+    its contract unfrozen until Planner creates and commits the exact contract
+    on `ticket/T-032`; then require the normal Spec-linter gate. Do not claim
+    another ticket until T-032 is protected-main Done.
 15. Run the complete trusted lifecycle: Planner, Spec-linter, Test-author,
     Builder, exact-head GitHub CI, Reviewer, Narrator, Linear approval,
     protected product merge, post-merge checks, and trusted Done closeout.
