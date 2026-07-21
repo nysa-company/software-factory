@@ -34,8 +34,15 @@ sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 sha256_text() { shasum -a 256 | awk '{print $1}'; }
 
 cursor_approval_hash() {
-  local root="$1" version="$2" route_plan
+  local root="$1" version="$2" route_plan cursor
   route_plan="$root/worktrees/$TICKET/factory/route-plans/$TICKET.json"
+  cursor="$(python3 - "$root/home/agent" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+  [[ "$cursor" == /* && -f "$cursor" && -x "$cursor" ]] ||
+    die "Cursor binary binding is unavailable"
   {
     python3 - "$root/marker.json" <<'PY'
 import json, sys
@@ -43,7 +50,8 @@ print(json.load(open(sys.argv[1], encoding="utf-8"))["kit_sha"])
 PY
     git -C "$root/kit" rev-parse 'HEAD^{tree}'
     git -C "$root/worktrees/$TICKET" rev-parse 'HEAD^{tree}'
-    printf '%s\n' "$version" "$(sha256_file "$route_plan")" "$(basename "$root")"
+    printf '%s\n' "$version" "$cursor" "$(sha256_file "$cursor")" \
+      "$(sha256_file "$route_plan")" "$(basename "$root")"
   } | sha256_text
 }
 
@@ -70,22 +78,31 @@ sandbox_exec() {
 }
 
 cursor_bin() {
-  local value
+  local value resolved
   if [[ "$TEST_MODE" -eq 1 && -n "${FACTORY_DEV_LANE_CURSOR_BIN:-}" ]]; then
     value="$FACTORY_DEV_LANE_CURSOR_BIN"
   else
     value="$(command -v agent 2>/dev/null || true)"
   fi
   [[ "$value" == /* && -x "$value" ]] || die "Cursor agent binary is unavailable"
-  python3 - "$value" <<'PY'
+  refuse_production_path "$value"
+  resolved="$(python3 - "$value" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
+)"
+  refuse_production_path "$resolved"
+  printf '%s\n' "$resolved"
 }
 
 refuse_production_path() {
-  local candidate="$1" forbidden
-  candidate="$(python3 - "$candidate" <<'PY'
+  local candidate="$1" lexical resolved forbidden
+  lexical="$(python3 - "$candidate" <<'PY'
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+)"
+  resolved="$(python3 - "$candidate" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
@@ -100,8 +117,11 @@ import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
 )"
-    case "$candidate" in
-      "$forbidden"|"$forbidden"/*) die "lane path overlaps protected production path: $forbidden" ;;
+    case "$lexical" in
+      "$forbidden"|"$forbidden"/*) die "path overlaps protected production path: $forbidden" ;;
+    esac
+    case "$resolved" in
+      "$forbidden"|"$forbidden"/*) die "path overlaps protected production path: $forbidden" ;;
     esac
   done
 }
@@ -112,15 +132,25 @@ validate_lane() {
     die "lane root must be an existing absolute, non-symlink directory"
   root="$(physical "$root")"
   case "$(basename "$root")" in nysa-sf-dev.*) ;; *) die "refusing non-lane root" ;; esac
-  [[ -f "$root/marker.json" && ! -L "$root/marker.json" ]] ||
-    die "lane ownership marker is missing or unsafe"
   schema="$(python3 - "$root/marker.json" "$root" <<'PY'
-import json, sys
+import json, os, stat, sys
 try:
-    v=json.load(open(sys.argv[1], encoding="utf-8"))
-    if set(v) != {"schema","root","nonce","kit_sha","kit_tree","mode"}:
+    root_info=os.lstat(sys.argv[2])
+    marker_info=os.lstat(sys.argv[1])
+    if not stat.S_ISDIR(root_info.st_mode) or stat.S_IMODE(root_info.st_mode) != 0o700:
         raise ValueError
-    if v["root"] != sys.argv[2]: raise ValueError
+    if root_info.st_uid != os.getuid(): raise ValueError
+    if (not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1 or
+        marker_info.st_uid != os.getuid() or stat.S_IMODE(marker_info.st_mode) != 0o600):
+        raise ValueError
+    v=json.load(open(sys.argv[1], encoding="utf-8"))
+    if set(v) != {"schema","root","nonce","kit_sha","kit_tree","mode",
+                  "uid","root_dev","root_ino","tmp_parent"}:
+        raise ValueError
+    if (v["root"] != sys.argv[2] or v["uid"] != os.getuid() or
+        v["root_dev"] != root_info.st_dev or v["root_ino"] != root_info.st_ino or
+        os.path.dirname(sys.argv[2]) != v["tmp_parent"]):
+        raise ValueError
     print(v["schema"])
 except Exception:
     raise SystemExit(1)
@@ -142,28 +172,48 @@ PY
 }
 
 clean_lane() {
-  local root
+  local root current_tmp
   root="$(validate_lane "$1")"
+  current_tmp="$(physical "${TMPDIR:-/tmp}")"
+  [[ "$(dirname "$root")" == "$current_tmp" ]] ||
+    die "cleanup requires the lane's creation TMPDIR"
+  python3 - "$root" <<'PY' || exit 1
+import json, os, stat, sys
+root=sys.argv[1]; marker=os.path.join(root, "marker.json")
+r=os.lstat(root); m=os.lstat(marker); v=json.load(open(marker, encoding="utf-8"))
+if (not stat.S_ISDIR(r.st_mode) or stat.S_IMODE(r.st_mode) != 0o700 or
+    r.st_uid != os.getuid() or r.st_dev != v["root_dev"] or r.st_ino != v["root_ino"] or
+    not stat.S_ISREG(m.st_mode) or m.st_nlink != 1 or m.st_uid != os.getuid() or
+    stat.S_IMODE(m.st_mode) != 0o600):
+    raise SystemExit("lane changed immediately before cleanup")
+PY
   rm -rf -- "$root"
   echo "CLEANED=$root"
 }
 
 write_seatbelt_profiles() {
   local root="$1" cursor="$2"
-  python3 - "$root" "$cursor" "$PATH" <<'PY'
+  python3 - "$root" "$cursor" <<'PY'
 import json, os, pathlib, sys
-root, cursor, path_value = sys.argv[1:]
+root, cursor = sys.argv[1:]
 system = [
     "/System", "/bin", "/sbin", "/usr/bin", "/usr/lib", "/usr/libexec",
     "/usr/share", "/etc", "/private/etc", "/private/var/db/timezone",
-    "/Library/Apple", "/Library/Developer",
-    "/Applications/Xcode.app/Contents/Developer", "/var/select", "/private/var/select",
+    "/Library/Apple", "/var/select", "/private/var/select",
 ]
 tools=[]
-for item in path_value.split(os.pathsep) + ["/opt/homebrew", "/usr/local", os.path.dirname(cursor)]:
-    if item and os.path.isabs(item) and os.path.isdir(item):
-        resolved=str(pathlib.Path(item).resolve())
-        if resolved not in tools: tools.append(resolved)
+for entry in pathlib.Path(root, "home").iterdir():
+    if not entry.is_symlink(): continue
+    target=entry.resolve(); parent=str(target.parent)
+    if parent not in tools: tools.append(parent)
+    if entry.name == "python3":
+        framework=str(target.parent.parent)
+        if framework not in tools: tools.append(framework)
+    if entry.name == "git" and target.parent.name == "bin" and target.parent.parent.name == "usr":
+        developer=target.parent.parent.parent
+        for relative in ("usr/libexec/git-core", "usr/share/git-core/templates"):
+            item=developer / relative
+            if item.is_dir() and str(item) not in tools: tools.append(str(item))
 reads=[]
 for item in system + tools + [root]:
     if item not in reads: reads.append(item)
@@ -200,13 +250,15 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce cursor developer tool timeout_bin
+  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
   tree="$(git -C "$SOURCE_ROOT" rev-parse 'HEAD^{tree}')"
-  root="$(mktemp -d "${TMPDIR:-/tmp}/nysa-sf-dev.XXXXXX")"
+  tmp_parent="$(physical "${TMPDIR:-/tmp}")"
+  root="$(mktemp -d "$tmp_parent/nysa-sf-dev.XXXXXX")"
   root="$(physical "$root")"
+  chmod 700 "$root"
   refuse_production_path "$root"
   nonce="$(basename "$root" | sed 's/^nysa-sf-dev\.//')"
   mkdir -p "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev" \
@@ -303,12 +355,16 @@ PY
   fi
   ln -s "$cursor" "$root/home/agent"
   write_seatbelt_profiles "$root" "$cursor"
-  python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" <<'PY'
+  python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
+    "$tmp_parent" <<'PY'
 import json, os, sys
-path, root, nonce, sha, tree, mode = sys.argv[1:]
+path, root, nonce, sha, tree, mode, tmp_parent = sys.argv[1:]
+info=os.lstat(root)
 with open(path, "w", encoding="utf-8") as f:
     json.dump({"schema":"nysa.software-factory.dev-lane/v1","root":root,
-               "nonce":nonce,"kit_sha":sha,"kit_tree":tree,"mode":mode}, f,
+               "nonce":nonce,"kit_sha":sha,"kit_tree":tree,"mode":mode,
+               "uid":os.getuid(),"root_dev":info.st_dev,"root_ino":info.st_ino,
+               "tmp_parent":tmp_parent}, f,
               sort_keys=True, separators=(",",":"))
     f.write("\n")
 os.chmod(path, 0o600)
