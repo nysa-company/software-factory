@@ -42,9 +42,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Protected-merge reconciliation is a separate migration-only complete-batch adoption path for already-merged product changes whose old evidence cannot be refreshed safely. Its generated authorization, exact receipts, Done/Migration projections, target pin, and companions are bound atomically by one manual protected product merge. The reconciliation evidence and terminal projections remain immutable afterward; later authorized releases may evolve `KIT_PIN` and companion paths without invalidating that historical proof.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 - The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
+- Factory development may use the macOS-only disposable lane against an exact clean commit, a synthetic product, and a local Git remote. Mock mode is network-denied and must finish below 15 minutes; real Cursor requires a dedicated API key and a one-use executable-bound approval. Lane artifacts have no release receipts or activation records, and the production release contract is unchanged.
 
 ## Log
 
+- 2026-07-21: A reusable disposable development lane now exercises Planner through Narrator without installation, registration, certification, Linear, GitHub, or Nysa state. Its focused suite verifies the exact role order, local push, network-denied mock sandbox, owner/inode-bound cleanup, production sentinels, one-use Cursor approval, and the 15-minute mock ceiling. The launcher also avoids Bash 3.2's empty optional-array expansion while preserving the existing reviewer-only fallback exception.
 - 2026-07-21: A Nysa release activation exposed that protected-merge reconciliation incorrectly required its historical target pin and companion paths to remain unchanged forever. Validation now anchors those values at the original atomic adoption commit while preserving no-touch history for the reconciliation directory and terminal projections, allowing later authorized release and T-032 evolution without weakening the historical batch.
 - 2026-07-21: The T-032 pre-release audit found that protected in-flight authorization excluded Ready tickets even though route pinning occurs before the first role. Ready is now accepted under the same exact protected-main authorization, branch-head, old-plan, maintenance, and zero-lease barriers, and migration preserves its state.
 - 2026-07-21: The first T-032 Cursor-first planner canary switched itself into Cursor Plan mode and returned without the required commit. The shared Cursor adapter now ends every factory prompt with an explicit default-execution-mode requirement; a disposable live pre-release canary on pinned Cursor CLI `2026.07.17-3e2a980` created exactly one requested file, committed it, and exited cleanly without a mode switch. Wrapper no-commit enforcement remains the fail-closed backstop.
@@ -75,6 +77,18 @@ after confirmed mutations, identifies posted evidence by content digest, reads a
 complete fallback-approval window, and assigns both Awaiting Approval and
 Blocked-Escalated to the configured operator. Git remains execution authority;
 webhooks, new workflow states, and speculative API batching remain deferred.
+
+## 2026-07-21 — Decision 56: Development lanes are disposable, not releases
+
+Category: System change
+
+A clean committed factory branch may run the six-role synthetic lifecycle in an
+owner-only macOS Seatbelt lane with a separate product, local origin, runtime,
+home, and worktrees. Mock work is network-denied; real Cursor work requires a
+dedicated key and a one-use approval bound to the exact executable and lane
+inputs. Development artifacts cannot be activated, and protected-main CI,
+sealed installation, live canary, product certification, and activation remain
+mandatory for production.
 
 ## 2026-07-21 — Decision 53: Full factory verification is GitHub-owned
 
