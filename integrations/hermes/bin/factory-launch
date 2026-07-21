@@ -1374,7 +1374,8 @@ PY
     ATTEST_TICKET="$2"
     [[ "$ATTEST_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
     [[ "$ATTEST_ACTION" == "bundle" || "$ATTEST_ACTION" == "approval" ||
-       "$ATTEST_ACTION" == "done" ]] || die "invalid ticket-attest action"
+       "$ATTEST_ACTION" == "refresh" || "$ATTEST_ACTION" == "done" ]] ||
+      die "invalid ticket-attest action"
     resolve_product_workdir "$ATTEST_WORKDIR"
     if [[ "$ATTEST_ACTION" == "done" ]]; then
       ATTEST_BRANCH="chore/$(printf '%s' "$ATTEST_TICKET" | tr '[:upper:]' '[:lower:]' | tr -d '-')-closeout"

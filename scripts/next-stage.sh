@@ -158,6 +158,225 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   echo "REFUSE $FACTORY_DISPATCH_LEASE_ERROR"
   exit 1
 fi
+
+# A sealed base refresh invalidates all review/narration evidence at or before
+# the recorded baselines. The receipt is committed by ticket-attest; fail
+# closed if it is edited, malformed, or no longer belongs to this history.
+REFRESH_RECEIPT="$CONTENT_ROOT/factory/attestations/$TICKET/refresh.json"
+REFRESH_ACTIVE=0
+if [[ -e "$REFRESH_RECEIPT" ]]; then
+  [[ -f "$REFRESH_RECEIPT" && ! -L "$REFRESH_RECEIPT" ]] || {
+    echo "REFUSE refresh receipt is not a regular file"
+    exit 1
+  }
+  REFRESH_RELATIVE="factory/attestations/$TICKET/refresh.json"
+  COMMITTED_REFRESH="$(mktemp "${TMPDIR:-/tmp}/committed-refresh.XXXXXX")"
+  trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET" "$COMMITTED_REFRESH"' EXIT
+  if [[ -z "$TICKET_WORKTREE_ROOT" ]] ||
+     ! git -C "$TICKET_WORKTREE_ROOT" show "$COMMITTED_HEAD:$REFRESH_RELATIVE" \
+       > "$COMMITTED_REFRESH" 2>/dev/null ||
+     ! cmp -s "$REFRESH_RECEIPT" "$COMMITTED_REFRESH"; then
+    echo "REFUSE refresh receipt is not committed unchanged at HEAD"
+    exit 1
+  fi
+  REFRESH_VALUES="$(python3 - "$REFRESH_RECEIPT" "$TICKET" <<'PY'
+import datetime
+import json
+import re
+import sys
+
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    sha = re.compile(r"[0-9a-f]{40}")
+    if set(value) != {
+        "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
+        "prior_reviewer_runs", "prior_approve_verdicts",
+        "prior_request_changes_verdicts", "prior_narrator_runs",
+        "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
+    }:
+        raise ValueError
+    if value.get("schema") != "nysa.software-factory.ticket-refresh/v1":
+        raise ValueError
+    if value.get("ticket") != sys.argv[2]:
+        raise ValueError
+    generation = value.get("generation")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise ValueError
+    heads = [value.get(name) for name in ("old_head", "base_head", "merge_head")]
+    if not all(isinstance(item, str) and sha.fullmatch(item) for item in heads):
+        raise ValueError
+    counts = [value.get(name) for name in (
+        "prior_reviewer_runs", "prior_approve_verdicts",
+        "prior_request_changes_verdicts", "prior_narrator_runs",
+    )]
+    if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
+        raise ValueError
+    if counts[0] != counts[1] + counts[2]:
+        raise ValueError
+    for name in ("prior_bundle_blob", "prior_approval_blob"):
+        item = value.get(name)
+        if item is not None and not (isinstance(item, str) and sha.fullmatch(item)):
+            raise ValueError
+    refreshed_at = value.get("refreshed_at")
+    if not isinstance(refreshed_at, str) or not refreshed_at.endswith("Z"):
+        raise ValueError
+    datetime.datetime.fromisoformat(refreshed_at[:-1] + "+00:00")
+except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    raise SystemExit(1)
+print("|".join(map(str, heads + counts)))
+PY
+)" || {
+    echo "REFUSE malformed refresh receipt"
+    exit 1
+  }
+  IFS='|' read -r REFRESH_OLD_HEAD REFRESH_BASE_HEAD REFRESH_MERGE_HEAD \
+    REFRESH_REVIEWERS REFRESH_APPROVES REFRESH_REQUESTS REFRESH_NARRATORS \
+    <<< "$REFRESH_VALUES"
+  read -r -a REFRESH_PARENTS <<< "$(git -C "$TICKET_WORKTREE_ROOT" \
+    rev-list --parents -n 1 "$REFRESH_MERGE_HEAD" 2>/dev/null || true)"
+  if [[ "${#REFRESH_PARENTS[@]}" -ne 3 ||
+        "${REFRESH_PARENTS[1]}" != "$REFRESH_OLD_HEAD" ||
+        "${REFRESH_PARENTS[2]}" != "$REFRESH_BASE_HEAD" ]] ||
+     ! git -C "$TICKET_WORKTREE_ROOT" merge-base --is-ancestor \
+       "$REFRESH_MERGE_HEAD" "$COMMITTED_HEAD" 2>/dev/null; then
+    echo "REFUSE stale refresh receipt does not bind this branch history"
+    exit 1
+  fi
+  REFRESH_COMMIT="$(git -C "$TICKET_WORKTREE_ROOT" log -1 --format=%H \
+    "$COMMITTED_HEAD" -- "$REFRESH_RELATIVE" 2>/dev/null || true)"
+  read -r -a REFRESH_COMMIT_PARENTS <<< "$(git -C "$TICKET_WORKTREE_ROOT" \
+    rev-list --parents -n 1 "$REFRESH_COMMIT" 2>/dev/null || true)"
+  if [[ "${#REFRESH_COMMIT_PARENTS[@]}" -ne 2 ||
+        "${REFRESH_COMMIT_PARENTS[1]}" != "$REFRESH_MERGE_HEAD" ]]; then
+    echo "REFUSE refresh receipt was not committed directly after its merge"
+    exit 1
+  fi
+  REFRESH_PATHS="$(git -C "$TICKET_WORKTREE_ROOT" diff-tree --no-commit-id \
+    --name-status -r "$REFRESH_COMMIT" 2>/dev/null || true)"
+  REFRESH_TICKET_CHANGED="$(REFRESH_PATHS_INPUT="$REFRESH_PATHS" python3 - "$TICKET" <<'PY'
+import os
+import sys
+
+ticket = sys.argv[1]
+required = {
+    f"factory/attestations/{ticket}/refresh.json": {"A", "M"},
+}
+optional = {
+    f"factory/tickets/{ticket}.md": {"A", "M"},
+    f"factory/attestations/{ticket}/bundle.json": {"D"},
+    f"factory/attestations/{ticket}/approval.json": {"D"},
+}
+seen = set()
+for line in os.environ["REFRESH_PATHS_INPUT"].splitlines():
+    parts = line.split("\t")
+    if len(parts) != 2:
+        raise SystemExit(1)
+    status, path = parts
+    allowed = required.get(path, optional.get(path))
+    if allowed is None or status not in allowed or path in seen:
+        raise SystemExit(1)
+    seen.add(path)
+if not set(required).issubset(seen):
+    raise SystemExit(1)
+print(int(f"factory/tickets/{ticket}.md" in seen))
+PY
+)" || {
+    echo "REFUSE refresh commit changed paths outside the sealed reset"
+    exit 1
+  }
+  OLD_TICKET="$(mktemp "${TMPDIR:-/tmp}/old-ticket.XXXXXX")"
+  REFRESH_COMMIT_TICKET="$(mktemp "${TMPDIR:-/tmp}/refresh-ticket.XXXXXX")"
+  trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET" "$COMMITTED_REFRESH" "$OLD_TICKET" "$REFRESH_COMMIT_TICKET"' EXIT
+  if ! git -C "$TICKET_WORKTREE_ROOT" show \
+    "$REFRESH_OLD_HEAD:factory/tickets/$TICKET.md" > "$OLD_TICKET" 2>/dev/null; then
+    echo "REFUSE refresh old head lacks the ticket baseline"
+    exit 1
+  fi
+  if [[ "$REFRESH_TICKET_CHANGED" -eq 0 ]]; then
+    if ! git -C "$TICKET_WORKTREE_ROOT" show \
+         "$REFRESH_COMMIT:factory/tickets/$TICKET.md" > "$REFRESH_COMMIT_TICKET" 2>/dev/null ||
+       ! python3 - "$REFRESH_COMMIT_TICKET" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
+if len(states) != 1 or states[0].lower() != "review":
+    raise SystemExit(1)
+if re.search(r"^Operator-Approval:", text, re.I | re.M):
+    raise SystemExit(1)
+for label in ("Evidence bundle posted", "Operator approved"):
+    if len(re.findall(rf"^- \[ \] {re.escape(label)}\s*$", text, re.M)) != 1:
+        raise SystemExit(1)
+PY
+    then
+      echo "REFUSE omitted refresh ticket change was not an exact no-op reset"
+      exit 1
+    fi
+  fi
+  OLD_BASELINES="$(python3 - "$OLD_TICKET" <<'PY'
+import re
+import sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+approve = sum(bool(re.fullmatch(r"\s*reviewer round\s+\d+:\s*APPROVE\s*", line, re.I)) for line in lines)
+request = sum(bool(re.fullmatch(r"\s*reviewer round\s+\d+:\s*REQUEST CHANGES(?:\s+—\s+.*)?\s*", line, re.I)) for line in lines)
+voids = set()
+for line in lines:
+    match = re.fullmatch(
+        r"\s*OPERATOR NOTE:\s*reviewer run\s*(\d+)\s+void[^A-Za-z0-9]*duplicate\s*",
+        line, re.I,
+    )
+    if match:
+        voids.add(int(match.group(1)))
+raw_reviewers = approve + request + len(voids)
+if any(number < 1 or number > raw_reviewers for number in voids):
+    raise SystemExit(1)
+print(f"{approve}|{request}|{len(voids)}")
+PY
+)" || {
+    echo "REFUSE old ticket has malformed reviewer void evidence"
+    exit 1
+  }
+  IFS='|' read -r OLD_APPROVES OLD_REQUESTS OLD_VOID_COUNT <<< "$OLD_BASELINES"
+  if [[ "$REFRESH_APPROVES" -ne "$OLD_APPROVES" ||
+        "$REFRESH_REQUESTS" -ne "$OLD_REQUESTS" ||
+        "$REFRESH_REVIEWERS" -ne $((OLD_APPROVES + OLD_REQUESTS)) ]]; then
+    echo "REFUSE refresh receipt baselines do not match the old ticket"
+    exit 1
+  fi
+  if ! python3 - "$OLD_TICKET" "$COMMITTED_TICKET_FILE" <<'PY'
+import re
+import sys
+
+verdict_pattern = re.compile(
+    r"^\s*reviewer round\s+(\d+):\s*(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+    re.I | re.M,
+)
+void_pattern = re.compile(
+    r"^\s*OPERATOR NOTE:\s*reviewer run\s*(\d+)\s+void[^A-Za-z0-9]*duplicate\s*$",
+    re.I | re.M,
+)
+def sequences(path):
+    text = open(path, encoding="utf-8").read()
+    verdicts = [f"{int(round_number)}:{' '.join(verdict.split()).upper()}"
+                for round_number, verdict in verdict_pattern.findall(text)]
+    voids = [int(ordinal) for ordinal in void_pattern.findall(text)]
+    return verdicts, voids
+
+old_verdicts, old_voids = sequences(sys.argv[1])
+current_verdicts, current_voids = sequences(sys.argv[2])
+if (current_verdicts[:len(old_verdicts)] != old_verdicts
+        or current_voids[:len(old_voids)] != old_voids):
+    raise SystemExit(1)
+PY
+  then
+    echo "REFUSE old reviewer verdict or void-note sequence is not an unchanged prefix"
+    exit 1
+  fi
+  REFRESH_RAW_REVIEWERS=$((REFRESH_REVIEWERS + OLD_VOID_COUNT))
+  REFRESH_ACTIVE=1
+fi
 if [[ -n "$TERMINAL_BASIS" ]]; then
   if [[ "$TERMINAL_BASIS" == "attested-done" ]]; then
     echo "COMPLETE attested Done is on protected main; release the matching lease"
@@ -267,6 +486,15 @@ VOID_COUNT="${VOID_DATA%%|*}"
 VOID_RUNS="${VOID_DATA#*|}"
 REVIEWER_RUNS=$((R - VOID_COUNT))
 
+if [[ "$REFRESH_ACTIVE" -eq 1 ]] &&
+   { [[ "$REVIEWER_RUNS" -lt "$REFRESH_REVIEWERS" ]] ||
+     [[ "$A" -lt "$REFRESH_APPROVES" ]] ||
+     [[ "$RC" -lt "$REFRESH_REQUESTS" ]] ||
+     [[ "$N" -lt "$REFRESH_NARRATORS" ]]; }; then
+  echo "REFUSE refresh receipt baselines exceed current durable evidence"
+  exit 1
+fi
+
 if [[ "$P" -eq 0 ]]; then echo "RUN planner"; exit 0; fi
 
 # --- spec-lint gate: plan → lint → (replan on FAIL) → tests ---
@@ -311,7 +539,125 @@ if [[ "$REVIEWER_RUNS" -lt "$VERDICTS" ]]; then
   exit 1
 fi
 
-if [[ "$A" -ge 1 ]]; then
+refresh_manifest_rows() { # role raw-baseline ignored-reviewer-ordinals
+  python3 - "$LEDGER" "$FACTORY_DIR/runs" "$TICKET" "$1" "$2" "$3" <<'PY'
+import csv
+import os
+import re
+import stat
+import sys
+
+ledger, runs, ticket, role, baseline, ignored = sys.argv[1:]
+baseline = int(baseline)
+ignored = {int(item) for item in ignored.split(",") if item}
+with open(ledger, newline="", encoding="utf-8") as handle:
+    rows = list(csv.DictReader(handle))
+selected = []
+ordinal = 0
+for index, row in enumerate(rows, 1):
+    if row.get("ticket") != ticket or row.get("role") != role or row.get("exit_status") != "0":
+        continue
+    ordinal += 1
+    if ordinal <= baseline or (role == "reviewer" and ordinal in ignored):
+        continue
+    run_id = row.get("run_id", "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
+        raise SystemExit(1)
+    selected.append((index, run_id))
+
+manifests = {}
+directory = os.stat(runs, follow_symlinks=False)
+if not stat.S_ISDIR(directory.st_mode):
+    raise SystemExit(1)
+for name in os.listdir(runs):
+    if not name.endswith(".meta"):
+        continue
+    path = os.path.join(runs, name)
+    info = os.stat(path, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit(1)
+    values = {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle.read().splitlines():
+            if not line or "=" not in line:
+                raise SystemExit(1)
+            key, value = line.split("=", 1)
+            if key in values:
+                raise SystemExit(1)
+            values[key] = value
+    run_id = values.get("run_id", "")
+    if run_id in manifests:
+        raise SystemExit(1)
+    manifests[run_id] = values
+
+for index, run_id in selected:
+    value = manifests.get(run_id, {})
+    head = value.get("role_head_before", "")
+    if (
+        value.get("ticket") != ticket
+        or value.get("role") != role
+        or value.get("accounting_state") != "completed"
+        or value.get("exit_status") != "0"
+        or not re.fullmatch(r"[0-9a-f]{40}", head)
+    ):
+        raise SystemExit(1)
+    print(f"{index}|{head}")
+PY
+}
+
+if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
+  if ! FRESH_REVIEW_ROWS="$(refresh_manifest_rows reviewer \
+    "$REFRESH_RAW_REVIEWERS" "$VOID_RUNS")" ||
+     ! FRESH_NARRATOR_ROWS="$(refresh_manifest_rows narrator \
+    "$REFRESH_NARRATORS" "")"; then
+    echo "REFUSE post-refresh evidence lacks an exact successful run manifest"
+    exit 1
+  fi
+  while IFS='|' read -r _index evidence_head; do
+    [[ -n "$evidence_head" ]] || continue
+    if ! git -C "$TICKET_WORKTREE_ROOT" merge-base --is-ancestor \
+         "$REFRESH_COMMIT" "$evidence_head" 2>/dev/null ||
+       ! git -C "$TICKET_WORKTREE_ROOT" merge-base --is-ancestor \
+         "$evidence_head" "$COMMITTED_HEAD" 2>/dev/null; then
+      echo "REFUSE post-refresh run manifest is not bound to refreshed branch history"
+      exit 1
+    fi
+  done <<< "$FRESH_REVIEW_ROWS"$'\n'"$FRESH_NARRATOR_ROWS"
+fi
+
+if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
+  FRESH_REVIEWERS=$((REVIEWER_RUNS - REFRESH_REVIEWERS))
+  FRESH_APPROVES=$((A - REFRESH_APPROVES))
+  FRESH_REQUESTS=$((RC - REFRESH_REQUESTS))
+  FRESH_VERDICTS=$((FRESH_APPROVES + FRESH_REQUESTS))
+  FRESH_REVIEW_ROW_COUNT="$(printf '%s\n' "$FRESH_REVIEW_ROWS" | \
+    awk -F'|' 'NF==2 { count++ } END { print count+0 }')"
+  if [[ "$FRESH_REVIEW_ROW_COUNT" -ne "$FRESH_REVIEWERS" ]]; then
+    echo "REFUSE fresh Reviewer manifest selection does not match sequenced evidence"
+    exit 1
+  fi
+  if [[ "$FRESH_REVIEWERS" -eq 0 ]]; then echo "RUN reviewer"; exit 0; fi
+  if [[ "$FRESH_REVIEWERS" -ne "$FRESH_VERDICTS" ]]; then
+    echo "REFUSE refreshed reviewer has $FRESH_REVIEWERS successful run(s) but $FRESH_VERDICTS post-refresh verdict(s) — record the missing verdict"
+    exit 1
+  fi
+  LATEST_FRESH_VERDICT="$(awk -v skip="$((REFRESH_APPROVES + REFRESH_REQUESTS))" '
+    /^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*APPROVE[[:space:]]*$/ { if (++seen > skip) latest="APPROVE" }
+    /^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*REQUEST CHANGES([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$/ { if (++seen > skip) latest="REQUEST CHANGES" }
+    END { print latest }
+  ' "$TICKET_FILE")"
+  if [[ "$LATEST_FRESH_VERDICT" == "APPROVE" ]]; then
+    LAST_FRESH_REVIEW_INDEX="$(printf '%s\n' "$FRESH_REVIEW_ROWS" | \
+      awk -F'|' 'NF==2 { value=$1 } END { print value+0 }')"
+    NARRATOR_AFTER_REVIEWER="$(printf '%s\n' "$FRESH_NARRATOR_ROWS" | \
+      awk -F'|' -v review="$LAST_FRESH_REVIEW_INDEX" 'NF==2 && $1>review { found=1 } END { print found+0 }')"
+    if [[ "$NARRATOR_AFTER_REVIEWER" -ne 1 ]]; then echo "RUN narrator"; exit 0; fi
+    echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
+    exit 0
+  fi
+  # A post-refresh rejection must use the ordinary fix/re-review path below;
+  # an approval from the invalidated generation cannot short-circuit it.
+elif [[ "$A" -ge 1 ]]; then
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
   # future bundle-attestation path. Contract 1.2 stops before that boundary.
