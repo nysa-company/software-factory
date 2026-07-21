@@ -8,9 +8,9 @@ unset CI_FORCE_FULL
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
-[[ "$(grep -c 'complete pull-request verification' "$WORKFLOW")" -eq 2 ]] &&
-  ! grep -q -- '--changed "\$BASE_SHA" "\$GITHUB_SHA"' "$WORKFLOW" || {
-  echo "FAIL: behavioral Linux and macOS PR jobs must run complete suites" >&2
+[[ "$(grep -c 'targeted or deferred pull-request verification' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc -- '--changed-or-defer "$BASE_SHA" "$GITHUB_SHA"' "$WORKFLOW")" -eq 2 ]] || {
+  echo "FAIL: behavioral Linux and macOS PR jobs must run targeted-or-deferred verification" >&2
   exit 1
 }
 [[ "$(grep -c 'CI_FORCE_FULL: "1"' "$WORKFLOW")" -eq 2 ]] || {
@@ -21,9 +21,11 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: platform jobs must depend only on classification so they can run in parallel" >&2
   exit 1
 }
-[[ "$(grep -c 'shard: \[factory, hermes, release\]' "$WORKFLOW")" -eq 2 &&
-    "$(grep -c -- '--shard "${{ matrix.shard }}"' "$WORKFLOW")" -eq 4 ]] || {
-  echo "FAIL: Linux and macOS must each run the three complete-suite shards" >&2
+[[ "$(grep -Fc 'shard: ${{ fromJSON(needs.scope.outputs.shards) }}' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc -- '--shard "${{ matrix.shard }}"' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'shards=["factory","hermes","release"]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'shards=["pr"]' "$WORKFLOW")" -eq 2 ]] || {
+  echo "FAIL: only main may expand Linux and macOS into complete-suite shards" >&2
   exit 1
 }
 for job in linux-factory linux-hermes linux-release \

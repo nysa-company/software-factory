@@ -9,12 +9,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, and config-review enabled. `bash ci/test-all.sh` remains the unconditional full command; managed local readiness uses `bash ci/test-all.sh --changed-or-defer origin/main HEAD`.
-- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local work. Broad local readiness runs policy gates and defers the complete suite to GitHub; behavioral pull requests and every `main` commit run complete Linux and macOS suites.
+- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in three Linux and three macOS shards.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
-- The required aggregate `ci` status always reports. Inert metadata skips behavioral suites while retaining policy gates; every behavioral pull request and merged SHA runs complete Linux and macOS verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
+- The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `balanced-v2`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/high; Spec-linter and Test-author use Claude Fable 5/medium with Cursor Fable Thinking Medium secondary; Reviewer uses Claude Sonnet 5/high. `legacy-balanced-v1` remains compatibility policy; OpenAI-, Claude-, and Cursor-priority profiles remain explicit alternatives.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Native subscription and Cursor CLI routes retain the legacy serialized path; invalid or disabled activation fails closed to that path.
@@ -42,19 +42,20 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
-- 2026-07-21: Software Factory full suites moved to GitHub for behavioral PRs and `main`; each platform uses three balanced shards while the aggregate remains the release gate. Local readiness runs focused policy gates, and install/certification require all six successful protected-main shard jobs plus aggregate/immutability evidence and local smoke. Host migration verifies pinned CLIs and both Nysa Agents plugin installations before certification.
+- 2026-07-21: Software Factory pull requests run targeted or policy-only deferred checks; only protected `main` runs the complete suite, split into three balanced shards per platform. The aggregate remains the release gate, and install/certification require all six successful protected-main shard jobs plus aggregate/immutability evidence and local smoke. Host migration verifies pinned CLIs and both Nysa Agents plugin installations before certification.
 - 2026-07-21: Contract 1.6 now defaults the single coupled ticket-worktree/provider capacity to four. Contracts 1.1–1.5 retain their default of one.
 
 ## 2026-07-21 — Decision 53: Full factory verification is GitHub-owned
 
 Category: System change
 
-Local readiness runs focused or policy-only checks and records broad coverage
-as deferred. Behavioral pull requests and every protected-main commit run the
-complete Linux and macOS suites. Installation and certification require exact
-successful main evidence and local platform smoke; they never fall back to the
-complete local suite. Migration verifies the execution host's pinned CLIs and
-Codex/Claude Nysa Agents plugins before certification.
+Local readiness and pull requests run focused or policy-only checks and record
+broad coverage as deferred. Every protected-main commit runs the complete
+Linux and macOS registry across three shards per platform. Installation and
+certification require exact successful main evidence and local platform smoke;
+they never fall back to the complete local suite. Migration verifies the
+execution host's pinned CLIs and Codex/Claude Nysa Agents plugins before
+certification.
 - 2026-07-20: Contract 1.6 adds one-shot autonomous dispatch, exact worktree and lease claiming, early idempotent ticket PR creation at the Reviewer boundary, and activation-gated isolated API-route execution. The supervisor remains an inert Hermes profile skill until an operator enables the existing scheduler; this host has no real-provider activation because its dedicated broker credentials and TLS configuration are absent.
 - 2026-07-20: Contract 1.6 expands the coupled worktree/provider capacity to six while retaining a default of one. Contracts 1.1–1.5 remain bounded at four and Contract 1.0 remains unchanged; Decision 51 records the completed isolated-runtime gate while preserving serialization for legacy routes.
 - 2026-07-20: Concurrent Done closeouts may project an identical ledger after an earlier closeout already captured every terminal run. The trusted Done validator now permits `factory/ledger.csv` to be absent from that later closeout commit while still binding and checking the complete ledger hash; ticket and Done-attestation paths remain mandatory and exclusive.

@@ -21,21 +21,24 @@ allowlist. In this kit that includes the documentation roots plus `AGENTS.md`,
 conformance shakedown report. Repository baseline, secret, artifact, and
 test-immutability checks still run.
 
-Every behavioral pull request runs fail-closed component selection on Linux.
-Applicable shell/platform-sensitive pull requests run the same selection under
-macOS system Bash in parallel. Unknown, shared, mixed, dependency, CI, selector,
-addition, deletion, and rename changes resolve to full. Every push to `main`
-runs both complete suites so release verification remains bound to a fully
-tested merged SHA. Instantiated product workflows may skip expensive product
-checks for allowlisted PRs, but every product push to `main` runs its full
-verification so deployment evidence remains bound to the merged SHA.
+Every behavioral pull request runs fail-closed targeted-or-deferred selection
+on Linux and macOS system Bash. Mapped leaf changes execute their applicable
+suites. Unknown, shared, mixed, dependency, CI, selector, addition, deletion,
+and rename changes run policy gates and defer complete coverage. Every push to
+`main` runs all three shards on both platforms so release verification remains
+bound to a fully tested merged SHA. Instantiated product workflows may skip
+expensive product checks for allowlisted PRs, but every product push to `main`
+runs its full verification so deployment evidence remains bound to the merged
+SHA.
 
 Do not infer safety from commit size, commit messages, or a Markdown suffix:
-one-line code and executable Markdown prompt changes require full CI. Do not
-put `paths-ignore` on a required workflow; GitHub leaves its check pending
+one-line code and executable Markdown prompt changes require full post-merge
+CI before release. Do not put `paths-ignore` on a required workflow; GitHub
+leaves its check pending
 instead of reporting success. Mixed changes, renames from outside the
-allowlist, and executable Markdown all run at least Linux CI; missing
-comparison commits and classifier errors run both platforms. Each product owns
+allowlist, executable Markdown, missing comparison commits, and classifier
+errors run both platform policy jobs and defer to complete `main`
+verification. Each product owns
 its instantiated helper and must review any allowlist change against paths
 that can affect its runtime.
 

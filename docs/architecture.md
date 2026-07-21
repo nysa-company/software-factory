@@ -89,13 +89,15 @@ contracts, launchers, roles, CI or selector changes, malformed modes, and empty,
 duplicate, or unknown suite IDs. Only explicitly mapped single leaf components
 can recommend their direct and transitive suites plus CI-scope, immutability,
 and artifact-policy checks. The six audited leaf mappings remain available for
-focused local work. Behavioral pull requests run the complete registry on
-Linux and macOS. Each platform partitions it into the same three named shards
-so its slow factory-script, Hermes-contract, and release groups run in
-parallel. Pushes to `main` remain full on both platforms; release evidence
-requires all six shard jobs plus the aggregate and immutability jobs for the
-exact merged SHA. Historical runs with no shard jobs retain their legacy
-two-platform proof for rollback; any partial shard topology fails closed.
+focused local work. Pull requests run the same targeted-or-deferred selection
+on Linux and macOS: mapped leaf changes execute their suites, while broad work
+runs policy gates and defers complete coverage. Pushes to `main` partition the
+complete registry into three named shards per platform so the slow
+factory-script, Hermes-contract, and release groups run in parallel. Release
+evidence requires all six shard jobs plus the aggregate and immutability jobs
+for the exact merged SHA. Historical runs with no shard jobs retain their
+legacy two-platform proof for rollback; any partial shard topology fails
+closed.
 
 During shadow execution, an unselected failure fails CI and is rerun once. Only
 a repeated failure is recorded as `SHADOW_MISS`; a passing recheck is recorded
@@ -110,8 +112,8 @@ changes complete locally; every broad change, including selector, workflow,
 registry, baseline, and policy changes, runs only CI-scope, immutability, and
 artifact-policy locally and records full behavioral verification as deferred
 to required GitHub CI. The command succeeds when those local policy gates pass.
-An explicit argument-free `bash ci/test-all.sh` remains the complete command
-used by GitHub.
+An explicit argument-free `bash ci/test-all.sh` remains the complete local
+command; GitHub `main` divides that same registry across its six shard jobs.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
