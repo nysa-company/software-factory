@@ -2061,9 +2061,9 @@ assert commands["project-ledger"]["output_schema"] == \
 assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
-assert contract["concurrency"]["default"] == 1
+assert contract["concurrency"]["default"] == 4
 assert contract["concurrency"]["maximum"] == 6
-assert contract["concurrency"]["enabled_value"] == 2
+assert contract["concurrency"]["enabled_value"] == 4
 assert contract["concurrency"]["enabled_values"] == [2, 3, 4, 5, 6]
 assert contract["concurrency"]["capacity_scope"] == \
     "coupled ticket-worktree and provider-call capacity"

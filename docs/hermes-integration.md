@@ -121,9 +121,9 @@ is enforced, and a one-use Linear comment binds the validated partial-work
 snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
-Contracts `1.1.0` through `1.6.0` keep one-ticket behavior by default.
-Contracts 1.1 through 1.5 accept `MAX_CONCURRENT_TICKETS` only from `1` through
-`4`; Contract 1.6 accepts `1` through `6`. Above one, the dispatcher uses
+Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default and accept
+`MAX_CONCURRENT_TICKETS` only from `1` through `4`. Contract 1.6 defaults to
+`4` and accepts `1` through `6`. Above one, the dispatcher uses
 `claim`, `renew`, and `release`, and supplies the matching `--lease` to
 preflight, next-stage, run, and ticket-attest. Capacity refusal is deterministic,
 and duplicate ticket or lease identity fails closed.

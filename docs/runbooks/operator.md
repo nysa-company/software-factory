@@ -270,9 +270,9 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Do: serialize every product `KIT_PIN` change, activation, and rollback. Begin
   only at a ticket boundary with no active run, no conflicting nonterminal
   lease, no maintenance anomaly, and no incomplete activation journal.
-- Do: keep contract `1.0.0` and every later contract's default at one live
-  ticket. Contracts 1.1 through 1.5 permit an explicit capacity up to four;
-  Contract 1.6 permits up to six. One dispatcher holds no more than that many
+- Do: keep contracts 1.0 through 1.5 at their default of one live ticket.
+  Contract 1.6 defaults to four; contracts 1.1 through 1.5 permit an explicit
+  capacity up to four, and Contract 1.6 permits up to six. One dispatcher holds no more than that many
   matching leases. This is the coupled worktree/provider capacity. The retained
   product-wide provider lock serializes native subscription, Cursor CLI, and
   other legacy routes; only an exact owner-activated Contract 1.6 API route may

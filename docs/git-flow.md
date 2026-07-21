@@ -71,10 +71,10 @@ For every candidate that may reach production:
 
 Only one product activation or rollback may run at a time. Do not activate a
 second candidate while a ticket has a nonterminal lease, a run is active, or an
-activation journal is incomplete. Contract `1.1.0` remains single-ticket by
-default. Contracts 1.1 through 1.5 permit an explicit bounded pilot up to four
-tickets, and Contract 1.6 permits up to six, when the product sets
-`MAX_CONCURRENT_TICKETS` accordingly; each ticket keeps
+activation journal is incomplete. Contracts 1.1 through 1.5 remain
+single-ticket by default and permit an explicit bounded pilot up to four.
+Contract 1.6 defaults to four and permits up to six through
+`MAX_CONCURRENT_TICKETS`; each ticket keeps
 its own exact branch, linked worktree, opaque lease, and sequential role flow.
 Those leases may coexist. The setting is coupled worktree/provider capacity.
 The product-level control lock remains for native subscription, Cursor CLI, and

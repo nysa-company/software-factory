@@ -17,13 +17,14 @@ factory_dispatch_capacity_error() {
 }
 
 factory_dispatch_max_tickets() {
-  local contract="${2:-}"
-  python3 - "$1/factory/PROJECT.env" "$(factory_dispatch_capacity_limit "$contract")" <<'PY'
+  local contract="${2:-}" default=1
+  [[ "$contract" != "1.6.0" ]] || default=4
+  python3 - "$1/factory/PROJECT.env" "$(factory_dispatch_capacity_limit "$contract")" "$default" <<'PY'
 import pathlib, re, sys
 
 path = pathlib.Path(sys.argv[1])
 maximum = int(sys.argv[2])
-value = "1"
+value = sys.argv[3]
 seen = 0
 if path.exists() or path.is_symlink():
     if path.is_symlink() or not path.is_file():

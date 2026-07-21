@@ -497,9 +497,9 @@
   "concurrency": {
     "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
     "key": "MAX_CONCURRENT_TICKETS",
-    "default": 1,
+    "default": 4,
     "maximum": 6,
-    "enabled_value": 2,
+    "enabled_value": 4,
     "enabled_values": [
       2,
       3,

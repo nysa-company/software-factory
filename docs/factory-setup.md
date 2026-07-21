@@ -14,9 +14,9 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
 - Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid. Set `AUTO_MERGE_METHOD=squash`, `merge`, or `rebase` to the repository's protected merge strategy.
-- Leave `MAX_CONCURRENT_TICKETS` absent (the safe default is `1`). Contracts
-  1.1 through 1.5 accept only integers from `1` through `4`; Contract 1.6
-  accepts `1` through `6`. Set a value above `1` only after a bounded
+- Leave `MAX_CONCURRENT_TICKETS` absent to use the contract default. Contracts
+  1.1 through 1.5 default to `1` and accept integers through `4`; Contract 1.6
+  defaults to `4` and accepts `1` through `6`. Set a value above `1` only after a bounded
   concurrency pilot is approved. This is the one coupled worktree/provider
   capacity setting. The retained product-level control lock serializes native
   subscription, Cursor CLI, and every other legacy route. An API route may use

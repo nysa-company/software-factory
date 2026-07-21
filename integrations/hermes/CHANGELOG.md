@@ -13,7 +13,7 @@ helper output are not compatibility promises.
 - Adds idempotent early ticket-PR preparation at the sequencer-authorized
   Reviewer boundary without approval or merge authority.
 - Expands the one product-owned `MAX_CONCURRENT_TICKETS` capacity to accept
-  `1` through `6`, while retaining the default of `1`.
+  `1` through `6`, with an omitted-value default of `4`.
 - Preserves the Contract 1.0 flow and the exact Contract 1.1–1.5 capacity bound
   of `1` through `4`.
 - Defines that setting as coupled ticket-worktree and provider-call capacity;

@@ -113,7 +113,7 @@ def capacity(factory: Path) -> int:
             values.append(int(match.group(1)))
     if len(values) > 1:
         raise DispatchError("MAX_CONCURRENT_TICKETS is ambiguous")
-    selected = values[0] if values else 1
+    selected = values[0] if values else 4
     if not 1 <= selected <= 6:
         raise DispatchError("MAX_CONCURRENT_TICKETS is invalid")
     return selected

@@ -308,9 +308,9 @@ terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
 journals automatically.
 
-`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1`. Contracts
-1.1 through 1.5 accept only integers from `1` through `4`; Contract 1.6 accepts
-`1` through `6`. At any value above `1`, every sequencing and role launch
+`MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` for
+Contracts 1.1 through 1.5 and `4` for Contract 1.6. The older contracts accept
+integers through `4`; Contract 1.6 accepts `1` through `6`. At any value above `1`, every sequencing and role launch
 requires the matching opaque record under
 `factory/.dispatch-leases/`. Claims are atomic and deterministically refuse once
 the configured capacity is full. Stale records continue to consume capacity and
