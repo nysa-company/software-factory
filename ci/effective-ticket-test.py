@@ -130,7 +130,7 @@ class EffectiveTicketTests(unittest.TestCase):
             with self.subTest(duplicate=duplicate), self.assertRaises(ValueError):
                 apply_operator_fields(BASE_TICKET + duplicate, operator)
 
-    def test_attested_done_on_protected_main_precedes_stale_ticket_branch(self):
+    def test_attested_done_survives_ledger_append_but_not_prefix_mutation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir) / "product"
             remote = Path(temp_dir) / "product.git"
@@ -158,7 +158,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 check=True, capture_output=True, text=True,
             ).stdout.strip()
             ticket.write_text(
-                BASE_TICKET.replace("Backlog", "Done")
+                BASE_TICKET.replace("Backlog", "Approved")
                 + "Operator-Approval: Linear\n"
             )
             bundle = done.with_name("bundle.json")
@@ -217,6 +217,19 @@ class EffectiveTicketTests(unittest.TestCase):
                 ["git", "-C", repo, "hash-object", approval],
                 check=True, capture_output=True, text=True,
             ).stdout.strip()
+            subprocess.run(["git", "-C", repo, "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "approved",
+            ], check=True)
+            closeout_parent = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            ticket.write_text(
+                BASE_TICKET.replace("Backlog", "Done")
+                + "Operator-Approval: Linear\n"
+            )
             done.write_text(json.dumps({
                 "schema": "nysa.software-factory.ticket-done/v1",
                 "ticket": "T-700",
@@ -229,7 +242,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 "bundle_attestation_blob": bundle_blob,
                 "approval_attestation_blob": approval_blob,
                 "approval_parent_head": "1" * 40,
-                "closeout_parent": "4" * 40,
+                "closeout_parent": closeout_parent,
                 "kit_sha": "2" * 40,
                 "auto_merge_method": "squash",
                 "merged_at": "2026-07-17T18:00:00Z",
@@ -274,6 +287,36 @@ class EffectiveTicketTests(unittest.TestCase):
             self.assertEqual(terminal.returncode, 0, terminal.stderr)
             self.assertIn("State: Done", terminal.stdout)
             subprocess.run(["git", "-C", repo, "switch", "-q", "main"], check=True)
+            ledger.write_text(
+                ledger.read_text() + "2026-07-18,T-701,run-2\n"
+            )
+            subprocess.run(["git", "-C", repo, "add", str(ledger)], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "append ledger",
+            ], check=True)
+            subprocess.run(["git", "-C", repo, "push", "-q", "origin", "main"], check=True)
+            subprocess.run(["git", "-C", repo, "fetch", "-q", "origin"], check=True)
+            terminal = subprocess.run([
+                sys.executable, str(ROOT / "scripts/lib/effective_ticket.py"),
+                "--factory-dir", str(repo / "factory"), "--ticket", "T-700",
+                "--terminal-main",
+            ], capture_output=True, text=True)
+            self.assertEqual(terminal.returncode, 0, terminal.stderr)
+            ledger.write_text(ledger.read_text().replace("T-700,run-1", "T-700,forged"))
+            subprocess.run(["git", "-C", repo, "add", str(ledger)], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "mutate ledger prefix",
+            ], check=True)
+            subprocess.run(["git", "-C", repo, "push", "-q", "origin", "main"], check=True)
+            subprocess.run(["git", "-C", repo, "fetch", "-q", "origin"], check=True)
+            terminal = subprocess.run([
+                sys.executable, str(ROOT / "scripts/lib/effective_ticket.py"),
+                "--factory-dir", str(repo / "factory"), "--ticket", "T-700",
+                "--terminal-main",
+            ], capture_output=True, text=True)
+            self.assertNotEqual(terminal.returncode, 0)
             done.write_text(json.dumps({
                 "schema": "nysa.software-factory.ticket-done/v1",
                 "ticket": "T-700",

@@ -176,9 +176,10 @@ def repository_from_project(repo, ref):
 
 def _normal_terminal(repo, ticket, ref):
     root = f"factory/attestations/{ticket}"
+    done_path = f"{root}/done.json"
     bundle = json_at(repo, ref, f"{root}/bundle.json", "bundle attestation")
     approval = json_at(repo, ref, f"{root}/approval.json", "approval attestation")
-    done = json_at(repo, ref, f"{root}/done.json", "Done attestation")
+    done = json_at(repo, ref, done_path, "Done attestation")
     present = tuple(value is not None for value in (bundle, approval, done))
     if not any(present):
         return None
@@ -261,7 +262,21 @@ def _normal_terminal(repo, ticket, ref):
         raise ValidationError("normal attestation blobs do not match protected main")
     route_plan_text = text_at(repo, ref, bundle["route_plan_path"])
     bundle_text = text_at(repo, ref, bundle["bundle_path"])
-    ledger_text = text_at(repo, ref, "factory/ledger.csv")
+    additions = run(
+        repo, "log", "--format=%H", "--diff-filter=A",
+        f"{done['closeout_parent']}..{ref}", "--", done_path,
+    ).stdout.splitlines()
+    if len(additions) != 1:
+        raise ValidationError("normal Done attestation addition is ambiguous")
+    closeout = oid(additions[0], "normal closeout commit")
+    topology = run(repo, "rev-list", "--parents", "-n", "1", closeout).stdout.split()
+    if (
+        topology != [closeout, done["closeout_parent"]]
+        or blob_at(repo, closeout, done_path) != blob_at(repo, ref, done_path)
+    ):
+        raise ValidationError("normal Done attestation topology does not match")
+    ledger_text = text_at(repo, closeout, "factory/ledger.csv")
+    current_ledger_text = text_at(repo, ref, "factory/ledger.csv")
     if (
         route_plan_text is None
         or hashlib.sha256(route_plan_text.encode()).hexdigest()
@@ -269,8 +284,11 @@ def _normal_terminal(repo, ticket, ref):
         or bundle_text is None
         or hash_text(repo, bundle_text) != bundle["bundle_blob"]
         or ledger_text is None
+        or not ledger_text.endswith("\n")
         or hashlib.sha256(ledger_text.encode()).hexdigest()
         != done["ledger"]["sha256"]
+        or current_ledger_text is None
+        or not current_ledger_text.startswith(ledger_text)
     ):
         raise ValidationError("normal protected-main blobs or digests do not match")
     ticket_text = text_at(repo, ref, f"factory/tickets/{ticket}.md")
