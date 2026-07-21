@@ -562,7 +562,10 @@ class ProtectedMergeReconciliationTests(unittest.TestCase):
             "git", "-C", self.repo, "-c", "user.name=test",
             "-c", "user.email=test@example.com", "revert", "--no-edit", migration,
         )
-        command("git", "-C", self.repo, "cherry-pick", migration)
+        command(
+            "git", "-C", self.repo, "-c", "user.name=test",
+            "-c", "user.email=test@example.com", "cherry-pick", migration,
+        )
         self.push_main()
         with self.assertRaises(ValidationError):
             reconciliation_batch(self.repo)
