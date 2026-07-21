@@ -41,6 +41,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
+- 2026-07-21: Normal Done validation anchors the receipt's complete-ledger digest to the unique immutable closeout commit, then requires protected main's current ledger to preserve those bytes as an unchanged prefix. Later ticket rows may append without invalidating earlier terminal evidence; historical ledger rewrites still fail closed.
+
 - 2026-07-20: Concurrent Done closeouts may project an identical ledger after an earlier closeout already captured every terminal run. The trusted Done validator now permits `factory/ledger.csv` to be absent from that later closeout commit while still binding and checking the complete ledger hash; ticket and Done-attestation paths remain mandatory and exclusive.
 - 2026-07-20: A patched control-plane release may finish Done for already-approved evidence from an older ticket-pinned release. The closeout validates and records the ticket's canonical `Kit-SHA`; bundle and approval remain bound to the active release, so prior role evidence is never relabeled.
 

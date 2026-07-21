@@ -240,7 +240,10 @@ The Done receipt always binds the hash of the complete projected ledger. Its
 closeout commit includes `factory/ledger.csv` only when projection changes the
 tracked bytes; a prior concurrent closeout may already have projected the same
 terminal run set. Ticket and Done-attestation files remain mandatory in every
-closeout commit, and no other paths are allowed.
+closeout commit, and no other paths are allowed. Protected terminal validation
+checks that hash at the immutable closeout commit and requires the current
+ledger to retain those bytes as an unchanged prefix, allowing only later rows
+to be appended.
 
 A control-plane release may close an already-approved ticket from its older
 ticket-pinned release. Done validates the protected bundle and approval against
