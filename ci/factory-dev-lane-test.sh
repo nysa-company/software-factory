@@ -9,13 +9,14 @@ FAKE_SANDBOX="$TMP/sandbox-exec"
 FAKE_CURSOR="$TMP/cursor-agent"
 OUT="$TMP/out"
 CALLER_HOME="$TMP/caller-home"
+CURSOR_TEST_KEY="factory-dev-lane-dummy-key-$RANDOM-$$"
 
 cleanup() {
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
-trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed "s/factory-dev-lane-dummy-key/[redacted]/g" "$OUT" >&2; exit "$status"' ERR
+trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed "s/$CURSOR_TEST_KEY/[redacted]/g" "$OUT" >&2; exit "$status"' ERR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
@@ -44,7 +45,7 @@ cursor_env() {
   FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
   FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
   FACTORY_DEV_CURSOR_CREDENTIAL=dedicated \
-  CURSOR_API_KEY=factory-dev-lane-dummy-key \
+  CURSOR_API_KEY="$CURSOR_TEST_KEY" \
   HOME="$CALLER_HOME" \
   TMPDIR="$TMP/lanes" \
   "$@"
@@ -230,7 +231,7 @@ cursor_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 approval_hash="$(sed -n 's/^APPROVE_HASH=//p' "$OUT")"
 [[ "$cursor_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "cursor plan returned an unsafe root"
 [[ "$approval_hash" =~ ^[0-9a-f]{64}$ ]] || fail "cursor plan returned an invalid approval hash"
-if grep -R -Fq 'factory-dev-lane-dummy-key' "$cursor_root"; then
+if grep -R -Fq "$CURSOR_TEST_KEY" "$cursor_root"; then
   fail "cursor credential was persisted in the lane"
 fi
 bad_hash="${approval_hash%?}0"
