@@ -450,6 +450,101 @@ def review_evidence(text, manifests, workdir):
     return reviewer, narrator, reviewed
 
 
+def reviewer_sequences(text):
+    verdicts = [
+        f"{int(round_number)}:{' '.join(verdict.split()).upper()}"
+        for round_number, verdict in re.findall(
+            r"^\s*reviewer round\s+(\d+):\s*(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+            text, re.I | re.M,
+        )
+    ]
+    voids = [
+        int(value) for value in re.findall(
+            r"^\s*OPERATOR NOTE:\s*reviewer run\s+(\d+)\s+void[^A-Za-z0-9]*duplicate\s*$",
+            text, re.I | re.M,
+        )
+    ]
+    return verdicts, voids
+
+
+def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer, narrator):
+    relative = f"factory/attestations/{ticket}/refresh.json"
+    path = workdir / relative
+    if not os.path.lexists(path):
+        return
+    if not safe_optional_attestation(path):
+        raise Refusal("refresh receipt is unsafe")
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate key")
+            value[key] = item
+        return value
+
+    try:
+        receipt = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise Refusal("refresh receipt is malformed")
+    expected = {
+        "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
+        "prior_reviewer_runs", "prior_approve_verdicts",
+        "prior_request_changes_verdicts", "prior_narrator_runs",
+        "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
+    }
+    counts = [receipt.get(name) for name in (
+        "prior_reviewer_runs", "prior_approve_verdicts",
+        "prior_request_changes_verdicts", "prior_narrator_runs",
+    )]
+    if (
+        set(receipt) != expected
+        or receipt.get("schema") != "nysa.software-factory.ticket-refresh/v1"
+        or receipt.get("ticket") != ticket
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts)
+        or counts[0] != counts[1] + counts[2]
+        or not all(valid_oid(receipt.get(name)) for name in ("old_head", "base_head", "merge_head"))
+    ):
+        raise Refusal("refresh receipt identity or baselines are invalid")
+    receipt_commit = git(
+        workdir, "log", "-1", "--format=%H", "HEAD", "--", relative,
+    ).stdout.strip()
+    parents = git(workdir, "rev-list", "--parents", "-n", "1", receipt_commit).stdout.split()
+    if parents != [receipt_commit, receipt["merge_head"]]:
+        raise Refusal("refresh receipt commit topology is invalid")
+    old_ticket = git(
+        workdir, "show", f"{receipt['old_head']}:factory/tickets/{ticket}.md",
+    ).stdout
+    old_verdicts, old_voids = reviewer_sequences(old_ticket)
+    current_verdicts, current_voids = reviewer_sequences(text)
+    old_approvals = sum(value.endswith(":APPROVE") for value in old_verdicts)
+    if (
+        receipt["prior_reviewer_runs"] != len(old_verdicts)
+        or receipt["prior_approve_verdicts"] != old_approvals
+        or receipt["prior_request_changes_verdicts"] != len(old_verdicts) - old_approvals
+        or current_verdicts[:len(old_verdicts)] != old_verdicts
+        or current_voids[:len(old_voids)] != old_voids
+    ):
+        raise Refusal("refresh historical review evidence changed")
+    reviewers = sorted(
+        (item for item in manifests if item.get("role") == "reviewer"),
+        key=lambda item: item["_ledger_index"],
+    )
+    try:
+        reviewer_ordinal = reviewers.index(reviewer) + 1
+    except ValueError:
+        raise Refusal("post-refresh Reviewer evidence is missing")
+    if reviewer_ordinal <= len(old_verdicts) + len(old_voids):
+        raise Refusal("post-refresh Reviewer evidence is required")
+    for role, manifest in (("Reviewer", reviewer), ("Narrator", narrator)):
+        head = manifest.get("role_head_before", "")
+        if git(
+            workdir, "merge-base", "--is-ancestor", receipt_commit, head,
+            check=False,
+        ).returncode:
+            raise Refusal(f"post-refresh {role} evidence is required")
+
+
 def exact_pr(repo, branch, state):
     fields = "number,headRefName,baseRefName,headRefOid,url,state,isDraft,mergedAt,mergeCommit"
     result = json.loads(gh(
@@ -1242,6 +1337,9 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     manifests = successful_runs(product, args.ticket)
     route_plan = route_plan_evidence(workdir, product, args.ticket, kit_sha, manifests)
     reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
+    validate_refresh_review_evidence(
+        workdir, args.ticket, text, manifests, reviewer, narrator,
+    )
     allowed = {
         f"factory/tickets/{args.ticket}.md",
         f"factory/tickets/{args.ticket}-bundle.md",

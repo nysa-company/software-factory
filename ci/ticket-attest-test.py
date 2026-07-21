@@ -609,6 +609,7 @@ else:
         self.assertFalse(json.loads(self.state.read_text())["auto_merge"])
         operator = json.loads((self.product / "factory/linear-map.json").read_text())["tickets"]["T-700"]["operator"]
         self.assertEqual(operator, {"priority": "urgent"})
+        self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
         self.assertIn("already based", self.attest("refresh").stderr)
 
     def test_refresh_refuses_symlink_attestation_path(self):
