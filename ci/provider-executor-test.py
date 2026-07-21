@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = ROOT / "scripts/provider-executor.py"
-REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v2"
+REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v3"
 IMAGE = "registry.example/worker@sha256:" + "a" * 64
 
 FAKE_RUNTIME = r"""#!/usr/bin/env python3
@@ -68,6 +69,11 @@ elif args[0] == "exec":
     raise SystemExit(int(os.environ.get("FAKE_RETURN_CODE", "0")))
 elif args[0] == "rm":
     pass
+elif args[0] == "inspect":
+    if os.environ.get("FAKE_CONTAINER_EXISTS", "1") == "1":
+        print(json.dumps({"Running": os.environ.get("FAKE_CONTAINER_RUNNING", "1") == "1"}))
+    else:
+        raise SystemExit(1)
 else:
     raise SystemExit("unsupported fake runtime invocation")
 """
@@ -84,6 +90,8 @@ class ProviderExecutorTest(unittest.TestCase):
         (self.source / ".git/config").write_text("must not copy\n")
         self.input = self.root / "input.json"
         self.input.write_text('{"prompt":"test"}\n')
+        self.worker = self.root / "worker"
+        self.worker.write_text("#!/bin/sh\nexit 0\n")
         self.attempts = self.root / "attempts"
         self.runtime = self.root / "fake-runtime"
         self.runtime.write_text(FAKE_RUNTIME)
@@ -110,6 +118,8 @@ class ProviderExecutorTest(unittest.TestCase):
             "schema": REQUEST_SCHEMA,
             "source": str(self.source),
             "ticket": "T-123",
+            "worker_program": str(self.worker),
+            "worker_sha256": hashlib.sha256(self.worker.read_bytes()).hexdigest(),
         }
         value.update(changes)
         path = self.root / f"request-{len(list(self.root.glob('request-*')))}.json"
@@ -182,6 +192,31 @@ class ProviderExecutorTest(unittest.TestCase):
         self.assertEqual(calls[4][:4], ["exec", value["container_name"], "tar", "-c"])
         self.assertTrue((self.attempts / "attempt-1/artifacts/answer.json").is_file())
         self.assertFalse((self.attempts / "attempt-1/payload/source/.git").exists())
+
+    def test_status_reports_only_bound_container_liveness(self):
+        executed = self.execute()
+        self.assertEqual(executed.returncode, 0, executed.stderr)
+        value = json.loads(executed.stdout)
+        result = subprocess.run(
+            [
+                sys.executable, str(EXECUTOR),
+                "--runtime", str(self.runtime),
+                "--attempt-root", str(self.attempts),
+                "status",
+                "--attempt-id", "attempt-1",
+                "--binding-sha256", value["binding_sha256"],
+            ],
+            text=True,
+            capture_output=True,
+            env=self.environment,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = json.loads(result.stdout)
+        self.assertTrue(status["container_exists"])
+        self.assertTrue(status["container_running"])
+        self.assertNotIn("image", status)
 
     def test_digest_pin_is_required_before_runtime_launch(self):
         result = self.execute(self.request(image="registry.example/worker:latest"))

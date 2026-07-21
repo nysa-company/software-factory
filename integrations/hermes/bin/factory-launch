@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|dispatch-plan|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -545,6 +545,20 @@ HELPER_ENV=(
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
   "FACTORY_RELEASE_CONTRACT_VERSION=$ACTIVE_CONTRACT"
 )
+if [[ "$ACTIVE_CONTRACT" == "1.6.0" ]]; then
+  HELPER_ENV+=(
+    "FACTORY_PROVIDER_DB=$HOME/.factory/accounting/state-v2.sqlite3"
+    "FACTORY_PROVIDER_POLICY=$HOME/.factory/provider-policy.json"
+    "FACTORY_PROVIDER_BROKER_DB=$HOME/.factory/accounting/credential-broker.sqlite3"
+    "FACTORY_PROVIDER_CREDENTIALS=$HOME/.factory/provider-credentials.json"
+    "FACTORY_PROVIDER_ARTIFACT_POLICY=$HOME/.factory/provider-artifact-policy.json"
+    "FACTORY_PROVIDER_ATTEMPT_ROOT=$HOME/.factory/provider-attempts"
+    "FACTORY_PROVIDER_APPLY_LOCK_ROOT=$HOME/.factory/provider-apply-locks"
+    "FACTORY_PROVIDER_ACTIVATION=$HOME/.factory/isolated-v1.enabled"
+    "FACTORY_PROVIDER_BROKER_URL=https://127.0.0.1:8765"
+    "FACTORY_PROVIDER_BROKER_CA=$HOME/.factory/provider-broker-ca.pem"
+  )
+fi
 if [[ -n "$PROFILE_GH_TOKEN" ]]; then
   HELPER_ENV+=("GH_TOKEN=$PROFILE_GH_TOKEN")
 fi
@@ -910,6 +924,59 @@ PY
     exec_selected_helper "$DOCTOR" --json --project "$PROJECT" \
       --profile-dir "$PROFILE_DIR" --registry "$REGISTRY_FILE" \
       --kit-dir "$RELEASE_PATH" --product-root "$PRODUCT_ROOT" --kit-sha "$KIT_SHA"
+    ;;
+  dispatch-plan)
+    [[ "$ACTIVE_CONTRACT" == "1.6.0" ]] ||
+      die "autonomous dispatch requires contract 1.6.0"
+    [[ $# -eq 2 && "$2" == "--json" &&
+       ( "$1" == "--shadow" || "$1" == "--claim" ) ]] || usage
+    DISPATCH_HELPER="$RELEASE_PATH/scripts/dispatch-plan.py"
+    require_managed_file "$DISPATCH_HELPER" "active release dispatch planner"
+    WORKTREE_PARENT="$HOME/.factory/worktrees"
+    WORKTREE_ROOT="$WORKTREE_PARENT/$PROJECT"
+    ACTION="${1#--}"
+    if [[ "$ACTION" == "claim" ]]; then
+      mkdir -p "$WORKTREE_ROOT" || die "cannot create trusted worktree root"
+      chmod 700 "$WORKTREE_PARENT" "$WORKTREE_ROOT" ||
+        die "cannot secure trusted worktree root"
+      require_managed_directory "$WORKTREE_PARENT" "trusted worktree parent"
+      require_managed_directory "$WORKTREE_ROOT" "trusted project worktree root"
+    fi
+    add_certified_origin_env
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$DISPATCH_HELPER" \
+      --factory-root "$PRODUCT_ROOT" \
+      --worktree-root "$WORKTREE_ROOT" \
+      "$ACTION"
+    ;;
+  ticket-pr)
+    [[ "$ACTIVE_CONTRACT" == "1.6.0" ]] ||
+      die "early ticket PR requires contract 1.6.0"
+    TICKET_PR_LEASE=""
+    if [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--workdir" &&
+          "$5" == "--json" ]]; then
+      TICKET_PR_TICKET="$2" TICKET_PR_WORKDIR="$4"
+    elif [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--workdir" && "$7" == "--json" ]]; then
+      TICKET_PR_TICKET="$2" TICKET_PR_LEASE="$4" TICKET_PR_WORKDIR="$6"
+      [[ "$TICKET_PR_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    else
+      usage
+    fi
+    [[ "$TICKET_PR_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    resolve_product_workdir "$TICKET_PR_WORKDIR"
+    validate_ticket_worktree "$TICKET_PR_TICKET"
+    [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
+      die "product is in maintenance; ticket PR refused"
+    TICKET_PR_HELPER="$RELEASE_PATH/scripts/ticket-pr.py"
+    require_managed_file "$TICKET_PR_HELPER" "active release ticket PR helper"
+    add_certified_origin_env
+    add_dispatch_lease_env "$TICKET_PR_LEASE"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec_selected_helper "$TICKET_PR_HELPER" --ticket "$TICKET_PR_TICKET" \
+      --workdir "$RESOLVED_WORKDIR"
     ;;
   models)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||

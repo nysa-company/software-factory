@@ -17,7 +17,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The required aggregate `ci` status always reports. Inert metadata skips behavioral suites while retaining policy gates; mapped leaf changes run targeted suites on Linux and applicable macOS, and ambiguous changes run full. Every merged SHA runs complete Linux and macOS verification. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `balanced-v2`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/high; Spec-linter and Test-author use Claude Fable 5/medium with Cursor Fable Thinking Medium secondary; Reviewer uses Claude Sonnet 5/high. `legacy-balanced-v1` remains compatibility policy; OpenAI-, Claude-, and Cursor-priority profiles remain explicit alternatives.
-- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 retains the default and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Nysa T-013/T-014 and T-015/T-016 proved initial lease-level concurrency; the retained product-wide lock still serializes every provider interval, and parallel provider execution remains gated on isolated runtime integration with OS-enforced writer isolation, bounded parallel accounting, and crash-recovery evidence.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 retains the default and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Native subscription and Cursor CLI routes retain the legacy serialized path; absent, invalid, or disabled activation fails closed to that path.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
@@ -41,9 +41,26 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
-- 2026-07-20: Contract 1.6 expands the coupled worktree/provider capacity to six while retaining a default of one. Contracts 1.1–1.5 remain bounded at four, Contract 1.0 remains unchanged, and the provider lock remains until isolated runtime integration gates parallel execution.
+- 2026-07-20: Contract 1.6 adds one-shot autonomous dispatch, exact worktree and lease claiming, early idempotent ticket PR creation at the Reviewer boundary, and activation-gated isolated API-route execution. The supervisor remains an inert Hermes profile skill until an operator enables the existing scheduler; this host has no real-provider activation because its dedicated broker credentials and TLS configuration are absent.
+- 2026-07-20: Contract 1.6 expands the coupled worktree/provider capacity to six while retaining a default of one. Contracts 1.1–1.5 remain bounded at four and Contract 1.0 remains unchanged; Decision 51 records the completed isolated-runtime gate while preserving serialization for legacy routes.
 - 2026-07-20: Concurrent Done closeouts may project an identical ledger after an earlier closeout already captured every terminal run. The trusted Done validator now permits `factory/ledger.csv` to be absent from that later closeout commit while still binding and checking the complete ledger hash; ticket and Done-attestation paths remain mandatory and exclusive.
 - 2026-07-20: A patched control-plane release may finish Done for already-approved evidence from an older ticket-pinned release. The closeout validates and records the ticket's canonical `Kit-SHA`; bundle and approval remain bound to the active release, so prior role evidence is never relabeled.
+
+## 2026-07-20 — Decision 51: Isolated routes and autonomous dispatch remain explicitly gated
+
+Category: System change
+
+Contract 1.6 admits parallel provider work only for an exact owner-activated API
+route through the transactional coordinator, short-lived credential broker,
+networkless digest-pinned worker, and trusted artifact controller. Every native
+subscription or Cursor CLI route stays behind the legacy product-wide lock, and
+missing or malformed activation fails closed. Hermes autonomous operation is a
+one-claim supervisor invocation over the stable launcher: it deterministically
+waits at capacity, creates or reuses one exact open PR only when Reviewer is the
+next stage, delegates one ephemeral dispatcher child, and never approves,
+merges, loops, scans mutable tickets, or installs its own scheduler. Autonomous
+claiming requires configured capacity above one because a capacity-one run has
+no lease capability to transfer to the child.
 
 ## 2026-07-20 — Decision 50: Contract 1.6 couples capacity at six
 
@@ -53,8 +70,8 @@ Category: System change
 to `1`. Active Contract 1.6 accepts `1` through `6`; Contracts 1.1 through 1.5
 remain bounded at `4`, and Contract 1.0 semantics are unchanged. The setting
 couples exact-worktree ticket leases with eventual provider-call capacity, but
-the product-wide provider lock remains until isolated runtime integration gates
-safe parallel execution.
+the product-wide provider lock remains for legacy routes; Decision 51 defines
+the exact activation gate for isolated API-route parallelism.
 
 ## 2026-07-19 — Decision 49: Validated pre-submission checks get a bounded two-minute gate
 

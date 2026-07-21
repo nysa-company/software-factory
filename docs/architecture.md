@@ -201,9 +201,14 @@ micro-USD using active reservations plus terminal charges. The executor
 copies a sanitized source and immutable input into an unprivileged,
 digest-pinned ephemeral container and streams only bounded artifacts back.
 Worker identity binds ticket, role, attempt, base SHA, route, policy, image,
-input, source, and command. Production activation remains gated on brokered
-credentials, provider-only egress, controller-side artifact application,
-recovery, and legacy-barrier integration.
+input, source, and command. The release-owned image lock pins the exact worker
+digest. For patch artifacts, the host controller independently checks the
+artifact-tree hash, immutable identity, telemetry, base SHA, manifest paths,
+protected paths, file modes, and a temporary-index application before applying
+and committing the patch under a per-ticket lock. Production activation remains gated on
+staged local four-worker canaries and dedicated real-provider API-route
+certification. Native subscription/Cursor CLI routes remain on the serialized
+legacy path.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -310,16 +315,35 @@ requires the matching opaque record under
 `factory/.dispatch-leases/`. Claims are atomic and deterministically refuse once
 the configured capacity is full. Stale records continue to consume capacity and
 are never reassigned automatically. This is the single coupled ticket-worktree
-and provider-call capacity setting. The product-level control lock is retained
-and still serializes complete `run-agent.sh` provider intervals until all
-Contract 1.6 activation gates are satisfied. The isolated runtime primitives
-have proved six concurrent local containers, but do not yet bypass that lock.
+and provider-call capacity setting. The product-level control lock still
+serializes native subscription, Cursor CLI, and every other legacy provider
+interval. Only an exact API route selected by the owner-only Contract 1.6
+activation file may use transactional isolated admission and bypass that lock;
+missing or invalid activation selects the legacy path or refuses, never an
+implicit isolated run.
 The legacy global ledger remains an additional serialization and accounting
 boundary when a machine cap is configured.
+Contract 1.6 workers have no network and never receive provider credentials or
+broker tokens. The owner-local credential broker keeps credentials in a
+mode-0600 configuration and exchanges an attempt token for credentials only
+while the trusted runtime proxies an exact approved HTTPS path. The runtime
+relays only the bounded provider result into the worker. Tokens bind the
+attempt, route, model, reserved budget, expiry, and bounded request count;
+revocation, expiry, wrong-model requests, redirects, and unconfigured
+destinations fail closed. Only token-free, credential-free state is exposed by
+status reporting.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
 lease state after stopping recorded runs.
+
+The Contract 1.6 Hermes supervisor is deliberately one-shot: one invocation
+asks the stable launcher for one deterministic claim, starts at most one
+ephemeral dispatcher child on `START`, and exits on `WAIT` or `ESCALATE`.
+Autonomous claiming requires configured capacity above one so the lease can be
+transferred in memory to that child. At the first sequencer-authorized Reviewer
+boundary, the trusted ticket-PR helper creates or reuses exactly one open PR for
+the clean pushed ticket head; it has no approval or merge authority.
 
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,

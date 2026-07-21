@@ -48,9 +48,9 @@ a lease ID. A stale or mismatched lease is an escalation; only the operator
 may recover it under maintenance through `factory-kit recover-lease`.
 `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity
 setting; do not infer a second provider-capacity setting. The product-wide
-provider lock remains in place, so multiple leases permit concurrent
-control-plane ticket progress but not simultaneous model-provider calls until
-isolated runtime integration enables it.
+provider lock remains for native subscription, Cursor CLI, and every other
+legacy route. Only an exact owner-activated Contract 1.6 API route may enter
+the isolated runtime concurrently.
 
 For the first launch of a ticket:
 
@@ -91,6 +91,20 @@ The launcher wraps the existing scripts' text and exit code; those scripts do
 not accept `--json` themselves. Accept only the documented wrapper schema,
 require `exit_code: 0`, and use `action` from the next-stage result. Launch
 exactly the role authorized by that result:
+
+Under Contract 1.6, when that action is `RUN reviewer` after Builder, first
+prepare or reuse the exact open ticket PR:
+
+```text
+~/.factory/bin/factory-launch <project> ticket-pr \
+  --ticket <T-NNN> [--lease <opaque-lease-id>] \
+  --workdir <absolute-product-worktree> --json
+```
+
+Renew the lease immediately before this call when concurrency is enabled.
+Require schema `nysa.software-factory.ticket-pr/v1`, status `prepared`, and the
+exact ticket branch/head. The helper never approves or merges. Any refusal
+stops dispatch.
 
 ```text
 ~/.factory/bin/factory-launch <project> run \

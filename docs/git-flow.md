@@ -76,9 +76,10 @@ default. Contracts 1.1 through 1.5 permit an explicit bounded pilot up to four
 tickets, and Contract 1.6 permits up to six, when the product sets
 `MAX_CONCURRENT_TICKETS` accordingly; each ticket keeps
 its own exact branch, linked worktree, opaque lease, and sequential role flow.
-Those leases may coexist. The setting is coupled worktree/provider capacity,
-but a product-level control lock remains until isolated runtime integration
-makes parallel providers safe.
+Those leases may coexist. The setting is coupled worktree/provider capacity.
+The product-level control lock remains for native subscription, Cursor CLI, and
+every other legacy route; only an exact owner-activated Contract 1.6 API route
+may use isolated parallel admission.
 
 ## Kit release lifecycle
 

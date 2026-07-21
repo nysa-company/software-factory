@@ -22,7 +22,8 @@
       "KIT_DIR"
     ],
     "soul": "SOUL.md",
-    "dispatcher_skill": "skills/factory-dispatch/SKILL.md"
+    "dispatcher_skill": "skills/factory-dispatch/SKILL.md",
+    "supervisor_skill": "skills/factory-supervisor/SKILL.md"
   },
   "launcher": {
     "path": "~/.factory/bin/factory-launch",
@@ -77,6 +78,26 @@
           "--json"
         ],
         "output_schema": "nysa.software-factory.hermes-doctor/v1"
+      },
+      "dispatch-plan": {
+        "minimum_contract_version": "1.6.0",
+        "helper": "scripts/dispatch-plan.py",
+        "grammars": [
+          "--shadow --json",
+          "--claim --json"
+        ],
+        "output_schema": "nysa.software-factory.dispatch-plan/v1",
+        "authority": "fresh Linear reconciliation selects Ready or explicit resume; the helper atomically validates capacity, prepares the exact worktree, and creates an opaque lease"
+      },
+      "ticket-pr": {
+        "minimum_contract_version": "1.6.0",
+        "helper": "scripts/ticket-pr.py",
+        "grammars": [
+          "--ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
+          "--ticket <T-NNN> --lease <opaque-lease-id> --workdir <exact-ticket-worktree> --json"
+        ],
+        "output_schema": "nysa.software-factory.ticket-pr/v1",
+        "authority": "create or reuse one exact open ticket PR only at the sequencer-authorized Reviewer boundary; never approve or merge"
       },
       "models": {
         "minimum_contract_version": "1.2.0",
@@ -407,7 +428,17 @@
       "FACTORY_MODEL_STATE_ROOT": "resolved production kits projects directory",
       "FACTORY_PROJECT": "validated launcher project slug",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
-      "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher"
+      "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
+      "FACTORY_PROVIDER_DB": "fixed Contract 1.6 owner-local transactional database",
+      "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6 owner-local admission policy",
+      "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
+      "FACTORY_PROVIDER_CREDENTIALS": "fixed Contract 1.6 owner-local credential configuration",
+      "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
+      "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6 owner-local attempt directory",
+      "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6 owner-local apply-lock directory",
+      "FACTORY_PROVIDER_ACTIVATION": "fixed Contract 1.6 owner-local isolated-v1 activation gate",
+      "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
+      "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor"
     },
     "helper_environment_allowlist": [
       "HOME",
@@ -422,6 +453,16 @@
       "FACTORY_PROJECT",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
       "FACTORY_DISPATCH_LEASE_ID",
+      "FACTORY_PROVIDER_DB",
+      "FACTORY_PROVIDER_POLICY",
+      "FACTORY_PROVIDER_BROKER_DB",
+      "FACTORY_PROVIDER_CREDENTIALS",
+      "FACTORY_PROVIDER_ARTIFACT_POLICY",
+      "FACTORY_PROVIDER_ATTEMPT_ROOT",
+      "FACTORY_PROVIDER_APPLY_LOCK_ROOT",
+      "FACTORY_PROVIDER_ACTIVATION",
+      "FACTORY_PROVIDER_BROKER_URL",
+      "FACTORY_PROVIDER_BROKER_CA",
       "GH_TOKEN"
     ],
     "helper_optional_credentials": {
@@ -467,7 +508,7 @@
       6
     ],
     "capacity_scope": "coupled ticket-worktree and provider-call capacity",
-    "parallel_execution_gate": "the retained product-wide provider lock continues to serialize provider intervals until isolated runtime integration is enabled",
+    "parallel_execution_gate": "the retained product-wide provider lock serializes native subscription, Cursor CLI, and all other legacy routes; only an exact owner-activated Contract 1.6 API route may use isolated parallel admission",
     "lease_required_when_greater_than": 1,
     "state": "PRODUCT_ROOT/factory/.dispatch-leases/<T-NNN>.json",
     "lease_ttl_seconds": 900,
@@ -493,11 +534,31 @@
       "financial_accounting": "integer micro-USD machine-day, product-day, and ticket caps count active reservations plus terminal charges in the admission transaction",
       "unknown_outcome": "retain the full reservation and provider slot for explicit reconciliation"
     },
+    "credential_broker": {
+      "authority": "scripts/provider-credential-broker.py",
+      "database": "~/.factory/accounting/credential-broker.sqlite3",
+      "credentials": "~/.factory/provider-credentials.json",
+      "token_binding": [
+        "attempt_id",
+        "route_id",
+        "model",
+        "reserve_micro_usd",
+        "expires_at",
+        "max_requests"
+      ],
+      "transport": "host-loopback TLS endpoint reachable only by the trusted runtime; plaintext is restricted to explicit loopback-only tests",
+      "proxy_policy": "exact owner-configured HTTPS origin and path, exact token-bound model, bounded JSON request, no redirects, and host-side credential substitution",
+      "worker_exposure": "the trusted runtime consumes the attempt token and relays only the bounded provider result into a networkless worker; tokens and credentials never enter the container",
+      "revocation": "terminalization revokes the attempt token; expiry, revocation, or request exhaustion fails closed",
+      "reporting": "token hashes and raw provider credentials are never returned by status"
+    },
     "worker": {
       "authority": "scripts/provider-executor.py",
-      "request_schema": "nysa.software-factory.provider-execution-request/v2",
-      "identity_schema": "nysa.software-factory.provider-container-identity/v1",
-      "result_schema": "nysa.software-factory.provider-execution-result/v1",
+      "image_lock": "worker/image-lock.json",
+      "image_lock_schema": "nysa.software-factory.provider-worker-image-lock/v1",
+      "request_schema": "nysa.software-factory.provider-execution-request/v3",
+      "identity_schema": "nysa.software-factory.provider-container-identity/v2",
+      "result_schema": "nysa.software-factory.provider-execution-result/v2",
       "identity_binding": [
         "ticket",
         "role",
@@ -508,14 +569,18 @@
         "policy_sha256",
         "image_digest",
         "source_sha256",
+        "worker_sha256",
         "command"
       ],
       "source_transport": "sanitized copy-in with no host Git metadata, control state, sibling worktrees, credentials, process namespace, or container socket",
       "artifact_transport": "size-bounded copy-out bound to the immutable worker identity",
       "container": "ephemeral unprivileged digest-pinned image with read-only root, dropped capabilities, no-new-privileges, PID/CPU/memory limits, and attempt-local scratch",
-      "network": "provider-only egress through the configured credential broker; unrestricted egress and direct host credentials are not certified"
+      "network": "none; provider egress occurs only in the trusted host runtime through the configured credential broker"
     },
     "controller": {
+      "artifact_authority": "scripts/provider-artifact-controller.py",
+      "artifact_schema": "nysa.software-factory.provider-patch-artifact/v1",
+      "artifact_policy": "~/.factory/provider-artifact-policy.json",
       "exclusive_authority": [
         "leases",
         "provider slots",
@@ -527,7 +592,13 @@
         "pushes",
         "approvals"
       ],
-      "apply_rule": "revalidate the exact ticket branch and base SHA, validate protected paths and artifact identity, then apply under a per-ticket lock"
+      "apply_rule": "revalidate the exact ticket branch and base SHA, validate protected paths and artifact identity in a temporary index, then apply and commit under a per-ticket lock"
+    },
+    "recovery": {
+      "authority": "scripts/provider-recovery.py",
+      "cancellation": "persist request before signaling; release capacity only after container removal is proven",
+      "unknown_outcome": "post-GO missing or unobservable workers retain reservation and slot for explicit reconciliation",
+      "rollback": "refuse while attempts, legacy intervals, broker tokens, or live/unknown workers remain; preserve activation configuration as disabled evidence"
     },
     "legacy_barrier": "no isolated-v1 admission while any legacy provider interval is active, and no legacy provider interval starts while isolated-v1 attempts are active"
   },
@@ -547,6 +618,7 @@
     "bin/factory-launch",
     "templates/profile/SOUL.md",
     "templates/profile/skills/factory-dispatch/SKILL.md",
+    "templates/profile/skills/factory-supervisor/SKILL.md",
     "templates/launchd/com.nysa.hermes-factory-gateway.plist",
     "templates/launchd/com.nysa.hermes-dashboard.plist",
     "scripts/factory-doctor.sh",
@@ -555,8 +627,17 @@
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
     "scripts/provider-coordinator.py",
+    "scripts/provider-credential-broker.py",
+    "scripts/provider-activation.py",
+    "scripts/provider-artifact-controller.py",
     "scripts/provider-executor.py",
+    "scripts/provider-isolated-run.py",
+    "scripts/provider-recovery.py",
     "scripts/provider-runtime.py",
+    "scripts/provider-worker-image.py",
+    "worker/Dockerfile",
+    "worker/image-lock.json",
+    "worker/provider-worker.mjs",
     "scripts/ticket-state.sh",
     "scripts/ticket-attest.py",
     "scripts/ticket-attest.sh",
@@ -568,6 +649,8 @@
     "scripts/lib/product-remote.sh",
     "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",
+    "scripts/dispatch-plan.py",
+    "scripts/ticket-pr.py",
     "scripts/lib/dispatch-leases.sh",
     "scripts/factory-kit.sh",
     "scripts/kill-switch.sh",

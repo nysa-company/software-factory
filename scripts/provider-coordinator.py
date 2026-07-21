@@ -184,11 +184,15 @@ def create_database(path):
     if path.exists() or path.is_symlink():
         secure_regular(path, "database", owner_only=True)
         return
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except FileExistsError:
+        secure_regular(path, "database", owner_only=True)
+        return
     os.close(descriptor)
     secure_regular(path, "database", owner_only=True)
 
@@ -246,6 +250,16 @@ CREATE TABLE IF NOT EXISTS operations (
   request_sha256 TEXT NOT NULL,
   result_json TEXT NOT NULL,
   created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS legacy_intervals (
+  interval_id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  started_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS cancellation_requests (
+  attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+  requested_at INTEGER NOT NULL,
+  reason TEXT NOT NULL
 ) STRICT;
 """
 
@@ -313,9 +327,12 @@ def attempt(connection, attempt_id):
                   a.terminal_result,a.policy_sha256,a.updated_at,
                   b.product_id,b.ticket_id,b.budget_day,
                   b.product_daily_cap_micro_usd,b.ticket_cap_micro_usd,
-                  b.machine_daily_cap_micro_usd,b.charge_micro_usd
+                  b.machine_daily_cap_micro_usd,b.charge_micro_usd,
+                  c.requested_at AS cancellation_requested_at,
+                  c.reason AS cancellation_reason
            FROM attempts AS a
            JOIN attempt_budgets AS b ON b.attempt_id=a.attempt_id
+           LEFT JOIN cancellation_requests AS c ON c.attempt_id=a.attempt_id
            WHERE a.attempt_id=?""",
         (attempt_id,),
     ).fetchone()
@@ -487,9 +504,12 @@ def admit_mutation(connection, attempt_id, expected_version, policy, policy_hash
         raise CoordinatorError("only a prepared attempt may be admitted")
     if row["version"] != expected_version:
         raise CoordinatorError("attempt version compare-and-swap failed")
-    denials = limit_checks(
+    denials = []
+    if connection.execute("SELECT 1 FROM legacy_intervals LIMIT 1").fetchone():
+        denials.append({"limit": "legacy_barrier", "scope": "machine"})
+    denials.extend(limit_checks(
         connection, policy, row["provider_family"], row["account_route"], now
-    )
+    ))
     denials.extend(budget_checks(connection, row))
     if denials:
         return {
@@ -651,6 +671,41 @@ def transition_command(connection, args, target):
     )
 
 
+def request_cancel_command(connection, args):
+    attempt_id = validate_id(args.attempt_id, "attempt_id")
+    reason = validate_id(args.reason, "reason")
+    now = now_value(args)
+    request = {
+        "attempt_id": attempt_id,
+        "expected_version": args.expected_version,
+        "now": args.now,
+        "reason": reason,
+    }
+
+    def persist():
+        row = attempt(connection, attempt_id)
+        if row["version"] != args.expected_version or row["state"] != "submitted":
+            raise CoordinatorError(
+                "cancellation request requires the expected submitted attempt"
+            )
+        existing = connection.execute(
+            "SELECT requested_at,reason FROM cancellation_requests WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                "INSERT INTO cancellation_requests VALUES(?,?,?)",
+                (attempt_id, now, reason),
+            )
+        elif existing["reason"] != reason:
+            raise CoordinatorError("cancellation request conflicts")
+        return row_result(attempt(connection, attempt_id))
+
+    return mutate(
+        connection, args.operation_id, "request-cancel", request, persist
+    )
+
+
 def status_command(connection, args):
     if args.attempt_id:
         rows = [attempt(connection, validate_id(args.attempt_id, "attempt_id"))]
@@ -673,8 +728,85 @@ def status_command(connection, args):
         ).fetchone()[0],
         "attempts": [dict(row) for row in rows],
         "counts": counts,
+        "legacy_intervals": [
+            dict(row)
+            for row in connection.execute(
+                "SELECT interval_id,product_id,started_at "
+                "FROM legacy_intervals ORDER BY interval_id"
+            ).fetchall()
+        ],
         "schema": OUTPUT_SCHEMA,
     }
+
+
+def legacy_enter_command(connection, args):
+    interval_id = validate_id(args.interval_id, "interval_id")
+    product_id = validate_id(args.product_id, "product_id")
+    now = now_value(args)
+    request = {
+        "interval_id": interval_id,
+        "product_id": product_id,
+        "now": args.now,
+    }
+
+    def enter():
+        existing = connection.execute(
+            "SELECT * FROM legacy_intervals WHERE interval_id=?", (interval_id,)
+        ).fetchone()
+        if existing is not None:
+            if existing["product_id"] != product_id:
+                raise CoordinatorError("legacy interval identity conflicts")
+            return {
+                "entered": True,
+                "interval": dict(existing),
+                "schema": OUTPUT_SCHEMA,
+            }
+        active = connection.execute(
+            "SELECT count(*) FROM attempts WHERE state IN ('reserved','GO','submitted')"
+        ).fetchone()[0]
+        if active:
+            return {
+                "denials": [{"limit": "isolated_barrier", "scope": "machine"}],
+                "entered": False,
+                "schema": OUTPUT_SCHEMA,
+            }
+        connection.execute(
+            "INSERT INTO legacy_intervals VALUES(?,?,?)",
+            (interval_id, product_id, now),
+        )
+        return {
+            "entered": True,
+            "interval": {
+                "interval_id": interval_id,
+                "product_id": product_id,
+                "started_at": now,
+            },
+            "schema": OUTPUT_SCHEMA,
+        }
+
+    return mutate(
+        connection, args.operation_id, "legacy-enter", request, enter
+    )
+
+
+def legacy_exit_command(connection, args):
+    interval_id = validate_id(args.interval_id, "interval_id")
+    request = {"interval_id": interval_id, "now": args.now}
+    now_value(args)
+
+    def leave():
+        changed = connection.execute(
+            "DELETE FROM legacy_intervals WHERE interval_id=?", (interval_id,)
+        ).rowcount
+        return {
+            "exited": changed == 1,
+            "interval_id": interval_id,
+            "schema": OUTPUT_SCHEMA,
+        }
+
+    return mutate(
+        connection, args.operation_id, "legacy-exit", request, leave
+    )
 
 
 def reconcile_command(connection, args):
@@ -796,9 +928,24 @@ def parser():
         transition_command(connection, args, "terminal")
     )
 
+    cancellation = mutation("request-cancel")
+    cancellation.add_argument("--attempt-id", required=True)
+    cancellation.add_argument("--expected-version", required=True, type=int)
+    cancellation.add_argument("--reason", required=True)
+    cancellation.set_defaults(handler=request_cancel_command)
+
     status = commands.add_parser("status")
     status.add_argument("--attempt-id")
     status.set_defaults(handler=status_command)
+
+    legacy_enter = mutation("legacy-enter")
+    legacy_enter.add_argument("--interval-id", required=True)
+    legacy_enter.add_argument("--product-id", required=True)
+    legacy_enter.set_defaults(handler=legacy_enter_command)
+
+    legacy_exit = mutation("legacy-exit")
+    legacy_exit.add_argument("--interval-id", required=True)
+    legacy_exit.set_defaults(handler=legacy_exit_command)
 
     reconcile = mutation("reconcile")
     reconcile.add_argument("--input", required=True)

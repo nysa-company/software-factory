@@ -273,9 +273,10 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Do: keep contract `1.0.0` and every later contract's default at one live
   ticket. Contracts 1.1 through 1.5 permit an explicit capacity up to four;
   Contract 1.6 permits up to six. One dispatcher holds no more than that many
-  matching leases. This is the coupled worktree/provider capacity, but the
-  retained product-wide provider lock still permits only one model-provider
-  interval at a time until isolated runtime integration is enabled.
+  matching leases. This is the coupled worktree/provider capacity. The retained
+  product-wide provider lock serializes native subscription, Cursor CLI, and
+  other legacy routes; only an exact owner-activated Contract 1.6 API route may
+  use isolated parallel admission.
 - Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
   combine unrelated candidates into one unreviewed release, or overlap two
   activation/rollback operations.

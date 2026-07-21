@@ -17,6 +17,12 @@ directly. Begin each session by selecting the named project and running:
 ~/.factory/bin/factory-launch <project> doctor --json
 ```
 
+An installed scheduled supervisor uses the separate `factory-supervisor`
+skill and only `factory-launch <project> dispatch-plan --claim --json`. It may
+start one ephemeral `factory-dispatch` child from a successful atomic claim;
+it never scans tickets, logs lease capabilities, loops, or replaces this
+per-ticket dispatcher procedure.
+
 Contracts `1.2.0` through `1.6.0` require the exact ticket worktree for every decision:
 
 ```text
@@ -48,8 +54,9 @@ sequencer-directed role stages; it refuses evidence-sensitive transitions.
 Contract 1.3 uses `ticket-attest` for bundle, approval/auto-merge, and Done
 closeout. Pass the matching in-memory lease when concurrency is greater than
 one. The ticket setting is the coupled worktree/provider capacity; there is no
-second provider-capacity setting. Multiple leases do not bypass the retained
-product-wide provider lock until isolated runtime integration is enabled. These
+second provider-capacity setting. Multiple leases bypass the retained
+product-wide provider lock only for an exact owner-activated Contract 1.6 API
+route; native subscription, Cursor CLI, and other legacy routes remain serialized. These
 commands own their artifacts; never hand-edit ticket state or
 ledger rows. Done also owns the exact factory metadata/accounting PR and its
 protected auto-merge request; there is no second business approval or manual

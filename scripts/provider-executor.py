@@ -24,9 +24,9 @@ import time
 from typing import Any
 
 
-REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v2"
-RESULT_SCHEMA = "nysa.software-factory.provider-execution-result/v1"
-IDENTITY_SCHEMA = "nysa.software-factory.provider-container-identity/v1"
+REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v3"
+RESULT_SCHEMA = "nysa.software-factory.provider-execution-result/v2"
+IDENTITY_SCHEMA = "nysa.software-factory.provider-container-identity/v2"
 MODES = ("legacy-serialized", "isolated-v1")
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 TICKET_ID = re.compile(r"T-[0-9]{1,12}\Z")
@@ -37,6 +37,7 @@ REQUEST_KEYS = frozenset(
     (
         "attempt_id", "base_sha", "command", "image", "input",
         "policy_sha256", "role", "route_id", "schema", "source", "ticket",
+        "worker_program", "worker_sha256",
     )
 )
 DEFAULT_SOURCE_BYTES = 16 * 1024 * 1024
@@ -123,6 +124,11 @@ def validate_request(value: dict[str, Any], mode: str) -> None:
         or not SHA256.fullmatch(value["policy_sha256"])
     ):
         raise ExecutorError("invalid policy_sha256")
+    if (
+        not isinstance(value.get("worker_sha256"), str)
+        or not SHA256.fullmatch(value["worker_sha256"])
+    ):
+        raise ExecutorError("invalid worker_sha256")
     command = value.get("command")
     if (
         not isinstance(command, list)
@@ -137,7 +143,7 @@ def validate_request(value: dict[str, Any], mode: str) -> None:
         )
     ):
         raise ExecutorError("command must be a bounded non-empty string array")
-    for field in ("source", "input"):
+    for field in ("source", "input", "worker_program"):
         if not isinstance(value.get(field), str) or "\x00" in value[field]:
             raise ExecutorError(f"invalid {field} path")
     image = value.get("image")
@@ -481,6 +487,7 @@ def identity_for(
         "schema": IDENTITY_SCHEMA,
         "source_sha256": source_hash,
         "ticket": request["ticket"],
+        "worker_sha256": request["worker_sha256"],
     }
     binding = digest(canonical(core))
     return {
@@ -525,6 +532,7 @@ def result_value(
         "stdout": stdout.decode("utf-8", "replace"),
         "stdout_truncated": stdout_truncated,
         "ticket": identity["ticket"],
+        "worker_sha256": identity["worker_sha256"],
     }
 
 
@@ -582,6 +590,7 @@ def prepare_attempt(
     input_hash: str,
     source: Path,
     source_limit: int,
+    worker_raw: bytes,
 ) -> tuple[Path, dict[str, Any]]:
     attempt = root / request["attempt_id"]
     staging = Path(tempfile.mkdtemp(prefix=f".{request['attempt_id']}.", dir=root))
@@ -591,6 +600,8 @@ def prepare_attempt(
         source_hash = copy_source(source, payload / "source", source_limit)
         write_exclusive(payload / "input", input_raw)
         os.chmod(payload / "input", 0o444)
+        write_exclusive(payload / "worker", worker_raw)
+        os.chmod(payload / "worker", 0o555)
         identity = identity_for(request, input_hash, source_hash)
         write_exclusive(payload / "identity.json", canonical(identity))
         os.chmod(payload / "identity.json", 0o444)
@@ -621,9 +632,14 @@ def isolated_execute_locked(
     source = requested_source.resolve(strict=True)
     input_path = Path(request["input"])
     input_raw, input_hash = regular_file(input_path, args.input_bytes)
+    worker_raw, worker_hash = regular_file(
+        Path(request["worker_program"]), args.input_bytes
+    )
+    if worker_hash != request["worker_sha256"]:
+        raise ExecutorError("worker program is not bound to worker_sha256")
     root = checked_attempt_root(args.attempt_root)
     attempt, identity = prepare_attempt(
-        root, request, input_raw, input_hash, source, args.source_bytes
+        root, request, input_raw, input_hash, source, args.source_bytes, worker_raw
     )
     expected = identity_for(request, input_hash, identity.get("source_sha256", ""))
     if identity != expected:
@@ -787,6 +803,7 @@ def legacy_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[st
         "schema": IDENTITY_SCHEMA,
         "source_sha256": source_hash,
         "ticket": request["ticket"],
+        "worker_sha256": request["worker_sha256"],
     }
     identity = {**core, "binding_sha256": digest(canonical(core))}
     root = checked_attempt_root(args.attempt_root)
@@ -840,6 +857,48 @@ def cancel(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def status(args: argparse.Namespace) -> dict[str, Any]:
+    root = checked_attempt_root(args.attempt_root)
+    if not SAFE_ID.fullmatch(args.attempt_id):
+        raise ExecutorError("invalid attempt_id")
+    attempt = root / args.attempt_id
+    identity, _ = read_json(attempt / "identity.json", args.result_bytes)
+    if (
+        identity.get("schema") != IDENTITY_SCHEMA
+        or identity.get("attempt_id") != args.attempt_id
+    ):
+        raise ExecutorError("attempt identity is invalid")
+    if args.binding_sha256 and identity.get("binding_sha256") != args.binding_sha256:
+        raise ExecutorError("attempt status binding mismatch")
+    code, stdout, _, truncated, _ = runtime_call(
+        args.runtime,
+        [
+            "inspect",
+            "--format",
+            "{{json .State}}",
+            identity["container_name"],
+        ],
+        timeout=args.runtime_timeout,
+        output_limit=args.output_bytes,
+        check=False,
+    )
+    running = False
+    if code == 0 and not truncated:
+        try:
+            state = json.loads(stdout)
+            running = isinstance(state, dict) and state.get("Running") is True
+        except json.JSONDecodeError as error:
+            raise ExecutorError("container runtime returned invalid state") from error
+    return {
+        "attempt_id": args.attempt_id,
+        "binding_sha256": identity["binding_sha256"],
+        "container_exists": code == 0,
+        "container_name": identity["container_name"],
+        "container_running": running,
+        "schema": "nysa.software-factory.provider-container-status/v1",
+    }
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser()
     value.add_argument(
@@ -864,6 +923,9 @@ def parser() -> argparse.ArgumentParser:
     cancellation = subparsers.add_parser("cancel")
     cancellation.add_argument("--attempt-id", required=True)
     cancellation.add_argument("--binding-sha256")
+    observation = subparsers.add_parser("status")
+    observation.add_argument("--attempt-id", required=True)
+    observation.add_argument("--binding-sha256")
     return value
 
 
@@ -890,6 +952,8 @@ def main() -> None:
     positive_settings(args)
     if args.action == "cancel":
         result = cancel(args)
+    elif args.action == "status":
+        result = status(args)
     else:
         request, _ = read_json(args.request, args.result_bytes)
         validate_request(request, args.mode)

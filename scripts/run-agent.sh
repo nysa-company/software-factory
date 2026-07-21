@@ -115,6 +115,8 @@ HELD_LAUNCH_LOCK=0
 HELD_PROVIDER_LOCK=0
 RETAIN_PROVIDER_LOCK=0
 PROVIDER_LOCK_EXPECTED=""
+LEGACY_INTERVAL_ACTIVE=0
+LEGACY_INTERVAL_ID=""
 RUN_PID=""
 RUN_PGID=""
 RUN_GROUP_ACTIVE=0
@@ -465,6 +467,20 @@ release_provider_lock() {
   HELD_PROVIDER_LOCK=0
   rm -f "$quarantine/owner" || return 1
   rmdir "$quarantine" || return 1
+}
+
+release_legacy_interval() {
+  [[ "$LEGACY_INTERVAL_ACTIVE" -eq 1 ]] || return 0
+  local output
+  output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" legacy-exit \
+    --operation-id "$LEGACY_INTERVAL_ID-exit" \
+    --interval-id "$LEGACY_INTERVAL_ID" 2>/dev/null)" || return 1
+  printf '%s' "$output" | python3 -c '
+import json, sys
+raise SystemExit(0 if json.load(sys.stdin).get("exited") else 1)
+' || return 1
+  LEGACY_INTERVAL_ACTIVE=0
 }
 
 restore_global_if_changed() {
@@ -835,6 +851,10 @@ cleanup() {
     fi
   fi
   [[ "$HELD_LEDGER_LOCK" -eq 0 ]] || rmdir "$LOCK_DIR" 2>/dev/null || true
+  if [[ "$LEGACY_INTERVAL_ACTIVE" -eq 1 ]]; then
+    release_legacy_interval ||
+      echo "WARNING: legacy provider interval retained for reconciliation" >&2
+  fi
   if [[ "$HELD_PROVIDER_LOCK" -eq 1 && "$RETAIN_PROVIDER_LOCK" -eq 0 ]]; then
     release_provider_lock ||
       echo "WARNING: provider lock ownership changed; operator reconciliation required" >&2
@@ -1043,6 +1063,58 @@ ADAPTER="$SELECTED"
 
 ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
+ISOLATED_RUN=0
+ISOLATED_PROTOCOL=""
+ISOLATED_BROKER_PATH=""
+ISOLATED_MODEL=""
+ISOLATED_PROVIDER_FAMILY=""
+ISOLATED_ACCOUNT_ROUTE=""
+if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" &&
+      -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
+      -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
+  if ! ACTIVATION_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-activation.py" \
+      --config "$FACTORY_PROVIDER_ACTIVATION" \
+      --route-id "$SELECTED_ROUTE_ID" 2>/dev/null)"; then
+    echo "isolated-v1 activation is invalid for the selected route" >&2
+    exit 3
+  fi
+  if ! ACTIVATION_VALUES_OUTPUT="$(printf '%s' "$ACTIVATION_OUTPUT" | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+if value.get("status") != "enabled":
+    raise SystemExit(1)
+for key in ("protocol", "broker_path", "model", "provider_family", "account_route"):
+    selected = value.get(key)
+    if not isinstance(selected, str) or "\n" in selected:
+        raise SystemExit(1)
+    print(selected)
+' 2>/dev/null)"; then
+    echo "isolated-v1 activation returned invalid selection data" >&2
+    exit 3
+  fi
+  ACTIVATION_VALUES=()
+  while IFS= read -r activation_value; do
+    ACTIVATION_VALUES+=("$activation_value")
+  done <<< "$ACTIVATION_VALUES_OUTPUT"
+  if [[ "${#ACTIVATION_VALUES[@]}" -eq 5 ]]; then
+      ISOLATED_PROTOCOL="${ACTIVATION_VALUES[0]}"
+      ISOLATED_BROKER_PATH="${ACTIVATION_VALUES[1]}"
+      ISOLATED_MODEL="${ACTIVATION_VALUES[2]}"
+      ISOLATED_PROVIDER_FAMILY="${ACTIVATION_VALUES[3]}"
+      ISOLATED_ACCOUNT_ROUTE="${ACTIVATION_VALUES[4]}"
+      if [[ "$ISOLATED_MODEL" == "$SELECTED_MODEL" &&
+            "$ISOLATED_PROVIDER_FAMILY" == "$SELECTED_FAMILY" &&
+            "$ISOLATED_ACCOUNT_ROUTE" == "$SELECTED_ACCOUNT_ROUTE_ID" ]]; then
+        [[ "$ROLE" == "reviewer" ]] || ISOLATED_RUN=1
+      else
+        echo "isolated-v1 activation does not match the selected route identity" >&2
+        exit 3
+      fi
+  else
+    echo "isolated-v1 activation returned incomplete selection data" >&2
+    exit 3
+  fi
+fi
 
 # Serialize claim creation with kill-switch publication. Claims are mkdir
 # locks and are never reclaimed automatically; operator recovery must inspect
@@ -1089,45 +1161,46 @@ token=$CLAIM_TOKEN"
 printf '%s\n' "$ACTIVE_RUN_EXPECTED" > "$ACTIVE_RUN_FILE/owner"
 ACTIVE_RUN_EXPECTED="$(cat "$ACTIVE_RUN_FILE/owner")"
 
-# ponytail: serialize providers until an OS-enforced writer boundary can keep
-# provider processes out of factory/runs while preserving parallel execution.
-PROVIDER_LOCK_TRANSIENTS=0
-for i in $(seq 1 "$LOCK_ATTEMPTS"); do
-  if mkdir "$PROVIDER_LOCK" 2>/dev/null; then
-    HELD_PROVIDER_LOCK=1
-    PROVIDER_LOCK_EXPECTED="$ACTIVE_RUN_EXPECTED"
-    printf '%s\n' "$PROVIDER_LOCK_EXPECTED" |
-      python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$PROVIDER_LOCK/owner" || exit 8
-    break
-  fi
-  if [[ -f "$FACTORY_DIR/KILL" ]]; then
-    echo "KILL file appeared while waiting for provider lock; no task was submitted" >&2
-    exit 4
-  fi
-  if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
-    echo "MAINTENANCE file appeared while waiting for provider lock; no task was submitted" >&2
-    exit 4
-  fi
-  if provider_lock_owner_is_live; then
-    PROVIDER_LOCK_TRANSIENTS=0
-  else
-    owner_status=$?
-    if [[ "$PROVIDER_LOCK_TRANSIENTS" -lt 10 ]]; then
-      PROVIDER_LOCK_TRANSIENTS=$((PROVIDER_LOCK_TRANSIENTS + 1))
-      sleep 0.1
-      continue
-    elif [[ "$owner_status" -eq 1 ]]; then
-      echo "stale provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
-    else
-      echo "unsafe provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
+if [[ "$ISOLATED_RUN" -eq 0 ]]; then
+  # Legacy contracts retain the interval-wide product provider lock.
+  PROVIDER_LOCK_TRANSIENTS=0
+  for i in $(seq 1 "$LOCK_ATTEMPTS"); do
+    if mkdir "$PROVIDER_LOCK" 2>/dev/null; then
+      HELD_PROVIDER_LOCK=1
+      PROVIDER_LOCK_EXPECTED="$ACTIVE_RUN_EXPECTED"
+      printf '%s\n' "$PROVIDER_LOCK_EXPECTED" |
+        python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$PROVIDER_LOCK/owner" || exit 8
+      break
     fi
+    if [[ -f "$FACTORY_DIR/KILL" ]]; then
+      echo "KILL file appeared while waiting for provider lock; no task was submitted" >&2
+      exit 4
+    fi
+    if [[ -f "$FACTORY_DIR/MAINTENANCE" ]]; then
+      echo "MAINTENANCE file appeared while waiting for provider lock; no task was submitted" >&2
+      exit 4
+    fi
+    if provider_lock_owner_is_live; then
+      PROVIDER_LOCK_TRANSIENTS=0
+    else
+      owner_status=$?
+      if [[ "$PROVIDER_LOCK_TRANSIENTS" -lt 10 ]]; then
+        PROVIDER_LOCK_TRANSIENTS=$((PROVIDER_LOCK_TRANSIENTS + 1))
+        sleep 0.1
+        continue
+      elif [[ "$owner_status" -eq 1 ]]; then
+        echo "stale provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
+      else
+        echo "unsafe provider lock requires operator reconciliation; ordinary launch will not reclaim it" >&2
+      fi
+      exit 8
+    fi
+    sleep 0.1
+  done
+  if [[ "$HELD_PROVIDER_LOCK" -ne 1 ]]; then
+    echo "provider lock stuck — no task was submitted" >&2
     exit 8
   fi
-  sleep 0.1
-done
-if [[ "$HELD_PROVIDER_LOCK" -ne 1 ]]; then
-  echo "provider lock stuck — no task was submitted" >&2
-  exit 8
 fi
 
 GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
@@ -1140,6 +1213,28 @@ RUN_STARTED_AT="$(date -u +%FT%TZ)"
 TODAY="${RUN_STARTED_AT%%T*}"
 RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
 RESERVED_USD="$PER_RUN_BUDGET_USD"
+if [[ "$ISOLATED_RUN" -eq 0 &&
+      "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" &&
+      -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
+  LEGACY_INTERVAL_ID="legacy-$RUN_ID"
+  LEGACY_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+  LEGACY_ENTER_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" legacy-enter \
+    --operation-id "$LEGACY_INTERVAL_ID-enter" \
+    --interval-id "$LEGACY_INTERVAL_ID" \
+    --product-id "$LEGACY_PRODUCT_ID")" || {
+      echo "legacy provider barrier could not be entered; no task was submitted" >&2
+      exit 8
+    }
+  if ! printf '%s' "$LEGACY_ENTER_OUTPUT" | python3 -c '
+import json, sys
+raise SystemExit(0 if json.load(sys.stdin).get("entered") else 1)
+'; then
+    echo "isolated provider intervals are active; legacy run refused" >&2
+    exit 8
+  fi
+  LEGACY_INTERVAL_ACTIVE=1
+fi
 if [[ -n "$FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS" ]] &&
    ! python3 -B "$ENVELOPE_CONTROL" consume --factory-root "$REPO_ROOT" \
      --record-ids "$FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS" --run-id "$RUN_ID" >/dev/null; then
@@ -1206,7 +1301,8 @@ if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
   sleep "$FACTORY_TEST_BEFORE_REGISTER_SLEEP"
 fi
 
-# --- serialized cap check with budget reservation ---
+if [[ "$ISOLATED_RUN" -eq 0 ]]; then
+# --- serialized legacy cap check with budget reservation ---
 # mkdir is atomic: it is the lock. Reservation counts this run's full per-run
 # budget against the caps, so N concurrent runs cannot all squeeze past.
 for i in $(seq 1 50); do mkdir "$LOCK_DIR" 2>/dev/null && { HELD_LEDGER_LOCK=1; break; }; sleep 0.2; [[ $i -eq 50 ]] && { echo "ledger lock stuck — see runbook" >&2; exit 8; }; done
@@ -1308,6 +1404,15 @@ if [[ -n "$GLOBAL_LEDGER" ]]; then
   }
   GLOBAL_LEDGER_SNAPSHOT="$(snapshot_global_ledger "$GLOBAL_LEDGER")"
 fi
+fi
+if [[ "$ISOLATED_RUN" -eq 1 ]]; then
+  LEDGER_FAMILY="$(meta_value "$SELECTED_FAMILY")"
+  LEDGER_MODEL="$(meta_value "$SELECTED_MODEL")"
+  LEDGER_REASON="$(meta_value "$SELECTION_REASON")"
+  LEDGER_VERSION="$(meta_value "$SELECTED_VERSION")"
+  ACCOUNTING_SCHEMA=2
+  ACCOUNTING_STATE="reserved"
+fi
 
 # Reserve in the per-run manifest, then materialize the ignored runtime view.
 # A crash after GO leaves the full conservative reservation in force.
@@ -1316,7 +1421,9 @@ if ! refresh_runtime_ledger; then
   echo "effective ledger could not be materialized; refusing launch" >&2
   exit 3
 fi
-rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
+if [[ "$ISOLATED_RUN" -eq 0 ]]; then
+  rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
+fi
 
 # --- run one task-bearing process in an isolated process group ---
 if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
@@ -1354,12 +1461,83 @@ RUN_OUTPUT_TEMP=""
 # The controller may read project model state while selecting a route, but
 # task-bearing adapters must never inherit mutation-capable state paths.
 unset FACTORY_MODEL_STATE_ROOT FACTORY_PROJECT
+TASK_COMMAND=()
+STATUS=0
+if [[ "$ISOLATED_RUN" -eq 1 ]]; then
+  if [[ -z "${FACTORY_PROVIDER_BROKER_URL:-}" ]]; then
+    echo "isolated-v1 broker URL is unavailable" >&2
+    STATUS=3
+  else
+    MICRO_VALUES=()
+    while IFS= read -r micro_value; do
+      MICRO_VALUES+=("$micro_value")
+    done < <(python3 - "$RESERVED_USD" "$DAILY_CAP_USD" \
+      "$PER_TICKET_BUDGET_USD" "${GLOBAL_DAILY_CAP_USD:-1000000000}" <<'PY'
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import sys
+try:
+    for value in sys.argv[1:]:
+        amount = (Decimal(value) * Decimal(1_000_000)).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+        if amount < 0 or amount > 10**15:
+            raise ValueError
+        print(int(amount))
+except (InvalidOperation, ValueError):
+    raise SystemExit(1)
+PY
+    )
+    if [[ "${#MICRO_VALUES[@]}" -ne 4 ]]; then
+      echo "isolated-v1 budget conversion failed" >&2
+      STATUS=3
+    else
+      ISOLATED_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+      TASK_COMMAND=(
+        /usr/bin/env -u GH_TOKEN -u OPENAI_API_KEY -u ANTHROPIC_API_KEY
+        python3 "$KIT_DIR/scripts/provider-isolated-run.py"
+          --runtime "$KIT_DIR/scripts/provider-runtime.py"
+          --db "$FACTORY_PROVIDER_DB"
+          --policy "$FACTORY_PROVIDER_POLICY"
+          --broker-db "$FACTORY_PROVIDER_BROKER_DB"
+          --broker-credentials "$FACTORY_PROVIDER_CREDENTIALS"
+          --broker-url "$FACTORY_PROVIDER_BROKER_URL"
+          --broker-path "$ISOLATED_BROKER_PATH"
+          --protocol "$ISOLATED_PROTOCOL"
+          --model "$ISOLATED_MODEL"
+          --attempt-root "$FACTORY_PROVIDER_ATTEMPT_ROOT"
+          --artifact-policy "$FACTORY_PROVIDER_ARTIFACT_POLICY"
+          --apply-lock "$FACTORY_PROVIDER_APPLY_LOCK_ROOT/$TICKET.lock"
+          --worktree "$WORKDIR"
+          --branch "$ROLE_BRANCH_BEFORE"
+          --base-sha "$ROLE_HEAD_BEFORE"
+          --ticket "$TICKET"
+          --role "$ROLE"
+          --route-id "$SELECTED_ROUTE_ID"
+          --provider-family "$ISOLATED_PROVIDER_FAMILY"
+          --account-route "$ISOLATED_ACCOUNT_ROUTE"
+          --product-id "$ISOLATED_PRODUCT_ID"
+          --budget-day "$TODAY"
+          --reserve-micro-usd "${MICRO_VALUES[0]}"
+          --product-cap-micro-usd "${MICRO_VALUES[1]}"
+          --ticket-cap-micro-usd "${MICRO_VALUES[2]}"
+          --machine-cap-micro-usd "${MICRO_VALUES[3]}"
+          --prompt-file "$PROMPT_FILE"
+          --task "$TASK"
+        --image-lock "$KIT_DIR/worker/image-lock.json"
+      )
+      if [[ -n "${FACTORY_PROVIDER_BROKER_CA:-}" ]]; then
+        TASK_COMMAND+=(--broker-ca "$FACTORY_PROVIDER_BROKER_CA")
+      fi
+    fi
+  fi
+else
+  TASK_COMMAND=("$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK")
+fi
+if [[ "$STATUS" -eq 0 ]]; then
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
   "$RUN_READY_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE" \
   "$FACTORY_DIR/KILL" "$FACTORY_DIR/MAINTENANCE" "$CANCEL_REQUEST_FILE" \
-  "$ADAPTER_SH" \
-  "${ADAPTER_ARGS[@]}" \
-  -- "$TASK" 8<&- >&9 2>&1 &
+  "${TASK_COMMAND[@]}" 8<&- >&9 2>&1 &
 RUN_PID=$!
 RUN_PGID="$RUN_PID"
 RUN_GROUP_ACTIVE=1
@@ -1517,6 +1695,7 @@ else
     fi
   fi
 fi
+fi
 if [[ -z "$CANCELLATION_REASON" &&
       ( -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ) ]]; then
   if ! load_cancellation_request; then
@@ -1672,7 +1851,7 @@ else
   FINAL_ACCOUNTING_STATE="completed"
 fi
 
-if ! provider_lock_is_owned; then
+if [[ "$ISOLATED_RUN" -eq 0 ]] && ! provider_lock_is_owned; then
   echo "role_exit_control_plane_mutation: provider lock changed before terminal accounting" >&2
   CONTROL_PLANE_MUTATION=1
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
@@ -1705,7 +1884,7 @@ if [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
     STATUS=11
   fi
 fi
-if [[ "$RETAIN_PROVIDER_LOCK" -eq 0 ]]; then
+if [[ "$HELD_PROVIDER_LOCK" -eq 1 && "$RETAIN_PROVIDER_LOCK" -eq 0 ]]; then
   release_provider_lock || {
     echo "WARNING: provider lock ownership changed after terminal accounting; operator reconciliation required" >&2
     STATUS=11

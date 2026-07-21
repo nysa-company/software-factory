@@ -546,9 +546,57 @@ PY
   LINEAR_LAST_ERROR="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 4 { print; exit }' | sanitize)"
 fi
 
+PROVIDER_RUNTIME_STATUS="ok"
+PROVIDER_ACTIVATED=false
+PROVIDER_ACTIVE_ATTEMPTS=0
+PROVIDER_ACTIVE_TOKENS=0
+PROVIDER_UNKNOWN_WORKERS=0
+PROVIDER_LEGACY_INTERVALS=0
+if [[ "$CONTRACT_VERSION" == "1.6.0" &&
+      -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
+      -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
+  PROVIDER_ACTIVATED=true
+  if [[ -n "${FACTORY_PROVIDER_DB:-}" && -f "${FACTORY_PROVIDER_DB:-}" &&
+        -n "${FACTORY_PROVIDER_BROKER_DB:-}" && -f "${FACTORY_PROVIDER_BROKER_DB:-}" &&
+        -n "${FACTORY_PROVIDER_CREDENTIALS:-}" && -f "${FACTORY_PROVIDER_CREDENTIALS:-}" &&
+        -n "${FACTORY_PROVIDER_ATTEMPT_ROOT:-}" && -d "${FACTORY_PROVIDER_ATTEMPT_ROOT:-}" &&
+        -x "$KIT_DIR/scripts/provider-recovery.py" ]]; then
+    PROVIDER_RECOVERY_OUTPUT="$("$PYTHON_BIN" "$KIT_DIR/scripts/provider-recovery.py" \
+      --db "$FACTORY_PROVIDER_DB" \
+      --broker-db "$FACTORY_PROVIDER_BROKER_DB" \
+      --broker-credentials "$FACTORY_PROVIDER_CREDENTIALS" \
+      --attempt-root "$FACTORY_PROVIDER_ATTEMPT_ROOT" \
+      status 2>/dev/null || true)"
+    PROVIDER_RECOVERY_FIELDS="$(printf '%s' "$PROVIDER_RECOVERY_OUTPUT" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+    print(value["health"])
+    print(sum(1 for item in value["attempts"] if item.get("state") in ("reserved", "GO", "submitted")))
+    print(value["active_tokens"])
+    print(value["unknown_workers"])
+    print(len(value["legacy_intervals"]))
+except Exception:
+    raise SystemExit(1)
+' 2>/dev/null || true)"
+    if [[ -n "$PROVIDER_RECOVERY_FIELDS" ]]; then
+      PROVIDER_RUNTIME_STATUS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==1')"
+      PROVIDER_ACTIVE_ATTEMPTS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==2')"
+      PROVIDER_ACTIVE_TOKENS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==3')"
+      PROVIDER_UNKNOWN_WORKERS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==4')"
+      PROVIDER_LEGACY_INTERVALS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==5')"
+    else
+      PROVIDER_RUNTIME_STATUS="error"
+    fi
+  else
+    PROVIDER_RUNTIME_STATUS="error"
+  fi
+fi
+
 OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
-                    "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS"; do
+                    "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
+                    "$PROVIDER_RUNTIME_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
     break
@@ -576,6 +624,8 @@ export MAX_CONCURRENT_TICKETS DISPATCH_LEASES STALE_DISPATCH_LEASES MALFORMED_DI
 export HERMES_STATUS HERMES_PATH HERMES_VERSION CLI_STATUS CLI_FILE
 export CREDENTIAL_STATUS GH_PRESENT LINEAR_PRESENT
 export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAST_ERROR
+export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
+export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
 export OVERALL_STATUS RUN_FILE
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
@@ -689,6 +739,14 @@ document = {
             "age_seconds": number("LINEAR_AGE"),
             "last_error": optional("LINEAR_LAST_ERROR"),
         },
+        "isolated_provider": {
+            "status": os.environ["PROVIDER_RUNTIME_STATUS"],
+            "activated": boolean("PROVIDER_ACTIVATED"),
+            "active_attempts": number("PROVIDER_ACTIVE_ATTEMPTS"),
+            "active_tokens": number("PROVIDER_ACTIVE_TOKENS"),
+            "unknown_workers": number("PROVIDER_UNKNOWN_WORKERS"),
+            "legacy_intervals": number("PROVIDER_LEGACY_INTERVALS"),
+        },
     },
 }
 print(json.dumps(document, indent=2, sort_keys=True))
@@ -707,6 +765,7 @@ else
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
   done < "$CLI_FILE"
   echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
+  echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown}"
   [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi

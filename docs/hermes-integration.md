@@ -75,6 +75,9 @@ Contract versions `1.0.0` through `1.6.0` certify Hermes Agent `0.18.2`, build
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
+~/.factory/bin/factory-launch <project> dispatch-plan --shadow --json
+~/.factory/bin/factory-launch <project> dispatch-plan --claim --json
+~/.factory/bin/factory-launch <project> ticket-pr --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> next-stage --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> preflight --ticket T-123 --role planner --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> ticket-state --ticket T-123 --workdir /absolute/ticket-worktree --action materialize --json
@@ -130,9 +133,18 @@ leases are gone. Leases expire after 15 minutes unless renewed, but expiration
 never makes them available to another dispatcher and a stale record still
 occupies capacity. This one product setting is the coupled ticket-worktree and
 provider-call capacity; there is no separate provider-capacity setting. The
-product-wide provider lock remains held for each full provider interval, so
-increasing capacity does not enable simultaneous model-provider calls until
-all isolated runtime activation gates are enabled.
+product-wide provider lock remains held for native subscription, Cursor CLI,
+and every other legacy provider interval. An exact Contract 1.6 API route may
+bypass it only when selected by the owner-only isolated-v1 activation file;
+missing or malformed activation never enables parallel provider work.
+
+The `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
+wakeup claims at most one ticket and starts at most one ephemeral dispatcher
+child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque
+lease can remain in memory and accompany the child. `WAIT` and `ESCALATE` never
+prepare a worktree or start a child. When `next-stage` first authorizes Reviewer,
+`ticket-pr` creates or reuses exactly one open PR at the clean pushed branch
+head before review; it cannot approve or merge.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission
@@ -140,10 +152,18 @@ uses a short `BEGIN IMMEDIATE` transaction and states
 `prepared → reserved → GO → submitted → terminal`. The worker receives a
 sanitized source snapshot and immutable input; its identity binds ticket, role,
 attempt, base SHA, route, policy, image, input, source, and command. Unknown
-post-GO outcomes retain the reservation and slot. Production use remains
-disabled until credential brokering, provider-only egress, controller-side
-artifact application, recovery, and coexistence with legacy serialized runs
-are complete. Under
+post-GO outcomes retain the reservation and slot. The owner-only credential
+broker substitutes provider credentials at an exact configured HTTPS endpoint
+using a short-lived token bound to attempt, route, model, reservation, expiry,
+and request count. The trusted runtime consumes the token and relays only the
+bounded result into the networkless worker. Broker status never reports tokens
+or raw credentials, and terminalization revokes the token. A release-owned lock
+pins the worker image digest. Successful patch output is not trusted directly:
+the host artifact controller verifies its executor hash, full identity,
+telemetry, base, paths, protected-path policy, and temporary-index application,
+then applies and commits it under a per-ticket lock. Each route remains
+disabled until its activation evidence and owner configuration are installed;
+legacy serialized runs remain available for non-activated routes. Under
 maintenance, recover a stale record explicitly with:
 
 ```bash

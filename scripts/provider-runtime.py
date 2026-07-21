@@ -11,11 +11,14 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import time
 from typing import Any
+import urllib.error
+import urllib.request
 
 
 OUTPUT_SCHEMA = "nysa.software-factory.provider-runtime/v1"
-REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v2"
+REQUEST_SCHEMA = "nysa.software-factory.provider-execution-request/v3"
 MAX_JSON = 1_000_000
 
 
@@ -92,6 +95,187 @@ def operation(attempt_id: str, step: str) -> str:
     return f"{attempt_id}:{step}"
 
 
+def write_exclusive(path: Path, raw: bytes) -> None:
+    if not path.is_absolute():
+        raise RuntimeError("worker input path must be absolute")
+    parent = path.parent
+    info = parent.lstat()
+    if (
+        parent.resolve(strict=True) != parent
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o022
+    ):
+        raise RuntimeError("worker input directory is unsafe")
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.write(descriptor, raw)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def response_text(value: dict[str, Any]) -> str:
+    choices = value.get("choices")
+    if isinstance(choices, list) and len(choices) == 1:
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            return message["content"]
+    content = value.get("content")
+    if isinstance(content, list):
+        texts = [
+            item.get("text")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ]
+        if texts:
+            return "".join(texts)
+    output = value.get("output")
+    if isinstance(output, list):
+        texts = []
+        for item in output:
+            if not isinstance(item, dict) or not isinstance(item.get("content"), list):
+                continue
+            for block in item["content"]:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    texts.append(block["text"])
+        if texts:
+            return "".join(texts)
+    raise RuntimeError("provider response has no supported text result")
+
+
+def usage_value(value: dict[str, Any], *names: str) -> int:
+    usage = value.get("usage")
+    if not isinstance(usage, dict):
+        return 0
+    for name in names:
+        selected = usage.get(name)
+        if isinstance(selected, int) and not isinstance(selected, bool) and selected >= 0:
+            return selected
+    return 0
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def broker_worker_input(
+    args: argparse.Namespace, request: dict[str, Any], attempt_id: str
+) -> None:
+    if not all(
+        (
+            args.broker_db,
+            args.broker_credentials,
+            args.broker_url,
+            args.broker_path,
+            args.broker_model,
+            args.provider_request,
+        )
+    ):
+        raise RuntimeError("brokered provider execution is incompletely configured")
+    provider_request = read_json(args.provider_request, "provider request")
+    if provider_request.get("model") != args.broker_model:
+        raise RuntimeError("provider request model is not broker-bound")
+    broker_base = [
+        sys.executable,
+        str(args.credential_broker),
+        "--db", str(args.broker_db),
+        "--credentials", str(args.broker_credentials),
+    ]
+    if args.broker_allow_http_loopback:
+        broker_base.append("--allow-http-loopback")
+    issuance = command_json(
+        [
+            *broker_base,
+            "issue",
+            "--attempt-id", attempt_id,
+            "--route-id", request["route_id"],
+            "--model", args.broker_model,
+            "--reserve-micro-usd", str(args.reserve_micro_usd),
+            "--ttl-seconds", str(args.broker_ttl_seconds),
+            "--max-requests", "1",
+        ],
+        "provider credential broker issuance",
+    )
+    token = issuance.get("broker_token")
+    if not isinstance(token, str):
+        raise RuntimeError("provider credential broker returned no token")
+    started = time.monotonic()
+    try:
+        http_request = urllib.request.Request(
+            args.broker_url.rstrip("/") + args.broker_path,
+            data=canonical(provider_request).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        context = None
+        if args.broker_ca:
+            import ssl
+            context = ssl.create_default_context(cafile=str(args.broker_ca))
+        opener = urllib.request.build_opener(
+            NoRedirect(), urllib.request.HTTPSHandler(context=context)
+        )
+        with opener.open(http_request, timeout=args.broker_timeout) as response:
+            raw = response.read(MAX_JSON + 1)
+        if len(raw) > MAX_JSON:
+            raise RuntimeError("provider response exceeds runtime limit")
+        try:
+            provider_response = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError("provider response is invalid JSON") from error
+        if not isinstance(provider_response, dict):
+            raise RuntimeError("provider response must be an object")
+        try:
+            mutation = json.loads(response_text(provider_response))
+        except json.JSONDecodeError as error:
+            raise RuntimeError("provider response mutation is invalid JSON") from error
+        if (
+            not isinstance(mutation, dict)
+            or set(mutation) != {"files", "patch"}
+            or not isinstance(mutation["patch"], str)
+            or not isinstance(mutation["files"], list)
+        ):
+            raise RuntimeError("provider response mutation schema is invalid")
+        worker_input = {
+            "files": mutation["files"],
+            "patch": mutation["patch"],
+            "schema": "nysa.software-factory.provider-worker-input/v1",
+            "telemetry": {
+                "charge_micro_usd": args.reserve_micro_usd,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "input_tokens": usage_value(
+                    provider_response, "input_tokens", "prompt_tokens"
+                ),
+                "output_tokens": usage_value(
+                    provider_response, "output_tokens", "completion_tokens"
+                ),
+                "provider_request_id": None,
+            },
+        }
+        write_exclusive(
+            Path(request["input"]),
+            (canonical(worker_input) + "\n").encode("utf-8"),
+        )
+    finally:
+        command_json(
+            [
+                *broker_base,
+                "revoke",
+                "--attempt-id", attempt_id,
+            ],
+            "provider credential broker revocation",
+        )
+
+
 def execute(args: argparse.Namespace) -> dict[str, Any]:
     request = read_json(args.request, "execution request")
     if request.get("schema") != REQUEST_SCHEMA:
@@ -140,6 +324,8 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "--attempt-id", attempt_id,
         "--expected-version", "3",
     )
+    if args.provider_transport == "broker":
+        broker_worker_input(args, request, attempt_id)
 
     executor_command = [
         sys.executable,
@@ -156,7 +342,40 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "--pids-limit", str(args.pids_limit),
     ]
     execution = command_json(executor_command, "provider executor")
-    terminal_result = "succeeded" if execution.get("return_code") == 0 else "failed"
+    application = None
+    charge_micro_usd = args.reserve_micro_usd
+    if execution.get("return_code") == 0 and args.artifact_mode == "patch-v1":
+        if not all(
+            (
+                args.worktree,
+                args.artifact_policy,
+                args.apply_lock,
+                args.expected_branch,
+            )
+        ):
+            raise RuntimeError("patch-v1 artifact handling is incompletely configured")
+        application = command_json(
+            [
+                sys.executable,
+                str(args.artifact_controller),
+                "--attempt", str(args.attempt_root / attempt_id),
+                "--worktree", str(args.worktree),
+                "--policy", str(args.artifact_policy),
+                "--lock", str(args.apply_lock),
+                "--expected-branch", args.expected_branch,
+                "--base-sha", request["base_sha"],
+                "--reserve-micro-usd", str(args.reserve_micro_usd),
+                "apply",
+            ],
+            "provider artifact controller",
+        )
+        charge_micro_usd = application["charge_micro_usd"]
+    terminal_result = (
+        "succeeded"
+        if execution.get("return_code") == 0
+        and (args.artifact_mode != "patch-v1" or application is not None)
+        else "failed"
+    )
     terminal = coordinator(
         args,
         "terminalize",
@@ -164,12 +383,13 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "--attempt-id", attempt_id,
         "--expected-version", "4",
         "--result", terminal_result,
-        "--charge-micro-usd", str(args.reserve_micro_usd),
+        "--charge-micro-usd", str(charge_micro_usd),
     )
     return {
         "admitted": True,
         "attempt_id": attempt_id,
         "execution": execution,
+        "application": application,
         "schema": OUTPUT_SCHEMA,
         "terminal": terminal,
     }
@@ -192,6 +412,14 @@ def cancel(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(
             f"attempt cancellation requires submitted state, got {attempt.get('state')}"
         )
+    coordinator(
+        args,
+        "request-cancel",
+        "--operation-id", operation(args.attempt_id, "cancel-request"),
+        "--attempt-id", args.attempt_id,
+        "--expected-version", str(attempt["version"]),
+        "--reason", "operator_requested",
+    )
     executor_command = [
         sys.executable,
         str(args.executor),
@@ -235,6 +463,16 @@ def parser() -> argparse.ArgumentParser:
         "--coordinator", type=Path, default=root / "provider-coordinator.py"
     )
     value.add_argument("--executor", type=Path, default=root / "provider-executor.py")
+    value.add_argument(
+        "--artifact-controller",
+        type=Path,
+        default=root / "provider-artifact-controller.py",
+    )
+    value.add_argument(
+        "--credential-broker",
+        type=Path,
+        default=root / "provider-credential-broker.py",
+    )
     value.add_argument("--container-runtime", default="docker")
     command = value.add_subparsers(dest="command", required=True)
     run = command.add_parser("execute")
@@ -253,6 +491,28 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--memory", default="1g")
     run.add_argument("--cpus", type=float, default=1)
     run.add_argument("--pids-limit", type=int, default=128)
+    run.add_argument("--artifact-mode", choices=("generic", "patch-v1"), default="generic")
+    run.add_argument("--worktree", type=Path)
+    run.add_argument("--artifact-policy", type=Path)
+    run.add_argument("--apply-lock", type=Path)
+    run.add_argument("--expected-branch")
+    run.add_argument(
+        "--provider-transport", choices=("prepared-input", "broker"),
+        default="prepared-input",
+    )
+    run.add_argument("--broker-db", type=Path)
+    run.add_argument("--broker-credentials", type=Path)
+    run.add_argument("--broker-url")
+    run.add_argument("--broker-path")
+    run.add_argument("--broker-model")
+    run.add_argument("--broker-ca", type=Path)
+    run.add_argument("--broker-ttl-seconds", type=int, default=900)
+    run.add_argument("--broker-timeout", type=float, default=900)
+    run.add_argument("--provider-request", type=Path)
+    run.add_argument(
+        "--broker-allow-http-loopback", action="store_true",
+        help=argparse.SUPPRESS,
+    )
     run.set_defaults(handler=execute)
     cancellation = command.add_parser("cancel")
     cancellation.add_argument("--attempt-id", required=True)

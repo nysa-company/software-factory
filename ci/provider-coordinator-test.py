@@ -186,6 +186,50 @@ class ProviderCoordinatorTest(unittest.TestCase):
             family_blocked["denials"],
         )
 
+    def test_legacy_and_isolated_intervals_are_mutually_exclusive(self):
+        entered = self.json_command(
+            "legacy-enter",
+            "--operation-id", "legacy-enter-1",
+            "--interval-id", "legacy-1",
+            "--product-id", "product-a",
+            "--now", "100",
+        )
+        self.assertTrue(entered["entered"])
+        denied = self.reserve("isolated-1", now=101)
+        self.assertFalse(denied["admitted"])
+        self.assertIn(
+            {"limit": "legacy_barrier", "scope": "machine"},
+            denied["denials"],
+        )
+        exited = self.json_command(
+            "legacy-exit",
+            "--operation-id", "legacy-exit-1",
+            "--interval-id", "legacy-1",
+            "--now", "102",
+        )
+        self.assertTrue(exited["exited"])
+        admitted = self.json_command(
+            "admit",
+            "--operation-id", "isolated-admit-1",
+            "--attempt-id", "isolated-1",
+            "--expected-version", "1",
+            "--policy", self.policy,
+            "--now", "103",
+        )
+        self.assertTrue(admitted["admitted"])
+        blocked = self.json_command(
+            "legacy-enter",
+            "--operation-id", "legacy-enter-2",
+            "--interval-id", "legacy-2",
+            "--product-id", "product-b",
+            "--now", "104",
+        )
+        self.assertFalse(blocked["entered"])
+        self.assertIn(
+            {"limit": "isolated_barrier", "scope": "machine"},
+            blocked["denials"],
+        )
+
     def test_state_cas_replay_and_unknown_reconciliation_are_conservative(self):
         original = self.reserve("attempt", operation="reserve-once")
         replay = self.reserve("attempt", operation="reserve-once", now=1000)

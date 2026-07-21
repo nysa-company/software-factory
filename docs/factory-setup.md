@@ -18,8 +18,9 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
   1.1 through 1.5 accept only integers from `1` through `4`; Contract 1.6
   accepts `1` through `6`. Set a value above `1` only after a bounded
   concurrency pilot is approved. This is the one coupled worktree/provider
-  capacity setting, but the retained product-level control lock still
-  serializes provider intervals until isolated runtime integration is enabled.
+  capacity setting. The retained product-level control lock serializes native
+  subscription, Cursor CLI, and every other legacy route. An API route may use
+  isolated parallel admission only after exact Contract 1.6 owner activation.
 - Copy exactly three CI files (GitHub requires workflows and helpers to live in the repo they run on): `ci/test-immutability-check.sh` and `ci/lightweight-change.sh` → `.github/scripts/`, and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`. Set `TEST_PATHS` from `PROJECT.env` and review the helper's narrow inert-metadata allowlist for the product. Existing product repositories must receive template updates explicitly; kit updates do not rewrite instantiated CI.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. Optional `<ROLE>_PER_RUN_BUDGET_USD`, `<ROLE>_PER_RUN_MAX_TURNS`, and `<ROLE>_PER_RUN_TIMEOUT_MIN` keys override one role's attempt limits; normalize role hyphens to underscores, and omit a key to inherit its default. Money values are capped at $1,000,000 with six decimal places, turns at 1,000, and timeout at 1,440 minutes. The validator checks the two files agree. `ENVELOPE.env` and `~/.factory/global.env` are parsed as whitelisted data and must never contain shell commands or expansions.
 - If `GLOBAL_DAILY_CAP_USD` is configured, keep its global-ledger parent as a real local directory. The wrapper validates the ledger and holds its exact-owner lock across each complete provider interval, so all globally capped runs on that machine are intentionally serialized.

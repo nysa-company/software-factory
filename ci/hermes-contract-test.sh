@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sandboxed contract tests for the public Hermes integration boundary.
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCTOR="$ROOT/scripts/factory-doctor.sh"
@@ -32,6 +32,7 @@ cleanup() {
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+trap 'status=$?; echo "FAIL: unexpected command at line ${BASH_LINENO[0]:-$LINENO} (exit $status)" >&2; exit "$status"' ERR
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -1029,6 +1030,8 @@ cat > "$LAUNCH_PRODUCT/.gitignore" <<'EOF'
 factory/*-helper.env
 factory/runs/
 factory/runtime-ledger.csv
+factory/linear-map.json
+factory/.linear-sync.lock
 factory/.active-runs/
 factory/.provider.lock/
 factory/.dispatch-leases/
@@ -1419,7 +1422,7 @@ cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh model-control.sh model-manager.py model-router.py; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ticket-pr.py ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh dispatch-plan.py model-control.sh model-manager.py model-router.py; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 cp -p "$ROOT/scripts/model-routing/catalog-v1.json" \
@@ -1500,6 +1503,26 @@ git -C "$LAUNCH_PRODUCT" add factory/tickets/T-77{7,8,9}.md \
 git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
 git -C "$LAUNCH_PRODUCT" push -q origin main
 write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
+python3 - "$LAUNCH_PRODUCT/factory/linear-map.json" <<'PY'
+import datetime
+import json
+import sys
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"_sync": {"last_success_at": now}, "tickets": {}}, handle)
+    handle.write("\n")
+PY
+run_launcher launchtest dispatch-plan --shadow --json > "$TMP/dispatch-shadow.json"
+python3 - "$TMP/dispatch-shadow.json" <<'PY'
+import json
+import sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value["action"] == "SHADOW"
+assert value["status"] == "SHADOW"
+assert value["ticket"] == "T-777"
+PY
+[[ ! -e "$TEST_HOME/.factory/worktrees" ]] ||
+  fail "dispatch shadow created the trusted worktree root"
 ACTIVE_SNAPSHOT_TMP="$(cd "$TMP/launcher-tmp" && pwd -P)"
 ACTIVE_SNAPSHOT_MARKER="$ACTIVE_SNAPSHOT_TMP/active-parsed.marker"
 ACTIVE_SNAPSHOT_GATE="$ACTIVE_SNAPSHOT_TMP/active-parsed.gate"
@@ -1948,6 +1971,13 @@ assert contract["supported_hermes"] == [{
 assert contract["launcher"]["path"] == "~/.factory/bin/factory-launch"
 assert contract["launcher"]["source"] == "integrations/hermes/bin/factory-launch"
 commands = contract["launcher"]["commands"]
+dispatch = commands["dispatch-plan"]
+assert dispatch["minimum_contract_version"] == "1.6.0"
+assert dispatch["grammars"] == ["--shadow --json", "--claim --json"]
+assert dispatch["output_schema"] == "nysa.software-factory.dispatch-plan/v1"
+ticket_pr = commands["ticket-pr"]
+assert ticket_pr["minimum_contract_version"] == "1.6.0"
+assert ticket_pr["output_schema"] == "nysa.software-factory.ticket-pr/v1"
 assert commands["contract"]["arguments"] == ["--json"]
 assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
 assert commands["models"]["minimum_contract_version"] == "1.2.0"
@@ -2051,13 +2081,37 @@ assert provider_execution["coordinator"]["transaction"] == "BEGIN IMMEDIATE"
 assert provider_execution["coordinator"]["database"].endswith("state-v2.sqlite3")
 assert "integer micro-USD" in \
     provider_execution["coordinator"]["financial_accounting"]
+broker = provider_execution["credential_broker"]
+assert broker["authority"] == "scripts/provider-credential-broker.py"
+assert broker["database"].endswith("credential-broker.sqlite3")
+assert broker["token_binding"] == [
+    "attempt_id", "route_id", "model", "reserve_micro_usd", "expires_at",
+    "max_requests",
+]
+assert "TLS endpoint" in broker["transport"]
+assert "no redirects" in broker["proxy_policy"]
+assert "revokes" in broker["revocation"]
 assert provider_execution["worker"]["request_schema"] == \
-    "nysa.software-factory.provider-execution-request/v2"
+    "nysa.software-factory.provider-execution-request/v3"
+assert provider_execution["worker"]["image_lock"] == "worker/image-lock.json"
+assert provider_execution["worker"]["image_lock_schema"].endswith(
+    "provider-worker-image-lock/v1"
+)
 assert provider_execution["worker"]["identity_binding"] == [
     "ticket", "role", "attempt_id", "base_sha", "input_sha256", "route_id",
-    "policy_sha256", "image_digest", "source_sha256", "command",
+    "policy_sha256", "image_digest", "source_sha256", "worker_sha256",
+    "command",
 ]
-assert "provider-only egress" in provider_execution["worker"]["network"]
+assert provider_execution["worker"]["network"].startswith("none;")
+assert "trusted host runtime" in provider_execution["worker"]["network"]
+assert provider_execution["controller"]["artifact_authority"] == \
+    "scripts/provider-artifact-controller.py"
+assert provider_execution["controller"]["artifact_schema"].endswith(
+    "provider-patch-artifact/v1"
+)
+assert provider_execution["recovery"]["authority"] == "scripts/provider-recovery.py"
+assert "persist request before signaling" in \
+    provider_execution["recovery"]["cancellation"]
 assert "no isolated-v1 admission" in provider_execution["legacy_barrier"]
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
@@ -2100,6 +2154,16 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROJECT": "validated launcher project slug",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
+    "FACTORY_PROVIDER_DB": "fixed Contract 1.6 owner-local transactional database",
+    "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6 owner-local admission policy",
+    "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
+    "FACTORY_PROVIDER_CREDENTIALS": "fixed Contract 1.6 owner-local credential configuration",
+    "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
+    "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6 owner-local attempt directory",
+    "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6 owner-local apply-lock directory",
+    "FACTORY_PROVIDER_ACTIVATION": "fixed Contract 1.6 owner-local isolated-v1 activation gate",
+    "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
+    "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor",
 }
 assert contract["launcher"]["helper_environment_allowlist"] == [
     "HOME",
@@ -2114,6 +2178,16 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_PROJECT",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
+    "FACTORY_PROVIDER_DB",
+    "FACTORY_PROVIDER_POLICY",
+    "FACTORY_PROVIDER_BROKER_DB",
+    "FACTORY_PROVIDER_CREDENTIALS",
+    "FACTORY_PROVIDER_ARTIFACT_POLICY",
+    "FACTORY_PROVIDER_ATTEMPT_ROOT",
+    "FACTORY_PROVIDER_APPLY_LOCK_ROOT",
+    "FACTORY_PROVIDER_ACTIVATION",
+    "FACTORY_PROVIDER_BROKER_URL",
+    "FACTORY_PROVIDER_BROKER_CA",
     "GH_TOKEN",
 ]
 assert contract["launcher"]["helper_optional_credentials"]["GH_TOKEN"] == {
@@ -2144,8 +2218,17 @@ assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_recei
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 for surface in [
     "scripts/provider-coordinator.py",
+    "scripts/provider-credential-broker.py",
+    "scripts/provider-activation.py",
+    "scripts/provider-artifact-controller.py",
     "scripts/provider-executor.py",
+    "scripts/provider-isolated-run.py",
+    "scripts/provider-recovery.py",
     "scripts/provider-runtime.py",
+    "scripts/provider-worker-image.py",
+    "worker/Dockerfile",
+    "worker/image-lock.json",
+    "worker/provider-worker.mjs",
     "scripts/model-control.sh",
     "scripts/model-manager.py",
     "scripts/model-router.py",
@@ -2172,6 +2255,7 @@ required = [
     "fixtures/projects/relay.env",
     "templates/profile/SOUL.md",
     "templates/profile/skills/factory-dispatch/SKILL.md",
+    "templates/profile/skills/factory-supervisor/SKILL.md",
     "templates/launchd/com.nysa.hermes-factory-gateway.plist",
     "templates/launchd/com.nysa.hermes-dashboard.plist",
 ]
@@ -2186,6 +2270,7 @@ assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 for relative in [
     "templates/profile/SOUL.md",
     "templates/profile/skills/factory-dispatch/SKILL.md",
+    "templates/profile/skills/factory-supervisor/SKILL.md",
 ]:
     text = open(os.path.join(integration, relative), encoding="utf-8").read()
     assert "~/.factory/bin/factory-launch" in text
@@ -2216,9 +2301,19 @@ assert "preflight --ticket <T-NNN> --role <next-stage-role>" in skill
 assert "factory-launch <project> ticket-state" in skill
 assert "factory-launch <project> ticket-attest" in skill
 assert "factory-launch <project> project-ledger" in skill
+assert "factory-launch <project> ticket-pr" in skill
 assert "copy, reconstruct, reorder, or hand-edit ledger rows" in skill
 assert "--ticket <T-NNN>" in skill
 assert "--workdir <absolute-product-worktree>" in skill
+
+supervisor = open(
+    os.path.join(integration, "templates/profile/skills/factory-supervisor/SKILL.md"),
+    encoding="utf-8",
+).read()
+assert "version: 1.6.0" in supervisor
+assert "dispatch-plan --claim --json" in supervisor
+assert "starts at most one child" in supervisor
+assert re.search(r"Never\s+put the lease", supervisor)
 
 soul = open(
     os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
@@ -2239,6 +2334,7 @@ fixture = json.load(open(os.path.join(integration, "fixtures/factory-profile.jso
 assert fixture["redacted"] is True
 assert fixture["secret_values_included"] is False
 assert fixture["profile"]["environment_key_presence"] == {"GH_TOKEN": True}
+assert "skills/factory-supervisor/SKILL.md" in fixture["profile"]["files"]
 assert fixture["services"] == [
     {"kind": "gateway", "launch_agent": "separate"},
     {"kind": "dashboard", "launch_agent": "separate"},
