@@ -272,8 +272,10 @@ same-UID token exposure remains until a broker or OS isolation is used.
   protected merge of that exact product head grants authority.
 - Don't: migrate or repin the reconciled tickets, synthesize missing approval,
   accept a partial/extra batch or an unbound companion, hand-edit generated
-  evidence, or use the format for later tickets. Any protected-basis or batch
-  drift requires regeneration.
+  evidence, or use the format for later tickets. The reconciliation directory
+  and terminal projections remain immutable after adoption. The target pin and
+  companion blobs are bound at that protected introduction but may evolve in
+  later authorized releases without rewriting the historical batch.
 
 ## Test commit order before operator review
 
