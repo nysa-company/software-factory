@@ -723,6 +723,36 @@ else:
         command("git", "push", "-q", "origin", "main", cwd=updater)
         self.assertIn("historical refresh receipt", self.attest("refresh").stderr)
 
+        old_head = self.head()
+        base_head = self.head_at(updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "merge", "--no-ff", "--no-edit", base_head, cwd=self.product,
+        )
+        merge_head = self.head()
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({
+            "schema": "nysa.software-factory.ticket-refresh/v1",
+            "ticket": "T-700",
+            "generation": 1,
+            "old_head": old_head,
+            "base_head": base_head,
+            "merge_head": merge_head,
+            "prior_reviewer_runs": 1,
+            "prior_approve_verdicts": 1,
+            "prior_request_changes_verdicts": 0,
+            "prior_narrator_runs": 1,
+            "prior_bundle_blob": None,
+            "prior_approval_blob": None,
+            "refreshed_at": "2026-07-17T14:00:00Z",
+        }, indent=2, sort_keys=True) + "\n")
+        self.commit("forge reset refresh generation")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.assertIn(
+            "prior refresh receipt is missing from the recorded old head",
+            self.attest("bundle").stderr,
+        )
+
     def test_bundle_refuses_forged_refresh_generation_and_topology(self):
         old_head = self.head()
         receipt = self.product / "factory/attestations/T-700/refresh.json"

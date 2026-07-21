@@ -553,6 +553,10 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         ):
             raise Refusal("prior refresh generation is invalid")
         expected_generation = previous_generation + 1
+    elif git(
+        workdir, "log", "-1", "--format=%H", receipt["old_head"], "--", relative,
+    ).stdout.strip():
+        raise Refusal("prior refresh receipt is missing from the recorded old head")
     if generation != expected_generation:
         raise Refusal("refresh generation is not continuous")
     old_ticket = git(
