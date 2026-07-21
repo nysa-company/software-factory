@@ -35,7 +35,7 @@ CLASSIFICATIONS = {
 AUTH_KEYS = {
     "schema", "repository", "basis_kit_sha", "target_kit_sha",
     "candidate_contract", "cutoff", "protected_main_basis",
-    "required_checks", "authorization", "tickets",
+    "required_checks", "authorization", "companions", "tickets",
 }
 AUTH_TICKET_KEYS = {
     "ticket", "source_state", "source_kit_sha", "classification",
@@ -116,6 +116,15 @@ def _path(value, label):
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or path.parts[0] == "factory":
         raise ValidationError(f"{label} must be a non-factory repository path")
+    return value
+
+
+def _companion_path(value):
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValidationError("reconciliation companion path is invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or value == "factory/KIT_PIN" or value.startswith(MIGRATION_DIR + "/"):
+        raise ValidationError("reconciliation companion path is reserved or invalid")
     return value
 
 
@@ -300,11 +309,14 @@ def _validate_source_evidence(repo, ticket, receipt, original):
 
 
 def _migration_commit(repo, ref, basis, expected_paths):
-    matches = []
-    for commit in run(
+    additions = run(
         repo, "log", "--format=%H", "--diff-filter=A", ref, "--",
         f"{MIGRATION_DIR}/authorization.json",
-    ).stdout.splitlines():
+    ).stdout.splitlines()
+    if len(additions) != 1:
+        raise ValidationError("reconciliation authorization was introduced more than once")
+    matches = []
+    for commit in additions:
         parents = run(repo, "show", "-s", "--format=%P", commit).stdout.split()
         paths = set(run(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", commit).stdout.splitlines())
         if parents == [basis] and paths == expected_paths:
@@ -395,6 +407,19 @@ def _validate_documents(repo, ref, authorization, receipts):
         expected[ticket] = entry
     if list(expected) != sorted(expected):
         raise ValidationError("reconciliation tickets must be sorted")
+    companions = authorization["companions"]
+    if not isinstance(companions, list):
+        raise ValidationError("reconciliation companions must be a list")
+    companion_paths = []
+    for companion in companions:
+        exact(companion, PATH_KEYS, "reconciliation companion")
+        companion_paths.append(_companion_path(companion["path"]))
+        oid(companion["blob"], "reconciliation companion blob")
+    if companion_paths != sorted(companion_paths) or len(companion_paths) != len(set(companion_paths)):
+        raise ValidationError("reconciliation companions must be sorted and unique")
+    reserved_tickets = {f"factory/tickets/{ticket}.md" for ticket in expected}
+    if set(companion_paths) & reserved_tickets:
+        raise ValidationError("reconciliation companion collides with a terminal ticket")
     if set(receipts) != set(expected):
         raise ValidationError("reconciliation receipt batch is partial or extra")
     expected_files = {
@@ -404,8 +429,16 @@ def _validate_documents(repo, ref, authorization, receipts):
     actual_files = set(run(repo, "ls-tree", "-r", "--name-only", ref, "--", MIGRATION_DIR).stdout.splitlines())
     if actual_files != expected_files:
         raise ValidationError("reconciliation directory has missing or extra files")
-    expected_paths = {"factory/KIT_PIN", *expected_files, *(f"factory/tickets/{ticket}.md" for ticket in expected)}
+    expected_paths = {
+        "factory/KIT_PIN", *expected_files, *reserved_tickets, *companion_paths,
+    }
     migration_commit = _migration_commit(repo, ref, basis["commit"], expected_paths)
+    later_touches = run(
+        repo, "log", "--format=%H", f"{migration_commit}..{ref}", "--",
+        *sorted(expected_paths),
+    ).stdout.splitlines()
+    if later_touches:
+        raise ValidationError("reconciliation evidence or companions changed after introduction")
     if (
         text_at(repo, migration_commit, "factory/KIT_PIN") != authorization["target_kit_sha"] + "\n"
         or timestamp(run(repo, "show", "-s", "--format=%cI", migration_commit).stdout.strip(), "migration time") < cutoff
@@ -414,6 +447,9 @@ def _validate_documents(repo, ref, authorization, receipts):
     for path in expected_paths - {"factory/KIT_PIN"}:
         if blob_at(repo, migration_commit, path) != blob_at(repo, ref, path):
             raise ValidationError("reconciliation evidence changed after protected merge")
+    for companion in companions:
+        if blob_at(repo, migration_commit, companion["path"]) != companion["blob"]:
+            raise ValidationError("reconciliation companion blob does not match authorization")
     auth_blob = blob_at(repo, ref, f"{MIGRATION_DIR}/authorization.json")
     for ticket, entry in expected.items():
         receipt = exact(receipts[ticket], RECEIPT_KEYS, f"{ticket} reconciliation receipt")

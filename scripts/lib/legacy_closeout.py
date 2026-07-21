@@ -714,10 +714,15 @@ def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     repo = Path(repo).resolve(strict=True)
     commit = run(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
     oid(commit, "protected-main commit")
-    normal = _normal_terminal(repo, ticket, commit)
+    reconciliation = _protected_merge_reconciliation_batch_at(str(repo), commit)
+    if ticket in reconciliation:
+        normal_root = f"factory/attestations/{ticket}"
+        normal_done = json_at(repo, commit, f"{normal_root}/done.json", "Done attestation")
+        normal = _normal_terminal(repo, ticket, commit) if normal_done is not None else None
+    else:
+        normal = _normal_terminal(repo, ticket, commit)
     legacy = _legacy_batch_at(str(repo), commit)
     backfill = _terminal_backfill_batch_at(str(repo), commit)
-    reconciliation = _protected_merge_reconciliation_batch_at(str(repo), commit)
     evidence_count = sum((
         normal is not None,
         ticket in legacy,

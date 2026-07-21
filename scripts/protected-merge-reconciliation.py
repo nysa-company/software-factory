@@ -31,7 +31,7 @@ REQUEST_SCHEMA = "nysa.software-factory.protected-merge-reconciliation-request/v
 REQUEST_KEYS = {
     "schema", "repository", "basis_kit_sha", "target_kit_sha",
     "candidate_contract", "cutoff", "protected_main_basis",
-    "required_checks", "authorization", "tickets",
+    "required_checks", "authorization", "companions", "tickets",
 }
 REQUEST_TICKET_KEYS = {
     "ticket", "classification", "original_pr_number", "adoption_pr_number",
@@ -234,12 +234,13 @@ def generate(product, request_path):
     basis = exact(request["protected_main_basis"], {"commit", "tree"}, "request basis")
     basis_commit = oid(basis["commit"], "request basis commit")
     oid(basis["tree"], "request basis tree")
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
     if (
-        git(repo, "rev-parse", "HEAD").stdout.strip() != basis_commit
-        or git(repo, "rev-parse", "refs/remotes/origin/main").stdout.strip() != basis_commit
+        git(repo, "rev-parse", "refs/remotes/origin/main").stdout.strip() != basis_commit
         or git(repo, "rev-parse", f"{basis_commit}^{{tree}}").stdout.strip() != basis["tree"]
+        or git(repo, "merge-base", "--is-ancestor", basis_commit, head, check=False).returncode
     ):
-        raise ValidationError("HEAD, origin/main, and request basis must match exactly")
+        raise ValidationError("origin/main must match the basis and prep HEAD must descend from it")
     if project_value(repo, basis_commit, "GH_REPO") != request["repository"]:
         raise ValidationError("request repository does not match product configuration")
     if source_text(repo, basis_commit, "factory/KIT_PIN") != request["basis_kit_sha"] + "\n":
@@ -271,6 +272,40 @@ def generate(product, request_path):
     ticket_requests = request["tickets"]
     if not isinstance(ticket_requests, list) or not ticket_requests:
         raise ValidationError("request ticket batch is empty")
+    companions = request["companions"]
+    if not isinstance(companions, list):
+        raise ValidationError("request companions must be a list")
+    companion_paths = []
+    companion_files = {}
+    for companion in companions:
+        exact(companion, {"path", "blob"}, "request companion")
+        path = companion["path"]
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or ".." in Path(path).parts
+            or path == "factory/KIT_PIN"
+            or path.startswith(MIGRATION_DIR + "/")
+        ):
+            raise ValidationError("request companion path is reserved or invalid")
+        oid(companion["blob"], "request companion blob")
+        companion_paths.append(path)
+        content = source_text(repo, head, path)
+        if source_blob(repo, head, path) != companion["blob"]:
+            raise ValidationError("request companion blob does not match prep HEAD")
+        companion_files[path] = content
+    if companion_paths != sorted(companion_paths) or len(companion_paths) != len(set(companion_paths)):
+        raise ValidationError("request companions must be sorted and unique")
+    reserved_ticket_paths = {
+        f"factory/tickets/{item.get('ticket')}.md"
+        for item in ticket_requests if isinstance(item, dict)
+    }
+    if set(companion_paths) & reserved_ticket_paths:
+        raise ValidationError("request companion collides with a terminal ticket")
+    changed = git(repo, "diff", "--name-only", basis_commit, head).stdout.splitlines()
+    if changed != companion_paths:
+        raise ValidationError("prep HEAD differs from the basis outside exact companions")
     receipts = {}
     terminals = {}
     auth_entries = []
@@ -403,6 +438,7 @@ def generate(product, request_path):
         "protected_main_basis": basis,
         "required_checks": sorted(required, key=lambda value: value["name"]),
         "authorization": approval,
+        "companions": companions,
         "tickets": auth_entries,
     }
     auth_text = canonical(authorization)
@@ -410,6 +446,7 @@ def generate(product, request_path):
     for receipt in receipts.values():
         receipt["authorization_blob"] = auth_blob
     files = {
+        **companion_files,
         "factory/KIT_PIN": request["target_kit_sha"] + "\n",
         f"{MIGRATION_DIR}/authorization.json": auth_text,
         **{f"{MIGRATION_DIR}/{ticket}.json": canonical(receipt) for ticket, receipt in receipts.items()},
