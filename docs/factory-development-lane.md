@@ -14,7 +14,7 @@ The command creates a private `nysa-sf-dev.*` directory directly under `TMPDIR`,
 
 ## Real Cursor lifecycle
 
-The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`; API keys are intentionally rejected:
+The real probe is an explicit release gate. Put the Cursor `agent` binary on `PATH`; API keys are intentionally rejected. If the disposable home is not authenticated, `cursor-plan` opens Cursor's browser login:
 
 ```bash
 bash scripts/factory-dev-lane.sh cursor-plan
@@ -23,7 +23,7 @@ bash scripts/factory-dev-lane.sh cursor-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-`cursor-plan` copies Cursor's CLI configuration and authentication file into the owner-only disposable home; Keychain access remains denied. It binds the one-use approval to both session files, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. Cleanup deletes the disposable copies. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
+`cursor-plan` creates an owner-only CLI configuration and browser-authenticated session inside the disposable home; it does not read the normal Cursor profile and Keychain access remains denied. It binds the one-use approval to both session files, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. Cleanup deletes the session. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
 
 ## Cleanup and boundaries
 

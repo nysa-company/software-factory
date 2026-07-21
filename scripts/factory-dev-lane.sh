@@ -344,21 +344,8 @@ EOF
   git -C "$root/worktrees/$TICKET" push -q -u origin "ticket/$TICKET"
   if [[ "$mode" == cursor ]]; then
     mkdir -p "$root/home/.cursor"
-    if [[ "$TEST_MODE" -eq 1 ]]; then
-      printf '{}\n' > "$root/home/.cursor/cli-config.json"
-      printf '{"accessToken":"test","refreshToken":"test"}\n' > \
-        "$root/home/.cursor/auth.json"
-    else
-      [[ -f "$ACCOUNT_HOME/.cursor/cli-config.json" &&
-         ! -L "$ACCOUNT_HOME/.cursor/cli-config.json" ]] ||
-        die "authenticated Cursor CLI configuration is unavailable"
-      [[ -f "$ACCOUNT_HOME/.cursor/auth.json" &&
-         ! -L "$ACCOUNT_HOME/.cursor/auth.json" ]] ||
-        die "authenticated Cursor CLI session is unavailable"
-      cp "$ACCOUNT_HOME/.cursor/cli-config.json" "$root/home/.cursor/cli-config.json"
-      cp "$ACCOUNT_HOME/.cursor/auth.json" "$root/home/.cursor/auth.json"
-    fi
-    chmod 600 "$root/home/.cursor/cli-config.json" "$root/home/.cursor/auth.json"
+    printf '{}\n' > "$root/home/.cursor/cli-config.json"
+    chmod 600 "$root/home/.cursor/cli-config.json"
     cursor="$(cursor_bin)"
     timeout_bin="$(command -v timeout 2>/dev/null || true)"
     [[ "$timeout_bin" == /* && -x "$timeout_bin" ]] ||
@@ -476,8 +463,13 @@ run_mock_internal() {
 cursor_probe_and_pin() {
   local root="$1" version openai anthropic route_plan approval_hash
   require_lane_mode "$root" cursor
-  "$root/home/agent" status >/dev/null 2>&1 ||
-    die "Cursor CLI session is not authenticated"
+  if ! "$root/home/agent" status >/dev/null 2>&1; then
+    "$root/home/agent" login || die "Cursor browser login failed"
+  fi
+  "$root/home/agent" status >/dev/null 2>&1 || die "Cursor CLI session is not authenticated"
+  [[ -f "$root/home/.cursor/auth.json" && ! -L "$root/home/.cursor/auth.json" ]] ||
+    die "Cursor browser login did not create a lane-local session"
+  chmod 600 "$root/home/.cursor/auth.json"
   version="$("$root/home/agent" --version | awk 'NF {print $NF; exit}')"
   [[ -n "$version" ]] || die "Cursor version probe was empty"
   openai="$(python3 - "$root/kit/scripts/model-routing/catalog-v1.json" <<'PY'

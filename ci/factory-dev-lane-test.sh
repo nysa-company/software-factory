@@ -71,7 +71,8 @@ cat >"$FAKE_CURSOR" <<'EOF'
 case "${1:-}" in
   --version) printf '2026.07.17-test\n' ;;
   --help) printf '%s\n' --print --output-format --workspace --model --force --trust ;;
-  status) printf '{"authenticated":true}\n' ;;
+  status) [[ -f "$HOME/.cursor/auth.json" ]] || exit 1; printf '{"authenticated":true}\n' ;;
+  login) printf '{"accessToken":"test","refreshToken":"test"}\n' > "$HOME/.cursor/auth.json" ;;
   models) printf '%s\n' gpt-5.6-sol-high claude-fable-5-thinking-medium \
     claude-sonnet-5-thinking-high ;;
   *) exit 42 ;;
