@@ -227,11 +227,15 @@ cursor_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 approval_hash="$(sed -n 's/^APPROVE_HASH=//p' "$OUT")"
 [[ "$cursor_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "cursor plan returned an unsafe root"
 [[ "$approval_hash" =~ ^[0-9a-f]{64}$ ]] || fail "cursor plan returned an invalid approval hash"
-[[ -f "$cursor_root/home/.cursor/cli-config.json" &&
-   ! -L "$cursor_root/home/.cursor/cli-config.json" ]] ||
-  fail "Cursor session configuration is not lane-local"
-[[ "$(stat -f '%Lp' "$cursor_root/home/.cursor/cli-config.json")" == 600 ]] ||
-  fail "Cursor session configuration is not owner-only"
+for session_file in cli-config.json auth.json; do
+  [[ -f "$cursor_root/home/.cursor/$session_file" &&
+     ! -L "$cursor_root/home/.cursor/$session_file" ]] ||
+    fail "Cursor session file is not lane-local: $session_file"
+  [[ "$(stat -f '%Lp' "$cursor_root/home/.cursor/$session_file")" == 600 ]] ||
+    fail "Cursor session file is not owner-only: $session_file"
+done
+grep -Fq 'com.apple.securityd' "$cursor_root/runtime/cursor.sb" ||
+  fail "Cursor profile does not deny Keychain access"
 bad_hash="${approval_hash%?}0"
 [[ "$bad_hash" != "$approval_hash" ]] || bad_hash="${approval_hash%?}1"
 expect_failure "wrong cursor approval hash" cursor_env bash "$LANE" cursor-run \

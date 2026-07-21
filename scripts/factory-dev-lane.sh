@@ -52,6 +52,7 @@ PY
     git -C "$root/worktrees/$TICKET" rev-parse 'HEAD^{tree}'
     printf '%s\n' "$version" "$cursor" "$(sha256_file "$cursor")" \
       "$(sha256_file "$root/home/.cursor/cli-config.json")" \
+      "$(sha256_file "$root/home/.cursor/auth.json")" \
       "$(sha256_file "$route_plan")" "$(basename "$root")"
   } | sha256_text
 }
@@ -238,10 +239,9 @@ base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow file-read-metadata (literal "/dev"))\n',
          '(allow file-read* (subpath "/dev/fd"))\n',
          '(allow file-write* (subpath "/dev/fd"))\n',
-         '(allow signal (target same-sandbox))\n']
-pathlib.Path(root, "runtime/mock.sb").write_text(
-    "".join(base) + '(deny mach-lookup (global-name "com.apple.securityd"))\n'
-    + "(deny network*)\n")
+         '(allow signal (target same-sandbox))\n',
+         '(deny mach-lookup (global-name "com.apple.securityd"))\n']
+pathlib.Path(root, "runtime/mock.sb").write_text("".join(base) + "(deny network*)\n")
 cursor_network = ('(allow network-bind (local ip "localhost:*"))\n'
                   '(allow network-inbound (local ip "localhost:*"))\n'
                   '(allow network-outbound (remote ip "localhost:*"))\n'
@@ -346,13 +346,19 @@ EOF
     mkdir -p "$root/home/.cursor"
     if [[ "$TEST_MODE" -eq 1 ]]; then
       printf '{}\n' > "$root/home/.cursor/cli-config.json"
+      printf '{"accessToken":"test","refreshToken":"test"}\n' > \
+        "$root/home/.cursor/auth.json"
     else
       [[ -f "$ACCOUNT_HOME/.cursor/cli-config.json" &&
          ! -L "$ACCOUNT_HOME/.cursor/cli-config.json" ]] ||
         die "authenticated Cursor CLI configuration is unavailable"
+      [[ -f "$ACCOUNT_HOME/.cursor/auth.json" &&
+         ! -L "$ACCOUNT_HOME/.cursor/auth.json" ]] ||
+        die "authenticated Cursor CLI session is unavailable"
       cp "$ACCOUNT_HOME/.cursor/cli-config.json" "$root/home/.cursor/cli-config.json"
+      cp "$ACCOUNT_HOME/.cursor/auth.json" "$root/home/.cursor/auth.json"
     fi
-    chmod 600 "$root/home/.cursor/cli-config.json"
+    chmod 600 "$root/home/.cursor/cli-config.json" "$root/home/.cursor/auth.json"
     cursor="$(cursor_bin)"
     timeout_bin="$(command -v timeout 2>/dev/null || true)"
     [[ "$timeout_bin" == /* && -x "$timeout_bin" ]] ||

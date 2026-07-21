@@ -23,7 +23,7 @@ bash scripts/factory-dev-lane.sh cursor-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-`cursor-plan` copies the non-secret CLI configuration into the disposable home and uses the existing Cursor login through macOS credential services. It binds the one-use approval to that configuration, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
+`cursor-plan` copies Cursor's CLI configuration and authentication file into the owner-only disposable home; Keychain access remains denied. It binds the one-use approval to both session files, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. Cleanup deletes the disposable copies. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
 
 ## Cleanup and boundaries
 
