@@ -51,6 +51,7 @@ PY
     git -C "$root/kit" rev-parse 'HEAD^{tree}'
     git -C "$root/worktrees/$TICKET" rev-parse 'HEAD^{tree}'
     printf '%s\n' "$version" "$cursor" "$(sha256_file "$cursor")" \
+      "$(sha256_file "$root/home/.cursor/cli-config.json")" \
       "$(sha256_file "$route_plan")" "$(basename "$root")"
   } | sha256_text
 }
@@ -237,9 +238,10 @@ base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow file-read-metadata (literal "/dev"))\n',
          '(allow file-read* (subpath "/dev/fd"))\n',
          '(allow file-write* (subpath "/dev/fd"))\n',
-         '(allow signal (target same-sandbox))\n',
-         '(deny mach-lookup (global-name "com.apple.securityd"))\n']
-pathlib.Path(root, "runtime/mock.sb").write_text("".join(base) + "(deny network*)\n")
+         '(allow signal (target same-sandbox))\n']
+pathlib.Path(root, "runtime/mock.sb").write_text(
+    "".join(base) + '(deny mach-lookup (global-name "com.apple.securityd"))\n'
+    + "(deny network*)\n")
 cursor_network = ('(allow network-bind (local ip "localhost:*"))\n'
                   '(allow network-inbound (local ip "localhost:*"))\n'
                   '(allow network-outbound (remote ip "localhost:*"))\n'
@@ -341,6 +343,16 @@ EOF
     "$root/worktrees/$TICKET" main
   git -C "$root/worktrees/$TICKET" push -q -u origin "ticket/$TICKET"
   if [[ "$mode" == cursor ]]; then
+    mkdir -p "$root/home/.cursor"
+    if [[ "$TEST_MODE" -eq 1 ]]; then
+      printf '{}\n' > "$root/home/.cursor/cli-config.json"
+    else
+      [[ -f "$ACCOUNT_HOME/.cursor/cli-config.json" &&
+         ! -L "$ACCOUNT_HOME/.cursor/cli-config.json" ]] ||
+        die "authenticated Cursor CLI configuration is unavailable"
+      cp "$ACCOUNT_HOME/.cursor/cli-config.json" "$root/home/.cursor/cli-config.json"
+    fi
+    chmod 600 "$root/home/.cursor/cli-config.json"
     cursor="$(cursor_bin)"
     timeout_bin="$(command -v timeout 2>/dev/null || true)"
     [[ "$timeout_bin" == /* && -x "$timeout_bin" ]] ||
@@ -414,13 +426,12 @@ lane_env() {
 
 lane_cursor_env() {
   local root="$1"; shift
-  printf '%s\n' "$CURSOR_API_KEY" | env -i HOME="$root/home" TMPDIR="$root/tmp" \
+  env -i HOME="$root/home" TMPDIR="$root/tmp" \
     LANG=C LC_ALL=C PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
     FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT=factory-dev-lane \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-    FACTORY_HERMES_CONTRACT_VERSION=1.6.0 \
-    bash -c 'IFS= read -r CURSOR_API_KEY; export CURSOR_API_KEY; exec "$@"' _ "$@"
+    FACTORY_HERMES_CONTRACT_VERSION=1.6.0 "$@"
 }
 
 next_stage() {
@@ -458,10 +469,9 @@ run_mock_internal() {
 
 cursor_probe_and_pin() {
   local root="$1" version openai anthropic route_plan approval_hash
-  IFS= read -r CURSOR_API_KEY || die "Cursor credential was not supplied"
   require_lane_mode "$root" cursor
-  [[ -n "$CURSOR_API_KEY" ]] || die "Cursor credential was empty"
-  export CURSOR_API_KEY
+  "$root/home/agent" status >/dev/null 2>&1 ||
+    die "Cursor CLI session is not authenticated"
   version="$("$root/home/agent" --version | awk 'NF {print $NF; exit}')"
   [[ -n "$version" ]] || die "Cursor version probe was empty"
   openai="$(python3 - "$root/kit/scripts/model-routing/catalog-v1.json" <<'PY'
@@ -507,10 +517,7 @@ PY
 
 run_cursor_internal() {
   local root="$1" supplied="$2" stored role output latest version
-  IFS= read -r CURSOR_API_KEY || die "Cursor credential was not supplied"
   require_lane_mode "$root" cursor
-  [[ -n "$CURSOR_API_KEY" ]] || die "Cursor credential was empty"
-  export CURSOR_API_KEY
   [[ -f "$root/runtime/cursor-approval" && ! -L "$root/runtime/cursor-approval" ]] ||
     die "Cursor approval is missing or already used"
   stored="$(sed -n 's/^approval_hash=//p' "$root/runtime/cursor-approval")"
@@ -572,12 +579,10 @@ case "$command" in
   cursor-plan)
     assert_macos
     [[ $# -eq 0 ]] || usage
-    [[ -n "${CURSOR_API_KEY:-}" ]] || die "CURSOR_API_KEY is required"
-    [[ "${FACTORY_DEV_CURSOR_CREDENTIAL:-}" == dedicated ]] ||
-      die "set FACTORY_DEV_CURSOR_CREDENTIAL=dedicated to attest this is not a production credential"
+    [[ -z "${CURSOR_API_KEY:-}" ]] || die "use the authenticated Cursor CLI, not CURSOR_API_KEY"
     root="$(create_lane cursor)"
     echo "ROOT=$root"
-    printf '%s\n' "$CURSOR_API_KEY" | run_in_sandbox "$root" cursor __cursor-plan --root "$root"
+    run_in_sandbox "$root" cursor __cursor-plan --root "$root"
     ;;
   cursor-run)
     assert_macos
@@ -591,10 +596,8 @@ case "$command" in
     done
     [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
-    [[ -n "${CURSOR_API_KEY:-}" ]] || die "CURSOR_API_KEY is required"
-    [[ "${FACTORY_DEV_CURSOR_CREDENTIAL:-}" == dedicated ]] ||
-      die "set FACTORY_DEV_CURSOR_CREDENTIAL=dedicated to attest this is not a production credential"
-    printf '%s\n' "$CURSOR_API_KEY" | run_in_sandbox "$root" cursor __cursor-run \
+    [[ -z "${CURSOR_API_KEY:-}" ]] || die "use the authenticated Cursor CLI, not CURSOR_API_KEY"
+    run_in_sandbox "$root" cursor __cursor-run \
       --root "$root" --approve-hash "$approve"
     ;;
   clean)

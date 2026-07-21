@@ -9,14 +9,13 @@ FAKE_SANDBOX="$TMP/sandbox-exec"
 FAKE_CURSOR="$TMP/cursor-agent"
 OUT="$TMP/out"
 CALLER_HOME="$TMP/caller-home"
-CURSOR_TEST_KEY="factory-dev-lane-dummy-key-$RANDOM-$$"
 
 cleanup() {
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
-trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed "s/$CURSOR_TEST_KEY/[redacted]/g" "$OUT" >&2; exit "$status"' ERR
+trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed -n "1,120p" "$OUT" >&2; exit "$status"' ERR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
@@ -44,8 +43,6 @@ cursor_env() {
   FACTORY_DEV_LANE_UNAME=Darwin \
   FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
   FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
-  FACTORY_DEV_CURSOR_CREDENTIAL=dedicated \
-  CURSOR_API_KEY="$CURSOR_TEST_KEY" \
   HOME="$CALLER_HOME" \
   TMPDIR="$TMP/lanes" \
   "$@"
@@ -220,8 +217,7 @@ printf '{}\n' >"$forged/marker.json"
 expect_failure "forged cleanup" clean_cmd "$forged"
 [[ -d "$unmarked" && -d "$forged" ]] || fail "refused cleanup removed data"
 
-expect_failure "cursor plan without credential" test_env bash "$LANE" cursor-plan
-expect_failure "cursor plan with caller credential" env CURSOR_API_KEY=fake \
+expect_failure "cursor plan with API key" env CURSOR_API_KEY=fake \
   FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
   FACTORY_DEV_LANE_UNAME=Darwin FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
   TMPDIR="$TMP/lanes" bash "$LANE" cursor-plan
@@ -231,9 +227,11 @@ cursor_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 approval_hash="$(sed -n 's/^APPROVE_HASH=//p' "$OUT")"
 [[ "$cursor_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "cursor plan returned an unsafe root"
 [[ "$approval_hash" =~ ^[0-9a-f]{64}$ ]] || fail "cursor plan returned an invalid approval hash"
-if grep -R -Fq "$CURSOR_TEST_KEY" "$cursor_root"; then
-  fail "cursor credential was persisted in the lane"
-fi
+[[ -f "$cursor_root/home/.cursor/cli-config.json" &&
+   ! -L "$cursor_root/home/.cursor/cli-config.json" ]] ||
+  fail "Cursor session configuration is not lane-local"
+[[ "$(stat -f '%Lp' "$cursor_root/home/.cursor/cli-config.json")" == 600 ]] ||
+  fail "Cursor session configuration is not owner-only"
 bad_hash="${approval_hash%?}0"
 [[ "$bad_hash" != "$approval_hash" ]] || bad_hash="${approval_hash%?}1"
 expect_failure "wrong cursor approval hash" cursor_env bash "$LANE" cursor-run \
