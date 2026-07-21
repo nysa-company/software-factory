@@ -1125,15 +1125,11 @@ PY
            "$6" == "--workdir" && "$8" == "--reason" ]] || usage
         if [[ $# -eq 10 ]]; then
           [[ "${10}" == "--json" ]] || usage
-          MODEL_REVIEWER_EXCEPTION_ARGS=()
         else
           [[ "${10}" == "--allow-reviewer-family" && "${12}" == "--json" ]] ||
             usage
           [[ "${11}" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]] ||
             die "invalid Reviewer exception family"
-          MODEL_REVIEWER_EXCEPTION_ARGS=(
-            --allow-reviewer-family "${11}"
-          )
         fi
         [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
         [[ "$5" =~ ^[A-Za-z0-9._-]{1,200}$ ]] || die "invalid failed run identifier"
@@ -1142,8 +1138,10 @@ PY
         resolve_product_workdir "$7"
         validate_ticket_worktree "$3" 1
         MODEL_ARGS=("$MODEL_ACTION" --ticket "$3" --failed-run "$5" \
-          --workdir "$RESOLVED_WORKDIR" --reason "$9" \
-          "${MODEL_REVIEWER_EXCEPTION_ARGS[@]}")
+          --workdir "$RESOLVED_WORKDIR" --reason "$9")
+        if [[ $# -eq 12 ]]; then
+          MODEL_ARGS+=(--allow-reviewer-family "${11}")
+        fi
         add_certified_origin_env
         if [[ "$MODEL_ACTION" == "fallback" ]]; then
           MODEL_MUTATION=1
