@@ -90,8 +90,12 @@ duplicate, or unknown suite IDs. Only explicitly mapped single leaf components
 can recommend their direct and transitive suites plus CI-scope, immutability,
 and artifact-policy checks. The six audited leaf mappings remain available for
 focused local work. Behavioral pull requests run the complete registry on
-Linux and macOS in parallel. Pushes to `main` remain full on both platforms so
-release evidence covers the exact merged SHA.
+Linux and macOS. Each platform partitions it into the same three named shards
+so its slow factory-script, Hermes-contract, and release groups run in
+parallel. Pushes to `main` remain full on both platforms; release evidence
+requires all six shard jobs plus the aggregate and immutability jobs for the
+exact merged SHA. Historical runs with no shard jobs retain their legacy
+two-platform proof for rollback; any partial shard topology fails closed.
 
 During shadow execution, an unselected failure fails CI and is rerun once. Only
 a repeated failure is recorded as `SHADOW_MISS`; a passing recheck is recorded
@@ -110,11 +114,11 @@ An explicit argument-free `bash ci/test-all.sh` remains the complete command
 used by GitHub.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
-SHA with a successful authenticated GitHub Actions push run whose Linux,
-macOS, aggregate, and immutability jobs all passed. It then runs a sandboxed
-host smoke check locally. Missing, malformed, or unavailable remote evidence
-fails closed without running the complete suite locally. Expired certification
-evidence uses the same corroboration and smoke path.
+SHA with a successful authenticated GitHub Actions push run whose three Linux,
+three macOS, aggregate, and immutability jobs all passed. It then runs a
+sandboxed host smoke check locally. Missing, malformed, or unavailable remote
+evidence fails closed without running the complete suite locally. Expired
+certification evidence uses the same corroboration and smoke path.
 
 Model policy is kit-owned and certified by the same `KIT_PIN`. The route catalog
 separates adapter, transport, gateway, inference provider, provider family,

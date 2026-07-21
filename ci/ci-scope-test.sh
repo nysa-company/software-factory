@@ -21,6 +21,18 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: platform jobs must depend only on classification so they can run in parallel" >&2
   exit 1
 }
+[[ "$(grep -c 'shard: \[factory, hermes, release\]' "$WORKFLOW")" -eq 2 &&
+    "$(grep -c -- '--shard "${{ matrix.shard }}"' "$WORKFLOW")" -eq 4 ]] || {
+  echo "FAIL: Linux and macOS must each run the three complete-suite shards" >&2
+  exit 1
+}
+for job in linux-factory linux-hermes linux-release \
+  macos-bash-3-factory macos-bash-3-hermes macos-bash-3-release; do
+  grep -q "\"$job\"" "$ROOT/scripts/factory-kit.sh" || {
+    echo "FAIL: release evidence must require $job" >&2
+    exit 1
+  }
+done
 LIGHTWEIGHT="$ROOT/ci/lightweight-change.sh"
 MACOS="$ROOT/ci/macos-required-change.sh"
 SELECTOR="$ROOT/ci/changed-test-suites.sh"
@@ -227,6 +239,8 @@ mkdir -p "$RUNNER/ci"
 cp "$ROOT/ci/test-all.sh" "$RUNNER/ci/"
 printf '%s\n' '#!/usr/bin/env bash' 'suite_registry() {' \
   '  local callback="$1"' \
+  '  "$callback" factory-scripts "factory suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" hermes-contract "hermes suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" pass "pass suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" fail "fail suite" bash "$ROOT/ci/fail.sh"' \
   '  "$callback" ci-scope "scope suite" bash "$ROOT/ci/pass.sh"' \
@@ -262,6 +276,21 @@ runner_case 'invalid|fixture|pass' 0 0 'selector returned unknown mode' \
   'unknown mode fails closed to full'
 runner_case 'shadow|fixture|pass' 1 1 'SHADOW_MISS: fail was not selected and failed its immediate recheck' \
   'shadow miss is reproducible and fails'
+
+shard_case() {
+  local shard="$1" expected="$2" forbidden="$3" output status=0
+  output="$(cd "$RUNNER" && bash ci/test-all.sh --shard "$shard" 2>&1)" || status=$?
+  if [[ "$status" -ne 0 || "$output" != *"$expected"* || "$output" == *"$forbidden"* ]]; then
+    printf 'FAIL: %s shard selection (status %s; output %s)\n' "$shard" "$status" "$output" >&2
+    exit 1
+  fi
+}
+shard_case factory 'PASS: factory suite' 'PASS: hermes suite'
+shard_case hermes 'PASS: hermes suite' 'PASS: factory suite'
+shard_case release 'PASS: pass suite' 'PASS: factory suite'
+status=0
+(cd "$RUNNER" && bash ci/test-all.sh --shard unknown >/dev/null 2>&1) || status=$?
+[[ "$status" -eq 2 ]] || { echo "FAIL: unknown shard must be rejected" >&2; exit 1; }
 
 git -C "$RUNNER" init -q -b main
 git -C "$RUNNER" config user.name "Runner test"

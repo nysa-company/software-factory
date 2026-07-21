@@ -42,7 +42,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
-- 2026-07-21: Software Factory full suites moved to GitHub for behavioral PRs and `main`; local readiness runs focused policy gates, and install/certification require exact successful protected-main evidence plus local smoke. Host migration now verifies pinned CLIs and both Nysa Agents plugin installations before certification.
+- 2026-07-21: Software Factory full suites moved to GitHub for behavioral PRs and `main`; each platform uses three balanced shards while the aggregate remains the release gate. Local readiness runs focused policy gates, and install/certification require all six successful protected-main shard jobs plus aggregate/immutability evidence and local smoke. Host migration verifies pinned CLIs and both Nysa Agents plugin installations before certification.
 - 2026-07-21: Contract 1.6 now defaults the single coupled ticket-worktree/provider capacity to four. Contracts 1.1–1.5 retain their default of one.
 
 ## 2026-07-21 — Decision 53: Full factory verification is GitHub-owned

@@ -569,7 +569,14 @@ for job in jobs:
     name = job.get("name")
     if name and (name not in latest or int(job.get("id", 0)) > int(latest[name].get("id", 0))):
         latest[name] = job
-required = ("linux", "macos-bash-3", "ci", "test-immutability")
+sharded = (
+    "linux-factory", "linux-hermes", "linux-release",
+    "macos-bash-3-factory", "macos-bash-3-hermes", "macos-bash-3-release",
+)
+legacy = ("linux", "macos-bash-3")
+# A partial shard topology must never fall back to the legacy two-job proof.
+platform = sharded if any(name in latest for name in sharded) else legacy
+required = platform + ("ci", "test-immutability")
 if any(latest.get(name, {}).get("conclusion") != "success" for name in required):
     raise SystemExit(1)
 value = {

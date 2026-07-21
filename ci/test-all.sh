@@ -14,9 +14,14 @@ REASON="explicit full suite"
 SHADOW=0
 DEFER_FULL=0
 DEFER_AFTER=0
+SHARD="all"
 CHANGE_BASE="${BASE_REF:-origin/main}"
 trap 'rm -rf "$TMP"' EXIT
 . "$ROOT/ci/suite-registry.sh"
+
+# Keep the slowest suites on separate runners; new suites default to release.
+FACTORY_SHARD_IDS=" factory-scripts provider-executor provider-activation provider-artifact-controller "
+HERMES_SHARD_IDS=" hermes-contract preflight ticket-attest provider-coordinator provider-credential-broker provider-recovery "
 
 summary() {
   printf '%s\n' "$*"
@@ -45,10 +50,16 @@ fi
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
+    --shard)
+      [[ $# -eq 2 ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+      SHARD="$2"
+      case "$SHARD" in factory|hermes|release) ;; *) echo "unknown suite shard: $SHARD" >&2; exit 2 ;; esac
+      REASON="complete GitHub shard: $SHARD"
+      ;;
     --changed|--shadow-changed|--changed-or-defer)
       [[ "$1" != "--shadow-changed" ]] || SHADOW=1
       [[ "$1" != "--changed-or-defer" ]] || DEFER_FULL=1
-      [[ $# -ge 2 && $# -le 3 ]] || { echo "usage: ci/test-all.sh [--changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+      [[ $# -ge 2 && $# -le 3 ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
       CHANGE_BASE="$2"
       CHANGE_HEAD="${3:-HEAD}"
       SELECTION="$(bash "$ROOT/ci/changed-test-suites.sh" "$CHANGE_BASE" "$CHANGE_HEAD")" || SELECTION="full|selector failed|"
@@ -57,7 +68,7 @@ $SELECTION
 EOF
       ;;
     *)
-      echo "usage: ci/test-all.sh [--changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2
+      echo "usage: ci/test-all.sh [--shard factory|hermes|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2
       exit 2
       ;;
   esac
@@ -107,14 +118,23 @@ fi
 DISPLAY_SUITES="$SELECTED"
 [[ "$PLANNED_MODE" != "full" || "$DEFER_AFTER" -eq 1 ]] || DISPLAY_SUITES="all"
 [[ "$PLANNED_MODE" != "metadata" ]] || DISPLAY_SUITES="none"
-summary "CI selection: component_state=$PLANNED_MODE executed=$MODE reason=$REASON suites=$DISPLAY_SUITES"
+[[ "$SHARD" == "all" ]] || DISPLAY_SUITES="shard:$SHARD"
+summary "CI selection: component_state=$PLANNED_MODE executed=$MODE shard=$SHARD reason=$REASON suites=$DISPLAY_SUITES"
 
 selected() {
   [[ "$PLANNED_MODE" == "full" || " $SELECTED " == *" $1 "* ]]
 }
 
 should_run() {
-  [[ "$MODE" == "full" || ( "$MODE" == "targeted" && " $SELECTED " == *" $1 "* ) ]]
+  local id="$1"
+  case "$SHARD" in
+    factory) [[ "$FACTORY_SHARD_IDS" == *" $id "* ]] || return 1 ;;
+    hermes) [[ "$HERMES_SHARD_IDS" == *" $id "* ]] || return 1 ;;
+    release)
+      [[ "$FACTORY_SHARD_IDS" != *" $id "* && "$HERMES_SHARD_IDS" != *" $id "* ]] || return 1
+      ;;
+  esac
+  [[ "$MODE" == "full" || ( "$MODE" == "targeted" && " $SELECTED " == *" $id "* ) ]]
 }
 
 run_suite() {
@@ -154,10 +174,12 @@ run_immutability() {
 
 suite_registry run_suite
 
+RUN_LABEL="$MODE"
+[[ "$SHARD" == "all" ]] || RUN_LABEL="$SHARD shard"
 if [[ "$FAIL" -eq 0 ]]; then
-  summary "PASS: $MODE test suite ($((SECONDS - STARTED))s)"
+  summary "PASS: $RUN_LABEL test suite ($((SECONDS - STARTED))s)"
 else
-  summary "FAIL: $MODE test suite ($((SECONDS - STARTED))s)"
+  summary "FAIL: $RUN_LABEL test suite ($((SECONDS - STARTED))s)"
 fi
 [[ "$SHADOW_MISS" -eq 0 ]] || summary "SHADOW_MISS: full verification exposed an unselected failure"
 if [[ "$DEFER_AFTER" -eq 1 && "$FAIL" -eq 0 ]]; then

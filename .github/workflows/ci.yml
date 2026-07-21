@@ -40,8 +40,13 @@ jobs:
           fi
 
   linux:
+    name: linux-${{ matrix.shard }}
     needs: scope
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [factory, hermes, release]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,18 +71,23 @@ jobs:
         if: github.event_name == 'pull_request' && needs.scope.outputs.behavioral == 'true'
         env:
           BASE_REF: origin/main
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh --shard "${{ matrix.shard }}"
       - name: complete main verification
         if: github.event_name == 'push'
         env:
           BASE_REF: origin/main
           CI_FORCE_FULL: "1"
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh --shard "${{ matrix.shard }}"
 
   macos-bash-3:
+    name: macos-bash-3-${{ matrix.shard }}
     needs: scope
     if: needs.scope.outputs.behavioral == 'true'
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [factory, hermes, release]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,14 +99,14 @@ jobs:
         run: brew install coreutils
       - name: complete pull-request verification under system Bash
         if: github.event_name == 'pull_request'
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --shard "${{ matrix.shard }}"
       - name: complete main suite under system Bash
         if: github.event_name == 'push'
         env:
           CI_FORCE_FULL: "1"
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --shard "${{ matrix.shard }}"
 
-  # Keep the required context stable while Linux and macOS execute in parallel.
+  # Keep the required context stable while all six platform shards execute.
   ci:
     if: always()
     needs: [scope, linux, macos-bash-3]

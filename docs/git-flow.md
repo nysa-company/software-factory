@@ -122,9 +122,9 @@ sequencing. Contracts through `1.5.0` retain the bound of four; only Contract
 
 - Require a pull request before merging; no direct pushes.
 - Required status checks: `ci` and `test-immutability`, strict (branch up to
-  date). The `ci` context is an aggregate job that succeeds only when both the
-  Linux suite and the macOS system-Bash suite succeed. A separate green Linux
-  or macOS job is not sufficient.
+  date). The `ci` context is an aggregate job that succeeds only when all three
+  Linux shards and all three macOS system-Bash shards succeed. A separate
+  green platform shard is not sufficient.
 - Block force pushes and deletion.
 - Bypass list: **empty**. The release verifier fails closed on any bypass actor,
   including organization admins, because the certified commit must be proven to
