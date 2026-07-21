@@ -14,16 +14,18 @@ The command creates a private `nysa-sf-dev.*` directory directly under `TMPDIR`,
 
 ## Real Cursor lifecycle
 
-The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`; API keys are intentionally rejected:
+The real probe is an explicit release gate. Put a non-production Cursor `agent` binary on `PATH`, use a dedicated API key, and attest that credential source:
 
 ```bash
-bash scripts/factory-dev-lane.sh cursor-plan
+FACTORY_DEV_CURSOR_CREDENTIAL=dedicated CURSOR_API_KEY='<dedicated-key>' \
+  bash scripts/factory-dev-lane.sh cursor-plan
 
-bash scripts/factory-dev-lane.sh cursor-run \
+FACTORY_DEV_CURSOR_CREDENTIAL=dedicated CURSOR_API_KEY='<dedicated-key>' \
+  bash scripts/factory-dev-lane.sh cursor-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-`cursor-plan` exposes only the existing `auth.json` and `cli-config.json` through read-only symlinks and exact-file Seatbelt reads. Cursor mode may use macOS credential services but cannot write the normal Cursor profile. The one-use approval binds both session files, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. Cleanup removes the symlinks. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
+`cursor-plan` binds the one-use approval to the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. The key is passed through standard input and is not written into lane state. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
 
 ## Cleanup and boundaries
 

@@ -42,7 +42,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Protected-merge reconciliation is a separate migration-only complete-batch adoption path for already-merged product changes whose old evidence cannot be refreshed safely. Its generated authorization, exact receipts, Done/Migration projections, target pin, and companions are bound atomically by one manual protected product merge. The reconciliation evidence and terminal projections remain immutable afterward; later authorized releases may evolve `KIT_PIN` and companion paths without invalidating that historical proof.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 - The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
-- Factory development may use the macOS-only disposable lane against an exact clean commit, a synthetic product, and a local Git remote. Mock mode is network-denied and must finish below 15 minutes; real Cursor uses exact-file read-only bridges to the existing authenticated CLI session with API keys rejected and a one-use executable/session-bound approval. The Cursor sandbox permits credential services but cannot write the normal Cursor profile. Lane artifacts have no release receipts or activation records, and the production release contract is unchanged.
+- Factory development may use the macOS-only disposable lane against an exact clean commit, a synthetic product, and a local Git remote. Mock mode is network-denied and must finish below 15 minutes; real Cursor requires a dedicated API key and a one-use executable-bound approval. Lane artifacts have no release receipts or activation records, and the production release contract is unchanged.
 
 ## Log
 
@@ -85,10 +85,8 @@ Category: System change
 A clean committed factory branch may run the six-role synthetic lifecycle in an
 owner-only macOS Seatbelt lane with a separate product, local origin, runtime,
 home, and worktrees. Mock work is network-denied; real Cursor work requires a
-existing authenticated CLI session through exact-file read-only bridges and a
-one-use approval bound to the executable, session files, and lane inputs. The
-Cursor sandbox can use credential services but cannot write the normal Cursor
-profile. Development artifacts cannot be activated, and protected-main CI,
+dedicated key and a one-use approval bound to the exact executable and lane
+inputs. Development artifacts cannot be activated, and protected-main CI,
 sealed installation, live canary, product certification, and activation remain
 mandatory for production.
 
