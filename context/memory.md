@@ -16,7 +16,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
-- The no-record default is `balanced-v2`: Planner uses GPT-5.6 Sol/high; Builder and Narrator use GPT-5.6 Terra/high; Spec-linter and Test-author use Claude Fable 5/medium with Cursor Fable Thinking Medium secondary; Reviewer uses Claude Sonnet 5/high. `legacy-balanced-v1` remains compatibility policy; OpenAI-, Claude-, and Cursor-priority profiles remain explicit alternatives.
+- The no-record default is `cursor-balanced-v2`: it preserves `balanced-v2` models and effort levels while trying the matching Cursor route before native Codex/Claude CLI. Explicit active profiles and committed ticket route plans remain authoritative; `balanced-v2`, `legacy-balanced-v1`, and the earlier priority profiles remain available for compatibility.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Native subscription and Cursor CLI routes retain the legacy serialized path; invalid or disabled activation fails closed to that path.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
@@ -43,7 +43,30 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 ## Log
 
 - 2026-07-21: Software Factory pull requests run targeted or policy-only deferred checks; only protected `main` runs the complete suite, split into three balanced shards per platform. The aggregate remains the release gate, and install/certification require all six successful protected-main shard jobs plus aggregate/immutability evidence and local smoke. Host migration verifies pinned CLIs and both Nysa Agents plugin installations before certification.
+- 2026-07-21: Cursor-first `cursor-balanced-v2` becomes the no-record model default without lowering role effort. Release migration explicitly activates its exact hash for Nysa, validates the operator-approved $100 ticket budget, and transfers the ignored production Linear map only after the old reconciler stops. Linear reconciliation caches immutable protected-main migration batches, treats equivalent Markdown as unchanged, tracks evidence by digest, verifies mutation success, paginates recent fallback approvals, and assigns both operator queues.
 - 2026-07-21: Contract 1.6 now defaults the single coupled ticket-worktree/provider capacity to four. Contracts 1.1–1.5 retain their default of one.
+
+## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
+
+Category: Decision
+
+`cursor-balanced-v2` reverses only the primary/secondary transport order from
+`balanced-v2`; every role keeps the same model tier and effort. It is the
+no-record default, while explicit active profiles and committed ticket plans
+remain unchanged. Nysa activates it only through the later release migration,
+with exact CLI/plugin pins and an operator-approved $100 per-ticket envelope.
+
+## 2026-07-21 — Decision 55: Linear synchronization is snapshot-idempotent
+
+Category: System change
+
+Protected terminal migration batches are validated once per physical repository
+and immutable protected commit while per-ticket conflict checks remain exact.
+Linear projection canonicalizes equivalent Markdown, advances local markers only
+after confirmed mutations, identifies posted evidence by content digest, reads a
+complete fallback-approval window, and assigns both Awaiting Approval and
+Blocked-Escalated to the configured operator. Git remains execution authority;
+webhooks, new workflow states, and speculative API batching remain deferred.
 
 ## 2026-07-21 — Decision 53: Full factory verification is GitHub-owned
 
