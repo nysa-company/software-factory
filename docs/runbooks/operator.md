@@ -393,9 +393,10 @@ For an explicitly approved in-flight cutover, first merge one protected product
 PR containing the target `KIT_PIN` and
 `factory/migrations/inflight-release/<target-kit-sha>.json`. The authorization
 must name the product repository, old and target kit SHAs, and a sorted exact
-list of ticket branch heads and states. Each exact head must still contain its
-old-kit v1 route plan; activation validates that the candidate's existing
-`models migrate` can consume it. Publish maintenance, recover only the named
+list of Ready-or-later ticket branch heads and states. Each exact head must
+still contain its old-kit v1 route plan; activation validates that the
+candidate's existing `models migrate` can consume it. Publish maintenance,
+recover only the named
 stale leases after proving there are no active runs, and leave zero lease
 records before activation. After activation, keep maintenance while reviewing
 each read-only `models migrate-plan` preview; remove maintenance before applying

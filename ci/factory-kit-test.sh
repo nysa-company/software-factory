@@ -1604,11 +1604,16 @@ expect_failure "authorized route plan from another source kit blocks activation"
 
 cp "$VALID_INFLIGHT_PLAN" \
   "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json"
-commit_all "$LEASE_BRANCH_WORKTREE" "restore migratable in-flight route plan"
+sed 's/^State: Planning$/State: Ready/' \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
+mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "restore Ready migratable in-flight ticket"
 git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
 INFLIGHT_HEAD="$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
 write_inflight_authorization \
-  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Planning
+  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Ready
 commit_all "$PRODUCT_ONE" "authorize exact in-flight ticket head"
 push_main "$PRODUCT_ONE"
 expect_success "authorized in-flight product tuple certifies" \
@@ -1653,6 +1658,9 @@ mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
 commit_all "$LEASE_BRANCH_WORKTREE" "simulate sealed ticket route migration"
 git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
+grep -q '^State: Ready$' "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" &&
+  pass "in-flight migration preserves Ready state" ||
+  fail "in-flight migration preserves Ready state"
 
 expect_failure "rollback refuses unreverted product tuple" \
   rollback --project alpha --product "$PRODUCT_ONE"

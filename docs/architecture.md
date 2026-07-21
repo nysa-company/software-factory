@@ -291,12 +291,13 @@ An exceptional in-flight release cutover requires a protected-main
 v1 schema binds the product `repository`, one `source_kit_sha`, the exact
 `target_kit_sha`, and a sorted nonempty `tickets` list whose entries contain
 only `ticket`, exact ticket `branch`, remote `head`, and current `state`.
-Activation accepts only Planning, Building, Review, Awaiting Approval, or
-Approved remote ticket heads that match every authorized field, and refuses an
-unused or extra entry. Every exact head must also contain a v1 ticket route plan
-whose ticket and Kit-SHA match the authorization and whose complete resolution
-passes the candidate's existing historical-plan migration validator. The normal
-maintenance, zero-active-run, and zero-dispatcher-lease barriers still apply.
+Activation accepts only Ready, Planning, Building, Review, Awaiting Approval,
+or Approved remote ticket heads that match every authorized field, and refuses
+an unused or extra entry. Every exact head must also contain a v1 ticket route
+plan whose ticket and Kit-SHA match the authorization and whose complete
+resolution passes the candidate's existing historical-plan migration
+validator. The normal maintenance, zero-active-run, and zero-dispatcher-lease
+barriers still apply.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow to preserve the old v1 plan inside a v2 route journal and update
 the ticket Kit-SHA before reclaiming work. This authorization never changes
