@@ -687,6 +687,25 @@ else:
             self.product / "factory/attestations/T-700/refresh.json"
         ).is_file())
 
+    def test_bundle_refuses_deleted_historical_refresh_receipt(self):
+        updater = self.temp / "deleted-refresh-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = self.product / "factory/attestations/T-700/refresh.json"
+        receipt.unlink()
+        self.commit("delete refresh receipt")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+
+        self.assertIn("refresh receipt is missing", self.attest("bundle").stderr)
+
     def prepare_done(self, **state):
         self.bundle()
         self.approval_overlay()

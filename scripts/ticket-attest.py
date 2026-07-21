@@ -471,6 +471,11 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
     relative = f"factory/attestations/{ticket}/refresh.json"
     path = workdir / relative
     if not os.path.lexists(path):
+        historical = git(
+            workdir, "log", "-1", "--format=%H", "HEAD", "--", relative,
+        ).stdout.strip()
+        if historical:
+            raise Refusal("committed refresh receipt is missing from the ticket head")
         return
     if not safe_optional_attestation(path):
         raise Refusal("refresh receipt is unsafe")
@@ -540,6 +545,9 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         head = manifest.get("role_head_before", "")
         if git(
             workdir, "merge-base", "--is-ancestor", receipt_commit, head,
+            check=False,
+        ).returncode or git(
+            workdir, "merge-base", "--is-ancestor", head, "HEAD",
             check=False,
         ).returncode:
             raise Refusal(f"post-refresh {role} evidence is required")
