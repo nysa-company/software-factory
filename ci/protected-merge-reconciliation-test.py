@@ -581,6 +581,43 @@ class ProtectedMergeReconciliationTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             protected_terminal(self.repo, "T-030")
 
+    def test_later_release_and_companion_changes_preserve_terminal_evidence(self):
+        companion_path = "factory/tickets/T-032.md"
+        self.publish(companions={companion_path: "# T-032\n\nState: Backlog\n"})
+        (self.repo / "factory/KIT_PIN").write_text(OTHER_KIT + "\n")
+        (self.repo / companion_path).write_text("# T-032\n\nState: Ready\n")
+        self.commit("advance release and companion ticket")
+        self.push_main()
+
+        self.assertEqual(list(reconciliation_batch(self.repo)), list(TICKETS))
+        self.assertEqual(
+            protected_terminal(self.repo, "T-030")["basis"],
+            "validated-protected-merge-reconciliation",
+        )
+
+    def test_immutable_history_drift_fails_even_when_reverted(self):
+        paths = (
+            f"{MIGRATION_DIR}/T-030.json",
+            "factory/tickets/T-030.md",
+            f"{MIGRATION_DIR}/unexpected.json",
+        )
+        for relative in paths:
+            with self.subTest(relative):
+                self.publish()
+                target = self.repo / relative
+                original = target.read_text() if target.exists() else None
+                target.write_text((original or "") + "\n")
+                self.commit("tamper with immutable reconciliation history")
+                if original is None:
+                    target.unlink()
+                else:
+                    target.write_text(original)
+                self.commit("revert immutable reconciliation tamper")
+                self.push_main()
+                with self.assertRaises(ValidationError):
+                    reconciliation_batch(self.repo)
+                self.reset_to_basis()
+
     def test_superseded_partial_evidence_cannot_change_after_migration(self):
         paths = {
             "bundle markdown": "factory/tickets/T-030-bundle.md",

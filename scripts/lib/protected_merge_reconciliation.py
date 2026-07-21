@@ -429,22 +429,23 @@ def _validate_documents(repo, ref, authorization, receipts):
     actual_files = set(run(repo, "ls-tree", "-r", "--name-only", ref, "--", MIGRATION_DIR).stdout.splitlines())
     if actual_files != expected_files:
         raise ValidationError("reconciliation directory has missing or extra files")
-    expected_paths = {
-        "factory/KIT_PIN", *expected_files, *reserved_tickets, *companion_paths,
+    immutable_paths = {*expected_files, *reserved_tickets}
+    introduction_paths = {
+        "factory/KIT_PIN", *immutable_paths, *companion_paths,
     }
-    migration_commit = _migration_commit(repo, ref, basis["commit"], expected_paths)
+    migration_commit = _migration_commit(repo, ref, basis["commit"], introduction_paths)
     later_touches = run(
         repo, "log", "--format=%H", f"{migration_commit}..{ref}", "--",
-        *sorted(expected_paths),
+        MIGRATION_DIR, *sorted(reserved_tickets),
     ).stdout.splitlines()
     if later_touches:
-        raise ValidationError("reconciliation evidence or companions changed after introduction")
+        raise ValidationError("reconciliation evidence changed after introduction")
     if (
         text_at(repo, migration_commit, "factory/KIT_PIN") != authorization["target_kit_sha"] + "\n"
         or timestamp(run(repo, "show", "-s", "--format=%cI", migration_commit).stdout.strip(), "migration time") < cutoff
     ):
         raise ValidationError("reconciliation migration target or time is invalid")
-    for path in expected_paths - {"factory/KIT_PIN"}:
+    for path in immutable_paths:
         if blob_at(repo, migration_commit, path) != blob_at(repo, ref, path):
             raise ValidationError("reconciliation evidence changed after protected merge")
     for companion in companions:
