@@ -452,6 +452,19 @@ def _validate_documents(repo, ref, authorization, receipts):
             raise ValidationError("reconciliation companion blob does not match authorization")
     auth_blob = blob_at(repo, ref, f"{MIGRATION_DIR}/authorization.json")
     for ticket, entry in expected.items():
+        immutable_source_paths = (
+            f"factory/tickets/{ticket}-bundle.md",
+            f"factory/route-plans/{ticket}.json",
+            f"factory/attestations/{ticket}/bundle.json",
+            f"factory/attestations/{ticket}/approval.json",
+            f"factory/attestations/{ticket}/done.json",
+            f"factory/attestations/{ticket}/refresh.json",
+        )
+        if any(
+            blob_at(repo, ref, path) != blob_at(repo, basis["commit"], path)
+            for path in immutable_source_paths
+        ):
+            raise ValidationError(f"{ticket} superseded factory evidence changed after the basis")
         receipt = exact(receipts[ticket], RECEIPT_KEYS, f"{ticket} reconciliation receipt")
         if (
             receipt["schema"] != RECEIPT_SCHEMA
