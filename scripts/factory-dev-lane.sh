@@ -570,7 +570,7 @@ run_cursor_internal() {
       "Execute the authorized disposable lifecycle stage for $TICKET. Work only in this lane. Mutating roles must commit their scoped result; reviewer must remain read-only."
     if [[ "$role" == reviewer ]]; then
       latest="$(ls -t "$root/product/factory/runs/"*.out | head -n 1)"
-      grep -Eq '(^|[^A-Z])APPROVE([^A-Z]|$)' "$latest" ||
+      grep -Eiq '^[[:space:]#]*(Verdict:[[:space:]]*)?APPROVE[[:space:]]*$' "$latest" ||
         die "Reviewer did not return an unambiguous APPROVE verdict"
       append_commit_push "$root" 'reviewer round 1: APPROVE' "$TICKET: record Cursor review"
     fi
