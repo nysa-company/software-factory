@@ -334,7 +334,7 @@ Add the required top-level \`schemaVersion: 1\` field to Relay's existing \`GET 
 
 1. A fresh \`GET /health\` returns HTTP 200, \`Content-Type: application/json\`, and top-level \`schemaVersion\` equal to integer \`1\` alongside the existing \`ok\`, \`queue\`, and \`approvals\` fields.
 2. After one accepted event completes, \`GET /health\` still returns \`schemaVersion: 1\`, \`queue.done: 1\`, and \`approvals.pending: 1\`.
-3. Focused tests in \`app/tests/health-version.test.js\` pass with \`node --test app/tests/health-version.test.js\`.
+3. Focused tests in \`app/tests/health-version.test.js\` use the reserved, otherwise-unused ports \`4781\` and \`4782\`, and pass with \`node --test app/tests/health-version.test.js\`.
 EOF
   cat > "$root/product/docs/engine-spec.md" <<'EOF'
 # Relay engine spec
@@ -346,7 +346,7 @@ EOF
   cat > "$root/product/docs/acceptance/health-version.md" <<'EOF'
 # Versioned health response
 
-A fresh server and a server with one completed event both report `schemaVersion: 1` from `GET /health`. The completed-event response also reports `queue.done: 1` and `approvals.pending: 1`. Focused coverage belongs in `app/tests/health-version.test.js`; implementation belongs in `app/server.js`.
+A fresh server and a server with one completed event both report `schemaVersion: 1` from `GET /health`. The completed-event response also reports `queue.done: 1` and `approvals.pending: 1`. Focused coverage belongs in `app/tests/health-version.test.js` and uses the reserved ports `4781` and `4782`; implementation belongs in `app/server.js`.
 
 Failure responses, authentication, cookies, CORS, content negotiation, additional schema versions, and UI selectors are out of scope.
 EOF

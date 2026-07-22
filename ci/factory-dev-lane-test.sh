@@ -147,6 +147,9 @@ if find "$lane_root" -type f \( -name active.json -o -path '*/receipts/*.json' \
 fi
 [[ -d "$lane_root/origin.git" ]] || fail "local-only origin is missing"
 [[ -d "$lane_root/worktrees/T-900001" ]] || fail "synthetic ticket worktree is missing"
+grep -Fq 'ports `4781` and `4782`' \
+  "$lane_root/worktrees/T-900001/factory/tickets/T-900001.md" ||
+  fail "synthetic ticket does not reserve collision-free fixture ports"
 grep -qx 'State: Review' "$lane_root/worktrees/T-900001/factory/tickets/T-900001.md" ||
   fail "synthetic ticket did not remain in Review"
 [[ -z "$(git -C "$lane_root/product" status --porcelain)" ]] || fail "synthetic product is dirty"
