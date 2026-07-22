@@ -262,9 +262,9 @@ chmod +x "$FAKE_CURSOR"
 # consumed so a post-submission failure cannot be replayed.
 expect_failure "fake cursor execution" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$approval_hash"
-grep -qx -- '--sandbox' "$TMP/cursor-args" ||
+grep -qx -- '--sandbox' "$cursor_root/home/cursor-args" ||
   fail "real Cursor lane did not enable Cursor's internal sandbox"
-grep -qx -- 'enabled' "$TMP/cursor-args" ||
+grep -qx -- 'enabled' "$cursor_root/home/cursor-args" ||
   fail "real Cursor lane did not select the enabled sandbox mode"
 [[ ! -e "$TMP/cursor-tmp-bridge" && ! -L "$TMP/cursor-tmp-bridge" ]] ||
   fail "Cursor temporary bridge remained after failed execution"
