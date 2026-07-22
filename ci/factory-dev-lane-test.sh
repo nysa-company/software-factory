@@ -88,18 +88,23 @@ chmod +x "$FAKE_CURSOR"
 
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
 
-review_pattern='^[[:space:]#*]*((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE[*[:space:]]*$'
+review_pattern='^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$'
 printf '%s\n' '## Verdict: Approve' | grep -Eiq "$review_pattern" ||
   fail "review verdict parser rejected a canonical approval"
 printf '%s\n' '**Verdict: Approve**' | grep -Eiq "$review_pattern" ||
   fail "review verdict parser rejected a bold canonical approval"
 printf '%s\n' '## Review verdict: **Approve**' | grep -Eiq "$review_pattern" ||
   fail "review verdict parser rejected a headed bold approval"
+printf '%s\n' '## Review verdict: T-900001 — Approve' | grep -Eiq "$review_pattern" ||
+  fail "review verdict parser rejected a ticket-qualified approval"
 if printf '%s\n' 'Do not approve' | grep -Eiq "$review_pattern"; then
   fail "review verdict parser accepted approval prose"
 fi
 if printf '%s\n' 'I approve' | grep -Eiq "$review_pattern"; then
   fail "review verdict parser accepted first-person approval prose"
+fi
+if printf '%s\n' 'Review verdict: I cannot approve' | grep -Eiq "$review_pattern"; then
+  fail "review verdict parser accepted a negative verdict"
 fi
 
 # Production execution is macOS-only. On other systems no test override may

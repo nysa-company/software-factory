@@ -552,7 +552,7 @@ PY
 }
 
 run_cursor_internal() {
-  local root="$1" supplied="$2" stored role output latest version
+  local root="$1" supplied="$2" stored role output latest version instruction
   require_lane_mode "$root" cursor
   [[ -f "$root/runtime/cursor-approval" && ! -L "$root/runtime/cursor-approval" ]] ||
     die "Cursor approval is missing or already used"
@@ -565,13 +565,17 @@ run_cursor_internal() {
   mv "$root/runtime/cursor-approval" "$root/runtime/cursor-approval.used"
   for role in planner spec-linter test-author builder reviewer narrator; do
     [[ "$(next_stage "$root")" == "RUN $role" ]] || die "sequencer did not authorize $role"
+    instruction="Execute the authorized disposable lifecycle stage for $TICKET. Work only in this lane. Mutating roles must commit their scoped result; reviewer must remain read-only."
+    if [[ "$role" == reviewer ]]; then
+      instruction="$instruction End the final response with a separate line containing exactly APPROVE or REQUEST CHANGES."
+    fi
     lane_cursor_env "$root" \
       "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$TICKET" \
       --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$TICKET" -- \
-      "Execute the authorized disposable lifecycle stage for $TICKET. Work only in this lane. Mutating roles must commit their scoped result; reviewer must remain read-only."
+      "$instruction"
     if [[ "$role" == reviewer ]]; then
       latest="$(ls -t "$root/product/factory/runs/"*.out | head -n 1)"
-      grep -Eiq '^[[:space:]#*]*((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE[*[:space:]]*$' "$latest" ||
+      grep -Eiq '^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$' "$latest" ||
         die "Reviewer did not return an unambiguous APPROVE verdict"
       append_commit_push "$root" 'reviewer round 1: APPROVE' "$TICKET: record Cursor review"
     fi
