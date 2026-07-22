@@ -76,8 +76,8 @@ case "${1:-}" in
   --version) printf '2026.07.17-test\n' ;;
   --help) printf '%s\n' --print --output-format --workspace --model --force --trust ;;
   status) [[ -z "${CURSOR_API_KEY:-}" ]] || exit 42; printf '{"authenticated":true}\n' ;;
-  models) printf '%s\n' gpt-5.6-sol-high claude-fable-5-thinking-medium \
-    claude-sonnet-5-thinking-high ;;
+  models) [[ -z "${CURSOR_API_KEY:-}" ]] || exit 42; printf '%s\n' \
+    gpt-5.6-sol-high claude-fable-5-thinking-medium claude-sonnet-5-thinking-high ;;
   *) exit 42 ;;
 esac
 EOF

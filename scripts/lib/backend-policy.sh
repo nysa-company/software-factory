@@ -303,7 +303,8 @@ factory_probe_adapter() {
            python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
-      if ! timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
+      if [[ -z "${CURSOR_API_KEY:-}" ]] &&
+         ! timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
            awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
         PROBE_STATE="INVALID"; PROBE_REASON="model_unavailable"; return 0
       fi

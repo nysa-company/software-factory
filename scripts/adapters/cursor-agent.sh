@@ -72,7 +72,8 @@ INSTALLED_VERSION="$(printf '%s\n' "$INSTALLED" | awk '{print $NF}')"
   echo "Cursor Agent compatibility version mismatch" >&2
   exit 6
 }
-if ! timeout "${FACTORY_PROBE_TIMEOUT_SEC:-10}" "$CURSOR_BIN" models 2>/dev/null |
+if [[ -z "${CURSOR_API_KEY:-}" ]] &&
+   ! timeout "${FACTORY_PROBE_TIMEOUT_SEC:-10}" "$CURSOR_BIN" models 2>/dev/null |
      awk -v model="$MODEL" \
        '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
   echo "Resolved Cursor model is unavailable" >&2
