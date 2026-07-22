@@ -644,6 +644,53 @@ class ModelManagerTest(unittest.TestCase):
         )
         self.assertEqual(selected, fallback["selections"]["builder"])
 
+    def test_release_migration_preserves_v2_history_and_active_resolution(self):
+        legacy_path = self.base / "legacy-plan.json"
+        legacy = self.pin(legacy_path)
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            legacy_path.read_bytes(), "b" * 40, "c" * 40,
+            "2026-07-18T12:00:00Z", self.catalog, self.routes, self.profiles,
+        )
+        fallback = ROUTER.resolve_fallback_policy(
+            self.catalog, self.routes,
+            self.profiles[legacy["resolution"]["profile_id"]],
+            self.readiness, legacy["resolution"], "builder",
+            legacy["resolution"]["selections"]["builder"]["route_id"],
+            ["builder", "reviewer"],
+            {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
+        )
+        journal = MANAGER_MODULE.append_fallback_revision(
+            journal, fallback, "d" * 64, "e" * 64,
+            "provider_unavailable", {"receipt_id": "receipt-1"},
+            "2026-07-18T12:01:00Z", self.catalog, self.routes, self.profiles,
+        )
+        before = copy.deepcopy(journal)
+        resolution = MANAGER_MODULE.active_resolution(journal)
+        migrated = MANAGER_MODULE.migrate_v2_journal(
+            journal, "f" * 40, "1" * 40, "2026-07-18T12:02:00Z",
+            self.catalog, self.routes, self.profiles,
+        )
+        self.assertEqual(journal, before)
+        self.assertEqual(migrated["revisions"][:-1], before["revisions"])
+        self.assertEqual(migrated["kit_sha"], "1" * 40)
+        self.assertEqual(MANAGER_MODULE.active_resolution(migrated), resolution)
+        MANAGER_MODULE.validate_journal(
+            migrated, self.catalog, self.routes, self.profiles
+        )
+        self.assertEqual(
+            MANAGER_MODULE.migrate_v2_journal(
+                migrated, "f" * 40, "1" * 40, "2026-07-18T12:03:00Z",
+                self.catalog, self.routes, self.profiles,
+            ),
+            migrated,
+        )
+        tampered = copy.deepcopy(migrated)
+        tampered["revisions"][-1]["body"]["old_kit_sha"] = "2" * 40
+        with self.assertRaises(MANAGER_MODULE.ManagerError):
+            MANAGER_MODULE.validate_journal(
+                tampered, self.catalog, self.routes, self.profiles
+            )
+
     def test_journal_tampering_non_monotonic_revision_and_ineligible_reason_fail(self):
         legacy_path = self.base / "legacy-plan.json"
         self.pin(legacy_path)
