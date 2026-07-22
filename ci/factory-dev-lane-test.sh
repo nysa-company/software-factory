@@ -234,6 +234,8 @@ cursor_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 approval_hash="$(sed -n 's/^APPROVE_HASH=//p' "$OUT")"
 [[ "$cursor_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "cursor plan returned an unsafe root"
 [[ "$approval_hash" =~ ^[0-9a-f]{64}$ ]] || fail "cursor plan returned an invalid approval hash"
+grep -Fq "$TMP/cursor-tmp-bridge" "$cursor_root/runtime/cursor.sb" ||
+  fail "Cursor profile does not bind its ephemeral temporary bridge"
 if grep -R -Fq "$CURSOR_TEST_KEY" "$cursor_root"; then
   fail "cursor credential was persisted in the lane"
 fi

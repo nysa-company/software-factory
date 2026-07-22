@@ -246,6 +246,9 @@ cursor_network = ('(allow network-bind (local ip "localhost:*"))\n'
                   '(allow network-inbound (local ip "localhost:*"))\n'
                   '(allow network-outbound (remote ip "localhost:*"))\n'
                   '(allow network-outbound)\n')
+if bridge:
+    cursor_network += (f"(allow file-read* (subpath {json.dumps(bridge)}))\n"
+                       f"(allow file-write* (subpath {json.dumps(bridge)}))\n")
 pathlib.Path(root, "runtime/cursor.sb").write_text("".join(base) + cursor_network)
 PY
   chmod 600 "$root/runtime/"*.sb
