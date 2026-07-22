@@ -47,6 +47,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
+- 2026-07-22: In-flight activation found that a valid historical Cursor identity and CLI version could no longer pass the candidate catalog or runtime drift checks. V2 release migration now preserves its parent-hashed history and exact logical routes while refreshing only probe-reported adapter versions and identities; every other route tuple field remains immutable and any unavailable or changed route fails closed.
 - 2026-07-22: Nysa certification exposed that a product's managed secret scanner could not bootstrap inside the network-denied certification sandbox. Certification now reuses the existing pinned-scanner staging helper for the disposable product copy before running product checks.
 - 2026-07-21: A second release cutover exposed that protected in-flight authorization accepted only v1 plans even though a previously migrated ticket already carried a valid v2 journal. Exact source-bound v2 journals may now cross releases through the existing preview-hash flow; migration appends one parent-hashed release-affinity revision and preserves all prior route and fallback history.
 - 2026-07-21: The real disposable Reviewer returned the canonical role-contract verdict `## Verdict: Approve`, but the lane required uppercase `APPROVE` and stopped before Narrator. The lane now accepts only a standalone `Approve` or `Verdict: Approve` line case-insensitively; surrounding prose such as `do not approve` remains rejected.

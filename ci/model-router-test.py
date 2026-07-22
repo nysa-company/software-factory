@@ -530,6 +530,67 @@ class ModelRouterTest(unittest.TestCase):
                 allow_historical_catalog=True,
             )
 
+    def test_refresh_changes_only_machine_bound_route_evidence(self):
+        historical_catalog = copy.deepcopy(self.catalog)
+        for route in historical_catalog["routes"]:
+            if route["route_id"] == "cursor-claude-fable-5-thinking-medium":
+                route["expected_reported_identity"] = "Fable 5 1M Medium Thinking"
+        historical_routes = ROUTER.validate_catalog(historical_catalog)
+        historical_readiness = self.readiness()
+        historical_readiness["cursor-claude-fable-5-thinking-medium"].update({
+            "adapter_version": "cursor-old",
+            "reported_identity": "Fable 5 1M Medium Thinking",
+        })
+        prior = ROUTER.resolve_policy(
+            historical_catalog,
+            historical_routes,
+            self.profile_map["cursor-balanced-v2"],
+            historical_readiness,
+        )
+        with self.assertRaisesRegex(ROUTER.RouterError, "catalog hash mismatch"):
+            ROUTER.validate_plan(prior, self.catalog, self.routes, self.profile_map)
+
+        current_readiness = self.readiness()
+        current_readiness["cursor-claude-fable-5-thinking-medium"][
+            "adapter_version"
+        ] = "cursor-current"
+        refreshed = ROUTER.refresh_resolution(
+            prior, self.catalog, self.routes, self.profile_map, current_readiness
+        )
+        ROUTER.validate_plan(
+            refreshed, self.catalog, self.routes, self.profile_map
+        )
+        for role in ROUTER.ROLES:
+            old = prior["selections"][role]
+            new = refreshed["selections"][role]
+            self.assertEqual(
+                {key: value for key, value in old.items()
+                 if key not in ("adapter_version", "reported_identity")},
+                {key: value for key, value in new.items()
+                 if key not in ("adapter_version", "reported_identity")},
+            )
+
+        tampered = copy.deepcopy(prior)
+        tampered["selections"]["spec-linter"]["effort"] = "low"
+        with self.assertRaisesRegex(ROUTER.RouterError, "tuple mismatch"):
+            ROUTER.refresh_resolution(
+                tampered, self.catalog, self.routes, self.profile_map,
+                current_readiness,
+            )
+
+        current_hash_stale_identity = self.resolve("cursor-balanced-v2")
+        current_hash_stale_identity["selections"]["spec-linter"][
+            "reported_identity"
+        ] = "Fable 5 1M Medium Thinking"
+        with self.assertRaisesRegex(ROUTER.RouterError, "identity mismatch"):
+            ROUTER.validate_plan(
+                current_hash_stale_identity,
+                self.catalog,
+                self.routes,
+                self.profile_map,
+                allow_historical_catalog=True,
+            )
+
     def test_fallback_advances_only_unavailable_and_hard_stops_bad_evidence(self):
         prior = self.resolve()
         for state in ("INVALID", "UNKNOWN"):

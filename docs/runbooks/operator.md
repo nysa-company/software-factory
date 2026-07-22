@@ -398,13 +398,19 @@ must name the product repository, old and target kit SHAs, and a sorted exact
 list of Ready-or-later ticket branch heads and states. Each exact head must
 still contain its old-kit v1 route plan or v2 route journal; activation
 validates that the candidate's existing `models migrate` can consume it
-without changing the active resolution or rewriting v2 history. Publish maintenance,
+without changing its logical routes or rewriting v2 history. Publish maintenance,
 recover only the named
 stale leases after proving there are no active runs, and leave zero lease
 records before activation. After activation, keep maintenance while reviewing
 each read-only `models migrate-plan` preview; remove maintenance before applying
 each operator-approved `models migrate`. Existing v2 journals receive one
-parent-hashed release-migration revision. Then claim fresh leases before resuming.
+parent-hashed release-migration revision. Its probe-bound resolution refreshes
+only adapter version and reported identity for the already-selected routes;
+any route, family, effort, transport, account, or profile drift fails closed.
+Legacy v1 plans retain their exact encoded provenance and receive the same
+refreshed release-migration revision. Mutating migration refuses absent or
+changed readiness evidence.
+Then claim fresh leases before resuming.
 Any branch-head, state, source-kit, candidate-kit, repository, ticket-set, or
 protected-main drift requires a new protected authorization. Never preserve or
 copy an opaque lease into the authorization.

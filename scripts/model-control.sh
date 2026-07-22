@@ -22,11 +22,13 @@ PIN_TICKET_RELATIVE=""
 PIN_PLAN_RELATIVE=""
 PIN_PLAN_EXISTED=0
 TEMPORARY_FILE=""
+TEMPORARY_FILE_2=""
 FALLBACK_LAUNCH_LOCK=""
 
 cleanup() {
   local rc=$?
   [[ -z "$TEMPORARY_FILE" ]] || rm -f "$TEMPORARY_FILE"
+  [[ -z "$TEMPORARY_FILE_2" ]] || rm -f "$TEMPORARY_FILE_2"
   [[ -z "$FALLBACK_LAUNCH_LOCK" ]] || rmdir "$FALLBACK_LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$PIN_PRECOMMIT" -eq 1 && -n "$PIN_WORKDIR" ]]; then
     git -C "$PIN_WORKDIR" restore --staged --worktree -- \
@@ -258,6 +260,35 @@ case "$command_name" in
       json_error "ticket route document is missing or unsafe"
     factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
       json_error "$FACTORY_KIT_PIN_ERROR"
+    profile_id="$(python3 - "$CONTROL_PLAN_FILE" <<'PY'
+import base64, json, sys
+value = json.load(open(sys.argv[1]))
+if value.get("schema") == "ticket-model-route-plan/v1":
+    resolution = value["resolution"]
+elif value.get("schema") == "ticket-model-route-journal/v2":
+    body = value["revisions"][-1]["body"]
+    if body["kind"] == "migration":
+        resolution = json.loads(base64.b64decode(body["legacy_plan_b64"]))["resolution"]
+    else:
+        resolution = body.get("new_resolution", body["prior_resolution"])
+else:
+    raise SystemExit(2)
+print(resolution["profile_id"])
+PY
+)" || json_error "route document cannot select its profile"
+    load_machine_config
+    factory_load_model_probe_context ||
+      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-migration-readiness.XXXXXX")" ||
+      json_error "could not allocate migration readiness output"
+    TEMPORARY_FILE="$readiness"
+    plan_probe="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-migration-plan.XXXXXX")" ||
+      json_error "could not allocate migration probe output"
+    rm -f "$readiness"
+    factory_resolve_model_profile "$profile_id" "$plan_probe" \
+      "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" >/dev/null 2>&1 || true
+    rm -f "$plan_probe"
+    [[ -s "$readiness" ]] || json_error "model migration readiness probes failed"
     pin_commit="$(git -C "$workdir" log -1 --format=%H -- \
       "factory/route-plans/$ticket.json")"
     [[ "$pin_commit" =~ ^[0-9a-f]{40}$ ]] ||
@@ -272,7 +303,8 @@ PY
 )" || json_error "cannot normalize migration timestamp"
     preview="$(manager migrate-plan --ticket-plan "$CONTROL_PLAN_FILE" \
       --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
-      --migrated-at "$migrated_at")" || json_error "route migration preview failed"
+      --migrated-at "$migrated_at" --readiness "$(cat "$readiness")")" ||
+      json_error "route migration preview failed"
     preview_hash="$(python3 - "$preview" <<'PY'
 import json, re, sys
 value = json.loads(sys.argv[1])
@@ -290,6 +322,21 @@ PY
       json_error "migration approval hash does not match preview"
     [[ "$approved_by" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$approved_by" != "auto" ]] ||
       json_error "migration approver is invalid"
+    current_readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-migration-current.XXXXXX")" ||
+      json_error "could not allocate current migration readiness output"
+    TEMPORARY_FILE_2="$current_readiness"
+    current_plan_probe="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-migration-current-plan.XXXXXX")" ||
+      json_error "could not allocate current migration probe output"
+    rm -f "$current_readiness"
+    factory_resolve_model_profile "$profile_id" "$current_plan_probe" \
+      "$FACTORY_DISABLED_ROUTE_IDS" "$current_readiness" >/dev/null 2>&1 || true
+    rm -f "$current_plan_probe"
+    [[ -s "$current_readiness" ]] ||
+      json_error "current model migration readiness probes failed"
+    cmp -s "$readiness" "$current_readiness" ||
+      json_error "model migration readiness changed after approval"
+    rm -f "$current_readiness"
+    TEMPORARY_FILE_2=""
     expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
     [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
       json_error "remote tracking state is unavailable"
@@ -314,6 +361,7 @@ PY
     manager migrate --ticket-plan "$CONTROL_PLAN_FILE" \
       --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
       --migrated-at "$migrated_at" --approve-hash "$approve_hash" \
+      --readiness "$(cat "$readiness")" \
       --output "$CONTROL_PLAN_FILE" >/dev/null ||
       json_error "route journal migration failed"
     if git -C "$workdir" diff --quiet -- \
@@ -390,7 +438,7 @@ if body["kind"] == "migration":
     plan = json.loads(base64.b64decode(body["legacy_plan_b64"]))
     resolution = plan["resolution"]
 else:
-    resolution = body["new_resolution"]
+    resolution = body.get("new_resolution", body["prior_resolution"])
 print(resolution["profile_id"])
 PY
 )" || json_error "route journal cannot select its profile"

@@ -586,7 +586,9 @@ def _validate_fallback_assignment(selections, contributors, exceptions=None):
     return effective
 
 
-def validate_fallback_plan(plan, catalog, routes, profile_map):
+def validate_fallback_plan(
+    plan, catalog, routes, profile_map, allow_historical_catalog=False
+):
     if not isinstance(plan, dict):
         raise RouterError("fallback plan must be an object")
     project_policy = plan.get("profile_id") == "project-policy"
@@ -604,7 +606,12 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
     for key in ("catalog_hash", "profile_hash", "prior_policy_hash", "policy_hash"):
         if not isinstance(plan[key], str) or not re.fullmatch(r"[0-9a-f]{64}", plan[key]):
             raise RouterError("fallback plan.%s is not a SHA-256 hash" % key)
-    if plan["catalog_hash"] != content_hash(catalog):
+    current_catalog_hash = content_hash(catalog)
+    historical_catalog = (
+        allow_historical_catalog
+        and plan["catalog_hash"] != current_catalog_hash
+    )
+    if not allow_historical_catalog and plan["catalog_hash"] != current_catalog_hash:
         raise RouterError("fallback plan catalog hash mismatch")
     if project_policy:
         if plan["profile_version"] != 1:
@@ -653,6 +660,15 @@ def validate_fallback_plan(plan, catalog, routes, profile_map):
         )
         if selection != expected:
             raise RouterError("fallback plan route tuple mismatch for %s" % role)
+        identity = routes[route_id]["expected_reported_identity"]
+        if (
+            not historical_catalog
+            and identity
+            and selection["reported_identity"] != identity
+        ):
+            raise RouterError(
+                "fallback plan reported identity mismatch for %s" % role
+            )
         if role in future_roles and route_id == plan["failed_route_id"]:
             raise RouterError("fallback plan reuses the failed route")
     if (
@@ -832,10 +848,12 @@ def validate_plan(plan, catalog, routes, profile_map, allow_historical_catalog=F
         value = plan[key]
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise RouterError("plan.%s is not a SHA-256 hash" % key)
-    if (
-        not allow_historical_catalog
-        and plan["catalog_hash"] != content_hash(catalog)
-    ):
+    current_catalog_hash = content_hash(catalog)
+    historical_catalog = (
+        allow_historical_catalog
+        and plan["catalog_hash"] != current_catalog_hash
+    )
+    if not allow_historical_catalog and plan["catalog_hash"] != current_catalog_hash:
         raise RouterError("plan catalog hash mismatch")
     if schema == "model-resolution-plan/v2":
         if plan["profile_id"] != "project-policy" or plan["profile_version"] != 1:
@@ -876,7 +894,11 @@ def validate_plan(plan, catalog, routes, profile_map, allow_historical_catalog=F
         if selection != expected:
             raise RouterError("plan route tuple mismatch for %s" % role)
         identity = routes[route_id]["expected_reported_identity"]
-        if identity and selection["reported_identity"] != identity:
+        if (
+            not historical_catalog
+            and identity
+            and selection["reported_identity"] != identity
+        ):
             raise RouterError("plan reported identity mismatch for %s" % role)
         _safe_text(selection["adapter_version"], "plan adapter_version")
         _safe_text(selection["reported_identity"], "plan reported_identity")
@@ -886,6 +908,61 @@ def validate_plan(plan, catalog, routes, profile_map, allow_historical_catalog=F
     if plan["policy_hash"] != expected_policy_hash:
         raise RouterError("plan policy hash mismatch")
     return plan
+
+
+def refresh_resolution(prior, catalog, routes, profile_map, readiness):
+    """Refresh only machine-bound evidence for an unchanged logical route plan."""
+    schema = prior.get("schema") if isinstance(prior, dict) else None
+    if schema in ("model-resolution-plan/v1", "model-resolution-plan/v2"):
+        validate_plan(
+            prior, catalog, routes, profile_map, allow_historical_catalog=True
+        )
+    elif schema == "model-fallback-resolution/v2":
+        validate_fallback_plan(
+            prior, catalog, routes, profile_map, allow_historical_catalog=True
+        )
+    else:
+        raise RouterError("unsupported prior resolution schema")
+
+    ready = validate_readiness(readiness, routes)
+    refreshed = dict(prior)
+    refreshed["selections"] = {
+        role: dict(prior["selections"][role]) for role in ROLES
+    }
+    for role in ROLES:
+        selection = refreshed["selections"][role]
+        route_id = selection["route_id"]
+        evidence = ready.get(route_id)
+        if evidence is None or evidence["state"] != "READY":
+            state = "UNKNOWN" if evidence is None else evidence["state"]
+            raise RouterError(
+                "selected route %s is not READY: %s" % (route_id, state)
+            )
+        selection["adapter_version"] = evidence["adapter_version"]
+        selection["reported_identity"] = evidence["reported_identity"]
+
+    profile = (
+        model_policy_profile(refreshed["model_policy"], routes)
+        if refreshed["profile_id"] == "project-policy"
+        else _profile(profile_map, refreshed["profile_id"])
+    )
+    refreshed["catalog_hash"] = content_hash(catalog)
+    refreshed["profile_hash"] = profile_hash(profile)
+    if schema in ("model-resolution-plan/v1", "model-resolution-plan/v2"):
+        portfolios = {
+            value["portfolio_id"]: value for value in profile["portfolios"]
+        }
+        refreshed["policy_hash"] = _policy_hash(
+            refreshed["catalog_hash"],
+            refreshed["profile_hash"],
+            portfolios[refreshed["portfolio_id"]],
+            refreshed["selections"],
+        )
+        return validate_plan(refreshed, catalog, routes, profile_map)
+
+    refreshed.pop("policy_hash")
+    refreshed["policy_hash"] = content_hash(refreshed)
+    return validate_fallback_plan(refreshed, catalog, routes, profile_map)
 
 
 def _add_policy_paths(parser):

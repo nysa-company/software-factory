@@ -532,6 +532,36 @@ class ModelManagerTest(unittest.TestCase):
         self.assertEqual(
             body["historical_selections"], legacy["resolution"]["selections"]
         )
+        refreshed = MANAGER_MODULE.migrate_route_document(
+            original,
+            "b" * 40,
+            "c" * 40,
+            "2026-07-18T12:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+            self.readiness,
+        )
+        self.assertEqual(len(refreshed["revisions"]), 2)
+        self.assertEqual(
+            refreshed["revisions"][0]["body"]["new_kit_sha"], "a" * 40
+        )
+        self.assertEqual(
+            refreshed["revisions"][1]["body"]["new_kit_sha"], "c" * 40
+        )
+        self.assertIn(
+            "new_resolution", refreshed["revisions"][1]["body"]
+        )
+
+        rejected = self.command(
+            "migrate-plan",
+            "--ticket-plan", str(legacy_path),
+            "--pin-commit", "b" * 40,
+            "--kit-sha", "c" * 40,
+            "--migrated-at", "2026-07-18T12:00:00Z",
+            check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
 
     def test_migration_accepts_only_tuple_compatible_historical_catalog(self):
         historical_catalog = copy.deepcopy(self.catalog)
@@ -569,7 +599,8 @@ class ModelManagerTest(unittest.TestCase):
             self.profiles,
         )
         MANAGER_MODULE.validate_journal(
-            journal, self.catalog, self.routes, self.profiles
+            journal, self.catalog, self.routes, self.profiles,
+            allow_historical_active=True,
         )
         tampered = copy.deepcopy(legacy)
         tampered["resolution"]["selections"]["planner"]["selection_id"] = "auto"
@@ -666,6 +697,19 @@ class ModelManagerTest(unittest.TestCase):
         )
         before = copy.deepcopy(journal)
         resolution = MANAGER_MODULE.active_resolution(journal)
+        self.assertEqual(
+            MANAGER_MODULE.migrate_v2_journal(
+                journal,
+                "f" * 40,
+                journal["kit_sha"],
+                "2026-07-18T12:02:00Z",
+                self.catalog,
+                self.routes,
+                self.profiles,
+                self.readiness,
+            ),
+            journal,
+        )
         migrated = MANAGER_MODULE.migrate_v2_journal(
             journal, "f" * 40, "1" * 40, "2026-07-18T12:02:00Z",
             self.catalog, self.routes, self.profiles,
@@ -686,6 +730,160 @@ class ModelManagerTest(unittest.TestCase):
         )
         tampered = copy.deepcopy(migrated)
         tampered["revisions"][-1]["body"]["old_kit_sha"] = "2" * 40
+        with self.assertRaises(MANAGER_MODULE.ManagerError):
+            MANAGER_MODULE.validate_journal(
+                tampered, self.catalog, self.routes, self.profiles
+            )
+
+    def test_release_migration_refreshes_identity_without_rewriting_history(self):
+        historical_catalog = copy.deepcopy(self.catalog)
+        for route in historical_catalog["routes"]:
+            if route["route_id"] == "cursor-claude-fable-5-thinking-medium":
+                route["expected_reported_identity"] = "Fable 5 1M Medium Thinking"
+        historical_routes = ROUTER.validate_catalog(historical_catalog)
+        historical_readiness = copy.deepcopy(self.readiness)
+        historical_readiness["cursor-claude-fable-5-thinking-medium"].update({
+            "adapter_version": "cursor-old",
+            "reported_identity": "Fable 5 1M Medium Thinking",
+        })
+        resolution = ROUTER.resolve_policy(
+            historical_catalog,
+            historical_routes,
+            self.profiles["cursor-balanced-v2"],
+            historical_readiness,
+        )
+        legacy = {
+            "created_at": "2026-07-18T11:00:00Z",
+            "kit_sha": "a" * 40,
+            "resolution": resolution,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-123",
+        }
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            (ROUTER.canonical_json(legacy) + "\n").encode(),
+            "b" * 40,
+            "c" * 40,
+            "2026-07-18T12:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        before = copy.deepcopy(journal)
+        affinity_only = MANAGER_MODULE.migrate_v2_journal(
+            journal,
+            "d" * 40,
+            "f" * 40,
+            "2026-07-18T12:01:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        self.assertNotIn(
+            "new_resolution", affinity_only["revisions"][-1]["body"]
+        )
+        self.assertEqual(
+            MANAGER_MODULE.active_resolution(affinity_only), resolution
+        )
+        with self.assertRaises(MANAGER_MODULE.ManagerError):
+            MANAGER_MODULE.migrate_v2_journal(
+                journal,
+                "d" * 40,
+                journal["kit_sha"],
+                "2026-07-18T12:01:00Z",
+                self.catalog,
+                self.routes,
+                self.profiles,
+                self.readiness,
+            )
+        current_readiness = copy.deepcopy(self.readiness)
+        current_readiness["cursor-claude-fable-5-thinking-medium"][
+            "adapter_version"
+        ] = "cursor-current"
+        migrated = MANAGER_MODULE.migrate_v2_journal(
+            journal,
+            "d" * 40,
+            "e" * 40,
+            "2026-07-18T12:01:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+            current_readiness,
+        )
+        self.assertEqual(migrated["revisions"][:-1], before["revisions"])
+        body = migrated["revisions"][-1]["body"]
+        self.assertEqual(body["prior_resolution"], resolution)
+        self.assertEqual(
+            MANAGER_MODULE.active_resolution(migrated), body["new_resolution"]
+        )
+        MANAGER_MODULE.validate_journal(
+            migrated,
+            self.catalog,
+            self.routes,
+            self.profiles,
+            allow_historical_active=False,
+        )
+
+        intermediate_catalog = copy.deepcopy(self.catalog)
+        for route in intermediate_catalog["routes"]:
+            if route["route_id"] == "cursor-claude-fable-5-thinking-medium":
+                route["expected_reported_identity"] = "Fable 5 500K Medium"
+        intermediate_routes = ROUTER.validate_catalog(intermediate_catalog)
+        intermediate_readiness = copy.deepcopy(self.readiness)
+        intermediate_readiness["cursor-claude-fable-5-thinking-medium"].update({
+            "adapter_version": "cursor-middle",
+            "reported_identity": "Fable 5 500K Medium",
+        })
+        first_refresh = MANAGER_MODULE.migrate_v2_journal(
+            journal,
+            "d" * 40,
+            "1" * 40,
+            "2026-07-18T12:01:00Z",
+            intermediate_catalog,
+            intermediate_routes,
+            self.profiles,
+            intermediate_readiness,
+        )
+        second_refresh = MANAGER_MODULE.migrate_v2_journal(
+            first_refresh,
+            "2" * 40,
+            "3" * 40,
+            "2026-07-18T12:02:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+            current_readiness,
+        )
+        self.assertEqual(
+            second_refresh["revisions"][:-1], first_refresh["revisions"]
+        )
+        MANAGER_MODULE.validate_journal(
+            second_refresh, self.catalog, self.routes, self.profiles
+        )
+
+        journal_path = self.base / "historical-journal.json"
+        journal_path.write_text(ROUTER.canonical_json(journal) + "\n")
+        os.chmod(journal_path, 0o644)
+        preview = self.output(
+            "migrate-plan",
+            "--ticket-plan", str(journal_path),
+            "--pin-commit", "d" * 40,
+            "--kit-sha", "f" * 40,
+            "--migrated-at", "2026-07-18T12:01:00Z",
+            "--readiness", json.dumps(current_readiness),
+        )
+        self.assertIn(
+            "new_resolution", preview["journal"]["revisions"][-1]["body"]
+        )
+
+        tampered = copy.deepcopy(migrated)
+        tampered["revisions"][-1]["body"]["new_resolution"]["selections"][
+            "spec-linter"
+        ]["route_id"] = "claude-fable"
+        tampered["revisions"][-1]["revision_hash"] = MANAGER_MODULE._revision_hash(
+            tampered["revisions"][-1]["revision"],
+            tampered["revisions"][-1]["parent_hash"],
+            tampered["revisions"][-1]["body"],
+        )
         with self.assertRaises(MANAGER_MODULE.ManagerError):
             MANAGER_MODULE.validate_journal(
                 tampered, self.catalog, self.routes, self.profiles

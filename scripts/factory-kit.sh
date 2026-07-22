@@ -2235,7 +2235,9 @@ def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
                 plan, catalog, routes, profiles, allow_historical_catalog=True,
             )
         elif plan.get("schema") == "ticket-model-route-journal/v2":
-            manager.validate_journal(plan, catalog, routes, profiles)
+            manager.validate_journal(
+                plan, catalog, routes, profiles, allow_historical_active=True,
+            )
             migrated = manager.migrate_v2_journal(
                 plan, remote_tip, candidate, "1970-01-01T00:00:00Z",
                 catalog, routes, profiles,
