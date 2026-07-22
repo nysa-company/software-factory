@@ -346,6 +346,11 @@ chmod +x "$FAKE_CURSOR"
 # consumed so a post-submission failure cannot be replayed.
 expect_failure "fake cursor execution" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$approval_hash"
+grep -qx 'State: Ready' "$cursor_root/worktrees/T-900001/factory/tickets/T-900001.md" ||
+  fail "failed provider output advanced ticket state"
+[[ "$(git -C "$cursor_root/worktrees/T-900001" rev-parse HEAD)" == \
+   "$(git -C "$cursor_root/origin.git" rev-parse refs/heads/ticket/T-900001)" ]] ||
+  fail "failed provider output changed the trusted remote"
 grep -qx -- '--sandbox' "$cursor_root/home/cursor-args" ||
   fail "real Cursor lane did not enable Cursor's internal sandbox"
 grep -qx -- 'enabled' "$cursor_root/home/cursor-args" ||
