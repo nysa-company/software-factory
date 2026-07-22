@@ -155,6 +155,12 @@ lineage passes unchanged. A completed, role-valid Cursor run remains eligible
 when its billing state conservatively reserves the full run budget. It cannot
 approve or merge.
 
+Narrator recovery treats only the current ticket document and its exact route
+journal as post-review factory metadata. A changed journal must pass the sealed
+model manager and prove an exact append-only suffix containing only
+release-migration revisions. Any rewritten route history, product, test,
+sibling-ticket, or other path change invalidates review before GitHub access.
+
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission
 uses a short `BEGIN IMMEDIATE` transaction and states
