@@ -88,9 +88,11 @@ chmod +x "$FAKE_CURSOR"
 
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
 
-review_pattern='^[[:space:]#]*(Verdict:[[:space:]]*)?APPROVE[[:space:]]*$'
+review_pattern='^[[:space:]#]*((Verdict:[[:space:]]*)?APPROVE|\*\*(Verdict:[[:space:]]*)?APPROVE\*\*)[[:space:]]*$'
 printf '%s\n' '## Verdict: Approve' | grep -Eiq "$review_pattern" ||
   fail "review verdict parser rejected a canonical approval"
+printf '%s\n' '**Verdict: Approve**' | grep -Eiq "$review_pattern" ||
+  fail "review verdict parser rejected a bold canonical approval"
 if printf '%s\n' 'Do not approve' | grep -Eiq "$review_pattern"; then
   fail "review verdict parser accepted approval prose"
 fi
