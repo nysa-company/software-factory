@@ -2745,6 +2745,8 @@ cmd_certify() {
   evidence_expires="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $4}')"
   evidence_source="$(printf '%s' "$evidence_values" | awk -F'\t' '{print $5}')"
   release_lock "$lock"
+  prepare_pinned_scanner "$product_top" "$PREPARED_PRODUCT" "$workspace/tmp" ||
+    die "could not stage the product's pinned scanner for isolated certification"
   run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
     "$workspace" "$product_top" "$release" ||
     die "product certification failed"

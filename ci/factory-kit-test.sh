@@ -235,7 +235,12 @@ make_product() {
   git init --bare -q "$bare"
   git init -q -b main "$path"
   git -C "$path" remote add origin "$bare"
-  mkdir -p "$path/factory/tickets"
+  mkdir -p "$path/factory/tickets" "$path/scripts"
+  cat > "$path/scripts/secret-scan" <<'EOF'
+#!/usr/bin/env python3
+VERSION = "8.30.1"
+EOF
+  chmod +x "$path/scripts/secret-scan"
   cat > "$path/factory/PROJECT.env" <<'EOF'
 PROJECT_NAME=test-product
 GH_REPO=example/test-product
@@ -250,6 +255,7 @@ case "$HOME" in
 esac
 [[ "$(pwd -P)" == "$FACTORY_PRODUCT_ROOT" ]]
 [[ "$FACTORY_KIT_RELEASE" == *factory-kit-certification*/release ]]
+[[ -x .context/tools/gitleaks/8.30.1/gitleaks ]]
 if [[ -f factory/FAIL_CERTIFY ]]; then
   printf '%s\n' \
     'api_token=supersecret multi token tail' \
