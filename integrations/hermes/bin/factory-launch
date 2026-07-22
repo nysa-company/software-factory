@@ -975,7 +975,8 @@ PY
     add_dispatch_lease_env "$TICKET_PR_LEASE"
     cleanup_runtime
     trap - EXIT HUP INT TERM
-    exec_selected_helper "$TICKET_PR_HELPER" --ticket "$TICKET_PR_TICKET" \
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$TICKET_PR_HELPER" \
+      --ticket "$TICKET_PR_TICKET" \
       --workdir "$RESOLVED_WORKDIR"
     ;;
   models)
