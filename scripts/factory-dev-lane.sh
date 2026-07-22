@@ -220,8 +220,10 @@ for item in system + tools + [root]:
 metadata={"/"}
 for item in reads:
     p=pathlib.Path(item); metadata.add(str(p)); metadata.update(map(str, p.parents))
-if bridge:
-    p=pathlib.Path(bridge); metadata.add(str(p)); metadata.update(map(str, p.parents))
+bridge_paths=[] if not bridge else [bridge]
+if bridge == "/private/tmp/.cursor": bridge_paths.append("/tmp/.cursor")
+for item in bridge_paths:
+    p=pathlib.Path(item); metadata.add(str(p)); metadata.update(map(str, p.parents))
 base=["(version 1)\n", "(deny default)\n", "(allow process-fork)\n",
       "(allow process-info* (target same-sandbox))\n", "(allow sysctl-read)\n",
       "(allow mach-lookup)\n"]
@@ -246,9 +248,9 @@ cursor_network = ('(allow network-bind (local ip "localhost:*"))\n'
                   '(allow network-inbound (local ip "localhost:*"))\n'
                   '(allow network-outbound (remote ip "localhost:*"))\n'
                   '(allow network-outbound)\n')
-if bridge:
-    cursor_network += (f"(allow file-read* (subpath {json.dumps(bridge)}))\n"
-                       f"(allow file-write* (subpath {json.dumps(bridge)}))\n")
+for item in bridge_paths:
+    cursor_network += (f"(allow file-read* (subpath {json.dumps(item)}))\n"
+                       f"(allow file-write* (subpath {json.dumps(item)}))\n")
 pathlib.Path(root, "runtime/cursor.sb").write_text("".join(base) + cursor_network)
 PY
   chmod 600 "$root/runtime/"*.sb
