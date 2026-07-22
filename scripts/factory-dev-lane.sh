@@ -328,13 +328,13 @@ Kit-SHA: $sha
 
 ## Description
 
-Add the required top-level `schemaVersion: 1` field to Relay's existing `GET /health` JSON response. Preserve the existing status, content type, queue counts, and approval counts. Follow [the engine rule](../../docs/engine-spec.md#health-response), [acceptance spec](../../docs/acceptance/health-version.md), and [conventions](../../docs/conventions.md).
+Add the required top-level \`schemaVersion: 1\` field to Relay's existing \`GET /health\` JSON response. Preserve the existing status, content type, queue counts, and approval counts. Follow [the engine rule](../../docs/engine-spec.md#health-response), [acceptance spec](../../docs/acceptance/health-version.md), and [conventions](../../docs/conventions.md).
 
 ## Acceptance criteria
 
-1. A fresh `GET /health` returns HTTP 200, `Content-Type: application/json`, and top-level `schemaVersion` equal to integer `1` alongside the existing `ok`, `queue`, and `approvals` fields.
-2. After one accepted event completes, `GET /health` still returns `schemaVersion: 1`, `queue.done: 1`, and `approvals.pending: 1`.
-3. Focused tests in `app/tests/health-version.test.js` pass with `node --test app/tests/health-version.test.js`.
+1. A fresh \`GET /health\` returns HTTP 200, \`Content-Type: application/json\`, and top-level \`schemaVersion\` equal to integer \`1\` alongside the existing \`ok\`, \`queue\`, and \`approvals\` fields.
+2. After one accepted event completes, \`GET /health\` still returns \`schemaVersion: 1\`, \`queue.done: 1\`, and \`approvals.pending: 1\`.
+3. Focused tests in \`app/tests/health-version.test.js\` pass with \`node --test app/tests/health-version.test.js\`.
 EOF
   cat > "$root/product/docs/engine-spec.md" <<'EOF'
 # Relay engine spec
