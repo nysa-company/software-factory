@@ -40,6 +40,61 @@ function setStatus(message, error = false) {
   statusDot.classList.toggle("error", error);
 }
 
+function formatSnapshot(view, value) {
+  if (view === "workflow" && Array.isArray(value.roles)) {
+    const tickets = (value.tickets || []).map((item) =>
+      `${item.ticket.padEnd(10)} ${item.stage || item.state || "Unknown"}`);
+    const roles = value.roles.flatMap((item) => [
+      `${item.role.toUpperCase()} · ${item.lane} · ${item.effort}`,
+      `  ${item.primary.model || item.primary.route_id}`,
+      `  ↳ ${item.secondary.model || item.secondary.route_id}`,
+    ]);
+    return [
+      value.status || `Profile: ${value.profile || "default"}`,
+      `${value.tickets?.length || 0} tickets · ${value.roles.length} roles`,
+      "", ...tickets, "", ...roles,
+    ].join("\n");
+  }
+  if (view === "model" && Array.isArray(value.routes)) {
+    const policy = value.current_policy;
+    const families = policy
+      ? `${policy.production_family} production · ${policy.checking_family} checking`
+      : "Default role portfolio active";
+    return [
+      families,
+      `${value.routes.length} approved routes · ${value.efforts.length} effort levels`,
+      "",
+      ...value.routes.map((route) =>
+        `${route.provider_family.padEnd(10)} ${route.selection_id} · ${route.adapter}`),
+    ].join("\n");
+  }
+  if (view === "envelope" && value.values) {
+    const keys = [
+      ["PER_RUN_BUDGET_USD", "Per attempt"],
+      ["PER_TICKET_BUDGET_USD", "Per ticket"],
+      ["DAILY_CAP_USD", "Product daily"],
+      ["BUILDER_PER_RUN_BUDGET_USD", "Builder attempt"],
+    ];
+    return keys.map(([key, label]) =>
+      `${label.padEnd(18)} $${value.values[key] || "inherited"}`).join("\n");
+  }
+  if (view === "spend") {
+    const total = value.total_usd ?? value.spent_today;
+    const reserved = value.active_reservations;
+    return [
+      `Today             $${total || "0.00"}`,
+      ...(reserved == null ? [] : [`Reserved          $${reserved}`]),
+      ...(value.daily_cap == null ? [] : [`Daily cap         $${value.daily_cap}`]),
+      `${value.runs || 0} completed runs`,
+      "",
+      ...Object.entries(value.by_role_usd || {}).map(([role, cost]) =>
+        `${role.padEnd(18)} $${cost}`),
+      value.accounting || "",
+    ].filter((line) => line !== "").join("\n");
+  }
+  return JSON.stringify(value, null, 2);
+}
+
 async function loadView(view, selected) {
   const card = document.querySelector(`[data-view="${view}"]`);
   const output = card.querySelector("pre");
@@ -48,7 +103,7 @@ async function loadView(view, selected) {
   try {
     const body = await api(`/api/snapshots/${view}?project=${encodeURIComponent(selected)}`);
     state.snapshots[view] = body.snapshot;
-    output.textContent = JSON.stringify(body.snapshot, null, 2);
+    output.textContent = formatSnapshot(view, body.snapshot);
     if (view === "workflow" || view === "model") renderPolicy();
     if (view === "envelope") renderEnvelope();
   } catch (error) {
