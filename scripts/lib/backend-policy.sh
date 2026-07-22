@@ -133,7 +133,7 @@ factory_probe_adapter() {
   local adapter="$1" explicit_model="${2:-}"
   local installed installed_version help model expected_family actual_family
   local claude_bin secret_file minimal_path required_flag
-  local cursor_bin="${CURSOR_AGENT_BIN:-agent}"
+  local cursor_bin="${CURSOR_AGENT_BIN:-agent}" model_ready attempt
   local cursor_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
   local probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-30}"
   PROBE_STATE="UNKNOWN"
@@ -303,8 +303,15 @@ factory_probe_adapter() {
            python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
-      if ! HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
-           awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
+      model_ready=0
+      for attempt in 1 2; do
+        if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
+             awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
+          model_ready=1
+          break
+        fi
+      done
+      if [[ "$model_ready" != 1 ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="model_unavailable"; return 0
       fi
       PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$model" 2>/dev/null || true)"

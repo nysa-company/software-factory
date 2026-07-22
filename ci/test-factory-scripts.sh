@@ -139,7 +139,14 @@ case "${1:-}" in
       echo '{"authenticated":true}'
     fi
     exit 0 ;;
-  models) printf '%s\n' ${STUB_CURSOR_MODELS:-gpt-5.6-sol-high claude-sonnet-5-thinking-high}; exit 0 ;;
+  models)
+    if [[ -n "${STUB_CURSOR_MODELS_FAIL_ONCE_FILE:-}" &&
+          ! -f "$STUB_CURSOR_MODELS_FAIL_ONCE_FILE" ]]; then
+      : > "$STUB_CURSOR_MODELS_FAIL_ONCE_FILE"
+    else
+      printf '%s\n' ${STUB_CURSOR_MODELS:-gpt-5.6-sol-high claude-sonnet-5-thinking-high}
+    fi
+    exit 0 ;;
 esac
 
 [[ -z "${FACTORY_TEST_TRACE:-}" ]] || echo "cursor-task" >> "$FACTORY_TEST_TRACE"
@@ -311,6 +318,19 @@ if [[ "$EXPLICIT_CURSOR_PROBE" == "READY:local_contract_ready:gpt-5.6-sol-high" 
   pass "Cursor probe validates the explicit route model"
 else
   fail "Cursor probe validates the explicit route model" "$EXPLICIT_CURSOR_PROBE"
+fi
+
+MODEL_RETRY_MARKER="$TMP/cursor-model-retry"
+TRANSIENT_MODEL_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test CURSOR_OPENAI_MODEL=gpt-5.6-sol-high \
+  STUB_CURSOR_MODELS_FAIL_ONCE_FILE="$MODEL_RETRY_MARKER" \
+  bash -c 'source "$1"; factory_probe_adapter cursor-openai; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$TRANSIENT_MODEL_PROBE" == "READY:local_contract_ready" &&
+      -f "$MODEL_RETRY_MARKER" ]]; then
+  pass "Cursor readiness tolerates one transient model-list miss"
+else
+  fail "Cursor readiness tolerates one transient model-list miss" "$TRANSIENT_MODEL_PROBE"
 fi
 
 PROFILE_PLAN="$TMP/profile-plan.json"
