@@ -108,7 +108,7 @@ if printf '%s\n' 'Review verdict: I cannot approve' | grep -Eiq "$review_pattern
 fi
 printf '%s\n' \
   'warning outside stream' \
-  '{"type":"result","subtype":"success","result":"Reviewed safely.\\n\\nAPPROVE"}' |
+  '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' |
   python3 "$ROOT/scripts/lib/cursor-result.py" |
   grep -Eiq "$review_pattern" ||
   fail "review verdict parser did not decode the terminal Cursor result"
