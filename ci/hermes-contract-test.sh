@@ -1864,6 +1864,19 @@ assert stage["action"] == "RUN"
 assert stage["detail"] == "planner"
 assert stage["output"] == "RUN planner\n"
 PY
+TICKET_PR_STAGE_RC=0
+run_launcher launchtest ticket-pr --ticket T-777 --lease "$REAL_LEASE_ID" \
+  --workdir "$REAL_RUN_WORKTREE_PHYS" --json > "$TMP/real-ticket-pr-stage.json" ||
+  TICKET_PR_STAGE_RC=$?
+[[ "$TICKET_PR_STAGE_RC" -eq 2 ]] ||
+  fail "ticket-pr accepted a ticket before the reviewer boundary"
+python3 - "$TMP/real-ticket-pr-stage.json" <<'PY'
+import json, sys
+result = json.load(open(sys.argv[1], encoding="utf-8"))
+assert result["schema"] == "nysa.software-factory.ticket-pr/v1"
+assert result["status"] == "error"
+assert isinstance(result.get("error"), str) and result["error"]
+PY
 assert_bad_real_run_lease missing
 assert_bad_real_run_lease wrong \
   --lease 0000000000000000000000000000000000000000000000000000000000000000
