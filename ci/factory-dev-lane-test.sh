@@ -44,6 +44,7 @@ cursor_env() {
   FACTORY_DEV_LANE_UNAME=Darwin \
   FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
   FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
+  FACTORY_DEV_LANE_CURSOR_TMP_BRIDGE="$TMP/cursor-tmp-bridge" \
   FACTORY_DEV_CURSOR_CREDENTIAL=dedicated \
   CURSOR_API_KEY="$CURSOR_TEST_KEY" \
   HOME="$CALLER_HOME" \
@@ -74,7 +75,7 @@ cat >"$FAKE_CURSOR" <<'EOF'
 case "${1:-}" in
   --version) printf '2026.07.17-test\n' ;;
   --help) printf '%s\n' --print --output-format --workspace --model --force --trust ;;
-  status) printf '{"authenticated":true}\n' ;;
+  status) [[ -z "${CURSOR_API_KEY:-}" ]] || exit 42; printf '{"authenticated":true}\n' ;;
   models) printf '%s\n' gpt-5.6-sol-high claude-fable-5-thinking-medium \
     claude-sonnet-5-thinking-high ;;
   *) exit 42 ;;
@@ -227,6 +228,8 @@ expect_failure "cursor plan with caller credential" env CURSOR_API_KEY=fake \
   TMPDIR="$TMP/lanes" bash "$LANE" cursor-plan
 
 cursor_env bash "$LANE" cursor-plan >"$OUT"
+[[ ! -e "$TMP/cursor-tmp-bridge" && ! -L "$TMP/cursor-tmp-bridge" ]] ||
+  fail "Cursor temporary bridge remained after planning"
 cursor_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 approval_hash="$(sed -n 's/^APPROVE_HASH=//p' "$OUT")"
 [[ "$cursor_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "cursor plan returned an unsafe root"
@@ -250,6 +253,8 @@ chmod +x "$FAKE_CURSOR"
 # consumed so a post-submission failure cannot be replayed.
 expect_failure "fake cursor execution" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$approval_hash"
+[[ ! -e "$TMP/cursor-tmp-bridge" && ! -L "$TMP/cursor-tmp-bridge" ]] ||
+  fail "Cursor temporary bridge remained after failed execution"
 expect_failure "reused cursor approval hash" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$approval_hash"
 clean_cmd "$cursor_root"

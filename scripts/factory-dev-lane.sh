@@ -192,10 +192,10 @@ PY
 }
 
 write_seatbelt_profiles() {
-  local root="$1" cursor="$2"
-  python3 - "$root" "$cursor" <<'PY'
+  local root="$1" cursor="$2" bridge="${3:-}"
+  python3 - "$root" "$cursor" "$bridge" <<'PY'
 import json, os, pathlib, sys
-root, cursor = sys.argv[1:]
+root, cursor, bridge = sys.argv[1:]
 system = [
     "/System", "/bin", "/sbin", "/usr/bin", "/usr/lib", "/usr/libexec",
     "/usr/share", "/etc", "/private/etc", "/private/var/db/timezone",
@@ -220,6 +220,8 @@ for item in system + tools + [root]:
 metadata={"/"}
 for item in reads:
     p=pathlib.Path(item); metadata.add(str(p)); metadata.update(map(str, p.parents))
+if bridge:
+    p=pathlib.Path(bridge); metadata.add(str(p)); metadata.update(map(str, p.parents))
 base=["(version 1)\n", "(deny default)\n", "(allow process-fork)\n",
       "(allow process-info* (target same-sandbox))\n", "(allow sysctl-read)\n",
       "(allow mach-lookup)\n"]
@@ -250,7 +252,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent
+  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent bridge
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -350,11 +352,13 @@ import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
 )" "$root/home/timeout"
+    bridge="$(cursor_tmp_bridge)"
   else
     cursor=/usr/bin/true
+    bridge=""
   fi
   ln -s "$cursor" "$root/home/agent"
-  write_seatbelt_profiles "$root" "$cursor"
+  write_seatbelt_profiles "$root" "$cursor" "$bridge"
   python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
     "$tmp_parent" <<'PY'
 import json, os, sys
@@ -542,11 +546,46 @@ run_cursor_internal() {
 
 run_in_sandbox() {
   local root="$1" profile="$2"; shift 2
-  (cd "$root" && HOME="$root/home" TMPDIR="$root/tmp" \
-    "$(sandbox_exec)" -f "$root/runtime/$profile.sb" \
-      env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
-        PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-        bash "$root/kit/scripts/factory-dev-lane.sh" "$@")
+  (
+    bridge=""
+    cleanup_bridge() {
+      [[ -n "$bridge" ]] || return 0
+      target="$(python3 - "$bridge" <<'PY' 2>/dev/null || true
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      if [[ -L "$bridge" && "$target" == "$root/runtime/cursor-tmp" ]]; then
+        rm -f -- "$bridge"
+      else
+        echo "factory-dev-lane: Cursor temporary bridge changed; refusing cleanup" >&2
+        return 1
+      fi
+    }
+    if [[ "$profile" == cursor ]]; then
+      bridge="$(cursor_tmp_bridge)"
+      [[ ! -e "$bridge" && ! -L "$bridge" ]] ||
+        die "Cursor temporary bridge path is already in use"
+      mkdir -p "$root/runtime/cursor-tmp"
+      chmod 700 "$root/runtime/cursor-tmp"
+      ln -s "$root/runtime/cursor-tmp" "$bridge"
+      trap cleanup_bridge EXIT HUP INT TERM
+    fi
+    cd "$root"
+    HOME="$root/home" TMPDIR="$root/tmp" \
+      "$(sandbox_exec)" -f "$root/runtime/$profile.sb" \
+        env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+          PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+          bash "$root/kit/scripts/factory-dev-lane.sh" "$@"
+  )
+}
+
+cursor_tmp_bridge() {
+  if [[ "$TEST_MODE" -eq 1 && -n "${FACTORY_DEV_LANE_CURSOR_TMP_BRIDGE:-}" ]]; then
+    printf '%s\n' "$FACTORY_DEV_LANE_CURSOR_TMP_BRIDGE"
+  else
+    printf '%s\n' /private/tmp/.cursor
+  fi
 }
 
 command="${1:-}"; [[ $# -gt 0 ]] && shift || true

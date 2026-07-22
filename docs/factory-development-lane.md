@@ -25,7 +25,7 @@ FACTORY_DEV_CURSOR_CREDENTIAL=dedicated CURSOR_API_KEY='<dedicated-key>' \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-`cursor-plan` binds the one-use approval to the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. `cursor-run` consumes the approval before provider execution and stops on drift. The key is passed through standard input and is not written into lane state. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
+`cursor-plan` binds the one-use approval to the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. API-key readiness uses Cursor's authenticated model listing because Cursor's `status` command reports only browser-login state. Cursor's hardcoded `/tmp/.cursor` scratch path is redirected through an ephemeral symlink into the lane and removed on every sandbox exit. `cursor-run` consumes the approval before provider execution and stops on drift. The key is passed through standard input and is not written into lane state. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
 
 ## Cleanup and boundaries
 

@@ -298,7 +298,8 @@ factory_probe_adapter() {
             "$help" != *"--trust"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
       fi
-      if ! timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
+      if [[ -z "${CURSOR_API_KEY:-}" ]] &&
+         ! timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
            python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
