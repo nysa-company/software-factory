@@ -84,7 +84,7 @@ class ModelRouterTest(unittest.TestCase):
         self.assertEqual(cursor_fable["selection_id"], "claude-fable-5-thinking-medium")
         self.assertEqual(
             cursor_fable["expected_reported_identity"],
-            "Fable 5 1M Medium Thinking (NO ZDR)",
+            "Fable 5 300K Medium",
         )
         self.assertTrue(cursor_fable["enabled"])
         serialized = ROUTER.canonical_json(self.catalog)
