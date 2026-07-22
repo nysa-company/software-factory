@@ -88,13 +88,18 @@ chmod +x "$FAKE_CURSOR"
 
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
 
-review_pattern='^[[:space:]#]*((Verdict:[[:space:]]*)?APPROVE|\*\*(Verdict:[[:space:]]*)?APPROVE\*\*)[[:space:]]*$'
+review_pattern='^[[:space:]#*]*((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE[*[:space:]]*$'
 printf '%s\n' '## Verdict: Approve' | grep -Eiq "$review_pattern" ||
   fail "review verdict parser rejected a canonical approval"
 printf '%s\n' '**Verdict: Approve**' | grep -Eiq "$review_pattern" ||
   fail "review verdict parser rejected a bold canonical approval"
+printf '%s\n' '## Review verdict: **Approve**' | grep -Eiq "$review_pattern" ||
+  fail "review verdict parser rejected a headed bold approval"
 if printf '%s\n' 'Do not approve' | grep -Eiq "$review_pattern"; then
   fail "review verdict parser accepted approval prose"
+fi
+if printf '%s\n' 'I approve' | grep -Eiq "$review_pattern"; then
+  fail "review verdict parser accepted first-person approval prose"
 fi
 
 # Production execution is macOS-only. On other systems no test override may
