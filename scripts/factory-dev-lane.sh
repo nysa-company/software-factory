@@ -11,6 +11,7 @@ print(pwd.getpwuid(os.getuid()).pw_dir)
 PY
 )"
 TICKET=T-900001
+TICKETS=(T-900001 T-900002 T-900003 T-900004)
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
 if [[ "${FACTORY_DEV_LANE_TEST_MODE:-0}" == 1 &&
@@ -22,6 +23,7 @@ die() { echo "factory-dev-lane: $*" >&2; exit 1; }
 usage() {
   cat >&2 <<'EOF'
 usage: factory-dev-lane.sh mock [--keep]
+       factory-dev-lane.sh mock-concurrency [--keep]
        factory-dev-lane.sh cursor-plan
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh clean --root <absolute-lane-root>
@@ -126,6 +128,37 @@ PY
     case "$resolved" in
       "$forbidden"|"$forbidden"/*) die "path overlaps protected production path: $forbidden" ;;
     esac
+  done
+}
+
+require_lane_path() {
+  local root="$1" candidate="$2" lexical resolved
+  lexical="$(python3 - "$candidate" <<'PY'
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+)"
+  resolved="$(python3 - "$candidate" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+  refuse_production_path "$lexical"
+  refuse_production_path "$resolved"
+  case "$lexical" in "$root"|"$root"/*) ;; *) die "lane path escapes root: $lexical" ;; esac
+  case "$resolved" in "$root"|"$root"/*) ;; *) die "lane path resolves outside root: $resolved" ;; esac
+}
+
+validate_runtime_paths() {
+  local root="$1" path
+  for path in \
+    "$root/kit" "$root/product" "$root/origin.git" "$root/worktrees" \
+    "$root/runtime" "$root/runtime/provider-state.sqlite3" \
+    "$root/runtime/provider-policy.json" "$root/runtime/provider-attempts" \
+    "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
+    "$root/home" "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev-$(basename "$root")" \
+    "$root/tmp"; do
+    require_lane_path "$root" "$path"
   done
 }
 
@@ -267,7 +300,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent bridge session_home
+  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -278,8 +311,10 @@ create_lane() {
   chmod 700 "$root"
   refuse_production_path "$root"
   nonce="$(basename "$root" | sed 's/^nysa-sf-dev\.//')"
-  mkdir -p "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev" \
-    "$root/runtime/model-state" "$root/tmp" "$root/worktrees"
+  mkdir -p "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev-$(basename "$root")" \
+    "$root/runtime/model-state" "$root/runtime/provider-attempts" \
+    "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
+    "$root/tmp" "$root/worktrees"
   if [[ -x /usr/bin/xcode-select ]]; then
     developer="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
     if [[ -n "$developer" && -x "$developer/usr/bin/git" &&
@@ -310,15 +345,20 @@ PER_RUN_TIMEOUT_MIN=20
 DAILY_CAP_USD=100.00
 EOF
   cat > "$root/product/factory/PROJECT.env" <<EOF
-PROJECT_NAME=factory-dev-lane
+PROJECT_NAME=factory-dev-lane-$nonce
 TICKET_BRANCH_PREFIX=ticket/
 TEST_PATHS="app/tests/"
 WORKTREES_DIR=$root/worktrees
 EOF
   printf '%s\n' "$sha" > "$root/product/factory/KIT_PIN"
   printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' > "$root/product/factory/ledger.csv"
-  cat > "$root/product/factory/tickets/$TICKET.md" <<EOF
-# $TICKET — version the JSON health response
+  lane_tickets=("$TICKET")
+  [[ "$mode" == mock-concurrency ]] && lane_tickets=("${TICKETS[@]}")
+  for ticket in "${lane_tickets[@]}"; do
+    port_a=$((4781 + 2 * (10#${ticket#T-} - 900001)))
+    port_b=$((port_a + 1))
+    cat > "$root/product/factory/tickets/$ticket.md" <<EOF
+# $ticket — version the JSON health response
 
 State: Ready
 Priority: low
@@ -334,9 +374,10 @@ Add the required top-level \`schemaVersion: 1\` field to Relay's existing \`GET 
 
 1. A fresh \`GET /health\` returns HTTP 200, \`Content-Type: application/json\`, and top-level \`schemaVersion\` equal to integer \`1\` alongside the existing \`ok\`, \`queue\`, and \`approvals\` fields.
 2. After one accepted event completes, \`GET /health\` still returns \`schemaVersion: 1\`, \`queue.done: 1\`, and \`approvals.pending: 1\`.
-3. Focused tests in \`app/tests/health-version.test.js\` use the reserved, otherwise-unused ports \`4781\` and \`4782\`, and pass with \`node --test app/tests/health-version.test.js\`.
+3. Focused tests in \`app/tests/health-version.test.js\` use the reserved, otherwise-unused ports \`$port_a\` and \`$port_b\`, and pass with \`node --test app/tests/health-version.test.js\`.
 4. The complete app suite passes with \`npm --prefix app test\`; test-author ownership includes complete-body expectation helpers in \`app/tests/health.test.js\` and \`app/tests/health-approvals.test.js\`.
 EOF
+  done
   cat > "$root/product/docs/engine-spec.md" <<'EOF'
 # Relay engine spec
 
@@ -377,9 +418,11 @@ EOF
   git init -q --bare "$root/origin.git"
   git -C "$root/product" remote add origin "$root/origin.git"
   git -C "$root/product" push -q -u origin main
-  git -C "$root/product" worktree add -q -b "ticket/$TICKET" \
-    "$root/worktrees/$TICKET" main
-  git -C "$root/worktrees/$TICKET" push -q -u origin "ticket/$TICKET"
+  for ticket in "${lane_tickets[@]}"; do
+    git -C "$root/product" worktree add -q -b "ticket/$ticket" \
+      "$root/worktrees/$ticket" main
+    git -C "$root/worktrees/$ticket" push -q -u origin "ticket/$ticket"
+  done
   if [[ "$mode" == cursor ]]; then
     cursor="$(cursor_bin)"
     timeout_bin="$(command -v timeout 2>/dev/null || true)"
@@ -402,6 +445,41 @@ PY
     session_home=""
   fi
   ln -s "$cursor" "$root/home/agent"
+  if [[ "$mode" == mock-concurrency ]]; then
+    cat > "$root/home/mock-container" <<'PY'
+#!/usr/bin/env python3
+import io, json, os, sys, tarfile, time
+from pathlib import Path
+args=sys.argv[1:]
+if args[0] == "create": print("lane-container")
+elif args[0] == "start": print("lane-container")
+elif args[0] == "exec" and "-i" in args: pass
+elif args[0] == "exec" and "tar" in args and "-c" in args:
+    out=io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as archive:
+        directory=tarfile.TarInfo("artifacts"); directory.type=tarfile.DIRTYPE; directory.mode=0o700; archive.addfile(directory)
+        raw=b'{"ok":true}\n'; item=tarfile.TarInfo("artifacts/result.json"); item.size=len(raw); item.mode=0o600; archive.addfile(item, io.BytesIO(raw))
+    sys.stdout.buffer.write(out.getvalue())
+elif args[0] == "exec":
+    timeline=Path(os.environ["FACTORY_DEV_LANE_TIMELINE"])
+    with timeline.open("a", encoding="utf-8") as handle: handle.write(f"start {os.getpid()} {time.monotonic_ns()}\n")
+    time.sleep(2)
+    with timeline.open("a", encoding="utf-8") as handle: handle.write(f"end {os.getpid()} {time.monotonic_ns()}\n")
+elif args[0] == "rm": pass
+elif args[0] == "inspect": print(json.dumps({"Running": True}))
+else: raise SystemExit("unsupported mock container command")
+PY
+    chmod 700 "$root/home/mock-container"
+    python3 - "$root/runtime/provider-policy.json" <<'PY'
+import json, os, sys
+limit={"max_concurrent":4,"max_starts":32,"window_seconds":60}
+value={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
+       "global":limit,"provider_families":{"mock":limit},"account_routes":{"lane-local":limit}}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(value, handle, sort_keys=True, separators=(",",":")); handle.write("\n")
+os.chmod(sys.argv[1], 0o600)
+PY
+  fi
   write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home"
   python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
     "$tmp_parent" <<'PY'
@@ -417,6 +495,7 @@ with open(path, "w", encoding="utf-8") as f:
     f.write("\n")
 os.chmod(path, 0o600)
 PY
+  validate_runtime_paths "$root"
   printf '%s\n' "$root"
 }
 
@@ -451,21 +530,23 @@ PY
 }
 
 lane_env() {
-  local root="$1"; shift
+  local root="$1" project; shift
+  project="factory-dev-lane-$(basename "$root")"
   env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
     PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
-    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT=factory-dev-lane \
+    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
     FACTORY_HERMES_CONTRACT_VERSION=1.6.0 "$@"
 }
 
 lane_cursor_env() {
-  local root="$1"; shift
+  local root="$1" project; shift
+  project="factory-dev-lane-$(basename "$root")"
   env -i HOME="$root/home" TMPDIR="$root/tmp" \
     LANG=C LC_ALL=C PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
-    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT=factory-dev-lane \
+    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
     FACTORY_CURSOR_SESSION_HOME="${FACTORY_CURSOR_SESSION_HOME:-}" \
     FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
@@ -479,8 +560,14 @@ next_stage() {
 }
 
 run_mock_internal() {
-  local root="$1" role expected
-  require_lane_mode "$root" mock
+  local root="$1" role expected mode
+  mode="$(python3 - "$root/marker.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["mode"])
+PY
+)"
+  [[ "$mode" == mock || "$mode" == mock-concurrency ]] ||
+    die "lane mode does not authorize mock lifecycle"
   for role in planner spec-linter test-author builder reviewer narrator; do
     expected="RUN $role"
     [[ "$(next_stage "$root")" == "$expected" ]] ||
@@ -503,6 +590,89 @@ run_mock_internal() {
   [[ "$(git -C "$root/worktrees/$TICKET" rev-parse HEAD)" == \
      "$(git -C "$root/worktrees/$TICKET" rev-parse "origin/ticket/$TICKET")" ]] ||
     die "synthetic ticket branch is not pushed"
+}
+
+run_mock_concurrency_internal() {
+  local root="$1" ticket request output pid day worker image worker_sha policy_sha start_ns end_ns
+  local -a pids=()
+  require_lane_mode "$root" mock-concurrency
+  validate_runtime_paths "$root"
+  day="$(date -u +%F)"
+  worker="$root/kit/worker/provider-worker.mjs"
+  image="$(python3 - "$root/kit/worker/image-lock.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["image_reference"])
+PY
+)"
+  worker_sha="$(sha256_file "$worker")"
+  policy_sha="$(python3 - "$root/runtime/provider-policy.json" <<'PY'
+import hashlib, json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+raw=json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",",":"))
+print(hashlib.sha256(raw.encode()).hexdigest())
+PY
+)"
+  : > "$root/runtime/provider-timeline"
+  chmod 600 "$root/runtime/provider-timeline"
+  for ticket in "${TICKETS[@]}"; do
+    request="$root/runtime/provider-inputs/$ticket.json"
+    python3 - "$request" "$root/worktrees/$ticket" "$root/runtime/provider-inputs/$ticket.input" \
+      "$ticket" "$image" "$worker" "$worker_sha" "$policy_sha" <<'PY'
+import json, os, subprocess, sys
+request, worktree, input_path, ticket, image, worker, worker_sha, policy_sha=sys.argv[1:]
+with open(input_path, "w", encoding="utf-8") as handle: handle.write('{"kind":"lane-mock"}\n')
+base=subprocess.check_output(["git", "-C", worktree, "rev-parse", "HEAD"], text=True).strip()
+value={"attempt_id":f"{ticket}-builder-lane","base_sha":base,
+       "command":["node","/workspace/payload/worker"],"image":image,"input":input_path,
+       "policy_sha256":policy_sha,"role":"builder","route_id":"mock-api-lane",
+       "schema":"nysa.software-factory.provider-execution-request/v3","source":worktree,
+       "ticket":ticket,"worker_program":worker,"worker_sha256":worker_sha}
+with open(request, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, sort_keys=True, separators=(",",":")); handle.write("\n")
+os.chmod(request, 0o600); os.chmod(input_path, 0o600)
+PY
+    require_lane_path "$root" "$request"
+    output="$root/runtime/provider-inputs/$ticket.out"
+    lane_env "$root" FACTORY_DEV_LANE_TIMELINE="$root/runtime/provider-timeline" \
+      python3 "$root/kit/scripts/provider-runtime.py" \
+        --db "$root/runtime/provider-state.sqlite3" \
+        --policy "$root/runtime/provider-policy.json" \
+        --executor "$root/kit/scripts/provider-executor.py" \
+        --container-runtime "$root/home/mock-container" execute \
+        --request "$request" --attempt-root "$root/runtime/provider-attempts" \
+        --provider-family mock --account-route lane-local \
+        --reserve-micro-usd 1000000 --product-id "factory-dev-lane-$(basename "$root")" \
+        --budget-day "$day" --product-daily-cap-micro-usd 4000000 \
+        --ticket-cap-micro-usd 1000000 --machine-daily-cap-micro-usd 4000000 \
+        --timeout 30 >"$output" 2>&1 &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do wait "$pid" || die "isolated mock provider failed"; done
+  read -r start_ns end_ns < <(python3 - "$root/runtime/provider-timeline" <<'PY'
+import sys
+events=[line.split() for line in open(sys.argv[1], encoding="utf-8")]
+starts=[int(row[2]) for row in events if row[0]=="start"]
+ends=[int(row[2]) for row in events if row[0]=="end"]
+if len(starts)!=4 or len(ends)!=4 or max(starts)>=min(ends):
+    raise SystemExit("four provider calls did not overlap")
+print(min(starts), max(ends))
+PY
+  ) || die "four provider calls did not overlap"
+  python3 "$root/kit/scripts/provider-coordinator.py" \
+    --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+assert value["counts"] == {"terminal":4}, value
+assert value["active_reserve_micro_usd"] == 0, value
+' || die "isolated provider reservations did not drain"
+  pids=()
+  for ticket in "${TICKETS[@]}"; do
+    (TICKET="$ticket"; run_mock_internal "$root") &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do wait "$pid" || die "synthetic lifecycle failed"; done
+  echo "PROVIDER_CALLS=4"
+  echo "PROVIDER_OVERLAP_MILLISECONDS=$(( (end_ns - start_ns) / 1000000 ))"
 }
 
 cursor_probe_and_pin() {
@@ -670,6 +840,24 @@ case "$command" in
       die "mock lifecycle failed; lane retained for inspection"
     fi
     ;;
+  mock-concurrency)
+    assert_macos
+    keep=0
+    case "${1:-}" in --keep) keep=1; shift ;; "") ;; *) usage ;; esac
+    [[ $# -eq 0 ]] || usage
+    start="$(date +%s)"; root="$(create_lane mock-concurrency)"
+    if run_in_sandbox "$root" mock __mock-concurrency-run --root "$root"; then
+      elapsed=$(( $(date +%s) - start ))
+      echo "ROOT=$root"
+      echo "STATUS=AWAIT-OPERATOR"
+      echo "TICKETS=${TICKETS[*]}"
+      echo "ELAPSED_SECONDS=$elapsed"
+      if [[ "$keep" -eq 0 ]]; then clean_lane "$root" >/dev/null; fi
+    else
+      echo "ROOT=$root" >&2
+      die "mock concurrency lifecycle failed; lane retained for inspection"
+    fi
+    ;;
   cursor-plan)
     assert_macos
     [[ $# -eq 0 ]] || usage
@@ -700,6 +888,10 @@ case "$command" in
   __mock-run)
     [[ "${1:-}" == --root ]] || usage; root="$(validate_lane "${2:-}")"
     run_mock_internal "$root"
+    ;;
+  __mock-concurrency-run)
+    [[ "${1:-}" == --root ]] || usage; root="$(validate_lane "${2:-}")"
+    run_mock_concurrency_internal "$root"
     ;;
   __cursor-plan)
     [[ "${1:-}" == --root ]] || usage; root="$(validate_lane "${2:-}")"
