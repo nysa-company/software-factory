@@ -293,16 +293,17 @@ v1 schema binds the product `repository`, one `source_kit_sha`, the exact
 only `ticket`, exact ticket `branch`, remote `head`, and current `state`.
 Activation accepts only Ready, Planning, Building, Review, Awaiting Approval,
 or Approved remote ticket heads that match every authorized field, and refuses
-an unused or extra entry. Every exact head must also contain a v1 ticket route
-plan whose ticket and Kit-SHA match the authorization and whose complete
-resolution passes the candidate's existing historical-plan migration
+an unused or extra entry. Every exact head must also contain either a v1 ticket
+route plan or a v2 route journal whose ticket and Kit-SHA match the
+authorization and whose complete history passes the candidate's migration
 validator. The normal maintenance, zero-active-run, and zero-dispatcher-lease
 barriers still apply.
 After activation, the operator uses the existing preview-hash-bound `models
-migrate` flow to preserve the old v1 plan inside a v2 route journal and update
-the ticket Kit-SHA before reclaiming work. This authorization never changes
-ticket state, migrates a branch, renews a lease, or permits an unprotected-main
-record.
+migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
+one parent-hashed release-migration revision that preserves every prior
+revision and the active resolution. Both paths update the ticket Kit-SHA before
+work is reclaimed. This authorization never changes ticket state, migrates a
+branch, renews a lease, or permits an unprotected-main record.
 
 A one-time Contract 1.2 migration may instead use the separate
 `factory/migrations/contract-1.3/` legacy-closeout format. It does not create or

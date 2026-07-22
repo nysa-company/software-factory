@@ -2222,22 +2222,30 @@ def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
         text=True, capture_output=True,
     )
     if result.returncode or len(result.stdout.encode("utf-8")) > 1024 * 1024:
-        raise SystemExit("authorized in-flight ticket lacks a safe migratable v1 route plan")
+        raise SystemExit("authorized in-flight ticket lacks a safe migratable route document")
     try:
         plan = json.loads(result.stdout, object_pairs_hook=no_duplicates)
         manager, catalog, routes, profiles = load_migration_policy()
-        if (
-            set(plan) != {"schema", "ticket", "kit_sha", "created_at", "resolution"}
-            or plan.get("schema") != "ticket-model-route-plan/v1"
-            or plan.get("ticket") != ticket_id
-            or plan.get("kit_sha") != authorization["source_kit_sha"]
-        ):
+        if plan.get("ticket") != ticket_id or plan.get("kit_sha") != authorization["source_kit_sha"]:
             raise ValueError("route plan identity mismatch")
-        manager._validate_pin(
-            plan, catalog, routes, profiles, allow_historical_catalog=True,
-        )
+        if plan.get("schema") == "ticket-model-route-plan/v1":
+            if set(plan) != {"schema", "ticket", "kit_sha", "created_at", "resolution"}:
+                raise ValueError("route plan shape mismatch")
+            manager._validate_pin(
+                plan, catalog, routes, profiles, allow_historical_catalog=True,
+            )
+        elif plan.get("schema") == "ticket-model-route-journal/v2":
+            manager.validate_journal(plan, catalog, routes, profiles)
+            migrated = manager.migrate_v2_journal(
+                plan, remote_tip, candidate, "1970-01-01T00:00:00Z",
+                catalog, routes, profiles,
+            )
+            if migrated["revisions"][:-1] != plan["revisions"]:
+                raise ValueError("route journal history changed during migration preview")
+        else:
+            raise ValueError("unsupported route document schema")
     except Exception:
-        raise SystemExit("authorized in-flight ticket route plan is not migratable by the candidate")
+        raise SystemExit("authorized in-flight ticket route document is not migratable by the candidate")
     used_authorizations.add(ticket_id)
 
 def protected_legacy_approval(ticket_id, lease, source_ref, text):

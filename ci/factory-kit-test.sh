@@ -199,6 +199,27 @@ path.write_text(json.dumps({
 PY
 }
 
+migrate_v2_fixture() {
+  local path="$1" target="$2"
+  python3 - "$ROOT/scripts/model-manager.py" "$path" "$target" <<'PY'
+import importlib.util, json, pathlib, sys
+manager_path, journal_path, target = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("fixture_manager", manager_path)
+manager = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(manager)
+path = pathlib.Path(journal_path)
+value = json.loads(path.read_text())
+catalog, routes, _, profiles = manager.ROUTER.load_policy()
+migrated = manager.migrate_v2_journal(
+    value, "5" * 40, target, "2026-07-21T00:01:00Z",
+    catalog, routes, profiles,
+)
+assert migrated["revisions"][:-1] == value["revisions"]
+assert manager.active_resolution(migrated) == manager.active_resolution(value)
+path.write_text(json.dumps(migrated, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+}
+
 restore_product_tuple() {
   local product="$1" sha="$2"
   printf '%s\n' "$sha" > "$product/factory/KIT_PIN"
@@ -1575,7 +1596,7 @@ push_main "$PRODUCT_ONE"
 expect_success "v2-plan in-flight tuple certifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_V2_PLAN="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
-expect_failure "authorized ticket with a v2 plan blocks v1 migration cutover" \
+expect_failure "authorized ticket with a malformed v2 journal blocks cutover" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_V2_PLAN"
 
@@ -1602,21 +1623,38 @@ expect_failure "authorized route plan from another source kit blocks activation"
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_WRONG_PLAN_SOURCE"
 
-cp "$VALID_INFLIGHT_PLAN" \
-  "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json"
+python3 - "$ROOT/scripts/model-manager.py" "$VALID_INFLIGHT_PLAN" \
+  "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$SHA_A" <<'PY'
+import importlib.util, json, pathlib, sys
+manager_path, source, output, target = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("fixture_manager", manager_path)
+manager = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(manager)
+legacy = json.loads(pathlib.Path(source).read_text())
+legacy["kit_sha"] = "3" * 40
+raw = (json.dumps(legacy, sort_keys=True, separators=(",", ":")) + "\n").encode()
+catalog, routes, _, profiles = manager.ROUTER.load_policy()
+journal = manager.migrate_v1_plan(
+    raw, "4" * 40, target, "2026-07-21T00:00:00Z",
+    catalog, routes, profiles,
+)
+pathlib.Path(output).write_text(
+    json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n"
+)
+PY
 sed 's/^State: Planning$/State: Ready/' \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
 mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
-commit_all "$LEASE_BRANCH_WORKTREE" "restore Ready migratable in-flight ticket"
+commit_all "$LEASE_BRANCH_WORKTREE" "add Ready migratable v2 in-flight ticket"
 git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
 INFLIGHT_HEAD="$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
 write_inflight_authorization \
   "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Ready
 commit_all "$PRODUCT_ONE" "authorize exact in-flight ticket head"
 push_main "$PRODUCT_ONE"
-expect_success "authorized in-flight product tuple certifies" \
+expect_success "authorized v2 in-flight product tuple certifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_B="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 [[ "$(json_value "$RECEIPT_B" expected_previous_generation)" == "1" ]] &&
@@ -1649,8 +1687,9 @@ expect_success "reconcile completes claimed pre-pointer transaction" \
   pass "reconcile commits release b" ||
   fail "reconcile commits release b"
 
-# Existing sealed models migrate performs this step after activation; the
-# factory-kit fixture changes only the same two affinity bytes it validates.
+# Existing sealed models migrate performs this step after activation.
+migrate_v2_fixture \
+  "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$SHA_B"
 sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_B/" \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
@@ -1661,9 +1700,19 @@ git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
 grep -q '^State: Ready$' "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" &&
   pass "in-flight migration preserves Ready state" ||
   fail "in-flight migration preserves Ready state"
+python3 - "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$SHA_B" <<'PY' &&
+import json, sys
+value = json.load(open(sys.argv[1]))
+assert value["kit_sha"] == sys.argv[2]
+assert value["revisions"][-1]["body"]["kind"] == "release-migration"
+PY
+  pass "in-flight v2 migration appends release affinity" ||
+  fail "in-flight v2 migration appends release affinity"
 
 expect_failure "rollback refuses unreverted product tuple" \
   rollback --project alpha --product "$PRODUCT_ONE"
+migrate_v2_fixture \
+  "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$SHA_A"
 sed "s/^Kit-SHA: .*$/Kit-SHA: $SHA_A/" \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
