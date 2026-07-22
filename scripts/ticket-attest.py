@@ -196,6 +196,21 @@ def route_revision_hash(index, parent, body):
     ).encode("utf-8")).hexdigest()
 
 
+def logical_resolution(value):
+    result = {
+        key: item for key, item in value.items()
+        if key not in ("catalog_hash", "profile_hash", "policy_hash")
+    }
+    result["selections"] = {
+        role: {
+            key: item for key, item in selection.items()
+            if key not in ("adapter_version", "reported_identity")
+        }
+        for role, selection in value["selections"].items()
+    }
+    return result
+
+
 def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
     path = workdir / "factory" / "route-plans" / f"{ticket}.json"
     if not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1:
@@ -220,45 +235,94 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
             raise Refusal("ticket route journal is malformed")
         parent = None
         resolution = None
+        current_kit = None
         for index, revision_value in enumerate(plan.get("revisions", [])):
             body = revision_value.get("body") if isinstance(revision_value, dict) else None
             expected = route_revision_hash(index, parent, body)
             if (
-                set(revision_value) != {"revision", "parent_hash", "body", "revision_hash"}
+                not isinstance(revision_value, dict)
+                or not isinstance(body, dict)
+                or set(revision_value) != {"revision", "parent_hash", "body", "revision_hash"}
                 or revision_value.get("revision") != index
                 or revision_value.get("parent_hash") != parent
                 or revision_value.get("revision_hash") != expected
             ):
                 raise Refusal("ticket route journal hash chain is invalid")
             if index == 0 and body.get("kind") == "migration":
+                migration_keys = {
+                    "kind", "migrated_at", "legacy_plan_b64", "legacy_plan_sha256",
+                    "pin_commit", "old_kit_sha", "new_kit_sha", "policy_hash",
+                    "historical_selections",
+                }
                 try:
                     legacy_raw = base64.b64decode(body["legacy_plan_b64"], validate=True)
                     legacy = json.loads(legacy_raw)
                 except (KeyError, ValueError, UnicodeError, json.JSONDecodeError):
                     raise Refusal("ticket route migration provenance is malformed")
                 if (
-                    hashlib.sha256(legacy_raw).hexdigest() != body.get("legacy_plan_sha256")
+                    set(body) != migration_keys
+                    or not isinstance(legacy, dict)
+                    or hashlib.sha256(legacy_raw).hexdigest() != body.get("legacy_plan_sha256")
                     or legacy.get("ticket") != ticket
+                    or legacy.get("kit_sha") != body.get("old_kit_sha")
                     or legacy.get("resolution", {}).get("policy_hash") != body.get("policy_hash")
+                    or legacy.get("resolution", {}).get("selections")
+                    != body.get("historical_selections")
+                    or not valid_oid(body.get("pin_commit", ""))
+                    or not valid_oid(body.get("new_kit_sha", ""))
+                    or body.get("new_kit_sha") == body.get("old_kit_sha")
                 ):
                     raise Refusal("ticket route migration provenance does not match")
+                timestamp(body.get("migrated_at"), "route migration")
                 resolution = legacy["resolution"]
+                current_kit = body["new_kit_sha"]
             elif index > 0 and body.get("kind") == "fallback":
                 if body.get("prior_resolution") != resolution:
                     raise Refusal("fallback revision does not extend the prior resolution")
                 resolution = body.get("new_resolution")
                 failed_digests.add(body.get("failed_manifest_digest"))
+            elif index > 0 and body.get("kind") == "release-migration":
+                keys = {
+                    "kind", "migrated_at", "pin_commit", "old_kit_sha",
+                    "new_kit_sha", "prior_resolution",
+                }
+                if "new_resolution" in body:
+                    keys.add("new_resolution")
+                if (
+                    set(body) != keys
+                    or body.get("prior_resolution") != resolution
+                    or body.get("old_kit_sha") != current_kit
+                    or not valid_oid(body.get("pin_commit", ""))
+                    or not valid_oid(body.get("new_kit_sha", ""))
+                    or body.get("new_kit_sha") == current_kit
+                ):
+                    raise Refusal("release migration does not extend the prior route evidence")
+                timestamp(body.get("migrated_at"), "release migration")
+                if "new_resolution" in body:
+                    try:
+                        unchanged = logical_resolution(body["new_resolution"]) == logical_resolution(
+                            resolution
+                        )
+                    except (KeyError, TypeError):
+                        unchanged = False
+                    if not unchanged:
+                        raise Refusal("release migration changed logical routing")
+                    resolution = body["new_resolution"]
+                current_kit = body["new_kit_sha"]
             else:
                 raise Refusal("ticket route journal revision kind is invalid")
             prefix = dict(plan)
+            prefix["kit_sha"] = current_kit
             prefix["revisions"] = plan["revisions"][:index + 1]
             prefix_raw = (
                 json.dumps(prefix, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 + "\n"
             ).encode("utf-8")
-            revisions[index] = (revision_value["revision_hash"], resolution, prefix_raw)
+            revisions[index] = (
+                revision_value["revision_hash"], resolution, prefix_raw, current_kit,
+            )
             parent = revision_value["revision_hash"]
-        if resolution is None:
+        if resolution is None or current_kit != plan.get("kit_sha"):
             raise Refusal("ticket route journal has no active resolution")
     else:
         raise Refusal("unsupported ticket route evidence schema")
@@ -293,13 +357,12 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
         elif reason == "route_journal":
             try:
                 number = int(manifest.get("route_revision", ""))
-                revision_hash, selected_resolution, revision_raw = revisions[number]
+                revision_hash, selected_resolution, revision_raw, expected_kit = revisions[number]
             except (ValueError, KeyError):
                 raise Refusal("successful run references an unknown route revision")
             if manifest.get("route_revision_hash") != revision_hash:
                 raise Refusal("successful run route revision hash does not match")
             expected_digest = hashlib.sha256(revision_raw).hexdigest()
-            expected_kit = kit_sha
         else:
             raise Refusal("successful run has an unsupported route selection reason")
         selection = selected_resolution["selections"].get(role)
@@ -1432,6 +1495,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         workdir, args.ticket, text, manifests, reviewer, narrator,
     )
     allowed = {
+        f"factory/route-plans/{args.ticket}.json",
         f"factory/tickets/{args.ticket}.md",
         f"factory/tickets/{args.ticket}-bundle.md",
     }

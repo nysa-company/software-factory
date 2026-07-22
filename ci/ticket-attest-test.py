@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Network-free trusted ticket attestation regressions."""
 
+import base64
 import json
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +17,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ticket-attest.py"
 KIT_SHA = "a" * 40
+
+SPEC = importlib.util.spec_from_file_location("ticket_attest", SCRIPT)
+TICKET_ATTEST = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(TICKET_ATTEST)
 
 
 def command(*args, cwd=None, env=None, check=True):
@@ -424,6 +430,103 @@ else:
             manifest.read_text().replace("route_id=mock-route", "route_id=other-route")
         )
         self.assertIn("does not match its pinned route", self.attest("bundle").stderr)
+
+    def test_route_journal_binds_runs_to_historical_release_migrations(self):
+        legacy = json.loads(
+            (self.product / "factory/route-plans/T-700.json").read_text()
+        )
+        legacy["kit_sha"] = "e" * 40
+        legacy_raw = (json.dumps(legacy, indent=2, sort_keys=True) + "\n").encode()
+        resolution = legacy["resolution"]
+        migration = {
+            "historical_selections": resolution["selections"],
+            "kind": "migration",
+            "legacy_plan_b64": base64.b64encode(legacy_raw).decode(),
+            "legacy_plan_sha256": hashlib.sha256(legacy_raw).hexdigest(),
+            "migrated_at": "2026-07-17T11:10:00Z",
+            "new_kit_sha": "b" * 40,
+            "old_kit_sha": "e" * 40,
+            "pin_commit": "1" * 40,
+            "policy_hash": resolution["policy_hash"],
+        }
+        revision_zero = {
+            "body": migration, "parent_hash": None, "revision": 0,
+        }
+        revision_zero["revision_hash"] = TICKET_ATTEST.route_revision_hash(
+            0, None, migration
+        )
+        release = {
+            "kind": "release-migration",
+            "migrated_at": "2026-07-17T11:20:00Z",
+            "new_kit_sha": KIT_SHA,
+            "old_kit_sha": "b" * 40,
+            "pin_commit": "2" * 40,
+            "prior_resolution": resolution,
+        }
+        revision_one = {
+            "body": release,
+            "parent_hash": revision_zero["revision_hash"],
+            "revision": 1,
+        }
+        revision_one["revision_hash"] = TICKET_ATTEST.route_revision_hash(
+            1, revision_zero["revision_hash"], release
+        )
+        journal = {
+            "kit_sha": KIT_SHA,
+            "revisions": [revision_zero, revision_one],
+            "schema": "ticket-model-route-journal/v2",
+            "ticket": "T-700",
+        }
+        path = self.product / "factory/route-plans/T-700.json"
+        path.write_text(json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n")
+
+        def manifest(role, number, expected_kit, revisions):
+            prefix = dict(journal)
+            prefix["kit_sha"] = expected_kit
+            prefix["revisions"] = journal["revisions"][:revisions]
+            raw = (json.dumps(prefix, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            selection = resolution["selections"][role]
+            return {
+                "role": role,
+                "selection_reason": "route_journal",
+                "route_revision": str(number),
+                "route_revision_hash": journal["revisions"][number]["revision_hash"],
+                "route_plan_sha256": hashlib.sha256(raw).hexdigest(),
+                "kit_sha": expected_kit,
+                "policy_hash": resolution["policy_hash"],
+                **{
+                    field: selection[selected]
+                    for field, selected in {
+                        "adapter": "adapter", "provider_family": "provider_family",
+                        "model_id": "selection_id", "effort": "effort",
+                        "adapter_version": "adapter_version", "route_id": "route_id",
+                        "gateway_id": "gateway_id",
+                        "inference_provider_id": "inference_provider_id",
+                        "account_route_id": "account_route_id", "transport": "transport",
+                    }.items()
+                },
+            }
+
+        evidence = TICKET_ATTEST.route_plan_evidence(
+            self.product, self.product, "T-700", KIT_SHA,
+            [manifest("reviewer", 0, "b" * 40, 1), manifest("narrator", 1, KIT_SHA, 2)],
+        )
+        self.assertEqual(
+            evidence["route_plan_sha256"], hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        self.assertEqual(evidence["policy_hash"], resolution["policy_hash"])
+        self.assertNotIn("legacy_planner_manifest_sha256", evidence)
+
+        release["new_resolution"] = json.loads(json.dumps(resolution))
+        release["new_resolution"]["selections"]["narrator"]["route_id"] = "changed"
+        revision_one["revision_hash"] = TICKET_ATTEST.route_revision_hash(
+            1, revision_zero["revision_hash"], release
+        )
+        path.write_text(json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n")
+        with self.assertRaisesRegex(TICKET_ATTEST.Refusal, "changed logical routing"):
+            TICKET_ATTEST.route_plan_evidence(
+                self.product, self.product, "T-700", KIT_SHA, []
+            )
 
     def test_bundle_accepts_one_superseded_legacy_planner_and_binds_digest(self):
         legacy = self.add_legacy_planner()

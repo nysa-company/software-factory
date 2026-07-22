@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import json
 import os
@@ -110,8 +111,68 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
     reviewed = latest_reviewer_head(product, ticket)
     run(["git", "-C", str(workdir), "merge-base", "--is-ancestor", reviewed, head])
     changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").splitlines())
-    if changed - {f"factory/tickets/{ticket}.md"}:
+    route_path = f"factory/route-plans/{ticket}.json"
+    trusted_metadata = {
+        route_path,
+        f"factory/tickets/{ticket}.md",
+    }
+    if changed - trusted_metadata:
         raise Refusal("ticket implementation changed after the latest successful review")
+    if route_path not in changed:
+        return
+
+    state_root = os.environ.get("FACTORY_MODEL_STATE_ROOT", "")
+    project = os.environ.get("FACTORY_PROJECT", "")
+    ticket_text = (workdir / f"factory/tickets/{ticket}.md").read_text(encoding="utf-8")
+    kit_shas = re.findall(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_text, re.MULTILINE)
+    if not Path(state_root).is_absolute() or not project or len(kit_shas) != 1:
+        raise Refusal("route migration validation environment is missing")
+    release_sha = kit_shas[0]
+    manager = Path(__file__).resolve().parent / "model-manager.py"
+    route_file = workdir / route_path
+    command = [
+        sys.executable, "-B", str(manager), "select",
+        "--state-root", state_root,
+        "--project", project,
+        "--ticket-plan", str(route_file),
+        "--ticket", ticket,
+        "--kit-sha", release_sha,
+        "--role", "narrator",
+    ]
+    policy = os.environ.get("FACTORY_MODEL_POLICY_FILE", "")
+    if policy:
+        command.extend(["--policy-file", policy])
+    run(command)
+
+    prior_blob = run([
+        "git", "-C", str(workdir), "show", f"{reviewed}:{route_path}",
+    ]).stdout.encode("utf-8")
+    try:
+        prior = json.loads(prior_blob)
+        current = json.loads(route_file.read_text(encoding="utf-8"))
+        revisions = current["revisions"]
+        if prior.get("schema") == "ticket-model-route-journal/v2":
+            prefix = prior["revisions"]
+            suffix = revisions[len(prefix):]
+            valid_lineage = revisions[:len(prefix)] == prefix
+        elif prior.get("schema") == "ticket-model-route-plan/v1":
+            prefix = []
+            suffix = revisions[1:]
+            valid_lineage = base64.b64decode(
+                revisions[0]["body"]["legacy_plan_b64"], validate=True
+            ) == prior_blob
+        else:
+            valid_lineage = False
+            suffix = []
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError):
+        valid_lineage = False
+        suffix = []
+    if (
+        not valid_lineage
+        or not suffix
+        or any(item.get("body", {}).get("kind") != "release-migration" for item in suffix)
+    ):
+        raise Refusal("post-review route migration lineage is invalid")
 
 
 def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
