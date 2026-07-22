@@ -19,6 +19,7 @@ HEADER = (
     "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,"
     "run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
 )
+LEASE_ID = "a" * 64
 
 
 class TicketPrTest(unittest.TestCase):
@@ -35,8 +36,17 @@ class TicketPrTest(unittest.TestCase):
         (factory / "tickets").mkdir(parents=True)
         (factory / "PROJECT.env").write_text(
             "GH_REPO=example/product\nTICKET_BRANCH_PREFIX=ticket/\n"
-            "MAX_CONCURRENT_TICKETS=1\n"
+            "MAX_CONCURRENT_TICKETS=4\n"
         )
+        leases = factory / ".dispatch-leases"
+        leases.mkdir()
+        (leases / "T-100.json").write_text(json.dumps({
+            "schema_version": 1,
+            "ticket": "T-100",
+            "lease_id": LEASE_ID,
+            "claimed_epoch": 1,
+            "expires_epoch": 4102444800,
+        }))
         (factory / "KIT_PIN").write_text(KIT_SHA + "\n")
         (factory / "tickets/T-100.md").write_text(
             f"# T-100\n\nState: Building\nInitiative: I-1\nPriority: normal\n"
@@ -94,7 +104,7 @@ else:
             )
         self.ledger.write_text("\n".join(rows) + "\n")
 
-    def command(self, expected=0, bucket="pass"):
+    def command(self, expected=0, bucket="pass", lease_id=LEASE_ID):
         head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
@@ -108,6 +118,7 @@ else:
                 "FACTORY_ROOT": str(self.product),
                 "FACTORY_LEDGER": str(self.ledger),
                 "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+                "FACTORY_DISPATCH_LEASE_ID": lease_id,
                 "FAKE_PR_STATE": str(self.state),
                 "FAKE_PR_TRACE": str(self.trace),
                 "FAKE_PR_HEAD": head,
@@ -116,6 +127,29 @@ else:
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
+
+    def prepare_narrator(self, *, late_implementation=False):
+        reviewed = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        runs = self.product / "factory/runs"
+        runs.mkdir()
+        (runs / "run-5.meta").write_text(
+            "accounting_state=completed\nexit_status=0\nrole=reviewer\n"
+            f"role_head_before={reviewed}\nrun_id=run-5\nticket=T-100\n"
+        )
+        self.write_ledger(("planner", "spec-linter", "test-author", "builder", "reviewer"))
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text() + "Reviewer round 1: APPROVE\n")
+        if late_implementation:
+            (self.product / "implementation.txt").write_text("changed after review\n")
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run(["git", "-C", self.product, "commit", "-qm", "record review"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
 
     def test_creates_once_reuses_and_requires_reviewer_stage(self):
         first = self.command()
@@ -134,25 +168,7 @@ else:
         self.assertEqual(failed["checks"], ["ci"])
         self.assertEqual(self.command()["status"], "prepared")
 
-        reviewed = subprocess.run(
-            ["git", "-C", self.product, "rev-parse", "HEAD"],
-            text=True, capture_output=True, check=True,
-        ).stdout.strip()
-        runs = self.product / "factory/runs"
-        runs.mkdir()
-        (runs / "run-5.meta").write_text(
-            "accounting_state=completed\nexit_status=0\nrole=reviewer\n"
-            f"role_head_before={reviewed}\nrun_id=run-5\nticket=T-100\n"
-        )
-        self.write_ledger(("planner", "spec-linter", "test-author", "builder", "reviewer"))
-        ticket = self.product / "factory/tickets/T-100.md"
-        ticket.write_text(ticket.read_text() + "Reviewer round 1: APPROVE\n")
-        subprocess.run(["git", "-C", self.product, "add", "factory/tickets/T-100.md"], check=True)
-        subprocess.run(["git", "-C", self.product, "commit", "-qm", "record review"], check=True)
-        subprocess.run(
-            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
-            check=True,
-        )
+        self.prepare_narrator()
         current = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
@@ -178,6 +194,24 @@ else:
         self.state.write_text(json.dumps(prs))
         refused = self.command(expected=2)
         self.assertIn("implementation changed", refused["error"])
+
+    def test_narrator_recovery_creates_pr_only_after_valid_review_lineage(self):
+        self.prepare_narrator()
+        recovered = self.command()
+        self.assertEqual(recovered["boundary"], "narrator")
+        self.assertEqual(recovered["status"], "ready")
+        self.assertEqual(self.trace.read_text().count("pr create"), 1)
+
+    def test_invalid_narrator_lineage_never_accesses_github(self):
+        self.prepare_narrator(late_implementation=True)
+        refused = self.command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_mismatched_lease_is_refused_before_pr_access(self):
+        refused = self.command(expected=2, lease_id="b" * 64)
+        self.assertIn("lease is missing, unsafe, or does not match", refused["error"])
+        self.assertFalse(self.trace.exists())
 
 
 if __name__ == "__main__":

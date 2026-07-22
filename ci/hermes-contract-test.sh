@@ -1875,7 +1875,8 @@ import json, sys
 result = json.load(open(sys.argv[1], encoding="utf-8"))
 assert result["schema"] == "nysa.software-factory.ticket-pr/v1"
 assert result["status"] == "error"
-assert isinstance(result.get("error"), str) and result["error"]
+assert "reviewer or narrator stage" in result.get("error", "")
+assert "dispatcher lease" not in result["error"]
 PY
 assert_bad_real_run_lease missing
 assert_bad_real_run_lease wrong \

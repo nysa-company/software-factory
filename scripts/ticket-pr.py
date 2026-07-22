@@ -166,18 +166,25 @@ def main() -> None:
         ).stdout.split()
         if not remote or remote[0] != head:
             raise Refusal("ticket branch is not pushed at the exact local head")
-        stage = run(
-            [
-                "bash", str(Path(__file__).resolve().parent / "next-stage.sh"),
-                "--ticket", args.ticket, "--workdir", str(workdir),
-            ]
-        ).stdout.strip()
+        lease_id = os.environ.get("FACTORY_DISPATCH_LEASE_ID", "")
+        stage_command = [
+            "bash", str(Path(__file__).resolve().parent / "next-stage.sh"),
+            "--ticket", args.ticket,
+        ]
+        if lease_id:
+            if not re.fullmatch(r"[0-9a-f]{64}", lease_id):
+                raise Refusal("dispatcher lease is invalid")
+            stage_command.extend(["--lease", lease_id])
+        stage_command.extend(["--workdir", str(workdir)])
+        stage = run(stage_command).stdout.strip()
         if stage.startswith("RUN reviewer"):
             boundary = "reviewer"
         elif stage.startswith("RUN narrator"):
             boundary = "narrator"
         else:
             raise Refusal("ticket PR verification requires the reviewer or narrator stage")
+        if boundary == "narrator":
+            validate_review_lineage(product, workdir, args.ticket, head)
         repo = project_repo(factory)
         fields = "number,headRefName,baseRefName,headRefOid,url,state"
 
@@ -191,7 +198,7 @@ def main() -> None:
             return value
 
         prs = candidates()
-        if not prs and boundary == "reviewer":
+        if not prs:
             run([
                 "gh", "pr", "create", "--repo", repo, "--head", branch,
                 "--base", "main", "--title", f"{args.ticket}: implementation",
@@ -211,8 +218,6 @@ def main() -> None:
         ):
             raise Refusal("ticket PR branch, base, head, or state is invalid")
         check_status, checks = required_check_status(repo, pr["number"])
-        if boundary == "narrator":
-            validate_review_lineage(product, workdir, args.ticket, head)
         status = (
             "ready" if boundary == "narrator" and check_status == "pass"
             else "prepared" if check_status == "pass"
