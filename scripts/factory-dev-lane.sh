@@ -304,7 +304,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -315,6 +315,7 @@ create_lane() {
   chmod 700 "$root"
   refuse_production_path "$root"
   nonce="$(basename "$root" | sed 's/^nysa-sf-dev\.//')"
+  project="factory-dev-lane-$(printf '%s' "$nonce" | tr '[:upper:]' '[:lower:]')"
   mkdir -p "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev-$(basename "$root")" \
     "$root/runtime/model-state" "$root/runtime/provider-attempts" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
@@ -349,7 +350,7 @@ PER_RUN_TIMEOUT_MIN=20
 DAILY_CAP_USD=100.00
 EOF
   cat > "$root/product/factory/PROJECT.env" <<EOF
-PROJECT_NAME=factory-dev-lane-$nonce
+PROJECT_NAME=$project
 TICKET_BRANCH_PREFIX=ticket/
 TEST_PATHS="app/tests/"
 WORKTREES_DIR=$root/worktrees
@@ -535,7 +536,7 @@ PY
 
 lane_env() {
   local root="$1" project; shift
-  project="factory-dev-lane-$(basename "$root")"
+  project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
   env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
     PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
@@ -546,7 +547,7 @@ lane_env() {
 
 lane_cursor_env() {
   local root="$1" project; shift
-  project="factory-dev-lane-$(basename "$root")"
+  project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
   env -i HOME="$root/home" TMPDIR="$root/tmp" \
     LANG=C LC_ALL=C PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
