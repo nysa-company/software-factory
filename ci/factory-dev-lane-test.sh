@@ -106,6 +106,12 @@ fi
 if printf '%s\n' 'Review verdict: I cannot approve' | grep -Eiq "$review_pattern"; then
   fail "review verdict parser accepted a negative verdict"
 fi
+printf '%s\n' \
+  'warning outside stream' \
+  '{"type":"result","subtype":"success","result":"Reviewed safely.\\n\\nAPPROVE"}' |
+  python3 "$ROOT/scripts/lib/cursor-result.py" |
+  grep -Eiq "$review_pattern" ||
+  fail "review verdict parser did not decode the terminal Cursor result"
 
 # Production execution is macOS-only. On other systems no test override may
 # accidentally turn a real invocation into a development lane.

@@ -575,7 +575,8 @@ run_cursor_internal() {
       "$instruction"
     if [[ "$role" == reviewer ]]; then
       latest="$(ls -t "$root/product/factory/runs/"*.out | head -n 1)"
-      grep -Eiq '^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$' "$latest" ||
+      python3 "$root/kit/scripts/lib/cursor-result.py" < "$latest" |
+        grep -Eiq '^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$' ||
         die "Reviewer did not return an unambiguous APPROVE verdict"
       append_commit_push "$root" 'reviewer round 1: APPROVE' "$TICKET: record Cursor review"
     fi
