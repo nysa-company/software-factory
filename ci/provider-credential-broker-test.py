@@ -214,6 +214,8 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(len(self.upstream.requests), 1)
         state = self.command("status", "--attempt-id", "attempt-1")
         self.assertEqual(state["tokens"][0]["used_requests"], 1)
+        self.assertFalse(state["tokens"][0]["active"])
+        self.assertFalse(state["tokens"][0]["request_in_flight"])
         self.assertNotIn("broker_token", state["tokens"][0])
 
     def test_token_is_bound_to_route_model_budget_expiry_and_attempt(self):

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import sys
@@ -24,6 +25,12 @@ MAX_JSON = 1_000_000
 
 class RuntimeError(ValueError):
     pass
+
+
+class BrokerSettledError(RuntimeError):
+    def __init__(self, message: str, *, cancelled: bool = False):
+        super().__init__(message)
+        self.cancelled = cancelled
 
 
 def canonical(value: Any) -> str:
@@ -165,6 +172,30 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def prove_broker_drained(
+    broker_base: list[str], attempt_id: str, timeout: float
+) -> None:
+    deadline = time.monotonic() + min(max(timeout, 1), 125)
+    while True:
+        report = command_json(
+            [*broker_base, "status", "--attempt-id", attempt_id],
+            "provider credential broker status",
+        )
+        tokens = report.get("tokens")
+        if tokens == [] or (
+            isinstance(tokens, list)
+            and len(tokens) == 1
+            and tokens[0].get("active") is False
+            and tokens[0].get("request_in_flight") is False
+        ):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "provider request drain was not proven; reservation retained"
+            )
+        time.sleep(0.5)
+
+
 def broker_worker_input(
     args: argparse.Namespace, request: dict[str, Any], attempt_id: str
 ) -> None:
@@ -178,10 +209,15 @@ def broker_worker_input(
             args.provider_request,
         )
     ):
-        raise RuntimeError("brokered provider execution is incompletely configured")
-    provider_request = read_json(args.provider_request, "provider request")
-    if provider_request.get("model") != args.broker_model:
-        raise RuntimeError("provider request model is not broker-bound")
+        raise BrokerSettledError(
+            "brokered provider execution is incompletely configured"
+        )
+    try:
+        provider_request = read_json(args.provider_request, "provider request")
+        if provider_request.get("model") != args.broker_model:
+            raise RuntimeError("provider request model is not broker-bound")
+    except RuntimeError as error:
+        raise BrokerSettledError(str(error)) from error
     broker_base = [
         sys.executable,
         str(args.credential_broker),
@@ -190,24 +226,35 @@ def broker_worker_input(
     ]
     if args.broker_allow_http_loopback:
         broker_base.append("--allow-http-loopback")
-    issuance = command_json(
-        [
-            *broker_base,
-            "issue",
-            "--attempt-id", attempt_id,
-            "--route-id", request["route_id"],
-            "--model", args.broker_model,
-            "--reserve-micro-usd", str(args.reserve_micro_usd),
-            "--ttl-seconds", str(args.broker_ttl_seconds),
-            "--max-requests", "1",
-        ],
-        "provider credential broker issuance",
-    )
-    token = issuance.get("broker_token")
-    if not isinstance(token, str):
-        raise RuntimeError("provider credential broker returned no token")
-    started = time.monotonic()
+    issued = False
+    previous_signals: dict[int, Any] = {}
+
+    def interrupted(signum, _frame):
+        raise BrokerSettledError(
+            f"broker request cancelled by signal {signum}", cancelled=True
+        )
+
+    for selected in (signal.SIGTERM, signal.SIGINT):
+        previous_signals[selected] = signal.signal(selected, interrupted)
     try:
+        issuance = command_json(
+            [
+                *broker_base,
+                "issue",
+                "--attempt-id", attempt_id,
+                "--route-id", request["route_id"],
+                "--model", args.broker_model,
+                "--reserve-micro-usd", str(args.reserve_micro_usd),
+                "--ttl-seconds", str(args.broker_ttl_seconds),
+                "--max-requests", "1",
+            ],
+            "provider credential broker issuance",
+        )
+        token = issuance.get("broker_token")
+        if not isinstance(token, str):
+            raise RuntimeError("provider credential broker returned no token")
+        issued = True
+        started = time.monotonic()
         http_request = urllib.request.Request(
             args.broker_url.rstrip("/") + args.broker_path,
             data=canonical(provider_request).encode("utf-8"),
@@ -265,15 +312,28 @@ def broker_worker_input(
             Path(request["input"]),
             (canonical(worker_input) + "\n").encode("utf-8"),
         )
+    except BrokerSettledError:
+        raise
+    except Exception as error:
+        raise BrokerSettledError(f"broker request failed: {error}") from error
     finally:
-        command_json(
-            [
-                *broker_base,
-                "revoke",
-                "--attempt-id", attempt_id,
-            ],
-            "provider credential broker revocation",
-        )
+        try:
+            revocation = command_json(
+                [
+                    *broker_base,
+                    "revoke",
+                    "--attempt-id", attempt_id,
+                ],
+                "provider credential broker revocation",
+            )
+            if issued and revocation.get("revoked") is not True:
+                raise RuntimeError(
+                    "provider credential broker did not prove token revocation"
+                )
+            prove_broker_drained(broker_base, attempt_id, args.broker_timeout)
+        finally:
+            for selected, previous in previous_signals.items():
+                signal.signal(selected, previous)
 
 
 def execute(args: argparse.Namespace) -> dict[str, Any]:
@@ -325,7 +385,29 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "--expected-version", "3",
     )
     if args.provider_transport == "broker":
-        broker_worker_input(args, request, attempt_id)
+        try:
+            broker_worker_input(args, request, attempt_id)
+        except BrokerSettledError as error:
+            result = "cancelled" if error.cancelled else "failed"
+            if error.cancelled:
+                coordinator(
+                    args,
+                    "request-cancel",
+                    "--operation-id", operation(attempt_id, "broker-cancel-request"),
+                    "--attempt-id", attempt_id,
+                    "--expected-version", "4",
+                    "--reason", "controller_signal",
+                )
+            coordinator(
+                args,
+                "terminalize",
+                "--operation-id", operation(attempt_id, "broker-terminal"),
+                "--attempt-id", attempt_id,
+                "--expected-version", "4",
+                "--result", result,
+                "--charge-micro-usd", str(args.reserve_micro_usd),
+            )
+            raise
 
     executor_command = [
         sys.executable,

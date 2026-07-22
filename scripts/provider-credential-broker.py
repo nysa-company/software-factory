@@ -352,7 +352,12 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
     connection = connect(args.db)
     try:
         query = """SELECT attempt_id, route_id, model, reserve_micro_usd, expires_at,
-                          max_requests, used_requests, issued_at, revoked_at
+                          max_requests, used_requests, issued_at, revoked_at,
+                          EXISTS(
+                            SELECT 1 FROM requests
+                            WHERE requests.token_sha256=tokens.token_sha256
+                              AND requests.completed_at IS NULL
+                          ) AS request_in_flight
                    FROM tokens"""
         parameters: tuple[Any, ...] = ()
         if args.attempt_id:
@@ -363,7 +368,12 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
         connection.close()
     now = int(time.time())
     for row in rows:
-        row["active"] = row["revoked_at"] is None and row["expires_at"] > now
+        row["request_in_flight"] = bool(row["request_in_flight"])
+        row["active"] = (
+            row["revoked_at"] is None
+            and row["expires_at"] > now
+            and (row["used_requests"] < row["max_requests"] or row["request_in_flight"])
+        )
     return {"schema": OUTPUT_SCHEMA, "status": "ok", "tokens": rows}
 
 

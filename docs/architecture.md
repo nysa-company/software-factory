@@ -377,7 +377,10 @@ relays only the bounded provider result into the worker. Tokens bind the
 attempt, route, model, reserved budget, expiry, and bounded request count;
 revocation, expiry, wrong-model requests, redirects, and unconfigured
 destinations fail closed. Only token-free, credential-free state is exposed by
-status reporting.
+status reporting. A broker-stage failure or controller signal releases its
+slot only after the token is revoked and the broker reports no request in
+flight; otherwise the full reservation remains active. The executor likewise
+publishes a successful result only after removing its bound container.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe

@@ -58,9 +58,27 @@ print(json.dumps({
 class Upstream(http.server.ThreadingHTTPServer):
     allow_reuse_address = False
 
-    def __init__(self, address):
+    def __init__(self, address, *, blocked=False):
         super().__init__(address, UpstreamHandler)
         self.observed_key = None
+        self.blocked = blocked
+        self.releases = {}
+        self.started = set()
+        self.condition = threading.Condition()
+
+    def wait_for(self, count):
+        deadline = time.monotonic() + 5
+        with self.condition:
+            while len(self.started) < count:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.condition.wait(remaining)
+        return True
+
+    def release(self, attempt):
+        with self.condition:
+            self.releases.setdefault(attempt, threading.Event()).set()
 
 
 class UpstreamHandler(http.server.BaseHTTPRequestHandler):
@@ -71,8 +89,15 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers["Content-Length"])
-        self.rfile.read(length)
+        payload = json.loads(self.rfile.read(length))
+        attempt = payload.get("attempt", "default")
         self.server.observed_key = self.headers.get("X-Api-Key")
+        with self.server.condition:
+            self.server.started.add(attempt)
+            release = self.server.releases.setdefault(attempt, threading.Event())
+            self.server.condition.notify_all()
+        if self.server.blocked:
+            release.wait(10)
         mutation = json.dumps(
             {
                 "files": ["app.txt"],
@@ -160,7 +185,7 @@ class ProviderRuntimeTest(unittest.TestCase):
             "base_sha": "b" * 40,
             "command": ["worker"],
             "image": "worker@sha256:" + "a" * 64,
-            "input": str(self.root / "input.json"),
+            "input": str(self.root / f"{attempt}.input.json"),
             "policy_sha256": policy_hash or self.policy_hash,
             "role": "builder",
             "route_id": "mock-route",
@@ -175,21 +200,24 @@ class ProviderRuntimeTest(unittest.TestCase):
     def command(self, *arguments, mode="success"):
         environment = {**os.environ, "FAKE_EXECUTOR_MODE": mode}
         return subprocess.run(
-            [
-                sys.executable, str(RUNTIME),
-                "--db", str(self.db),
-                "--policy", str(self.policy),
-                "--coordinator", str(COORDINATOR),
-                "--executor", str(self.executor),
-                "--artifact-controller", str(self.controller),
-                *map(str, arguments),
-            ],
+            self.runtime_command(*arguments),
             text=True,
             capture_output=True,
             check=False,
             env=environment,
             timeout=30,
         )
+
+    def runtime_command(self, *arguments):
+        return [
+            sys.executable, str(RUNTIME),
+            "--db", str(self.db),
+            "--policy", str(self.policy),
+            "--coordinator", str(COORDINATOR),
+            "--executor", str(self.executor),
+            "--artifact-controller", str(self.controller),
+            *map(str, arguments),
+        ]
 
     def execute(
         self, attempt="attempt-1", mode="success", policy_hash=None, patch=False
@@ -229,6 +257,92 @@ class ProviderRuntimeTest(unittest.TestCase):
         )
         return json.loads(result.stdout)["attempts"][0]
 
+    def broker_fixture(self, upstream):
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        self.servers.append((upstream, thread))
+        credentials = self.root / "credentials.json"
+        secret = "host-only-provider-secret"
+        credentials.write_text(json.dumps({
+            "schema": "nysa.software-factory.provider-credentials/v1",
+            "routes": {"mock-route": {
+                "provider_family": "mock",
+                "upstream_origin": f"http://127.0.0.1:{upstream.server_port}",
+                "credential_header": "X-Api-Key",
+                "credential_prefix": "",
+                "credential_value": secret,
+                "allowed_paths": ["/v1/messages"],
+                "allowed_models": ["model-approved"],
+                "forward_headers": [],
+                "max_request_bytes": 100000,
+            }},
+        }))
+        os.chmod(credentials, 0o600)
+        broker_db = self.root / "broker.sqlite3"
+        with __import__("socket").socket() as value:
+            value.bind(("127.0.0.1", 0))
+            broker_port = value.getsockname()[1]
+        process = subprocess.Popen(
+            [
+                sys.executable, str(BROKER),
+                "--db", str(broker_db),
+                "--credentials", str(credentials),
+                "--allow-http-loopback",
+                "serve",
+                "--listen-port", str(broker_port),
+                "--allow-plaintext-loopback",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.processes.append(process)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(stdout + stderr)
+            try:
+                with __import__("socket").create_connection(
+                    ("127.0.0.1", broker_port), timeout=0.1
+                ):
+                    break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            self.fail("broker did not listen")
+        return broker_db, broker_port, credentials, secret
+
+    def broker_arguments(self, attempt, fixture, *, timeout="900"):
+        broker_db, broker_port, credentials, _ = fixture
+        provider_request = self.root / f"{attempt}.provider-request.json"
+        provider_request.write_text(json.dumps({
+            "attempt": attempt, "model": "model-approved", "messages": [],
+        }))
+        os.chmod(provider_request, 0o600)
+        return [
+            "execute",
+            "--request", self.request(attempt),
+            "--attempt-root", self.attempts,
+            "--provider-family", "mock",
+            "--account-route", "local",
+            "--reserve-micro-usd", "1000",
+            "--product-id", "product-a",
+            "--budget-day", "2026-07-20",
+            "--product-daily-cap-micro-usd", "1000000",
+            "--ticket-cap-micro-usd", "1000000",
+            "--machine-daily-cap-micro-usd", "1000000",
+            "--provider-transport", "broker",
+            "--broker-db", broker_db,
+            "--broker-credentials", credentials,
+            "--broker-url", f"http://127.0.0.1:{broker_port}",
+            "--broker-path", "/v1/messages",
+            "--broker-model", "model-approved",
+            "--provider-request", provider_request,
+            "--broker-timeout", timeout,
+            "--broker-allow-http-loopback",
+        ]
+
     def test_success_and_provider_failure_terminalize(self):
         success = self.execute()
         self.assertEqual(success.returncode, 0, success.stdout + success.stderr)
@@ -264,96 +378,12 @@ class ProviderRuntimeTest(unittest.TestCase):
 
     def test_broker_turn_is_reserved_first_redacted_and_written_for_worker(self):
         upstream = Upstream(("127.0.0.1", 0))
-        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-        thread.start()
-        self.servers.append((upstream, thread))
-        credentials = self.root / "credentials.json"
-        secret = "host-only-provider-secret"
-        credentials.write_text(
-            json.dumps(
-                {
-                    "schema": "nysa.software-factory.provider-credentials/v1",
-                    "routes": {
-                        "mock-route": {
-                            "provider_family": "mock",
-                            "upstream_origin": (
-                                f"http://127.0.0.1:{upstream.server_port}"
-                            ),
-                            "credential_header": "X-Api-Key",
-                            "credential_prefix": "",
-                            "credential_value": secret,
-                            "allowed_paths": ["/v1/messages"],
-                            "allowed_models": ["model-approved"],
-                            "forward_headers": [],
-                            "max_request_bytes": 100000,
-                        }
-                    },
-                }
-            )
-        )
-        os.chmod(credentials, 0o600)
-        broker_db = self.root / "broker.sqlite3"
-        broker_port = 0
-        with __import__("socket").socket() as value:
-            value.bind(("127.0.0.1", 0))
-            broker_port = value.getsockname()[1]
-        process = subprocess.Popen(
-            [
-                sys.executable, str(BROKER),
-                "--db", str(broker_db),
-                "--credentials", str(credentials),
-                "--allow-http-loopback",
-                "serve",
-                "--listen-port", str(broker_port),
-                "--allow-plaintext-loopback",
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self.processes.append(process)
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            if process.poll() is not None:
-                stdout, stderr = process.communicate()
-                self.fail(stdout + stderr)
-            try:
-                with __import__("socket").create_connection(
-                    ("127.0.0.1", broker_port), timeout=0.1
-                ):
-                    break
-            except OSError:
-                time.sleep(0.05)
-        provider_request = self.root / "provider-request.json"
-        provider_request.write_text(
-            json.dumps({"model": "model-approved", "messages": []})
-        )
-        os.chmod(provider_request, 0o600)
-        request_path = self.request()
-        result = self.command(
-            "execute",
-            "--request", request_path,
-            "--attempt-root", self.attempts,
-            "--provider-family", "mock",
-            "--account-route", "local",
-            "--reserve-micro-usd", "1000",
-            "--product-id", "product-a",
-            "--budget-day", "2026-07-20",
-            "--product-daily-cap-micro-usd", "1000000",
-            "--ticket-cap-micro-usd", "1000000",
-            "--machine-daily-cap-micro-usd", "1000000",
-            "--provider-transport", "broker",
-            "--broker-db", broker_db,
-            "--broker-credentials", credentials,
-            "--broker-url", f"http://127.0.0.1:{broker_port}",
-            "--broker-path", "/v1/messages",
-            "--broker-model", "model-approved",
-            "--provider-request", provider_request,
-            "--broker-allow-http-loopback",
-        )
+        fixture = self.broker_fixture(upstream)
+        broker_db, _, credentials, secret = fixture
+        result = self.command(*self.broker_arguments("attempt-1", fixture))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(upstream.observed_key, secret)
-        worker_input = json.loads((self.root / "input.json").read_text())
+        worker_input = json.loads((self.root / "attempt-1.input.json").read_text())
         self.assertEqual(worker_input["files"], ["app.txt"])
         self.assertNotIn(secret, result.stdout + result.stderr)
         broker_status = subprocess.run(
@@ -369,6 +399,105 @@ class ProviderRuntimeTest(unittest.TestCase):
             check=True,
         )
         self.assertFalse(json.loads(broker_status.stdout)["tokens"][0]["active"])
+
+    def test_signal_cancels_only_targeted_broker_attempt_after_proven_drain(self):
+        upstream = Upstream(("127.0.0.1", 0), blocked=True)
+        fixture = self.broker_fixture(upstream)
+        broker_db, _, credentials, _ = fixture
+        attempts = [f"attempt-{number}" for number in range(1, 5)]
+        processes = [
+            subprocess.Popen(
+                self.runtime_command(*self.broker_arguments(attempt, fixture)),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for attempt in attempts
+        ]
+        try:
+            self.assertTrue(upstream.wait_for(4), "four broker calls did not overlap")
+            processes[0].terminate()
+            upstream.release("attempt-1")
+            stdout, stderr = processes[0].communicate(timeout=5)
+            self.assertEqual(processes[0].returncode, 2, stdout + stderr)
+            cancelled = self.status("attempt-1")
+            self.assertEqual(cancelled["terminal_result"], "cancelled")
+            self.assertEqual(cancelled["cancellation_reason"], "controller_signal")
+
+            replacement = self.execute("attempt-5")
+            self.assertEqual(
+                replacement.returncode, 0, replacement.stdout + replacement.stderr
+            )
+            status = subprocess.run(
+                [sys.executable, str(COORDINATOR), "--db", str(self.db), "status"],
+                text=True, capture_output=True, check=True,
+            )
+            value = json.loads(status.stdout)
+            self.assertEqual(value["active_reserve_micro_usd"], 3000)
+            self.assertEqual(
+                {item["attempt_id"] for item in value["attempts"] if item["state"] == "submitted"},
+                {"attempt-2", "attempt-3", "attempt-4"},
+            )
+
+            for attempt in attempts[1:]:
+                upstream.release(attempt)
+            for process in processes[1:]:
+                stdout, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+        finally:
+            for attempt in attempts:
+                upstream.release(attempt)
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+                    process.communicate(timeout=5)
+
+        report = subprocess.run(
+            [
+                sys.executable, str(BROKER),
+                "--db", str(broker_db),
+                "--credentials", str(credentials),
+                "--allow-http-loopback", "status",
+            ],
+            text=True, capture_output=True, check=True,
+        )
+        self.assertTrue(all(
+            token["active"] is False and token["request_in_flight"] is False
+            for token in json.loads(report.stdout)["tokens"]
+        ))
+        final = subprocess.run(
+            [sys.executable, str(COORDINATOR), "--db", str(self.db), "status"],
+            text=True, capture_output=True, check=True,
+        )
+        self.assertEqual(json.loads(final.stdout)["active_reserve_micro_usd"], 0)
+
+    def test_broker_timeout_retains_slot_until_request_drain_is_proven(self):
+        upstream = Upstream(("127.0.0.1", 0), blocked=True)
+        fixture = self.broker_fixture(upstream)
+        process = subprocess.Popen(
+            self.runtime_command(*self.broker_arguments(
+                "attempt-timeout", fixture, timeout="0.2"
+            )),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            self.assertTrue(upstream.wait_for(1), "broker request did not start")
+            time.sleep(0.4)
+            self.assertIsNone(process.poll(), "runtime released an in-flight request")
+            self.assertEqual(self.status("attempt-timeout")["state"], "submitted")
+            upstream.release("attempt-timeout")
+            stdout, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 2, stdout + stderr)
+        finally:
+            upstream.release("attempt-timeout")
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=5)
+        status = self.status("attempt-timeout")
+        self.assertEqual(status["terminal_result"], "failed")
+        self.assertEqual(status["charge_micro_usd"], status["reserve_micro_usd"])
 
     def test_policy_binding_mismatch_fails_before_reservation(self):
         result = self.execute(policy_hash="f" * 64)

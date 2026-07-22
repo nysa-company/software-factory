@@ -20,6 +20,8 @@ bash scripts/factory-dev-lane.sh mock-concurrency
 
 This runs four identity-bound mock provider attempts through the existing Contract 1.6 coordinator, runtime, and executor at once, then completes four disposable Planner-through-Narrator lifecycles. The fake container transport, policy, database, attempts, locks, inputs, worktrees, project identity, ports, timeline, home, and temporary files are unique to the owner-only lane root. The command proves temporal overlap, drains all reservations, leaves each ticket clean and locally pushed in `Review`, and must finish in less than 15 minutes. It does not start a broker, use credentials, or permit a real provider call.
 
+Focused provider tests separately hold four loopback broker requests open, cancel one by controller signal, admit a replacement only into that released slot, and verify timeout cleanup. Capacity is released only after token revocation and request drain are both proven.
+
 ## Real Cursor lifecycle
 
 The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`:
