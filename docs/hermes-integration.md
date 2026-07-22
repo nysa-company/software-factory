@@ -149,7 +149,9 @@ head before review and reports `wait` without launching a role while required
 checks are pending. Completed failures are Reviewer evidence, not approval.
 Before Narrator, the dispatcher invokes it again and requires `ready`; the
 helper binds successful required checks and latest Reviewer evidence to the
-exact current head. It cannot approve or merge.
+exact current head. If an earlier helper failure prevented PR creation, the
+same call may create it at the Narrator boundary only after that reviewed-head
+lineage passes unchanged. It cannot approve or merge.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission
