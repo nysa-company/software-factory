@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -298,6 +299,126 @@ class ModelControlTest(unittest.TestCase):
                 ["git", "-C", str(self.workdir), "status", "--porcelain"], text=True
             ),
             "",
+        )
+
+    def test_migration_preview_and_apply_probe_current_readiness(self):
+        self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
+        release = self.base / "release"
+        shutil.copytree(ROOT / "scripts", release / "scripts")
+        backend = release / "scripts" / "lib" / "backend-policy.sh"
+        backend.write_text(backend.read_text().replace(
+            '  if [[ -n "$readiness_output" ]]; then\n',
+            '''  if [[ -n "${FACTORY_TEST_MIGRATION_READINESS_COUNTER:-}" ]]; then
+    count="$(awk 'NR==1 {print; exit}' "$FACTORY_TEST_MIGRATION_READINESS_COUNTER" 2>/dev/null || true)"
+    count=$((${count:-0} + 1))
+    printf '%s\\n' "$count" > "$FACTORY_TEST_MIGRATION_READINESS_COUNTER"
+    if [[ "$count" -eq 2 ]]; then
+      python3 - "$tmp/readiness.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+value = json.load(open(path))
+value[sorted(value)[0]]["reason"] = "drift"
+with open(path, "w") as handle:
+    json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+    handle.write("\\n")
+PY
+    fi
+  fi
+  if [[ -n "$readiness_output" ]]; then
+''',
+            1,
+        ))
+        (release / "integrations" / "hermes").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "integrations" / "hermes" / "contract.json",
+            release / "integrations" / "hermes" / "contract.json",
+        )
+        release_tree = subprocess.check_output(
+            [
+                "bash", "-c", 'source "$1"; factory_directory_tree "$2"', "_",
+                str(ROOT / "scripts" / "lib" / "kit-pin.sh"), str(release),
+            ],
+            text=True,
+        ).strip()
+        trace = self.base / "migration-probes.trace"
+        environment = {
+            **self.environment,
+            "FACTORY_PROBE_TRACE": str(trace),
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.6.0",
+            "FACTORY_RELEASE_PATH": str(release),
+            "FACTORY_RELEASE_SHA": self.kit_sha,
+            "FACTORY_RELEASE_TREE": release_tree,
+        }
+
+        def migrate(*args):
+            result = subprocess.run(
+                [str(release / "scripts" / "model-control.sh"), *args],
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if result.returncode:
+                self.fail("sealed model-control failed: %s %s" % (
+                    result.stdout, result.stderr
+                ))
+            return json.loads(result.stdout)
+
+        preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)
+        )
+        preview_probes = trace.read_text().splitlines()
+        route_plan = self.workdir / "factory" / "route-plans" / "T-901.json"
+        before_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True
+        )
+        before_plan = route_plan.read_bytes()
+        drift_environment = {
+            **environment,
+            "FACTORY_TEST_MIGRATION_READINESS_COUNTER": str(
+                self.base / "migration-readiness-counter"
+            ),
+        }
+        drift = subprocess.run(
+            [
+                str(release / "scripts" / "model-control.sh"), "migrate",
+                "--ticket", "T-901", "--workdir", str(self.workdir),
+                "--approve-hash", preview["preview_hash"],
+                "--approved-by", "tester",
+            ],
+            env=drift_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(drift.returncode, 2)
+        self.assertIn("readiness changed after approval", drift.stdout)
+        self.assertEqual(route_plan.read_bytes(), before_plan)
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True
+            ),
+            before_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "status", "--porcelain"],
+                text=True,
+            ),
+            "",
+        )
+        applied = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"], "--approved-by", "tester",
+        )
+        self.assertGreaterEqual(len(preview_probes), 6)
+        self.assertGreaterEqual(len(trace.read_text().splitlines()), 18)
+        self.assertEqual(applied["preview_hash"], preview["preview_hash"])
+        self.assertEqual(
+            json.loads(
+                route_plan.read_text()
+            )["schema"],
+            "ticket-model-route-journal/v2",
         )
 
 

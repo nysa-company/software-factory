@@ -701,7 +701,7 @@ elif plan.get("schema") == "ticket-model-route-journal/v2":
         legacy = json.loads(base64.b64decode(body["legacy_plan_b64"]))
         resolution = legacy["resolution"]
     else:
-        resolution = body["new_resolution"]
+        resolution = body.get("new_resolution", body["prior_resolution"])
     revision = str(revision_value["revision"])
     revision_hash = revision_value["revision_hash"]
     selection_reason = "route_journal"

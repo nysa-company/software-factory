@@ -60,6 +60,9 @@ RELEASE_MIGRATION_BODY_KEYS = frozenset((
     "kind", "migrated_at", "pin_commit", "old_kit_sha", "new_kit_sha",
     "prior_resolution",
 ))
+REFRESHED_RELEASE_MIGRATION_BODY_KEYS = (
+    RELEASE_MIGRATION_BODY_KEYS | frozenset(("new_resolution",))
+)
 FALLBACK_REASONS = frozenset((
     "budget_exhausted", "credits_exhausted", "operator_requested",
     "provider_unavailable",
@@ -482,15 +485,19 @@ def migrate_v1_plan(plan_blob, pin_commit, new_kit_sha, migrated_at,
 
 
 def migrate_v2_journal(journal, pin_commit, new_kit_sha, migrated_at,
-                       catalog, routes, profile_map):
+                       catalog, routes, profile_map, readiness=None):
     """Append a release affinity change without rewriting route history."""
-    validate_journal(journal, catalog, routes, profile_map)
+    validate_journal(
+        journal, catalog, routes, profile_map, allow_historical_active=True
+    )
     if not isinstance(pin_commit, str) or not KIT_SHA.fullmatch(pin_commit):
         raise ManagerError("pin commit must be 40 lowercase hex characters")
     if not isinstance(new_kit_sha, str) or not KIT_SHA.fullmatch(new_kit_sha):
         raise ManagerError("new kit SHA must be 40 lowercase hex characters")
     _timestamp(migrated_at, "migration migrated_at")
     if journal["kit_sha"] == new_kit_sha:
+        if readiness is not None:
+            validate_journal(journal, catalog, routes, profile_map)
         return journal
     body = {
         "kind": "release-migration",
@@ -500,6 +507,13 @@ def migrate_v2_journal(journal, pin_commit, new_kit_sha, migrated_at,
         "pin_commit": pin_commit,
         "prior_resolution": active_resolution(journal),
     }
+    if readiness is not None:
+        try:
+            body["new_resolution"] = ROUTER.refresh_resolution(
+                body["prior_resolution"], catalog, routes, profile_map, readiness
+            )
+        except ROUTER.RouterError as exc:
+            raise ManagerError("cannot refresh release resolution: %s" % exc)
     result = dict(journal)
     result["kit_sha"] = new_kit_sha
     result["revisions"] = list(journal["revisions"])
@@ -508,12 +522,18 @@ def migrate_v2_journal(journal, pin_commit, new_kit_sha, migrated_at,
     revision = {"body": body, "parent_hash": parent_hash, "revision": number}
     revision["revision_hash"] = _revision_hash(number, parent_hash, body)
     result["revisions"].append(revision)
-    validate_journal(result, catalog, routes, profile_map)
+    validate_journal(
+        result,
+        catalog,
+        routes,
+        profile_map,
+        allow_historical_active=readiness is None,
+    )
     return result
 
 
 def migrate_route_document(document_blob, pin_commit, new_kit_sha, migrated_at,
-                           catalog, routes, profile_map):
+                           catalog, routes, profile_map, readiness=None):
     try:
         value = json.loads(
             document_blob.decode("utf-8"),
@@ -522,14 +542,31 @@ def migrate_route_document(document_blob, pin_commit, new_kit_sha, migrated_at,
     except (UnicodeError, json.JSONDecodeError, ROUTER.RouterError) as exc:
         raise ManagerError("cannot parse route document: %s" % exc)
     if value.get("schema") == "ticket-model-route-plan/v1":
-        return migrate_v1_plan(
-            document_blob, pin_commit, new_kit_sha, migrated_at,
-            catalog, routes, profile_map,
+        journal = migrate_v1_plan(
+            document_blob,
+            pin_commit,
+            value["kit_sha"] if readiness is not None else new_kit_sha,
+            migrated_at,
+            catalog,
+            routes,
+            profile_map,
+        )
+        if readiness is None:
+            return journal
+        return migrate_v2_journal(
+            journal,
+            pin_commit,
+            new_kit_sha,
+            migrated_at,
+            catalog,
+            routes,
+            profile_map,
+            readiness,
         )
     if value.get("schema") == "ticket-model-route-journal/v2":
         return migrate_v2_journal(
             value, pin_commit, new_kit_sha, migrated_at,
-            catalog, routes, profile_map,
+            catalog, routes, profile_map, readiness,
         )
     raise ManagerError("unsupported ticket route document schema")
 
@@ -544,10 +581,53 @@ def active_resolution(journal):
         )["resolution"]
     if body["kind"] == "fallback":
         return body["new_resolution"]
+    if body.get("new_resolution") is not None:
+        return body["new_resolution"]
     return body["prior_resolution"]
 
 
-def validate_journal(value, catalog, routes, profile_map):
+def _validate_resolution(value, catalog, routes, profile_map, historical=False):
+    if not isinstance(value, dict):
+        raise ManagerError("resolution must be an object")
+    try:
+        if value.get("schema") == "model-fallback-resolution/v2":
+            ROUTER.validate_fallback_plan(
+                value,
+                catalog,
+                routes,
+                profile_map,
+                allow_historical_catalog=historical,
+            )
+        else:
+            ROUTER.validate_plan(
+                value,
+                catalog,
+                routes,
+                profile_map,
+                allow_historical_catalog=historical,
+            )
+    except ROUTER.RouterError as exc:
+        raise ManagerError("invalid resolution: %s" % exc)
+
+
+def _logical_resolution(value):
+    result = {
+        key: item for key, item in value.items()
+        if key not in ("catalog_hash", "profile_hash", "policy_hash")
+    }
+    result["selections"] = {
+        role: {
+            key: item for key, item in selection.items()
+            if key not in ("adapter_version", "reported_identity")
+        }
+        for role, selection in value["selections"].items()
+    }
+    return result
+
+
+def validate_journal(
+    value, catalog, routes, profile_map, allow_historical_active=False
+):
     _exact_keys(value, JOURNAL_KEYS, "route journal")
     if value["schema"] != "ticket-model-route-journal/v2":
         raise ManagerError("unsupported route journal schema")
@@ -642,13 +722,20 @@ def validate_journal(value, catalog, routes, profile_map):
                 raise ManagerError("fallback prior policy hash mismatch")
             try:
                 ROUTER.validate_fallback_plan(
-                    new_resolution, catalog, routes, profile_map
+                    new_resolution, catalog, routes, profile_map,
+                    allow_historical_catalog=True,
                 )
             except ROUTER.RouterError as exc:
                 raise ManagerError("invalid fallback resolution: %s" % exc)
             prior_resolution = new_resolution
         else:
-            _exact_keys(body, RELEASE_MIGRATION_BODY_KEYS, "%s.body" % location)
+            if frozenset(body) not in (
+                RELEASE_MIGRATION_BODY_KEYS,
+                REFRESHED_RELEASE_MIGRATION_BODY_KEYS,
+            ):
+                _exact_keys(
+                    body, RELEASE_MIGRATION_BODY_KEYS, "%s.body" % location
+                )
             if body["kind"] != "release-migration":
                 raise ManagerError("later route journal revision kind is invalid")
             for key in ("pin_commit", "old_kit_sha", "new_kit_sha"):
@@ -661,10 +748,34 @@ def validate_journal(value, catalog, routes, profile_map):
                 raise ManagerError("release migration must change kit SHA")
             if body["prior_resolution"] != prior_resolution:
                 raise ManagerError("release migration prior resolution mismatch")
+            if "new_resolution" in body:
+                try:
+                    _validate_resolution(
+                        body["new_resolution"],
+                        catalog,
+                        routes,
+                        profile_map,
+                        historical=True,
+                    )
+                    unchanged = (
+                        _logical_resolution(body["new_resolution"])
+                        == _logical_resolution(prior_resolution)
+                    )
+                except (KeyError, TypeError, ManagerError) as exc:
+                    raise ManagerError(
+                        "invalid release migration resolution: %s" % exc
+                    )
+                if not unchanged:
+                    raise ManagerError("release migration changed logical routing")
+                prior_resolution = body["new_resolution"]
             current_kit = body["new_kit_sha"]
         parent_hash = revision["revision_hash"]
     if value["kit_sha"] != current_kit:
         raise ManagerError("route journal final kit SHA mismatch")
+    if not allow_historical_active:
+        _validate_resolution(
+            active_resolution(value), catalog, routes, profile_map
+        )
     return value
 
 
@@ -860,6 +971,7 @@ def build_parser():
         migrate.add_argument("--pin-commit", required=True)
         migrate.add_argument("--kit-sha", required=True)
         migrate.add_argument("--migrated-at", required=True)
+        migrate.add_argument("--readiness", required=True)
         if name == "migrate":
             migrate.add_argument("--approve-hash", required=True)
             migrate.add_argument("--output", required=True)
@@ -1146,6 +1258,11 @@ def run(args):
         _atomic_write(output, value, mode=0o644)
         return value
     if args.command in ("migrate-plan", "migrate"):
+        readiness = (
+            None
+            if args.readiness is None
+            else _parse_json_argument(args.readiness, "readiness")
+        )
         journal = migrate_route_document(
             _load_plan_blob(args.ticket_plan),
             args.pin_commit,
@@ -1154,6 +1271,7 @@ def run(args):
             catalog,
             routes,
             profile_map,
+            readiness,
         )
         preview_hash = ROUTER.content_hash(journal)
         if args.command == "migrate-plan":

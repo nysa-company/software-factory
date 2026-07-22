@@ -210,12 +210,21 @@ spec.loader.exec_module(manager)
 path = pathlib.Path(journal_path)
 value = json.loads(path.read_text())
 catalog, routes, _, profiles = manager.ROUTER.load_policy()
+readiness = {
+    route_id: {
+        "adapter_version": "test-current", "reason": "test",
+        "reported_identity": route["expected_reported_identity"],
+        "state": "READY",
+    }
+    for route_id, route in routes.items() if route["enabled"]
+}
 migrated = manager.migrate_v2_journal(
     value, "5" * 40, target, "2026-07-21T00:01:00Z",
-    catalog, routes, profiles,
+    catalog, routes, profiles, readiness,
 )
 assert migrated["revisions"][:-1] == value["revisions"]
-assert manager.active_resolution(migrated) == manager.active_resolution(value)
+assert migrated["revisions"][-1]["body"]["prior_resolution"] == manager.active_resolution(value)
+assert manager.active_resolution(migrated) == migrated["revisions"][-1]["body"]["new_resolution"]
 path.write_text(json.dumps(migrated, sort_keys=True, separators=(",", ":")) + "\n")
 PY
 }
@@ -1638,8 +1647,22 @@ manager = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(manager)
 legacy = json.loads(pathlib.Path(source).read_text())
 legacy["kit_sha"] = "3" * 40
-raw = (json.dumps(legacy, sort_keys=True, separators=(",", ":")) + "\n").encode()
 catalog, routes, _, profiles = manager.ROUTER.load_policy()
+resolution = legacy["resolution"]
+resolution["selections"]["spec-linter"]["adapter_version"] = "test-old"
+resolution["selections"]["spec-linter"]["reported_identity"] = (
+    "Historical Cursor identity"
+)
+profile = profiles[resolution["profile_id"]]
+portfolio = next(
+    item for item in profile["portfolios"]
+    if item["portfolio_id"] == resolution["portfolio_id"]
+)
+resolution["policy_hash"] = manager.ROUTER._policy_hash(
+    resolution["catalog_hash"], resolution["profile_hash"], portfolio,
+    resolution["selections"],
+)
+raw = (json.dumps(legacy, sort_keys=True, separators=(",", ":")) + "\n").encode()
 journal = manager.migrate_v1_plan(
     raw, "4" * 40, target, "2026-07-21T00:00:00Z",
     catalog, routes, profiles,
@@ -1660,7 +1683,7 @@ write_inflight_authorization \
   "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Ready
 commit_all "$PRODUCT_ONE" "authorize exact in-flight ticket head"
 push_main "$PRODUCT_ONE"
-expect_success "authorized v2 in-flight product tuple certifies" \
+expect_success "authorized historical-identity v2 in-flight tuple certifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_B="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 [[ "$(json_value "$RECEIPT_B" expected_previous_generation)" == "1" ]] &&

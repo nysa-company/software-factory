@@ -270,6 +270,51 @@ else
   fail "no-record backend context selects cursor-balanced-v2" "$NO_STATE_PROFILE"
 fi
 
+PINNED_MANAGER="$TMP/pinned-manager"
+cat > "$PINNED_MANAGER" <<'STUB'
+import json
+print(json.dumps({
+    "account_route_id": "account", "adapter": "cursor-openai",
+    "adapter_version": "current-version", "effort": "high",
+    "gateway_id": "gateway", "inference_provider_id": "provider",
+    "provider_family": "openai", "reported_identity": "Current Identity",
+    "route_id": "cursor-route", "selection_id": "model", "transport": "cli",
+}))
+STUB
+python3 - "$TMP/old-release-journal.json" "$TMP/new-release-journal.json" <<'PY'
+import json, sys
+prior = {"policy_hash": "old-policy", "profile_id": "cursor-balanced-v2"}
+for path, refreshed in zip(sys.argv[1:], (False, True)):
+    body = {"kind": "release-migration", "prior_resolution": prior}
+    if refreshed:
+        body["new_resolution"] = {
+            "policy_hash": "new-policy", "profile_id": "cursor-balanced-v2"
+        }
+    value = {
+        "revisions": [{
+            "body": body, "revision": 1, "revision_hash": "revision-hash"
+        }],
+        "schema": "ticket-model-route-journal/v2",
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(value, handle)
+PY
+PINNED_RELEASE_POLICIES="$(FACTORY_MODEL_MANAGER="$PINNED_MANAGER" bash -c '
+  source "$1"
+  for plan in "$2" "$3"; do
+    factory_select_pinned_model_role "$plan" T-901 \
+      0000000000000000000000000000000000000000 planner || exit
+    printf "%s\n" "$FACTORY_SELECTED_POLICY_HASH"
+  done
+' _ "$ROOT/scripts/lib/backend-policy.sh" \
+  "$TMP/old-release-journal.json" "$TMP/new-release-journal.json")"
+if [[ "$PINNED_RELEASE_POLICIES" == $'old-policy\nnew-policy' ]]; then
+  pass "pinned runtime reads old and refreshed release migration resolutions"
+else
+  fail "pinned runtime reads old and refreshed release migration resolutions" \
+    "$PINNED_RELEASE_POLICIES"
+fi
+
 AUTO_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
   CURSOR_AGENT_VERSION=2026.07.test CURSOR_OPENAI_MODEL=auto \
   bash -c 'source "$1"; factory_probe_adapter cursor-openai; echo "$PROBE_STATE:$PROBE_REASON"' \

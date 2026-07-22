@@ -144,6 +144,11 @@ or one-process-per-attempt rules. The committed ticket route plan or journal,
 not the machine’s current active profile, is authoritative for an existing
 ticket.
 
+Release migration preserves every logical selection and all parent-hashed
+history. It re-probes the already-selected routes and records current adapter
+versions and reported identities in a new release-migration revision. Missing,
+disabled, unavailable, or logically changed routes stop migration.
+
 ## Operator commands
 
 ```bash
