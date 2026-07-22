@@ -874,6 +874,45 @@ class ModelManagerTest(unittest.TestCase):
         self.assertIn(
             "new_resolution", preview["journal"]["revisions"][-1]["body"]
         )
+        elsewhere = self.base / "elsewhere.json"
+        rejected = self.command(
+            "migrate",
+            "--ticket-plan", str(journal_path),
+            "--pin-commit", "d" * 40,
+            "--kit-sha", "f" * 40,
+            "--migrated-at", "2026-07-18T12:01:00Z",
+            "--readiness", json.dumps(current_readiness),
+            "--approve-hash", preview["preview_hash"],
+            "--output", str(elsewhere),
+            check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertFalse(elsewhere.exists())
+        applied = self.output(
+            "migrate",
+            "--ticket-plan", str(journal_path),
+            "--pin-commit", "d" * 40,
+            "--kit-sha", "f" * 40,
+            "--migrated-at", "2026-07-18T12:01:00Z",
+            "--readiness", json.dumps(current_readiness),
+            "--approve-hash", preview["preview_hash"],
+            "--output", str(journal_path),
+        )
+        self.assertEqual(applied, preview["journal"])
+        self.assertEqual(applied["revisions"][:-1], journal["revisions"])
+        self.assertEqual(
+            self.output(
+                "migrate",
+                "--ticket-plan", str(journal_path),
+                "--pin-commit", "d" * 40,
+                "--kit-sha", "f" * 40,
+                "--migrated-at", "2026-07-18T12:01:00Z",
+                "--readiness", json.dumps(current_readiness),
+                "--approve-hash", preview["preview_hash"],
+                "--output", str(journal_path),
+            ),
+            applied,
+        )
 
         tampered = copy.deepcopy(migrated)
         tampered["revisions"][-1]["body"]["new_resolution"]["selections"][

@@ -532,15 +532,19 @@ def migrate_v2_journal(journal, pin_commit, new_kit_sha, migrated_at,
     return result
 
 
-def migrate_route_document(document_blob, pin_commit, new_kit_sha, migrated_at,
-                           catalog, routes, profile_map, readiness=None):
+def _parse_route_document(document_blob):
     try:
-        value = json.loads(
+        return json.loads(
             document_blob.decode("utf-8"),
             object_pairs_hook=ROUTER._object_no_duplicates,
         )
     except (UnicodeError, json.JSONDecodeError, ROUTER.RouterError) as exc:
         raise ManagerError("cannot parse route document: %s" % exc)
+
+
+def migrate_route_document(document_blob, pin_commit, new_kit_sha, migrated_at,
+                           catalog, routes, profile_map, readiness=None):
+    value = _parse_route_document(document_blob)
     if value.get("schema") == "ticket-model-route-plan/v1":
         journal = migrate_v1_plan(
             document_blob,
@@ -1258,13 +1262,16 @@ def run(args):
         _atomic_write(output, value, mode=0o644)
         return value
     if args.command in ("migrate-plan", "migrate"):
+        source_path = Path(args.ticket_plan)
+        source_blob = _load_plan_blob(source_path)
+        source_document = _parse_route_document(source_blob)
         readiness = (
             None
             if args.readiness is None
             else _parse_json_argument(args.readiness, "readiness")
         )
         journal = migrate_route_document(
-            _load_plan_blob(args.ticket_plan),
+            source_blob,
             args.pin_commit,
             args.kit_sha,
             args.migrated_at,
@@ -1285,15 +1292,19 @@ def run(args):
         output = Path(args.output)
         if not output.is_absolute():
             raise ManagerError("--output must be an absolute path")
+        if output.resolve() != source_path.resolve():
+            raise ManagerError("migration must replace its exact route document")
         existing = _load_secure_json(output, required=False, expected_mode=0o644)
-        if existing is not None:
-            if existing.get("schema") == "ticket-model-route-journal/v2":
-                validate_journal(existing, catalog, routes, profile_map)
-                if existing != journal:
-                    raise ManagerError("existing route journal differs from migration")
-                return existing
-            if output.resolve() != Path(args.ticket_plan).resolve():
-                raise ManagerError("migration may replace only its exact v1 plan")
+        if existing == journal:
+            validate_journal(existing, catalog, routes, profile_map)
+            return existing
+        if existing != source_document:
+            raise ManagerError("route document changed during migration")
+        if source_document.get("schema") == "ticket-model-route-journal/v2" and (
+            len(journal["revisions"]) != len(source_document["revisions"]) + 1
+            or journal["revisions"][:-1] != source_document["revisions"]
+        ):
+            raise ManagerError("v2 migration must append exactly one revision")
         _atomic_write(output, journal, mode=0o644)
         return journal
     if args.command == "fallback-plan":
