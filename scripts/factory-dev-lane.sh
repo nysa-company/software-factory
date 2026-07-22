@@ -447,6 +447,7 @@ lane_cursor_env() {
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
     FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT=factory-dev-lane \
     FACTORY_CURSOR_SESSION_HOME="${FACTORY_CURSOR_SESSION_HOME:-}" \
+    FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
     FACTORY_HERMES_CONTRACT_VERSION=1.6.0 "$@"
 }
@@ -590,12 +591,19 @@ PY
       trap cleanup_bridge EXIT HUP INT TERM
     fi
     cd "$root"
-    HOME="$root/home" TMPDIR="$root/tmp" \
-      "$(sandbox_exec)" -f "$root/runtime/$profile.sb" \
-        env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
-          PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-          FACTORY_CURSOR_SESSION_HOME="$(cursor_session_home)" \
-          bash "$root/kit/scripts/factory-dev-lane.sh" "$@"
+    if [[ "$profile" == cursor ]]; then
+      env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+        PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+        FACTORY_CURSOR_SESSION_HOME="$(cursor_session_home)" \
+        bash "$root/kit/scripts/factory-dev-lane.sh" "$@"
+    else
+      HOME="$root/home" TMPDIR="$root/tmp" \
+        "$(sandbox_exec)" -f "$root/runtime/$profile.sb" \
+          env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+            PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+            FACTORY_CURSOR_SESSION_HOME="$(cursor_session_home)" \
+            bash "$root/kit/scripts/factory-dev-lane.sh" "$@"
+    fi
   )
 }
 

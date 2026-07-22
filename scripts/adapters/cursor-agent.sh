@@ -99,9 +99,13 @@ trap cleanup_cursor EXIT
 set +e
 (
   cd "$WORKDIR" &&
+    CURSOR_ARGS=(--print --output-format stream-json \
+      --workspace "$WORKDIR" --trust --force --model "$MODEL") &&
+    if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+      CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
+    fi &&
     HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
-      "$CURSOR_BIN" --print --output-format stream-json \
-      --workspace "$WORKDIR" --trust --force --model "$MODEL" "$FULL_TASK"
+      "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
 ) 2>&1 | python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \
   "$NORMALIZED" "$MODEL" "$EXPECTED_REPORTED_MODEL" "$WORKDIR" "$MAX_TURNS"
 PIPE_RESULT="${PIPESTATUS[*]}"

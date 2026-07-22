@@ -77,11 +77,11 @@ cat >"$FAKE_CURSOR" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   --version) printf '2026.07.17-test\n' ;;
-  --help) printf '%s\n' --print --output-format --workspace --model --force --trust ;;
+  --help) printf '%s\n' --print --output-format --workspace --model --force --trust --sandbox ;;
   status) printf '{"authenticated":true}\n' ;;
   models) printf '%s\n' \
     gpt-5.6-sol-high claude-fable-5-thinking-medium claude-sonnet-5-thinking-high ;;
-  *) exit 42 ;;
+  *) printf '%s\n' "$@" >"$(dirname "$0")/cursor-args"; exit 42 ;;
 esac
 EOF
 chmod +x "$FAKE_CURSOR"
@@ -224,6 +224,9 @@ printf '{}\n' >"$forged/marker.json"
 expect_failure "forged cleanup" clean_cmd "$forged"
 [[ -d "$unmarked" && -d "$forged" ]] || fail "refused cleanup removed data"
 
+# Real Cursor cannot authenticate inside a nested Seatbelt profile. Its lane
+# uses Cursor's own explicit sandbox; only mock mode invokes sandbox-exec.
+mv "$FAKE_SANDBOX" "$FAKE_SANDBOX.disabled"
 cursor_env bash "$LANE" cursor-plan >"$OUT"
 [[ "$(cksum "$CALLER_HOME/.cursor/auth.json" "$CALLER_HOME/.cursor/cli-config.json")" == \
    "$cursor_session_before" ]] || fail "Cursor planning changed the normal session files"
@@ -259,6 +262,10 @@ chmod +x "$FAKE_CURSOR"
 # consumed so a post-submission failure cannot be replayed.
 expect_failure "fake cursor execution" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$approval_hash"
+grep -qx -- '--sandbox' "$TMP/cursor-args" ||
+  fail "real Cursor lane did not enable Cursor's internal sandbox"
+grep -qx -- 'enabled' "$TMP/cursor-args" ||
+  fail "real Cursor lane did not select the enabled sandbox mode"
 [[ ! -e "$TMP/cursor-tmp-bridge" && ! -L "$TMP/cursor-tmp-bridge" ]] ||
   fail "Cursor temporary bridge remained after failed execution"
 expect_failure "reused cursor approval hash" cursor_env bash "$LANE" cursor-run \
