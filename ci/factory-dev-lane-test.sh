@@ -244,6 +244,8 @@ grep -Fq "$CALLER_HOME/Library/Keychains" "$cursor_root/runtime/cursor.sb" ||
   fail "Cursor profile does not bind the login Keychain database"
 grep -Fq 'Shell(security)' "$cursor_root/worktrees/T-900001/.cursor/cli.json" ||
   fail "synthetic product does not deny agent-initiated Keychain commands"
+grep -Fq '"allow":[]' "$cursor_root/worktrees/T-900001/.cursor/cli.json" ||
+  fail "synthetic Cursor permissions omit the required allow list"
 grep -Fq 'com.apple.securityd' "$cursor_root/runtime/cursor.sb" &&
   fail "Cursor profile blocks the authenticated CLI session"
 bad_hash="${approval_hash%?}0"

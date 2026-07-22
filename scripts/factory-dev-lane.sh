@@ -347,7 +347,7 @@ factory/linear-map.json
 app/data/
 EOF
   mkdir -p "$root/product/.cursor"
-  printf '%s\n' '{"permissions":{"deny":["Shell(security)"]}}' > \
+  printf '%s\n' '{"permissions":{"allow":[],"deny":["Shell(security)"]}}' > \
     "$root/product/.cursor/cli.json"
   git -C "$root/product" init -q
   git -C "$root/product" branch -M main
