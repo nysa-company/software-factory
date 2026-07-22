@@ -237,6 +237,10 @@ grep -Fq "$TMP/cursor-tmp-bridge" "$cursor_root/runtime/cursor.sb" ||
   fail "Cursor profile does not bind its ephemeral temporary bridge"
 grep -Fq "$CALLER_HOME/.cursor/auth.json" "$cursor_root/runtime/cursor.sb" ||
   fail "Cursor profile does not bind the exact session file"
+grep -Fq "$CALLER_HOME/Library/Keychains" "$cursor_root/runtime/cursor.sb" ||
+  fail "Cursor profile does not bind the login Keychain database"
+grep -Fq '(deny process-exec (literal "/usr/bin/security"))' \
+  "$cursor_root/runtime/cursor.sb" || fail "Cursor profile permits the Keychain CLI"
 grep -Fq 'com.apple.securityd' "$cursor_root/runtime/cursor.sb" &&
   fail "Cursor profile blocks the authenticated CLI session"
 bad_hash="${approval_hash%?}0"

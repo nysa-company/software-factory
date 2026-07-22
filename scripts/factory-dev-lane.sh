@@ -218,12 +218,14 @@ for entry in pathlib.Path(root, "home").iterdir():
             item=developer / relative
             if item.is_dir() and str(item) not in tools: tools.append(str(item))
 reads=[]
-session=[] if not session_home else [str(pathlib.Path(session_home, ".cursor", name).resolve())
-                                     for name in ("auth.json", "cli-config.json")]
-for item in system + tools + [root] + session:
+session=[] if not session_home else [
+    str(pathlib.Path(session_home, ".cursor", name).resolve())
+    for name in ("auth.json", "cli-config.json")
+] + [str(pathlib.Path(session_home, "Library", "Keychains").resolve())]
+for item in system + tools + [root]:
     if item not in reads: reads.append(item)
 metadata={"/"}
-for item in reads:
+for item in reads + session:
     p=pathlib.Path(item); metadata.add(str(p)); metadata.update(map(str, p.parents))
 bridge_paths=[] if not bridge else [bridge]
 if bridge == "/private/tmp/.cursor": bridge_paths.append("/tmp/.cursor")
@@ -238,6 +240,8 @@ for item in sorted(metadata):
 for item in reads:
     base += [f"(allow file-read* (subpath {json.dumps(item)}))\n",
              f"(allow process-exec (subpath {json.dumps(item)}))\n"]
+for item in session:
+    base += [f"(allow file-read* (subpath {json.dumps(item)}))\n"]
 base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow file-read* (literal "/dev/null"))\n',
          '(allow file-read* (literal "/dev/random"))\n',
@@ -246,7 +250,8 @@ base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow file-read-metadata (literal "/dev"))\n',
          '(allow file-read* (subpath "/dev/fd"))\n',
          '(allow file-write* (subpath "/dev/fd"))\n',
-         '(allow signal (target same-sandbox))\n']
+         '(allow signal (target same-sandbox))\n',
+         '(deny process-exec (literal "/usr/bin/security"))\n']
 pathlib.Path(root, "runtime/mock.sb").write_text(
     "".join(base) + '(deny mach-lookup (global-name "com.apple.securityd"))\n'
     + "(deny network*)\n")
