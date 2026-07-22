@@ -152,6 +152,12 @@ fi
 grep -Fq 'ports `4781` and `4782`' \
   "$lane_root/worktrees/T-900001/factory/tickets/T-900001.md" ||
   fail "synthetic ticket does not reserve collision-free fixture ports"
+grep -Fq 'JSON member order is not contractual' \
+  "$lane_root/worktrees/T-900001/docs/engine-spec.md" ||
+  fail "synthetic contract leaves JSON member order ambiguous"
+grep -Fq 'duplicate webhook delivery' \
+  "$lane_root/worktrees/T-900001/docs/acceptance/health-version.md" ||
+  fail "synthetic contract leaves duplicate delivery in scope"
 grep -qx 'State: Review' "$lane_root/worktrees/T-900001/factory/tickets/T-900001.md" ||
   fail "synthetic ticket did not remain in Review"
 [[ -z "$(git -C "$lane_root/product" status --porcelain)" ]] || fail "synthetic product is dirty"
