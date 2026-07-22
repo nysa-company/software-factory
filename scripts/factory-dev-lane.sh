@@ -250,8 +250,7 @@ base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow file-read-metadata (literal "/dev"))\n',
          '(allow file-read* (subpath "/dev/fd"))\n',
          '(allow file-write* (subpath "/dev/fd"))\n',
-         '(allow signal (target same-sandbox))\n',
-         '(deny process-exec (literal "/usr/bin/security"))\n']
+         '(allow signal (target same-sandbox))\n']
 pathlib.Path(root, "runtime/mock.sb").write_text(
     "".join(base) + '(deny mach-lookup (global-name "com.apple.securityd"))\n'
     + "(deny network*)\n")
@@ -347,6 +346,9 @@ factory/.ledger.lock/
 factory/linear-map.json
 app/data/
 EOF
+  mkdir -p "$root/product/.cursor"
+  printf '%s\n' '{"permissions":{"deny":["Shell(security)"]}}' > \
+    "$root/product/.cursor/cli.json"
   git -C "$root/product" init -q
   git -C "$root/product" branch -M main
   git -C "$root/product" add .
