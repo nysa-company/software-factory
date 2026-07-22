@@ -9,14 +9,13 @@ FAKE_SANDBOX="$TMP/sandbox-exec"
 FAKE_CURSOR="$TMP/cursor-agent"
 OUT="$TMP/out"
 CALLER_HOME="$TMP/caller-home"
-CURSOR_TEST_KEY="factory-dev-lane-dummy-key-$RANDOM-$$"
 
 cleanup() {
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
-trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed "s/$CURSOR_TEST_KEY/[redacted]/g" "$OUT" >&2; exit "$status"' ERR
+trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed -n "1,120p" "$OUT" >&2; exit "$status"' ERR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
@@ -45,8 +44,7 @@ cursor_env() {
   FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
   FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
   FACTORY_DEV_LANE_CURSOR_TMP_BRIDGE="$TMP/cursor-tmp-bridge" \
-  FACTORY_DEV_CURSOR_CREDENTIAL=dedicated \
-  CURSOR_API_KEY="$CURSOR_TEST_KEY" \
+  FACTORY_DEV_LANE_CURSOR_SESSION_HOME="$CALLER_HOME" \
   HOME="$CALLER_HOME" \
   TMPDIR="$TMP/lanes" \
   "$@"
@@ -54,14 +52,19 @@ cursor_env() {
 
 clean_cmd() { TMPDIR="$TMP/lanes" bash "$LANE" clean --root "$1"; }
 
-mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" \
+mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" "$CALLER_HOME/.cursor" \
   "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents"
 printf 'factory production sentinel\n' >"$CALLER_HOME/.factory/sentinel"
 printf 'profile production sentinel\n' >"$CALLER_HOME/.hermes/profiles/factory/sentinel"
 printf 'service production sentinel\n' >"$CALLER_HOME/Library/LaunchAgents/sentinel"
+printf '{"accessToken":"test","refreshToken":"test"}\n' >"$CALLER_HOME/.cursor/auth.json"
+printf '{}\n' >"$CALLER_HOME/.cursor/cli-config.json"
+chmod 600 "$CALLER_HOME/.cursor/"*.json
 sentinels_before="$(cksum "$CALLER_HOME/.factory/sentinel" \
   "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
   "$CALLER_HOME/Library/LaunchAgents/sentinel")"
+cursor_session_before="$(cksum "$CALLER_HOME/.cursor/auth.json" \
+  "$CALLER_HOME/.cursor/cli-config.json")"
 cat >"$FAKE_SANDBOX" <<'EOF'
 #!/usr/bin/env bash
 set -eu
@@ -75,8 +78,8 @@ cat >"$FAKE_CURSOR" <<'EOF'
 case "${1:-}" in
   --version) printf '2026.07.17-test\n' ;;
   --help) printf '%s\n' --print --output-format --workspace --model --force --trust ;;
-  status) [[ -z "${CURSOR_API_KEY:-}" ]] || exit 42; printf '{"authenticated":true}\n' ;;
-  models) [[ -z "${CURSOR_API_KEY:-}" ]] || exit 42; printf '%s\n' \
+  status) printf '{"authenticated":true}\n' ;;
+  models) printf '%s\n' \
     gpt-5.6-sol-high claude-fable-5-thinking-medium claude-sonnet-5-thinking-high ;;
   *) exit 42 ;;
 esac
@@ -221,13 +224,9 @@ printf '{}\n' >"$forged/marker.json"
 expect_failure "forged cleanup" clean_cmd "$forged"
 [[ -d "$unmarked" && -d "$forged" ]] || fail "refused cleanup removed data"
 
-expect_failure "cursor plan without credential" test_env bash "$LANE" cursor-plan
-expect_failure "cursor plan with caller credential" env CURSOR_API_KEY=fake \
-  FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
-  FACTORY_DEV_LANE_UNAME=Darwin FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
-  TMPDIR="$TMP/lanes" bash "$LANE" cursor-plan
-
 cursor_env bash "$LANE" cursor-plan >"$OUT"
+[[ "$(cksum "$CALLER_HOME/.cursor/auth.json" "$CALLER_HOME/.cursor/cli-config.json")" == \
+   "$cursor_session_before" ]] || fail "Cursor planning changed the normal session files"
 [[ ! -e "$TMP/cursor-tmp-bridge" && ! -L "$TMP/cursor-tmp-bridge" ]] ||
   fail "Cursor temporary bridge remained after planning"
 cursor_root="$(sed -n 's/^ROOT=//p' "$OUT")"
@@ -236,9 +235,10 @@ approval_hash="$(sed -n 's/^APPROVE_HASH=//p' "$OUT")"
 [[ "$approval_hash" =~ ^[0-9a-f]{64}$ ]] || fail "cursor plan returned an invalid approval hash"
 grep -Fq "$TMP/cursor-tmp-bridge" "$cursor_root/runtime/cursor.sb" ||
   fail "Cursor profile does not bind its ephemeral temporary bridge"
-if grep -R -Fq "$CURSOR_TEST_KEY" "$cursor_root"; then
-  fail "cursor credential was persisted in the lane"
-fi
+grep -Fq "$CALLER_HOME/.cursor/auth.json" "$cursor_root/runtime/cursor.sb" ||
+  fail "Cursor profile does not bind the exact session file"
+grep -Fq 'com.apple.securityd' "$cursor_root/runtime/cursor.sb" &&
+  fail "Cursor profile blocks the authenticated CLI session"
 bad_hash="${approval_hash%?}0"
 [[ "$bad_hash" != "$approval_hash" ]] || bad_hash="${approval_hash%?}1"
 expect_failure "wrong cursor approval hash" cursor_env bash "$LANE" cursor-run \

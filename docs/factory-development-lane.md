@@ -14,18 +14,16 @@ The command creates a private `nysa-sf-dev.*` directory directly under `TMPDIR`,
 
 ## Real Cursor lifecycle
 
-The real probe is an explicit release gate. Put a non-production Cursor `agent` binary on `PATH`, use a dedicated API key, and attest that credential source:
+The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`:
 
 ```bash
-FACTORY_DEV_CURSOR_CREDENTIAL=dedicated CURSOR_API_KEY='<dedicated-key>' \
-  bash scripts/factory-dev-lane.sh cursor-plan
+bash scripts/factory-dev-lane.sh cursor-plan
 
-FACTORY_DEV_CURSOR_CREDENTIAL=dedicated CURSOR_API_KEY='<dedicated-key>' \
-  bash scripts/factory-dev-lane.sh cursor-run \
+bash scripts/factory-dev-lane.sh cursor-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-`cursor-plan` binds the one-use approval to the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. Cursor's `status` and `models` subcommands only inspect browser-login state, so API-key mode validates the CLI contract and defers credential/model validation to the first model-bound call, which fails closed before advancement. Cursor's hardcoded `/tmp/.cursor` scratch path is redirected through an ephemeral symlink into the lane; Seatbelt allows only that exact bridge under macOS's `/tmp` and `/private/tmp` spellings plus its lane-local target, and the wrapper removes it on every sandbox exit. `cursor-run` consumes the approval before provider execution and stops on drift. The key is passed through standard input and is not written into lane state. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
+`cursor-plan` gives only Cursor subprocesses the normal session home, permits exact read access to `auth.json` and `cli-config.json` plus macOS credential services, and denies writes to the normal Cursor profile. The one-use approval binds both session files, the lane nonce, factory and product trees, route plan, Cursor version, resolved executable path, and executable bytes. Cursor's hardcoded `/tmp/.cursor` scratch path is redirected through an ephemeral symlink into the lane; Seatbelt allows only that exact bridge under macOS's `/tmp` and `/private/tmp` spellings plus its lane-local target, and the wrapper removes it on every sandbox exit. `cursor-run` consumes the approval before provider execution and stops on drift. The reviewer must stay read-only and report `APPROVE`; the final state remains `AWAIT-OPERATOR`.
 
 ## Cleanup and boundaries
 

@@ -134,6 +134,7 @@ factory_probe_adapter() {
   local installed installed_version help model expected_family actual_family
   local claude_bin secret_file minimal_path required_flag
   local cursor_bin="${CURSOR_AGENT_BIN:-agent}"
+  local cursor_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
   local probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-30}"
   PROBE_STATE="UNKNOWN"
   PROBE_REASON="unclassified"
@@ -275,7 +276,7 @@ factory_probe_adapter() {
       if ! command -v "$cursor_bin" >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
-      installed="$(timeout "$probe_timeout" "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
+      installed="$(HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
       PROBE_VERSION="$installed"
       if [[ -z "${CURSOR_AGENT_VERSION:-}" ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="version_unapproved"; return 0
@@ -289,7 +290,7 @@ factory_probe_adapter() {
         fi
         return 0
       fi
-      help="$(timeout "$probe_timeout" "$cursor_bin" --help 2>/dev/null || true)"
+      help="$(HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" --help 2>/dev/null || true)"
       if [[ "$help" != *"--print"* ||
             "$help" != *"--output-format"* ||
             "$help" != *"--workspace"* ||
@@ -298,13 +299,11 @@ factory_probe_adapter() {
             "$help" != *"--trust"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
       fi
-      if [[ -z "${CURSOR_API_KEY:-}" ]] &&
-         ! timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
+      if ! HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
            python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
-      if [[ -z "${CURSOR_API_KEY:-}" ]] &&
-         ! timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
+      if ! HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
            awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
         PROBE_STATE="INVALID"; PROBE_REASON="model_unavailable"; return 0
       fi

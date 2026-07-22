@@ -34,7 +34,7 @@ sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 sha256_text() { shasum -a 256 | awk '{print $1}'; }
 
 cursor_approval_hash() {
-  local root="$1" version="$2" route_plan cursor
+  local root="$1" version="$2" route_plan cursor session_home
   route_plan="$root/worktrees/$TICKET/factory/route-plans/$TICKET.json"
   cursor="$(python3 - "$root/home/agent" <<'PY'
 import os, sys
@@ -43,6 +43,7 @@ PY
 )"
   [[ "$cursor" == /* && -f "$cursor" && -x "$cursor" ]] ||
     die "Cursor binary binding is unavailable"
+  session_home="$(cursor_session_home)"
   {
     python3 - "$root/marker.json" <<'PY'
 import json, sys
@@ -51,6 +52,8 @@ PY
     git -C "$root/kit" rev-parse 'HEAD^{tree}'
     git -C "$root/worktrees/$TICKET" rev-parse 'HEAD^{tree}'
     printf '%s\n' "$version" "$cursor" "$(sha256_file "$cursor")" \
+      "$(sha256_file "$session_home/.cursor/auth.json")" \
+      "$(sha256_file "$session_home/.cursor/cli-config.json")" \
       "$(sha256_file "$route_plan")" "$(basename "$root")"
   } | sha256_text
 }
@@ -192,10 +195,10 @@ PY
 }
 
 write_seatbelt_profiles() {
-  local root="$1" cursor="$2" bridge="${3:-}"
-  python3 - "$root" "$cursor" "$bridge" <<'PY'
+  local root="$1" cursor="$2" bridge="${3:-}" session_home="${4:-}"
+  python3 - "$root" "$cursor" "$bridge" "$session_home" <<'PY'
 import json, os, pathlib, sys
-root, cursor, bridge = sys.argv[1:]
+root, cursor, bridge, session_home = sys.argv[1:]
 system = [
     "/System", "/bin", "/sbin", "/usr/bin", "/usr/lib", "/usr/libexec",
     "/usr/share", "/etc", "/private/etc", "/private/var/db/timezone",
@@ -215,7 +218,9 @@ for entry in pathlib.Path(root, "home").iterdir():
             item=developer / relative
             if item.is_dir() and str(item) not in tools: tools.append(str(item))
 reads=[]
-for item in system + tools + [root]:
+session=[] if not session_home else [str(pathlib.Path(session_home, ".cursor", name).resolve())
+                                     for name in ("auth.json", "cli-config.json")]
+for item in system + tools + [root] + session:
     if item not in reads: reads.append(item)
 metadata={"/"}
 for item in reads:
@@ -241,9 +246,10 @@ base += [f"(allow file-write* (subpath {json.dumps(root)}))\n",
          '(allow file-read-metadata (literal "/dev"))\n',
          '(allow file-read* (subpath "/dev/fd"))\n',
          '(allow file-write* (subpath "/dev/fd"))\n',
-         '(allow signal (target same-sandbox))\n',
-         '(deny mach-lookup (global-name "com.apple.securityd"))\n']
-pathlib.Path(root, "runtime/mock.sb").write_text("".join(base) + "(deny network*)\n")
+         '(allow signal (target same-sandbox))\n']
+pathlib.Path(root, "runtime/mock.sb").write_text(
+    "".join(base) + '(deny mach-lookup (global-name "com.apple.securityd"))\n'
+    + "(deny network*)\n")
 cursor_network = ('(allow network-bind (local ip "localhost:*"))\n'
                   '(allow network-inbound (local ip "localhost:*"))\n'
                   '(allow network-outbound (remote ip "localhost:*"))\n'
@@ -257,7 +263,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent bridge
+  local mode="$1" root sha tree nonce cursor developer tool timeout_bin tmp_parent bridge session_home
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -358,12 +364,18 @@ print(os.path.realpath(sys.argv[1]))
 PY
 )" "$root/home/timeout"
     bridge="$(cursor_tmp_bridge)"
+    session_home="$(cursor_session_home)"
+    for tool in auth.json cli-config.json; do
+      [[ -f "$session_home/.cursor/$tool" && ! -L "$session_home/.cursor/$tool" ]] ||
+        die "Cursor CLI session file is unavailable: $tool"
+    done
   else
     cursor=/usr/bin/true
     bridge=""
+    session_home=""
   fi
   ln -s "$cursor" "$root/home/agent"
-  write_seatbelt_profiles "$root" "$cursor" "$bridge"
+  write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home"
   python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
     "$tmp_parent" <<'PY'
 import json, os, sys
@@ -423,13 +435,13 @@ lane_env() {
 
 lane_cursor_env() {
   local root="$1"; shift
-  printf '%s\n' "$CURSOR_API_KEY" | env -i HOME="$root/home" TMPDIR="$root/tmp" \
+  env -i HOME="$root/home" TMPDIR="$root/tmp" \
     LANG=C LC_ALL=C PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
     FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT=factory-dev-lane \
+    FACTORY_CURSOR_SESSION_HOME="${FACTORY_CURSOR_SESSION_HOME:-}" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-    FACTORY_HERMES_CONTRACT_VERSION=1.6.0 \
-    bash -c 'IFS= read -r CURSOR_API_KEY; export CURSOR_API_KEY; exec "$@"' _ "$@"
+    FACTORY_HERMES_CONTRACT_VERSION=1.6.0 "$@"
 }
 
 next_stage() {
@@ -467,10 +479,7 @@ run_mock_internal() {
 
 cursor_probe_and_pin() {
   local root="$1" version openai anthropic route_plan approval_hash
-  IFS= read -r CURSOR_API_KEY || die "Cursor credential was not supplied"
   require_lane_mode "$root" cursor
-  [[ -n "$CURSOR_API_KEY" ]] || die "Cursor credential was empty"
-  export CURSOR_API_KEY
   version="$("$root/home/agent" --version | awk 'NF {print $NF; exit}')"
   [[ -n "$version" ]] || die "Cursor version probe was empty"
   openai="$(python3 - "$root/kit/scripts/model-routing/catalog-v1.json" <<'PY'
@@ -516,10 +525,7 @@ PY
 
 run_cursor_internal() {
   local root="$1" supplied="$2" stored role output latest version
-  IFS= read -r CURSOR_API_KEY || die "Cursor credential was not supplied"
   require_lane_mode "$root" cursor
-  [[ -n "$CURSOR_API_KEY" ]] || die "Cursor credential was empty"
-  export CURSOR_API_KEY
   [[ -f "$root/runtime/cursor-approval" && ! -L "$root/runtime/cursor-approval" ]] ||
     die "Cursor approval is missing or already used"
   stored="$(sed -n 's/^approval_hash=//p' "$root/runtime/cursor-approval")"
@@ -581,6 +587,7 @@ PY
       "$(sandbox_exec)" -f "$root/runtime/$profile.sb" \
         env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
           PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+          FACTORY_CURSOR_SESSION_HOME="$(cursor_session_home)" \
           bash "$root/kit/scripts/factory-dev-lane.sh" "$@"
   )
 }
@@ -590,6 +597,16 @@ cursor_tmp_bridge() {
     printf '%s\n' "$FACTORY_DEV_LANE_CURSOR_TMP_BRIDGE"
   else
     printf '%s\n' /private/tmp/.cursor
+  fi
+}
+
+cursor_session_home() {
+  if [[ -n "${FACTORY_CURSOR_SESSION_HOME:-}" ]]; then
+    physical "$FACTORY_CURSOR_SESSION_HOME"
+  elif [[ "$TEST_MODE" -eq 1 && -n "${FACTORY_DEV_LANE_CURSOR_SESSION_HOME:-}" ]]; then
+    physical "$FACTORY_DEV_LANE_CURSOR_SESSION_HOME"
+  else
+    printf '%s\n' "$ACCOUNT_HOME"
   fi
 }
 
@@ -616,12 +633,9 @@ case "$command" in
   cursor-plan)
     assert_macos
     [[ $# -eq 0 ]] || usage
-    [[ -n "${CURSOR_API_KEY:-}" ]] || die "CURSOR_API_KEY is required"
-    [[ "${FACTORY_DEV_CURSOR_CREDENTIAL:-}" == dedicated ]] ||
-      die "set FACTORY_DEV_CURSOR_CREDENTIAL=dedicated to attest this is not a production credential"
     root="$(create_lane cursor)"
     echo "ROOT=$root"
-    printf '%s\n' "$CURSOR_API_KEY" | run_in_sandbox "$root" cursor __cursor-plan --root "$root"
+    run_in_sandbox "$root" cursor __cursor-plan --root "$root"
     ;;
   cursor-run)
     assert_macos
@@ -635,10 +649,7 @@ case "$command" in
     done
     [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
-    [[ -n "${CURSOR_API_KEY:-}" ]] || die "CURSOR_API_KEY is required"
-    [[ "${FACTORY_DEV_CURSOR_CREDENTIAL:-}" == dedicated ]] ||
-      die "set FACTORY_DEV_CURSOR_CREDENTIAL=dedicated to attest this is not a production credential"
-    printf '%s\n' "$CURSOR_API_KEY" | run_in_sandbox "$root" cursor __cursor-run \
+    run_in_sandbox "$root" cursor __cursor-run \
       --root "$root" --approve-hash "$approve"
     ;;
   clean)
