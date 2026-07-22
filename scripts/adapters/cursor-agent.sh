@@ -54,6 +54,7 @@ if [[ -z "$MODEL" || "$MODEL" == "auto" || "$ACTUAL_FAMILY" != "$EXPECTED_FAMILY
 fi
 
 CURSOR_BIN="${CURSOR_AGENT_BIN:-agent}"
+CURSOR_HOME="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
 command -v "$CURSOR_BIN" >/dev/null 2>&1 || {
   echo "Cursor Agent CLI not installed" >&2
   exit 6
@@ -66,13 +67,13 @@ command -v timeout >/dev/null 2>&1 || {
   echo "CURSOR_AGENT_VERSION is not approved in the machine config" >&2
   exit 6
 }
-INSTALLED="$("$CURSOR_BIN" --version 2>/dev/null | awk 'NR==1 {print; exit}')"
+INSTALLED="$(HOME="$CURSOR_HOME" "$CURSOR_BIN" --version 2>/dev/null | awk 'NR==1 {print; exit}')"
 INSTALLED_VERSION="$(printf '%s\n' "$INSTALLED" | awk '{print $NF}')"
 [[ "$INSTALLED_VERSION" == "$CURSOR_AGENT_VERSION" ]] || {
   echo "Cursor Agent compatibility version mismatch" >&2
   exit 6
 }
-if ! timeout "${FACTORY_PROBE_TIMEOUT_SEC:-10}" "$CURSOR_BIN" models 2>/dev/null |
+if ! HOME="$CURSOR_HOME" timeout "${FACTORY_PROBE_TIMEOUT_SEC:-10}" "$CURSOR_BIN" models 2>/dev/null |
      awk -v model="$MODEL" \
        '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
   echo "Resolved Cursor model is unavailable" >&2
@@ -98,9 +99,13 @@ trap cleanup_cursor EXIT
 set +e
 (
   cd "$WORKDIR" &&
-    timeout "$((TIMEOUT_MIN * 60))" \
-      "$CURSOR_BIN" --print --output-format stream-json \
-      --workspace "$WORKDIR" --trust --force --model "$MODEL" "$FULL_TASK"
+    CURSOR_ARGS=(--print --output-format stream-json \
+      --workspace "$WORKDIR" --trust --force --model "$MODEL") &&
+    if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+      CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
+    fi &&
+    HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
+      "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
 ) 2>&1 | python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \
   "$NORMALIZED" "$MODEL" "$EXPECTED_REPORTED_MODEL" "$WORKDIR" "$MAX_TURNS"
 PIPE_RESULT="${PIPESTATUS[*]}"

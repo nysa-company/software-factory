@@ -370,6 +370,10 @@ env | awk -F= '$1 != "GH_TOKEN"' | LC_ALL=C sort > "$ENV_OUT"
 if [[ ${GH_TOKEN+x} == x ]]; then
   printf 'GH_TOKEN_PRESENT=true\n' >> "$ENV_OUT"
 fi
+if [[ -e "$FACTORY_ROOT/factory/test-model-args-only" ]]; then
+  printf 'ARG=%s\n' "$@"
+  exit 0
+fi
 exec /bin/bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/model-control-real.sh" "$@"
 EOF
   chmod +x "$release/scripts/factory-doctor.sh" "$release/scripts/factory-doctor-real.sh" \
@@ -619,19 +623,23 @@ SHA_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 SHA_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 SHA_V11="dddddddddddddddddddddddddddddddddddddddd"
 SHA_MODELS="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+SHA_FALLBACK="ffffffffffffffffffffffffffffffffffffffff"
 RELEASE_A="$KITS_ROOT/releases/$SHA_A"
 RELEASE_B="$KITS_ROOT/releases/$SHA_B"
 RELEASE_V11="$KITS_ROOT/releases/$SHA_V11"
 RELEASE_MODELS="$KITS_ROOT/releases/$SHA_MODELS"
+RELEASE_FALLBACK="$KITS_ROOT/releases/$SHA_FALLBACK"
 mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
 create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner" "1.0.0"
 create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR" "1.1.0"
 create_test_release "$RELEASE_V11" "RELEASE-V11" "RUN planner" "1.1.0"
 create_test_release "$RELEASE_MODELS" "RELEASE-MODELS" "RUN planner" "1.2.0"
+create_test_release "$RELEASE_FALLBACK" "RELEASE-FALLBACK" "RUN planner" "1.6.0"
 TREE_A="$(tree_for_directory "$RELEASE_A")"
 TREE_B="$(tree_for_directory "$RELEASE_B")"
 TREE_V11="$(tree_for_directory "$RELEASE_V11")"
 TREE_MODELS="$(tree_for_directory "$RELEASE_MODELS")"
+TREE_FALLBACK="$(tree_for_directory "$RELEASE_FALLBACK")"
 printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 REGISTRY_SENTINEL="$TMP/registry-was-sourced"
 cat > "$PROFILE/projects/launchtest.env" <<EOF
@@ -1038,6 +1046,7 @@ factory/.active-runs/
 factory/.provider.lock/
 factory/.dispatch-leases/
 factory/test-adapter-gate
+factory/test-model-args-only
 EOF
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add -A
@@ -1217,6 +1226,22 @@ rm -f "$LAUNCH_PRODUCT/factory/MAINTENANCE"
 # mutation coverage above.
 rm -rf "$KITS_ROOT/projects/launchtest/routing"
 rm -f "$TEST_HOME/.factory/global.env"
+
+# Bash 3.2 with nounset rejects expansion of an empty array. A fallback without
+# a Reviewer exception must still reach the selected helper with only base args.
+printf '%s\n' "$SHA_FALLBACK" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_FALLBACK" "$TREE_FALLBACK" "$RELEASE_FALLBACK"
+touch "$LAUNCH_PRODUCT/factory/test-model-args-only"
+run_launcher launchtest models fallback-plan \
+  --ticket T-123 --failed-run failed-run-1 --workdir "$RUN_WORKTREE_PHYS" \
+  --reason provider_unavailable --json > "$TMP/models-fallback-no-exception.out"
+for expected in fallback-plan T-123 failed-run-1 "$RUN_WORKTREE_PHYS" provider_unavailable; do
+  grep -qFx "ARG=$expected" "$TMP/models-fallback-no-exception.out" ||
+    fail "fallback without Reviewer exception omitted base argument: $expected"
+done
+! grep -qF 'allow-reviewer-family' "$TMP/models-fallback-no-exception.out" ||
+  fail "fallback without Reviewer exception invented one"
+rm -f "$LAUNCH_PRODUCT/factory/test-model-args-only"
 
 # Compatibility smoke: the new launcher can still run a mock role selected
 # from an active 1.0 release.

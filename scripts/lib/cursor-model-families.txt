@@ -5,5 +5,5 @@
 # models`, calibrate it on the conformance product, and update the kit pin.
 # Aliases, `auto`, and name-prefix inference are deliberately unsupported.
 gpt-5.6-sol-high|openai|GPT-5.6 Sol 272K High
-claude-fable-5-thinking-medium|anthropic|Fable 5 1M Medium Thinking (NO ZDR)
+claude-fable-5-thinking-medium|anthropic|Fable 5 300K Medium
 claude-sonnet-5-thinking-high|anthropic|Sonnet 5 300K High

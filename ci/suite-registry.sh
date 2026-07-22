@@ -38,6 +38,7 @@ suite_registry() {
   "$callback" protected-merge-reconciliation "protected merge reconciliation suite" python3 "$ROOT/ci/protected-merge-reconciliation-test.py"
   "$callback" hermes-contract "Hermes contract suite" bash "$ROOT/ci/hermes-contract-test.sh"
   "$callback" factory-kit "factory kit release suite" bash "$ROOT/ci/factory-kit-test.sh"
+  "$callback" factory-dev-lane "isolated factory development lane suite" bash "$ROOT/ci/factory-dev-lane-test.sh"
   "$callback" conformance "conformance app suite" run_conformance
   "$callback" immutability "test immutability suite" run_immutability
   "$callback" artifact-policy "artifact policy self-test" "$ROOT/scripts/artifact-check" --self-test
