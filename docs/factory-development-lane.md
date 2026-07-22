@@ -12,6 +12,14 @@ bash scripts/factory-dev-lane.sh mock
 
 The command creates a private `nysa-sf-dev.*` directory directly under `TMPDIR`, clones the exact factory commit into it, creates a separate product and local bare Git remote, and runs Planner through Narrator with mock adapters. Seatbelt denies network access. The ticket must finish clean and pushed locally in `Review`, with the sequencer returning `AWAIT-OPERATOR`, in less than 15 minutes. A successful run cleans itself; add `--keep` to retain it for inspection.
 
+## Four-ticket isolated mock
+
+```bash
+bash scripts/factory-dev-lane.sh mock-concurrency
+```
+
+This runs four identity-bound mock provider attempts through the existing Contract 1.6 coordinator, runtime, and executor at once, then completes four disposable Planner-through-Narrator lifecycles. The fake container transport, policy, database, attempts, locks, inputs, worktrees, project identity, ports, timeline, home, and temporary files are unique to the owner-only lane root. The command proves temporal overlap, drains all reservations, leaves each ticket clean and locally pushed in `Review`, and must finish in less than 15 minutes. It does not start a broker, use credentials, or permit a real provider call.
+
 ## Real Cursor lifecycle
 
 The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`:
@@ -33,4 +41,4 @@ bash scripts/factory-dev-lane.sh clean --root <root>
 
 Cleanup accepts only the original owner-only lane directory beneath its creation `TMPDIR`, with an unchanged owner, inode, device, marker, and permissions. Failed runs are retained for diagnosis.
 
-The lane refuses canonical Nysa, production factory, production Hermes, and LaunchAgent paths. It creates no production receipt or activation record, has no Linear or GitHub integration, and cannot become a production release. The normal protected-main CI, sealed installation, live Cursor canary, product certification, registration, and activation process remains unchanged.
+Before any isolated attempt, every runtime input is checked lexically and physically beneath the validated lane root and against the production denylist. The lane refuses canonical Nysa, production factory, production Hermes, and LaunchAgent paths. It creates no production receipt or activation record, has no Linear or GitHub integration, and cannot become a production release. The normal protected-main CI, sealed installation, live Cursor canary, product certification, registration, activation, and legacy serialized-provider path remain unchanged.

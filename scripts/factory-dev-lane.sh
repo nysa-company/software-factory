@@ -17,6 +17,9 @@ TEST_MODE=0
 if [[ "${FACTORY_DEV_LANE_TEST_MODE:-0}" == 1 &&
       "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == 1 ]]; then
   TEST_MODE=1
+  if [[ -n "${FACTORY_DEV_LANE_ACCOUNT_HOME:-}" ]]; then
+    ACCOUNT_HOME="$(cd "$FACTORY_DEV_LANE_ACCOUNT_HOME" && pwd -P)"
+  fi
 fi
 
 die() { echo "factory-dev-lane: $*" >&2; exit 1; }
@@ -67,7 +70,8 @@ assert_macos() {
   else
     [[ -z "${FACTORY_DEV_LANE_UNAME:-}" &&
        -z "${FACTORY_DEV_LANE_SANDBOX_EXEC:-}" &&
-       -z "${FACTORY_DEV_LANE_CURSOR_BIN:-}" ]] ||
+       -z "${FACTORY_DEV_LANE_CURSOR_BIN:-}" &&
+       -z "${FACTORY_DEV_LANE_ACCOUNT_HOME:-}" ]] ||
       die "development-lane test overrides require the trusted test harness"
     os="$(uname -s)"
   fi

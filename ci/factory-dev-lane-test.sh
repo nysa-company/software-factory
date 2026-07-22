@@ -32,6 +32,7 @@ test_env() {
   FACTORY_TRUSTED_TEST_HARNESS=1 \
   FACTORY_DEV_LANE_UNAME=Darwin \
   FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
+  FACTORY_DEV_LANE_ACCOUNT_HOME="$CALLER_HOME" \
   HOME="$CALLER_HOME" \
   TMPDIR="$TMP/lanes" \
   "$@"
@@ -45,6 +46,7 @@ cursor_env() {
   FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
   FACTORY_DEV_LANE_CURSOR_TMP_BRIDGE="$TMP/cursor-tmp-bridge" \
   FACTORY_DEV_LANE_CURSOR_SESSION_HOME="$CALLER_HOME" \
+  FACTORY_DEV_LANE_ACCOUNT_HOME="$CALLER_HOME" \
   HOME="$CALLER_HOME" \
   TMPDIR="$TMP/lanes" \
   "$@"
@@ -53,16 +55,19 @@ cursor_env() {
 clean_cmd() { TMPDIR="$TMP/lanes" bash "$LANE" clean --root "$1"; }
 
 mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" "$CALLER_HOME/.cursor" \
-  "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents"
+  "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app"
 printf 'factory production sentinel\n' >"$CALLER_HOME/.factory/sentinel"
 printf 'profile production sentinel\n' >"$CALLER_HOME/.hermes/profiles/factory/sentinel"
 printf 'service production sentinel\n' >"$CALLER_HOME/Library/LaunchAgents/sentinel"
+printf 'product production sentinel\n' >"$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel"
 printf '{"accessToken":"test","refreshToken":"test"}\n' >"$CALLER_HOME/.cursor/auth.json"
 printf '{}\n' >"$CALLER_HOME/.cursor/cli-config.json"
 chmod 600 "$CALLER_HOME/.cursor/"*.json
 sentinels_before="$(cksum "$CALLER_HOME/.factory/sentinel" \
   "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
-  "$CALLER_HOME/Library/LaunchAgents/sentinel")"
+  "$CALLER_HOME/Library/LaunchAgents/sentinel" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel")"
 cursor_session_before="$(cksum "$CALLER_HOME/.cursor/auth.json" \
   "$CALLER_HOME/.cursor/cli-config.json")"
 cat >"$FAKE_SANDBOX" <<'EOF'
@@ -126,10 +131,12 @@ test_env bash "$LANE" mock --keep >"$OUT"
 elapsed=$((SECONDS - started))
 [[ "$(cksum "$CALLER_HOME/.factory/sentinel" \
   "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
-  "$CALLER_HOME/Library/LaunchAgents/sentinel")" == "$sentinels_before" ]] ||
+  "$CALLER_HOME/Library/LaunchAgents/sentinel" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel")" == "$sentinels_before" ]] ||
   fail "mock changed caller production sentinels"
 [[ "$(find "$CALLER_HOME/.factory" "$CALLER_HOME/.hermes/profiles/factory" \
-  "$CALLER_HOME/Library/LaunchAgents" -type f | wc -l | tr -d ' ')" -eq 3 ]] ||
+  "$CALLER_HOME/Library/LaunchAgents" "$CALLER_HOME/Projects/nysa-company/nysa-app" \
+  -type f | wc -l | tr -d ' ')" -eq 4 ]] ||
   fail "mock added caller production state"
 lane_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 [[ "$lane_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "mock returned an unsafe root"
@@ -214,7 +221,7 @@ grep -Eq '\(deny +default\)' "$profile" || fail "mock profile is not default-den
 grep -Eq '\(deny +network' "$profile" || fail "mock profile does not deny network"
 grep -Fq "$lane_root" "$profile" || fail "mock profile does not bind filesystem access to its lane"
 for forbidden in "$CALLER_HOME/.factory" "$CALLER_HOME/.hermes/profiles/factory" \
-  "$CALLER_HOME/Library/LaunchAgents" "/Users/sofiagonzalez/Projects/nysa-company/nysa-app"; do
+  "$CALLER_HOME/Library/LaunchAgents" "$CALLER_HOME/Projects/nysa-company/nysa-app"; do
   grep -Fq "$forbidden" "$profile" && fail "mock profile names production path: $forbidden"
 done
 
@@ -257,6 +264,48 @@ mkdir -p "$forged"
 printf '{}\n' >"$forged/marker.json"
 expect_failure "forged cleanup" clean_cmd "$forged"
 [[ -d "$unmarked" && -d "$forged" ]] || fail "refused cleanup removed data"
+
+started=$SECONDS
+test_env bash "$LANE" mock-concurrency --keep >"$OUT"
+elapsed=$((SECONDS - started))
+concurrency_root="$(sed -n 's/^ROOT=//p' "$OUT")"
+[[ "$concurrency_root" == "$TMP/lanes"/nysa-sf-dev.* ]] ||
+  fail "concurrency mock returned an unsafe root"
+grep -qx 'PROVIDER_CALLS=4' "$OUT" || fail "concurrency mock did not run four providers"
+overlap_ms="$(sed -n 's/^PROVIDER_OVERLAP_MILLISECONDS=//p' "$OUT")"
+[[ "$overlap_ms" =~ ^[0-9]+$ && "$overlap_ms" -ge 2000 && "$overlap_ms" -lt 5000 ]] ||
+  fail "four provider calls did not overlap for one bounded interval"
+reported_elapsed="$(sed -n 's/^ELAPSED_SECONDS=//p' "$OUT")"
+[[ "$reported_elapsed" =~ ^[0-9]+$ && "$reported_elapsed" -lt 900 && "$elapsed" -lt 900 ]] ||
+  fail "four lifecycle batch exceeded the 15-minute ceiling"
+[[ "$(cksum "$CALLER_HOME/.factory/sentinel" \
+  "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
+  "$CALLER_HOME/Library/LaunchAgents/sentinel" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel")" == "$sentinels_before" ]] ||
+  fail "concurrency mock changed production sentinels"
+python3 "$concurrency_root/kit/scripts/provider-coordinator.py" \
+  --db "$concurrency_root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+assert value["counts"] == {"terminal":4}, value
+assert value["active_reserve_micro_usd"] == 0, value
+' || fail "concurrency mock retained provider capacity or reservations"
+[[ "$(find "$concurrency_root/product/factory/runs" -type f -name '*.meta' | wc -l | tr -d ' ')" -eq 24 ]] ||
+  fail "four lifecycle batch did not record 24 role runs"
+for ticket in T-900001 T-900002 T-900003 T-900004; do
+  work="$concurrency_root/worktrees/$ticket"
+  grep -qx 'State: Review' "$work/factory/tickets/$ticket.md" ||
+    fail "$ticket did not complete in Review"
+  [[ "$(git -C "$work" rev-parse HEAD)" == \
+     "$(git -C "$concurrency_root/origin.git" rev-parse "refs/heads/ticket/$ticket")" ]] ||
+    fail "$ticket trusted host output was not pushed locally"
+done
+if find "$concurrency_root/product/factory" -type f -name '*.pid' -print -quit | grep -q . ||
+   find "$concurrency_root" -type f \( -name active.json -o -path '*/receipts/*.json' \) -print -quit | grep -q .; then
+  fail "concurrency mock retained a live process or activation artifact"
+fi
+clean_cmd "$concurrency_root"
+[[ ! -e "$concurrency_root" ]] || fail "concurrency cleanup retained its lane"
 
 # Real Cursor cannot authenticate inside a nested Seatbelt profile. Its lane
 # uses Cursor's own explicit sandbox; only mock mode invokes sandbox-exec.
