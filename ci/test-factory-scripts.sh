@@ -549,10 +549,16 @@ write_run_manifest() {
   mkdir -p "$root/factory/runs"
   printf '%s\n' \
     "run_id=$run_id" \
+    'phase=completed' \
+    'accounting_schema=1' \
     'accounting_state=completed' \
+    'cost_basis=test_fixture' \
+    'go_issued=1' \
+    'task_submitted=1' \
     'exit_status=0' \
     "ticket=$ticket" \
     "role=$role" \
+    'role_exit=ok' \
     "role_head_before=$head" > "$root/factory/runs/$run_id.meta"
 }
 

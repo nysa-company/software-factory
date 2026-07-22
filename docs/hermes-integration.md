@@ -151,7 +151,9 @@ Before Narrator, the dispatcher invokes it again and requires `ready`; the
 helper binds successful required checks and latest Reviewer evidence to the
 exact current head. If an earlier helper failure prevented PR creation, the
 same call may create it at the Narrator boundary only after that reviewed-head
-lineage passes unchanged. It cannot approve or merge.
+lineage passes unchanged. A completed, role-valid Cursor run remains eligible
+when its billing state conservatively reserves the full run budget. It cannot
+approve or merge.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission
@@ -307,6 +309,11 @@ bash "$KIT_REPO/scripts/factory-kit.sh" certify \
   --product "$PRODUCT_REPO" \
   --sha "$SHA"
 ```
+
+Certification is network-denied by default. If the product's reviewed,
+pinned certification workflow must fetch dependencies, explicitly scope
+`FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1` to this command. The opt-in is
+rejected during installation and does not weaken filesystem isolation.
 
 Certification first verifies the manifest-backed sealed release. It reuses the
 install suite result only when its release, current physical tree, host,

@@ -132,10 +132,32 @@ def successful_runs(product, ticket):
         if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
             raise Refusal("run manifests must be regular single-link files")
         value = meta(path)
-        if (
-            value.get("ticket") == ticket
+        legacy_success = (
+            value.get("contract_version") == "1.2.0"
+            and value.get("selection_reason") == "primary_ready"
             and value.get("accounting_state") == "completed"
             and value.get("exit_status") == "0"
+        )
+        if (
+            value.get("ticket") == ticket
+            and (
+                legacy_success
+                or (
+                    value.get("phase") == "completed"
+                    and value.get("accounting_schema") == "1"
+                    and value.get("accounting_state") in {
+                        "completed", "abandoned_conservative",
+                    }
+                    and value.get("go_issued") == "1"
+                    and value.get("task_submitted") == "1"
+                    and value.get("exit_status") == "0"
+                    and value.get("role_exit") == "ok"
+                    and (
+                        value.get("accounting_state") != "abandoned_conservative"
+                        or value.get("cost_basis") == "conservative_reservation"
+                    )
+                )
+            )
         ):
             value["_manifest_name"] = path.name
             value["_manifest_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -157,6 +179,13 @@ def successful_runs(product, ticket):
         if value.get("run_id") not in successful_ids:
             raise Refusal(f"successful manifest {value.get('run_id')} is absent from ledger")
         value["_ledger_index"], value["_ledger_row"] = successful_ids[value["run_id"]]
+        ledger_row = value["_ledger_row"]
+        ledger_fields = (
+            "ticket", "role", "adapter", "exit_status", "run_id", "provider_family",
+            "model_id", "selection_reason", "cost_basis", "adapter_version",
+        )
+        if any(value.get(field) != ledger_row.get(field) for field in ledger_fields):
+            raise Refusal(f"successful manifest {value.get('run_id')} does not match ledger")
     return manifests
 
 
