@@ -453,7 +453,7 @@ from pathlib import Path
 args=sys.argv[1:]
 if args[0] == "create": print("lane-container")
 elif args[0] == "start": print("lane-container")
-elif args[0] == "exec" and "-i" in args: pass
+elif args[0] == "exec" and "-i" in args: sys.stdin.buffer.read()
 elif args[0] == "exec" and "tar" in args and "-c" in args:
     out=io.BytesIO()
     with tarfile.open(fileobj=out, mode="w") as archive:
