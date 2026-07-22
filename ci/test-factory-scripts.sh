@@ -133,7 +133,11 @@ case "${1:-}" in
     printf '%s\n' --print --output-format --workspace --model --force --trust
     exit 0 ;;
   status)
-    if [[ "${STUB_CURSOR_AUTH_FALSE:-0}" == "1" ]]; then
+    if [[ -n "${STUB_CURSOR_AUTH_FAIL_ONCE_FILE:-}" &&
+          ! -f "$STUB_CURSOR_AUTH_FAIL_ONCE_FILE" ]]; then
+      : > "$STUB_CURSOR_AUTH_FAIL_ONCE_FILE"
+      echo '{"authenticated":false}'
+    elif [[ "${STUB_CURSOR_AUTH_FALSE:-0}" == "1" ]]; then
       echo '{"authenticated":false}'
     else
       echo '{"authenticated":true}'
@@ -308,6 +312,19 @@ if [[ "$FALSE_AUTH_PROBE" == "UNAVAILABLE:authentication_unavailable" ]]; then
   pass "Cursor status JSON must affirm authentication"
 else
   fail "Cursor status JSON must affirm authentication" "$FALSE_AUTH_PROBE"
+fi
+
+AUTH_RETRY_MARKER="$TMP/cursor-auth-retry"
+TRANSIENT_AUTH_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test CURSOR_OPENAI_MODEL=gpt-5.6-sol-high \
+  STUB_CURSOR_AUTH_FAIL_ONCE_FILE="$AUTH_RETRY_MARKER" \
+  bash -c 'source "$1"; factory_probe_adapter cursor-openai; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$TRANSIENT_AUTH_PROBE" == "READY:local_contract_ready" &&
+      -f "$AUTH_RETRY_MARKER" ]]; then
+  pass "Cursor readiness tolerates one transient authentication miss"
+else
+  fail "Cursor readiness tolerates one transient authentication miss" "$TRANSIENT_AUTH_PROBE"
 fi
 
 EXPLICIT_CURSOR_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \

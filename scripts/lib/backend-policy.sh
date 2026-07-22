@@ -299,8 +299,15 @@ factory_probe_adapter() {
             "$help" != *"--trust"* ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
       fi
-      if ! HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
-           python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
+      auth_ready=0
+      for attempt in 1 2; do
+        if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
+             python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
+          auth_ready=1
+          break
+        fi
+      done
+      if [[ "$auth_ready" != 1 ]]; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
       model_ready=0
