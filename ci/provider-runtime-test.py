@@ -62,6 +62,7 @@ class Upstream(http.server.ThreadingHTTPServer):
         super().__init__(address, UpstreamHandler)
         self.observed_key = None
         self.blocked = blocked
+        self.responses = {}
         self.releases = {}
         self.started = set()
         self.condition = threading.Condition()
@@ -110,12 +111,11 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
             },
             separators=(",", ":"),
         )
-        body = json.dumps(
-            {
-                "choices": [{"message": {"content": mutation}}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
-            }
-        ).encode()
+        value = self.server.responses.get(attempt, {
+            "choices": [{"message": {"content": mutation}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        })
+        body = value if isinstance(value, bytes) else json.dumps(value).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -498,6 +498,43 @@ class ProviderRuntimeTest(unittest.TestCase):
         status = self.status("attempt-timeout")
         self.assertEqual(status["terminal_result"], "failed")
         self.assertEqual(status["charge_micro_usd"], status["reserve_micro_usd"])
+
+    def test_provider_response_envelopes_and_malformed_results_settle_safely(self):
+        upstream = Upstream(("127.0.0.1", 0))
+        fixture = self.broker_fixture(upstream)
+        mutation = json.dumps({"files": ["app.txt"], "patch": ""})
+        upstream.responses.update({
+            "chat": {"choices": [{"message": {"content": mutation}}]},
+            "anthropic": {"content": [{"type": "text", "text": mutation}]},
+            "responses": {"output": [{"content": [{"text": mutation}]}]},
+            "invalid-json": b"{",
+            "non-object": [],
+            "missing-text": {},
+            "invalid-mutation": {"choices": [{"message": {"content": "{"}}]},
+            "invalid-schema": {"choices": [{"message": {"content": json.dumps({
+                "files": "app.txt", "patch": "",
+            })}}]},
+        })
+        for attempt in ("chat", "anthropic", "responses"):
+            result = self.command(*self.broker_arguments(attempt, fixture))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.status(attempt)["terminal_result"], "succeeded")
+        for attempt in (
+            "invalid-json", "non-object", "missing-text", "invalid-mutation",
+            "invalid-schema",
+        ):
+            result = self.command(*self.broker_arguments(attempt, fixture))
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            status = self.status(attempt)
+            self.assertEqual(status["terminal_result"], "failed")
+            self.assertEqual(status["charge_micro_usd"], status["reserve_micro_usd"])
+            self.assertFalse((self.root / f"{attempt}.input.json").exists())
+
+        final = subprocess.run(
+            [sys.executable, str(COORDINATOR), "--db", str(self.db), "status"],
+            text=True, capture_output=True, check=True,
+        )
+        self.assertEqual(json.loads(final.stdout)["active_reserve_micro_usd"], 0)
 
     def test_policy_binding_mismatch_fails_before_reservation(self):
         result = self.execute(policy_hash="f" * 64)
