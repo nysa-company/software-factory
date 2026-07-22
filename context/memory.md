@@ -525,3 +525,9 @@ The selective-CI self-test clears the outer `CI_FORCE_FULL` controller flag for 
 Category: System change
 
 A protected-main authorization may bridge only exact named old-kit ticket branch heads across an exceptional release activation; maintenance, active-run, and dispatcher-lease drain barriers remain unchanged. After sealed route migration, a non-force base refresh retires old bundle and approval receipts and records role/verdict baselines so fresh Reviewer, Narrator, bundle, and Linear approval evidence is mandatory. One authentic superseded Contract 1.2 Planner manifest is retained only as digest-bound legacy accounting evidence, never as modern route authority.
+
+## 2026-07-21 — Decision 26: Isolated development lane validated with Cursor
+
+Category: System change
+
+The reusable development lane runs a synthetic six-role lifecycle from committed factory source against a disposable local product and origin, without release installation, registration, activation, or canonical Nysa state. Mock verification remains under 15 minutes; real Cursor requires a one-use, content-bound approval. A complete real lifecycle reached `AWAIT-OPERATOR` with Cursor OpenAI for Planner, Builder, and Narrator, Cursor Fable for Spec-linter and Test-author, and Cursor Sonnet for read-only Reviewer. The lane reserves collision-free fixture ports, decodes the validated Cursor terminal result before verdict parsing, and retries one transient authentication or model-list miss while still failing closed after two misses.
