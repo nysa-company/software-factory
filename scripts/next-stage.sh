@@ -600,8 +600,17 @@ for index, run_id in selected:
     if (
         value.get("ticket") != ticket
         or value.get("role") != role
-        or value.get("accounting_state") != "completed"
+        or value.get("phase") != "completed"
+        or value.get("accounting_schema") != "1"
+        or value.get("accounting_state") not in {"completed", "abandoned_conservative"}
+        or value.get("go_issued") != "1"
+        or value.get("task_submitted") != "1"
         or value.get("exit_status") != "0"
+        or value.get("role_exit") != "ok"
+        or (
+            value.get("accounting_state") == "abandoned_conservative"
+            and value.get("cost_basis") != "conservative_reservation"
+        )
         or not re.fullmatch(r"[0-9a-f]{40}", head)
     ):
         raise SystemExit(1)

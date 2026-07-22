@@ -64,8 +64,17 @@ def latest_reviewer_head(product: Path, ticket: str) -> str:
         if (
             values.get("ticket") == ticket
             and values.get("role") == "reviewer"
-            and values.get("accounting_state") == "completed"
+            and values.get("phase") == "completed"
+            and values.get("accounting_schema") == "1"
+            and values.get("accounting_state") in {"completed", "abandoned_conservative"}
+            and values.get("go_issued") == "1"
+            and values.get("task_submitted") == "1"
             and values.get("exit_status") == "0"
+            and values.get("role_exit") == "ok"
+            and (
+                values.get("accounting_state") != "abandoned_conservative"
+                or values.get("cost_basis") == "conservative_reservation"
+            )
         ):
             run_id = values.get("run_id", "")
             if not run_id or run_id in reviewers:
@@ -88,7 +97,10 @@ def latest_reviewer_head(product: Path, ticket: str) -> str:
     run_id = rows[-1].get("run_id", "")
     if run_id not in reviewers:
         raise Refusal("latest successful reviewer manifest is missing")
-    head = reviewers[run_id].get("role_head_before", "")
+    reviewer = reviewers[run_id]
+    if reviewer.get("cost_basis") != rows[-1].get("cost_basis"):
+        raise Refusal("latest successful reviewer ledger evidence does not match")
+    head = reviewer.get("role_head_before", "")
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise Refusal("reviewer head evidence is invalid")
     return head

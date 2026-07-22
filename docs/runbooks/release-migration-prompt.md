@@ -78,11 +78,15 @@ this exact order:
      proposed tracked baseline change is a separate product change and stops
      this migration.
 8. Verify Node 22 and product certification dependencies. For nysa-app,
-   require PostgreSQL at `127.0.0.1:55432`. Certify the exact clean committed
-   tree at {{PRODUCT_REPO_ABSOLUTE_PATH}} with `bash scripts/factory-kit.sh
-   certify --project {{PROJECT_SLUG}} --product
-   {{PRODUCT_REPO_ABSOLUTE_PATH}} --sha {{SHA}}`. Record the host-bound receipt
-   ID and expiry; another computer's receipt is invalid.
+   require PostgreSQL at `127.0.0.1:55432`, review its pinned dependency fetch,
+   and certify the exact clean committed tree at
+   {{PRODUCT_REPO_ABSOLUTE_PATH}} with
+   `FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1 bash
+   scripts/factory-kit.sh certify --project {{PROJECT_SLUG}} --product
+   {{PRODUCT_REPO_ABSOLUTE_PATH}} --sha {{SHA}}`. The opt-in applies only to
+   this reviewed certification command; installation and unreviewed products
+   remain network-denied. Record the host-bound receipt ID and expiry; another
+   computer's receipt is invalid.
 9. {{CANARY_LINE: "Run the isolated real-Hermes canary with a separate sandbox
    product/profile because this release changes {{SURFACES_TOUCHED}}. Never
    copy production environment, credentials, board mapping, registry, ledger,

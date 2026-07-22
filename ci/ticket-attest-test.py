@@ -179,8 +179,9 @@ Priority: normal
         for index, role in enumerate(("reviewer", "narrator"), 1):
             run_id = f"{role}-1"
             (self.product / f"factory/runs/{run_id}.meta").write_text(
-                f"run_id={run_id}\naccounting_schema=1\naccounting_state=completed\n"
-                "reserved_usd=1\ngo_issued=1\nstarted_at=2026-07-17T12:00:00Z\n"
+                f"run_id={run_id}\nphase=completed\naccounting_schema=1\n"
+                "accounting_state=completed\nreserved_usd=1\ngo_issued=1\n"
+                "task_submitted=1\nrole_exit=ok\nstarted_at=2026-07-17T12:00:00Z\n"
                 "prompt_version=1\nturns=1\neffective_cost=0.1\ncost_basis=reported\n"
                 f"exit_status=0\nticket=T-700\nrole={role}\nadapter=mock\n"
                 "provider_family=anthropic\nselection_reason=pinned_route_plan\n"
@@ -222,8 +223,9 @@ Priority: normal
         ).hexdigest()
         pinned_id = "planner-pinned-1"
         (self.product / f"factory/runs/{pinned_id}.meta").write_text(
-            f"run_id={pinned_id}\naccounting_schema=1\naccounting_state=completed\n"
-            "exit_status=0\nticket=T-700\nrole=planner\nadapter=mock\n"
+            f"run_id={pinned_id}\nphase=completed\naccounting_schema=1\n"
+            "accounting_state=completed\ngo_issued=1\ntask_submitted=1\nrole_exit=ok\n"
+            "cost_basis=reported\nexit_status=0\nticket=T-700\nrole=planner\nadapter=mock\n"
             "provider_family=anthropic\nmodel_id=mock\neffort=medium\n"
             "selection_reason=pinned_route_plan\nadapter_version=1\n"
             "route_id=mock-route\ngateway_id=direct\n"
@@ -384,6 +386,20 @@ else:
         self.assertIn("--squash", state["merge_argv"])
         self.assertNotIn("--merge", state["merge_argv"])
 
+    def test_bundle_accepts_completed_conservative_cursor_accounting(self):
+        manifest = self.product / "factory/runs/reviewer-1.meta"
+        manifest.write_text(
+            manifest.read_text()
+            .replace("accounting_state=completed", "accounting_state=abandoned_conservative")
+            .replace("cost_basis=reported", "cost_basis=conservative_reservation")
+        )
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text(ledger.read_text().replace(
+            "reviewer-1,anthropic,mock,pinned_route_plan,reported,1",
+            "reviewer-1,anthropic,mock,pinned_route_plan,conservative_reservation,1",
+        ))
+        self.bundle()
+
     def test_stale_approval_is_refused(self):
         self.bundle()
         self.approval_overlay(stale=True)
@@ -479,8 +495,9 @@ else:
         for index, role in ((3, "reviewer"), (4, "narrator")):
             run_id = f"{role}-2"
             (self.product / f"factory/runs/{run_id}.meta").write_text(
-                f"run_id={run_id}\naccounting_schema=1\naccounting_state=completed\n"
-                "exit_status=0\nticket=T-700\n"
+                f"run_id={run_id}\nphase=completed\naccounting_schema=1\n"
+                "accounting_state=completed\ngo_issued=1\ntask_submitted=1\nrole_exit=ok\n"
+                "cost_basis=reported\nexit_status=0\nticket=T-700\n"
                 f"role={role}\nrole_head_before={self.reviewed}\n"
                 "adapter=mock\nprovider_family=anthropic\nmodel_id=mock\neffort=medium\n"
                 "selection_reason=pinned_route_plan\nadapter_version=1\n"
@@ -628,8 +645,9 @@ else:
         ):
             run_id = f"{role}-2"
             (self.product / f"factory/runs/{run_id}.meta").write_text(
-                f"run_id={run_id}\naccounting_schema=1\naccounting_state=completed\n"
-                "exit_status=0\nticket=T-700\n"
+                f"run_id={run_id}\nphase=completed\naccounting_schema=1\n"
+                "accounting_state=completed\ngo_issued=1\ntask_submitted=1\nrole_exit=ok\n"
+                "cost_basis=reported\nexit_status=0\nticket=T-700\n"
                 f"role={role}\nrole_head_before={role_head}\n"
                 "adapter=mock\nprovider_family=anthropic\nmodel_id=mock\neffort=medium\n"
                 "selection_reason=pinned_route_plan\nadapter_version=1\n"

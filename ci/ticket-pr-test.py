@@ -128,7 +128,10 @@ else:
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
-    def prepare_narrator(self, *, late_implementation=False):
+    def prepare_narrator(
+        self, *, late_implementation=False, accounting_state="completed",
+        phase="completed", role_exit="ok",
+    ):
         reviewed = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
@@ -136,10 +139,18 @@ else:
         runs = self.product / "factory/runs"
         runs.mkdir()
         (runs / "run-5.meta").write_text(
-            "accounting_state=completed\nexit_status=0\nrole=reviewer\n"
-            f"role_head_before={reviewed}\nrun_id=run-5\nticket=T-100\n"
+            f"accounting_schema=1\naccounting_state={accounting_state}\n"
+            f"cost_basis={'conservative_reservation' if accounting_state == 'abandoned_conservative' else 'actual'}\n"
+            f"exit_status=0\ngo_issued=1\nphase={phase}\nrole=reviewer\n"
+            f"role_exit={role_exit}\nrole_head_before={reviewed}\ntask_submitted=1\n"
+            "run_id=run-5\nticket=T-100\n"
         )
         self.write_ledger(("planner", "spec-linter", "test-author", "builder", "reviewer"))
+        if accounting_state == "abandoned_conservative":
+            self.ledger.write_text(self.ledger.read_text().replace(
+                "run-5,mock,model,selected,actual,v1",
+                "run-5,mock,model,selected,conservative_reservation,v1",
+            ))
         ticket = self.product / "factory/tickets/T-100.md"
         ticket.write_text(ticket.read_text() + "Reviewer round 1: APPROVE\n")
         if late_implementation:
@@ -196,7 +207,7 @@ else:
         self.assertIn("implementation changed", refused["error"])
 
     def test_narrator_recovery_creates_pr_only_after_valid_review_lineage(self):
-        self.prepare_narrator()
+        self.prepare_narrator(accounting_state="abandoned_conservative")
         recovered = self.command()
         self.assertEqual(recovered["boundary"], "narrator")
         self.assertEqual(recovered["status"], "ready")
@@ -212,6 +223,26 @@ else:
         refused = self.command(expected=2, lease_id="b" * 64)
         self.assertIn("lease is missing, unsafe, or does not match", refused["error"])
         self.assertFalse(self.trace.exists())
+
+    def test_invalid_reviewer_execution_never_accesses_github(self):
+        self.prepare_narrator()
+        manifest = self.product / "factory/runs/run-5.meta"
+        valid = manifest.read_text()
+        cases = (
+            ("phase=completed", "phase=running"),
+            ("accounting_state=completed", "accounting_state=cancelled_conservative"),
+            ("accounting_schema=1", "accounting_schema=2"),
+            ("go_issued=1", "go_issued=0"),
+            ("task_submitted=1", "task_submitted=0"),
+            ("role_exit=ok", "role_exit=reviewer_mutated_worktree"),
+            ("exit_status=0", "exit_status=1"),
+        )
+        for original, replacement in cases:
+            with self.subTest(replacement=replacement):
+                manifest.write_text(valid.replace(original, replacement))
+                refused = self.command(expected=2)
+                self.assertIn("reviewer manifest is missing", refused["error"])
+                self.assertFalse(self.trace.exists())
 
 
 if __name__ == "__main__":
