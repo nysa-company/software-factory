@@ -573,7 +573,7 @@ expect_stage() {
   certified_origin="$(git -C "$root" remote get-url --push origin 2>/dev/null || true)"
   actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
-    FACTORY_RELEASE_CONTRACT_VERSION="${TEST_CONTRACT_VERSION:-1.2.0}" \
+    FACTORY_HERMES_CONTRACT_VERSION="${TEST_CONTRACT_VERSION:-1.2.0}" \
     "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
   status=$?
   [[ "$actual" == "$expected"* ]] || {
