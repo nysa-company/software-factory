@@ -2070,7 +2070,9 @@ product_scheduler_admits() {
 product_role_retryable() {
   local log="$1"
   [[ -f "$log" && ! -L "$log" ]] || return 1
-  grep -Fxq 'Resolved Cursor model is unavailable' "$log"
+  grep -Fxq 'Resolved Cursor model is unavailable' "$log" ||
+    grep -Eq "^pinned route unavailable or drifted for role '[a-z-]+': pinned_route_UNAVAILABLE_(authentication|model)_unavailable; no task was submitted$" \
+      "$log"
 }
 
 product_role_for_stage() {

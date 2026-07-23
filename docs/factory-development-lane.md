@@ -45,6 +45,10 @@ misses so a short CLI session-state transition cannot exhaust every retry.
 Retained-product resumes run that probe before hashing the plan and again
 before validating it for execution; the internal run reuses the second result
 instead of immediately probing the same session a third time.
+If an exact pinned route still reports a transient authentication or model
+availability miss before task submission, the scheduler waits ten seconds and
+retries that role once. Version, identity, contract, and post-submission
+failures remain non-retryable.
 
 ## Isolated product proof and resume
 

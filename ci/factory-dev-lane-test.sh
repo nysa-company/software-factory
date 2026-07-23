@@ -360,6 +360,17 @@ printf '%s\n' 'subscription authentication is unavailable' >"$TMP/retryable-role
 if product_role_retryable "$TMP/retryable-role.log"; then
   fail "scheduler retried a non-readiness provider failure"
 fi
+printf '%s\n' \
+  "pinned route unavailable or drifted for role 'reviewer': pinned_route_UNAVAILABLE_authentication_unavailable; no task was submitted" \
+  >"$TMP/retryable-role.log"
+product_role_retryable "$TMP/retryable-role.log" ||
+  fail "scheduler did not retry a transient pinned-route authentication miss"
+printf '%s\n' \
+  "pinned route unavailable or drifted for role 'reviewer': pinned_route_INVALID_version_mismatch; no task was submitted" \
+  >"$TMP/retryable-role.log"
+if product_role_retryable "$TMP/retryable-role.log"; then
+  fail "scheduler retried pinned-route identity or contract drift"
+fi
 eval "$(sed -n '/^product_role_for_stage()/,/^}/p' "$LANE")"
 [[ "$(product_role_for_stage 'FIX builder-or-test-author')" == builder ]] ||
   fail "review request did not select the bounded Builder fix role"
