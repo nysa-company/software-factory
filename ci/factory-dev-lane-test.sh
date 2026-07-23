@@ -149,6 +149,13 @@ if [[ "\${1:-}" == --version ]]; then
   printf '%s\n' "$readiness_tool 1.0-test"
   exit 0
 fi
+if [[ "$readiness_tool" == codex && -f "\$HOME/.transient-auth" ]]; then
+  count="\$(cat "\$HOME/.transient-auth")"
+  if [[ "\$count" -lt 2 ]]; then
+    printf '%s\n' "\$((count + 1))" >"\$HOME/.transient-auth"
+    exit 1
+  fi
+fi
 [[ -f "\$HOME/.auth-ready" ]]
 EOF
   chmod +x "$READINESS_ROOT/home/$readiness_tool"
@@ -177,6 +184,13 @@ AMBIENT_AUTH_READY=1 \
   subscription_env "$READINESS_ROOT" \
     "$READINESS_ROOT/home/codex" login status >/dev/null ||
   fail "role environment disagreed with lane-local readiness"
+printf '%s\n' 0 >"$READINESS_ROOT/session-home/.transient-auth"
+(
+  die() { exit 1; }
+  subscription_ready "$READINESS_ROOT"
+) || fail "subscription readiness did not outwait transient authentication"
+[[ "$(<"$READINESS_ROOT/session-home/.transient-auth")" == 2 ]] ||
+  fail "subscription readiness did not exercise bounded authentication retries"
 
 EXPORT_ROOT="$TMP/product-export"
 EXPORT_WORK="$EXPORT_ROOT/worktrees/T-1"

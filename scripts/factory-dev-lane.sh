@@ -98,16 +98,19 @@ subscription_ready() {
     subscription_base_env "$root" "$root/home/timeout" 10 \
       "$root/home/agent" status >/dev/null 2>&1 && break
     [[ "$i" -lt 3 ]] || die "Cursor subscription authentication is unavailable"
+    sleep 1
   done
   for i in 1 2 3; do
     subscription_base_env "$root" "$root/home/timeout" 10 \
       "$root/home/codex" login status >/dev/null 2>&1 && break
     [[ "$i" -lt 3 ]] || die "Codex subscription authentication is unavailable"
+    sleep 1
   done
   for i in 1 2 3; do
     subscription_base_env "$root" "$root/home/timeout" 10 \
       "$root/home/claude" auth status >/dev/null 2>&1 && break
     [[ "$i" -lt 3 ]] || die "Claude subscription authentication is unavailable"
+    sleep 1
   done
 }
 

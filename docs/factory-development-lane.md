@@ -40,6 +40,8 @@ role execution then use the same clean environment and only those copied
 files; ambient authentication variables and the external Cursor session home
 are not consulted. If a copied session is unavailable, the lane stops before
 consuming approval, claiming a lease, reserving budget, or submitting a task.
+Each readiness probe gets three attempts with a one-second delay between
+misses so a short CLI session-state transition cannot exhaust every retry.
 
 ## Isolated product proof and resume
 
