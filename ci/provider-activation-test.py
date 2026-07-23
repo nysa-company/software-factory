@@ -159,8 +159,21 @@ class ActivationTest(unittest.TestCase):
         self.write()
         self.assertEqual(self.command(contract="1.7.0").returncode, 2)
 
-    def test_cli_activation_rejects_unsafe_account_capacity(self):
-        self.policy["account_routes"]["codex-native"]["max_concurrent"] = 3
+    def test_cli_activation_allows_four_codex_calls(self):
+        self.policy["account_routes"]["codex-native"]["max_concurrent"] = 4
+        digest = self.write_policy()
+        self.value = {
+            "enabled": True, "mode": "cli-concurrent-v1",
+            "policy_sha256": digest,
+            "routes": {"route-a": {"account_route": "codex-native", "adapter": "codex",
+                                     "model": "gpt-5.6-sol", "provider_family": "openai"}},
+            "schema": "nysa.software-factory.provider-activation/v2",
+        }
+        self.write()
+        self.assertEqual(self.command(contract="1.7.0").returncode, 0)
+
+    def test_cli_activation_rejects_unsafe_codex_capacity(self):
+        self.policy["account_routes"]["codex-native"]["max_concurrent"] = 5
         digest = self.write_policy()
         self.value = {
             "enabled": True, "mode": "cli-concurrent-v1",
@@ -184,6 +197,19 @@ class ActivationTest(unittest.TestCase):
         }
         self.write()
         self.assertEqual(self.command(contract="1.7.0").returncode, 0)
+
+    def test_cli_activation_rejects_four_cursor_subscription_calls(self):
+        self.policy["account_routes"]["cursor"]["max_concurrent"] = 4
+        digest = self.write_policy()
+        self.value = {
+            "enabled": True, "mode": "cli-concurrent-v1",
+            "policy_sha256": digest,
+            "routes": {"route-a": {"account_route": "cursor", "adapter": "cursor-openai",
+                                     "model": "gpt-5.6-sol-high", "provider_family": "openai"}},
+            "schema": "nysa.software-factory.provider-activation/v2",
+        }
+        self.write()
+        self.assertEqual(self.command(contract="1.7.0").returncode, 2)
 
     def test_cli_activation_rejects_invalid_unselected_route(self):
         self.value = {

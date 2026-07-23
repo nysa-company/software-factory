@@ -18,7 +18,7 @@ The command creates a private `nysa-sf-dev.*` directory directly under `TMPDIR`,
 bash scripts/factory-dev-lane.sh mock-concurrency
 ```
 
-This runs four identity-bound mock subscription commands through the Contract 1.7 CLI runtime and existing transactional coordinator at once, then completes four disposable Planner-through-Narrator lifecycles. The policy, database, worktrees, project identity, ports, timeline, home, and temporary files are unique to the owner-only lane root. The command proves temporal overlap, retains reservations until trusted-host terminalization, drains them, leaves each ticket clean and locally pushed in `Review`, and must finish in less than 15 minutes. It does not use credentials or permit a real provider call.
+This runs four identity-bound mock subscription commands through one mock account in the Contract 1.7 CLI runtime and existing transactional coordinator at once, then completes four disposable Planner-through-Narrator lifecycles. The policy, database, worktrees, project identity, ports, timeline, home, and temporary files are unique to the owner-only lane root. The command proves temporal overlap, retains reservations until trusted-host terminalization, drains them, leaves each ticket clean and locally pushed in `Review`, and must finish in less than 15 minutes. It does not use credentials or permit a real provider call.
 
 Focused provider tests separately hold four loopback broker requests open, cancel one by controller signal, admit a replacement only into that released slot, and verify timeout cleanup. Capacity is released only after token revocation and request drain are both proven.
 
@@ -51,6 +51,16 @@ If an exact pinned route still reports a transient authentication or model
 availability miss before task submission, the scheduler waits ten seconds and
 retries that role once. Version, identity, contract, and post-submission
 failures remain non-retryable.
+
+The product scheduler launches every eligible ticket without interpreting
+provider capacity. The coordinator owns atomic admission and may wait up to
+five minutes only for transient concurrency capacity in this marker-bound
+development lane. The runner keeps the ticket lease heartbeat active and
+releases the product launch lock while waiting, then reacquires it and
+revalidates controls before proceeding. Budget, policy, identity, and rate
+denials remain immediate. Development activation permits four calls for one
+Codex account; Cursor and native Claude remain capped at two, and the native
+Claude circuit breaker remains in force.
 
 ## Isolated product proof and resume
 

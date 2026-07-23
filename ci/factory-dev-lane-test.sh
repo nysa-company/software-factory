@@ -321,7 +321,7 @@ for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no v
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
     --adapter codex --input "$VERDICT"
 done
-product_role_source="$(sed -n '/^product_role_run()/,/^product_scheduler_admits()/p' "$LANE")"
+product_role_source="$(sed -n '/^product_role_run()/,/^product_role_retryable()/p' "$LANE")"
 printf '%s\n' "$product_role_source" | grep -Fq '"$role" == builder' ||
   fail "product Builder no longer owns the Review-state transition"
 if printf '%s\n' "$product_role_source" | grep -Fq '"$role" == narrator'; then
@@ -368,27 +368,6 @@ grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
 grep -Fq -- '--base-envelope "$ENV_FILE"' "$ROOT/scripts/run-agent.sh" ||
   fail "effective budget resolution dropped the ticket-specific envelope"
 
-eval "$(sed -n '/^product_scheduler_admits()/,/^}/p' "$LANE")"
-empty_routes=("")
-product_scheduler_admits cursor openai "${empty_routes[@]}" ||
-  fail "scheduler rejected the first call under Bash nounset"
-product_scheduler_admits cursor openai codex-native:openai ||
-  fail "scheduler rejected the second OpenAI-family call"
-if product_scheduler_admits codex-native openai codex-native:openai cursor:openai; then
-  fail "scheduler admitted a third OpenAI-family call"
-fi
-product_scheduler_admits cursor anthropic codex-native:openai cursor:openai ||
-  fail "scheduler rejected an available Anthropic-family slot"
-if product_scheduler_admits cursor anthropic codex-native:openai cursor:openai cursor:anthropic; then
-  fail "scheduler exceeded the Cursor account cap"
-fi
-product_scheduler_admits new-account new-family \
-  cursor:openai codex-native:anthropic claude-native:openai ||
-  fail "scheduler rejected an available fourth global slot"
-if product_scheduler_admits new-account new-family \
-  cursor:openai codex-native:anthropic claude-native:openai fourth:anthropic; then
-  fail "scheduler exceeded the global concurrency cap"
-fi
 eval "$(sed -n '/^product_role_retryable()/,/^}/p' "$LANE")"
 printf '%s\n' 'Resolved Cursor model is unavailable' >"$TMP/retryable-role.log"
 product_role_retryable "$TMP/retryable-role.log" ||

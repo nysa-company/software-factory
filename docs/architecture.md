@@ -222,7 +222,9 @@ legacy path.
 Contract `1.7.0` reuses the same transactional coordinator for exact
 owner-activated subscription CLI routes. Activation binds the selected CLI
 adapter/model/family/account tuple and canonical provider-policy digest; all
-limits remain policy-owned. Contract 1.6 and non-activated 1.7 routes keep the
+limits remain policy-owned. Activation permits account capacity through four
+for Codex, while Cursor and native Claude remain capped at two. Contract 1.6
+and non-activated 1.7 routes keep the
 serialized path unchanged.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 

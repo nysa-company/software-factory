@@ -63,6 +63,7 @@ REPO_ROOT="${FACTORY_ROOT:-$("$FACTORY_TRUSTED_GIT_BIN" rev-parse --show-topleve
 [[ "$WORKDIR_SET" -eq 1 ]] || WORKDIR="$REPO_ROOT"
 FACTORY_DIR="$REPO_ROOT/factory"
 BUDGET_DAY=""
+PROVIDER_WAIT_SECONDS=0
 if [[ -n "${FACTORY_DEV_BUDGET_DAY:-}" ]]; then
   [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
      "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* &&
@@ -82,8 +83,25 @@ if [[ -n "${FACTORY_DEV_BUDGET_DAY:-}" ]]; then
   }
   BUDGET_DAY="$FACTORY_DEV_BUDGET_DAY"
 fi
+if [[ -n "${FACTORY_DEV_PROVIDER_WAIT_SECONDS:-}" ]]; then
+  [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
+     "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* &&
+     -f "$FACTORY_CLI_LANE_ROOT/marker.json" &&
+     "$FACTORY_DEV_PROVIDER_WAIT_SECONDS" =~ ^[1-9][0-9]*$ &&
+     "$FACTORY_DEV_PROVIDER_WAIT_SECONDS" -le 900 ]] || {
+    echo "development provider wait binding is invalid" >&2
+    exit 2
+  }
+  case "$(cd "$REPO_ROOT" && pwd -P)" in
+    "$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)/product" | \
+    "$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)/product"/*) ;;
+    *) echo "development provider wait is outside its lane" >&2; exit 2 ;;
+  esac
+  PROVIDER_WAIT_SECONDS="$FACTORY_DEV_PROVIDER_WAIT_SECONDS"
+fi
 unset FACTORY_DEV_BUDGET_DAY
-readonly BUDGET_DAY
+unset FACTORY_DEV_PROVIDER_WAIT_SECONDS
+readonly BUDGET_DAY PROVIDER_WAIT_SECONDS
 
 # Direct callers may anchor FACTORY_ROOT inside a linked worktree. Runtime
 # accounting still belongs beside the same product path in the main checkout.
@@ -706,6 +724,7 @@ stop_before_adapter_gate() {
 start_lease_heartbeat() {
   local interval=300
   [[ -n "$DISPATCH_LEASE_ID" ]] || return 0
+  [[ -z "$LEASE_HEARTBEAT_PID" ]] || return 0
   if [[ "${FACTORY_TEST_MODE:-0}" == 1 &&
         "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == 1 &&
         "${FACTORY_TEST_LEASE_HEARTBEAT_SECONDS:-}" =~ ^[1-9][0-9]*$ &&
@@ -883,7 +902,10 @@ print(attempts[0]["version"])
     return 0
   fi
   case "$state" in
-    prepared|reserved) result="failed_pre_go"; charge=0 ;;
+    prepared|reserved)
+      [[ "${1:-failed}" != cancelled ]] || result=cancelled
+      result="${result:-failed_pre_go}"; charge=0
+      ;;
     GO|submitted)
       case "${1:-failed}" in
         succeeded|cancelled|failed) result="${1:-failed}" ;;
@@ -1419,9 +1441,7 @@ fi
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   CLI_ATTEMPT_ID="$RUN_ID-cli"
   CLI_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
-  CLI_RESERVATION="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
-    --db "$FACTORY_PROVIDER_DB" reserve \
-    --operation-id "$CLI_ATTEMPT_ID-reserve" \
+  CLI_ATTEMPT_ARGS=(
     --attempt-id "$CLI_ATTEMPT_ID" \
     --provider-family "$SELECTED_FAMILY" \
     --account-route "$SELECTED_ACCOUNT_ROUTE_ID" \
@@ -1431,12 +1451,95 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
     --budget-day "$TODAY" \
     --product-daily-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[1]}" \
     --ticket-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[2]}" \
-    --machine-daily-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}" \
+    --machine-daily-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}"
+  )
+  CLI_RESERVATION_ARGS=(
+    "${CLI_ATTEMPT_ARGS[@]}" \
     --policy "$FACTORY_PROVIDER_POLICY" \
-    --expected-policy-sha256 "$ACTIVATED_POLICY_HASH")" || {
-      echo "CLI provider reservation failed; no task was submitted" >&2
+    --expected-policy-sha256 "$ACTIVATED_POLICY_HASH"
+  )
+  if [[ "$PROVIDER_WAIT_SECONDS" -gt 0 ]]; then
+    CLI_WAIT_ENVELOPE_BINDING="$RESERVED_USD|$DAILY_CAP_USD|$PER_TICKET_BUDGET_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}"
+    python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+      --db "$FACTORY_PROVIDER_DB" prepare \
+      --operation-id "$CLI_ATTEMPT_ID-prepare" \
+      "${CLI_ATTEMPT_ARGS[@]}" >/dev/null || {
+        echo "CLI provider preparation failed; no task was submitted" >&2
+        exit 8
+      }
+    CLI_ATTEMPT_ACTIVE=1
+    start_lease_heartbeat
+    rmdir "$LAUNCH_LOCK"
+    HELD_LAUNCH_LOCK=0
+    if CLI_RESERVATION="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+        --db "$FACTORY_PROVIDER_DB" wait-admit \
+        --operation-id "$CLI_ATTEMPT_ID-wait-admit" \
+        --attempt-id "$CLI_ATTEMPT_ID" --expected-version 1 \
+        --policy "$FACTORY_PROVIDER_POLICY" \
+        --expected-policy-sha256 "$ACTIVATED_POLICY_HASH" \
+        --wait-seconds "$PROVIDER_WAIT_SECONDS" \
+        --cancel-path "$FACTORY_DIR/KILL" \
+        --cancel-path "$FACTORY_DIR/MAINTENANCE" \
+        --cancel-path "$CANCEL_REQUEST_FILE")"; then
+      CLI_RESERVATION_STATUS=0
+    else
+      CLI_RESERVATION_STATUS=$?
+    fi
+    for i in $(seq 1 "$LOCK_ATTEMPTS"); do
+      mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
+      sleep 0.1
+    done
+    [[ "$HELD_LAUNCH_LOCK" -eq 1 ]] || {
+      echo "launch lock stuck after CLI provider wait; no task was submitted" >&2
       exit 8
     }
+    [[ "$CLI_RESERVATION_STATUS" -eq 0 ]] || {
+      echo "CLI provider reservation wait failed; no task was submitted" >&2
+      exit 8
+    }
+    load_effective_envelope || {
+      echo "effective envelope changed during CLI provider wait; no task was submitted" >&2
+      exit 3
+    }
+    [[ "$CLI_WAIT_ENVELOPE_BINDING" == \
+      "$PER_RUN_BUDGET_USD|$DAILY_CAP_USD|$PER_TICKET_BUDGET_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}" ]] || {
+      echo "effective envelope changed during CLI provider wait; no task was submitted" >&2
+      exit 3
+    }
+    POST_WAIT_ACTIVATION_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-activation.py" \
+      "${ACTIVATION_ARGS[@]}" --route-id "$SELECTED_ROUTE_ID" 2>/dev/null)" || {
+        echo "CLI concurrency activation changed during provider wait; no task was submitted" >&2
+        exit 3
+      }
+    [[ "$POST_WAIT_ACTIVATION_OUTPUT" == "$ACTIVATION_OUTPUT" ]] || {
+      echo "CLI concurrency activation changed during provider wait; no task was submitted" >&2
+      exit 3
+    }
+    [[ ! -f "$FACTORY_DIR/KILL" ]] || {
+      echo "KILL file appeared during CLI provider wait; no task was submitted" >&2
+      exit 4
+    }
+    [[ ! -f "$FACTORY_DIR/MAINTENANCE" ]] || {
+      echo "MAINTENANCE file appeared during CLI provider wait; no task was submitted" >&2
+      exit 4
+    }
+    [[ ! -e "$CANCEL_REQUEST_FILE" && ! -L "$CANCEL_REQUEST_FILE" ]] || {
+      echo "targeted cancellation appeared during CLI provider wait; no task was submitted" >&2
+      exit 130
+    }
+    factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID" || {
+      echo "$FACTORY_DISPATCH_LEASE_ERROR after CLI provider wait; no task was submitted" >&2
+      exit 7
+    }
+  else
+    CLI_RESERVATION="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+      --db "$FACTORY_PROVIDER_DB" reserve \
+      --operation-id "$CLI_ATTEMPT_ID-reserve" \
+      "${CLI_RESERVATION_ARGS[@]}")" || {
+        echo "CLI provider reservation failed; no task was submitted" >&2
+        exit 8
+      }
+  fi
   if ! printf '%s' "$CLI_RESERVATION" | python3 -c '
 import json, sys
 raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)

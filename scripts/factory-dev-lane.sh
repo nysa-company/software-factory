@@ -812,7 +812,7 @@ PY
 import hashlib, json, os, sys
 policy_path, activation_path=sys.argv[1:]
 global_limit={"max_concurrent":4,"max_starts":32,"window_seconds":60}
-account_limit={"max_concurrent":2,"max_starts":32,"window_seconds":60}
+account_limit={"max_concurrent":4,"max_starts":32,"window_seconds":60}
 policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
         "global":global_limit,"provider_families":{"mock":global_limit},
         "account_routes":{"test-mock-a":account_limit,"test-mock-b":account_limit}}
@@ -821,7 +821,7 @@ with open(policy_path, "w", encoding="utf-8") as handle: handle.write(raw+"\n")
 routes={}
 for number in range(900001,900005):
     ticket=f"T-{number}"
-    routes[f"test-mock-{ticket}"]={"account_route":"test-mock-a" if number % 2 else "test-mock-b",
+    routes[f"test-mock-{ticket}"]={"account_route":"test-mock-a",
         "adapter":"mock","model":"test-mock-model","provider_family":"mock"}
 activation={"enabled":True,"mode":"cli-concurrent-v1",
             "policy_sha256":hashlib.sha256(raw.encode()).hexdigest(),"routes":routes,
@@ -1711,8 +1711,8 @@ def limit(concurrent, starts):
     return {"max_concurrent":concurrent,"max_starts":starts,"window_seconds":60}
 policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
         "global":limit(4,24),
-        "provider_families":{"openai":limit(2,12),"anthropic":limit(2,12)},
-        "account_routes":{"cursor":limit(2,15),"codex-native":limit(2,9)}}
+        "provider_families":{"openai":limit(4,24),"anthropic":limit(2,12)},
+        "account_routes":{"cursor":limit(2,15),"codex-native":limit(4,18)}}
 raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
 routes={}
 for ticket in tickets:
@@ -1738,7 +1738,7 @@ PY
   chmod 600 "$root/runtime/product-approval"
   echo "APPROVE_HASH=$approval_hash"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
-  echo "PROVIDER_LIMITS=global:4,cursor:2,codex:2,claude:2"
+  echo "PROVIDER_LIMITS=global:4,cursor:2,codex:4,claude:2"
 }
 
 next_stage() {
@@ -1798,7 +1798,7 @@ run_mock_concurrency_internal() {
   chmod 600 "$root/runtime/provider-timeline"
   for ticket in "${TICKETS[@]}"; do
     attempt="$ticket-builder-lane"
-    case "$ticket" in *1|*3) account=test-mock-a ;; *) account=test-mock-b ;; esac
+    account=test-mock-a
     output="$root/runtime/provider-inputs/$ticket.out"
     lane_env "$root" FACTORY_DEV_LANE_TIMELINE="$root/runtime/provider-timeline" \
       python3 "$root/kit/scripts/provider-cli-runtime.py" \
@@ -1840,6 +1840,20 @@ value=json.load(sys.stdin)
 assert value["counts"] == {"terminal":4}, value
 assert value["active_reserve_micro_usd"] == 0, value
 ' || die "isolated provider reservations did not drain"
+  # The provider overlap proof uses one activated account. Synthetic role
+  # fixtures retain their historical alternating mock identities.
+  python3 - "$root/runtime/provider-activation.json" <<'PY'
+import json, os, pathlib, sys
+path=pathlib.Path(sys.argv[1])
+value=json.loads(path.read_text())
+for number in range(900001,900005):
+    ticket=f"T-{number}"
+    value["routes"][f"test-mock-{ticket}"]["account_route"] = (
+        "test-mock-a" if number % 2 else "test-mock-b"
+    )
+path.write_text(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n")
+os.chmod(path,0o600)
+PY
   pids=()
   for ticket in "${TICKETS[@]}"; do
     (TICKET="$ticket"; run_mock_internal "$root") &
@@ -2055,6 +2069,7 @@ product_role_run() {
   subscription_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
     FACTORY_ENVELOPE="$envelope" \
     FACTORY_DEV_BUDGET_DAY="$(cat "$root/runtime/product-envelope/budget-day" 2>/dev/null || true)" \
+    FACTORY_DEV_PROVIDER_WAIT_SECONDS=300 \
     "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
     --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
     "$instruction" || return
@@ -2101,20 +2116,6 @@ PY
   return 0
 }
 
-product_scheduler_admits() {
-  local requested_account="$1" requested_family="$2" entry account family
-  local total=0 account_count=0 family_count=0
-  shift 2
-  for entry in "$@"; do
-    [[ -n "$entry" ]] || continue
-    account="${entry%%:*}"; family="${entry#*:}"
-    total=$((total + 1))
-    [[ "$account" != "$requested_account" ]] || account_count=$((account_count + 1))
-    [[ "$family" != "$requested_family" ]] || family_count=$((family_count + 1))
-  done
-  [[ "$total" -lt 4 && "$account_count" -lt 2 && "$family_count" -lt 2 ]]
-}
-
 product_role_retryable() {
   local log="$1"
   [[ -f "$log" && ! -L "$log" ]] || return 1
@@ -2135,7 +2136,7 @@ run_product_internal() {
   local root="$1" supplied="$2" readiness_proven="${3:-0}"
   local stored day i ticket lease_json stage role account family now
   local done_count failed_count progress pid rc prior rollback_failed
-  local -a leases pids accounts families states renewals retries retry_after roles active_routes
+  local -a leases pids states renewals retries retry_after roles
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -2172,7 +2173,7 @@ run_product_internal() {
       }
     leases[$i]="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
       <<<"$lease_json")"
-    pids[$i]=0; accounts[$i]=""; families[$i]=""; states[$i]=idle; renewals[$i]=0
+    pids[$i]=0; states[$i]=idle; renewals[$i]=0
     retries[$i]=0; retry_after[$i]=0; roles[$i]=""
   done
   done_count=0; failed_count=0
@@ -2193,7 +2194,7 @@ run_product_internal() {
         else
           states[$i]=failed; failed_count=$((failed_count + 1))
         fi
-        pids[$i]=0; accounts[$i]=""; families[$i]=""; progress=1
+        pids[$i]=0; progress=1
       fi
     done
     for i in "${!PRODUCT_TICKETS[@]}"; do
@@ -2242,17 +2243,9 @@ PY
       case "$family" in openai|anthropic) ;; *)
         states[$i]=failed; failed_count=$((failed_count + 1)); continue ;;
       esac
-      # Bash 3.2 treats an expanded empty array as unbound under `set -u`.
-      # Keep one ignored sentinel so the first role can be admitted safely.
-      active_routes=("")
-      for value in "${!PRODUCT_TICKETS[@]}"; do
-        [[ -n "${accounts[$value]}" ]] || continue
-        active_routes+=("${accounts[$value]}:${families[$value]}")
-      done
-      product_scheduler_admits "$account" "$family" "${active_routes[@]}" || continue
       product_role_run "$root" "$ticket" "${leases[$i]}" "$role" \
         >"$root/runtime/product-scheduler/$ticket-$role.log" 2>&1 &
-      pids[$i]=$!; accounts[$i]="$account"; families[$i]="$family"; states[$i]=running; progress=1
+      pids[$i]=$!; states[$i]=running; progress=1
     done
     [[ "$progress" -eq 1 ]] || sleep 1
   done

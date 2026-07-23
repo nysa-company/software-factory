@@ -111,12 +111,20 @@ def validate_cli_policy(policy, routes, expected_hash):
             not isinstance(policy.get("global"), dict) or
             not capacity(policy["global"].get("max_concurrent"), 4)):
         raise ActivationError("CLI concurrency global capacity must be at most four")
+    account_maximum = {}
     for route in routes.values():
         family = policy.get("provider_families", {}).get(route["provider_family"], {})
         account = policy.get("account_routes", {}).get(route["account_route"], {})
-        account_maximum = 2
+        adapter_maximum = 4 if route["adapter"] in {"codex", "mock"} else 2
+        account_maximum[route["account_route"]] = min(
+            account_maximum.get(route["account_route"], adapter_maximum),
+            adapter_maximum,
+        )
         if (not capacity(family.get("max_concurrent"), 4) or
-                not capacity(account.get("max_concurrent"), account_maximum)):
+                not capacity(
+                    account.get("max_concurrent"),
+                    account_maximum[route["account_route"]],
+                )):
             raise ActivationError("CLI concurrency route capacity is unsafe")
 
 

@@ -29,6 +29,7 @@ OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 MAX_MONEY = 10**15
 MAX_WINDOW = 7 * 24 * 60 * 60
 MAX_JSON = 1_000_000
+MAX_WAIT_SECONDS = 15 * 60
 
 
 class CoordinatorError(Exception):
@@ -640,6 +641,84 @@ def admit_command(connection, args):
     )
 
 
+def wait_admit_command(connection, args):
+    attempt_id = validate_id(args.attempt_id, "attempt_id")
+    validate_id(args.operation_id, "operation_id", operation=True)
+    policy, policy_hash = load_policy(Path(args.policy))
+    if (args.expected_policy_sha256 is not None and
+            args.expected_policy_sha256 != policy_hash):
+        raise CoordinatorError("provider policy does not match the activated digest")
+    if not 1 <= args.wait_seconds <= MAX_WAIT_SECONDS:
+        raise CoordinatorError("--wait-seconds is out of range")
+    cancel_paths = [Path(value) for value in args.cancel_path]
+    if any(not value.is_absolute() for value in cancel_paths):
+        raise CoordinatorError("--cancel-path must be absolute")
+    request = {
+        "attempt_id": attempt_id,
+        "expected_version": args.expected_version,
+        "policy_sha256": policy_hash,
+        "expected_policy_sha256": args.expected_policy_sha256,
+        "wait_seconds": args.wait_seconds,
+        "cancel_paths": [str(value) for value in cancel_paths],
+    }
+    deadline = time.monotonic() + args.wait_seconds
+    while True:
+        current_policy, current_hash = load_policy(Path(args.policy))
+        if current_hash != policy_hash:
+            raise CoordinatorError("provider policy changed during admission wait")
+        policy = current_policy
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            prior = connection.execute(
+                "SELECT command,request_sha256,result_json FROM operations "
+                "WHERE operation_id=?",
+                (args.operation_id,),
+            ).fetchone()
+            if prior is not None:
+                if (prior["command"] != "wait-admit" or
+                        prior["request_sha256"] != digest(request)):
+                    raise CoordinatorError(
+                        "operation_id was already used for a different request"
+                    )
+                result = json.loads(prior["result_json"])
+                connection.commit()
+                return result
+            result = admit_mutation(
+                connection, attempt_id, args.expected_version, policy,
+                policy_hash, int(time.time()),
+            )
+            transient = (
+                result["admitted"] is False
+                and result["denials"]
+                and all(item["limit"] == "max_concurrent"
+                        for item in result["denials"])
+            )
+            stopped = next(
+                (str(value) for value in cancel_paths
+                 if value.exists() or value.is_symlink()),
+                None,
+            )
+            timed_out = time.monotonic() >= deadline
+            if result["admitted"] or not transient or stopped or timed_out:
+                result["stopped_by"] = stopped
+                result["timed_out"] = timed_out and not stopped
+                result_json = canonical(result)
+                connection.execute(
+                    "INSERT INTO operations VALUES(?,?,?,?,?)",
+                    (
+                        args.operation_id, "wait-admit", digest(request),
+                        result_json, int(time.time()),
+                    ),
+                )
+                connection.commit()
+                return result
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        time.sleep(0.1)
+
+
 def reserve_command(connection, args):
     values = common_attempt_values(args)
     policy, policy_hash = load_policy(Path(args.policy))
@@ -923,6 +1002,15 @@ def parser():
     admit.add_argument("--expected-version", required=True, type=int)
     admit.add_argument("--policy", required=True)
     admit.set_defaults(handler=admit_command)
+
+    wait_admit = mutation("wait-admit")
+    wait_admit.add_argument("--attempt-id", required=True)
+    wait_admit.add_argument("--expected-version", required=True, type=int)
+    wait_admit.add_argument("--policy", required=True)
+    wait_admit.add_argument("--expected-policy-sha256")
+    wait_admit.add_argument("--wait-seconds", required=True, type=int)
+    wait_admit.add_argument("--cancel-path", action="append", default=[])
+    wait_admit.set_defaults(handler=wait_admit_command)
 
     for name, target in (("mark-go", "GO"), ("mark-submitted", "submitted")):
         command = mutation(name)
