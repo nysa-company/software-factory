@@ -288,7 +288,7 @@ python3 "$concurrency_root/kit/scripts/provider-coordinator.py" \
   --db "$concurrency_root/runtime/provider-state.sqlite3" status | python3 -c '
 import json, sys
 value=json.load(sys.stdin)
-assert value["counts"] == {"terminal":4}, value
+assert value["counts"] == {"terminal":28}, value
 assert value["active_reserve_micro_usd"] == 0, value
 ' || fail "concurrency mock retained provider capacity or reservations"
 [[ "$(find "$concurrency_root/product/factory/runs" -type f -name '*.meta' | wc -l | tr -d ' ')" -eq 24 ]] ||
