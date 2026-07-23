@@ -1506,7 +1506,9 @@ PY
       case "$family" in openai|anthropic) ;; *)
         states[$i]=failed; failed_count=$((failed_count + 1)); continue ;;
       esac
-      active_routes=()
+      # Bash 3.2 treats an expanded empty array as unbound under `set -u`.
+      # Keep one ignored sentinel so the first role can be admitted safely.
+      active_routes=("")
       for value in 0 1 2 3; do
         [[ -n "${accounts[$value]}" ]] || continue
         active_routes+=("${accounts[$value]}:${families[$value]}")

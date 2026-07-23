@@ -98,6 +98,9 @@ grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" |
   fail "provider task environment no longer owns the push guard"
 
 eval "$(sed -n '/^product_scheduler_admits()/,/^}/p' "$LANE")"
+empty_routes=("")
+product_scheduler_admits cursor openai "${empty_routes[@]}" ||
+  fail "scheduler rejected the first call under Bash nounset"
 product_scheduler_admits cursor openai codex-native:openai ||
   fail "scheduler rejected the second OpenAI-family call"
 if product_scheduler_admits codex-native openai codex-native:openai cursor:openai; then
