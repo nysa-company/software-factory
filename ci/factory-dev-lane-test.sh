@@ -165,6 +165,9 @@ eval "$(sed -n '/^subscription_base_env()/,/^subscription_approval_hash()/p' \
   "$LANE" | sed '$d')"
 eval "$(sed -n '/^subscription_env()/,/^product_approval_hash()/p' \
   "$LANE" | sed '$d')"
+[[ "$(subscription_base_env "$READINESS_ROOT" \
+  /usr/bin/printenv AGENT_CLI_CREDENTIAL_STORE)" == file ]] ||
+  fail "subscription environment did not isolate Cursor credentials in the lane"
 if (
   die() { exit 1; }
   AMBIENT_AUTH_READY=1 \
@@ -331,6 +334,9 @@ grep -qx 'reviewer round 1: REQUEST CHANGES' "$review_ticket" ||
   fail "request-changes review was not recorded durably"
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
+grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
+  "$ROOT/scripts/run-agent.sh" ||
+  fail "provider task environment dropped the lane-local Cursor credential store"
 
 eval "$(sed -n '/^product_scheduler_admits()/,/^}/p' "$LANE")"
 empty_routes=("")

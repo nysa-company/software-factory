@@ -82,6 +82,7 @@ subscription_base_env() {
     cd "$root"
     env -i HOME="$root/session-home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
       PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+      AGENT_CLI_CREDENTIAL_STORE=file \
       FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
       FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
       FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
@@ -115,6 +116,16 @@ subscription_ready() {
     [[ "$i" -lt 3 ]] || die "Claude subscription authentication is unavailable"
     sleep 1
   done
+}
+
+ensure_cursor_file_credential_config() {
+  local config="$1/home/.factory/global.env"
+  if grep -q '^AGENT_CLI_CREDENTIAL_STORE=' "$config"; then
+    grep -qx 'AGENT_CLI_CREDENTIAL_STORE=file' "$config" ||
+      die "lane Cursor credential store is not file-backed"
+  else
+    printf '%s\n' 'AGENT_CLI_CREDENTIAL_STORE=file' >>"$config"
+  fi
 }
 
 subscription_approval_hash() {
@@ -1524,6 +1535,7 @@ PY
     die "product resume selection is not a strict active-lane subset"
   product_resume_drained "$root" ||
     die "product resume requires a fully drained, current-day lane"
+  ensure_cursor_file_credential_config "$root"
   subscription_ready "$root"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
     stage="$(product_resume_stage "$root" "$ticket")" ||
@@ -1607,6 +1619,7 @@ product_probe_and_plan() {
   cat >"$root/home/.factory/global.env" <<EOF
 $(cat "$root/runtime/product-envelope/global.env" 2>/dev/null || printf '%s\n' 'GLOBAL_DAILY_CAP_USD=500.00')
 FACTORY_CURSOR_FALLBACK_ENABLED=1
+AGENT_CLI_CREDENTIAL_STORE=file
 CURSOR_AGENT_VERSION=$cursor_version
 CODEX_PINNED=$codex_version
 CLAUDE_CODE_PINNED=$claude_version
@@ -1823,6 +1836,7 @@ subscription_probe_and_plan() {
   cat > "$root/home/.factory/global.env" <<EOF
 GLOBAL_DAILY_CAP_USD=1.00
 FACTORY_CURSOR_FALLBACK_ENABLED=1
+AGENT_CLI_CREDENTIAL_STORE=file
 CURSOR_AGENT_VERSION=$cursor_version
 CODEX_PINNED=$codex_version
 CLAUDE_CODE_PINNED=$claude_version
@@ -2384,6 +2398,7 @@ PY
   cat > "$root/home/.factory/global.env" <<EOF
 GLOBAL_DAILY_CAP_USD=100.00
 FACTORY_CURSOR_FALLBACK_ENABLED=1
+AGENT_CLI_CREDENTIAL_STORE=file
 CURSOR_AGENT_VERSION=$version
 CURSOR_OPENAI_MODEL=$openai
 CURSOR_ANTHROPIC_MODEL=$anthropic

@@ -32,7 +32,7 @@ bash scripts/factory-dev-lane.sh subscription-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-The canary uses existing authenticated Cursor, Codex, and Claude subscription CLIs—never API keys—for one Cursor, two Codex, and one Claude call. It reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Cursor remains capped at one process because its temporary bridge is shared. Planning binds executable paths, bytes, versions, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
+The canary uses existing authenticated Cursor, Codex, and Claude subscription CLIs—never API keys—for one Cursor, two Codex, and one Claude call. Cursor authentication uses its file-backed credential store inside the lane-local session home, so login and refresh never depend on the host credential store. It reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Cursor remains capped at one process because its temporary bridge is shared. Planning binds executable paths, bytes, versions, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
 
 Subscription and product lanes copy the three CLI session files into their
 owner-only lane root once. Readiness, version evidence, approval hashing, and
