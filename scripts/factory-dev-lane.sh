@@ -1054,7 +1054,7 @@ elif value.get("schema") == "factory-dev-product-seed-accounting/v4":
     ticket_caps=value["ticket_caps_micro_usd"]
     aggregate_cap=value["aggregate_cap_micro_usd"]
     if (not isinstance(ticket_caps, dict) or
-        aggregate_cap != 1_000_000_000 or
+        aggregate_cap not in (1_000_000_000, 1_500_000_000) or
         value["authorized_by"] != "operator" or
         not re.fullmatch(r"[0-9a-f]{64}", value["authorization_nonce"]) or
         value["budget_day"] != __import__("datetime").datetime.now(
@@ -1075,7 +1075,7 @@ for ticket, amount in amounts.items():
 if value["schema"].endswith("/v4"):
     if (set(ticket_caps) != set(amounts) or
         any(not isinstance(cap, int) or isinstance(cap, bool) or
-            cap < 1 or cap > 300_000_000 for cap in ticket_caps.values())):
+            cap < 1 or cap > 350_000_000 for cap in ticket_caps.values())):
         raise SystemExit(1)
     if any(amount > ticket_caps[ticket] for ticket, amount in amounts.items()):
         raise SystemExit(1)
@@ -1107,7 +1107,8 @@ if value["schema"].endswith(("/v3", "/v4")):
         (value.get("ticket_cap_micro_usd") != 200_000_000 or
          value.get("aggregate_cap_micro_usd") != 700_000_000) or
         value["schema"].endswith("/v4") and
-        value.get("aggregate_cap_micro_usd") != 1_000_000_000 or
+        value.get("aggregate_cap_micro_usd") not in
+            (1_000_000_000, 1_500_000_000) or
         value.get("authorized_by") != "operator"):
         raise SystemExit(1)
     ticket_caps=value.get("ticket_caps_micro_usd")

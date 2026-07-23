@@ -511,7 +511,7 @@ validate_product_seed_accounting "$SEED_ACCOUNTING_V4" "$SEED_BUNDLE" \
   "$SEED_BASE" T-1 T-3 ||
   fail "operator-authorized per-ticket seed accounting was rejected"
 SEED_ACCOUNTING_V4_BAD="$TMP/accounting-v4-bad.json"
-sed 's/"T-2":200000000/"T-2":300000001/' "$SEED_ACCOUNTING_V4" \
+sed 's/"T-2":200000000/"T-2":350000001/' "$SEED_ACCOUNTING_V4" \
   >"$SEED_ACCOUNTING_V4_BAD"
 chmod 600 "$SEED_ACCOUNTING_V4_BAD"
 if validate_product_seed_accounting "$SEED_ACCOUNTING_V4_BAD" "$SEED_BUNDLE" \
@@ -533,6 +533,14 @@ grep -qx 'PER_TICKET_BUDGET_USD=50.000000' \
 grep -qx 'GLOBAL_DAILY_CAP_USD=340.000000' \
   "$SEED_ROOT_V4/runtime/product-envelope/global.env" ||
   fail "per-ticket accounting did not carry aggregate spend"
+SEED_ACCOUNTING_V4_HIGH="$TMP/accounting-v4-high.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v4\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_caps_micro_usd\":{\"T-1\":350000000,\"T-2\":350000000,\"T-3\":300000000,\"T-4\":300000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE_V4\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":210000000,\"T-2\":140000000,\"T-3\":150000000,\"T-4\":160000000}}" \
+  >"$SEED_ACCOUNTING_V4_HIGH"
+chmod 600 "$SEED_ACCOUNTING_V4_HIGH"
+validate_product_seed_accounting "$SEED_ACCOUNTING_V4_HIGH" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1 T-2 ||
+  fail "higher operator-authorized development caps were rejected"
 eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
 physical() { (cd "$1" 2>/dev/null && pwd -P); }
 consume_product_seed_authorization "$SEED_ACCOUNTING" \
