@@ -116,6 +116,11 @@ expect_failure "production product source" test_env bash "$LANE" product-plan \
 expect_failure "duplicate product tickets" test_env bash "$LANE" product-plan \
   --source "$TMP/safe-source" --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --tickets T-1,T-1,T-2,T-3
+expect_failure "two-ticket source validation" test_env bash "$LANE" product-plan \
+  --source "$TMP/safe-source" --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --tickets T-1,T-2
+grep -Fq 'product source must be an absolute, non-symlink repository' "$OUT" ||
+  fail "two-ticket development batch was rejected by argument validation"
 [[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
    "$lane_count_before" ]] ||
   fail "invalid product input created a lane"

@@ -38,7 +38,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-seed-lineage --accounting <absolute-json> --output <absolute-json> [--parent-accounting <absolute-json>]
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json>]
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-export --root <absolute-lane-root> [--tickets <T-NNN,...>]
@@ -558,10 +558,8 @@ PY
     git -C "$root/product" remote remove origin
     git -C "$root/product" branch -f main "$PRODUCT_BASE"
     lane_tickets=("${PRODUCT_TICKETS[@]}")
-    [[ "${#lane_tickets[@]}" -eq 4 ||
-       ( -n "$PRODUCT_SEED_BUNDLE" && "${#lane_tickets[@]}" -ge 1 &&
-         "${#lane_tickets[@]}" -le 4 ) ]] ||
-      die "product lane requires four fresh tickets or one to four seeded tickets"
+    [[ "${#lane_tickets[@]}" -ge 1 && "${#lane_tickets[@]}" -le 4 ]] ||
+      die "product lane requires one to four tickets"
     mkdir -p "$root/product/factory/route-plans" "$root/product/factory/runs"
     for ticket in "${lane_tickets[@]}"; do
       [[ "$ticket" =~ ^T-[0-9]+$ ]] || die "invalid product ticket"
@@ -2774,11 +2772,7 @@ case "$command" in
     refuse_production_path "$source_repo"
     PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"; PRODUCT_SEED_BUNDLE="$seed_bundle"
     IFS=, read -r -a PRODUCT_TICKETS <<<"$ticket_csv"
-    if [[ -n "$seed_bundle" ]]; then
-      [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 4 ]] || usage
-    else
-      [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || usage
-    fi
+    [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 4 ]] || usage
     python3 - "${PRODUCT_TICKETS[@]}" <<'PY' || usage
 import re, sys
 tickets=sys.argv[1:]
