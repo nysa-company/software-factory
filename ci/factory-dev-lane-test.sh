@@ -337,6 +337,8 @@ grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" |
 grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
   "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment dropped the lane-local Cursor credential store"
+grep -Fq -- '--base-envelope "$ENV_FILE"' "$ROOT/scripts/run-agent.sh" ||
+  fail "effective budget resolution dropped the ticket-specific envelope"
 
 eval "$(sed -n '/^product_scheduler_admits()/,/^}/p' "$LANE")"
 empty_routes=("")

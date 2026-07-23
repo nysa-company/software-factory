@@ -705,6 +705,11 @@ def effective_command(args):
         records.extend(global_records)
         changes.update(global_changes)
     values = dict(state[-1])
+    if args.base_envelope:
+        base_path = Path(args.base_envelope)
+        if not base_path.is_absolute():
+            raise ControlError("base envelope path must be absolute")
+        values = parse_env_bytes(secure_read(base_path, 1_000_000))
     values.update({key: value for key, value in changes.items() if key in ALL_KEYS})
     validate_values(values)
     effective = effective_role(values, args.role)
@@ -796,6 +801,7 @@ def parser():
     effective.add_argument("--ticket", required=True)
     effective.add_argument("--role", required=True)
     effective.add_argument("--day", required=True)
+    effective.add_argument("--base-envelope")
     effective.add_argument("--global-env")
     effective.add_argument("--format", choices=("json", "shell"), default="json")
     effective.set_defaults(handler=effective_command)

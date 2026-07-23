@@ -201,6 +201,7 @@ load_effective_envelope() {
   output="$(python3 -B "$ENVELOPE_CONTROL" effective \
     --factory-root "$REPO_ROOT" --ticket "$TICKET" --role "$ROLE" \
     --day "${BUDGET_DAY:-$(date -u +%F)}" \
+    --base-envelope "$ENV_FILE" \
     --global-env "$GLOBAL_ENV" --format shell)" || return 1
   while IFS='=' read -r key value; do
     case "$key" in

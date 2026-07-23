@@ -92,6 +92,21 @@ class EnvelopeControlTest(unittest.TestCase):
         self.assertIn("| builder | $2.50 | 8 | 12 min |",
                       (self.factory / "ENVELOPE.md").read_text())
 
+    def test_effective_uses_the_explicit_ticket_envelope(self):
+        ticket_envelope = self.root.parent / "T-901.env"
+        ticket_envelope.write_text(
+            ENVIRONMENT.replace(
+                "PER_TICKET_BUDGET_USD=10.00",
+                "PER_TICKET_BUDGET_USD=7.00",
+            )
+        )
+        effective = self.json_command(
+            "effective", "--factory-root", str(self.root),
+            "--ticket", "T-901", "--role", "builder", "--day", "2026-07-23",
+            "--base-envelope", str(ticket_envelope),
+        )["effective"]
+        self.assertEqual(effective["PER_TICKET_BUDGET_USD"], "7.00")
+
     def test_stale_preview_and_symlink_are_rejected(self):
         changes = ("--set", "PER_RUN_MAX_TURNS=6")
         preview = self.json_command("plan", "--factory-root", str(self.root), *changes)
