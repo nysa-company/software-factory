@@ -3,6 +3,7 @@
 set -euo pipefail
 
 TICKET="" WORKDIR="" ACTION="" STATE=""
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2 ;;
@@ -17,7 +18,7 @@ done
    "$ACTION" == "reviewer-reconcile" ]] || { echo "invalid ticket-state action" >&2; exit 2; }
 [[ "$ACTION" != "transition" || -n "$STATE" ]] || { echo "transition requires --state" >&2; exit 2; }
 [[ "$ACTION" != "reviewer-reconcile" ||
-   "${FACTORY_HERMES_CONTRACT_VERSION:-}" == "1.7.0" ]] || {
+   "$CONTRACT_VERSION" == "1.7.0" ]] || {
   echo "reviewer reconciliation requires contract 1.7.0" >&2
   exit 1
 }
@@ -141,7 +142,7 @@ elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
     --runs-dir "$PRODUCT_ROOT/factory/runs" \
     --ticket-file "$TICKET_FILE" --ticket "$TICKET" \
     --head "$HEAD_BEFORE" \
-    --contract-version "$FACTORY_HERMES_CONTRACT_VERSION" \
+    --contract-version "$CONTRACT_VERSION" \
     --output "$TMP"
 fi
 
