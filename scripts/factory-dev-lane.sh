@@ -1411,10 +1411,24 @@ PY
   fi
 }
 
+product_scheduler_admits() {
+  local requested_account="$1" requested_family="$2" entry account family
+  local total=0 account_count=0 family_count=0
+  shift 2
+  for entry in "$@"; do
+    [[ -n "$entry" ]] || continue
+    account="${entry%%:*}"; family="${entry#*:}"
+    total=$((total + 1))
+    [[ "$account" != "$requested_account" ]] || account_count=$((account_count + 1))
+    [[ "$family" != "$requested_family" ]] || family_count=$((family_count + 1))
+  done
+  [[ "$total" -lt 4 && "$account_count" -lt 2 && "$family_count" -lt 2 ]]
+}
+
 run_product_internal() {
-  local root="$1" supplied="$2" stored day i ticket lease_json stage role account now
-  local total_active done_count failed_count progress pid rc
-  local -a leases pids accounts states renewals
+  local root="$1" supplied="$2" stored day i ticket lease_json stage role account family now
+  local done_count failed_count progress pid rc
+  local -a leases pids accounts families states renewals active_routes
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -1437,7 +1451,7 @@ run_product_internal() {
       claim --ticket "$ticket")" || die "could not claim product ticket lease: $ticket"
     leases[$i]="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
       <<<"$lease_json")"
-    pids[$i]=0; accounts[$i]=""; states[$i]=idle; renewals[$i]=0
+    pids[$i]=0; accounts[$i]=""; families[$i]=""; states[$i]=idle; renewals[$i]=0
   done
   done_count=0; failed_count=0
   while [[ "$done_count" -lt 4 && $((done_count + failed_count)) -lt 4 ]]; do
@@ -1448,7 +1462,7 @@ run_product_internal() {
       if ! kill -0 "$pid" 2>/dev/null; then
         rc=0; wait "$pid" || rc=$?
         if [[ "$rc" -eq 0 ]]; then states[$i]=idle; else states[$i]=failed; failed_count=$((failed_count + 1)); fi
-        pids[$i]=0; accounts[$i]=""; progress=1
+        pids[$i]=0; accounts[$i]=""; families[$i]=""; progress=1
       fi
     done
     for i in 0 1 2 3; do
@@ -1476,26 +1490,31 @@ run_product_internal() {
       fi
       [[ "$stage" == RUN\ * ]] || { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
       role="${stage#RUN }"
-      account="$(python3 - "$root/worktrees/$ticket/factory/route-plans/$ticket.json" "$role" <<'PY'
+      read -r account family < <(python3 - "$root/worktrees/$ticket/factory/route-plans/$ticket.json" "$role" <<'PY'
 import json, sys
-print(json.load(open(sys.argv[1]))["resolution"]["selections"][sys.argv[2]]["account_route_id"])
+selection=json.load(open(sys.argv[1]))["resolution"]["selections"][sys.argv[2]]
+print(selection["account_route_id"], selection["provider_family"])
 PY
-)" || { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
-      total_active=0; cursor_active=0; codex_active=0; claude_active=0
-      for value in "${accounts[@]}"; do
-        [[ -n "$value" ]] || continue; total_active=$((total_active + 1))
-        case "$value" in cursor) cursor_active=$((cursor_active + 1));; codex-native) codex_active=$((codex_active + 1));; claude-native) claude_active=$((claude_active + 1));; esac
-      done
-      [[ "$total_active" -lt 4 ]] || continue
+)
+      [[ -n "$account" && -n "$family" ]] || {
+        states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+      }
       case "$account" in
-        cursor) [[ "$cursor_active" -lt 2 ]] || continue ;;
-        codex-native) [[ "$codex_active" -lt 2 ]] || continue ;;
-        claude-native) [[ "$claude_active" -lt 2 ]] || continue ;;
+        cursor|codex-native|claude-native) ;;
         *) states[$i]=failed; failed_count=$((failed_count + 1)); continue ;;
       esac
+      case "$family" in openai|anthropic) ;; *)
+        states[$i]=failed; failed_count=$((failed_count + 1)); continue ;;
+      esac
+      active_routes=()
+      for value in 0 1 2 3; do
+        [[ -n "${accounts[$value]}" ]] || continue
+        active_routes+=("${accounts[$value]}:${families[$value]}")
+      done
+      product_scheduler_admits "$account" "$family" "${active_routes[@]}" || continue
       product_role_run "$root" "$ticket" "${leases[$i]}" "$role" \
         >"$root/runtime/product-scheduler/$ticket-$role.log" 2>&1 &
-      pids[$i]=$!; accounts[$i]="$account"; states[$i]=running; progress=1
+      pids[$i]=$!; accounts[$i]="$account"; families[$i]="$family"; states[$i]=running; progress=1
     done
     [[ "$progress" -eq 1 ]] || sleep 1
   done

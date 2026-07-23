@@ -97,6 +97,18 @@ fi
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 
+eval "$(sed -n '/^product_scheduler_admits()/,/^}/p' "$LANE")"
+product_scheduler_admits cursor openai codex-native:openai ||
+  fail "scheduler rejected the second OpenAI-family call"
+if product_scheduler_admits codex-native openai codex-native:openai cursor:openai; then
+  fail "scheduler admitted a third OpenAI-family call"
+fi
+product_scheduler_admits cursor anthropic codex-native:openai cursor:openai ||
+  fail "scheduler rejected an available Anthropic-family slot"
+if product_scheduler_admits cursor anthropic codex-native:openai cursor:openai cursor:anthropic; then
+  fail "scheduler exceeded the Cursor account cap"
+fi
+
 review_pattern='^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$'
 printf '%s\n' '## Verdict: Approve' | grep -Eiq "$review_pattern" ||
   fail "review verdict parser rejected a canonical approval"
