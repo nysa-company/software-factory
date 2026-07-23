@@ -22,6 +22,18 @@ This runs four identity-bound mock subscription commands through the Contract 1.
 
 Focused provider tests separately hold four loopback broker requests open, cancel one by controller signal, admit a replacement only into that released slot, and verify timeout cleanup. Capacity is released only after token revocation and request drain are both proven.
 
+## Four-call subscription canary
+
+After the mock proof passes and no provider call is active, plan and run the one-use canary:
+
+```bash
+bash scripts/factory-dev-lane.sh subscription-plan
+bash scripts/factory-dev-lane.sh subscription-run \
+  --root <root-from-plan> --approve-hash <hash-from-plan>
+```
+
+The canary uses existing authenticated Cursor, Codex, and Claude subscription CLIs—never API keys—for one Cursor, two Codex, and one Claude call. It reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Cursor remains capped at one process because its temporary bridge is shared. Planning binds executable paths, bytes, versions, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
+
 ## Real Cursor lifecycle
 
 The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`:

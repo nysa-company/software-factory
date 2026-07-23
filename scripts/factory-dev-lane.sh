@@ -29,6 +29,8 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh mock-concurrency [--keep]
        factory-dev-lane.sh cursor-plan
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
+       factory-dev-lane.sh subscription-plan
+       factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh clean --root <absolute-lane-root>
 EOF
   exit 2
@@ -61,6 +63,68 @@ PY
       "$(sha256_file "$session_home/.cursor/cli-config.json")" \
       "$(sha256_file "$route_plan")" "$(basename "$root")"
   } | sha256_text
+}
+
+subscription_ready() {
+  local root="$1" session_home
+  session_home="$(cursor_session_home)"
+  HOME="$session_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 ||
+    die "Cursor subscription authentication is unavailable"
+  HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1 ||
+    die "Codex subscription authentication is unavailable"
+  HOME="$session_home" "$root/home/timeout" 10 "$root/home/claude" auth status >/dev/null 2>&1 ||
+    die "Claude subscription authentication is unavailable"
+}
+
+subscription_approval_hash() {
+  local root="$1" session_home real tool
+  session_home="$(cursor_session_home)"
+  {
+    python3 - "$root/marker.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+print(value["kit_sha"]); print(value["nonce"])
+PY
+    git -C "$root/kit" rev-parse 'HEAD^{tree}'
+    git -C "$root/product" rev-parse 'HEAD^{tree}'
+    for tool in agent codex claude; do
+      real="$(python3 - "$root/home/$tool" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      printf '%s\n' "$real" "$(sha256_file "$real")" "$("$root/home/$tool" --version 2>/dev/null | head -n1)"
+    done
+    HOME="$session_home" "$root/home/codex" login status 2>/dev/null | sha256_text
+    HOME="$session_home" "$root/home/claude" auth status 2>/dev/null | sha256_text
+    sha256_file "$root/runtime/provider-policy.json"
+    sha256_file "$root/runtime/provider-activation.json"
+    sha256_file "$root/home/record-provider-call"
+    sha256_file "$session_home/.cursor/auth.json"
+    sha256_file "$session_home/.cursor/cli-config.json"
+  } | sha256_text
+}
+
+subscription_provider_idle() {
+  python3 - <<'PY'
+import subprocess
+
+rows=subprocess.run(
+    ["/bin/ps", "-axo", "command="], text=True, capture_output=True,
+    check=True, timeout=10,
+).stdout.splitlines()
+for row in rows:
+    words=row.strip().split()
+    if not words:
+        continue
+    executable=words[0].rsplit("/", 1)[-1]
+    if executable == "agent" and "--print" in words:
+        raise SystemExit(1)
+    if executable == "claude" and "-p" in words:
+        raise SystemExit(1)
+    if executable == "codex" and "exec" in words[1:]:
+        raise SystemExit(1)
+PY
 }
 
 assert_macos() {
@@ -304,7 +368,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -358,7 +422,7 @@ EOF
   printf '%s\n' "$sha" > "$root/product/factory/KIT_PIN"
   printf '%s\n' 'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' > "$root/product/factory/ledger.csv"
   lane_tickets=("$TICKET")
-  [[ "$mode" == mock-concurrency ]] && lane_tickets=("${TICKETS[@]}")
+  [[ "$mode" == mock-concurrency || "$mode" == subscription ]] && lane_tickets=("${TICKETS[@]}")
   for ticket in "${lane_tickets[@]}"; do
     port_a=$((4781 + 2 * (10#${ticket#T-} - 900001)))
     port_b=$((port_a + 1))
@@ -428,7 +492,7 @@ EOF
       "$root/worktrees/$ticket" main
     git -C "$root/worktrees/$ticket" push -q -u origin "ticket/$ticket"
   done
-  if [[ "$mode" == cursor ]]; then
+  if [[ "$mode" == cursor || "$mode" == subscription ]]; then
     cursor="$(cursor_bin)"
     timeout_bin="$(command -v timeout 2>/dev/null || true)"
     [[ "$timeout_bin" == /* && -x "$timeout_bin" ]] ||
@@ -450,6 +514,20 @@ PY
     session_home=""
   fi
   ln -s "$cursor" "$root/home/agent"
+  if [[ "$mode" == subscription ]]; then
+    for tool in codex claude; do
+      resolved="$(command -v "$tool" 2>/dev/null || true)"
+      [[ "$resolved" == /* && -x "$resolved" ]] || die "$tool CLI is unavailable"
+      refuse_production_path "$resolved"
+      resolved="$(python3 - "$resolved" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      refuse_production_path "$resolved"
+      ln -s "$resolved" "$root/home/$tool"
+    done
+  fi
   if [[ "$mode" == mock-concurrency ]]; then
     cat > "$root/home/mock-provider-cli" <<'PY'
 #!/usr/bin/env python3
@@ -562,6 +640,29 @@ lane_cursor_env() {
     FACTORY_HERMES_CONTRACT_VERSION=1.6.0 "$@"
 }
 
+subscription_env() {
+  local root="$1" project session_home cursor_version codex_version claude_version; shift
+  project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
+  session_home="$(cursor_session_home)"
+  cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  codex_version="$("$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$("$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  env -i HOME="$session_home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+    PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
+    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
+    FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
+    FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
+    FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
+    FACTORY_CURSOR_SESSION_HOME="$session_home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
+    FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
+    CURSOR_AGENT_VERSION="$cursor_version" CODEX_PINNED="$codex_version" \
+    CLAUDE_CODE_PINNED="$claude_version" \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl \
+    GIT_CONFIG_VALUE_0=disabled://factory-provider-push "$@"
+}
+
 next_stage() {
   local root="$1"
   lane_env "$root" "$root/kit/scripts/next-stage.sh" --ticket "$TICKET" \
@@ -664,6 +765,193 @@ assert value["active_reserve_micro_usd"] == 0, value
   echo "PROVIDER_CALLS=4"
   echo "PROVIDER_MODE=cli-concurrent-v1"
   echo "PROVIDER_OVERLAP_MILLISECONDS=$(( (end_ns - start_ns) / 1000000 ))"
+}
+
+subscription_probe_and_plan() {
+  local root="$1" cursor_version codex_version claude_version approval_hash
+  require_lane_mode "$root" subscription
+  validate_runtime_paths "$root"
+  subscription_ready "$root"
+  cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  codex_version="$("$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$("$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
+    die "subscription CLI version probe was empty"
+  cat > "$root/home/.factory/global.env" <<EOF
+GLOBAL_DAILY_CAP_USD=1.00
+FACTORY_CURSOR_FALLBACK_ENABLED=1
+CURSOR_AGENT_VERSION=$cursor_version
+CODEX_PINNED=$codex_version
+CLAUDE_CODE_PINNED=$claude_version
+CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
+CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
+EOF
+  chmod 600 "$root/home/.factory/global.env"
+  python3 - "$root/runtime/provider-policy.json" "$root/runtime/provider-activation.json" <<'PY'
+import hashlib, json, os, sys
+
+policy_path, activation_path=sys.argv[1:]
+def limit(concurrent):
+    return {"max_concurrent":concurrent,"max_starts":4,"window_seconds":60}
+policy={
+    "schema":"factory-provider-concurrency-policy/v1",
+    "coupled_max_concurrent":4,
+    "global":limit(4),
+    "provider_families":{"openai":limit(3),"anthropic":limit(1)},
+    "account_routes":{
+        "lane-cursor-subscription":limit(1),
+        "lane-codex-subscription":limit(2),
+        "lane-claude-subscription":limit(1),
+    },
+}
+raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
+routes={
+    "lane-subscription-T-900001":{
+        "account_route":"lane-cursor-subscription","adapter":"cursor-openai",
+        "model":"gpt-5.6-sol-high","provider_family":"openai"},
+    "lane-subscription-T-900002":{
+        "account_route":"lane-codex-subscription","adapter":"codex",
+        "model":"gpt-5.6-sol","provider_family":"openai"},
+    "lane-subscription-T-900003":{
+        "account_route":"lane-codex-subscription","adapter":"codex",
+        "model":"gpt-5.6-sol","provider_family":"openai"},
+    "lane-subscription-T-900004":{
+        "account_route":"lane-claude-subscription","adapter":"claude-code",
+        "model":"fable","provider_family":"anthropic"},
+}
+activation={"enabled":True,"mode":"cli-concurrent-v1",
+            "policy_sha256":hashlib.sha256(raw.encode()).hexdigest(),
+            "routes":routes,
+            "schema":"nysa.software-factory.provider-activation/v2"}
+with open(policy_path, "w", encoding="utf-8") as handle:
+    handle.write(raw+"\n")
+with open(activation_path, "w", encoding="utf-8") as handle:
+    json.dump(activation, handle, sort_keys=True, separators=(",",":")); handle.write("\n")
+os.chmod(policy_path, 0o600); os.chmod(activation_path, 0o600)
+PY
+  python3 "$root/kit/scripts/provider-activation.py" \
+    --config "$root/runtime/provider-activation.json" \
+    --policy "$root/runtime/provider-policy.json" \
+    --contract-version 1.7.0 --status >/dev/null ||
+    die "subscription activation policy is invalid"
+  cat > "$root/home/record-provider-call" <<'PY'
+#!/usr/bin/env python3
+import os, subprocess, sys, time
+
+timeline, ticket, *command=sys.argv[1:]
+with open(timeline, "a", encoding="utf-8") as handle:
+    handle.write(f"start {ticket} {time.monotonic_ns()}\n")
+    handle.flush(); os.fsync(handle.fileno())
+completed=subprocess.run(command, check=False, start_new_session=True)
+with open(timeline, "a", encoding="utf-8") as handle:
+    handle.write(f"end {ticket} {time.monotonic_ns()} {completed.returncode}\n")
+    handle.flush(); os.fsync(handle.fileno())
+raise SystemExit(completed.returncode)
+PY
+  chmod 700 "$root/home/record-provider-call"
+  approval_hash="$(subscription_approval_hash "$root")"
+  printf 'approval_hash=%s\nused=0\n' "$approval_hash" > "$root/runtime/subscription-approval"
+  chmod 600 "$root/runtime/subscription-approval"
+  echo "APPROVE_HASH=$approval_hash"
+  echo "PROVIDER_SPLIT=cursor:1,codex:2,claude:1"
+  echo "AGGREGATE_RESERVATION_USD=1.00"
+}
+
+run_subscription_internal() {
+  local root="$1" supplied="$2" stored ticket adapter family account model attempt output pid
+  local day start_ns end_ns result command_path terminal_result
+  local -a pids=() attempts=() outputs=()
+  require_lane_mode "$root" subscription
+  validate_runtime_paths "$root"
+  [[ -f "$root/runtime/subscription-approval" && ! -L "$root/runtime/subscription-approval" ]] ||
+    die "subscription approval is missing or already used"
+  stored="$(sed -n 's/^approval_hash=//p' "$root/runtime/subscription-approval")"
+  [[ "$stored" == "$supplied" && "$(sed -n 's/^used=//p' "$root/runtime/subscription-approval")" == 0 ]] ||
+    die "subscription approval hash does not match or was already used"
+  [[ "$(subscription_approval_hash "$root")" == "$supplied" ]] ||
+    die "subscription approval inputs drifted after planning"
+  subscription_ready "$root"
+  subscription_provider_idle || die "another subscription provider call is active"
+  mv "$root/runtime/subscription-approval" "$root/runtime/subscription-approval.used"
+  day="$(date -u +%F)"
+  : > "$root/runtime/provider-timeline"
+  chmod 600 "$root/runtime/provider-timeline"
+  for ticket in "${TICKETS[@]}"; do
+    case "$ticket" in
+      T-900001)
+        adapter=cursor-openai; family=openai; account=lane-cursor-subscription
+        model=gpt-5.6-sol-high ;;
+      T-900002|T-900003)
+        adapter=codex; family=openai; account=lane-codex-subscription
+        model=gpt-5.6-sol ;;
+      T-900004)
+        adapter=claude-code; family=anthropic; account=lane-claude-subscription
+        model=fable ;;
+      *) die "unexpected subscription canary ticket" ;;
+    esac
+    attempt="$ticket-subscription-canary"
+    output="$root/runtime/provider-inputs/$ticket.out"
+    command_path="$root/kit/scripts/adapters/$adapter.sh"
+    subscription_env "$root" python3 "$root/kit/scripts/provider-cli-runtime.py" \
+      --coordinator "$root/kit/scripts/provider-coordinator.py" \
+      --db "$root/runtime/provider-state.sqlite3" \
+      --policy "$root/runtime/provider-policy.json" \
+      --attempt-id "$attempt" --provider-family "$family" --account-route "$account" \
+      --reserve-micro-usd 250000 --product-id "factory-dev-lane-$(basename "$root")" \
+      --ticket-id "$ticket" --budget-day "$day" \
+      --product-cap-micro-usd 1000000 --ticket-cap-micro-usd 250000 \
+      --machine-cap-micro-usd 1000000 -- \
+      "$root/home/record-provider-call" "$root/runtime/provider-timeline" "$ticket" \
+      "$command_path" --budget 0.25 --max-turns 1 --timeout-min 3 \
+      --prompt-file /dev/null --workdir "$root/worktrees/$ticket" \
+      --model "$model" --effort low -- \
+      "Reply with exactly CANARY_OK. Do not read, execute, or modify files." \
+      >"$output" 2>&1 &
+    pids+=("$!"); attempts+=("$attempt"); outputs+=("$output")
+  done
+  result=0
+  for pid in "${pids[@]}"; do
+    wait "$pid" || result=1
+  done
+  for attempt in "${attempts[@]}"; do
+    if [[ "$result" -eq 0 ]]; then terminal_result=succeeded; else terminal_result=failed; fi
+    python3 "$root/kit/scripts/provider-coordinator.py" \
+      --db "$root/runtime/provider-state.sqlite3" terminalize \
+      --operation-id "$attempt-host-terminal" --attempt-id "$attempt" \
+      --expected-version 4 --result "$terminal_result" --charge-micro-usd 250000 >/dev/null ||
+      die "trusted host could not terminalize $attempt"
+  done
+  [[ "$result" -eq 0 ]] || die "one or more subscription canary calls failed"
+  for output in "${outputs[@]}"; do
+    grep -q 'CANARY_OK' "$output" || die "subscription canary output validation failed"
+  done
+  read -r start_ns end_ns < <(python3 - "$root/runtime/provider-timeline" <<'PY'
+import sys
+events=[line.split() for line in open(sys.argv[1], encoding="utf-8")]
+starts=[int(row[2]) for row in events if row[0]=="start"]
+ends=[int(row[2]) for row in events if row[0]=="end"]
+if len(starts)!=4 or len(ends)!=4 or max(starts)>=min(ends):
+    raise SystemExit(1)
+print(min(starts), max(ends))
+PY
+  ) || die "four subscription provider calls did not overlap"
+  for ticket in "${TICKETS[@]}"; do
+    [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] ||
+      die "subscription canary modified its synthetic worktree"
+  done
+  python3 "$root/kit/scripts/provider-coordinator.py" \
+    --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+assert value["counts"] == {"terminal":4}, value
+assert value["active_reserve_micro_usd"] == 0, value
+' || die "subscription canary reservations did not drain"
+  subscription_provider_idle || die "subscription canary left a provider process"
+  echo "PROVIDER_CALLS=4"
+  echo "PROVIDER_MODE=cli-concurrent-v1"
+  echo "PROVIDER_SPLIT=cursor:1,codex:2,claude:1"
+  echo "PROVIDER_OVERLAP_MILLISECONDS=$(( (end_ns - start_ns) / 1000000 ))"
+  echo "ACCOUNTED_RESERVATION_USD=1.00"
 }
 
 cursor_probe_and_pin() {
@@ -871,6 +1159,31 @@ case "$command" in
     run_in_sandbox "$root" cursor __cursor-run \
       --root "$root" --approve-hash "$approve"
     ;;
+  subscription-plan)
+    assert_macos
+    [[ $# -eq 0 ]] || usage
+    root="$(create_lane subscription)"
+    echo "ROOT=$root"
+    if ! run_in_sandbox "$root" cursor __subscription-plan --root "$root"; then
+      echo "ROOT=$root" >&2
+      die "subscription canary planning failed; lane retained for inspection"
+    fi
+    ;;
+  subscription-run)
+    assert_macos
+    root=""; approve=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --approve-hash) approve="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
+    root="$(validate_lane "$root")"
+    run_in_sandbox "$root" cursor __subscription-run \
+      --root "$root" --approve-hash "$approve"
+    ;;
   clean)
     root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage
     [[ $# -eq 0 && -n "$root" ]] || usage
@@ -893,6 +1206,17 @@ case "$command" in
     root="$(validate_lane "${2:-}")"; approve="${4:-}"
     [[ "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     run_cursor_internal "$root" "$approve"
+    ;;
+  __subscription-plan)
+    [[ "${1:-}" == --root ]] || usage
+    root="$(validate_lane "${2:-}")"
+    subscription_probe_and_plan "$root"
+    ;;
+  __subscription-run)
+    [[ "${1:-}" == --root && "${3:-}" == --approve-hash ]] || usage
+    root="$(validate_lane "${2:-}")"; approve="${4:-}"
+    [[ "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
+    run_subscription_internal "$root" "$approve"
     ;;
   *) usage ;;
 esac
