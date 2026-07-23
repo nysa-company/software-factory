@@ -67,6 +67,7 @@ FALLBACK_REASONS = frozenset((
     "budget_exhausted", "credits_exhausted", "operator_requested",
     "provider_unavailable",
 ))
+DISABLE_REASONS = frozenset(("credits_exhausted", "runtime_isolation_failure"))
 SCOPE_TYPES = frozenset(("account-route", "provider-family", "model", "route"))
 ABSENT_POLICY_HASH = ROUTER.content_hash(None)
 
@@ -344,7 +345,7 @@ def _validate_overrides(value, project, routes):
         if override["scope_type"] not in SCOPE_TYPES:
             raise ManagerError("%s.scope_type is invalid" % location)
         _scope_id(override["scope_id"], override["scope_type"], routes)
-        if override["reason"] != "credits_exhausted":
+        if override["reason"] not in DISABLE_REASONS:
             raise ManagerError("%s.reason is invalid" % location)
         _safe_id(override["operator_id"], "%s.operator_id" % location)
         created = _timestamp(override["created_at"], "%s.created_at" % location)
@@ -947,7 +948,7 @@ def build_parser():
     _common(disable)
     disable.add_argument("--scope-type", required=True, choices=sorted(SCOPE_TYPES))
     disable.add_argument("--scope-id", required=True)
-    disable.add_argument("--reason", required=True, choices=("credits_exhausted",))
+    disable.add_argument("--reason", required=True, choices=sorted(DISABLE_REASONS))
     disable.add_argument("--ttl-seconds", required=True, type=int)
     disable.add_argument("--operator-id", required=True)
     enable = commands.add_parser("enable")

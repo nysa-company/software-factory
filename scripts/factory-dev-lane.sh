@@ -995,10 +995,17 @@ CODEX_PINNED=$codex_version
 CLAUDE_CODE_PINNED=$claude_version
 CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
 CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
-FACTORY_PROBE_CLAUDE_CODE=UNAVAILABLE:lane_sandbox_temp_collision
 EOF
   chmod 600 "$root/home/.factory/global.env"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
+    if [[ "$ticket" == "${PRODUCT_TICKETS[1]}" ]]; then
+      for unsafe_route in claude-fable claude-sonnet; do
+        subscription_env "$root" "$root/kit/scripts/model-control.sh" disable \
+          --scope-type route --scope-id "$unsafe_route" \
+          --reason runtime_isolation_failure --ttl-seconds 86400 \
+          --operator-id factory-dev-lane >/dev/null
+      done
+    fi
     profile=balanced-v2
     [[ "$ticket" != "${PRODUCT_TICKETS[0]}" ]] || profile=cursor-priority-v1
     profile_hash="$(python3 - "$root/kit/scripts/model-routing/profiles-v1.json" "$profile" <<'PY'
