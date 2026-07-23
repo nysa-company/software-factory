@@ -1546,7 +1546,7 @@ cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ticket-pr.py ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh dispatch-plan.py model-control.sh model-manager.py model-router.py; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ticket-pr.py ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh dispatch-lease-heartbeat.py dispatch-plan.py model-control.sh model-manager.py model-router.py; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 cp -p "$ROOT/scripts/model-routing/catalog-v1.json" \

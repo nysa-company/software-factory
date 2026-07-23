@@ -676,6 +676,7 @@
     "scripts/lib/product-remote.sh",
     "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",
+    "scripts/dispatch-lease-heartbeat.py",
     "scripts/dispatch-plan.py",
     "scripts/ticket-pr.py",
     "scripts/lib/dispatch-leases.sh",
