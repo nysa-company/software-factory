@@ -278,6 +278,31 @@ fi
 [[ "$(cat "$CLAIM_ROOT/lease-actions")" == $'claim T-1\nclaim T-2\nrelease T-1' ]] ||
   fail "partial lease claim failure did not release only prior leases"
 
+PARTIAL_ROOT="$TMP/partial-run"
+mkdir -p "$PARTIAL_ROOT/runtime" "$PARTIAL_ROOT/worktrees"
+printf '%s\n' 'approval_hash=test-approval' 'used=0' \
+  >"$PARTIAL_ROOT/runtime/product-approval"
+for ticket in T-1 T-2 T-3; do
+  mkdir -p "$PARTIAL_ROOT/worktrees/$ticket"
+  git -C "$PARTIAL_ROOT/worktrees/$ticket" init -q
+done
+subscription_env() {
+  local ignored="$1" command action ticket
+  shift
+  command="$1"; action="$2"; ticket="$4"
+  printf '%s %s\n' "$action" "$ticket" >>"$PARTIAL_ROOT/lease-actions"
+  [[ "$action" != claim ]] || printf '{"lease_id":"lease-%s"}\n' "$ticket"
+}
+product_reconcile_reviewer() { :; }
+next_stage() { printf '%s\n' AWAIT-OPERATOR; }
+die() { exit 1; }
+partial_output="$(run_product_internal "$PARTIAL_ROOT" test-approval)"
+grep -qx 'STATUS=AWAIT-OPERATOR' <<<"$partial_output" ||
+  fail "partial product lifecycle did not reach operator approval"
+[[ "$(cat "$PARTIAL_ROOT/lease-actions")" == \
+   $'claim T-1\nclaim T-2\nclaim T-3\nrenew T-1\nrelease T-1\nrenew T-2\nrelease T-2\nrenew T-3\nrelease T-3' ]] ||
+  fail "partial product lifecycle did not claim, renew, and release exactly its tickets"
+
 die() { return 1; }
 printf '%s\n' \
   "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":100000000}}" \
