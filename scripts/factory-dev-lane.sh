@@ -1050,8 +1050,7 @@ def limit(concurrent, starts):
 policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
         "global":limit(4,24),
         "provider_families":{"openai":limit(4,24),"anthropic":limit(4,24)},
-        "account_routes":{"cursor":limit(2,15),"codex-native":limit(2,9),
-                          "claude-native":limit(1,1)}}
+        "account_routes":{"cursor":limit(2,15),"codex-native":limit(2,9)}}
 raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
 routes={}
 for ticket in tickets:
