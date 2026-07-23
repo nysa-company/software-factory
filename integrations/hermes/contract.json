@@ -302,11 +302,11 @@
           "--workdir",
           "<absolute-product-worktree>",
           "--action",
-          "<materialize|transition>",
+          "<materialize|transition|reviewer-reconcile>",
           "[--state <ticket-state>]",
           "--json"
         ],
-        "output": "the committed ticket state after applying the ignored operator overlay or requested transition",
+        "output": "the committed ticket state after applying the ignored operator overlay, requested transition, or Contract 1.7 Reviewer reconciliation",
         "transition_states": [
           "Planning",
           "Building",
@@ -665,6 +665,8 @@
     "scripts/ticket-attest.py",
     "scripts/ticket-attest.sh",
     "scripts/lib/effective_ticket.py",
+    "scripts/lib/reviewer-reconcile.py",
+    "scripts/lib/reviewer-verdict.py",
     "scripts/lib/legacy_closeout.py",
     "scripts/lib/terminal_backfill.py",
     "scripts/lib/protected_merge_reconciliation.py",

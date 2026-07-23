@@ -1420,10 +1420,14 @@ PY
     fi
     TICKET="$2" TICKET_ACTION="$6"
     [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
-    [[ "$TICKET_ACTION" == "materialize" || "$TICKET_ACTION" == "transition" ]] ||
+    [[ "$TICKET_ACTION" == "materialize" || "$TICKET_ACTION" == "transition" ||
+       "$TICKET_ACTION" == "reviewer-reconcile" ]] ||
       die "invalid ticket-state action"
-    [[ "$TICKET_ACTION" == "materialize" || -n "$TICKET_STATE_VALUE" ]] ||
+    [[ "$TICKET_ACTION" != "transition" || -n "$TICKET_STATE_VALUE" ]] ||
       die "transition requires a state"
+    [[ "$TICKET_ACTION" != "reviewer-reconcile" ||
+       "$CONTRACT_VERSION" == "1.7.0" ]] ||
+      die "reviewer reconciliation requires contract 1.7.0"
     resolve_product_workdir "$4"
     validate_ticket_worktree "$TICKET"
     [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||

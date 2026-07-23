@@ -1593,7 +1593,7 @@ REAL_TREE="$(tree_for_directory "$RELEASE_C")"
 chmod -R a-w "$RELEASE_C"
 printf '%s\n' "$SHA_C" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 mkdir -p "$LAUNCH_PRODUCT/factory/tickets" "$LAUNCH_PRODUCT/factory/initiatives"
-for ticket in T-777 T-778 T-779 T-780; do
+for ticket in T-777 T-778 T-779 T-780 T-781 T-782; do
   cat > "$LAUNCH_PRODUCT/factory/tickets/$ticket.md" <<TICKET
 # $ticket — sealed runtime concurrency smoke
 
@@ -1622,7 +1622,7 @@ printf '%s\n' \
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'MAX_CONCURRENT_TICKETS=2' \
   > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add factory/tickets/T-77{7,8,9}.md \
-  factory/tickets/T-780.md factory/initiatives/I-777.md \
+  factory/tickets/T-78{0,1,2}.md factory/initiatives/I-777.md \
   factory/ENVELOPE.env factory/ledger.csv factory/PROJECT.env factory/KIT_PIN
 git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
 git -C "$LAUNCH_PRODUCT" push -q origin main
@@ -1731,6 +1731,12 @@ REAL_RUN_WORKTREE_779_PHYS="$(cd "$REAL_RUN_WORKTREE_779" && pwd -P)"
 REAL_RUN_WORKTREE_780="$TMP/real-run-worktree-780"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-780 "$REAL_RUN_WORKTREE_780"
 REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
+REAL_RUN_WORKTREE_781="$TMP/real-run-worktree-781"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-781 "$REAL_RUN_WORKTREE_781"
+REAL_RUN_WORKTREE_781_PHYS="$(cd "$REAL_RUN_WORKTREE_781" && pwd -P)"
+REAL_RUN_WORKTREE_782="$TMP/real-run-worktree-782"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-782 "$REAL_RUN_WORKTREE_782"
+REAL_RUN_WORKTREE_782_PHYS="$(cd "$REAL_RUN_WORKTREE_782" && pwd -P)"
 
 ROLELESS_PREFLIGHT_RC=0
 run_launcher launchtest preflight --ticket T-777 \
@@ -1788,6 +1794,69 @@ run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTRE
   --action materialize --json > "$TMP/real-ticket-state-779.json"
 run_launcher launchtest ticket-state --ticket T-780 --workdir "$REAL_RUN_WORKTREE_780_PHYS" \
   --action materialize --json > "$TMP/real-ticket-state-780.json"
+run_launcher launchtest ticket-state --ticket T-781 --workdir "$REAL_RUN_WORKTREE_781_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state-781.json"
+run_launcher launchtest ticket-state --ticket T-782 --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state-782.json"
+
+# Development and Hermes consume the same trusted Reviewer reconciliation.
+mkdir -p "$LAUNCH_PRODUCT/factory/runs"
+for transition in Planning Building Review; do
+  run_launcher launchtest ticket-state --ticket T-781 \
+    --workdir "$REAL_RUN_WORKTREE_781_PHYS" \
+    --action transition --state "$transition" --json >/dev/null
+  run_launcher launchtest ticket-state --ticket T-782 \
+    --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+    --action transition --state "$transition" --json >/dev/null
+done
+for ticket in T-781 T-782; do
+  worktree="$REAL_RUN_WORKTREE_781_PHYS"
+  [[ "$ticket" == T-781 ]] || worktree="$REAL_RUN_WORKTREE_782_PHYS"
+  output="$LAUNCH_PRODUCT/factory/runs/reviewer-$ticket.out"
+  manifest="$LAUNCH_PRODUCT/factory/runs/reviewer-$ticket.meta"
+  printf '%s\n' 'Review complete.' 'REQUEST CHANGES' 'FIX-OWNER: both' > "$output"
+  head="$(git -C "$worktree" rev-parse HEAD)"
+  digest="$(shasum -a 256 "$output" | awk '{print $1}')"
+  printf '%s\n' \
+    "run_id=reviewer-$ticket" "ticket=$ticket" 'role=reviewer' 'adapter=codex' \
+    'contract_version=1.7.0' 'role_exit=ok' \
+    "role_head_before=$head" "role_remote_before=$head" "output_sha256=$digest" \
+    'accounting_state=completed' 'exit_status=0' 'started_at=2026-07-23T00:00:00Z' \
+    > "$manifest"
+done
+FACTORY_ROOT="$LAUNCH_PRODUCT" \
+FACTORY_CERTIFIED_PRODUCT_ORIGIN="$LAUNCH_PRODUCT_REMOTE" \
+FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
+  "$RELEASE_C_PHYS/scripts/ticket-state.sh" \
+    --ticket T-781 --workdir "$REAL_RUN_WORKTREE_781_PHYS" \
+    --action reviewer-reconcile > "$TMP/direct-reviewer-reconcile.json"
+run_launcher launchtest ticket-state --ticket T-782 \
+  --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action reviewer-reconcile --json > "$TMP/launcher-reviewer-reconcile.json"
+python3 - \
+  "$REAL_RUN_WORKTREE_781_PHYS/factory/tickets/T-781.md" \
+  "$REAL_RUN_WORKTREE_782_PHYS/factory/tickets/T-782.md" <<'PY'
+import re
+import sys
+
+left = open(sys.argv[1], encoding="utf-8").read().replace("T-781", "T-TEST")
+right = open(sys.argv[2], encoding="utf-8").read().replace("T-782", "T-TEST")
+assert left == right
+assert re.search(r"^State: Building$", left, re.M)
+assert left.count("reviewer round 1: REQUEST CHANGES") == 1
+assert left.count("reviewer round 1 FIX-OWNER: both") == 1
+PY
+run_launcher launchtest ticket-state --ticket T-782 \
+  --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action reviewer-reconcile --json > "$TMP/launcher-reviewer-reconcile-replay.json"
+printf '%s\n' 'tampered output' >> "$LAUNCH_PRODUCT/factory/runs/reviewer-T-782.out"
+REVIEWER_OUTPUT_DRIFT_RC=0
+run_launcher launchtest ticket-state --ticket T-782 \
+  --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action reviewer-reconcile --json >/dev/null 2>&1 || REVIEWER_OUTPUT_DRIFT_RC=$?
+[[ "$REVIEWER_OUTPUT_DRIFT_RC" -eq 1 ]] ||
+  fail "reviewer reconciliation accepted output drift"
+rm -f "$LAUNCH_PRODUCT/factory/runs/reviewer-T-78"{1,2}.{meta,out}
 
 assert_bad_real_preflight() {
   local label="$1" rc=0
@@ -2179,7 +2248,8 @@ assert commands["next-stage"]["contract_1_3_terminal_action"].startswith(
 )
 assert commands["ticket-state"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-product-worktree>",
-    "--action", "<materialize|transition>", "[--state <ticket-state>]", "--json"
+    "--action", "<materialize|transition|reviewer-reconcile>",
+    "[--state <ticket-state>]", "--json"
 ]
 assert commands["ticket-state"]["transition_states"] == [
     "Planning", "Building", "Review", "Blocked-Escalated"

@@ -19,6 +19,9 @@ helper output are not compatibility promises.
   scratch root is account-global; the coupled global capacity remains four.
 - Keeps Contract 1.6 activation v1 and serialized native-CLI behavior
   unchanged, and preserves serialization as the rollback path for 1.7.
+- Adds trusted Reviewer reconciliation that binds the successful run's head and
+  output digest, records its explicit repair owner, and atomically returns a
+  rejected ticket from Review to Building.
 
 ## 1.6.0 — 2026-07-20
 

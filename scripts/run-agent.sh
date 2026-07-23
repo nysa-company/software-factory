@@ -208,6 +208,7 @@ CLI_ATTEMPT_ID=""
 CLI_ATTEMPT_ACTIVE=0
 PROVIDER_EXECUTION_MODE="legacy-serialized"
 PROVIDER_BUDGET_MICRO_VALUES=()
+RUN_OUTPUT_SHA256=""
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
@@ -610,6 +611,7 @@ write_manifest() {
     echo "role_branch_before=$(meta_value "${ROLE_BRANCH_BEFORE:-}")"
     echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
+    echo "output_sha256=$(meta_value "$RUN_OUTPUT_SHA256")"
     echo "cancellation_reason=$(meta_value "$CANCELLATION_REASON")"
     echo "cancellation_preview_hash=$(meta_value "$CANCELLATION_PREVIEW_HASH")"
     echo "updated_at=$(date -u +%FT%TZ)"
@@ -2115,6 +2117,14 @@ RESULT="$(cat <&8)"
 exec 8<&-
 printf '%s\n' "$RESULT" | \
   python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUNS_DIR/$RUN_ID.out"
+RUN_OUTPUT_SHA256="$(python3 - "$RUNS_DIR/$RUN_ID.out" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    print(hashlib.sha256(handle.read()).hexdigest())
+PY
+)"
 
 if ! stop_lease_heartbeat; then
   echo "role_exit_control_plane_mutation: dispatcher lease heartbeat failed" >&2

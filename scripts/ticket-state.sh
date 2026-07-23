@@ -13,8 +13,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$TICKET" =~ ^T-[0-9]+$ && -n "$WORKDIR" ]] || { echo "invalid ticket-state arguments" >&2; exit 2; }
-[[ "$ACTION" == "materialize" || "$ACTION" == "transition" ]] || { echo "invalid ticket-state action" >&2; exit 2; }
-[[ "$ACTION" == "materialize" || -n "$STATE" ]] || { echo "transition requires --state" >&2; exit 2; }
+[[ "$ACTION" == "materialize" || "$ACTION" == "transition" ||
+   "$ACTION" == "reviewer-reconcile" ]] || { echo "invalid ticket-state action" >&2; exit 2; }
+[[ "$ACTION" != "transition" || -n "$STATE" ]] || { echo "transition requires --state" >&2; exit 2; }
+[[ "$ACTION" != "reviewer-reconcile" ||
+   "${FACTORY_HERMES_CONTRACT_VERSION:-}" == "1.7.0" ]] || {
+  echo "reviewer reconciliation requires contract 1.7.0" >&2
+  exit 1
+}
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
@@ -122,6 +128,21 @@ if (current, target_key) not in allowed or target_key not in states:
     raise SystemExit(f"illegal factory transition: {current} -> {target_key}")
 path.write_text(re.sub(r"^State:\s*.*$", f"State: {states[target_key]}", text, count=1, flags=re.MULTILINE | re.IGNORECASE))
 PY
+elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
+  cmp -s "$TMP" "$TICKET_FILE" || {
+    echo "pending operator fields require materialization before reviewer reconciliation" >&2
+    exit 1
+  }
+  HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD)" || {
+    echo "ticket head cannot be resolved" >&2
+    exit 1
+  }
+  python3 "$KIT_DIR/scripts/lib/reviewer-reconcile.py" \
+    --runs-dir "$PRODUCT_ROOT/factory/runs" \
+    --ticket-file "$TICKET_FILE" --ticket "$TICKET" \
+    --head "$HEAD_BEFORE" \
+    --contract-version "$FACTORY_HERMES_CONTRACT_VERSION" \
+    --output "$TMP"
 fi
 
 CHANGED=0

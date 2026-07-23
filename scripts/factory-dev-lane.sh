@@ -2194,45 +2194,10 @@ product_role_run() {
 }
 
 product_reconcile_reviewer() {
-  local root="$1" ticket="$2" evidence round adapter output verdict owner record
-  evidence="$(python3 - "$root/product/factory/runs" \
-    "$root/worktrees/$ticket/factory/tickets/$ticket.md" "$ticket" <<'PY'
-import pathlib, re, sys
-runs=pathlib.Path(sys.argv[1]); ticket_file=pathlib.Path(sys.argv[2]); ticket=sys.argv[3]
-verdicts=sum(bool(re.fullmatch(r"\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*", line, re.I))
-             for line in ticket_file.read_text(errors="replace").splitlines())
-successful=[]
-for meta in runs.glob("*.meta"):
-    values=dict(line.split("=",1) for line in meta.read_text(errors="replace").splitlines() if "=" in line)
-    if (values.get("ticket") == ticket and values.get("role") == "reviewer" and
-        values.get("accounting_state") in {"completed", "abandoned_conservative"} and
-        values.get("exit_status") == "0"):
-        successful.append((values.get("started_at", ""), meta.name, values, meta.with_suffix(".out")))
-successful.sort(key=lambda item: (item[0], item[1]))
-if len(successful) == verdicts:
-    print("none")
-elif len(successful) == verdicts + 1:
-    _, _, values, output = successful[-1]
-    if not output.is_file(): raise SystemExit("successful reviewer output is missing")
-    print(f"{verdicts + 1}|{values.get('adapter','')}|{output}")
-else:
-    raise SystemExit("reviewer runs and durable verdicts are ambiguous")
-PY
-)" || return 1
-  [[ "$evidence" != none ]] || return 0
-  IFS='|' read -r round adapter output <<<"$evidence"
-  [[ "$round" =~ ^[1-9][0-9]*$ && -n "$adapter" && -f "$output" ]] || return 1
-  IFS=$'\t' read -r verdict owner < <(
-    python3 "$root/kit/scripts/lib/reviewer-verdict.py" \
-      --adapter "$adapter" --input "$output" --contract-version 1.7.0 \
-      --format fields
-  ) || return 1
-  record="reviewer round $round: $verdict"
-  [[ -z "$owner" ]] ||
-    record+=$'\n'"reviewer round $round FIX-OWNER: $owner"
-  append_commit_push "$root" "$record" \
-    "$ticket: record isolated review round $round" || return 1
-  return 0
+  local root="$1" ticket="$2"
+  lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
+    --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+    --action reviewer-reconcile >/dev/null
 }
 
 product_resume_reason() {

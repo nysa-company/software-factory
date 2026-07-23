@@ -345,35 +345,61 @@ mkdir -p "$REC/product/factory/runs" "$REC/worktrees/T-900001/factory/tickets"
 ln -s "$ROOT" "$REC/kit"
 review_ticket="$REC/worktrees/T-900001/factory/tickets/T-900001.md"
 printf '%s\n' 'State: Review' >"$review_ticket"
-printf '%s\n' \
-  'ticket=T-900001' 'role=reviewer' 'adapter=cursor-anthropic' \
-  'accounting_state=abandoned_conservative' 'exit_status=0' 'started_at=2026-01-01T00:00:00Z' \
-  >"$REC/product/factory/runs/review.meta"
+review_head=1111111111111111111111111111111111111111
 printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' \
   >"$REC/product/factory/runs/review.out"
-eval "$(sed -n '/^product_reconcile_reviewer()/,/^}/p' "$LANE")"
-append_commit_push() { printf '%s\n' "$2" >>"$review_ticket"; }
-TICKET=T-900001 product_reconcile_reviewer "$REC" T-900001 ||
+review_digest="$(shasum -a 256 "$REC/product/factory/runs/review.out" | awk '{print $1}')"
+printf '%s\n' \
+  'ticket=T-900001' 'role=reviewer' 'adapter=cursor-anthropic' \
+  'contract_version=1.7.0' 'role_exit=ok' \
+  "role_head_before=$review_head" "role_remote_before=$review_head" \
+  "output_sha256=$review_digest" \
+  'accounting_state=abandoned_conservative' 'exit_status=0' 'started_at=2026-01-01T00:00:00Z' \
+  >"$REC/product/factory/runs/review.meta"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled"
+mv "$REC/reconciled" "$review_ticket"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled" ||
   fail "successful unpaired review was not reconciled"
-TICKET=T-900001 product_reconcile_reviewer "$REC" T-900001 ||
+cmp -s "$review_ticket" "$REC/reconciled" ||
   fail "replayed review reconciliation was not idempotent"
 [[ "$(grep -c '^reviewer round 1: APPROVE$' "$review_ticket")" -eq 1 ]] ||
   fail "review reconciliation did not append exactly once"
 review_ticket="$REC/worktrees/T-900002/factory/tickets/T-900002.md"
 mkdir -p "$(dirname "$review_ticket")"
 printf '%s\n' 'State: Review' >"$review_ticket"
-printf '%s\n' \
-  'ticket=T-900002' 'role=reviewer' 'adapter=codex' \
-  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-02T00:00:00Z' \
-  >"$REC/product/factory/runs/review-request.meta"
 printf '%s\n' 'Review complete.' 'REQUEST CHANGES' 'FIX-OWNER: test-author' \
   >"$REC/product/factory/runs/review-request.out"
-TICKET=T-900002 product_reconcile_reviewer "$REC" T-900002 ||
+review_digest="$(shasum -a 256 "$REC/product/factory/runs/review-request.out" | awk '{print $1}')"
+printf '%s\n' \
+  'ticket=T-900002' 'role=reviewer' 'adapter=codex' \
+  'contract_version=1.7.0' 'role_exit=ok' \
+  "role_head_before=$review_head" "role_remote_before=$review_head" \
+  "output_sha256=$review_digest" \
+  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-02T00:00:00Z' \
+  >"$REC/product/factory/runs/review-request.meta"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900002 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled" ||
   fail "request-changes review was treated as a terminal lifecycle failure"
+mv "$REC/reconciled" "$review_ticket"
+grep -qx 'State: Building' "$review_ticket" ||
+  fail "request-changes review did not atomically return the ticket to Building"
 grep -qx 'reviewer round 1: REQUEST CHANGES' "$review_ticket" ||
   fail "request-changes review was not recorded durably"
 grep -qx 'reviewer round 1 FIX-OWNER: test-author' "$review_ticket" ||
   fail "request-changes repair ownership was not recorded durably"
+product_reconcile_source="$(sed -n '/^product_reconcile_reviewer()/,/^}/p' "$LANE")"
+printf '%s\n' "$product_reconcile_source" | grep -Fq 'scripts/ticket-state.sh' ||
+  fail "development scheduler does not use the shared trusted reconciliation helper"
+printf '%s\n' "$product_reconcile_source" | grep -Fq -- '--action reviewer-reconcile' ||
+  fail "development scheduler does not request shared reviewer reconciliation"
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \

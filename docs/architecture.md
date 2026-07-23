@@ -226,6 +226,10 @@ limits remain policy-owned. Activation permits account capacity through four
 for Codex, while Cursor and native Claude remain capped at two. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
+Its trusted ticket-state reconciliation binds a successful Reviewer's
+read-only head and durable output digest, records the canonical verdict and
+explicit repair owner, and commits a rejection's Review-to-Building transition
+in the same host-owned change.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

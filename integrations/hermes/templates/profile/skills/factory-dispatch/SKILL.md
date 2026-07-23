@@ -92,6 +92,18 @@ not accept `--json` themselves. Accept only the documented wrapper schema,
 require `exit_code: 0`, and use `action` from the next-stage result. Launch
 exactly the role authorized by that result:
 
+After a successful Contract 1.7 Reviewer run, bind its durable output before
+asking for the next stage:
+
+```text
+~/.factory/bin/factory-launch <project> ticket-state \
+  --ticket <T-NNN> --workdir <absolute-product-worktree> \
+  --action reviewer-reconcile --json
+```
+
+This trusted action records the canonical verdict and repair owner and moves a
+rejection from Review to Building atomically. Never infer the repair owner.
+
 Under Contracts 1.6 and 1.7, when that action is `RUN reviewer` after Builder, first
 prepare or reuse the exact open ticket PR:
 
