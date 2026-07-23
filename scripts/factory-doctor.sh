@@ -557,10 +557,13 @@ if [[ ( "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   PROVIDER_ACTIVATED=true
+  PROVIDER_ACTIVATION_ARGS=(--config "$FACTORY_PROVIDER_ACTIVATION" \
+    --contract-version "$CONTRACT_VERSION")
+  [[ -z "${FACTORY_PROVIDER_POLICY:-}" ]] ||
+    PROVIDER_ACTIVATION_ARGS+=(--policy "$FACTORY_PROVIDER_POLICY")
   PROVIDER_ACTIVATION_STATUS="$("$PYTHON_BIN" -I -S \
     "$KIT_DIR/scripts/provider-activation.py" \
-    --config "$FACTORY_PROVIDER_ACTIVATION" \
-    --contract-version "$CONTRACT_VERSION" --status 2>/dev/null || true)"
+    "${PROVIDER_ACTIVATION_ARGS[@]}" --status 2>/dev/null || true)"
   PROVIDER_EXECUTION_MODE="$(printf '%s' "$PROVIDER_ACTIVATION_STATUS" | \
     "$PYTHON_BIN" -c '
 import json, sys
@@ -572,7 +575,7 @@ try:
 except Exception:
     raise SystemExit(1)
 ' 2>/dev/null || true)"
-  if [[ "$PROVIDER_EXECUTION_MODE" == "isolated-v1" &&
+  if [[ "$PROVIDER_EXECUTION_MODE" == "api-isolated-v1" &&
         -n "${FACTORY_PROVIDER_DB:-}" && -f "${FACTORY_PROVIDER_DB:-}" &&
         -n "${FACTORY_PROVIDER_BROKER_DB:-}" && -f "${FACTORY_PROVIDER_BROKER_DB:-}" &&
         -n "${FACTORY_PROVIDER_CREDENTIALS:-}" && -f "${FACTORY_PROVIDER_CREDENTIALS:-}" &&

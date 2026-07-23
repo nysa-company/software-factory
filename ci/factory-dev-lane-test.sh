@@ -293,6 +293,10 @@ assert value["active_reserve_micro_usd"] == 0, value
 ' || fail "concurrency mock retained provider capacity or reservations"
 [[ "$(find "$concurrency_root/product/factory/runs" -type f -name '*.meta' | wc -l | tr -d ' ')" -eq 24 ]] ||
   fail "four lifecycle batch did not record 24 role runs"
+if find "$concurrency_root/product/factory/runs" -type f -name '*.meta' -exec \
+     grep -L '^provider_execution_mode=cli-concurrent-v1$' {} + | grep -q .; then
+  fail "synthetic lifecycles did not use CLI concurrent admission"
+fi
 for ticket in T-900001 T-900002 T-900003 T-900004; do
   work="$concurrency_root/worktrees/$ticket"
   grep -qx 'State: Review' "$work/factory/tickets/$ticket.md" ||

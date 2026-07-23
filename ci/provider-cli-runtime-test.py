@@ -27,12 +27,13 @@ class ProviderCliRuntimeTest(unittest.TestCase):
         self.db = self.root / "provider.sqlite3"
         self.policy = self.root / "policy.json"
         limit = {"max_concurrent": 4, "max_starts": 20, "window_seconds": 60}
+        account_limit = {"max_concurrent": 2, "max_starts": 20, "window_seconds": 60}
         self.policy.write_text(json.dumps({
             "schema": "factory-provider-concurrency-policy/v1",
             "coupled_max_concurrent": 4,
             "global": limit,
             "provider_families": {"openai": limit},
-            "account_routes": {"codex": limit},
+            "account_routes": {"codex": account_limit, "claude": account_limit},
         }, sort_keys=True, separators=(",", ":")) + "\n")
 
     def tearDown(self) -> None:
@@ -82,7 +83,7 @@ class ProviderCliRuntimeTest(unittest.TestCase):
             result = subprocess.run([
                 sys.executable, str(COORDINATOR), "--db", str(self.db), "reserve",
                 "--operation-id", f"hold-{index}", "--attempt-id", f"hold-{index}",
-                "--provider-family", "openai", "--account-route", "codex",
+                "--provider-family", "openai", "--account-route", "codex" if index < 2 else "claude",
                 "--reserve-micro-usd", "1000000", "--product-id", "product",
                 "--ticket-id", f"T-{index + 1}", "--budget-day", "2026-07-23",
                 "--product-daily-cap-micro-usd", "4000000",
@@ -125,7 +126,8 @@ class ProviderCliRuntimeTest(unittest.TestCase):
                 sys.executable, str(RUNTIME),
                 "--coordinator", str(COORDINATOR), "--db", str(self.db),
                 "--policy", str(self.policy), "--attempt-id", f"overlap-{index}",
-                "--provider-family", "openai", "--account-route", "codex",
+                "--provider-family", "openai", "--account-route",
+                "codex" if index < 2 else "claude",
                 "--reserve-micro-usd", "1000000", "--product-id", "product",
                 "--ticket-id", f"T-{index}", "--budget-day", "2026-07-23",
                 "--product-cap-micro-usd", "4000000",

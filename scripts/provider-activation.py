@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ OUTPUT_SCHEMA_V2 = "nysa.software-factory.provider-activation-selection/v2"
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 CLI_ADAPTERS = frozenset(("claude-code", "codex", "cursor-anthropic", "cursor-openai"))
+POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 
 
 class ActivationError(ValueError):
@@ -52,17 +54,76 @@ def valid_v1_route(route):
 
 
 def valid_v2_route(route):
+    allowed = CLI_ADAPTERS
+    if (os.environ.get("FACTORY_TEST_MODE") == "1" and
+            os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") == "1"):
+        allowed = allowed | {"mock"}
     return (
         isinstance(route, dict)
         and set(route) == {"account_route", "adapter", "model", "provider_family"}
         and valid_identity(route)
-        and route.get("adapter") in CLI_ADAPTERS
+        and route.get("adapter") in allowed
     )
+
+
+def read_secure(path, label, owner_only=False):
+    if not path.is_absolute():
+        raise ActivationError(f"{label} path must be absolute")
+    info = path.lstat()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_mode & (0o077 if owner_only else 0o022)
+        or info.st_size > 1_000_000
+    ):
+        raise ActivationError(f"{label} is unsafe")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(descriptor)
+        if ((opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or
+                not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or
+                opened.st_size > 1_000_000):
+            raise ActivationError(f"{label} changed while opening")
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            descriptor = -1
+            raw = handle.read(1_000_001)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(raw.encode("utf-8")) > 1_000_000:
+        raise ActivationError(f"{label} is too large")
+    return raw, json.loads(raw)
+
+
+def validate_cli_policy(policy, routes, expected_hash):
+    def capacity(value, maximum):
+        return (isinstance(value, int) and not isinstance(value, bool) and
+                1 <= value <= maximum)
+
+    required = {"schema", "coupled_max_concurrent", "global", "provider_families", "account_routes"}
+    if not isinstance(policy, dict) or set(policy) != required or policy.get("schema") != POLICY_SCHEMA:
+        raise ActivationError("CLI concurrency policy is invalid")
+    if hashlib.sha256(canonical(policy).encode()).hexdigest() != expected_hash:
+        raise ActivationError("CLI concurrency policy digest does not match activation")
+    if (not capacity(policy["coupled_max_concurrent"], 4) or
+            not isinstance(policy.get("global"), dict) or
+            not capacity(policy["global"].get("max_concurrent"), 4)):
+        raise ActivationError("CLI concurrency global capacity must be at most four")
+    for route in routes.values():
+        family = policy.get("provider_families", {}).get(route["provider_family"], {})
+        account = policy.get("account_routes", {}).get(route["account_route"], {})
+        account_maximum = 1 if route["adapter"].startswith("cursor-") else 2
+        if (not capacity(family.get("max_concurrent"), 4) or
+                not capacity(account.get("max_concurrent"), account_maximum)):
+            raise ActivationError("CLI concurrency route capacity is unsafe")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--policy", type=Path)
     parser.add_argument(
         "--contract-version", required=True, choices=("1.6.0", "1.7.0")
     )
@@ -79,32 +140,7 @@ def main() -> None:
         path = args.config
         if not path.is_absolute():
             raise ActivationError("activation path must be absolute")
-        info = path.lstat()
-        if (
-            path.is_symlink()
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or info.st_nlink != 1
-            or info.st_mode & 0o077
-            or info.st_size > 1_000_000
-        ):
-            raise ActivationError("activation configuration is unsafe")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            opened = os.fstat(descriptor)
-            if ((opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or
-                    not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or
-                    opened.st_size > 1_000_000):
-                raise ActivationError("activation configuration changed while opening")
-            with os.fdopen(descriptor, encoding="utf-8") as handle:
-                descriptor = -1
-                raw = handle.read(1_000_001)
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        if len(raw.encode("utf-8")) > 1_000_000:
-            raise ActivationError("activation configuration is too large")
-        value = json.loads(raw)
+        raw, value = read_secure(path, "activation configuration", owner_only=True)
         common_invalid = (
             not isinstance(value, dict)
             or value.get("enabled") is not True
@@ -145,6 +181,11 @@ def main() -> None:
             for route_id, configured_route in value["routes"].items()
         ):
             raise ActivationError("activated route is invalid")
+        if schema == SCHEMA_V2:
+            if args.policy is None:
+                raise ActivationError("CLI concurrency policy is required")
+            _, policy = read_secure(args.policy, "CLI concurrency policy")
+            validate_cli_policy(policy, value["routes"], value["policy_sha256"])
         if args.status:
             print(
                 canonical(

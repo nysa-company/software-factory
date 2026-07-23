@@ -2,6 +2,7 @@
 """Fail-closed tests for owner-local provider activation."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +20,16 @@ class ActivationTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         self.config = self.root / "activation.json"
+        self.policy_path = self.root / "policy.json"
+        limit = {"max_concurrent": 2, "max_starts": 20, "window_seconds": 60}
+        self.policy = {
+            "schema": "factory-provider-concurrency-policy/v1",
+            "coupled_max_concurrent": 4,
+            "global": {**limit, "max_concurrent": 4},
+            "provider_families": {"openai": {**limit, "max_concurrent": 4}},
+            "account_routes": {"codex-native": limit, "cursor": {**limit, "max_concurrent": 1}},
+        }
+        self.write_policy()
         self.value = {
             "enabled": True,
             "routes": {
@@ -43,15 +54,23 @@ class ActivationTest(unittest.TestCase):
         )
         os.chmod(self.config, 0o600)
 
+    def write_policy(self):
+        raw = json.dumps(self.policy, sort_keys=True, separators=(",", ":"))
+        self.policy_path.write_text(raw + "\n")
+        os.chmod(self.policy_path, 0o600)
+        return hashlib.sha256(raw.encode()).hexdigest()
+
     def command(self, route="route-a", contract="1.6.0", status=False):
         selection = ["--status"] if status else ["--route-id", route]
-        return subprocess.run(
-            [
+        arguments = [
                 sys.executable, str(HELPER),
                 "--config", str(self.config),
                 "--contract-version", contract,
-                *selection,
-            ],
+        ]
+        if contract == "1.7.0":
+            arguments += ["--policy", str(self.policy_path)]
+        return subprocess.run(
+            [*arguments, *selection],
             text=True,
             capture_output=True,
             check=False,
@@ -76,7 +95,7 @@ class ActivationTest(unittest.TestCase):
         self.value = {
             "enabled": True,
             "mode": "cli-concurrent-v1",
-            "policy_sha256": "a" * 64,
+            "policy_sha256": self.write_policy(),
             "routes": {
                 "route-a": {
                     "account_route": "codex-native",
@@ -92,7 +111,7 @@ class ActivationTest(unittest.TestCase):
         self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
         value = json.loads(selected.stdout)
         self.assertEqual(value["execution_mode"], "cli-concurrent-v1")
-        self.assertEqual(value["policy_sha256"], "a" * 64)
+        self.assertEqual(value["policy_sha256"], self.write_policy())
         self.assertEqual(value["adapter"], "codex")
         status = self.command(contract="1.7.0", status=True)
         self.assertEqual(status.returncode, 0)
@@ -104,7 +123,7 @@ class ActivationTest(unittest.TestCase):
         self.value = {
             "enabled": True,
             "mode": "cli-concurrent-v1",
-            "policy_sha256": "a" * 64,
+            "policy_sha256": self.write_policy(),
             "routes": {},
             "schema": "nysa.software-factory.provider-activation/v2",
         }
@@ -117,7 +136,7 @@ class ActivationTest(unittest.TestCase):
         self.value = {
             "enabled": True,
             "mode": "cli-concurrent-v1",
-            "policy_sha256": "a" * 64,
+            "policy_sha256": self.write_policy(),
             "routes": {
                 "route-a": {
                     "account_route": "codex-native",
@@ -132,7 +151,7 @@ class ActivationTest(unittest.TestCase):
             self.value[field] = invalid
             self.write()
             self.assertEqual(self.command(contract="1.7.0").returncode, 2)
-            self.value[field] = "cli-concurrent-v1" if field == "mode" else "a" * 64
+            self.value[field] = "cli-concurrent-v1" if field == "mode" else self.write_policy()
         self.value["routes"]["route-a"]["adapter"] = "../codex"
         self.write()
         self.assertEqual(self.command(contract="1.7.0").returncode, 2)
@@ -140,11 +159,24 @@ class ActivationTest(unittest.TestCase):
         self.write()
         self.assertEqual(self.command(contract="1.7.0").returncode, 2)
 
+    def test_cli_activation_rejects_unsafe_account_capacity(self):
+        self.policy["account_routes"]["codex-native"]["max_concurrent"] = 3
+        digest = self.write_policy()
+        self.value = {
+            "enabled": True, "mode": "cli-concurrent-v1",
+            "policy_sha256": digest,
+            "routes": {"route-a": {"account_route": "codex-native", "adapter": "codex",
+                                     "model": "gpt-5.6-sol", "provider_family": "openai"}},
+            "schema": "nysa.software-factory.provider-activation/v2",
+        }
+        self.write()
+        self.assertEqual(self.command(contract="1.7.0").returncode, 2)
+
     def test_cli_activation_rejects_invalid_unselected_route(self):
         self.value = {
             "enabled": True,
             "mode": "cli-concurrent-v1",
-            "policy_sha256": "a" * 64,
+            "policy_sha256": self.write_policy(),
             "routes": {
                 "route-a": {
                     "account_route": "codex-native",

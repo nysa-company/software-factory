@@ -31,7 +31,7 @@ command -v codex >/dev/null || { echo "codex CLI not installed" >&2; exit 6; }
 INSTALLED="$(codex --version 2>/dev/null | head -n1 || true)"
 case "$INSTALLED" in
   *"$PINNED_VERSION"*) : ;;
-  *) echo "WARNING: installed Codex ($INSTALLED) != pinned ($PINNED_VERSION). Run adapters/contract-test.sh before continuing." >&2 ;;
+  *) echo "installed Codex does not match the approved version" >&2; exit 6 ;;
 esac
 
 FULL_TASK="$TASK"

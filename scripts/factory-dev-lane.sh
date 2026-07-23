@@ -347,7 +347,7 @@ PER_RUN_BUDGET_USD=10.00
 PER_TICKET_BUDGET_USD=100.00
 PER_RUN_MAX_TURNS=15
 PER_RUN_TIMEOUT_MIN=20
-DAILY_CAP_USD=100.00
+DAILY_CAP_USD=1000.00
 EOF
   cat > "$root/product/factory/PROJECT.env" <<EOF
 PROJECT_NAME=$project
@@ -463,14 +463,27 @@ with timeline.open("a", encoding="utf-8") as handle:
     handle.write(f"end {os.getpid()} {time.monotonic_ns()}\n")
 PY
     chmod 700 "$root/home/mock-provider-cli"
-    python3 - "$root/runtime/provider-policy.json" <<'PY'
-import json, os, sys
-limit={"max_concurrent":4,"max_starts":32,"window_seconds":60}
-value={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
-       "global":limit,"provider_families":{"mock":limit},"account_routes":{"lane-local":limit}}
-with open(sys.argv[1], "w", encoding="utf-8") as handle:
-    json.dump(value, handle, sort_keys=True, separators=(",",":")); handle.write("\n")
-os.chmod(sys.argv[1], 0o600)
+    python3 - "$root/runtime/provider-policy.json" "$root/runtime/provider-activation.json" <<'PY'
+import hashlib, json, os, sys
+policy_path, activation_path=sys.argv[1:]
+global_limit={"max_concurrent":4,"max_starts":32,"window_seconds":60}
+account_limit={"max_concurrent":2,"max_starts":32,"window_seconds":60}
+policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
+        "global":global_limit,"provider_families":{"mock":global_limit},
+        "account_routes":{"test-mock-a":account_limit,"test-mock-b":account_limit}}
+raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
+with open(policy_path, "w", encoding="utf-8") as handle: handle.write(raw+"\n")
+routes={}
+for number in range(900001,900005):
+    ticket=f"T-{number}"
+    routes[f"test-mock-{ticket}"]={"account_route":"test-mock-a" if number % 2 else "test-mock-b",
+        "adapter":"mock","model":"test-mock-model","provider_family":"mock"}
+activation={"enabled":True,"mode":"cli-concurrent-v1",
+            "policy_sha256":hashlib.sha256(raw.encode()).hexdigest(),"routes":routes,
+            "schema":"nysa.software-factory.provider-activation/v2"}
+with open(activation_path, "w", encoding="utf-8") as handle:
+    json.dump(activation, handle, sort_keys=True, separators=(",",":")); handle.write("\n")
+os.chmod(policy_path, 0o600); os.chmod(activation_path, 0o600)
 PY
   fi
   write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home"
@@ -529,8 +542,11 @@ lane_env() {
     PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
     FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
+    FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
+    FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
+    FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-    FACTORY_HERMES_CONTRACT_VERSION=1.6.0 "$@"
+    FACTORY_HERMES_CONTRACT_VERSION=1.7.0 "$@"
 }
 
 lane_cursor_env() {
@@ -553,7 +569,7 @@ next_stage() {
 }
 
 run_mock_internal() {
-  local root="$1" role expected mode
+  local root="$1" role expected mode mock_sleep=0
   mode="$(python3 - "$root/marker.json" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["mode"])
@@ -561,12 +577,14 @@ PY
 )"
   [[ "$mode" == mock || "$mode" == mock-concurrency ]] ||
     die "lane mode does not authorize mock lifecycle"
+  [[ "$mode" != mock-concurrency ]] || mock_sleep=2
   for role in planner spec-linter test-author builder reviewer narrator; do
     expected="RUN $role"
     [[ "$(next_stage "$root")" == "$expected" ]] ||
       die "sequencer did not authorize $role"
     lane_env "$root" FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
       FACTORY_ADAPTER_OVERRIDE=mock \
+      MOCK_SLEEP="$mock_sleep" \
       "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$TICKET" \
       --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$TICKET" \
       -- "Execute the disposable development-lane $role stage."
@@ -586,7 +604,7 @@ PY
 }
 
 run_mock_concurrency_internal() {
-  local root="$1" ticket output pid day start_ns end_ns attempt
+  local root="$1" ticket output pid day start_ns end_ns attempt account
   local -a pids=()
   require_lane_mode "$root" mock-concurrency
   validate_runtime_paths "$root"
@@ -595,6 +613,7 @@ run_mock_concurrency_internal() {
   chmod 600 "$root/runtime/provider-timeline"
   for ticket in "${TICKETS[@]}"; do
     attempt="$ticket-builder-lane"
+    case "$ticket" in *1|*3) account=test-mock-a ;; *) account=test-mock-b ;; esac
     output="$root/runtime/provider-inputs/$ticket.out"
     lane_env "$root" FACTORY_DEV_LANE_TIMELINE="$root/runtime/provider-timeline" \
       python3 "$root/kit/scripts/provider-cli-runtime.py" \
@@ -602,7 +621,7 @@ run_mock_concurrency_internal() {
         --db "$root/runtime/provider-state.sqlite3" \
         --policy "$root/runtime/provider-policy.json" \
         --attempt-id "$attempt" \
-        --provider-family mock --account-route lane-local \
+        --provider-family mock --account-route "$account" \
         --reserve-micro-usd 1000000 --product-id "factory-dev-lane-$(basename "$root")" \
         --ticket-id "$ticket" --budget-day "$day" \
         --product-cap-micro-usd 4000000 --ticket-cap-micro-usd 1000000 \

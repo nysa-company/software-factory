@@ -30,7 +30,7 @@ command -v claude >/dev/null || { echo "claude CLI not installed" >&2; exit 6; }
 INSTALLED="$(claude --version 2>/dev/null | head -n1 || true)"
 case "$INSTALLED" in
   *"$PINNED_VERSION"*) : ;;
-  *) echo "WARNING: installed Claude Code ($INSTALLED) != pinned ($PINNED_VERSION). Run adapters/contract-test.sh before continuing." >&2 ;;
+  *) echo "installed Claude Code does not match the approved version" >&2; exit 6 ;;
 esac
 
 # Shakedown finding (2026-07-11, Claude Code 2.1.207): --max-turns is gone from

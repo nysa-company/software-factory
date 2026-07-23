@@ -162,6 +162,8 @@ CANCEL_REQUEST_FILE=""
 CANCELLATION_REASON=""
 CANCELLATION_PREVIEW_HASH=""
 CANCELLATION_ACCEPTED=0
+LEASE_HEARTBEAT_PID=""
+LEASE_HEARTBEAT_FAILED=0
 CLI_ATTEMPT_ID=""
 CLI_ATTEMPT_ACTIVE=0
 PROVIDER_EXECUTION_MODE="legacy-serialized"
@@ -677,6 +679,34 @@ stop_before_adapter_gate() {
   return 0
 }
 
+start_lease_heartbeat() {
+  local interval=300
+  [[ -n "$DISPATCH_LEASE_ID" ]] || return 0
+  if [[ "${FACTORY_TEST_MODE:-0}" == 1 &&
+        "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == 1 &&
+        "${FACTORY_TEST_LEASE_HEARTBEAT_SECONDS:-}" =~ ^[1-9][0-9]*$ &&
+        "${FACTORY_TEST_LEASE_HEARTBEAT_SECONDS}" -le 300 ]]; then
+    interval="$FACTORY_TEST_LEASE_HEARTBEAT_SECONDS"
+  fi
+  python3 "$KIT_DIR/scripts/dispatch-lease-heartbeat.py" \
+    --renew-script "$KIT_DIR/scripts/dispatch-lease.sh" \
+    --factory-root "$REPO_ROOT" --ticket "$TICKET" \
+    --lease "$DISPATCH_LEASE_ID" --interval "$interval" &
+  LEASE_HEARTBEAT_PID=$!
+}
+
+stop_lease_heartbeat() {
+  local status=0
+  [[ -n "$LEASE_HEARTBEAT_PID" ]] || return 0
+  kill -TERM "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || status=$?
+  LEASE_HEARTBEAT_PID=""
+  if [[ "$status" -ne 0 ]]; then
+    LEASE_HEARTBEAT_FAILED=1
+    return 1
+  fi
+}
+
 verify_control_interval_integrity() {
   local registered_status_after
   if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
@@ -847,11 +877,29 @@ print(attempts[0]["version"])
   CLI_ATTEMPT_ACTIVE=0
 }
 
+release_active_run_claim() {
+  [[ "$OWNS_ACTIVE_RUN" -eq 1 ]] || return 0
+  if [[ -d "$ACTIVE_RUN_FILE" && ! -L "$ACTIVE_RUN_FILE" &&
+        -f "$ACTIVE_RUN_FILE/owner" && ! -L "$ACTIVE_RUN_FILE/owner" &&
+        "$(cat "$ACTIVE_RUN_FILE/owner" 2>/dev/null)" == "$ACTIVE_RUN_EXPECTED" ]]; then
+    rm -f "$ACTIVE_RUN_FILE/owner"
+    rmdir "$ACTIVE_RUN_FILE" 2>/dev/null || return 1
+    OWNS_ACTIVE_RUN=0
+    return 0
+  fi
+  return 1
+}
+
 cleanup() {
   local status=$? accounting_finalized=0
+  stop_lease_heartbeat || true
   terminate_run_group || true
-  reconcile_cli_attempt "$([[ "$status" -eq 130 || "$status" -eq 143 ]] && printf cancelled || printf failed)" ||
-    echo "WARNING: CLI provider reservation retained for operator reconciliation" >&2
+  if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
+    reconcile_cli_attempt "$([[ "$status" -eq 130 || "$status" -eq 143 ]] && printf cancelled || printf failed)" ||
+      echo "WARNING: CLI provider reservation retained for operator reconciliation" >&2
+  elif [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
+    echo "WARNING: CLI provider reservation retained because its process group survived" >&2
+  fi
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
       rm -f "$RUN_PID_FILE"
@@ -865,7 +913,9 @@ cleanup() {
   [[ -z "$RUN_SUBMITTED_FILE" ]] || rm -f "$RUN_SUBMITTED_FILE"
   [[ -z "$RUN_OUTPUT_TEMP" ]] || rm -f "$RUN_OUTPUT_TEMP"
   exec 8<&- 9>&- 2>/dev/null || true
-  if [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
+  if [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && "$RUN_GROUP_TERMINATED" -ne 1 ]]; then
+    echo "WARNING: run accounting retained because its CLI process group survived" >&2
+  elif [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
     [[ "$status" -ne 0 ]] || status=125
     if [[ "$GO_ISSUED" -eq 1 ]]; then
       finalize_accounting "abandoned_conservative" "$RESERVED_USD" "${TURNS:-0}" "$status" "conservative_reservation" "abandoned"
@@ -918,13 +968,9 @@ cleanup() {
   fi
   [[ "$HELD_LAUNCH_LOCK" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$OWNS_ACTIVE_RUN" -eq 1 ]]; then
-    if [[ -d "$ACTIVE_RUN_FILE" && ! -L "$ACTIVE_RUN_FILE" &&
-          -f "$ACTIVE_RUN_FILE/owner" && ! -L "$ACTIVE_RUN_FILE/owner" &&
-          "$(cat "$ACTIVE_RUN_FILE/owner" 2>/dev/null)" == "$ACTIVE_RUN_EXPECTED" ]]; then
-      rm -f "$ACTIVE_RUN_FILE/owner"
-      rmdir "$ACTIVE_RUN_FILE" 2>/dev/null ||
-        echo "WARNING: run claim gained unexpected entries; operator reconciliation required" >&2
-    else
+    if [[ "$RUN_GROUP_TERMINATED" -ne 1 ]]; then
+      echo "WARNING: run claim retained because its process group survived" >&2
+    elif ! release_active_run_claim; then
       echo "WARNING: run claim ownership changed; successor state was not removed" >&2
     fi
   fi
@@ -1060,8 +1106,13 @@ if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
   fi
   SELECTED="$FACTORY_ADAPTER_OVERRIDE"
   SELECTED_FAMILY="$(factory_adapter_family "$SELECTED" 2>/dev/null || echo test)"
-  SELECTED_MODEL="${FACTORY_OVERRIDE_MODEL:-}"
+  SELECTED_MODEL="${FACTORY_OVERRIDE_MODEL:-test-mock-model}"
   SELECTED_VERSION="test"
+  SELECTED_ROUTE_ID="test-mock-$TICKET"
+  case "$TICKET" in
+    *1|*3|*5|*7|*9) SELECTED_ACCOUNT_ROUTE_ID="test-mock-a" ;;
+    *) SELECTED_ACCOUNT_ROUTE_ID="test-mock-b" ;;
+  esac
   SELECTION_REASON="test_override"
   PRIMARY_PROBE_SUMMARY="test_override"
 elif [[ -f "$ROUTE_PLAN" ]]; then
@@ -1126,14 +1177,17 @@ ISOLATED_BROKER_PATH=""
 ISOLATED_MODEL=""
 ISOLATED_PROVIDER_FAMILY=""
 ISOLATED_ACCOUNT_ROUTE=""
-if [[ ( "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
-        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ) &&
+PROVIDER_CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-}}"
+if [[ ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
+        "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
+  ACTIVATION_ARGS=(--config "$FACTORY_PROVIDER_ACTIVATION" \
+    --contract-version "$PROVIDER_CONTRACT_VERSION")
+  [[ -z "${FACTORY_PROVIDER_POLICY:-}" ]] ||
+    ACTIVATION_ARGS+=(--policy "$FACTORY_PROVIDER_POLICY")
   if ! ACTIVATION_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-activation.py" \
-      --config "$FACTORY_PROVIDER_ACTIVATION" \
-      --contract-version "$FACTORY_RELEASE_CONTRACT_VERSION" \
-      --route-id "$SELECTED_ROUTE_ID" 2>/dev/null)"; then
+      "${ACTIVATION_ARGS[@]}" --route-id "$SELECTED_ROUTE_ID" 2>/dev/null)"; then
     echo "isolated-v1 activation is invalid for the selected route" >&2
     exit 3
   fi
@@ -1173,7 +1227,7 @@ for key in keys:
               "$ACTIVATED_ADAPTER" == - && "$ACTIVATED_POLICY_HASH" == - ]]; then
           [[ "$ROLE" == "reviewer" ]] || ISOLATED_RUN=1
         elif [[ "$EXECUTION_MODE" == "cli-concurrent-v1" &&
-                "$FACTORY_RELEASE_CONTRACT_VERSION" == "1.7.0" &&
+                "$PROVIDER_CONTRACT_VERSION" == "1.7.0" &&
                 "$ACTIVATED_ADAPTER" == "$ADAPTER" &&
                 "$ACTIVATED_POLICY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
           CURRENT_POLICY_HASH="$(python3 - "$FACTORY_PROVIDER_POLICY" <<'PY'
@@ -1370,9 +1424,9 @@ raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
   CLI_ATTEMPT_ACTIVE=1
 fi
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 &&
-      ( "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
-        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ) &&
-      -n "${FACTORY_PROVIDER_DB:-}" ]]; then
+      ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
+        "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ) &&
+      -n "${FACTORY_PROVIDER_DB:-}" && -f "$FACTORY_PROVIDER_DB" ]]; then
   LEGACY_INTERVAL_ID="legacy-$RUN_ID"
   LEGACY_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
   LEGACY_ENTER_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
@@ -1581,6 +1635,7 @@ fi
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]]; then
   rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 fi
+start_lease_heartbeat
 
 # --- run one task-bearing process in an isolated process group ---
 if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
@@ -1689,6 +1744,15 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       -- /usr/bin/env -i
         "HOME=$HOME" "PATH=$PATH" "TMPDIR=${TMPDIR:-/tmp}"
         "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "LANG=${LANG:-C}"
+        "CODEX_PINNED=${CODEX_PINNED:-}" "CLAUDE_CODE_PINNED=${CLAUDE_CODE_PINNED:-}"
+        "CURSOR_AGENT_VERSION=${CURSOR_AGENT_VERSION:-}"
+        "CURSOR_AGENT_BIN=${CURSOR_AGENT_BIN:-agent}"
+        "FACTORY_CURSOR_SESSION_HOME=${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
+        "FACTORY_CURSOR_INTERNAL_SANDBOX=${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}"
+        "FACTORY_PROBE_TIMEOUT_SEC=${FACTORY_PROBE_TIMEOUT_SEC:-10}"
+        "FACTORY_TEST_MODE=${FACTORY_TEST_MODE:-0}"
+        "FACTORY_TRUSTED_TEST_HARNESS=${FACTORY_TRUSTED_TEST_HARNESS:-0}"
+        "MOCK_SLEEP=${MOCK_SLEEP:-0}"
         GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl
         GIT_CONFIG_VALUE_0=disabled://factory-provider-must-not-push
         "$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK"
@@ -1910,6 +1974,12 @@ exec 8<&-
 printf '%s\n' "$RESULT" | \
   python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUNS_DIR/$RUN_ID.out"
 
+if ! stop_lease_heartbeat; then
+  echo "role_exit_control_plane_mutation: dispatcher lease heartbeat failed" >&2
+  CONTROL_PLANE_MUTATION=1
+  STATUS=11
+fi
+
 PROVIDER_STATUS="$STATUS"
 if [[ "$CONTROL_PLANE_MUTATION" -eq 0 &&
       -n "$CANCELLATION_REASON" ]]; then
@@ -2035,6 +2105,22 @@ else
 fi
 
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  if [[ "$RUN_GROUP_TERMINATED" -ne 1 ]]; then
+    echo "role_exit_control_plane_mutation: CLI process group survived; reservation retained" >&2
+    STATUS=11
+    printf '%s\n' "$RESULT"
+    exit "$STATUS"
+  fi
+  for _terminal_lock_try in $(seq 1 "$LOCK_ATTEMPTS"); do
+    mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
+    sleep 0.1
+  done
+  if [[ "$HELD_LAUNCH_LOCK" -ne 1 ]]; then
+    echo "role_exit_control_plane_mutation: launch lock stuck before CLI terminalization" >&2
+    STATUS=11
+    printf '%s\n' "$RESULT"
+    exit "$STATUS"
+  fi
   CLI_TERMINAL_RESULT="failed"
   [[ "$STATUS" -ne 0 ]] || CLI_TERMINAL_RESULT="succeeded"
   [[ "$CANCELLATION_ACCEPTED" -eq 0 ]] || CLI_TERMINAL_RESULT="cancelled"
@@ -2068,6 +2154,15 @@ else
     echo "WARNING: effective ledger materialization failed for run $RUN_ID; manifest remains authoritative" >&2
   fi
   rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
+fi
+
+if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  if ! release_active_run_claim; then
+    echo "role_exit_control_plane_mutation: CLI run claim could not be terminalized" >&2
+    STATUS=11
+  fi
+  rmdir "$LAUNCH_LOCK" 2>/dev/null || STATUS=11
+  HELD_LAUNCH_LOCK=0
 fi
 
 finalize_global_ledger
