@@ -385,6 +385,9 @@ Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
 lease state after stopping recorded runs.
+Renewal serializes only on the dispatcher lease lock, not the provider launch
+lock; matching ownership and pre/post mutation control checks keep maintenance
+and kill fail-closed while unrelated provider entry cannot starve a heartbeat.
 
 The Contract 1.6 Hermes supervisor is deliberately one-shot: one invocation
 asks the stable launcher for one deterministic claim, starts at most one

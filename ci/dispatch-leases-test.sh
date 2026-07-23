@@ -145,6 +145,38 @@ else
   fail "stale lease blocks work until its owner renews" "stale=$STALE_STAGE renewed=$RENEWED_STAGE"
 fi
 
+mkdir "$PRODUCT/factory/.launch.lock"
+BUSY_RENEW_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
+  > "$TMP/busy-renew.out" 2>&1 || BUSY_RENEW_RC=$?
+if [[ "$BUSY_RENEW_RC" -eq 0 && -d "$PRODUCT/factory/.launch.lock" ]]; then
+  pass "lease renewal does not wait for an unrelated provider launch lock"
+else
+  fail "lease renewal does not wait for an unrelated provider launch lock" "status=$BUSY_RENEW_RC"
+fi
+cp "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json" "$TMP/busy-lease-before.json"
+WRONG_BUSY_RENEW_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" \
+  --lease 0000000000000000000000000000000000000000000000000000000000000000 \
+  >/dev/null 2>&1 || WRONG_BUSY_RENEW_RC=$?
+if [[ "$WRONG_BUSY_RENEW_RC" -ne 0 ]] &&
+   cmp -s "$TMP/busy-lease-before.json" "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json"; then
+  pass "busy launch lock does not weaken exact renewal ownership"
+else
+  fail "busy launch lock does not weaken exact renewal ownership" "status=$WRONG_BUSY_RENEW_RC"
+fi
+touch "$PRODUCT/factory/MAINTENANCE"
+BLOCKED_BUSY_RENEW_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
+  >/dev/null 2>&1 || BLOCKED_BUSY_RENEW_RC=$?
+rm "$PRODUCT/factory/MAINTENANCE"
+rmdir "$PRODUCT/factory/.launch.lock"
+if [[ "$BLOCKED_BUSY_RENEW_RC" -eq 4 ]]; then
+  pass "maintenance still blocks renewal while the launch lock is busy"
+else
+  fail "maintenance still blocks renewal while the launch lock is busy" "status=$BLOCKED_BUSY_RENEW_RC"
+fi
+
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null
 RECLAIMED="$(FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-908)"
 RECLAIMED_ID="$(printf '%s\n' "$RECLAIMED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
