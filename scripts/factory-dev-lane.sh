@@ -2181,6 +2181,19 @@ product_role_run() {
 
 product_reconcile_reviewer() {
   local root="$1" ticket="$2"
+  python3 - "$root/product/factory/runs" "$ticket" <<'PY' || return 0
+import pathlib, sys
+runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]
+for path in runs.glob("*.meta"):
+    values={}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value=line.partition("=")
+        if separator: values[key]=value
+    if (values.get("ticket")==ticket and values.get("role")=="reviewer" and
+        values.get("phase")=="terminal" and values.get("exit_status")=="0"):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
   lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
     --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
     --action reviewer-reconcile >/dev/null

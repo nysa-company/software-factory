@@ -431,6 +431,20 @@ printf '%s\n' "$product_reconcile_source" | grep -Fq 'scripts/ticket-state.sh' |
   fail "development scheduler does not use the shared trusted reconciliation helper"
 printf '%s\n' "$product_reconcile_source" | grep -Fq -- '--action reviewer-reconcile' ||
   fail "development scheduler does not request shared reviewer reconciliation"
+eval "$product_reconcile_source"
+RECONCILE_GUARD="$TMP/reviewer-reconcile-guard"
+mkdir -p "$RECONCILE_GUARD/product/factory/runs"
+lane_env() { printf '%s\n' called >>"$RECONCILE_GUARD/calls"; }
+product_reconcile_reviewer "$RECONCILE_GUARD" T-1 ||
+  fail "scheduler rejected a ticket before its first Reviewer output"
+[[ ! -e "$RECONCILE_GUARD/calls" ]] ||
+  fail "scheduler reconciled before a successful Reviewer output existed"
+printf '%s\n' ticket=T-1 role=reviewer phase=terminal exit_status=0 \
+  >"$RECONCILE_GUARD/product/factory/runs/reviewer.meta"
+product_reconcile_reviewer "$RECONCILE_GUARD" T-1 ||
+  fail "scheduler did not reconcile a successful Reviewer output"
+[[ "$(cat "$RECONCILE_GUARD/calls")" == called ]] ||
+  fail "scheduler did not use the shared reconciliation helper exactly once"
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
