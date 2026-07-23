@@ -460,11 +460,55 @@ run_product_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()
 if grep -Eq 'retries\[|retry_after|product_role_retryable' <<<"$run_product_source"; then
   fail "product scheduler retained automatic provider retries"
 fi
-for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_TICKETS=' \
-  'RESUME_NEXT=product-resume-plan'; do
+for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_RECOMMENDED=1' \
+  'RESUME_TICKETS=' 'RESUME_NEXT=product-resume-plan' 'FAILED_STAGE=' \
+  'COMPLETED_ROLES=' 'REMAINING_BUDGET_USD=' 'RETAINED_ROOT=' \
+  'RESUME_COMMAND='; do
   grep -Fq "$expected" <<<"$run_product_source" ||
     fail "product failure omitted explicit same-lane resume handoff: $expected"
 done
+eval "$(sed -n '/^product_completed_roles()/,/^run_product_internal()/p' \
+  "$LANE" | sed '$d')"
+TIMING_ROOT="$TMP/product-timing"
+mkdir -p "$TIMING_ROOT/kit/scripts" "$TIMING_ROOT/runtime" \
+  "$TIMING_ROOT/product/factory/runs"
+cat >"$TIMING_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+#!/usr/bin/env python3
+import json
+base={
+  "ticket_id":"T-1","prepared_at":9,"admitted_at":10,"submitted_at":11,
+  "state":"terminal","terminal_result":"succeeded","reserve_micro_usd":10000000,
+  "charge_micro_usd":10000000,
+}
+print(json.dumps({"attempts":[
+  dict(base,attempt_id="one",go_at=10,terminal_at=20),
+  dict(base,attempt_id="two",go_at=12,terminal_at=18),
+]}))
+PY
+chmod +x "$TIMING_ROOT/kit/scripts/provider-coordinator.py"
+: >"$TIMING_ROOT/runtime/provider-state.sqlite3"
+printf '%s\n' 'PER_TICKET_BUDGET_USD=100.00' \
+  >"$TIMING_ROOT/product/factory/ENVELOPE.env"
+for timing_run in one two; do
+  printf '%s\n' phase=terminal ticket=T-1 role=planner exit_status=0 \
+    >"$TIMING_ROOT/product/factory/runs/$timing_run.meta"
+done
+[[ "$(product_completed_roles "$TIMING_ROOT" T-1)" == planner ]] ||
+  fail "resume diagnostics lost completed-role evidence"
+[[ "$(product_remaining_budget "$TIMING_ROOT" T-1)" == 80.000000 ]] ||
+  fail "resume diagnostics calculated the wrong remaining budget"
+product_write_timing_report "$TIMING_ROOT" 5 35
+python3 - "$TIMING_ROOT/runtime/product-timing.json" <<'PY' ||
+import json, pathlib, stat, sys
+path=pathlib.Path(sys.argv[1]); value=json.loads(path.read_text())
+assert stat.S_IMODE(path.stat().st_mode)==0o600
+assert value["schema"]=="factory-dev-product-timing/v1"
+assert value["elapsed_seconds"]==30
+assert value["maximum_provider_overlap"]==2
+assert value["successful_role_replay_count"]==1
+assert len(value["attempts"])==2
+PY
+  fail "product timing evidence was incomplete"
 eval "$(sed -n '/^product_role_for_stage()/,/^}/p' "$LANE")"
 if product_role_for_stage 'FIX builder-or-test-author' >/dev/null; then
   fail "development lane guessed Builder for ambiguous repair ownership"
@@ -846,6 +890,7 @@ subscription_env() {
 }
 product_reconcile_reviewer() { :; }
 next_stage() { printf '%s\n' AWAIT-OPERATOR; }
+product_write_timing_report() { :; }
 die() { exit 1; }
 partial_output="$(run_product_internal "$PARTIAL_ROOT" test-approval)"
 grep -qx 'STATUS=AWAIT-OPERATOR' <<<"$partial_output" ||

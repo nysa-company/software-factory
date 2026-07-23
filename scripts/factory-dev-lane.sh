@@ -2210,11 +2210,112 @@ product_role_for_stage() {
   esac
 }
 
+product_completed_roles() {
+  local root="$1" ticket="$2"
+  python3 - "$root/product/factory/runs" "$ticket" <<'PY'
+import pathlib, sys
+runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]
+order=("planner","spec-linter","test-author","builder","reviewer","narrator")
+completed=set()
+for path in runs.glob("*.meta"):
+    values={}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value=line.partition("=")
+        if separator: values[key]=value
+    if (values.get("ticket")==ticket and values.get("phase")=="terminal" and
+        values.get("exit_status")=="0"):
+        completed.add(values.get("role"))
+print(",".join(role for role in order if role in completed) or "none")
+PY
+}
+
+product_remaining_budget() {
+  local root="$1" ticket="$2" envelope
+  envelope="$root/product/factory/ENVELOPE.env"
+  [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||
+    envelope="$root/runtime/product-envelope/$ticket.env"
+  python3 - "$root/kit/scripts/provider-coordinator.py" \
+    "$root/runtime/provider-state.sqlite3" "$envelope" "$ticket" <<'PY'
+import json, pathlib, subprocess, sys
+coordinator, database, envelope_path, ticket=sys.argv[1:]
+envelope=pathlib.Path(envelope_path)
+values={}
+for line in envelope.read_text(encoding="utf-8").splitlines():
+    key, separator, value=line.partition("=")
+    if separator: values[key]=value
+cap=round(float(values["PER_TICKET_BUDGET_USD"])*1_000_000)
+status=json.loads(subprocess.check_output(
+    [sys.executable,coordinator,"--db",database,"status"],text=True))
+used=0
+for attempt in status["attempts"]:
+    if attempt["ticket_id"] != ticket: continue
+    used += (attempt["charge_micro_usd"] if attempt["state"]=="terminal"
+             else attempt["reserve_micro_usd"])
+print(f"{max(0,cap-used)/1_000_000:.6f}")
+PY
+}
+
+product_write_timing_report() {
+  local root="$1" started="$2" finished="$3"
+  python3 - "$root/kit/scripts/provider-coordinator.py" \
+    "$root/runtime/provider-state.sqlite3" "$root/runtime/product-timing.json" \
+    "$root/product/factory/runs" "$started" "$finished" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile
+coordinator, database, output_path, runs_path, started_value, finished_value=sys.argv[1:]
+output=pathlib.Path(output_path); runs=pathlib.Path(runs_path)
+started=int(started_value); finished=int(finished_value)
+status=json.loads(subprocess.check_output(
+    [sys.executable,coordinator,"--db",database,"status"],text=True))
+attempts=status["attempts"]
+events=[]
+for attempt in attempts:
+    if attempt["go_at"] is not None and attempt["terminal_at"] is not None:
+        events.extend(((attempt["go_at"],1),(attempt["terminal_at"],-1)))
+active=maximum=0
+for _, delta in sorted(events, key=lambda item:(item[0],-item[1])):
+    active += delta
+    maximum=max(maximum,active)
+successful={}
+for path in runs.glob("*.meta"):
+    values={}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value=line.partition("=")
+        if separator: values[key]=value
+    if values.get("phase")=="terminal" and values.get("exit_status")=="0":
+        key=(values.get("ticket"),values.get("role"))
+        successful[key]=successful.get(key,0)+1
+report={
+  "schema":"factory-dev-product-timing/v1",
+  "batch_started_at":started,
+  "batch_terminal_at":finished,
+  "elapsed_seconds":max(0,finished-started),
+  "maximum_provider_overlap":maximum,
+  "successful_role_replay_count":sum(max(0,count-1) for count in successful.values()),
+  "attempts":[{
+    key:attempt[key] for key in (
+      "attempt_id","ticket_id","prepared_at","admitted_at","go_at",
+      "submitted_at","terminal_at","terminal_result","reserve_micro_usd",
+      "charge_micro_usd")
+  } for attempt in attempts],
+}
+fd, temporary=tempfile.mkstemp(prefix=output.name+".",dir=output.parent)
+try:
+    os.fchmod(fd,0o600)
+    with os.fdopen(fd,"w",encoding="utf-8") as stream:
+        json.dump(report,stream,sort_keys=True,separators=(",",":"))
+        stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
+    os.replace(temporary,output)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PY
+}
+
 run_product_internal() {
   local root="$1" supplied="$2" readiness_proven="${3:-0}"
   local stored day i ticket lease_json stage role account family now
   local done_count failed_count progress pid rc prior rollback_failed resume_csv
-  local -a leases pids states renewals roles resume_reasons
+  local batch_started batch_finished completed remaining
+  local -a leases pids states renewals roles resume_reasons failed_stages
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -2231,6 +2332,7 @@ run_product_internal() {
   [[ "$readiness_proven" == 1 ]] || subscription_ready "$root"
   subscription_provider_idle || die "another subscription provider call is active"
   mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
+  batch_started="$(date +%s)"
   mkdir -p "$root/runtime/product-scheduler"
   chmod 700 "$root/runtime/product-scheduler"
   for i in "${!PRODUCT_TICKETS[@]}"; do
@@ -2253,6 +2355,7 @@ run_product_internal() {
       <<<"$lease_json")"
     pids[$i]=0; states[$i]=idle; renewals[$i]=0
     roles[$i]=""; resume_reasons[$i]=control-boundary-failure
+    failed_stages[$i]=control-boundary
   done
   done_count=0; failed_count=0
   while [[ "$done_count" -lt "${#PRODUCT_TICKETS[@]}" &&
@@ -2284,11 +2387,14 @@ run_product_internal() {
         renewals[$i]="$now"
       fi
       (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || {
+        failed_stages[$i]=reviewer-reconcile
         states[$i]=failed; failed_count=$((failed_count + 1)); continue;
       }
       stage="$(TICKET="$ticket"; next_stage "$root" "${leases[$i]}")" || {
+        failed_stages[$i]=sequencing
         states[$i]=failed; failed_count=$((failed_count + 1)); continue;
       }
+      failed_stages[$i]="$stage"
       if [[ "$stage" == AWAIT-OPERATOR* ]]; then
         [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] || {
           states[$i]=failed; failed_count=$((failed_count + 1)); continue;
@@ -2302,6 +2408,7 @@ run_product_internal() {
       role="$(product_role_for_stage "$stage")" ||
         { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
       roles[$i]="$role"
+      failed_stages[$i]="$role"
       read -r account family < <(python3 - "$root/worktrees/$ticket/factory/route-plans/$ticket.json" "$role" <<'PY'
 import json, sys
 selection=json.load(open(sys.argv[1]))["resolution"]["selections"][sys.argv[2]]
@@ -2331,21 +2438,40 @@ PY
         --ticket "${PRODUCT_TICKETS[$i]}" --lease "${leases[$i]}" >/dev/null || true
     fi
   done
+  batch_finished="$(date +%s)"
+  product_write_timing_report "$root" "$batch_started" "$batch_finished" ||
+    die "could not persist product timing evidence"
   if [[ "$done_count" -ne "${#PRODUCT_TICKETS[@]}" || "$failed_count" -ne 0 ]]; then
     resume_csv=""
     for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == failed ]] || continue
       resume_csv="${resume_csv:+$resume_csv,}${PRODUCT_TICKETS[$i]}"
+      completed="$(product_completed_roles "$root" "${PRODUCT_TICKETS[$i]}")" ||
+        completed=unknown
+      remaining="$(product_remaining_budget "$root" "${PRODUCT_TICKETS[$i]}")" ||
+        remaining=unknown
       printf 'RESUME_REASON=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
         "${resume_reasons[$i]}" >&2
+      printf 'FAILED_STAGE=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
+        "${failed_stages[$i]}" >&2
+      printf 'COMPLETED_ROLES=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
+        "$completed" >&2
+      printf 'REMAINING_BUDGET_USD=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
+        "$remaining" >&2
     done
-    printf 'STATUS=RESUME-REQUIRED\nRESUME_TICKETS=%s\nRESUME_NEXT=product-resume-plan\n' \
+    printf 'STATUS=RESUME-REQUIRED\nRESUME_RECOMMENDED=1\nRESUME_TICKETS=%s\n' \
       "$resume_csv" >&2
+    printf 'RESUME_NEXT=product-resume-plan\n' >&2
+    printf 'RETAINED_ROOT=%s\n' "$root" >&2
+    printf "RESUME_COMMAND=bash '%s/scripts/factory-dev-lane.sh' product-resume-plan --root '%s' --tickets '%s'\n" \
+      "$SOURCE_ROOT" "$root" "$resume_csv" >&2
     die "one or more product lifecycles failed; successful siblings were retained"
   fi
   subscription_provider_idle || die "product lifecycle left a provider process"
   echo "STATUS=AWAIT-OPERATOR"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
+  echo "TIMING_REPORT=$root/runtime/product-timing.json"
+  echo "ELAPSED_SECONDS=$((batch_finished - batch_started))"
 }
 
 product_export_patch() {

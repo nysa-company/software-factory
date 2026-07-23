@@ -50,9 +50,13 @@ instead of immediately probing the same session a third time.
 Every failed role attempt is terminal and charged conservatively. The scheduler
 does not retry automatically, including for a pre-submission authentication or
 model-availability miss. After the lane drains it reports the failed ticket set
-and `product-resume-plan` as the next control step; that explicit same-lane
-resume revalidates readiness, evidence, clean heads, routes, envelopes, budget
-day, and the mechanical next stage before issuing a new one-use approval.
+and an exact `product-resume-plan` command as the next control step, together
+with the failed stage, completed roles, remaining ticket budget, and retained
+root. That explicit same-lane resume revalidates readiness, evidence, clean
+heads, routes, envelopes, budget day, and the mechanical next stage before
+issuing a new one-use approval. Every batch also writes an owner-only timing
+report with coordinator admission/GO/submission/terminal timestamps, elapsed
+time, successful-role replay count, and maximum provider overlap.
 
 The product scheduler launches every eligible ticket without interpreting
 provider capacity. The coordinator owns atomic admission and may wait up to
