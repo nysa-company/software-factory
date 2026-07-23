@@ -1521,6 +1521,7 @@ PY
     die "product resume selection is not a strict active-lane subset"
   product_resume_drained "$root" ||
     die "product resume requires a fully drained, current-day lane"
+  subscription_ready "$root"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
     stage="$(product_resume_stage "$root" "$ticket")" ||
       die "product resume could not resolve the current stage: $ticket"
@@ -2081,7 +2082,8 @@ product_role_for_stage() {
 }
 
 run_product_internal() {
-  local root="$1" supplied="$2" stored day i ticket lease_json stage role account family now
+  local root="$1" supplied="$2" readiness_proven="${3:-0}"
+  local stored day i ticket lease_json stage role account family now
   local done_count failed_count progress pid rc prior rollback_failed
   local -a leases pids accounts families states renewals retries retry_after roles active_routes
   require_lane_mode "$root" product
@@ -2095,7 +2097,9 @@ run_product_internal() {
     die "product approval hash does not match or was already used"
   [[ "$(product_approval_hash "$root")" == "$supplied" ]] ||
     die "product approval inputs drifted after planning"
-  subscription_ready "$root"
+  [[ "$readiness_proven" == 0 || "$readiness_proven" == 1 ]] ||
+    die "product readiness proof is invalid"
+  [[ "$readiness_proven" == 1 ]] || subscription_ready "$root"
   subscription_provider_idle || die "another subscription provider call is active"
   mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
   mkdir -p "$root/runtime/product-scheduler"
@@ -2663,11 +2667,12 @@ raise SystemExit(0 if "resume_sha256" in json.load(open(sys.argv[1])) else 1)
 PY
     then
       resume=1
+      subscription_ready "$root"
       validate_product_resume_basis "$root" 1 ||
         die "product resume basis drifted before execution"
     fi
     if [[ "$resume" -eq 1 ]]; then
-      if run_product_internal "$root" "$approve"; then
+      if run_product_internal "$root" "$approve" 1; then
         restore_product_resume_source "$root"
       else
         exit $?

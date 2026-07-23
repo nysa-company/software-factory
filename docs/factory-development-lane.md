@@ -42,6 +42,9 @@ are not consulted. If a copied session is unavailable, the lane stops before
 consuming approval, claiming a lease, reserving budget, or submitting a task.
 Each readiness probe gets three attempts with a one-second delay between
 misses so a short CLI session-state transition cannot exhaust every retry.
+Retained-product resumes run that probe before hashing the plan and again
+before validating it for execution; the internal run reuses the second result
+instead of immediately probing the same session a third time.
 
 ## Isolated product proof and resume
 

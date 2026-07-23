@@ -191,6 +191,12 @@ printf '%s\n' 0 >"$READINESS_ROOT/session-home/.transient-auth"
 ) || fail "subscription readiness did not outwait transient authentication"
 [[ "$(<"$READINESS_ROOT/session-home/.transient-auth")" == 2 ]] ||
   fail "subscription readiness did not exercise bounded authentication retries"
+sed -n '/^product_resume_plan()/,/^}/p' "$LANE" |
+  grep -q 'subscription_ready "\$root"' ||
+  fail "product resume planning does not stabilize authentication before approval"
+sed -n '/^run_product_internal()/,/^}/p' "$LANE" |
+  grep -Fq '[[ "$readiness_proven" == 1 ]] || subscription_ready "$root"' ||
+  fail "product runtime cannot reuse the trusted resume readiness proof"
 
 EXPORT_ROOT="$TMP/product-export"
 EXPORT_WORK="$EXPORT_ROOT/worktrees/T-1"
