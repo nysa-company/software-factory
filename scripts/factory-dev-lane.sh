@@ -1046,6 +1046,21 @@ elif value.get("schema") == "factory-dev-product-seed-accounting/v3":
             __import__("datetime").timezone.utc
         ).date().isoformat()):
         raise SystemExit(1)
+elif value.get("schema") == "factory-dev-product-seed-accounting/v4":
+    if set(value) != common | {
+        "ticket_caps_micro_usd","aggregate_cap_micro_usd","authorized_by",
+        "authorization_nonce","budget_day"
+    }: raise SystemExit(1)
+    ticket_caps=value["ticket_caps_micro_usd"]
+    aggregate_cap=value["aggregate_cap_micro_usd"]
+    if (not isinstance(ticket_caps, dict) or
+        aggregate_cap != 1_000_000_000 or
+        value["authorized_by"] != "operator" or
+        not re.fullmatch(r"[0-9a-f]{64}", value["authorization_nonce"]) or
+        value["budget_day"] != __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc
+        ).date().isoformat()):
+        raise SystemExit(1)
 else:
     raise SystemExit(1)
 amounts=value.get("reserved_micro_usd")
@@ -1057,10 +1072,19 @@ for ticket, amount in amounts.items():
     if (not isinstance(amount, int) or isinstance(amount, bool) or
         amount < 0):
         raise SystemExit(1)
+if value["schema"].endswith("/v4"):
+    if (set(ticket_caps) != set(amounts) or
+        any(not isinstance(cap, int) or isinstance(cap, bool) or
+            cap < 1 or cap > 300_000_000 for cap in ticket_caps.values())):
+        raise SystemExit(1)
+    if any(amount > ticket_caps[ticket] for ticket, amount in amounts.items()):
+        raise SystemExit(1)
 if value["schema"].endswith("/v3") and any(
     amount > ticket_cap for amount in amounts.values()
 ): raise SystemExit(1)
-if any(amounts[ticket] >= ticket_cap for ticket in tickets): raise SystemExit(1)
+if any(amounts[ticket] >= (
+    ticket_caps[ticket] if value["schema"].endswith("/v4") else ticket_cap
+) for ticket in tickets): raise SystemExit(1)
 if sum(amounts.values()) >= aggregate_cap: raise SystemExit(1)
 PY
   then
@@ -1078,20 +1102,26 @@ import json, os, pathlib, re, sys
 manifest, base_path, output, *tickets=sys.argv[1:]
 value=json.load(open(manifest, encoding="utf-8"))
 amounts=value["reserved_micro_usd"]
-if value["schema"].endswith("/v3"):
-    if (value.get("ticket_cap_micro_usd") != 200_000_000 or
-        value.get("aggregate_cap_micro_usd") != 700_000_000 or
+if value["schema"].endswith(("/v3", "/v4")):
+    if (value["schema"].endswith("/v3") and
+        (value.get("ticket_cap_micro_usd") != 200_000_000 or
+         value.get("aggregate_cap_micro_usd") != 700_000_000) or
+        value["schema"].endswith("/v4") and
+        value.get("aggregate_cap_micro_usd") != 1_000_000_000 or
         value.get("authorized_by") != "operator"):
         raise SystemExit(1)
-    ticket_cap=value["ticket_cap_micro_usd"]
+    ticket_caps=value.get("ticket_caps_micro_usd")
+    ticket_cap=value.get("ticket_cap_micro_usd")
     aggregate_cap=value["aggregate_cap_micro_usd"]
     day=pathlib.Path(output,"budget-day")
     day.write_text(value["budget_day"]+"\n",encoding="utf-8"); os.chmod(day,0o600)
 else:
+    ticket_caps=None
     ticket_cap,aggregate_cap=100_000_000,500_000_000
 base=pathlib.Path(base_path).read_text(encoding="utf-8")
 for ticket in tickets:
-    remaining=(ticket_cap-amounts[ticket])/1_000_000
+    cap=ticket_caps[ticket] if ticket_caps is not None else ticket_cap
+    remaining=(cap-amounts[ticket])/1_000_000
     text,count=re.subn(r"(?m)^PER_TICKET_BUDGET_USD=.*$",
                        f"PER_TICKET_BUDGET_USD={remaining:.6f}",base,count=1)
     if count != 1: raise SystemExit(1)
@@ -1107,7 +1137,7 @@ PY
 consume_product_seed_authorization() {
   local manifest="$1" expected="$2" parent root digest nonce day marker
   [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["schema"])' \
-    "$manifest")" == factory-dev-product-seed-accounting/v3 ]] || return 0
+    "$manifest")" =~ ^factory-dev-product-seed-accounting/v[34]$ ]] || return 0
   parent="$(physical "$(dirname "$manifest")")"
   refuse_production_path "$parent"
   [[ "$(stat -f '%Su:%Lp' "$parent")" == "$(id -un):700" ]] ||
