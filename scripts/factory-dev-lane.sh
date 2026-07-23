@@ -14,6 +14,7 @@ TICKET=T-900001
 TICKETS=(T-900001 T-900002 T-900003 T-900004)
 PRODUCT_SOURCE=""
 PRODUCT_BASE=""
+PRODUCT_SEED_BUNDLE=""
 PRODUCT_TICKETS=()
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
@@ -34,7 +35,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <T-NNN,...>
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <T-NNN,...> [--seed-bundle <absolute-bundle>]
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-export --root <absolute-lane-root>
        factory-dev-lane.sh clean --root <absolute-lane-root>
@@ -448,7 +449,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash=""
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -544,14 +545,22 @@ PY
         "$root/worktrees/$ticket" "$lane_control_sha"
       git -C "$root/worktrees/$ticket" push -q -u origin "ticket/$ticket"
     done
+    if [[ -n "$PRODUCT_SEED_BUNDLE" ]]; then
+      seed_product_worktrees "$root" "$PRODUCT_SEED_BUNDLE" "$PRODUCT_BASE" \
+        "${lane_tickets[@]}"
+      seed_hash="$(sha256_file "$PRODUCT_SEED_BUNDLE")"
+    fi
     python3 - "$root/runtime/product-source.json" "$PRODUCT_BASE" \
       "$(git -C "$PRODUCT_SOURCE" rev-parse "$PRODUCT_BASE^{tree}")" "$lane_control_sha" \
+      "$seed_hash" -- \
       "${lane_tickets[@]}" <<'PY'
 import json, os, sys
-path, base, tree, control, *tickets=sys.argv[1:]
+path, base, tree, control, seed, separator, *tickets=sys.argv[1:]
+if separator != "--": raise SystemExit(1)
 with open(path, "w", encoding="utf-8") as stream:
     json.dump({"schema":"factory-dev-product-source/v1","base_sha":base,
-               "base_tree":tree,"lane_control_sha":control,"tickets":tickets},
+               "base_tree":tree,"lane_control_sha":control,
+               "seed_bundle_sha256":seed or None,"tickets":tickets},
               stream, sort_keys=True, separators=(",",":")); stream.write("\n")
 os.chmod(path, 0o600)
 PY
@@ -796,6 +805,79 @@ os.chmod(path, 0o600)
 PY
   validate_runtime_paths "$root"
   printf '%s\n' "$root"
+}
+
+seed_product_worktrees() {
+  local root="$1" bundle="$2" base="$3" ticket commit subject index
+  local -a commits
+  shift 3
+  [[ "$bundle" == /* && -f "$bundle" && ! -L "$bundle" ]] ||
+    die "product seed bundle must be an absolute regular file"
+  refuse_production_path "$bundle"
+  [[ "$(stat -f '%Su:%Lp' "$bundle")" == "$(id -un):600" ]] ||
+    die "product seed bundle must be owner-only"
+  git -C "$root/product" bundle verify "$bundle" >/dev/null 2>&1 ||
+    die "product seed bundle is invalid"
+  for ticket in "$@"; do
+    git -C "$root/worktrees/$ticket" fetch -q "$bundle" \
+      "refs/heads/ticket/$ticket:refs/retry/$ticket" ||
+      die "product seed bundle is missing $ticket"
+    git -C "$root/worktrees/$ticket" merge-base --is-ancestor \
+      "$base" "refs/retry/$ticket" || die "product seed does not descend from the approved base"
+    commits=()
+    while IFS= read -r commit; do commits+=("$commit"); done < <(
+      git -C "$root/worktrees/$ticket" rev-list --reverse \
+        "$base..refs/retry/$ticket"
+    )
+    [[ "${#commits[@]}" -ge 2 ]] || die "product seed history is incomplete: $ticket"
+    [[ "$(git -C "$root/worktrees/$ticket" show -s --format=%s "${commits[0]}")" == \
+       'Configure isolated Contract 1.7 product lane' ]] ||
+      die "product seed control boundary is unrecognized: $ticket"
+    subject="$(git -C "$root/worktrees/$ticket" show -s --format=%s "${commits[1]}")"
+    [[ "$subject" == "$ticket: pin kit and model route plan" ]] ||
+      die "product seed route boundary is unrecognized: $ticket"
+    index=2
+    while [[ "$index" -lt "${#commits[@]}" ]]; do
+      commit="${commits[$index]}"
+      python3 - "$root/worktrees/$ticket" "$commit" "$ticket" <<'PY' ||
+        die "product seed commit crosses a control boundary: $ticket"
+import subprocess, sys
+worktree, commit, ticket=sys.argv[1:]
+paths=subprocess.check_output(
+    ["git","-C",worktree,"diff-tree","--no-commit-id","--name-only","-r",commit],
+    text=True).splitlines()
+for path in paths:
+    if (path in {"factory/KIT_PIN","factory/PROJECT.env","factory/ledger.csv"} or
+        path.startswith("factory/route-plans/") or
+        path.startswith("factory/runs/") or
+        (path.startswith("factory/tickets/") and path != f"factory/tickets/{ticket}.md")):
+        raise SystemExit(1)
+PY
+      git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
+        -c user.email=factory-dev@local cherry-pick -q "$commit" ||
+        die "product seed commit did not apply cleanly: $ticket"
+      index=$((index + 1))
+    done
+    python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" <<'PY'
+from pathlib import Path
+import re, sys
+p=Path(sys.argv[1]); lines=[]
+for line in p.read_text(encoding="utf-8").splitlines():
+    if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
+        lines.append("Retry-Evidence: prior " + line.strip())
+    elif re.fullmatch(r"\s*reviewer round\s+\d+:.*", line, re.I):
+        lines.append("Retry-Evidence: prior " + line.strip())
+    else:
+        lines.append(re.sub(r"^State:\s*.*$", "State: Ready", line))
+p.write_text("\n".join(lines)+"\n", encoding="utf-8")
+PY
+    git -C "$root/worktrees/$ticket" add "factory/tickets/$ticket.md"
+    if ! git -C "$root/worktrees/$ticket" diff --cached --quiet; then
+      git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
+        -c user.email=factory-dev@local commit -qm "$ticket: prepare retained retry evidence"
+    fi
+    git -C "$root/worktrees/$ticket" push -q origin "HEAD:refs/heads/ticket/$ticket"
+  done
 }
 
 append_commit_push() {
@@ -1870,17 +1952,18 @@ case "$command" in
     ;;
   product-plan)
     assert_macos
-    source_repo=""; base_sha=""; ticket_csv=""
+    source_repo=""; base_sha=""; ticket_csv=""; seed_bundle=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --source) source_repo="${2:-}"; shift 2 ;;
         --base-sha) base_sha="${2:-}"; shift 2 ;;
         --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        --seed-bundle) seed_bundle="${2:-}"; shift 2 ;;
         *) usage ;;
       esac
     done
     [[ "$source_repo" == /* && "$base_sha" =~ ^[0-9a-f]{40}$ && -n "$ticket_csv" ]] || usage
-    PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"
+    PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"; PRODUCT_SEED_BUNDLE="$seed_bundle"
     IFS=, read -r -a PRODUCT_TICKETS <<<"$ticket_csv"
     [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || usage
     root="$(create_lane product)"
