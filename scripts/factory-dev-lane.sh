@@ -856,7 +856,7 @@ PY
         die "product seed commit crosses a control boundary: $ticket"
       fi
       git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
-        -c user.email=factory-dev@local cherry-pick -q "$commit" ||
+        -c user.email=factory-dev@local cherry-pick "$commit" >/dev/null ||
         die "product seed commit did not apply cleanly: $ticket"
       index=$((index + 1))
     done
