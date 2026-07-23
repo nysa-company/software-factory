@@ -153,6 +153,14 @@ product_scheduler_admits cursor anthropic codex-native:openai cursor:openai ||
 if product_scheduler_admits cursor anthropic codex-native:openai cursor:openai cursor:anthropic; then
   fail "scheduler exceeded the Cursor account cap"
 fi
+eval "$(sed -n '/^product_role_retryable()/,/^}/p' "$LANE")"
+printf '%s\n' 'Resolved Cursor model is unavailable' >"$TMP/retryable-role.log"
+product_role_retryable "$TMP/retryable-role.log" ||
+  fail "scheduler rejected the bounded model-readiness retry"
+printf '%s\n' 'subscription authentication is unavailable' >"$TMP/retryable-role.log"
+if product_role_retryable "$TMP/retryable-role.log"; then
+  fail "scheduler retried a non-readiness provider failure"
+fi
 
 review_pattern='^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$'
 printf '%s\n' '## Verdict: Approve' | grep -Eiq "$review_pattern" ||

@@ -1531,10 +1531,16 @@ product_scheduler_admits() {
   [[ "$total" -lt 4 && "$account_count" -lt 2 && "$family_count" -lt 2 ]]
 }
 
+product_role_retryable() {
+  local log="$1"
+  [[ -f "$log" && ! -L "$log" ]] || return 1
+  grep -Fxq 'Resolved Cursor model is unavailable' "$log"
+}
+
 run_product_internal() {
   local root="$1" supplied="$2" stored day i ticket lease_json stage role account family now
   local done_count failed_count progress pid rc
-  local -a leases pids accounts families states renewals active_routes
+  local -a leases pids accounts families states renewals retries retry_after roles active_routes
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -1558,6 +1564,7 @@ run_product_internal() {
     leases[$i]="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
       <<<"$lease_json")"
     pids[$i]=0; accounts[$i]=""; families[$i]=""; states[$i]=idle; renewals[$i]=0
+    retries[$i]=0; retry_after[$i]=0; roles[$i]=""
   done
   done_count=0; failed_count=0
   while [[ "$done_count" -lt 4 && $((done_count + failed_count)) -lt 4 ]]; do
@@ -1567,13 +1574,22 @@ run_product_internal() {
       pid="${pids[$i]}"
       if ! kill -0 "$pid" 2>/dev/null; then
         rc=0; wait "$pid" || rc=$?
-        if [[ "$rc" -eq 0 ]]; then states[$i]=idle; else states[$i]=failed; failed_count=$((failed_count + 1)); fi
+        if [[ "$rc" -eq 0 ]]; then
+          states[$i]=idle
+        elif [[ "${retries[$i]}" -lt 1 ]] &&
+             product_role_retryable "$root/runtime/product-scheduler/${PRODUCT_TICKETS[$i]}-${roles[$i]}.log"; then
+          retries[$i]=$((retries[$i] + 1)); retry_after[$i]=$(( $(date +%s) + 10 ))
+          states[$i]=idle
+        else
+          states[$i]=failed; failed_count=$((failed_count + 1))
+        fi
         pids[$i]=0; accounts[$i]=""; families[$i]=""; progress=1
       fi
     done
     for i in 0 1 2 3; do
       [[ "${states[$i]}" == idle ]] || continue
       ticket="${PRODUCT_TICKETS[$i]}"; now="$(date +%s)"
+      [[ "$now" -ge "${retry_after[$i]}" ]] || continue
       if [[ $((now - renewals[$i])) -ge 120 ]]; then
         subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" renew \
           --ticket "$ticket" --lease "${leases[$i]}" >/dev/null || {
@@ -1599,6 +1615,7 @@ run_product_internal() {
       fi
       [[ "$stage" == RUN\ * ]] || { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
       role="${stage#RUN }"
+      roles[$i]="$role"
       read -r account family < <(python3 - "$root/worktrees/$ticket/factory/route-plans/$ticket.json" "$role" <<'PY'
 import json, sys
 selection=json.load(open(sys.argv[1]))["resolution"]["selections"][sys.argv[2]]
