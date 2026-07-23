@@ -1196,10 +1196,10 @@ import json, sys
 value = json.load(sys.stdin)
 if value.get("status") != "enabled":
     raise SystemExit(1)
-keys = ("execution_mode", "protocol", "broker_path", "adapter", "model",
-        "provider_family", "account_route", "policy_sha256")
-for key in keys:
-    selected = value.get(key, "api-isolated-v1" if key == "execution_mode" else "-")
+fields = ("execution_mode", "protocol", "broker_path", "adapter", "model",
+          "provider_family", "account_route", "policy_sha256")
+for field in fields:
+    selected = value.get(field, "api-isolated-v1" if field == "execution_mode" else "-")
     if not isinstance(selected, str) or "\n" in selected or selected == "":
         raise SystemExit(1)
     print(selected)

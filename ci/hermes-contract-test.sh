@@ -571,12 +571,13 @@ import sys
 
 policy_path, activation_path = sys.argv[1:]
 limit = {"max_concurrent": 4, "max_starts": 20, "window_seconds": 60}
+account_limit = {"max_concurrent": 2, "max_starts": 20, "window_seconds": 60}
 policy = {
     "schema": "factory-provider-concurrency-policy/v1",
     "coupled_max_concurrent": 4,
     "global": limit,
     "provider_families": {"openai": limit},
-    "account_routes": {"codex-native": limit},
+    "account_routes": {"codex-native": account_limit},
 }
 canonical_policy = json.dumps(policy, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 with open(policy_path, "w", encoding="utf-8") as handle:
