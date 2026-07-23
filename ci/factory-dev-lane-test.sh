@@ -283,12 +283,10 @@ select_product_export_tickets T-2
 [[ "${PRODUCT_TICKETS[*]}" == T-2 ]] ||
   fail "product export did not select the requested completed sibling"
 PRODUCT_TICKETS=(T-1 T-2)
-die() { return 1; }
-if select_product_export_tickets T-2,T-2 ||
-   select_product_export_tickets T-3; then
+if (die() { exit 1; }; select_product_export_tickets T-2,T-2) ||
+   (die() { exit 1; }; select_product_export_tickets T-3); then
   fail "product export accepted an unsafe ticket selection"
 fi
-die() { exit 1; }
 
 VERDICT="$TMP/reviewer.out"
 printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' >"$VERDICT"
@@ -616,15 +614,12 @@ seed_product_worktrees "$SEED_HISTORY_ROOT" "$TMP/seed-history.bundle" \
   fail "late route pin caused retained lifecycle output to be skipped"
 [[ ! -e "$SEED_HISTORY_ROOT/worktrees/T-1/factory/route-plans/T-1.json" ]] ||
   fail "stale retained route plan was replayed"
-grep -qx 'State: Review' \
+grep -qx 'State: Ready' \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
-  fail "retained ticket did not preserve its resume stage"
-grep -qx 'SPEC-LINT: PASS' \
-  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
-  fail "retained ticket lost prerequisite evidence"
-if grep -q '^reviewer round ' \
+  fail "retained ticket was not reset to its evidence-backed start"
+if grep -Eq '^(SPEC-LINT:|reviewer round )' \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md"; then
-  fail "retained ticket kept a stale reviewer verdict"
+  fail "retained ticket kept stale role evidence"
 fi
 die() { return 1; }
 
