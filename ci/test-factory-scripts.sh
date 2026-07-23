@@ -1074,14 +1074,16 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.6.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.7.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
-    fail "unavailable primary selects one redacted Cursor task"
+    fail "unavailable primary selects one redacted Cursor task" \
+      "artifact validation failed: out=$(sed -n '1,4p' "$FALLBACK_OUT" | tr '\n' '|') meta=$(grep -E '^(phase|task_submitted|kit_sha|kit_tree|product_tree|ticket_kit_sha|contract_version|physical_kit_path)=' "$FALLBACK_META" | tr '\n' '|')"
   fi
 else
-  fail "unavailable primary selects one redacted Cursor task"
+  fail "unavailable primary selects one redacted Cursor task" \
+    "route validation failed: ledger=$(tail -n1 "$FALLBACK/factory/runtime-ledger.csv" 2>/dev/null) trace=$(tr '\n' '|' <"$FALLBACK_TRACE") args=$(tail -n2 "$FALLBACK_ARGS" | tr '\n' '|')"
 fi
 
 # Checking roles select the Anthropic-typed Cursor adapter.

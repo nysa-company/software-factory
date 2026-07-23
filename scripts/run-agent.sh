@@ -62,7 +62,7 @@ unset FACTORY_DISPATCH_LEASE_ID
 REPO_ROOT="${FACTORY_ROOT:-$("$FACTORY_TRUSTED_GIT_BIN" rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 [[ "$WORKDIR_SET" -eq 1 ]] || WORKDIR="$REPO_ROOT"
 FACTORY_DIR="$REPO_ROOT/factory"
-BUDGET_DAY="$(date -u +%F)"
+BUDGET_DAY=""
 if [[ -n "${FACTORY_DEV_BUDGET_DAY:-}" ]]; then
   [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
      "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* &&
@@ -76,7 +76,7 @@ if [[ -n "${FACTORY_DEV_BUDGET_DAY:-}" ]]; then
     "$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)/product"/*) ;;
     *) echo "development budget-day binding is outside its lane" >&2; exit 2 ;;
   esac
-  [[ "$FACTORY_DEV_BUDGET_DAY" == "$BUDGET_DAY" ]] || {
+  [[ "$FACTORY_DEV_BUDGET_DAY" == "$(date -u +%F)" ]] || {
     echo "development budget day changed; no task was submitted" >&2
     exit 8
   }
@@ -200,7 +200,8 @@ load_effective_envelope() {
   local key value output
   output="$(python3 -B "$ENVELOPE_CONTROL" effective \
     --factory-root "$REPO_ROOT" --ticket "$TICKET" --role "$ROLE" \
-    --day "$BUDGET_DAY" --global-env "$GLOBAL_ENV" --format shell)" || return 1
+    --day "${BUDGET_DAY:-$(date -u +%F)}" \
+    --global-env "$GLOBAL_ENV" --format shell)" || return 1
   while IFS='=' read -r key value; do
     case "$key" in
       PER_RUN_BUDGET_USD|PER_TICKET_BUDGET_USD|PER_RUN_MAX_TURNS|PER_RUN_TIMEOUT_MIN|DAILY_CAP_USD|GLOBAL_DAILY_CAP_USD|FACTORY_ENVELOPE_OVERRIDE_IDS|FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS)
@@ -1380,11 +1381,14 @@ RUN_ID="$(date +%s)-$$"
 MANIFEST="$RUNS_DIR/$RUN_ID.meta"
 CANCEL_REQUEST_FILE="$RUNS_DIR/$RUN_ID.cancel-request.json"
 RUN_STARTED_AT="$(date -u +%FT%TZ)"
-[[ "$(date -u +%F)" == "$BUDGET_DAY" ]] || {
-  echo "development budget day changed before reservation; no task was submitted" >&2
-  exit 8
-}
-TODAY="$BUDGET_DAY"
+TODAY="${RUN_STARTED_AT%%T*}"
+if [[ -n "$BUDGET_DAY" ]]; then
+  [[ "$(date -u +%F)" == "$BUDGET_DAY" ]] || {
+    echo "development budget day changed before reservation; no task was submitted" >&2
+    exit 8
+  }
+  TODAY="$BUDGET_DAY"
+fi
 RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
 RESERVED_USD="$PER_RUN_BUDGET_USD"
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]]; then
