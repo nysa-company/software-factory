@@ -75,9 +75,9 @@ subscription_ready() {
   local root="$1" session_home="$1/session-home"
   HOME="$session_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 ||
     die "Cursor subscription authentication is unavailable"
-  HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1 ||
+  (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1) ||
     die "Codex subscription authentication is unavailable"
-  HOME="$session_home" "$root/home/timeout" 10 "$root/home/claude" auth status >/dev/null 2>&1 ||
+  (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/claude" auth status >/dev/null 2>&1) ||
     die "Claude subscription authentication is unavailable"
 }
 
@@ -98,10 +98,10 @@ import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
 )"
-      printf '%s\n' "$real" "$(sha256_file "$real")" "$("$root/home/$tool" --version 2>/dev/null | head -n1)"
+      printf '%s\n' "$real" "$(sha256_file "$real")" "$(cd "$root" && "$root/home/$tool" --version 2>/dev/null | head -n1)"
     done
-    HOME="$session_home" "$root/home/codex" login status 2>/dev/null | sha256_text
-    HOME="$session_home" "$root/home/claude" auth status 2>/dev/null | sha256_text
+    (cd "$root" && HOME="$session_home" "$root/home/codex" login status 2>/dev/null) | sha256_text
+    (cd "$root" && HOME="$session_home" "$root/home/claude" auth status 2>/dev/null) | sha256_text
     sha256_file "$root/runtime/provider-policy.json"
     sha256_file "$root/runtime/provider-activation.json"
     sha256_file "$root/home/record-provider-call"
@@ -782,8 +782,8 @@ subscription_env() {
   project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
   session_home="$root/session-home"
   cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  codex_version="$("$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  claude_version="$("$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
   env -i HOME="$session_home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
     PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
@@ -820,7 +820,7 @@ print(os.path.realpath(sys.argv[1]))
 PY
 )"
       printf '%s\n' "$real" "$(sha256_file "$real")" \
-        "$("$root/home/$tool" --version 2>/dev/null | head -n1)"
+        "$(cd "$root" && "$root/home/$tool" --version 2>/dev/null | head -n1)"
     done
     sha256_file "$session_home/.cursor/auth.json"
     sha256_file "$session_home/.cursor/cli-config.json"
@@ -857,8 +857,8 @@ product_probe_and_plan() {
   validate_runtime_paths "$root"
   subscription_ready "$root"
   cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  codex_version="$("$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  claude_version="$("$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
   [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
     die "product subscription CLI version probe was empty"
   cat >"$root/home/.factory/global.env" <<EOF
@@ -1033,8 +1033,8 @@ subscription_probe_and_plan() {
   validate_runtime_paths "$root"
   subscription_ready "$root"
   cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  codex_version="$("$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  claude_version="$("$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
   [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
     die "subscription CLI version probe was empty"
   cat > "$root/home/.factory/global.env" <<EOF
