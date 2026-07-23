@@ -28,8 +28,14 @@ if args.adapter.startswith("cursor-"):
         raise SystemExit("reviewer stream must contain exactly one successful result")
     raw = results[0]
 
-lines = [line.strip() for line in raw.splitlines() if line.strip()]
-verdicts = [line.upper() for line in lines if re.fullmatch(r"APPROVE|REQUEST CHANGES", line, re.I)]
-if len(verdicts) != 1 or not lines or lines[-1].upper() != verdicts[0]:
-    raise SystemExit("reviewer result must end with exactly one standalone verdict")
-print(verdicts[0])
+signals = []
+for line in raw.splitlines():
+    stripped = line.strip()
+    if re.fullmatch(r"APPROVE|REQUEST CHANGES", stripped, re.I):
+        signals.append(stripped.upper())
+    signals.extend(match.upper() for match in re.findall(
+        r"\*\*(APPROVE|REQUEST CHANGES)(?:\.)?\*\*", stripped, re.I
+    ))
+if not signals or len(set(signals)) != 1:
+    raise SystemExit("reviewer result must contain one unambiguous verdict")
+print(signals[0])

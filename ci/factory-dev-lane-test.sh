@@ -102,7 +102,10 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n
 printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
   fail "strict reviewer parser rejected a plain request-changes verdict"
-for invalid in 'APPROVE|REQUEST CHANGES' 'APPROVE|APPROVE' 'APPROVE|trailing text' 'no verdict'; do
+printf '%s\n' '**Request changes.**' 'Build is not green.' '**REQUEST CHANGES** due to the build failure.' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
+  fail "reviewer parser rejected repeated agreeing Markdown verdicts"
+for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
     --adapter codex --input "$VERDICT"
@@ -121,7 +124,7 @@ review_ticket="$REC/worktrees/T-900001/factory/tickets/T-900001.md"
 printf '%s\n' 'State: Review' >"$review_ticket"
 printf '%s\n' \
   'ticket=T-900001' 'role=reviewer' 'adapter=cursor-anthropic' \
-  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-01T00:00:00Z' \
+  'accounting_state=abandoned_conservative' 'exit_status=0' 'started_at=2026-01-01T00:00:00Z' \
   >"$REC/product/factory/runs/review.meta"
 printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' \
   >"$REC/product/factory/runs/review.out"

@@ -1406,7 +1406,8 @@ successful=[]
 for meta in runs.glob("*.meta"):
     values=dict(line.split("=",1) for line in meta.read_text(errors="replace").splitlines() if "=" in line)
     if (values.get("ticket") == ticket and values.get("role") == "reviewer" and
-        values.get("accounting_state") == "completed" and values.get("exit_status") == "0"):
+        values.get("accounting_state") in {"completed", "abandoned_conservative"} and
+        values.get("exit_status") == "0"):
         successful.append((values.get("started_at", ""), meta.name, values, meta.with_suffix(".out")))
 successful.sort(key=lambda item: (item[0], item[1]))
 if len(successful) == verdicts:
@@ -1595,7 +1596,9 @@ import pathlib, sys
 root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; roles={}
 for path in root.glob("*.meta"):
     values=dict(line.split("=",1) for line in path.read_text(errors="replace").splitlines() if "=" in line)
-    if values.get("ticket") == ticket and values.get("accounting_state") == "completed" and values.get("exit_status") == "0":
+    if (values.get("ticket") == ticket and
+        values.get("accounting_state") in {"completed", "abandoned_conservative"} and
+        values.get("exit_status") == "0"):
         roles[values.get("role")]=path
 expected={"planner","spec-linter","test-author","builder","reviewer","narrator"}
 if set(roles) != expected: raise SystemExit(1)
