@@ -102,6 +102,19 @@ expect_failure "duplicate product tickets" test_env bash "$LANE" product-plan \
 [[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
    "$lane_count_before" ]] ||
   fail "invalid product input created a lane"
+MISSING_SESSION_HOME="$TMP/missing-session-home"
+mkdir -p "$MISSING_SESSION_HOME"
+expect_failure "incomplete lane cleanup" env \
+  FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DEV_LANE_UNAME=Darwin FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
+  FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
+  FACTORY_DEV_LANE_ACCOUNT_HOME="$MISSING_SESSION_HOME" \
+  FACTORY_DEV_LANE_CURSOR_SESSION_HOME="$MISSING_SESSION_HOME" \
+  HOME="$MISSING_SESSION_HOME" TMPDIR="$TMP/lanes" \
+  bash "$LANE" cursor-plan
+[[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
+   "$lane_count_before" ]] ||
+  fail "failed lane construction retained an isolated root"
 DAY_LANE="$TMP/nysa-sf-dev.day"
 mkdir -p "$DAY_LANE/product"
 printf '{}\n' >"$DAY_LANE/marker.json"
@@ -313,6 +326,68 @@ printf '%s\n' \
 if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
   fail "stale authorized budget day was accepted"
 fi
+
+SEED_HISTORY="$TMP/seed-history"
+SEED_HISTORY_ROOT="$TMP/seed-history-root"
+mkdir -p "$SEED_HISTORY/factory/tickets" "$SEED_HISTORY/factory/route-plans" \
+  "$SEED_HISTORY/app" "$SEED_HISTORY_ROOT/worktrees"
+git -C "$SEED_HISTORY" init -q
+printf '%s\n' 'State: Ready' >"$SEED_HISTORY/factory/tickets/T-1.md"
+printf '%s\n' base >"$SEED_HISTORY/app/base"
+git -C "$SEED_HISTORY" add .
+git -C "$SEED_HISTORY" -c user.name=Base -c user.email=base@local \
+  commit -qm 'Create base'
+SEED_HISTORY_BASE="$(git -C "$SEED_HISTORY" rev-parse HEAD)"
+printf '%s\n' kit >"$SEED_HISTORY/factory/KIT_PIN"
+printf '%s\n' project >"$SEED_HISTORY/factory/PROJECT.env"
+git -C "$SEED_HISTORY" add factory
+git -C "$SEED_HISTORY" -c user.name='Factory Dev Lane' \
+  -c user.email=factory-dev@local commit -qm \
+  'Configure isolated Contract 1.7 product lane'
+printf '%s\n' before >"$SEED_HISTORY/app/before"
+git -C "$SEED_HISTORY" add app/before
+git -C "$SEED_HISTORY" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm 'T-1: retain earlier lifecycle output'
+printf '%s\n' '{}' >"$SEED_HISTORY/factory/route-plans/T-1.json"
+git -C "$SEED_HISTORY" add factory/route-plans/T-1.json
+git -C "$SEED_HISTORY" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm 'T-1: pin kit and model route plan'
+printf '%s\n' after >"$SEED_HISTORY/app/after"
+git -C "$SEED_HISTORY" add app/after
+git -C "$SEED_HISTORY" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm 'T-1: retain later lifecycle output'
+git -C "$SEED_HISTORY" branch ticket/T-1
+git -C "$SEED_HISTORY" bundle create "$TMP/seed-history.bundle" ticket/T-1
+chmod 600 "$TMP/seed-history.bundle"
+git clone -q "$ROOT" "$SEED_HISTORY_ROOT/kit"
+git clone -q "$SEED_HISTORY" "$SEED_HISTORY_ROOT/product"
+git -C "$SEED_HISTORY_ROOT/product" checkout -q --detach "$SEED_HISTORY_BASE"
+git init -q --bare "$SEED_HISTORY_ROOT/origin.git"
+git -C "$SEED_HISTORY_ROOT/product" remote set-url origin \
+  "$SEED_HISTORY_ROOT/origin.git"
+printf '%s\n' kit >"$SEED_HISTORY_ROOT/product/factory/KIT_PIN"
+printf '%s\n' project >"$SEED_HISTORY_ROOT/product/factory/PROJECT.env"
+git -C "$SEED_HISTORY_ROOT/product" add factory
+git -C "$SEED_HISTORY_ROOT/product" -c user.name='Factory Dev Lane' \
+  -c user.email=factory-dev@local commit -qm \
+  'Configure isolated Contract 1.7 product lane'
+git -C "$SEED_HISTORY_ROOT/product" worktree add -q -b ticket/T-1 \
+  "$SEED_HISTORY_ROOT/worktrees/T-1" HEAD
+git -C "$SEED_HISTORY_ROOT/worktrees/T-1" push -q -u origin ticket/T-1
+eval "$(sed -n '/^seed_product_worktrees()/,/^}/p' "$LANE")"
+require_lane_path() { :; }
+die() { exit 1; }
+seed_product_worktrees "$SEED_HISTORY_ROOT" "$TMP/seed-history.bundle" \
+  "$SEED_HISTORY_BASE" T-1
+[[ -f "$SEED_HISTORY_ROOT/worktrees/T-1/app/before" &&
+   -f "$SEED_HISTORY_ROOT/worktrees/T-1/app/after" ]] ||
+  fail "late route pin caused retained lifecycle output to be skipped"
+[[ ! -e "$SEED_HISTORY_ROOT/worktrees/T-1/factory/route-plans/T-1.json" ]] ||
+  fail "stale retained route plan was replayed"
+grep -qx 'State: Ready' \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
+  fail "retained ticket was not reset to Ready"
+die() { return 1; }
 
 eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
 SOURCE_ROOT_TEST="$TMP/source-binding"

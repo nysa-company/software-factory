@@ -450,7 +450,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash=""
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" cleanup_trap
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -466,6 +466,24 @@ create_lane() {
     "$root/runtime/model-state" "$root/runtime/provider-attempts" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
     "$root/tmp" "$root/worktrees"
+  python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
+    "$tmp_parent" <<'PY'
+import json, os, sys
+path, root, nonce, sha, tree, mode, tmp_parent = sys.argv[1:]
+info=os.lstat(root)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"schema":"nysa.software-factory.dev-lane/v1","root":root,
+               "nonce":nonce,"kit_sha":sha,"kit_tree":tree,"mode":mode,
+               "uid":os.getuid(),"root_dev":info.st_dev,"root_ino":info.st_ino,
+               "tmp_parent":tmp_parent}, f,
+              sort_keys=True, separators=(",",":"))
+    f.write("\n")
+os.chmod(path, 0o600)
+PY
+  printf -v cleanup_trap \
+    'status=$?; trap - EXIT; clean_lane %q >/dev/null 2>&1 || printf "factory-dev-lane: incomplete lane retained for inspection: %%s\\n" %q >&2; exit "$status"' \
+    "$root" "$root"
+  trap "$cleanup_trap" EXIT
   if [[ -x /usr/bin/xcode-select ]]; then
     developer="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
     if [[ -n "$developer" && -x "$developer/usr/bin/git" &&
@@ -798,27 +816,14 @@ EOF
       chmod 700 "$root/home/$tool"
     done
   fi
-  python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
-    "$tmp_parent" <<'PY'
-import json, os, sys
-path, root, nonce, sha, tree, mode, tmp_parent = sys.argv[1:]
-info=os.lstat(root)
-with open(path, "w", encoding="utf-8") as f:
-    json.dump({"schema":"nysa.software-factory.dev-lane/v1","root":root,
-               "nonce":nonce,"kit_sha":sha,"kit_tree":tree,"mode":mode,
-               "uid":os.getuid(),"root_dev":info.st_dev,"root_ino":info.st_ino,
-               "tmp_parent":tmp_parent}, f,
-              sort_keys=True, separators=(",",":"))
-    f.write("\n")
-os.chmod(path, 0o600)
-PY
   validate_runtime_paths "$root"
+  trap - EXIT
   printf '%s\n' "$root"
 }
 
 seed_product_worktrees() {
-  local root="$1" bundle="$2" base="$3" ticket commit subject index
-  local -a commits
+  local root="$1" bundle="$2" base="$3" ticket commit subject index previous route_count
+  local -a commits parents
   shift 3
   [[ "$bundle" == /* && -f "$bundle" && ! -L "$bundle" ]] ||
     die "product seed bundle must be an absolute regular file"
@@ -839,15 +844,69 @@ seed_product_worktrees() {
         "$base..refs/retry/$ticket"
     )
     [[ "${#commits[@]}" -ge 2 ]] || die "product seed history is incomplete: $ticket"
+    previous="$base"
+    for commit in "${commits[@]}"; do
+      read -r -a parents <<<"$(git -C "$root/worktrees/$ticket" \
+        rev-list --parents -n 1 "$commit")"
+      [[ "${#parents[@]}" -eq 2 && "${parents[1]}" == "$previous" ]] ||
+        die "product seed history is not linear: $ticket"
+      previous="$commit"
+    done
     [[ "$(git -C "$root/worktrees/$ticket" show -s --format=%s "${commits[0]}")" == \
        'Configure isolated Contract 1.7 product lane' ]] ||
       die "product seed control boundary is unrecognized: $ticket"
-    subject="$(git -C "$root/worktrees/$ticket" show -s --format=%s "${commits[1]}")"
-    [[ "$subject" == "$ticket: pin kit and model route plan" ]] ||
-      die "product seed route boundary is unrecognized: $ticket"
-    index=2
+    [[ "$(git -C "$root/worktrees/$ticket" show -s \
+      --format='%an <%ae>%n%cn <%ce>' "${commits[0]}")" == \
+      $'Factory Dev Lane <factory-dev@local>\nFactory Dev Lane <factory-dev@local>' ]] ||
+      die "product seed control identity is unrecognized: $ticket"
+    python3 - "$root/worktrees/$ticket" "${commits[0]}" <<'PY' ||
+import subprocess, sys
+worktree, commit=sys.argv[1:]
+raw=subprocess.check_output(
+    ["git","-C",worktree,"diff-tree","--no-commit-id","--raw","-r",commit],
+    text=True).splitlines()
+if any(line.split("\t",1)[0].split()[1] in {"120000","160000"} for line in raw):
+    raise SystemExit(1)
+paths=subprocess.check_output(
+    ["git","-C",worktree,"diff-tree","--no-commit-id","--name-only","-r",commit],
+    text=True).splitlines()
+if (not paths or any(
+    path not in {"factory/KIT_PIN","factory/PROJECT.env"} and
+    not (path.startswith("factory/tickets/T-") and path.endswith(".md"))
+    for path in paths
+)): raise SystemExit(1)
+PY
+      die "product seed control boundary crosses an unsafe path: $ticket"
+    route_count=0
+    index=1
     while [[ "$index" -lt "${#commits[@]}" ]]; do
       commit="${commits[$index]}"
+      subject="$(git -C "$root/worktrees/$ticket" show -s --format=%s "$commit")"
+      if [[ "$subject" == "$ticket: pin kit and model route plan" ]]; then
+        route_count=$((route_count + 1))
+        [[ "$route_count" -eq 1 &&
+          "$(git -C "$root/worktrees/$ticket" show -s \
+            --format='%an <%ae>%n%cn <%ce>' "$commit")" == \
+          $'Software Factory <factory@local>\nSoftware Factory <factory@local>' ]] ||
+          die "product seed route identity is unrecognized: $ticket"
+        python3 - "$root/worktrees/$ticket" "$commit" "$ticket" <<'PY' ||
+import subprocess, sys
+worktree, commit, ticket=sys.argv[1:]
+raw=subprocess.check_output(
+    ["git","-C",worktree,"diff-tree","--no-commit-id","--raw","-r",commit],
+    text=True).splitlines()
+paths=subprocess.check_output(
+    ["git","-C",worktree,"diff-tree","--no-commit-id","--name-status","-r",commit],
+    text=True).splitlines()
+if (len(raw) != 1 or len(paths) != 1 or
+    raw[0].split("\t",1)[0].split()[1] in {"120000","160000"} or
+    paths[0] != f"A\tfactory/route-plans/{ticket}.json"):
+    raise SystemExit(1)
+PY
+          die "product seed route boundary crosses an unsafe path: $ticket"
+        index=$((index + 1))
+        continue
+      fi
       if ! python3 - "$root/worktrees/$ticket" "$commit" "$ticket" <<'PY'
 import subprocess, sys
 worktree, commit, ticket=sys.argv[1:]
@@ -874,6 +933,10 @@ PY
         die "product seed commit did not apply cleanly: $ticket"
       index=$((index + 1))
     done
+    [[ "$route_count" -eq 1 ]] ||
+      die "product seed route boundary is unrecognized: $ticket"
+    [[ ! -e "$root/worktrees/$ticket/factory/route-plans/$ticket.json" ]] ||
+      die "product seed replay retained a stale route plan: $ticket"
     require_lane_path "$root" "$root/worktrees/$ticket/factory/tickets/$ticket.md"
     [[ -f "$root/worktrees/$ticket/factory/tickets/$ticket.md" &&
        ! -L "$root/worktrees/$ticket/factory/tickets/$ticket.md" ]] ||
