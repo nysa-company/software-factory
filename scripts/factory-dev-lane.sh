@@ -995,6 +995,7 @@ CODEX_PINNED=$codex_version
 CLAUDE_CODE_PINNED=$claude_version
 CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
 CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
+FACTORY_PROBE_CLAUDE_CODE=UNAVAILABLE:lane_sandbox_temp_collision
 EOF
   chmod 600 "$root/home/.factory/global.env"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
@@ -1014,6 +1015,25 @@ PY
     subscription_env "$root" "$root/kit/scripts/model-control.sh" pin \
       --ticket "$ticket" --workdir "$root/worktrees/$ticket" >/dev/null
   done
+  python3 - "$root" "${PRODUCT_TICKETS[@]}" <<'PY' ||
+import json, pathlib, sys
+root, *tickets=sys.argv[1:]
+production={"planner","builder","narrator"}; checking={"spec-linter","test-author","reviewer"}
+for index,ticket in enumerate(tickets):
+    plan=json.loads(pathlib.Path(root,"worktrees",ticket,"factory","route-plans",ticket+".json").read_text())
+    selections=plan["resolution"]["selections"]
+    if any(selections[r]["provider_family"]==selections[c]["provider_family"] for r in production for c in checking):
+        raise SystemExit("role-family separation failed")
+    if index == 0:
+        if any(not value["adapter"].startswith("cursor-") for value in selections.values()):
+            raise SystemExit("cursor ticket route drifted")
+    else:
+        if any(selections[r]["adapter"] != "codex" for r in production):
+            raise SystemExit("native production route drifted")
+        if any(selections[r]["adapter"] != "cursor-anthropic" for r in checking):
+            raise SystemExit("checking circuit breaker did not select Cursor Claude")
+PY
+    die "product route-family or circuit-breaker validation failed"
   python3 - "$root/runtime/provider-policy.json" \
     "$root/runtime/provider-activation.json" "$root" "${PRODUCT_TICKETS[@]}" <<'PY'
 import hashlib, json, os, pathlib, sys
@@ -1023,8 +1043,8 @@ def limit(concurrent, starts):
 policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
         "global":limit(4,24),
         "provider_families":{"openai":limit(4,24),"anthropic":limit(4,24)},
-        "account_routes":{"cursor":limit(1,6),"codex-native":limit(2,12),
-                          "claude-native":limit(2,12)}}
+        "account_routes":{"cursor":limit(2,15),"codex-native":limit(2,9),
+                          "claude-native":limit(2,1)}}
 raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
 routes={}
 for ticket in tickets:
@@ -1050,7 +1070,7 @@ PY
   chmod 600 "$root/runtime/product-approval"
   echo "APPROVE_HASH=$approval_hash"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
-  echo "PROVIDER_LIMITS=global:4,cursor:1,codex:2,claude:2"
+  echo "PROVIDER_LIMITS=global:4,cursor:2,codex:2,claude:2"
 }
 
 next_stage() {
@@ -1462,7 +1482,7 @@ PY
       done
       [[ "$total_active" -lt 4 ]] || continue
       case "$account" in
-        cursor) [[ "$cursor_active" -lt 1 ]] || continue ;;
+        cursor) [[ "$cursor_active" -lt 2 ]] || continue ;;
         codex-native) [[ "$codex_active" -lt 2 ]] || continue ;;
         claude-native) [[ "$claude_active" -lt 2 ]] || continue ;;
         *) states[$i]=failed; failed_count=$((failed_count + 1)); continue ;;
