@@ -1049,7 +1049,7 @@ def limit(concurrent, starts):
     return {"max_concurrent":concurrent,"max_starts":starts,"window_seconds":60}
 policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
         "global":limit(4,24),
-        "provider_families":{"openai":limit(3,12),"anthropic":limit(1,12)},
+        "provider_families":{"openai":limit(2,12),"anthropic":limit(2,12)},
         "account_routes":{"cursor":limit(2,15),"codex-native":limit(2,9)}}
 raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
 routes={}
