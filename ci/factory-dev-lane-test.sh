@@ -96,7 +96,7 @@ if sed -n '/^subscription_env()/,/^}/p' "$LANE" | grep -q 'remote.origin.pushurl
 fi
 
 VERDICT="$TMP/reviewer.out"
-printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\\n\\nAPPROVE"}' >"$VERDICT"
+printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter cursor-anthropic --input "$VERDICT")" == APPROVE ]] ||
   fail "strict reviewer parser rejected a Cursor approval"
 printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
@@ -123,7 +123,7 @@ printf '%s\n' \
   'ticket=T-900001' 'role=reviewer' 'adapter=cursor-anthropic' \
   'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-01T00:00:00Z' \
   >"$REC/product/factory/runs/review.meta"
-printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\\n\\nAPPROVE"}' \
+printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' \
   >"$REC/product/factory/runs/review.out"
 eval "$(sed -n '/^product_reconcile_reviewer()/,/^}/p' "$LANE")"
 append_commit_push() { printf '%s\n' "$2" >>"$review_ticket"; }
