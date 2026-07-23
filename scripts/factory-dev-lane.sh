@@ -37,6 +37,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json>]
+       factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-export --root <absolute-lane-root>
        factory-dev-lane.sh clean --root <absolute-lane-root>
@@ -1281,6 +1282,295 @@ PY
     die "product source binding is incomplete"
 }
 
+load_product_resume_original_tickets() {
+  local root="$1" line serialized
+  PRODUCT_RESUME_ORIGINAL_TICKETS=()
+  serialized="$(python3 - "$root/runtime/product-source.json" <<'PY'
+import json, re, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+tickets=value.get("resume_original_tickets", value.get("tickets", []))
+if (not 1 <= len(tickets) <= 4 or len(set(tickets)) != len(tickets) or
+    any(not isinstance(ticket, str) or
+        not re.fullmatch(r"T-[0-9]+", ticket) for ticket in tickets)):
+    raise SystemExit(1)
+for ticket in tickets: print(ticket)
+PY
+  )" || die "product resume original ticket binding is malformed"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && PRODUCT_RESUME_ORIGINAL_TICKETS+=("$line")
+  done <<<"$serialized"
+}
+
+product_resume_evidence_digest() {
+  local root="$1"
+  python3 - "$root" <<'PY'
+import hashlib, pathlib, sys
+root=pathlib.Path(sys.argv[1]); digest=hashlib.sha256()
+paths=[]
+for item in (
+    root/"product/factory/runtime-ledger.csv",
+    root/"runtime/product-approval.used",
+):
+    if item.is_file(): paths.append(item)
+for pattern in (
+    "product/factory/runs/*",
+    "runtime/product-discarded/*",
+):
+    paths.extend(path for path in root.glob(pattern) if path.is_file())
+for path in sorted(paths, key=lambda item: str(item.relative_to(root))):
+    relative=str(path.relative_to(root)).encode()
+    digest.update(len(relative).to_bytes(8,"big")); digest.update(relative)
+    data=path.read_bytes()
+    digest.update(len(data).to_bytes(8,"big")); digest.update(data)
+print(digest.hexdigest())
+PY
+}
+
+product_resume_stage() {
+  local root="$1" ticket="$2" lease_json lease stage rc=0
+  lease_json="$(subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" \
+    claim --ticket "$ticket")" || return 1
+  lease="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
+    <<<"$lease_json")" || return 1
+  stage="$(TICKET="$ticket"; next_stage "$root" "$lease")" || rc=$?
+  subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
+    --ticket "$ticket" --lease "$lease" >/dev/null || return 1
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  printf '%s\n' "$stage"
+}
+
+product_resume_basis_hash() {
+  local root="$1" ticket stage status evidence
+  [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
+    return 1
+  load_product_resume_original_tickets "$root"
+  status="$(python3 "$root/kit/scripts/provider-coordinator.py" \
+    --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+print(json.dumps(value,sort_keys=True,separators=(",",":")))
+')" || return 1
+  evidence="$(product_resume_evidence_digest "$root")" || return 1
+  {
+    printf 'schema=factory-dev-product-resume-basis/v1\n'
+    printf 'resume_controller=%s\nresume_controller_tree=%s\n' \
+      "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" \
+      "$(git -C "$SOURCE_ROOT" rev-parse 'HEAD^{tree}')"
+    python3 - "$root/runtime/product-source.json" <<'PY'
+import json, sys
+v=json.load(open(sys.argv[1], encoding="utf-8"))
+for key in ("schema","base_sha","base_tree","lane_control_sha",
+            "seed_bundle_sha256","seed_accounting_sha256"):
+    print(f"{key}={json.dumps(v.get(key),sort_keys=True,separators=(',',':'))}")
+PY
+    printf 'provider_status=%s\nevidence_sha256=%s\n' "$status" "$evidence"
+    for path in \
+      "$root/runtime/provider-policy.json" \
+      "$root/runtime/provider-activation.json" \
+      "$root/runtime/product-containers.json" \
+      "$root/runtime/product-envelope/global.env" \
+      "$root/runtime/product-envelope/budget-day"; do
+      printf '%s=%s\n' "${path#$root/}" "$(sha256_file "$path")"
+    done
+    for ticket in "${PRODUCT_RESUME_ORIGINAL_TICKETS[@]}"; do
+      [[ -z "$(git -C "$root/worktrees/$ticket" \
+        status --porcelain --untracked-files=all)" ]] || return 1
+      [[ "$(git -C "$root/worktrees/$ticket" rev-parse HEAD)" == \
+        "$(git -C "$root/origin.git" rev-parse "refs/heads/ticket/$ticket")" ]] ||
+        return 1
+      stage="$(product_resume_stage "$root" "$ticket")" || return 1
+      printf 'ticket=%s\nhead=%s\norigin=%s\ntree=%s\nstage=%s\n' \
+        "$ticket" \
+        "$(git -C "$root/worktrees/$ticket" rev-parse HEAD)" \
+        "$(git -C "$root/origin.git" rev-parse "refs/heads/ticket/$ticket")" \
+        "$(git -C "$root/worktrees/$ticket" rev-parse 'HEAD^{tree}')" \
+        "$stage"
+      printf 'ticket_file=%s\nroute_plan=%s\nenvelope=%s\n' \
+        "$(sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md")" \
+        "$(sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json")" \
+        "$(sha256_file "$root/runtime/product-envelope/$ticket.env")"
+    done
+  } | sha256_text
+}
+
+product_resume_drained() {
+  local root="$1" approval_ready="${2:-0}" container label state
+  [[ -f "$root/runtime/product-approval.used" &&
+     ! -L "$root/runtime/product-approval.used" &&
+     "$(stat -f '%Su:%Lp:%l' "$root/runtime/product-approval.used")" == \
+       "$(id -un):600:1" ]] || return 1
+  python3 - "$root/runtime/product-approval.used" <<'PY' || return 1
+import re, sys
+value=dict(line.split("=",1) for line in open(sys.argv[1],encoding="utf-8").read().splitlines())
+if (set(value) != {"approval_hash","used"} or
+    not re.fullmatch(r"[0-9a-f]{64}", value["approval_hash"]) or
+    value["used"] != "0"): raise SystemExit(1)
+PY
+  if [[ "$approval_ready" -eq 1 ]]; then
+    [[ -f "$root/runtime/product-approval" &&
+       ! -L "$root/runtime/product-approval" &&
+       "$(stat -f '%Su:%Lp:%l' "$root/runtime/product-approval")" == \
+         "$(id -un):600:1" ]] || return 1
+  else
+    [[ ! -e "$root/runtime/product-approval" ]] || return 1
+  fi
+  python3 "$root/kit/scripts/provider-coordinator.py" \
+    --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+v=json.load(sys.stdin)
+assert v.get("active_reserve_micro_usd") == 0, v
+assert all(item.get("state") == "terminal" for item in v.get("attempts", [])), v
+assert all(name == "terminal" for name in v.get("counts", {})), v
+' || return 1
+  [[ ! -d "$root/product/factory/.dispatch-leases" ||
+     -z "$(find "$root/product/factory/.dispatch-leases" -type f -print -quit)" ]] ||
+    return 1
+  [[ ! -d "$root/product/factory/.active-runs" ||
+     -z "$(find "$root/product/factory/.active-runs" -mindepth 1 -print -quit)" ]] ||
+    return 1
+  python3 - "$root" <<'PY' || return 1
+import os, pathlib, re, sys
+for path in pathlib.Path(sys.argv[1]).rglob("*.pid"):
+    try: text=path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError): raise SystemExit(1)
+    match=re.search(r"(?:^|\n)pid=([1-9][0-9]*)(?:\n|$)", text)
+    if match is None and text.strip().isdigit():
+        match=re.match(r"([1-9][0-9]*)", text.strip())
+    if match is None: continue
+    try: os.kill(int(match.group(1)), 0)
+    except ProcessLookupError: continue
+    except PermissionError: raise SystemExit(1)
+    raise SystemExit(1)
+PY
+  [[ "$(cat "$root/runtime/product-envelope/budget-day")" == "$(date -u +%F)" ]] ||
+    return 1
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    read -r label state < <(DOCKER_HOST="$(cat "$root/runtime/docker-host")" \
+      "$root/runtime/docker" inspect --format \
+      '{{ index .Config.Labels "nysa.factory.dev-lane-root" }} {{.State.Status}}' \
+      "$container" 2>/dev/null) || return 1
+    [[ "$label" == "$root" && "$state" == running ]] || return 1
+  done < <(python3 - "$root/runtime/product-containers.json" <<'PY'
+import json, sys
+v=json.load(open(sys.argv[1], encoding="utf-8"))
+for item in v.get("containers", []): print(item["name"])
+PY
+  )
+  subscription_provider_idle
+}
+
+validate_product_resume_basis() {
+  local root="$1" approval_ready="${2:-0}" expected actual
+  [[ -f "$root/runtime/product-resume.json" &&
+     ! -L "$root/runtime/product-resume.json" &&
+     "$(stat -f '%Su:%Lp:%l' "$root/runtime/product-resume.json")" == \
+       "$(id -un):600:1" ]] || return 1
+  expected="$(python3 - "$root/runtime/product-source.json" \
+    "$root/runtime/product-resume.json" <<'PY'
+import hashlib, json, sys
+source=json.load(open(sys.argv[1],encoding="utf-8"))
+raw=open(sys.argv[2],"rb").read()
+value=json.loads(raw)
+if (value.get("schema") != "factory-dev-product-resume/v1" or
+    source.get("resume_sha256") != hashlib.sha256(raw).hexdigest() or
+    source.get("tickets") != value.get("selected_tickets") or
+    source.get("resume_original_tickets") != value.get("original_tickets")):
+    raise SystemExit(1)
+print(value["basis_sha256"])
+PY
+  )" || return 1
+  product_resume_drained "$root" "$approval_ready" || return 1
+  actual="$(product_resume_basis_hash "$root")" || return 1
+  [[ "$actual" == "$expected" ]]
+}
+
+product_resume_plan() {
+  local root="$1"; shift
+  local selected_csv="$1" ticket stage basis approval_hash
+  local -a selected
+  require_lane_mode "$root" product
+  load_product_tickets "$root"
+  load_product_resume_original_tickets "$root"
+  validate_runtime_paths "$root"
+  IFS=, read -r -a selected <<<"$selected_csv"
+  [[ "${#selected[@]}" -ge 1 && "${#selected[@]}" -le "${#PRODUCT_TICKETS[@]}" ]] ||
+    die "product resume selection is empty or wider than the active lane"
+  python3 - "${PRODUCT_TICKETS[@]}" -- "${selected[@]}" <<'PY' ||
+import re, sys
+current=sys.argv[1:sys.argv.index("--")]; selected=sys.argv[sys.argv.index("--")+1:]
+if (len(set(selected)) != len(selected) or not set(selected) <= set(current) or
+    any(not re.fullmatch(r"T-[0-9]+", ticket) for ticket in selected)):
+    raise SystemExit(1)
+PY
+    die "product resume selection is not a strict active-lane subset"
+  product_resume_drained "$root" ||
+    die "product resume requires a fully drained, current-day lane"
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    stage="$(product_resume_stage "$root" "$ticket")" ||
+      die "product resume could not resolve the current stage: $ticket"
+    if printf '%s\n' "${selected[@]}" | grep -Fxq "$ticket"; then
+      product_role_for_stage "$stage" >/dev/null ||
+        die "selected product resume ticket is not runnable: $ticket"
+    else
+      [[ "$stage" == AWAIT-OPERATOR* ]] ||
+        die "excluded product resume ticket is not complete: $ticket"
+    fi
+  done
+  basis="$(product_resume_basis_hash "$root")" ||
+    die "product resume basis could not be proven"
+  python3 - "$root/runtime/product-source.json" \
+    "$root/runtime/product-resume.json" "$basis" -- \
+    "${PRODUCT_RESUME_ORIGINAL_TICKETS[@]}" -- "${selected[@]}" <<'PY'
+import json, os, pathlib, sys
+source_path, resume_path, basis, sep1, *rest=sys.argv[1:]
+split=rest.index("--"); original=rest[:split]; selected=rest[split+1:]
+if sep1 != "--": raise SystemExit(1)
+source=json.load(open(source_path,encoding="utf-8"))
+prior=source.get("resume_sha256")
+value={"schema":"factory-dev-product-resume/v1","basis_sha256":basis,
+       "original_tickets":original,"selected_tickets":selected,
+       "prior_resume_sha256":prior}
+raw=json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+path=pathlib.Path(resume_path); tmp=path.with_name(path.name+".tmp")
+tmp.write_text(raw,encoding="utf-8"); os.chmod(tmp,0o600); os.replace(tmp,path)
+source["resume_original_tickets"]=original
+source["tickets"]=selected
+source["resume_sha256"]=__import__("hashlib").sha256(raw.encode()).hexdigest()
+raw=json.dumps(source,sort_keys=True,separators=(",",":"))+"\n"
+path=pathlib.Path(source_path); tmp=path.with_name(path.name+".tmp")
+tmp.write_text(raw,encoding="utf-8"); os.chmod(tmp,0o600); os.replace(tmp,path)
+PY
+  load_product_tickets "$root"
+  validate_product_resume_basis "$root" ||
+    die "product resume basis drifted while planning"
+  approval_hash="$(product_approval_hash "$root")"
+  python3 - "$root/runtime/product-approval" "$approval_hash" <<'PY' ||
+import os, sys
+fd=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(fd,"w",encoding="utf-8") as stream:
+    stream.write(f"approval_hash={sys.argv[2]}\nused=0\n")
+PY
+    die "product resume approval already exists"
+  echo "APPROVE_HASH=$approval_hash"
+  echo "TICKETS=${PRODUCT_TICKETS[*]}"
+}
+
+restore_product_resume_source() {
+  local root="$1"
+  python3 - "$root/runtime/product-source.json" <<'PY'
+import json, os, pathlib, sys
+path=pathlib.Path(sys.argv[1]); value=json.load(open(path,encoding="utf-8"))
+original=value.pop("resume_original_tickets",None)
+value.pop("resume_sha256",None)
+if original is None: raise SystemExit(1)
+value["tickets"]=original
+raw=json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+tmp=path.with_name(path.name+".tmp")
+tmp.write_text(raw,encoding="utf-8"); os.chmod(tmp,0o600); os.replace(tmp,path)
+PY
+}
+
 product_probe_and_plan() {
   local root="$1" cursor_version codex_version claude_version ticket profile profile_hash approval_hash
   require_lane_mode "$root" product
@@ -1738,7 +2028,7 @@ PY
     --adapter "$adapter" --input "$output")" || return 1
   append_commit_push "$root" "reviewer round $round: $verdict" \
     "$ticket: record isolated review round $round" || return 1
-  [[ "$verdict" == APPROVE ]]
+  return 0
 }
 
 product_scheduler_admits() {
@@ -1759,6 +2049,14 @@ product_role_retryable() {
   local log="$1"
   [[ -f "$log" && ! -L "$log" ]] || return 1
   grep -Fxq 'Resolved Cursor model is unavailable' "$log"
+}
+
+product_role_for_stage() {
+  case "$1" in
+    "FIX builder-or-test-author") printf '%s\n' builder ;;
+    RUN\ *) printf '%s\n' "${1#RUN }" ;;
+    *) return 1 ;;
+  esac
 }
 
 run_product_internal() {
@@ -1850,8 +2148,8 @@ run_product_internal() {
           }
         states[$i]=done; done_count=$((done_count + 1)); progress=1; continue
       fi
-      [[ "$stage" == RUN\ * ]] || { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
-      role="${stage#RUN }"
+      role="$(product_role_for_stage "$stage")" ||
+        { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
       roles[$i]="$role"
       read -r account family < <(python3 - "$root/worktrees/$ticket/factory/route-plans/$ticket.json" "$role" <<'PY'
 import json, sys
@@ -2252,9 +2550,23 @@ PY
       die "product planning failed; lane retained for inspection"
     fi
     ;;
+  product-resume-plan)
+    assert_macos
+    root=""; ticket_csv=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && -n "$ticket_csv" ]] || usage
+    root="$(validate_lane "$root")"
+    product_resume_plan "$root" "$ticket_csv"
+    ;;
   product-run)
     assert_macos
-    root=""; approve=""
+    root=""; approve=""; resume=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --root) root="${2:-}"; shift 2 ;;
@@ -2264,7 +2576,27 @@ PY
     done
     [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
-    run_in_sandbox "$root" cursor __product-run --root "$root" --approve-hash "$approve"
+    if python3 - "$root/runtime/product-source.json" <<'PY'
+import json, sys
+raise SystemExit(0 if "resume_sha256" in json.load(open(sys.argv[1])) else 1)
+PY
+    then
+      resume=1
+      validate_product_resume_basis "$root" 1 ||
+        die "product resume basis drifted before execution"
+    fi
+    if [[ "$resume" -eq 1 ]]; then
+      if run_product_internal "$root" "$approve"; then
+        restore_product_resume_source "$root"
+      else
+        exit $?
+      fi
+    elif run_in_sandbox "$root" cursor __product-run \
+      --root "$root" --approve-hash "$approve"; then
+      :
+    else
+      exit $?
+    fi
     ;;
   product-export)
     root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage

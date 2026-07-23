@@ -171,6 +171,19 @@ TICKET=T-900001 product_reconcile_reviewer "$REC" T-900001 ||
   fail "replayed review reconciliation was not idempotent"
 [[ "$(grep -c '^reviewer round 1: APPROVE$' "$review_ticket")" -eq 1 ]] ||
   fail "review reconciliation did not append exactly once"
+review_ticket="$REC/worktrees/T-900002/factory/tickets/T-900002.md"
+mkdir -p "$(dirname "$review_ticket")"
+printf '%s\n' 'State: Review' >"$review_ticket"
+printf '%s\n' \
+  'ticket=T-900002' 'role=reviewer' 'adapter=codex' \
+  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-02T00:00:00Z' \
+  >"$REC/product/factory/runs/review-request.meta"
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' \
+  >"$REC/product/factory/runs/review-request.out"
+TICKET=T-900002 product_reconcile_reviewer "$REC" T-900002 ||
+  fail "request-changes review was treated as a terminal lifecycle failure"
+grep -qx 'reviewer round 1: REQUEST CHANGES' "$review_ticket" ||
+  fail "request-changes review was not recorded durably"
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 
@@ -202,6 +215,14 @@ product_role_retryable "$TMP/retryable-role.log" ||
 printf '%s\n' 'subscription authentication is unavailable' >"$TMP/retryable-role.log"
 if product_role_retryable "$TMP/retryable-role.log"; then
   fail "scheduler retried a non-readiness provider failure"
+fi
+eval "$(sed -n '/^product_role_for_stage()/,/^}/p' "$LANE")"
+[[ "$(product_role_for_stage 'FIX builder-or-test-author')" == builder ]] ||
+  fail "review request did not select the bounded Builder fix role"
+[[ "$(product_role_for_stage 'RUN reviewer')" == reviewer ]] ||
+  fail "ordinary sequencer role mapping changed"
+if product_role_for_stage AWAIT-OPERATOR >/dev/null; then
+  fail "operator boundary was mapped to a provider role"
 fi
 eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
 refuse_production_path() { :; }
@@ -388,6 +409,38 @@ grep -qx 'State: Ready' \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
   fail "retained ticket was not reset to Ready"
 die() { return 1; }
+
+RESUME_ROOT="$TMP/resume-drained"
+mkdir -p "$RESUME_ROOT/kit/scripts" "$RESUME_ROOT/runtime/product-envelope" \
+  "$RESUME_ROOT/product/factory/.dispatch-leases" \
+  "$RESUME_ROOT/product/factory/.active-runs"
+cat >"$RESUME_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+#!/usr/bin/env python3
+print('{"active_reserve_micro_usd":0,"attempts":[{"state":"terminal"}],"counts":{"terminal":1}}')
+PY
+chmod 700 "$RESUME_ROOT/kit/scripts/provider-coordinator.py"
+printf '%s\n' \
+  approval_hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  used=0 \
+  >"$RESUME_ROOT/runtime/product-approval.used"
+chmod 600 "$RESUME_ROOT/runtime/product-approval.used"
+printf '%s\n' '{"containers":[]}' \
+  >"$RESUME_ROOT/runtime/product-containers.json"
+date -u +%F >"$RESUME_ROOT/runtime/product-envelope/budget-day"
+eval "$(sed -n '/^product_resume_drained()/,/^}/p' "$LANE")"
+subscription_provider_idle() { :; }
+product_resume_drained "$RESUME_ROOT" ||
+  fail "fully drained retained lane was rejected"
+printf 'pid=%s\n' "$$" >"$RESUME_ROOT/runtime/live.pid"
+if product_resume_drained "$RESUME_ROOT"; then
+  fail "retained lane with a live process was resumable"
+fi
+rm "$RESUME_ROOT/runtime/live.pid"
+cp "$RESUME_ROOT/runtime/product-approval.used" \
+  "$RESUME_ROOT/runtime/product-approval"
+if product_resume_drained "$RESUME_ROOT"; then
+  fail "retained lane with a fresh approval was rearmed twice"
+fi
 
 eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
 SOURCE_ROOT_TEST="$TMP/source-binding"
