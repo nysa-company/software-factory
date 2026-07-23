@@ -162,7 +162,7 @@ PY
 )"
   if [[ "$contract" == "1.2.0" || "$contract" == "1.3.0" ||
         "$contract" == "1.4.0" || "$contract" == "1.5.0" ||
-        "$contract" == "1.6.0" ]]; then
+        "$contract" == "1.6.0" || "$contract" == "1.7.0" ]]; then
     origin="$(git -C "$product" remote get-url --push origin)"
     product_tree="$(git -C "$product" rev-parse 'HEAD^{tree}')"
     receipt_id="$(printf '%s' "$sha|$tree|$product|$origin" | shasum -a 256 | awk '{print $1}')"
@@ -263,7 +263,7 @@ PY
 import pathlib, sys
 path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
 text = path.read_text()
-old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.6.0}"'
+old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.7.0}"'
 new = f'CONTRACT_VERSION="${{FACTORY_RELEASE_CONTRACT_VERSION:-{contract}}}"'
 if text.count(old) != 1:
     raise SystemExit("factory-doctor contract fixture is ambiguous")
@@ -526,7 +526,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.6.0"
+assert data["contract_version"] == "1.7.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -558,6 +558,102 @@ assert "[redacted]" in checks["linear_sync"]["last_error"]
 allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(check["status"] in allowed for check in checks.values())
+PY
+
+PROVIDER_TEST_ROOT="$(cd "$TMP" && pwd -P)/provider-v2"
+mkdir -m 700 "$PROVIDER_TEST_ROOT" "$PROVIDER_TEST_ROOT/attempts" \
+  "$PROVIDER_TEST_ROOT/apply-locks"
+python3 - "$PROVIDER_TEST_ROOT/policy.json" "$PROVIDER_TEST_ROOT/activation.json" <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+policy_path, activation_path = sys.argv[1:]
+limit = {"max_concurrent": 4, "max_starts": 20, "window_seconds": 60}
+policy = {
+    "schema": "factory-provider-concurrency-policy/v1",
+    "coupled_max_concurrent": 4,
+    "global": limit,
+    "provider_families": {"openai": limit},
+    "account_routes": {"codex-native": limit},
+}
+canonical_policy = json.dumps(policy, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+with open(policy_path, "w", encoding="utf-8") as handle:
+    handle.write(canonical_policy + "\n")
+activation = {
+    "enabled": True,
+    "mode": "cli-concurrent-v1",
+    "policy_sha256": hashlib.sha256(canonical_policy.encode()).hexdigest(),
+    "routes": {
+        "codex-gpt-5.6-sol": {
+            "account_route": "codex-native",
+            "adapter": "codex",
+            "model": "gpt-5.6-sol",
+            "provider_family": "openai",
+        }
+    },
+    "schema": "nysa.software-factory.provider-activation/v2",
+}
+with open(activation_path, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(activation, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+os.chmod(activation_path, 0o600)
+PY
+python3 "$ROOT/scripts/provider-coordinator.py" \
+  --db "$PROVIDER_TEST_ROOT/state.sqlite3" status >/dev/null
+PROVIDER_DB_BEFORE="$(cksum "$PROVIDER_TEST_ROOT/state.sqlite3")"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_PROVIDER_ACTIVATION="$PROVIDER_TEST_ROOT/activation.json" \
+  FACTORY_PROVIDER_POLICY="$PROVIDER_TEST_ROOT/policy.json" \
+  FACTORY_PROVIDER_DB="$PROVIDER_TEST_ROOT/state.sqlite3" \
+  FACTORY_PROVIDER_ATTEMPT_ROOT="$PROVIDER_TEST_ROOT/attempts" \
+  FACTORY_PROVIDER_APPLY_LOCK_ROOT="$PROVIDER_TEST_ROOT/apply-locks" \
+  bash "$DOCTOR" --json --project relay > "$TMP/provider-v2-doctor.json"
+[[ "$(cksum "$PROVIDER_TEST_ROOT/state.sqlite3")" == "$PROVIDER_DB_BEFORE" ]] ||
+  fail "Contract 1.7 doctor mutated provider coordinator state"
+python3 - "$TMP/provider-v2-doctor.json" <<'PY'
+import json
+import sys
+
+provider = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["isolated_provider"]
+assert provider == {
+    "status": "ok",
+    "activated": True,
+    "execution_mode": "cli-concurrent-v1",
+    "active_attempts": 0,
+    "active_tokens": 0,
+    "unknown_workers": 0,
+    "legacy_intervals": 0,
+}
+PY
+python3 - "$PROVIDER_TEST_ROOT/activation.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["policy_sha256"] = "0" * 64
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+PROVIDER_MISMATCH_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" \
+  FACTORY_PROVIDER_ACTIVATION="$PROVIDER_TEST_ROOT/activation.json" \
+  FACTORY_PROVIDER_POLICY="$PROVIDER_TEST_ROOT/policy.json" \
+  FACTORY_PROVIDER_DB="$PROVIDER_TEST_ROOT/state.sqlite3" \
+  FACTORY_PROVIDER_ATTEMPT_ROOT="$PROVIDER_TEST_ROOT/attempts" \
+  FACTORY_PROVIDER_APPLY_LOCK_ROOT="$PROVIDER_TEST_ROOT/apply-locks" \
+  bash "$DOCTOR" --json --project relay > "$TMP/provider-v2-mismatch.json" ||
+  PROVIDER_MISMATCH_RC=$?
+[[ "$PROVIDER_MISMATCH_RC" -eq 1 ]] ||
+  fail "Contract 1.7 doctor accepted a mismatched provider policy digest"
+python3 - "$TMP/provider-v2-mismatch.json" <<'PY'
+import json
+import sys
+
+provider = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["isolated_provider"]
+assert provider["status"] == "error"
+assert provider["activated"] is True
 PY
 
 sed -i.bak 's/^process_start=.*/process_start=stale/' "$PRODUCT/factory/.provider.lock/owner"
@@ -1994,7 +2090,7 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.6.0"
+assert contract["contract_version"] == "1.7.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
@@ -2114,11 +2210,16 @@ assert "provider lock" in contract["concurrency"]["parallel_execution_gate"]
 assert contract["concurrency"]["lease_required_when_greater_than"] == 1
 provider_execution = contract["provider_execution"]
 assert provider_execution["contract_1_6_mode"] == "isolated-v1"
+assert provider_execution["contract_1_7_mode"] == "cli-concurrent-v1"
+assert set(provider_execution["activation_schemas"]) == {
+    "nysa.software-factory.provider-activation/v1",
+    "nysa.software-factory.provider-activation/v2",
+}
 assert provider_execution["runtime_authority"] == "scripts/provider-runtime.py"
 assert provider_execution["state_machine"] == [
     "prepared", "reserved", "GO", "submitted", "terminal",
 ]
-assert "disabled until" in provider_execution["activation_gate"]
+assert "owner-only canonical activation" in provider_execution["activation_gate"]
 assert "1.0.0 through 1.5.0" in provider_execution["legacy_contracts"]
 assert provider_execution["coordinator"]["transaction"] == "BEGIN IMMEDIATE"
 assert provider_execution["coordinator"]["database"].endswith("state-v2.sqlite3")
@@ -2155,7 +2256,13 @@ assert provider_execution["controller"]["artifact_schema"].endswith(
 assert provider_execution["recovery"]["authority"] == "scripts/provider-recovery.py"
 assert "persist request before signaling" in \
     provider_execution["recovery"]["cancellation"]
-assert "no isolated-v1 admission" in provider_execution["legacy_barrier"]
+assert "no isolated-v1 or cli-concurrent-v1 admission" in provider_execution["legacy_barrier"]
+assert provider_execution["subscription_cli"]["authority"] == \
+    "scripts/provider-cli-runtime.py"
+assert provider_execution["subscription_cli"]["allowed_adapters"] == [
+    "codex", "claude-code", "cursor-openai", "cursor-anthropic",
+]
+assert "Cursor at one" in provider_execution["subscription_cli"]["account_limits"]
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
     "<T-NNN>",
@@ -2197,14 +2304,14 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROJECT": "validated launcher project slug",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
-    "FACTORY_PROVIDER_DB": "fixed Contract 1.6 owner-local transactional database",
-    "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6 owner-local admission policy",
+    "FACTORY_PROVIDER_DB": "fixed Contract 1.6+ owner-local transactional database",
+    "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6+ owner-local admission policy",
     "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
     "FACTORY_PROVIDER_CREDENTIALS": "fixed Contract 1.6 owner-local credential configuration",
     "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
-    "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6 owner-local attempt directory",
-    "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6 owner-local apply-lock directory",
-    "FACTORY_PROVIDER_ACTIVATION": "fixed Contract 1.6 owner-local isolated-v1 activation gate",
+    "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6+ owner-local attempt directory",
+    "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6+ owner-local apply-lock directory",
+    "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7 API v1 or subscription-CLI v2",
     "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
     "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor",
 }
@@ -2261,6 +2368,7 @@ assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_recei
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 for surface in [
     "scripts/provider-coordinator.py",
+    "scripts/provider-cli-runtime.py",
     "scripts/provider-credential-broker.py",
     "scripts/provider-activation.py",
     "scripts/provider-artifact-controller.py",
@@ -2309,7 +2417,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.6.0" in changelog and "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
+assert "## 1.7.0" in changelog and "## 1.6.0" in changelog and "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [
@@ -2337,10 +2445,10 @@ skill = open(
     encoding="utf-8",
 ).read()
 assert "factory-launch <project> reorder-test-fixes" in skill
-assert "version: 1.6.0" in skill
+assert "version: 1.7.0" in skill
 assert "Contracts `1.2.0` through `1.5.0` retain `1.1.0` lease behavior unchanged" in skill
 assert re.search(
-    r"Contract `1\.6\.0` accepts a capacity from `1`\s+through `6`", skill
+    r"Contracts `1\.6\.0` and `1\.7\.0` accept a capacity from `1`\s+through `6`", skill
 )
 assert "preflight --ticket <T-NNN> --role <next-stage-role>" in skill
 assert "factory-launch <project> ticket-state" in skill
@@ -2355,7 +2463,7 @@ supervisor = open(
     os.path.join(integration, "templates/profile/skills/factory-supervisor/SKILL.md"),
     encoding="utf-8",
 ).read()
-assert "version: 1.6.0" in supervisor
+assert "version: 1.7.0" in supervisor
 assert "dispatch-plan --claim --json" in supervisor
 assert "starts at most one child" in supervisor
 assert re.search(r"Never\s+put the lease", supervisor)
@@ -2367,7 +2475,7 @@ assert re.search(
     r"Contracts `1\.2\.0` through `1\.5\.0` retain contract `1\.1\.0` lease behavior\s+unchanged",
     soul,
 )
-assert "Contract `1.6.0` accepts up to six" in soul
+assert "Contracts `1.6.0` and `1.7.0` accept up to six" in soul
 assert "preflight --ticket <T-NNN> --role <next-stage-role>" in soul
 assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
 assert "factory-launch <project> ticket-state" in soul

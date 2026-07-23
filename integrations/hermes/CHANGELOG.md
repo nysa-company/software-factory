@@ -5,6 +5,21 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.7.0 — 2026-07-22
+
+- Adds owner-activated `cli-concurrent-v1` admission for the existing Codex,
+  Claude Code, and Cursor subscription CLI routes without API credentials.
+- Reuses Contract 1.6's transactional coordinator for short atomic capacity
+  and conservative budget reservations; limits remain exclusively in the
+  owner-local provider policy.
+- Binds activation to the exact selected adapter, model, provider family,
+  account route, and canonical provider-policy SHA-256. Invalid or mismatched
+  activation fails closed to the serialized path.
+- Caps Cursor at one concurrent process in the initial policy because its
+  scratch root is account-global; the coupled global capacity remains four.
+- Keeps Contract 1.6 activation v1 and serialized native-CLI behavior
+  unchanged, and preserves serialization as the rollback path for 1.7.
+
 ## 1.6.0 — 2026-07-20
 
 - Adds an atomic `dispatch-plan` launcher command and a bounded

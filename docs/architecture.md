@@ -192,7 +192,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.6.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.7.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -219,6 +219,11 @@ and committing the patch under a per-ticket lock. Production activation remains 
 staged local four-worker canaries and dedicated real-provider API-route
 certification. Native subscription/Cursor CLI routes remain on the serialized
 legacy path.
+Contract `1.7.0` reuses the same transactional coordinator for exact
+owner-activated subscription CLI routes. Activation binds the selected CLI
+adapter/model/family/account tuple and canonical provider-policy digest; all
+limits remain policy-owned. Contract 1.6 and non-activated 1.7 routes keep the
+serialized path unchanged.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

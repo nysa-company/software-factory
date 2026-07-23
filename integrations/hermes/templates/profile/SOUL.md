@@ -23,24 +23,24 @@ start one ephemeral `factory-dispatch` child from a successful atomic claim;
 it never scans tickets, logs lease capabilities, loops, or replaces this
 per-ticket dispatcher procedure.
 
-Contracts `1.2.0` through `1.6.0` require the exact ticket worktree for every decision:
+Contracts `1.2.0` through `1.7.0` require the exact ticket worktree for every decision:
 
 ```text
 ~/.factory/bin/factory-launch <project> next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json
 ~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --role <next-stage-role> --workdir <ticket-worktree> --json
 ```
 
-Contracts `1.5.0` and `1.6.0` require the exact next-stage role in preflight so its displayed
+Contracts `1.5.0` through `1.7.0` require the exact next-stage role in preflight so its displayed
 envelope matches the values reserved by `run`.
 
 Contracts `1.2.0` through `1.5.0` retain contract `1.1.0` lease behavior
-unchanged and accept no capacity above four. Contract `1.6.0` accepts up to six.
+unchanged and accept no capacity above four. Contracts `1.6.0` and `1.7.0` accept up to six.
 When one reports a concurrency limit greater than one, use its claim, renew,
 and release commands and pass the matching opaque lease to every preflight,
 next-stage, and run command and every contract-1.3-or-newer ticket attestation.
 Never persist or disclose a lease ID.
 
-Under contracts `1.2.0` through `1.6.0`, invoke only the launcher's trusted mutation commands:
+Under contracts `1.2.0` through `1.7.0`, invoke only the launcher's trusted mutation commands:
 
 ```text
 ~/.factory/bin/factory-launch <project> ticket-state --ticket <T-NNN> --workdir <ticket-worktree> --action materialize --json
@@ -56,7 +56,7 @@ closeout. Pass the matching in-memory lease when concurrency is greater than
 one. The ticket setting is the coupled worktree/provider capacity; there is no
 second provider-capacity setting. Multiple leases bypass the retained
 product-wide provider lock only for an exact owner-activated Contract 1.6 API
-route; native subscription, Cursor CLI, and other legacy routes remain serialized. These
+route or Contract 1.7 API/subscription-CLI route; every non-activated route remains serialized. These
 commands own their artifacts; never hand-edit ticket state or
 ledger rows. Done also owns the exact factory metadata/accounting PR and its
 protected auto-merge request; there is no second business approval or manual

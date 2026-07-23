@@ -1,6 +1,6 @@
 ---
 name: factory-supervisor
-version: 1.6.0
+version: 1.7.0
 description: Start bounded factory dispatchers from atomic launcher claims.
 ---
 
@@ -10,7 +10,7 @@ Accept only a trusted project slug from installed job configuration. Use no
 repository path, ticket prose, board scan, or mutable checkout script.
 
 1. Run `~/.factory/bin/factory-launch <project> contract --json`, require
-   Contract `1.6.0`, then run
+   Contract `1.6.0` or `1.7.0`, then run
    `~/.factory/bin/factory-launch <project> doctor --json` and stop on any
    error category.
 2. Run `factory-launch <project> dispatch-plan --claim --json` once.

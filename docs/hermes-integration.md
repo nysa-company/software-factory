@@ -68,7 +68,7 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.6.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.7.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
@@ -85,7 +85,7 @@ Contract versions `1.0.0` through `1.6.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Under Contracts 1.5 and 1.6, pass the exact role returned by `next-stage` to `preflight`;
+Under Contracts 1.5 through 1.7, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the
 one reserved by `run`.
 
@@ -123,7 +123,7 @@ snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
 Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default and accept
-`MAX_CONCURRENT_TICKETS` only from `1` through `4`. Contract 1.6 defaults to
+`MAX_CONCURRENT_TICKETS` only from `1` through `4`. Contracts 1.6 and 1.7 default to
 `4` and accepts `1` through `6`. Above one, the dispatcher uses
 `claim`, `renew`, and `release`, and supplies the matching `--lease` to
 preflight, next-stage, run, and ticket-attest. Capacity refusal is deterministic,
@@ -134,10 +134,14 @@ leases are gone. Leases expire after 15 minutes unless renewed, but expiration
 never makes them available to another dispatcher and a stale record still
 occupies capacity. This one product setting is the coupled ticket-worktree and
 provider-call capacity; there is no separate provider-capacity setting. The
-product-wide provider lock remains held for native subscription, Cursor CLI,
-and every other legacy provider interval. An exact Contract 1.6 API route may
-bypass it only when selected by the owner-only isolated-v1 activation file;
-missing or malformed activation never enables parallel provider work.
+product-wide provider lock remains held for every non-activated legacy
+provider interval. An exact Contract 1.6 API route may bypass it only through
+owner-only isolated-v1 activation. Contract 1.7 additionally admits exact
+Codex, Claude Code, and Cursor subscription CLI routes through canonical
+`cli-concurrent-v1` activation bound to the selected route and provider-policy
+SHA-256. Missing, malformed, or mismatched activation never enables parallel
+provider work. The initial policy caps Cursor at one concurrent process because
+its scratch root is account-global; limits are not duplicated in activation.
 
 The `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
 wakeup claims at most one ticket and starts at most one ephemeral dispatcher
@@ -178,8 +182,15 @@ the host artifact controller verifies its executor hash, full identity,
 telemetry, base, paths, protected-path policy, and temporary-index application,
 then applies and commits it under a per-ticket lock. Each route remains
 disabled until its activation evidence and owner configuration are installed;
-legacy serialized runs remain available for non-activated routes. Under
-maintenance, recover a stale record explicitly with:
+legacy serialized runs remain available for non-activated routes.
+Contract 1.7 reuses that coordinator for subscription CLIs through
+`scripts/provider-cli-runtime.py`. Admission and terminalization remain short
+transactions, unknown post-submission outcomes retain their full reservation,
+and provider roles may commit locally but never push. Contract 1.6 accepts only
+the API activation-v1 schema and therefore preserves its serialized native-CLI
+behavior unchanged.
+
+Under maintenance, recover a stale record explicitly with:
 
 ```bash
 bash scripts/factory-kit.sh recover-lease \

@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.6.0",
+  "contract_version": "1.7.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -430,14 +430,14 @@
       "FACTORY_PROJECT": "validated launcher project slug",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
       "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
-      "FACTORY_PROVIDER_DB": "fixed Contract 1.6 owner-local transactional database",
-      "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6 owner-local admission policy",
+      "FACTORY_PROVIDER_DB": "fixed Contract 1.6+ owner-local transactional database",
+      "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6+ owner-local admission policy",
       "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
       "FACTORY_PROVIDER_CREDENTIALS": "fixed Contract 1.6 owner-local credential configuration",
       "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
-      "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6 owner-local attempt directory",
-      "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6 owner-local apply-lock directory",
-      "FACTORY_PROVIDER_ACTIVATION": "fixed Contract 1.6 owner-local isolated-v1 activation gate",
+      "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6+ owner-local attempt directory",
+      "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6+ owner-local apply-lock directory",
+      "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7 API v1 or subscription-CLI v2",
       "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
       "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor"
     },
@@ -509,7 +509,7 @@
       6
     ],
     "capacity_scope": "coupled ticket-worktree and provider-call capacity",
-    "parallel_execution_gate": "the retained product-wide provider lock serializes native subscription, Cursor CLI, and all other legacy routes; only an exact owner-activated Contract 1.6 API route may use isolated parallel admission",
+    "parallel_execution_gate": "the retained product-wide provider lock serializes every non-activated route; an exact owner-activated Contract 1.6 API route or Contract 1.7 API/subscription-CLI route may use transactional parallel admission",
     "lease_required_when_greater_than": 1,
     "state": "PRODUCT_ROOT/factory/.dispatch-leases/<T-NNN>.json",
     "lease_ttl_seconds": 900,
@@ -517,8 +517,14 @@
   },
   "provider_execution": {
     "contract_1_6_mode": "isolated-v1",
-    "activation_gate": "disabled until a digest-pinned worker image, owner-only provider policy, transactional coordinator, credential broker, provider-only egress, artifact validator, cancellation reconciliation, and legacy barrier are all configured",
+    "contract_1_7_mode": "cli-concurrent-v1",
+    "activation_schemas": {
+      "nysa.software-factory.provider-activation/v1": "Contract 1.6 or 1.7 API route bound to broker protocol and path",
+      "nysa.software-factory.provider-activation/v2": "Contract 1.7 subscription CLI route bound to exact adapter, model, provider family, account route, and provider-policy SHA-256"
+    },
+    "activation_gate": "disabled unless the owner-only canonical activation matches the active contract, selected route identity, and exact provider-policy digest; invalid or absent activation retains serialized execution",
     "legacy_contracts": "contracts 1.0.0 through 1.5.0 retain interval-wide serialized provider execution",
+    "contract_1_6_compatibility": "Contract 1.6 accepts only activation v1 and retains native subscription/Cursor CLI serialization",
     "runtime_authority": "scripts/provider-runtime.py",
     "state_machine": [
       "prepared",
@@ -595,13 +601,28 @@
       ],
       "apply_rule": "revalidate the exact ticket branch and base SHA, validate protected paths and artifact identity in a temporary index, then apply and commit under a per-ticket lock"
     },
+    "subscription_cli": {
+      "authority": "scripts/provider-cli-runtime.py",
+      "activation_mode": "cli-concurrent-v1",
+      "allowed_adapters": [
+        "codex",
+        "claude-code",
+        "cursor-openai",
+        "cursor-anthropic"
+      ],
+      "identity_binding": "activation adapter, model, provider family, and account route must exactly match the frozen selected route; activation policy_sha256 must equal the canonical provider policy digest",
+      "admission": "reuse the Contract 1.6 transactional coordinator; capacity and budget limits live only in the owner-local provider policy",
+      "account_limits": "initial provider policy caps Cursor at one concurrent process because its scratch root is account-global; other account-route limits remain policy-owned",
+      "git_authority": "provider roles may commit locally but cannot push; the trusted host wrapper validates remote durability and owns every push"
+    },
     "recovery": {
       "authority": "scripts/provider-recovery.py",
       "cancellation": "persist request before signaling; release capacity only after container removal is proven",
       "unknown_outcome": "post-GO missing or unobservable workers retain reservation and slot for explicit reconciliation",
       "rollback": "refuse while attempts, legacy intervals, broker tokens, or live/unknown workers remain; preserve activation configuration as disabled evidence"
     },
-    "legacy_barrier": "no isolated-v1 admission while any legacy provider interval is active, and no legacy provider interval starts while isolated-v1 attempts are active"
+    "legacy_barrier": "no isolated-v1 or cli-concurrent-v1 admission while any legacy provider interval is active, and no legacy provider interval starts while coordinated attempts are active",
+    "serialized_fallback": "missing, disabled, malformed, identity-mismatched, or policy-mismatched activation never enables concurrency; Contract 1.6 behavior remains unchanged"
   },
   "status_categories": [
     "ok",
@@ -628,6 +649,7 @@
     "scripts/next-stage.sh",
     "scripts/run-agent.sh",
     "scripts/provider-coordinator.py",
+    "scripts/provider-cli-runtime.py",
     "scripts/provider-credential-broker.py",
     "scripts/provider-activation.py",
     "scripts/provider-artifact-controller.py",

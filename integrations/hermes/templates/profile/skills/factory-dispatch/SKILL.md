@@ -1,13 +1,13 @@
 ---
 name: factory-dispatch
-version: 1.6.0
+version: 1.7.0
 description: Dispatch a registered product through the stable factory launcher.
 ---
 
 # Factory dispatch
 
 This skill implements contract `nysa.software-factory.hermes` versions `1.0.0`
-through `1.6.0`.
+through `1.7.0`.
 It coordinates factory work and never performs contributor or operator work.
 
 ## Resolve the public boundary
@@ -15,7 +15,7 @@ It coordinates factory work and never performs contributor or operator work.
 1. Take the project slug from the board or operator. Do not accept a path.
 2. Run `~/.factory/bin/factory-launch <project> contract --json`.
 3. Require contract version `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, `1.4.0`,
-   `1.5.0`, or `1.6.0` and a supported Hermes version.
+   `1.5.0`, `1.6.0`, or `1.7.0` and a supported Hermes version.
 4. Run `~/.factory/bin/factory-launch <project> doctor --json`.
 5. Require schema `nysa.software-factory.hermes-doctor/v1`, known status
    categories, a valid full `KIT_PIN`, and no `error` result before dispatch.
@@ -28,10 +28,10 @@ uses only helpers under that resolved physical release.
 
 ## Dispatch sequence
 
-Contract `1.0.0`, and contracts `1.1.0` through `1.6.0` with
+Contract `1.0.0`, and contracts `1.1.0` through `1.7.0` with
 `max_concurrent_tickets: 1`, retain the original one-ticket flow below.
 Contracts `1.2.0` through `1.5.0` retain `1.1.0` lease behavior unchanged and
-accept no capacity above four. Contract `1.6.0` accepts a capacity from `1`
+accept no capacity above four. Contracts `1.6.0` and `1.7.0` accept a capacity from `1`
 through `6`. When a supported contract reports `max_concurrent_tickets`
 greater than one, claim no more than that many distinct tickets and claim each
 one before preflight:
@@ -48,9 +48,9 @@ a lease ID. A stale or mismatched lease is an escalation; only the operator
 may recover it under maintenance through `factory-kit recover-lease`.
 `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity
 setting; do not infer a second provider-capacity setting. The product-wide
-provider lock remains for native subscription, Cursor CLI, and every other
-legacy route. Only an exact owner-activated Contract 1.6 API route may enter
-the isolated runtime concurrently.
+provider lock remains for every non-activated legacy route. Contract 1.6 admits
+only exact owner-activated API routes; Contract 1.7 also admits exact
+owner-activated subscription CLI routes through the transactional coordinator.
 
 For the first launch of a ticket:
 
@@ -80,7 +80,7 @@ Then preflight the exact authorized role:
 ~/.factory/bin/factory-launch <project> preflight --ticket <T-NNN> --role <next-stage-role> [--lease <opaque-lease-id>] --workdir <absolute-product-worktree> --json
 ```
 
-Contracts `1.5.0` and `1.6.0` require the exact role authorized by `next-stage` so preflight
+Contracts `1.5.0` through `1.7.0` require the exact role authorized by `next-stage` so preflight
 resolves the same role envelope used by `run`. For contract `1.2.0` or `1.3.0`,
 `--workdir <absolute-product-worktree>` is required
 immediately before `--json` in both commands. It must be the same exact ticket
@@ -92,7 +92,7 @@ not accept `--json` themselves. Accept only the documented wrapper schema,
 require `exit_code: 0`, and use `action` from the next-stage result. Launch
 exactly the role authorized by that result:
 
-Under Contract 1.6, when that action is `RUN reviewer` after Builder, first
+Under Contracts 1.6 and 1.7, when that action is `RUN reviewer` after Builder, first
 prepare or reuse the exact open ticket PR:
 
 ```text

@@ -3,7 +3,7 @@
 # Public interface: factory-doctor.sh [--json] [--project <slug>]
 set -u
 
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.6.0}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.7.0}"
 DOCTOR_SCHEMA="nysa.software-factory.hermes-doctor/v1"
 SUPPORTED_HERMES_AGENT="0.18.2"
 SUPPORTED_HERMES_BUILD="2026.7.7.2"
@@ -548,15 +548,32 @@ fi
 
 PROVIDER_RUNTIME_STATUS="ok"
 PROVIDER_ACTIVATED=false
+PROVIDER_EXECUTION_MODE=""
 PROVIDER_ACTIVE_ATTEMPTS=0
 PROVIDER_ACTIVE_TOKENS=0
 PROVIDER_UNKNOWN_WORKERS=0
 PROVIDER_LEGACY_INTERVALS=0
-if [[ "$CONTRACT_VERSION" == "1.6.0" &&
+if [[ ( "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   PROVIDER_ACTIVATED=true
-  if [[ -n "${FACTORY_PROVIDER_DB:-}" && -f "${FACTORY_PROVIDER_DB:-}" &&
+  PROVIDER_ACTIVATION_STATUS="$("$PYTHON_BIN" -I -S \
+    "$KIT_DIR/scripts/provider-activation.py" \
+    --config "$FACTORY_PROVIDER_ACTIVATION" \
+    --contract-version "$CONTRACT_VERSION" --status 2>/dev/null || true)"
+  PROVIDER_EXECUTION_MODE="$(printf '%s' "$PROVIDER_ACTIVATION_STATUS" | \
+    "$PYTHON_BIN" -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+    if value.get("status") != "enabled":
+        raise ValueError
+    print(value["execution_mode"])
+except Exception:
+    raise SystemExit(1)
+' 2>/dev/null || true)"
+  if [[ "$PROVIDER_EXECUTION_MODE" == "isolated-v1" &&
+        -n "${FACTORY_PROVIDER_DB:-}" && -f "${FACTORY_PROVIDER_DB:-}" &&
         -n "${FACTORY_PROVIDER_BROKER_DB:-}" && -f "${FACTORY_PROVIDER_BROKER_DB:-}" &&
         -n "${FACTORY_PROVIDER_CREDENTIALS:-}" && -f "${FACTORY_PROVIDER_CREDENTIALS:-}" &&
         -n "${FACTORY_PROVIDER_ATTEMPT_ROOT:-}" && -d "${FACTORY_PROVIDER_ATTEMPT_ROOT:-}" &&
@@ -585,6 +602,70 @@ except Exception:
       PROVIDER_ACTIVE_TOKENS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==3')"
       PROVIDER_UNKNOWN_WORKERS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==4')"
       PROVIDER_LEGACY_INTERVALS="$(printf '%s\n' "$PROVIDER_RECOVERY_FIELDS" | awk 'NR==5')"
+    else
+      PROVIDER_RUNTIME_STATUS="error"
+    fi
+  elif [[ "$PROVIDER_EXECUTION_MODE" == "cli-concurrent-v1" &&
+          -n "${FACTORY_PROVIDER_DB:-}" && -f "${FACTORY_PROVIDER_DB:-}" &&
+          -n "${FACTORY_PROVIDER_POLICY:-}" && -f "${FACTORY_PROVIDER_POLICY:-}" &&
+          -n "${FACTORY_PROVIDER_ATTEMPT_ROOT:-}" && -d "${FACTORY_PROVIDER_ATTEMPT_ROOT:-}" &&
+          -n "${FACTORY_PROVIDER_APPLY_LOCK_ROOT:-}" && -d "${FACTORY_PROVIDER_APPLY_LOCK_ROOT:-}" ]]; then
+    PROVIDER_CLI_FIELDS="$("$PYTHON_BIN" -I -S - \
+      "$PROVIDER_ACTIVATION_STATUS" "$FACTORY_PROVIDER_POLICY" \
+      "$FACTORY_PROVIDER_DB" "$FACTORY_PROVIDER_ATTEMPT_ROOT" \
+      "$FACTORY_PROVIDER_APPLY_LOCK_ROOT" <<'PY' 2>/dev/null || true
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import stat
+import sys
+
+activation_status = json.loads(sys.argv[1])
+policy_path, database_path, attempt_root, apply_root = map(Path, sys.argv[2:])
+
+def secure(path, *, directory=False, owner_only=False):
+    info = path.lstat()
+    expected = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if (not path.is_absolute() or path.is_symlink() or not expected
+            or info.st_uid != os.geteuid() or (not directory and info.st_nlink != 1)
+            or info.st_mode & (0o077 if owner_only else 0o022)):
+        raise SystemExit(1)
+
+secure(policy_path)
+secure(database_path, owner_only=True)
+secure(attempt_root, directory=True)
+secure(apply_root, directory=True)
+policy = json.loads(policy_path.read_text(encoding="utf-8"))
+policy_digest = hashlib.sha256(json.dumps(
+    policy, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+).encode()).hexdigest()
+if activation_status.get("policy_sha256") != policy_digest:
+    raise SystemExit(1)
+uri = "file:" + str(database_path) + "?mode=ro"
+connection = sqlite3.connect(uri, uri=True)
+try:
+    connection.execute("PRAGMA query_only=ON")
+    if connection.execute("PRAGMA application_id").fetchone()[0] != 0x4E595343:
+        raise SystemExit(1)
+    if connection.execute("PRAGMA user_version").fetchone()[0] != 2:
+        raise SystemExit(1)
+    if connection.execute("SELECT value FROM metadata WHERE key='schema'").fetchone() != ("factory-provider-state/v2",):
+        raise SystemExit(1)
+    active = connection.execute(
+        "SELECT count(*) FROM attempts WHERE state IN ('reserved','GO','submitted')"
+    ).fetchone()[0]
+    legacy = connection.execute("SELECT count(*) FROM legacy_intervals").fetchone()[0]
+finally:
+    connection.close()
+print(active)
+print(legacy)
+PY
+)"
+    if [[ -n "$PROVIDER_CLI_FIELDS" ]]; then
+      PROVIDER_ACTIVE_ATTEMPTS="$(printf '%s\n' "$PROVIDER_CLI_FIELDS" | awk 'NR==1')"
+      PROVIDER_LEGACY_INTERVALS="$(printf '%s\n' "$PROVIDER_CLI_FIELDS" | awk 'NR==2')"
     else
       PROVIDER_RUNTIME_STATUS="error"
     fi
@@ -625,6 +706,7 @@ export HERMES_STATUS HERMES_PATH HERMES_VERSION CLI_STATUS CLI_FILE
 export CREDENTIAL_STATUS GH_PRESENT LINEAR_PRESENT
 export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAST_ERROR
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
+export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
 export OVERALL_STATUS RUN_FILE
 
@@ -742,6 +824,7 @@ document = {
         "isolated_provider": {
             "status": os.environ["PROVIDER_RUNTIME_STATUS"],
             "activated": boolean("PROVIDER_ACTIVATED"),
+            "execution_mode": optional("PROVIDER_EXECUTION_MODE"),
             "active_attempts": number("PROVIDER_ACTIVE_ATTEMPTS"),
             "active_tokens": number("PROVIDER_ACTIVE_TOKENS"),
             "unknown_workers": number("PROVIDER_UNKNOWN_WORKERS"),
@@ -765,7 +848,7 @@ else
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
   done < "$CLI_FILE"
   echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
-  echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
+  echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown}"
   [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi
