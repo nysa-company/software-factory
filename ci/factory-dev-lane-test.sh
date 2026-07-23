@@ -91,6 +91,23 @@ EOF
 chmod +x "$FAKE_CURSOR"
 
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
+subscription_plan_source="$(sed -n \
+  '/^subscription_probe_and_plan()/,/^run_subscription_internal()/p' "$LANE")"
+grep -Fq '"account_routes":{"lane-codex-subscription":limit(4)}' \
+  <<<"$subscription_plan_source" ||
+  fail "subscription canary does not grant one Codex account four slots"
+grep -Fq '"adapter":"codex"' <<<"$subscription_plan_source" ||
+  fail "subscription canary does not route through Codex"
+if grep -Eq 'cursor-openai|claude-code|lane-cursor-subscription|lane-claude-subscription' \
+  <<<"$subscription_plan_source"; then
+  fail "subscription canary retained a mixed-adapter route"
+fi
+subscription_run_source="$(sed -n \
+  '/^run_subscription_internal()/,/^product_role_run()/p' "$LANE")"
+grep -Fq 'PROVIDER_SPLIT=codex:4' <<<"$subscription_run_source" ||
+  fail "subscription canary does not report four Codex calls"
+grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
+  fail "subscription canary readiness is not Codex-only"
 lane_count_before="$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 expect_failure "production product source" test_env bash "$LANE" product-plan \
   --source "$CALLER_HOME/Projects/nysa-company/nysa-app" \
@@ -195,6 +212,15 @@ printf '%s\n' 0 >"$READINESS_ROOT/session-home/.transient-auth"
 ) || fail "subscription readiness did not outwait transient authentication"
 [[ "$(<"$READINESS_ROOT/session-home/.transient-auth")" == 2 ]] ||
   fail "subscription readiness did not exercise bounded authentication retries"
+for unused_tool in agent claude; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' \
+    >"$READINESS_ROOT/home/$unused_tool"
+  chmod +x "$READINESS_ROOT/home/$unused_tool"
+done
+(
+  die() { exit 1; }
+  codex_subscription_ready "$READINESS_ROOT"
+) || fail "Codex-only canary readiness depended on another provider session"
 sed -n '/^product_resume_plan()/,/^}/p' "$LANE" |
   grep -q 'subscription_ready "\$root"' ||
   fail "product resume planning does not stabilize authentication before approval"

@@ -32,16 +32,16 @@ bash scripts/factory-dev-lane.sh subscription-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-The canary uses existing authenticated Cursor, Codex, and Claude subscription CLIs—never API keys—for one Cursor, two Codex, and one Claude call. Cursor authentication uses its file-backed credential store inside the lane-local session home, so login and refresh never depend on the host credential store. It reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Cursor remains capped at one process because its temporary bridge is shared. Planning binds executable paths, bytes, versions, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
+The canary uses one existing authenticated Codex subscription CLI session—never an API key—for four same-account Codex calls. It copies only the Codex session into the lane-local home, reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Planning binds the Codex executable path, bytes, version, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
 
-Subscription and product lanes copy the three CLI session files into their
-owner-only lane root once. Readiness, version evidence, approval hashing, and
-role execution then use the same clean environment and only those copied
-files from the lane root as their working directory; ambient authentication
-variables, the caller's working directory, and the external Cursor session
-home are not consulted. If a copied session is unavailable, the lane stops
-before consuming approval, claiming a lease, reserving budget, or submitting
-a task.
+The subscription canary copies only its Codex CLI session; product lanes copy
+their three configured CLI sessions into the owner-only lane root once.
+Readiness, version evidence, approval hashing, and role execution then use the
+same clean environment and only those copied files from the lane root as their
+working directory; ambient authentication variables, the caller's working
+directory, and the external Cursor session home are not consulted. If a
+required copied session is unavailable, the lane stops before consuming
+approval, claiming a lease, reserving budget, or submitting a task.
 Each readiness probe gets three attempts with a one-second delay between
 misses so a short CLI session-state transition cannot exhaust every retry.
 Retained-product resumes run that probe before hashing the plan and again
