@@ -839,8 +839,7 @@ seed_product_worktrees() {
     index=2
     while [[ "$index" -lt "${#commits[@]}" ]]; do
       commit="${commits[$index]}"
-      python3 - "$root/worktrees/$ticket" "$commit" "$ticket" <<'PY' ||
-        die "product seed commit crosses a control boundary: $ticket"
+      if ! python3 - "$root/worktrees/$ticket" "$commit" "$ticket" <<'PY'
 import subprocess, sys
 worktree, commit, ticket=sys.argv[1:]
 paths=subprocess.check_output(
@@ -853,6 +852,9 @@ for path in paths:
         (path.startswith("factory/tickets/") and path != f"factory/tickets/{ticket}.md")):
         raise SystemExit(1)
 PY
+      then
+        die "product seed commit crosses a control boundary: $ticket"
+      fi
       git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
         -c user.email=factory-dev@local cherry-pick -q "$commit" ||
         die "product seed commit did not apply cleanly: $ticket"
