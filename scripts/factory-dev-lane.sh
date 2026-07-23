@@ -342,6 +342,23 @@ for path in root.rglob("*.pid"):
         raise SystemExit(f"cannot prove pid is stopped: {path}")
     raise SystemExit(f"live pid evidence: {path}")
 PY
+  if [[ -f "$root/runtime/product-containers.json" ]]; then
+    while IFS= read -r container; do
+      [[ -n "$container" ]] || continue
+      label="$(docker inspect --format '{{ index .Config.Labels "nysa.factory.dev-lane-root" }}' \
+        "$container" 2>/dev/null || true)"
+      [[ -z "$label" || "$label" == "$root" ]] ||
+        die "cleanup refused a container whose lane label drifted"
+      [[ -z "$label" ]] || docker rm -f "$container" >/dev/null ||
+        die "cleanup could not remove a lane container"
+    done < <(python3 - "$root/runtime/product-containers.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("schema") != "factory-dev-product-containers/v1": raise SystemExit(1)
+for item in value.get("containers", []): print(item["name"])
+PY
+    )
+  fi
   rm -rf -- "$root"
   echo "CLEANED=$root"
 }
@@ -681,6 +698,13 @@ PY
       ln -s "$resolved" "$root/home/$tool-real"
     done
   fi
+  if [[ "$mode" == product ]]; then
+    for tool in node npm npx; do
+      resolved="/opt/homebrew/opt/node@22/bin/$tool"
+      [[ -x "$resolved" || -f "$resolved" ]] || die "Node 22 $tool is unavailable"
+      ln -s "$resolved" "$root/home/$tool"
+    done
+  fi
   if [[ "$mode" == mock-concurrency ]]; then
     cat > "$root/home/mock-provider-cli" <<'PY'
 #!/usr/bin/env python3
@@ -859,6 +883,7 @@ product_approval_hash() {
     sha256_file "$root/runtime/cursor.sb"
     sha256_file "$root/runtime/native.sb"
     sha256_file "$root/runtime/claude-settings.json"
+    sha256_file "$root/runtime/product-containers.json"
     for tool in agent codex claude; do
       real="$(python3 - "$root/home/$tool" <<'PY'
 import os, sys
@@ -876,8 +901,43 @@ PY
       git -C "$root/worktrees/$ticket" rev-parse HEAD 'HEAD^{tree}'
       sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md"
       sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json"
+      sha256_file "$root/runtime/product-db/$ticket.env"
     done
   } | sha256_text
+}
+
+provision_product_databases() {
+  local root="$1" ticket nonce name password database port env_file
+  local -a names=()
+  command -v docker >/dev/null 2>&1 || die "Docker is unavailable for isolated product databases"
+  mkdir -m 700 "$root/runtime/product-db"
+  nonce="$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    name="nysa-sfdev-$nonce-$(printf '%s' "$ticket" | tr '[:upper:]' '[:lower:]')"
+    password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+    database="nysa_$(printf '%s' "${ticket#T-}" | tr -cd '0-9')"
+    env_file="$root/runtime/product-db/$ticket.env"
+    printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_DB=%s\n' "$password" "$database" >"$env_file"
+    chmod 600 "$env_file"
+    docker run -d --name "$name" \
+      --label "nysa.factory.dev-lane-root=$root" --env-file "$env_file" \
+      -p 127.0.0.1::5432 pgvector/pgvector:0.8.5-pg16 >/dev/null ||
+      die "could not start isolated database for $ticket"
+    names+=("$name")
+    port="$(docker port "$name" 5432/tcp | sed -n 's/.*://p' | tail -n1)"
+    [[ "$port" =~ ^[0-9]+$ ]] || die "could not resolve isolated database port"
+    printf 'POSTGRES_PORT=%s\nDATABASE_URL=postgresql://postgres:%s@127.0.0.1:%s/%s\n' \
+      "$port" "$password" "$port" "$database" >>"$env_file"
+  done
+  python3 - "$root/runtime/product-containers.json" "$root" "${names[@]}" <<'PY'
+import json, os, sys
+path, root, *names=sys.argv[1:]
+with open(path,"w",encoding="utf-8") as stream:
+    json.dump({"schema":"factory-dev-product-containers/v1","root":root,
+               "containers":[{"name":name} for name in names]},stream,
+              sort_keys=True,separators=(",",":")); stream.write("\n")
+os.chmod(path,0o600)
+PY
 }
 
 load_product_tickets() {
@@ -966,6 +1026,7 @@ PY
     --config "$root/runtime/provider-activation.json" \
     --policy "$root/runtime/provider-policy.json" \
     --contract-version 1.7.0 --status >/dev/null || die "product activation policy is invalid"
+  provision_product_databases "$root"
   approval_hash="$(product_approval_hash "$root")"
   printf 'approval_hash=%s\nused=0\n' "$approval_hash" >"$root/runtime/product-approval"
   chmod 600 "$root/runtime/product-approval"
@@ -1274,6 +1335,7 @@ assert value["active_reserve_micro_usd"] == 0, value
 product_role_run() {
   local root="$1" ticket="$2" lease="$3" role="$4" instruction latest
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
+  instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
     instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES."
   fi
