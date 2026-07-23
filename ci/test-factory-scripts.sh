@@ -573,6 +573,7 @@ expect_stage() {
   certified_origin="$(git -C "$root" remote get-url --push origin 2>/dev/null || true)"
   actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
+    FACTORY_RELEASE_CONTRACT_VERSION="${TEST_CONTRACT_VERSION:-1.2.0}" \
     "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
   status=$?
   [[ "$actual" == "$expected"* ]] || {
@@ -2164,6 +2165,45 @@ if expect_stage "ESCALATE" "$ROUNDS" T-300 &&
      "$NEXT_STAGE" --ticket T-300 | grep -q "reviewer round 3"; then
   pass "duplicate row preserves semantic round 3"
 fi
+
+# Contract 1.7 makes repair ownership mechanical. When both roles own a fix,
+# Test-author must finish before the Builder and only then may Reviewer rerun.
+OWNED_FIX="$TMP/owned-fix"
+mkdir -p "$OWNED_FIX/factory/tickets"
+{
+  ledger_header
+  ledger_row T-302 planner
+  ledger_row T-302 test-author
+  ledger_row T-302 builder
+  ledger_row T-302 reviewer
+} > "$OWNED_FIX/factory/ledger.csv"
+cat > "$OWNED_FIX/factory/tickets/T-302.md" <<'EOF'
+# T-302
+reviewer round 1: REQUEST CHANGES
+reviewer round 1 FIX-OWNER: both
+EOF
+if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302; then
+  ledger_row T-302 test-author >> "$OWNED_FIX/factory/ledger.csv"
+  if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX builder" "$OWNED_FIX" T-302; then
+    ledger_row T-302 builder >> "$OWNED_FIX/factory/ledger.csv"
+    TEST_CONTRACT_VERSION=1.7.0 expect_stage "RUN reviewer" "$OWNED_FIX" T-302 &&
+      pass "contract 1.7 sequences explicit dual-owner repairs"
+  fi
+fi
+
+MISSING_OWNER="$TMP/missing-fix-owner"
+mkdir -p "$MISSING_OWNER/factory/tickets"
+{
+  ledger_header
+  ledger_row T-303 planner
+  ledger_row T-303 test-author
+  ledger_row T-303 builder
+  ledger_row T-303 reviewer
+} > "$MISSING_OWNER/factory/ledger.csv"
+printf '%s\n' '# T-303' 'reviewer round 1: REQUEST CHANGES' \
+  > "$MISSING_OWNER/factory/tickets/T-303.md"
+TEST_CONTRACT_VERSION=1.7.0 expect_stage "REFUSE" "$MISSING_OWNER" T-303 &&
+  pass "contract 1.7 refuses missing repair ownership"
 
 printf '%s\n' 'OPERATOR AUTHORIZATION: reviewer round 3' >> "$ROUNDS/factory/tickets/T-300.md"
 if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then

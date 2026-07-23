@@ -990,16 +990,20 @@ PY
       "$(git -C "$root/kit" rev-parse HEAD)" <<'PY'
 from pathlib import Path
 import re, sys
-p=Path(sys.argv[1]); kit_sha=sys.argv[2]; lines=[]
+p=Path(sys.argv[1]); kit_sha=sys.argv[2]; lines=[]; kit_written=False
 for line in p.read_text(encoding="utf-8").splitlines():
     if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
         continue
-    elif re.fullmatch(r"\s*reviewer round\s+\d+:.*", line, re.I):
+    elif re.fullmatch(r"\s*reviewer round\s+\d+(?::.*|\s+FIX-OWNER:\s*.*)", line, re.I):
         continue
     elif re.match(r"^Kit-SHA:\s*", line):
-        lines.append("Kit-SHA: " + kit_sha)
+        if not kit_written:
+            lines.append("Kit-SHA: " + kit_sha)
+            kit_written=True
     else:
         lines.append(re.sub(r"^State:\s*.*$", "State: Ready", line))
+if not kit_written:
+    lines.append("Kit-SHA: " + kit_sha)
 p.write_text("\n".join(lines)+"\n", encoding="utf-8")
 PY
     git -C "$root/worktrees/$ticket" add "factory/tickets/$ticket.md"
@@ -2170,7 +2174,7 @@ product_role_run() {
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
-    instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES."
+    instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES. If requesting changes, add exactly one standalone FIX-OWNER: builder, FIX-OWNER: test-author, or FIX-OWNER: both line; approvals must not include FIX-OWNER."
   fi
   envelope="$root/product/factory/ENVELOPE.env"
   [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||
@@ -2190,7 +2194,7 @@ product_role_run() {
 }
 
 product_reconcile_reviewer() {
-  local root="$1" ticket="$2" evidence round adapter output verdict
+  local root="$1" ticket="$2" evidence round adapter output verdict owner record
   evidence="$(python3 - "$root/product/factory/runs" \
     "$root/worktrees/$ticket/factory/tickets/$ticket.md" "$ticket" <<'PY'
 import pathlib, re, sys
@@ -2218,9 +2222,15 @@ PY
   [[ "$evidence" != none ]] || return 0
   IFS='|' read -r round adapter output <<<"$evidence"
   [[ "$round" =~ ^[1-9][0-9]*$ && -n "$adapter" && -f "$output" ]] || return 1
-  verdict="$(python3 "$root/kit/scripts/lib/reviewer-verdict.py" \
-    --adapter "$adapter" --input "$output")" || return 1
-  append_commit_push "$root" "reviewer round $round: $verdict" \
+  IFS=$'\t' read -r verdict owner < <(
+    python3 "$root/kit/scripts/lib/reviewer-verdict.py" \
+      --adapter "$adapter" --input "$output" --contract-version 1.7.0 \
+      --format fields
+  ) || return 1
+  record="reviewer round $round: $verdict"
+  [[ -z "$owner" ]] ||
+    record+=$'\n'"reviewer round $round FIX-OWNER: $owner"
+  append_commit_push "$root" "$record" \
     "$ticket: record isolated review round $round" || return 1
   return 0
 }
@@ -2242,7 +2252,8 @@ product_resume_reason() {
 
 product_role_for_stage() {
   case "$1" in
-    "FIX builder-or-test-author") printf '%s\n' builder ;;
+    "FIX builder") printf '%s\n' builder ;;
+    "FIX test-author") printf '%s\n' test-author ;;
     RUN\ *) printf '%s\n' "${1#RUN }" ;;
     *) return 1 ;;
   esac

@@ -268,6 +268,10 @@ sequencer_allows_role() {
         ( "$ROLE" == "builder" || "$ROLE" == "test-author" ) ]]; then
     return 0
   fi
+  if [[ "$output" == "FIX $ROLE" &&
+        ( "$ROLE" == "builder" || "$ROLE" == "test-author" ) ]]; then
+    return 0
+  fi
   SEQUENCER_ERROR="sequencer did not authorize the requested role"
   return 1
 }
@@ -835,7 +839,8 @@ authorization = re.compile(
     re.IGNORECASE,
 )
 reviewer_verdict = re.compile(
-    r"^\s*reviewer round\s+\d+:\s*(?:APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+    r"^\s*reviewer round\s+\d+(?::\s*(?:APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)"
+    r"|\s+FIX-OWNER:\s*(?:builder|test-author|both))\s*$",
     re.IGNORECASE,
 )
 reviewer_void = re.compile(

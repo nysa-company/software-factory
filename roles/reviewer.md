@@ -22,6 +22,11 @@ The PR (diff, description), the reconciled Markdown ticket in Review (spec, acce
 
 Either **Approve** (one comment: what you checked and why it passes) or **Request changes** (numbered, actionable items tied to a criterion or convention — never taste).
 
+Under Contract 1.7, end `REQUEST CHANGES` with exactly one standalone
+`FIX-OWNER: builder`, `FIX-OWNER: test-author`, or `FIX-OWNER: both` line.
+Use `both` only when tests and implementation must change. End `APPROVE`
+without any `FIX-OWNER` line.
+
 ## Rules
 
 - Maximum 2 rounds. If round 2 doesn't resolve it, move the ticket to Blocked-Escalated and write one plain-language paragraph for the operator: what the disagreement is, what the options are, what you recommend. The operator adjudicates outcomes, not code.
@@ -36,6 +41,7 @@ Receipt-row PR: reviewer notices the test asserts a row exists but never checks 
 
 ## Changelog
 
+- v4: Contract 1.7 repair ownership is explicit and machine-sequenced.
 - v3: clarified Review stage and reconciled field ownership.
 - v2: structural pass added to question 2 (SQL/data safety, races, LLM trust boundary, shell injection, enum completeness — adapted from gstack /review's critical categories); question 1 now also flags untestable-as-written criteria as planning defects.
 - v1: initial.

@@ -10,6 +10,8 @@ import re
 parser = argparse.ArgumentParser()
 parser.add_argument("--adapter", required=True)
 parser.add_argument("--input", required=True, type=pathlib.Path)
+parser.add_argument("--contract-version", default="1.6.0")
+parser.add_argument("--format", choices=("verdict", "fields"), default="verdict")
 args = parser.parse_args()
 
 raw = args.input.read_text(encoding="utf-8", errors="replace")
@@ -38,4 +40,25 @@ for line in raw.splitlines():
     ))
 if not signals or len(set(signals)) != 1:
     raise SystemExit("reviewer result must contain one unambiguous verdict")
-print(signals[0])
+verdict = signals[0]
+owners = [
+    match.group(1).lower()
+    for line in raw.splitlines()
+    if (match := re.fullmatch(
+        r"\s*FIX-OWNER:\s*(builder|test-author|both)\s*", line, re.I
+    ))
+]
+owner = ""
+if args.contract_version == "1.7.0":
+    if verdict == "REQUEST CHANGES" and len(owners) != 1:
+        raise SystemExit("contract 1.7 request changes requires exactly one FIX-OWNER")
+    if verdict == "APPROVE" and owners:
+        raise SystemExit("contract 1.7 approval must not include FIX-OWNER")
+    owner = owners[0] if owners else ""
+elif owners:
+    raise SystemExit("FIX-OWNER requires contract 1.7")
+
+if args.format == "fields":
+    print(f"{verdict}\t{owner}")
+else:
+    print(verdict)

@@ -19,7 +19,10 @@ The ticket file in Planning (spec'd description, acceptance criteria, frozen con
 
 ## Output — appended to the ticket file's log
 
-A numbered findings list (each finding names the criterion/contract line it faults and what would fix it), then exactly one verdict line:
+A contract-element coverage table with one row per element and columns for its
+positive, failure/empty, duplicate, and out-of-scope disposition; a numbered
+findings list (each finding names the criterion/contract line it faults and
+what would fix it); then exactly one verdict line:
 
 ```
 SPEC-LINT: PASS
@@ -48,6 +51,7 @@ Receipt-row ticket, criterion 2 reads "the row shows the summary nicely." Findin
 
 ## Changelog
 
+- v5: requires a complete contract-element coverage table before verdict.
 - v4: Consistency check reads `factory/rulings.md`; a contract contradicting a recorded operator ruling is a finding.
 - v3: documented exact operator authorization for one next semantic lint round.
 - v2: clarified the spec-linter's Planning stage and reconciled field ownership.

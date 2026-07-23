@@ -647,12 +647,97 @@ FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
   NR>1 && $3==t && $9=="0" {
     if ($4=="reviewer") {
       reviewer_run++
-      if (index(voids, "," reviewer_run ",")==0) { last_r=NR; fix=0 }
+      if (index(voids, "," reviewer_run ",")==0) {
+        last_r=NR; builder=0; test_author=0; builder_after_test=0
+      }
     }
-    else if (($4=="builder" || $4=="test-author") && last_r>0) fix=1
+    else if ($4=="builder" && last_r>0) {
+      builder=1
+      if (test_author) builder_after_test=1
+    }
+    else if ($4=="test-author" && last_r>0) test_author=1
   }
-  END { print fix+0 }' "$LEDGER")"
-if [[ "$FIX_AFTER" -eq 1 ]]; then
+  END { print builder+0 "|" test_author+0 "|" builder_after_test+0 }' "$LEDGER")"
+IFS='|' read -r FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST <<<"$FIX_AFTER"
+
+LATEST_VERDICT=""
+LATEST_FIX_OWNER=""
+CONTRACT17_FIX_ACTION=""
+if [[ "$CONTRACT_VERSION" == "1.7.0" && "$VERDICTS" -gt 0 ]]; then
+  OWNER_DATA="$(python3 - "$TICKET_FILE" <<'PY'
+import re
+import sys
+
+verdicts = {}
+owners = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    match = re.fullmatch(
+        r"\s*reviewer round\s+(\d+):\s*(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*",
+        line, re.I,
+    )
+    if match:
+        round_number = int(match.group(1))
+        verdict = match.group(2).upper()
+        verdict = "REQUEST CHANGES" if verdict.startswith("REQUEST CHANGES") else verdict
+        if round_number in verdicts:
+            raise SystemExit(1)
+        verdicts[round_number] = verdict
+        continue
+    match = re.fullmatch(
+        r"\s*reviewer round\s+(\d+)\s+FIX-OWNER:\s*(builder|test-author|both)\s*",
+        line, re.I,
+    )
+    if match:
+        round_number = int(match.group(1))
+        if round_number in owners:
+            raise SystemExit(1)
+        owners[round_number] = match.group(2).lower()
+
+if not verdicts or set(owners) - set(verdicts):
+    raise SystemExit(1)
+for round_number, verdict in verdicts.items():
+    if (verdict == "REQUEST CHANGES") != (round_number in owners):
+        raise SystemExit(1)
+latest = max(verdicts)
+print(f"{verdicts[latest]}|{owners.get(latest, '')}")
+PY
+  )" || {
+    echo "REFUSE contract 1.7 reviewer verdicts require exact, unambiguous FIX-OWNER records"
+    exit 1
+  }
+  IFS='|' read -r LATEST_VERDICT LATEST_FIX_OWNER <<<"$OWNER_DATA"
+fi
+
+if [[ "$CONTRACT_VERSION" == "1.7.0" && "$LATEST_VERDICT" == "REQUEST CHANGES" ]]; then
+  case "$LATEST_FIX_OWNER" in
+    builder)
+      if [[ "$FIX_BUILDER" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX builder"
+      else
+        echo "RUN reviewer"
+        exit 0
+      fi
+      ;;
+    test-author)
+      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX test-author"
+      else
+        echo "RUN reviewer"
+        exit 0
+      fi
+      ;;
+    both)
+      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX test-author"
+      elif [[ "$FIX_BUILDER_AFTER_TEST" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX builder"
+      else
+        echo "RUN reviewer"
+        exit 0
+      fi
+      ;;
+  esac
+elif [[ "$FIX_BUILDER" -eq 1 || "$FIX_TEST_AUTHOR" -eq 1 ]]; then
   echo "RUN reviewer"
   exit 0
 fi
@@ -719,4 +804,4 @@ if [[ "$RC" -ge 2 ]]; then
   fi
 fi
 
-echo "FIX builder-or-test-author"
+echo "${CONTRACT17_FIX_ACTION:-FIX builder-or-test-author}"

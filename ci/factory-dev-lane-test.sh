@@ -295,6 +295,18 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n
 printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
   fail "strict reviewer parser rejected a plain request-changes verdict"
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' 'FIX-OWNER: both' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT" \
+  --contract-version 1.7.0 --format fields)" == $'REQUEST CHANGES\tboth' ]] ||
+  fail "contract 1.7 reviewer parser lost explicit repair ownership"
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
+expect_failure "missing contract 1.7 fix owner" \
+  python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT" \
+    --contract-version 1.7.0
+printf '%s\n' 'Review complete.' 'APPROVE' 'FIX-OWNER: builder' >"$VERDICT"
+expect_failure "approval with contract 1.7 fix owner" \
+  python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT" \
+    --contract-version 1.7.0
 printf '%s\n' '**Request changes.**' 'Build is not green.' '**REQUEST CHANGES** due to the build failure.' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
   fail "reviewer parser rejected repeated agreeing Markdown verdicts"
@@ -354,12 +366,14 @@ printf '%s\n' \
   'ticket=T-900002' 'role=reviewer' 'adapter=codex' \
   'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-02T00:00:00Z' \
   >"$REC/product/factory/runs/review-request.meta"
-printf '%s\n' 'Review complete.' 'REQUEST CHANGES' \
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' 'FIX-OWNER: test-author' \
   >"$REC/product/factory/runs/review-request.out"
 TICKET=T-900002 product_reconcile_reviewer "$REC" T-900002 ||
   fail "request-changes review was treated as a terminal lifecycle failure"
 grep -qx 'reviewer round 1: REQUEST CHANGES' "$review_ticket" ||
   fail "request-changes review was not recorded durably"
+grep -qx 'reviewer round 1 FIX-OWNER: test-author' "$review_ticket" ||
+  fail "request-changes repair ownership was not recorded durably"
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
@@ -395,8 +409,11 @@ for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_TICKETS=' \
     fail "product failure omitted explicit same-lane resume handoff: $expected"
 done
 eval "$(sed -n '/^product_role_for_stage()/,/^}/p' "$LANE")"
-[[ "$(product_role_for_stage 'FIX builder-or-test-author')" == builder ]] ||
-  fail "review request did not select the bounded Builder fix role"
+if product_role_for_stage 'FIX builder-or-test-author' >/dev/null; then
+  fail "development lane guessed Builder for ambiguous repair ownership"
+fi
+[[ "$(product_role_for_stage 'FIX test-author')" == test-author ]] ||
+  fail "explicit review ownership did not select Test-author"
 [[ "$(product_role_for_stage 'RUN reviewer')" == reviewer ]] ||
   fail "ordinary sequencer role mapping changed"
 if product_role_for_stage AWAIT-OPERATOR >/dev/null; then
