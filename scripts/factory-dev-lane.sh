@@ -72,14 +72,20 @@ PY
 }
 
 subscription_ready() {
-  local root="$1" session_home="$1/session-home" cursor_home
+  local root="$1" session_home="$1/session-home" cursor_home i
   cursor_home="$(cursor_session_home)"
-  HOME="$cursor_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 ||
-    die "Cursor subscription authentication is unavailable"
-  (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1) ||
-    die "Codex subscription authentication is unavailable"
-  (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/claude" auth status >/dev/null 2>&1) ||
-    die "Claude subscription authentication is unavailable"
+  for i in 1 2 3; do
+    HOME="$cursor_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 && break
+    [[ "$i" -lt 3 ]] || die "Cursor subscription authentication is unavailable"
+  done
+  for i in 1 2 3; do
+    (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1) && break
+    [[ "$i" -lt 3 ]] || die "Codex subscription authentication is unavailable"
+  done
+  for i in 1 2 3; do
+    (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/claude" auth status >/dev/null 2>&1) && break
+    [[ "$i" -lt 3 ]] || die "Claude subscription authentication is unavailable"
+  done
 }
 
 subscription_approval_hash() {
