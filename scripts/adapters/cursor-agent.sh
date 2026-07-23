@@ -86,9 +86,15 @@ if [[ -s "$PROMPT_FILE" ]]; then
 
 $TASK"
 fi
-FULL_TASK="$FULL_TASK
+if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
+  FULL_TASK="$FULL_TASK
+
+Reviewer CLI control: remain read-only, inspect the supplied change, and return the required verdict without editing or committing."
+else
+  FULL_TASK="$FULL_TASK
 
 Cursor CLI control: stay in the default execution mode. Do not switch to Plan or Ask mode, invoke createPlan, or merely describe intended work. Execute the supplied role contract now while preserving its mutation limits."
+fi
 
 NORMALIZED="$(mktemp "${TMPDIR:-/tmp}/factory-cursor-metrics.XXXXXX")"
 cleanup_cursor() {
@@ -100,7 +106,12 @@ set +e
 (
   cd "$WORKDIR" &&
     CURSOR_ARGS=(--print --output-format stream-json \
-      --workspace "$WORKDIR" --trust --force --model "$MODEL") &&
+      --workspace "$WORKDIR" --trust --model "$MODEL") &&
+    if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
+      CURSOR_ARGS=(--mode ask "${CURSOR_ARGS[@]}")
+    else
+      CURSOR_ARGS=(--force "${CURSOR_ARGS[@]}")
+    fi &&
     if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
       CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
     fi &&

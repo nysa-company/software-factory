@@ -298,6 +298,24 @@ printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
 printf '%s\n' '**Request changes.**' 'Build is not green.' '**REQUEST CHANGES** due to the build failure.' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
   fail "reviewer parser rejected repeated agreeing Markdown verdicts"
+rm -f "$TMP/cursor-args"
+FACTORY_ROLE=reviewer FACTORY_CURSOR_SESSION_HOME="$CALLER_HOME" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/reviewer.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- review \
+    >/dev/null 2>&1 || true
+if ! python3 - "$TMP/cursor-args" <<'PY'
+import sys
+args = open(sys.argv[1], encoding="utf-8").read().splitlines()
+assert args[args.index("--mode") + 1] == "ask"
+assert "--force" not in args
+assert "Reviewer CLI control: remain read-only" in args[-1]
+PY
+then
+  fail "concurrent Cursor Reviewer did not use native read-only mode"
+fi
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
