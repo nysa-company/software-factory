@@ -16,6 +16,7 @@ PRODUCT_SOURCE=""
 PRODUCT_BASE=""
 PRODUCT_SEED_BUNDLE=""
 PRODUCT_SEED_ACCOUNTING=""
+PRODUCT_SEED_LINEAGE=""
 PRODUCT_TICKETS=()
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
@@ -36,7 +37,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json>]
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-export --root <absolute-lane-root> [--tickets <T-NNN,...>]
@@ -491,7 +492,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" cleanup_trap
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" cleanup_trap
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -616,19 +617,21 @@ PY
         "$PRODUCT_SEED_BUNDLE" "$PRODUCT_BASE" \
         "${lane_tickets[@]}"
       accounting_hash="$(sha256_file "$PRODUCT_SEED_ACCOUNTING")"
+      lineage_hash="$(sha256_file "$PRODUCT_SEED_LINEAGE")"
     fi
     python3 - "$root/runtime/product-source.json" "$PRODUCT_BASE" \
       "$(git -C "$PRODUCT_SOURCE" rev-parse "$PRODUCT_BASE^{tree}")" "$lane_control_sha" \
-      "$seed_hash" "$accounting_hash" -- \
+      "$seed_hash" "$accounting_hash" "$lineage_hash" -- \
       "${lane_tickets[@]}" <<'PY'
 import json, os, sys
-path, base, tree, control, seed, accounting, separator, *tickets=sys.argv[1:]
+path, base, tree, control, seed, accounting, lineage, separator, *tickets=sys.argv[1:]
 if separator != "--": raise SystemExit(1)
 with open(path, "w", encoding="utf-8") as stream:
     json.dump({"schema":"factory-dev-product-source/v1","base_sha":base,
                "base_tree":tree,"lane_control_sha":control,
                "seed_bundle_sha256":seed or None,
-               "seed_accounting_sha256":accounting or None,"tickets":tickets},
+               "seed_accounting_sha256":accounting or None,
+               "seed_lineage_sha256":lineage or None,"tickets":tickets},
               stream, sort_keys=True, separators=(",",":")); stream.write("\n")
 os.chmod(path, 0o600)
 PY
@@ -1136,33 +1139,82 @@ PY
 }
 
 consume_product_seed_authorization() {
-  local manifest="$1" expected="$2" parent root digest nonce day marker
-  [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["schema"])' \
-    "$manifest")" =~ ^factory-dev-product-seed-accounting/v[34]$ ]] || return 0
-  parent="$(physical "$(dirname "$manifest")")"
+  local manifest="$1" expected="$2" lineage_record="$3"
+  local parent root digest nonce day marker lineage_id lineage_parent lineage_values
+  local accounting_values lineage lock head
+  [[ "$lineage_record" == /* && -f "$lineage_record" && ! -L "$lineage_record" &&
+     "$(stat -f '%Su:%Lp:%l' "$lineage_record")" == "$(id -un):600:1" ]] ||
+    die "product seed lineage must be an owner-only regular file"
+  refuse_production_path "$lineage_record"
+  parent="$(physical "$(dirname "$lineage_record")")"
   refuse_production_path "$parent"
   [[ "$(stat -f '%Su:%Lp' "$parent")" == "$(id -un):700" ]] ||
-    die "product seed authorization parent must be owner-only"
-  read -r nonce day < <(python3 - "$manifest" <<'PY'
-import json, sys
-value=json.load(open(sys.argv[1], encoding="utf-8"))
-print(value["authorization_nonce"], value["budget_day"])
-PY
-)
+    die "product seed lineage parent must be owner-only"
   digest="$(sha256_file "$manifest")"
   [[ "$digest" == "$expected" ]] ||
     die "product seed authorization drifted after lane creation"
-  root="$parent/.seed-accounting-consumptions"
+  lineage_values="$(python3 - "$lineage_record" "$digest" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+sha=lambda item: isinstance(item,str) and len(item)==64 and all(c in "0123456789abcdef" for c in item)
+if (set(value) != {"schema","lineage_id","parent_manifest_sha256","manifest_sha256"} or
+    value.get("schema") != "factory-dev-product-seed-lineage/v1" or
+    not sha(value.get("lineage_id")) or
+    value.get("parent_manifest_sha256") is not None and
+        not sha(value.get("parent_manifest_sha256")) or
+    value.get("manifest_sha256") != sys.argv[2]):
+    raise SystemExit(1)
+print(value["lineage_id"], value["parent_manifest_sha256"] or "none")
+PY
+  )" || die "product seed lineage is malformed or detached"
+  read -r lineage_id lineage_parent <<<"$lineage_values"
+  accounting_values="$(python3 - "$manifest" "$digest" <<'PY'
+import hashlib, json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+print(value.get("authorization_nonce", hashlib.sha256(sys.argv[2].encode()).hexdigest()),
+      value.get("budget_day", "legacy"))
+PY
+  )" || die "product seed accounting is malformed"
+  read -r nonce day <<<"$accounting_values"
+  root="$parent/.seed-accounting-lineages"
   if [[ ! -e "$root" ]]; then mkdir -m 700 "$root" 2>/dev/null || true; fi
   [[ -d "$root" && ! -L "$root" &&
      "$(stat -f '%Su:%Lp' "$root")" == "$(id -un):700" ]] ||
-    die "product seed authorization consumption root is unsafe"
-  marker="$root/$nonce.used"
-  mkdir -m 700 "$marker" 2>/dev/null ||
-    die "product seed authorization was already consumed"
-  printf 'schema=factory-dev-product-seed-authorization-consumption/v1\nmanifest_sha256=%s\nbudget_day=%s\n' \
-    "$digest" "$day" >"$marker/receipt"
-  chmod 600 "$marker/receipt"
+    die "product seed accounting lineage root is unsafe"
+  lock="$root/$lineage_id.lock"
+  mkdir -m 700 "$lock" 2>/dev/null ||
+    die "product seed accounting lineage is busy"
+  if ! (
+    trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+    lineage="$root/$lineage_id"
+    if [[ ! -e "$lineage" ]]; then
+      [[ "$lineage_parent" == none ]] || exit 1
+      mkdir -m 700 "$lineage"
+      mkdir -m 700 "$lineage/nonces"
+    fi
+    [[ -d "$lineage" && ! -L "$lineage" &&
+       "$(stat -f '%Su:%Lp' "$lineage")" == "$(id -un):700" &&
+       -d "$lineage/nonces" && ! -L "$lineage/nonces" &&
+       "$(stat -f '%Su:%Lp' "$lineage/nonces")" == "$(id -un):700" ]] || exit 1
+    head="$lineage/head"
+    if [[ "$lineage_parent" == none ]]; then
+      [[ ! -e "$head" ]] || exit 1
+    else
+      [[ -f "$head" && ! -L "$head" &&
+         "$(stat -f '%Su:%Lp:%l' "$head")" == "$(id -un):600:1" &&
+         "$(sed -n '1p' "$head")" == "$lineage_parent" ]] || exit 1
+    fi
+    marker="$lineage/nonces/$nonce.used"
+    mkdir -m 700 "$marker" 2>/dev/null || exit 1
+    printf 'schema=factory-dev-product-seed-authorization-consumption/v1\nmanifest_sha256=%s\nbudget_day=%s\n' \
+      "$digest" "$day" >"$marker/receipt"
+    chmod 600 "$marker/receipt"
+    printf '%s\n' "$digest" >"$marker/head"
+    chmod 600 "$marker/head"
+    mv "$marker/head" "$head"
+  ); then
+    die "product seed accounting lineage is stale or already consumed"
+  fi
 }
 
 append_commit_push() {
@@ -1420,7 +1472,7 @@ print(json.dumps(value,sort_keys=True,separators=(",",":")))
 import json, sys
 v=json.load(open(sys.argv[1], encoding="utf-8"))
 for key in ("schema","base_sha","base_tree","lane_control_sha",
-            "seed_bundle_sha256","seed_accounting_sha256"):
+            "seed_bundle_sha256","seed_accounting_sha256","seed_lineage_sha256"):
     print(f"{key}={json.dumps(v.get(key),sort_keys=True,separators=(',',':'))}")
 PY
     printf 'provider_status=%s\nevidence_sha256=%s\n' "$status" "$evidence"
@@ -2116,12 +2168,19 @@ PY
   return 0
 }
 
-product_role_retryable() {
+product_resume_reason() {
   local log="$1"
-  [[ -f "$log" && ! -L "$log" ]] || return 1
-  grep -Fxq 'Resolved Cursor model is unavailable' "$log" ||
+  [[ -f "$log" && ! -L "$log" ]] || {
+    printf '%s\n' role-failed
+    return
+  }
+  if grep -Fxq 'Resolved Cursor model is unavailable' "$log" ||
     grep -Eq "^pinned route unavailable or drifted for role '[a-z-]+': pinned_route_UNAVAILABLE_(authentication|model)_unavailable; no task was submitted$" \
-      "$log"
+      "$log"; then
+    printf '%s\n' pinned-route-readiness
+  else
+    printf '%s\n' role-failed
+  fi
 }
 
 product_role_for_stage() {
@@ -2135,8 +2194,8 @@ product_role_for_stage() {
 run_product_internal() {
   local root="$1" supplied="$2" readiness_proven="${3:-0}"
   local stored day i ticket lease_json stage role account family now
-  local done_count failed_count progress pid rc prior rollback_failed
-  local -a leases pids states renewals retries retry_after roles
+  local done_count failed_count progress pid rc prior rollback_failed resume_csv
+  local -a leases pids states renewals roles resume_reasons
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -2174,7 +2233,7 @@ run_product_internal() {
     leases[$i]="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
       <<<"$lease_json")"
     pids[$i]=0; states[$i]=idle; renewals[$i]=0
-    retries[$i]=0; retry_after[$i]=0; roles[$i]=""
+    roles[$i]=""; resume_reasons[$i]=control-boundary-failure
   done
   done_count=0; failed_count=0
   while [[ "$done_count" -lt "${#PRODUCT_TICKETS[@]}" &&
@@ -2187,11 +2246,9 @@ run_product_internal() {
         rc=0; wait "$pid" || rc=$?
         if [[ "$rc" -eq 0 ]]; then
           states[$i]=idle
-        elif [[ "${retries[$i]}" -lt 1 ]] &&
-             product_role_retryable "$root/runtime/product-scheduler/${PRODUCT_TICKETS[$i]}-${roles[$i]}.log"; then
-          retries[$i]=$((retries[$i] + 1)); retry_after[$i]=$(( $(date +%s) + 10 ))
-          states[$i]=idle
         else
+          resume_reasons[$i]="$(product_resume_reason \
+            "$root/runtime/product-scheduler/${PRODUCT_TICKETS[$i]}-${roles[$i]}.log")"
           states[$i]=failed; failed_count=$((failed_count + 1))
         fi
         pids[$i]=0; progress=1
@@ -2200,7 +2257,6 @@ run_product_internal() {
     for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == idle ]] || continue
       ticket="${PRODUCT_TICKETS[$i]}"; now="$(date +%s)"
-      [[ "$now" -ge "${retry_after[$i]}" ]] || continue
       if [[ $((now - renewals[$i])) -ge 120 ]]; then
         subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" renew \
           --ticket "$ticket" --lease "${leases[$i]}" >/dev/null || {
@@ -2256,8 +2312,18 @@ PY
         --ticket "${PRODUCT_TICKETS[$i]}" --lease "${leases[$i]}" >/dev/null || true
     fi
   done
-  [[ "$done_count" -eq "${#PRODUCT_TICKETS[@]}" && "$failed_count" -eq 0 ]] ||
+  if [[ "$done_count" -ne "${#PRODUCT_TICKETS[@]}" || "$failed_count" -ne 0 ]]; then
+    resume_csv=""
+    for i in "${!PRODUCT_TICKETS[@]}"; do
+      [[ "${states[$i]}" == failed ]] || continue
+      resume_csv="${resume_csv:+$resume_csv,}${PRODUCT_TICKETS[$i]}"
+      printf 'RESUME_REASON=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
+        "${resume_reasons[$i]}" >&2
+    done
+    printf 'STATUS=RESUME-REQUIRED\nRESUME_TICKETS=%s\nRESUME_NEXT=product-resume-plan\n' \
+      "$resume_csv" >&2
     die "one or more product lifecycles failed; successful siblings were retained"
+  fi
   subscription_provider_idle || die "product lifecycle left a provider process"
   echo "STATUS=AWAIT-OPERATOR"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
@@ -2657,6 +2723,7 @@ case "$command" in
   product-plan)
     assert_macos
     source_repo=""; base_sha=""; ticket_csv=""; seed_bundle=""; seed_accounting=""
+    seed_lineage=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --source) source_repo="${2:-}"; shift 2 ;;
@@ -2664,6 +2731,7 @@ case "$command" in
         --tickets) ticket_csv="${2:-}"; shift 2 ;;
         --seed-bundle) seed_bundle="${2:-}"; shift 2 ;;
         --seed-accounting) seed_accounting="${2:-}"; shift 2 ;;
+        --seed-lineage) seed_lineage="${2:-}"; shift 2 ;;
         *) usage ;;
       esac
     done
@@ -2682,14 +2750,14 @@ tickets=sys.argv[1:]
 if len(set(tickets)) != len(tickets) or any(not re.fullmatch(r"T-[0-9]+", t) for t in tickets):
     raise SystemExit(1)
 PY
-    if [[ -n "$seed_bundle" || -n "$seed_accounting" ]]; then
-      [[ -n "$seed_bundle" && -n "$seed_accounting" ]] || usage
+    if [[ -n "$seed_bundle" || -n "$seed_accounting" || -n "$seed_lineage" ]]; then
+      [[ -n "$seed_bundle" && -n "$seed_accounting" && -n "$seed_lineage" ]] || usage
       validate_product_seed_accounting "$seed_accounting" "$seed_bundle" "$base_sha" \
         "${PRODUCT_TICKETS[@]}"
       consume_product_seed_authorization "$seed_accounting" \
-        "$(sha256_file "$seed_accounting")"
+        "$(sha256_file "$seed_accounting")" "$seed_lineage"
     fi
-    PRODUCT_SEED_ACCOUNTING="$seed_accounting"
+    PRODUCT_SEED_ACCOUNTING="$seed_accounting"; PRODUCT_SEED_LINEAGE="$seed_lineage"
     root="$(create_lane product)"
     echo "ROOT=$root"
     if ! run_in_sandbox "$root" cursor __product-plan --root "$root"; then

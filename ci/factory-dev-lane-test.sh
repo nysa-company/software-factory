@@ -368,25 +368,32 @@ grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
 grep -Fq -- '--base-envelope "$ENV_FILE"' "$ROOT/scripts/run-agent.sh" ||
   fail "effective budget resolution dropped the ticket-specific envelope"
 
-eval "$(sed -n '/^product_role_retryable()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^product_resume_reason()/,/^}/p' "$LANE")"
 printf '%s\n' 'Resolved Cursor model is unavailable' >"$TMP/retryable-role.log"
-product_role_retryable "$TMP/retryable-role.log" ||
-  fail "scheduler rejected the bounded model-readiness retry"
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == pinned-route-readiness ]] ||
+  fail "resume handoff lost the model-readiness diagnosis"
 printf '%s\n' 'subscription authentication is unavailable' >"$TMP/retryable-role.log"
-if product_role_retryable "$TMP/retryable-role.log"; then
-  fail "scheduler retried a non-readiness provider failure"
-fi
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == role-failed ]] ||
+  fail "resume handoff misclassified a provider failure"
 printf '%s\n' \
   "pinned route unavailable or drifted for role 'reviewer': pinned_route_UNAVAILABLE_authentication_unavailable; no task was submitted" \
   >"$TMP/retryable-role.log"
-product_role_retryable "$TMP/retryable-role.log" ||
-  fail "scheduler did not retry a transient pinned-route authentication miss"
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == pinned-route-readiness ]] ||
+  fail "resume handoff lost the pinned-route authentication diagnosis"
 printf '%s\n' \
   "pinned route unavailable or drifted for role 'reviewer': pinned_route_INVALID_version_mismatch; no task was submitted" \
   >"$TMP/retryable-role.log"
-if product_role_retryable "$TMP/retryable-role.log"; then
-  fail "scheduler retried pinned-route identity or contract drift"
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == role-failed ]] ||
+  fail "resume handoff misclassified identity or contract drift"
+run_product_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()/p' "$LANE")"
+if grep -Eq 'retries\[|retry_after|product_role_retryable' <<<"$run_product_source"; then
+  fail "product scheduler retained automatic provider retries"
 fi
+for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_TICKETS=' \
+  'RESUME_NEXT=product-resume-plan'; do
+  grep -Fq "$expected" <<<"$run_product_source" ||
+    fail "product failure omitted explicit same-lane resume handoff: $expected"
+done
 eval "$(sed -n '/^product_role_for_stage()/,/^}/p' "$LANE")"
 [[ "$(product_role_for_stage 'FIX builder-or-test-author')" == builder ]] ||
   fail "review request did not select the bounded Builder fix role"
@@ -522,15 +529,51 @@ validate_product_seed_accounting "$SEED_ACCOUNTING_V4_HIGH" "$SEED_BUNDLE" \
   fail "higher operator-authorized development caps were rejected"
 eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
 physical() { (cd "$1" 2>/dev/null && pwd -P); }
+SEED_LINEAGE="$TMP/seed-lineage.json"
+SEED_LINEAGE_ID="$(printf 'lineage-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+SEED_MANIFEST_SHA="$(sha256_file "$SEED_ACCOUNTING")"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$SEED_LINEAGE_ID\",\"parent_manifest_sha256\":null,\"manifest_sha256\":\"$SEED_MANIFEST_SHA\"}" \
+  >"$SEED_LINEAGE"
+chmod 600 "$SEED_LINEAGE"
 consume_product_seed_authorization "$SEED_ACCOUNTING" \
-  "$(sha256_file "$SEED_ACCOUNTING")"
-CONSUMPTION="$TMP/.seed-accounting-consumptions/$SEED_NONCE.used/receipt"
+  "$SEED_MANIFEST_SHA" "$SEED_LINEAGE"
+CONSUMPTION="$TMP/.seed-accounting-lineages/$SEED_LINEAGE_ID/nonces/$SEED_NONCE.used/receipt"
 [[ "$(stat -f '%Su:%Lp' "$CONSUMPTION")" == "$(id -un):600" ]] ||
   fail "seed authorization consumption receipt is unsafe"
+[[ "$(sed -n '1p' "$TMP/.seed-accounting-lineages/$SEED_LINEAGE_ID/head")" == \
+   "$SEED_MANIFEST_SHA" ]] ||
+  fail "seed accounting lineage head was not advanced"
 die() { exit 1; }
 if (consume_product_seed_authorization "$SEED_ACCOUNTING" \
-    "$(sha256_file "$SEED_ACCOUNTING")"); then
+    "$SEED_MANIFEST_SHA" "$SEED_LINEAGE"); then
   fail "seed authorization was consumed twice"
+fi
+die() { return 1; }
+SEED_SUCCESSOR="$TMP/seed-successor.json"
+SEED_SIBLING="$TMP/seed-sibling.json"
+SEED_SUCCESSOR_NONCE="$(printf 'successor-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+SEED_SIBLING_NONCE="$(printf 'sibling-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+sed "s/$SEED_NONCE/$SEED_SUCCESSOR_NONCE/" "$SEED_ACCOUNTING" >"$SEED_SUCCESSOR"
+sed "s/$SEED_NONCE/$SEED_SIBLING_NONCE/" "$SEED_ACCOUNTING" >"$SEED_SIBLING"
+chmod 600 "$SEED_SUCCESSOR" "$SEED_SIBLING"
+SEED_SUCCESSOR_SHA="$(sha256_file "$SEED_SUCCESSOR")"
+SEED_SIBLING_SHA="$(sha256_file "$SEED_SIBLING")"
+SEED_SUCCESSOR_LINEAGE="$TMP/seed-successor-lineage.json"
+SEED_SIBLING_LINEAGE="$TMP/seed-sibling-lineage.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$SEED_LINEAGE_ID\",\"parent_manifest_sha256\":\"$SEED_MANIFEST_SHA\",\"manifest_sha256\":\"$SEED_SUCCESSOR_SHA\"}" \
+  >"$SEED_SUCCESSOR_LINEAGE"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$SEED_LINEAGE_ID\",\"parent_manifest_sha256\":\"$SEED_MANIFEST_SHA\",\"manifest_sha256\":\"$SEED_SIBLING_SHA\"}" \
+  >"$SEED_SIBLING_LINEAGE"
+chmod 600 "$SEED_SUCCESSOR_LINEAGE" "$SEED_SIBLING_LINEAGE"
+consume_product_seed_authorization "$SEED_SUCCESSOR" \
+  "$SEED_SUCCESSOR_SHA" "$SEED_SUCCESSOR_LINEAGE"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_SIBLING" \
+    "$SEED_SIBLING_SHA" "$SEED_SIBLING_LINEAGE"); then
+  fail "stale sibling seed accounting lineage was consumed"
 fi
 die() { return 1; }
 printf '%s\n' \

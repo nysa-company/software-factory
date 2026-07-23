@@ -47,10 +47,12 @@ misses so a short CLI session-state transition cannot exhaust every retry.
 Retained-product resumes run that probe before hashing the plan and again
 before validating it for execution; the internal run reuses the second result
 instead of immediately probing the same session a third time.
-If an exact pinned route still reports a transient authentication or model
-availability miss before task submission, the scheduler waits ten seconds and
-retries that role once. Version, identity, contract, and post-submission
-failures remain non-retryable.
+Every failed role attempt is terminal and charged conservatively. The scheduler
+does not retry automatically, including for a pre-submission authentication or
+model-availability miss. After the lane drains it reports the failed ticket set
+and `product-resume-plan` as the next control step; that explicit same-lane
+resume revalidates readiness, evidence, clean heads, routes, envelopes, budget
+day, and the mechanical next stage before issuing a new one-use approval.
 
 The product scheduler launches every eligible ticket without interpreting
 provider capacity. The coordinator owns atomic admission and may wait up to
@@ -66,7 +68,12 @@ Claude circuit breaker remains in force.
 
 `product-plan` requires four tickets for a fresh proof. A seeded retry may select one to four unfinished tickets, so completed siblings are not rerun. The source must be a clean isolated worktree; the canonical Nysa checkout is refused. The lane clones it into a private product, replaces its remote with a local bare origin, and has no GitHub or Linear route.
 
-Seeded retries require an owner-only, single-link accounting manifest bound to the exact seed-bundle digest and approved base SHA. Its full historical ticket map is retained even when only a subset resumes. A seed resets role sequencing to `Ready` and discards prior role verdict lines because runtime role evidence is lane-bound and cannot be inferred safely from Git history alone. V2 keeps the default $100 ticket and $500 aggregate ceilings; an explicit operator-authored v3 record permits only the bounded $200 ticket and $700 aggregate development-proof ceilings. V4 permits an operator-authored per-ticket cap map up to $350 per ticket with an exact $1,000 or $1,500 aggregate ceiling. V3 and V4 also bind one authorization nonce and UTC budget day; planning consumes that nonce in the owner-only artifact directory before creating a runnable lane, and day drift stops before reservation. Prior reservations reduce both limits, and the resulting per-ticket envelope remains the coordinator's atomic admission cap. Missing history, reuse, an exhausted selected ticket, aggregate exhaustion, unauthorized limits, bundle/base drift, duplicate tickets, seeded symlinks or submodules, and unsafe ticket files fail before provider execution.
+Seeded retries require an owner-only, single-link accounting manifest bound to the exact seed-bundle digest and approved base SHA. They also require an owner-only lineage record in one shared artifact directory; it binds the manifest digest, a stable lineage ID, and the previous manifest digest. An atomic lineage-head advance permits exactly one child of a cumulative accounting snapshot, so separately authorized sibling lanes cannot both spend from stale totals. A busy, reused, detached, or stale lineage stops before lane creation. Its full historical ticket map is retained even when only a subset resumes. A seed resets role sequencing to `Ready` and discards prior role verdict lines because runtime role evidence is lane-bound and cannot be inferred safely from Git history alone. V2 keeps the default $100 ticket and $500 aggregate ceilings; an explicit operator-authored v3 record permits only the bounded $200 ticket and $700 aggregate development-proof ceilings. V4 permits an operator-authored per-ticket cap map up to $350 per ticket with an exact $1,000 or $1,500 aggregate ceiling. V3 and V4 also bind one authorization nonce and UTC budget day; planning consumes that nonce through the same lineage transaction, and day drift stops before reservation. Prior reservations reduce both limits, and the resulting per-ticket envelope remains the coordinator's atomic admission cap. Missing history, reuse, an exhausted selected ticket, aggregate exhaustion, unauthorized limits, bundle/base/lineage drift, duplicate tickets, seeded symlinks or submodules, and unsafe ticket files fail before provider execution.
+
+For sequential protected-base refreshes, keep using the existing committed
+`ticket-refresh/v1` attestation path. It already invalidates the old approval
+and requires a fresh Reviewer and Narrator bound after the exact merge. This
+lane does not add a second refresh or checkpoint format.
 
 `product-export` binds each application patch to the latest successful
 Reviewer head, rejects later non-Factory changes, and excludes the complete
