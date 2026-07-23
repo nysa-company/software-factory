@@ -39,7 +39,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
-       factory-dev-lane.sh product-export --root <absolute-lane-root>
+       factory-dev-lane.sh product-export --root <absolute-lane-root> [--tickets <T-NNN,...>]
        factory-dev-lane.sh clean --root <absolute-lane-root>
 EOF
   exit 2
@@ -2323,10 +2323,28 @@ PY
   printf '%s\n' "$reviewed"
 }
 
+select_product_export_tickets() {
+  local selected_csv="$1"
+  local -a selected
+  [[ -n "$selected_csv" ]] || return 0
+  IFS=, read -r -a selected <<<"$selected_csv"
+  python3 - "${PRODUCT_TICKETS[@]}" -- "${selected[@]}" <<'PY' ||
+import re, sys
+current=sys.argv[1:sys.argv.index("--")]; selected=sys.argv[sys.argv.index("--")+1:]
+if (not selected or len(set(selected)) != len(selected) or
+    not set(selected) <= set(current) or
+    any(not re.fullmatch(r"T-[0-9]+", ticket) for ticket in selected)):
+    raise SystemExit(1)
+PY
+    die "product export selection is invalid"
+  PRODUCT_TICKETS=("${selected[@]}")
+}
+
 export_product_internal() {
-  local root="$1" ticket base head branch export_dir reviewed
+  local root="$1" selected_csv="${2:-}" ticket base head branch export_dir reviewed
   require_lane_mode "$root" product
   load_product_tickets "$root"
+  select_product_export_tickets "$selected_csv"
   validate_runtime_paths "$root"
   [[ ! -e "$root/runtime/product-approval" ]] || die "product run approval is still unused"
   python3 "$root/kit/scripts/provider-coordinator.py" \
@@ -2736,10 +2754,22 @@ PY
     fi
     ;;
   product-export)
-    root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage
-    [[ $# -eq 0 && -n "$root" ]] || usage
+    root=""; ticket_csv=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" ]] || usage
     root="$(validate_lane "$root")"
-    run_in_sandbox "$root" mock __product-export --root "$root"
+    if [[ -n "$ticket_csv" ]]; then
+      run_in_sandbox "$root" mock __product-export --root "$root" \
+        --tickets "$ticket_csv"
+    else
+      run_in_sandbox "$root" mock __product-export --root "$root"
+    fi
     ;;
   clean)
     root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage
@@ -2788,8 +2818,10 @@ PY
     ;;
   __product-export)
     [[ "${1:-}" == --root ]] || usage
-    root="$(validate_lane "${2:-}")"
-    export_product_internal "$root"
+    root="$(validate_lane "${2:-}")"; shift 2; ticket_csv=""
+    if [[ "${1:-}" == --tickets ]]; then ticket_csv="${2:-}"; shift 2; fi
+    [[ $# -eq 0 ]] || usage
+    export_product_internal "$root" "$ticket_csv"
     ;;
   *) usage ;;
 esac

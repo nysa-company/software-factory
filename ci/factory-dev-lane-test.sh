@@ -277,6 +277,18 @@ if product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
     >/dev/null; then
   fail "post-review product drift was exportable"
 fi
+eval "$(sed -n '/^select_product_export_tickets()/,/^}/p' "$LANE")"
+PRODUCT_TICKETS=(T-1 T-2)
+select_product_export_tickets T-2
+[[ "${PRODUCT_TICKETS[*]}" == T-2 ]] ||
+  fail "product export did not select the requested completed sibling"
+PRODUCT_TICKETS=(T-1 T-2)
+die() { return 1; }
+if select_product_export_tickets T-2,T-2 ||
+   select_product_export_tickets T-3; then
+  fail "product export accepted an unsafe ticket selection"
+fi
+die() { exit 1; }
 
 VERDICT="$TMP/reviewer.out"
 printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' >"$VERDICT"

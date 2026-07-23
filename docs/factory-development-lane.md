@@ -63,7 +63,9 @@ Reviewer head, rejects later non-Factory changes, and excludes the complete
 reserved `factory/` namespace. The exact Git bundle retains retry and audit
 history only; it is never an application artifact. Apply only the projected
 patch to a fresh isolated product branch, then refresh and reverify it against
-current protected main.
+current protected main. When successful siblings finish in different retained
+lanes, `product-export --tickets T-NNN,...` exports only the named completed
+subset while applying the same role-evidence and Reviewer checks.
 
 ## Real Cursor lifecycle
 
