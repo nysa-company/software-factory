@@ -819,7 +819,8 @@ lane_cursor_env() {
 }
 
 subscription_env() {
-  local root="$1" project session_home cursor_home cursor_version codex_version claude_version git_config_count=1; shift
+  local root="$1" project session_home cursor_home cursor_version codex_version claude_version
+  local release_sha release_tree git_config_count=1; shift
   [[ "${FACTORY_LANE_TRUSTED_PUSH:-0}" != 1 ]] || git_config_count=0
   project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
   session_home="$root/session-home"
@@ -827,6 +828,8 @@ subscription_env() {
   cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  release_sha="$(git -C "$root/kit" rev-parse HEAD)"
+  release_tree="$(git -C "$root/kit" rev-parse 'HEAD^{tree}')"
   env -i HOME="$session_home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
     PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
     FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
@@ -839,7 +842,8 @@ subscription_env() {
     FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
     FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
-    FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+    FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 FACTORY_RELEASE_SHA="$release_sha" \
+    FACTORY_RELEASE_TREE="$release_tree" FACTORY_RELEASE_PATH="$root/kit" \
     CURSOR_AGENT_VERSION="$cursor_version" CODEX_PINNED="$codex_version" \
     CLAUDE_CODE_PINNED="$claude_version" \
     GIT_CONFIG_COUNT="$git_config_count" GIT_CONFIG_KEY_0=remote.origin.pushurl \
