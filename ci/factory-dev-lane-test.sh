@@ -130,6 +130,54 @@ if sed -n '/^subscription_env()/,/^}/p' "$LANE" | grep -q 'remote.origin.pushurl
   fail "subscription host environment disables its own trusted push destination"
 fi
 
+READINESS_ROOT="$TMP/nysa-sf-dev.readiness"
+mkdir -p "$READINESS_ROOT/home" "$READINESS_ROOT/session-home" \
+  "$READINESS_ROOT/tmp"
+cat >"$READINESS_ROOT/home/timeout" <<'EOF'
+#!/usr/bin/env bash
+shift
+exec "$@"
+EOF
+chmod +x "$READINESS_ROOT/home/timeout"
+for readiness_tool in agent codex claude; do
+  cat >"$READINESS_ROOT/home/$readiness_tool" <<EOF
+#!/usr/bin/env bash
+[[ -z "\${AMBIENT_AUTH_READY+x}" ]]
+[[ "\$HOME" == "$READINESS_ROOT/session-home" ]]
+[[ "\${FACTORY_CURSOR_SESSION_HOME:-}" == "$READINESS_ROOT/session-home" ]]
+if [[ "\${1:-}" == --version ]]; then
+  printf '%s\n' "$readiness_tool 1.0-test"
+  exit 0
+fi
+[[ -f "\$HOME/.auth-ready" ]]
+EOF
+  chmod +x "$READINESS_ROOT/home/$readiness_tool"
+done
+eval "$(sed -n '/^subscription_base_env()/,/^subscription_approval_hash()/p' \
+  "$LANE" | sed '$d')"
+eval "$(sed -n '/^subscription_env()/,/^product_approval_hash()/p' \
+  "$LANE" | sed '$d')"
+if (
+  die() { exit 1; }
+  AMBIENT_AUTH_READY=1 \
+    FACTORY_CURSOR_SESSION_HOME="$TMP/external-cursor-home" \
+    subscription_ready "$READINESS_ROOT"
+); then
+  fail "ambient-only subscription authentication passed lane readiness"
+fi
+touch "$READINESS_ROOT/session-home/.auth-ready"
+(
+  die() { exit 1; }
+  AMBIENT_AUTH_READY=1 \
+    FACTORY_CURSOR_SESSION_HOME="$TMP/external-cursor-home" \
+    subscription_ready "$READINESS_ROOT"
+) || fail "lane-local subscription authentication failed readiness"
+AMBIENT_AUTH_READY=1 \
+  FACTORY_CURSOR_SESSION_HOME="$TMP/external-cursor-home" \
+  subscription_env "$READINESS_ROOT" \
+    "$READINESS_ROOT/home/codex" login status >/dev/null ||
+  fail "role environment disagreed with lane-local readiness"
+
 VERDICT="$TMP/reviewer.out"
 printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter cursor-anthropic --input "$VERDICT")" == APPROVE ]] ||

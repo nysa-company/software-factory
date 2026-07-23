@@ -34,6 +34,13 @@ bash scripts/factory-dev-lane.sh subscription-run \
 
 The canary uses existing authenticated Cursor, Codex, and Claude subscription CLIs—never API keys—for one Cursor, two Codex, and one Claude call. It reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Cursor remains capped at one process because its temporary bridge is shared. Planning binds executable paths, bytes, versions, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
 
+Subscription and product lanes copy the three CLI session files into their
+owner-only lane root once. Readiness, version evidence, approval hashing, and
+role execution then use the same clean environment and only those copied
+files; ambient authentication variables and the external Cursor session home
+are not consulted. If a copied session is unavailable, the lane stops before
+consuming approval, claiming a lease, reserving budget, or submitting a task.
+
 ## Isolated product proof and resume
 
 `product-plan` requires four tickets for a fresh proof. A seeded retry may select one to four unfinished tickets, so completed siblings are not rerun. The source must be a clean isolated worktree; the canonical Nysa checkout is refused. The lane clones it into a private product, replaces its remote with a local bare origin, and has no GitHub or Linear route.

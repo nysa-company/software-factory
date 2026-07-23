@@ -74,19 +74,39 @@ PY
   } | sha256_text
 }
 
+subscription_base_env() {
+  local root="$1" project
+  shift
+  project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
+  env -i HOME="$root/session-home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+    PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
+    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
+    FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
+    FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
+    FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
+    FACTORY_CURSOR_SESSION_HOME="$root/session-home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
+    FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
+    FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
+    FACTORY_HERMES_CONTRACT_VERSION=1.7.0 "$@"
+}
+
 subscription_ready() {
-  local root="$1" session_home="$1/session-home" cursor_home i
-  cursor_home="$(cursor_session_home)"
+  local root="$1" i
   for i in 1 2 3; do
-    HOME="$cursor_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 && break
+    subscription_base_env "$root" "$root/home/timeout" 10 \
+      "$root/home/agent" status >/dev/null 2>&1 && break
     [[ "$i" -lt 3 ]] || die "Cursor subscription authentication is unavailable"
   done
   for i in 1 2 3; do
-    (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1) && break
+    subscription_base_env "$root" "$root/home/timeout" 10 \
+      "$root/home/codex" login status >/dev/null 2>&1 && break
     [[ "$i" -lt 3 ]] || die "Codex subscription authentication is unavailable"
   done
   for i in 1 2 3; do
-    (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/claude" auth status >/dev/null 2>&1) && break
+    subscription_base_env "$root" "$root/home/timeout" 10 \
+      "$root/home/claude" auth status >/dev/null 2>&1 && break
     [[ "$i" -lt 3 ]] || die "Claude subscription authentication is unavailable"
   done
 }
@@ -94,7 +114,7 @@ subscription_ready() {
 subscription_approval_hash() {
   local root="$1" session_home real tool cursor_home
   session_home="$root/session-home"
-  cursor_home="$(cursor_session_home)"
+  cursor_home="$session_home"
   {
     python3 - "$root/marker.json" <<'PY'
 import json, sys
@@ -109,10 +129,13 @@ import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
 )"
-      printf '%s\n' "$real" "$(sha256_file "$real")" "$(cd "$root" && "$root/home/$tool" --version 2>/dev/null | head -n1)"
+      printf '%s\n' "$real" "$(sha256_file "$real")" \
+        "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
     done
-    (cd "$root" && HOME="$session_home" "$root/home/codex" login status 2>/dev/null) | sha256_text
-    (cd "$root" && HOME="$session_home" "$root/home/claude" auth status 2>/dev/null) | sha256_text
+    subscription_base_env "$root" "$root/home/codex" login status 2>/dev/null |
+      sha256_text
+    subscription_base_env "$root" "$root/home/claude" auth status 2>/dev/null |
+      sha256_text
     sha256_file "$root/runtime/provider-policy.json"
     sha256_file "$root/runtime/provider-activation.json"
     sha256_file "$root/home/record-provider-call"
@@ -1152,26 +1175,15 @@ lane_cursor_env() {
 }
 
 subscription_env() {
-  local root="$1" project session_home cursor_home cursor_version codex_version claude_version
+  local root="$1" cursor_version codex_version claude_version
   shift
-  project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
-  session_home="$root/session-home"
-  cursor_home="$(cursor_session_home)"
-  cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
-  env -i HOME="$session_home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
-    PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-    FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
-    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
-    FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
-    FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
-    FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
-    FACTORY_CURSOR_SESSION_HOME="$cursor_home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
-    FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
-    FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
-    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-    FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
+  cursor_version="$(subscription_base_env "$root" \
+    "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  codex_version="$(subscription_base_env "$root" \
+    "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$(subscription_base_env "$root" \
+    "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  subscription_base_env "$root" env \
     CURSOR_AGENT_VERSION="$cursor_version" CODEX_PINNED="$codex_version" \
     CLAUDE_CODE_PINNED="$claude_version" \
     "$@"
@@ -1179,7 +1191,7 @@ subscription_env() {
 
 product_approval_hash() {
   local root="$1" ticket tool real session_home="$1/session-home" cursor_home
-  cursor_home="$(cursor_session_home)"
+  cursor_home="$session_home"
   {
     sha256_file "$root/marker.json"
     sha256_file "$root/runtime/product-source.json"
@@ -1206,7 +1218,7 @@ print(os.path.realpath(sys.argv[1]))
 PY
 )"
       printf '%s\n' "$real" "$(sha256_file "$real")" \
-        "$(cd "$root" && "$root/home/$tool" --version 2>/dev/null | head -n1)"
+        "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
     done
     sha256_file "$cursor_home/.cursor/auth.json"
     sha256_file "$cursor_home/.cursor/cli-config.json"
@@ -1577,9 +1589,12 @@ product_probe_and_plan() {
   load_product_tickets "$root"
   validate_runtime_paths "$root"
   subscription_ready "$root"
-  cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  cursor_version="$(subscription_base_env "$root" \
+    "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  codex_version="$(subscription_base_env "$root" \
+    "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$(subscription_base_env "$root" \
+    "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
   [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
     die "product subscription CLI version probe was empty"
   cat >"$root/home/.factory/global.env" <<EOF
@@ -1790,9 +1805,12 @@ subscription_probe_and_plan() {
   require_lane_mode "$root" subscription
   validate_runtime_paths "$root"
   subscription_ready "$root"
-  cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  cursor_version="$(subscription_base_env "$root" \
+    "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  codex_version="$(subscription_base_env "$root" \
+    "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$(subscription_base_env "$root" \
+    "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
   [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
     die "subscription CLI version probe was empty"
   cat > "$root/home/.factory/global.env" <<EOF
@@ -2361,7 +2379,13 @@ run_cursor_internal() {
 }
 
 run_in_sandbox() {
-  local root="$1" profile="$2"; shift 2
+  local root="$1" profile="$2" cursor_home
+  shift 2
+  if [[ -d "$root/session-home" ]]; then
+    cursor_home="$root/session-home"
+  else
+    cursor_home="$(cursor_session_home)"
+  fi
   (
     bridge=""
     cleanup_bridge() {
@@ -2391,14 +2415,14 @@ PY
     if [[ "$profile" == cursor ]]; then
       env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
         PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-        FACTORY_CURSOR_SESSION_HOME="$(cursor_session_home)" \
+        FACTORY_CURSOR_SESSION_HOME="$cursor_home" \
         bash "$root/kit/scripts/factory-dev-lane.sh" "$@"
     else
       HOME="$root/home" TMPDIR="$root/tmp" \
         "$(sandbox_exec)" -f "$root/runtime/$profile.sb" \
           env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
             PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-            FACTORY_CURSOR_SESSION_HOME="$(cursor_session_home)" \
+            FACTORY_CURSOR_SESSION_HOME="$cursor_home" \
             bash "$root/kit/scripts/factory-dev-lane.sh" "$@"
     fi
   )
