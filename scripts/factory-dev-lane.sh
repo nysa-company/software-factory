@@ -988,14 +988,15 @@ from pathlib import Path
 import re, sys
 p=Path(sys.argv[1]); kit_sha=sys.argv[2]; lines=[]
 for line in p.read_text(encoding="utf-8").splitlines():
-    if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
-        continue
-    elif re.fullmatch(r"\s*reviewer round\s+\d+:.*", line, re.I):
+    if re.fullmatch(r"\s*reviewer round\s+\d+:.*", line, re.I):
         continue
     elif re.match(r"^Kit-SHA:\s*", line):
         lines.append("Kit-SHA: " + kit_sha)
     else:
-        lines.append(re.sub(r"^State:\s*.*$", "State: Ready", line))
+        lines.append(line)
+states=[line.split(":",1)[1].strip() for line in lines if line.startswith("State:")]
+if len(states) != 1 or states[0] not in {"Ready","Review"}:
+    raise SystemExit(1)
 p.write_text("\n".join(lines)+"\n", encoding="utf-8")
 PY
     git -C "$root/worktrees/$ticket" add "factory/tickets/$ticket.md"

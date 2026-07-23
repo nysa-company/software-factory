@@ -570,7 +570,10 @@ git -C "$SEED_HISTORY" add factory/route-plans/T-1.json
 git -C "$SEED_HISTORY" -c user.name='Software Factory' \
   -c user.email=factory@local commit -qm 'T-1: pin kit and model route plan'
 printf '%s\n' after >"$SEED_HISTORY/app/after"
-git -C "$SEED_HISTORY" add app/after
+printf '%s\n' 'State: Review' 'SPEC-LINT: PASS' \
+  'reviewer round 1: REQUEST CHANGES' \
+  >"$SEED_HISTORY/factory/tickets/T-1.md"
+git -C "$SEED_HISTORY" add app/after factory/tickets/T-1.md
 git -C "$SEED_HISTORY" -c user.name='Software Factory' \
   -c user.email=factory@local commit -qm 'T-1: retain later lifecycle output'
 git -C "$SEED_HISTORY" branch ticket/T-1
@@ -601,9 +604,16 @@ seed_product_worktrees "$SEED_HISTORY_ROOT" "$TMP/seed-history.bundle" \
   fail "late route pin caused retained lifecycle output to be skipped"
 [[ ! -e "$SEED_HISTORY_ROOT/worktrees/T-1/factory/route-plans/T-1.json" ]] ||
   fail "stale retained route plan was replayed"
-grep -qx 'State: Ready' \
+grep -qx 'State: Review' \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
-  fail "retained ticket was not reset to Ready"
+  fail "retained ticket did not preserve its resume stage"
+grep -qx 'SPEC-LINT: PASS' \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
+  fail "retained ticket lost prerequisite evidence"
+if grep -q '^reviewer round ' \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md"; then
+  fail "retained ticket kept a stale reviewer verdict"
+fi
 die() { return 1; }
 
 RESUME_ROOT="$TMP/resume-drained"
