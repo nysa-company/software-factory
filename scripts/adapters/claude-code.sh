@@ -25,6 +25,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 TASK="${*:-}"
+CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions)
 
 command -v claude >/dev/null || { echo "claude CLI not installed" >&2; exit 6; }
 INSTALLED="$(claude --version 2>/dev/null | head -n1 || true)"
@@ -33,25 +34,34 @@ case "$INSTALLED" in
   *) echo "installed Claude Code does not match the approved version" >&2; exit 6 ;;
 esac
 
+if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+  [[ "${FACTORY_CLAUDE_SETTINGS:-}" == /* && -f "$FACTORY_CLAUDE_SETTINGS" &&
+     ! -L "$FACTORY_CLAUDE_SETTINGS" ]] || {
+    echo "lane-local Claude sandbox settings are unavailable" >&2
+    exit 6
+  }
+  CLAUDE_PERMISSION_ARGS=(--settings "$FACTORY_CLAUDE_SETTINGS"
+    --permission-mode acceptEdits --no-session-persistence --disable-slash-commands)
+fi
+
 # Shakedown finding (2026-07-11, Claude Code 2.1.207): --max-turns is gone from
 # the CLI; --max-budget-usd exists and is a HARD in-run dollar stop — strictly
 # better enforcement than the old post-hoc check. Turns remain logged from the
 # JSON result; timeout guards the wall clock.
 # Note: no bash arrays for the optional prompt (macOS ships bash 3.2, where
 # empty-array expansion under `set -u` aborts).
-# First-real-run finding (2026-07-12): headless -p mode cannot edit files or
-# run commands without --dangerously-skip-permissions. Factory runs are
-# autonomous by design; containment comes from the envelope (budget, timeout),
-# the worktree, and CI gates — not from interactive permission prompts.
+# Legacy execution retains its established permission mode. Contract 1.7's
+# isolated development lane instead requires fail-closed Claude sandbox
+# settings and autonomous edit permission without the bypass flag.
 if [[ -s "$PROMPT_FILE" ]]; then
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
     claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
-    --dangerously-skip-permissions \
+    "${CLAUDE_PERMISSION_ARGS[@]}" \
     --append-system-prompt "$(cat "$PROMPT_FILE")" 2>&1)" || STATUS=$?
 else
   OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
     claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
-    --dangerously-skip-permissions 2>&1)" || STATUS=$?
+    "${CLAUDE_PERMISSION_ARGS[@]}" 2>&1)" || STATUS=$?
 fi
 STATUS="${STATUS:-0}"
 

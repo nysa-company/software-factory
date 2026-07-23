@@ -116,6 +116,7 @@ PY
     sha256_file "$root/home/.factory/global.env"
     sha256_file "$root/runtime/cursor.sb"
     sha256_file "$root/runtime/native.sb"
+    sha256_file "$root/runtime/claude-settings.json"
     sha256_file "$cursor_home/.cursor/auth.json"
     sha256_file "$cursor_home/.cursor/cli-config.json"
     sha256_file "$session_home/.codex/auth.json"
@@ -422,7 +423,6 @@ for item in native_auth:
     for parent in [p, *p.parents]:
         native_extra += f"(allow file-read-metadata (literal {json.dumps(str(parent))}))\n"
     native_extra += f"(allow file-read* (subpath {json.dumps(item)}))\n"
-native_extra += '(deny process-exec (literal "/usr/bin/security"))\n'
 pathlib.Path(root, "runtime/native.sb").write_text("".join(base) + cursor_network + native_extra)
 PY
   chmod 600 "$root/runtime/"*.sb
@@ -720,6 +720,21 @@ PY
   [[ "$mode" != subscription && "$mode" != product ]] || session_home="$root/session-home"
   write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home" ""
   if [[ "$mode" == subscription || "$mode" == product ]]; then
+    python3 - "$root/runtime/claude-settings.json" "$ACCOUNT_HOME" <<'PY'
+import json, os, sys
+path, home=sys.argv[1:]
+denied=[
+    f"Read({home}/.factory/**)", f"Read({home}/.hermes/**)",
+    f"Read({home}/Projects/nysa-company/nysa-app/**)",
+    "Bash(security *)", "Bash(ssh *)", "Bash(scp *)",
+]
+value={"permissions":{"deny":denied},"sandbox":{"enabled":True,
+       "failIfUnavailable":True,"autoAllowBashIfSandboxed":True,
+       "allowUnsandboxedCommands":False}}
+with open(path,"w",encoding="utf-8") as stream:
+    json.dump(value,stream,sort_keys=True,separators=(",",":")); stream.write("\n")
+os.chmod(path,0o600)
+PY
     for tool in codex claude; do
       cat >"$root/home/$tool" <<EOF
 #!/usr/bin/env bash
@@ -820,6 +835,7 @@ subscription_env() {
     FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
     FACTORY_CURSOR_SESSION_HOME="$cursor_home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
     FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
+    FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
     FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
     FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
@@ -841,6 +857,7 @@ product_approval_hash() {
     sha256_file "$root/runtime/provider-activation.json"
     sha256_file "$root/runtime/cursor.sb"
     sha256_file "$root/runtime/native.sb"
+    sha256_file "$root/runtime/claude-settings.json"
     for tool in agent codex claude; do
       real="$(python3 - "$root/home/$tool" <<'PY'
 import os, sys
