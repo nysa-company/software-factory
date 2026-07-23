@@ -345,10 +345,10 @@ PY
 }
 
 write_seatbelt_profiles() {
-  local root="$1" cursor="$2" bridge="${3:-}" session_home="${4:-}"
-  python3 - "$root" "$cursor" "$bridge" "$session_home" <<'PY'
+  local root="$1" cursor="$2" bridge="${3:-}" session_home="${4:-}" native_auth_home="${5:-}"
+  python3 - "$root" "$cursor" "$bridge" "$session_home" "$native_auth_home" <<'PY'
 import json, os, pathlib, sys
-root, cursor, bridge, session_home = sys.argv[1:]
+root, cursor, bridge, session_home, native_auth_home = sys.argv[1:]
 system = [
     "/System", "/bin", "/sbin", "/usr/bin", "/usr/lib", "/usr/libexec",
     "/usr/share", "/etc", "/private/etc", "/private/var/db/timezone",
@@ -412,7 +412,17 @@ for item in bridge_paths:
     cursor_network += (f"(allow file-read* (subpath {json.dumps(item)}))\n"
                        f"(allow file-write* (subpath {json.dumps(item)}))\n")
 pathlib.Path(root, "runtime/cursor.sb").write_text("".join(base) + cursor_network)
-pathlib.Path(root, "runtime/native.sb").write_text("".join(base) + cursor_network)
+native_auth=[] if not native_auth_home else [
+    str(pathlib.Path(native_auth_home, "Library", "Keychains").resolve())
+]
+native_extra=""
+for item in native_auth:
+    p=pathlib.Path(item)
+    for parent in [p, *p.parents]:
+        native_extra += f"(allow file-read-metadata (literal {json.dumps(str(parent))}))\n"
+    native_extra += f"(allow file-read* (subpath {json.dumps(item)}))\n"
+native_extra += '(deny process-exec (literal "/usr/bin/security"))\n'
+pathlib.Path(root, "runtime/native.sb").write_text("".join(base) + cursor_network + native_extra)
 PY
   chmod 600 "$root/runtime/"*.sb
 }
@@ -700,12 +710,15 @@ os.chmod(policy_path, 0o600); os.chmod(activation_path, 0o600)
 PY
   fi
   [[ "$mode" != subscription && "$mode" != product ]] || session_home="$root/session-home"
-  write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home"
+  write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home" \
+    "$([[ "$mode" == subscription || "$mode" == product ]] && printf '%s' "$ACCOUNT_HOME")"
   if [[ "$mode" == subscription || "$mode" == product ]]; then
     for tool in codex claude; do
+      tool_home=''
+      [[ "$tool" != claude ]] || tool_home="HOME=$ACCOUNT_HOME "
       cat >"$root/home/$tool" <<EOF
 #!/usr/bin/env bash
-exec "$(sandbox_exec)" -f "$root/runtime/native.sb" "$root/home/$tool-real" "\$@"
+${tool_home}exec "$(sandbox_exec)" -f "$root/runtime/native.sb" "$root/home/$tool-real" "\$@"
 EOF
       chmod 700 "$root/home/$tool"
     done
