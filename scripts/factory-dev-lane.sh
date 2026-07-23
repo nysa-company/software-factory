@@ -867,9 +867,9 @@ import re, sys
 p=Path(sys.argv[1]); kit_sha=sys.argv[2]; lines=[]
 for line in p.read_text(encoding="utf-8").splitlines():
     if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
-        lines.append("Retry-Evidence: prior " + line.strip())
+        continue
     elif re.fullmatch(r"\s*reviewer round\s+\d+:.*", line, re.I):
-        lines.append("Retry-Evidence: prior " + line.strip())
+        continue
     elif re.match(r"^Kit-SHA:\s*", line):
         lines.append("Kit-SHA: " + kit_sha)
     else:
