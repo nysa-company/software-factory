@@ -94,6 +94,45 @@ chmod +x "$FAKE_CURSOR"
 if sed -n '/^subscription_env()/,/^}/p' "$LANE" | grep -q 'remote.origin.pushurl'; then
   fail "subscription host environment disables its own trusted push destination"
 fi
+
+VERDICT="$TMP/reviewer.out"
+printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\\n\\nAPPROVE"}' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter cursor-anthropic --input "$VERDICT")" == APPROVE ]] ||
+  fail "strict reviewer parser rejected a Cursor approval"
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
+  fail "strict reviewer parser rejected a plain request-changes verdict"
+for invalid in 'APPROVE|REQUEST CHANGES' 'APPROVE|APPROVE' 'APPROVE|trailing text' 'no verdict'; do
+  printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
+  expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
+    --adapter codex --input "$VERDICT"
+done
+product_role_source="$(sed -n '/^product_role_run()/,/^product_scheduler_admits()/p' "$LANE")"
+printf '%s\n' "$product_role_source" | grep -Fq '"$role" == builder' ||
+  fail "product Builder no longer owns the Review-state transition"
+if printf '%s\n' "$product_role_source" | grep -Fq '"$role" == narrator'; then
+  fail "product Narrator still owns the late Review-state transition"
+fi
+
+REC="$TMP/reviewer-reconcile"
+mkdir -p "$REC/product/factory/runs" "$REC/worktrees/T-900001/factory/tickets"
+ln -s "$ROOT" "$REC/kit"
+review_ticket="$REC/worktrees/T-900001/factory/tickets/T-900001.md"
+printf '%s\n' 'State: Review' >"$review_ticket"
+printf '%s\n' \
+  'ticket=T-900001' 'role=reviewer' 'adapter=cursor-anthropic' \
+  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-01T00:00:00Z' \
+  >"$REC/product/factory/runs/review.meta"
+printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\\n\\nAPPROVE"}' \
+  >"$REC/product/factory/runs/review.out"
+eval "$(sed -n '/^product_reconcile_reviewer()/,/^}/p' "$LANE")"
+append_commit_push() { printf '%s\n' "$2" >>"$review_ticket"; }
+TICKET=T-900001 product_reconcile_reviewer "$REC" T-900001 ||
+  fail "successful unpaired review was not reconciled"
+TICKET=T-900001 product_reconcile_reviewer "$REC" T-900001 ||
+  fail "replayed review reconciliation was not idempotent"
+[[ "$(grep -c '^reviewer round 1: APPROVE$' "$review_ticket")" -eq 1 ]] ||
+  fail "review reconciliation did not append exactly once"
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 

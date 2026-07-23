@@ -1377,7 +1377,7 @@ assert value["active_reserve_micro_usd"] == 0, value
 }
 
 product_role_run() {
-  local root="$1" ticket="$2" lease="$3" role="$4" instruction latest
+  local root="$1" ticket="$2" lease="$3" role="$4" instruction
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
@@ -1388,27 +1388,45 @@ product_role_run() {
     --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
     "$instruction" || return
   if [[ "$role" == reviewer ]]; then
-    latest="$(python3 - "$root/product/factory/runs" "$ticket" <<'PY'
-import pathlib, sys
-root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; matches=[]
-for meta in root.glob("*.meta"):
-    values={}
-    for line in meta.read_text(errors="replace").splitlines():
-        if "=" in line:
-            key,value=line.split("=",1); values[key]=value
-    if values.get("ticket") == ticket and values.get("role") == "reviewer":
-        matches.append((meta.stat().st_mtime_ns, meta.with_suffix(".out")))
-if not matches: raise SystemExit(1)
-print(max(matches)[1])
-PY
-)" || return 1
-    grep -Eiq '^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$' \
-      "$latest" || return 1
-    (TICKET="$ticket"; append_commit_push "$root" 'reviewer round 1: APPROVE' \
-      "$ticket: record isolated review") || return
-  elif [[ "$role" == narrator ]]; then
+    (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || return
+  elif [[ "$role" == builder ]]; then
     (TICKET="$ticket"; set_review_state "$root") || return
   fi
+}
+
+product_reconcile_reviewer() {
+  local root="$1" ticket="$2" evidence round adapter output verdict
+  evidence="$(python3 - "$root/product/factory/runs" \
+    "$root/worktrees/$ticket/factory/tickets/$ticket.md" "$ticket" <<'PY'
+import pathlib, re, sys
+runs=pathlib.Path(sys.argv[1]); ticket_file=pathlib.Path(sys.argv[2]); ticket=sys.argv[3]
+verdicts=sum(bool(re.fullmatch(r"\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*", line, re.I))
+             for line in ticket_file.read_text(errors="replace").splitlines())
+successful=[]
+for meta in runs.glob("*.meta"):
+    values=dict(line.split("=",1) for line in meta.read_text(errors="replace").splitlines() if "=" in line)
+    if (values.get("ticket") == ticket and values.get("role") == "reviewer" and
+        values.get("accounting_state") == "completed" and values.get("exit_status") == "0"):
+        successful.append((values.get("started_at", ""), meta.name, values, meta.with_suffix(".out")))
+successful.sort(key=lambda item: (item[0], item[1]))
+if len(successful) == verdicts:
+    print("none")
+elif len(successful) == verdicts + 1:
+    _, _, values, output = successful[-1]
+    if not output.is_file(): raise SystemExit("successful reviewer output is missing")
+    print(f"{verdicts + 1}|{values.get('adapter','')}|{output}")
+else:
+    raise SystemExit("reviewer runs and durable verdicts are ambiguous")
+PY
+)" || return 1
+  [[ "$evidence" != none ]] || return 0
+  IFS='|' read -r round adapter output <<<"$evidence"
+  [[ "$round" =~ ^[1-9][0-9]*$ && -n "$adapter" && -f "$output" ]] || return 1
+  verdict="$(python3 "$root/kit/scripts/lib/reviewer-verdict.py" \
+    --adapter "$adapter" --input "$output")" || return 1
+  append_commit_push "$root" "reviewer round $round: $verdict" \
+    "$ticket: record isolated review round $round" || return 1
+  [[ "$verdict" == APPROVE ]]
 }
 
 product_scheduler_admits() {
@@ -1475,6 +1493,9 @@ run_product_internal() {
           }
         renewals[$i]="$now"
       fi
+      (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || {
+        states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+      }
       stage="$(TICKET="$ticket"; next_stage "$root" "${leases[$i]}")" || {
         states[$i]=failed; failed_count=$((failed_count + 1)); continue;
       }
