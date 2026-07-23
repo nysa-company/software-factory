@@ -860,15 +860,18 @@ PY
         die "product seed commit did not apply cleanly: $ticket"
       index=$((index + 1))
     done
-    python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" <<'PY'
+    python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" \
+      "$(git -C "$root/kit" rev-parse HEAD)" <<'PY'
 from pathlib import Path
 import re, sys
-p=Path(sys.argv[1]); lines=[]
+p=Path(sys.argv[1]); kit_sha=sys.argv[2]; lines=[]
 for line in p.read_text(encoding="utf-8").splitlines():
     if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
         lines.append("Retry-Evidence: prior " + line.strip())
     elif re.fullmatch(r"\s*reviewer round\s+\d+:.*", line, re.I):
         lines.append("Retry-Evidence: prior " + line.strip())
+    elif re.match(r"^Kit-SHA:\s*", line):
+        lines.append("Kit-SHA: " + kit_sha)
     else:
         lines.append(re.sub(r"^State:\s*.*$", "State: Ready", line))
 p.write_text("\n".join(lines)+"\n", encoding="utf-8")
