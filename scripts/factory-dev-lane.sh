@@ -819,7 +819,8 @@ lane_cursor_env() {
 }
 
 subscription_env() {
-  local root="$1" project session_home cursor_home cursor_version codex_version claude_version; shift
+  local root="$1" project session_home cursor_home cursor_version codex_version claude_version git_config_count=1; shift
+  [[ "${FACTORY_LANE_TRUSTED_PUSH:-0}" != 1 ]] || git_config_count=0
   project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
   session_home="$root/session-home"
   cursor_home="$(cursor_session_home)"
@@ -841,7 +842,7 @@ subscription_env() {
     FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
     CURSOR_AGENT_VERSION="$cursor_version" CODEX_PINNED="$codex_version" \
     CLAUDE_CODE_PINNED="$claude_version" \
-    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl \
+    GIT_CONFIG_COUNT="$git_config_count" GIT_CONFIG_KEY_0=remote.origin.pushurl \
     GIT_CONFIG_VALUE_0=disabled://factory-provider-push "$@"
 }
 
@@ -931,7 +932,8 @@ PY
     subscription_env "$root" "$root/kit/scripts/model-control.sh" activate \
       --profile "$profile" --approve-hash "$profile_hash" \
       --approved-by factory-dev-lane >/dev/null
-    subscription_env "$root" "$root/kit/scripts/model-control.sh" pin \
+    FACTORY_LANE_TRUSTED_PUSH=1 subscription_env "$root" \
+      "$root/kit/scripts/model-control.sh" pin \
       --ticket "$ticket" --workdir "$root/worktrees/$ticket" >/dev/null
   done
   python3 - "$root/runtime/provider-policy.json" \
