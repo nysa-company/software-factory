@@ -144,6 +144,7 @@ for readiness_tool in agent codex claude; do
 #!/usr/bin/env bash
 [[ -z "\${AMBIENT_AUTH_READY+x}" ]]
 [[ "\$HOME" == "$READINESS_ROOT/session-home" ]]
+[[ "\$PWD" == "$READINESS_ROOT" ]]
 [[ "\${FACTORY_CURSOR_SESSION_HOME:-}" == "$READINESS_ROOT/session-home" ]]
 if [[ "\${1:-}" == --version ]]; then
   printf '%s\n' "$readiness_tool 1.0-test"

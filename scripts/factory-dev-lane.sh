@@ -78,18 +78,21 @@ subscription_base_env() {
   local root="$1" project
   shift
   project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
-  env -i HOME="$root/session-home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
-    PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-    FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
-    FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
-    FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
-    FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
-    FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
-    FACTORY_CURSOR_SESSION_HOME="$root/session-home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
-    FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
-    FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
-    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-    FACTORY_HERMES_CONTRACT_VERSION=1.7.0 "$@"
+  (
+    cd "$root"
+    env -i HOME="$root/session-home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+      PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+      FACTORY_ROOT="$root/product" FACTORY_GLOBAL_ENV="$root/home/.factory/global.env" \
+      FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
+      FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
+      FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
+      FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
+      FACTORY_CURSOR_SESSION_HOME="$root/session-home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
+      FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
+      FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
+      FACTORY_HERMES_CONTRACT_VERSION=1.7.0 "$@"
+  )
 }
 
 subscription_ready() {

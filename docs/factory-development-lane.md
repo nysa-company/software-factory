@@ -37,9 +37,11 @@ The canary uses existing authenticated Cursor, Codex, and Claude subscription CL
 Subscription and product lanes copy the three CLI session files into their
 owner-only lane root once. Readiness, version evidence, approval hashing, and
 role execution then use the same clean environment and only those copied
-files; ambient authentication variables and the external Cursor session home
-are not consulted. If a copied session is unavailable, the lane stops before
-consuming approval, claiming a lease, reserving budget, or submitting a task.
+files from the lane root as their working directory; ambient authentication
+variables, the caller's working directory, and the external Cursor session
+home are not consulted. If a copied session is unavailable, the lane stops
+before consuming approval, claiming a lease, reserving budget, or submitting
+a task.
 Each readiness probe gets three attempts with a one-second delay between
 misses so a short CLI session-state transition cannot exhaust every retry.
 Retained-product resumes run that probe before hashing the plan and again
