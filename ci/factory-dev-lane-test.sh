@@ -161,6 +161,20 @@ printf '%s\n' 'subscription authentication is unavailable' >"$TMP/retryable-role
 if product_role_retryable "$TMP/retryable-role.log"; then
   fail "scheduler retried a non-readiness provider failure"
 fi
+eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
+refuse_production_path() { :; }
+die() { return 1; }
+SEED_ACCOUNTING="$TMP/seed-accounting.json"
+printf '%s\n' '{"schema":"factory-dev-product-seed-accounting/v1","reserved_micro_usd":{"T-1":90000000,"T-2":0}}' >"$SEED_ACCOUNTING"
+chmod 600 "$SEED_ACCOUNTING"
+validate_product_seed_accounting "$SEED_ACCOUNTING" T-1 T-2 ||
+  fail "valid cumulative seed accounting was rejected"
+printf '%s\n' '{"schema":"factory-dev-product-seed-accounting/v1","reserved_micro_usd":{"T-1":100000000,"T-2":0}}' >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" T-1 T-2; then
+  fail "exhausted cumulative seed accounting was accepted"
+fi
+grep -Fq 'FACTORY_ENVELOPE="$envelope"' "$LANE" ||
+  fail "seeded remaining-budget envelope is not passed to role execution"
 
 review_pattern='^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$'
 printf '%s\n' '## Verdict: Approve' | grep -Eiq "$review_pattern" ||

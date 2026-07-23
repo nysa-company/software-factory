@@ -15,6 +15,7 @@ TICKETS=(T-900001 T-900002 T-900003 T-900004)
 PRODUCT_SOURCE=""
 PRODUCT_BASE=""
 PRODUCT_SEED_BUNDLE=""
+PRODUCT_SEED_ACCOUNTING=""
 PRODUCT_TICKETS=()
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
@@ -35,7 +36,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <T-NNN,...> [--seed-bundle <absolute-bundle>]
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json>]
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-export --root <absolute-lane-root>
        factory-dev-lane.sh clean --root <absolute-lane-root>
@@ -449,7 +450,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash=""
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash=""
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -549,18 +550,22 @@ PY
       seed_product_worktrees "$root" "$PRODUCT_SEED_BUNDLE" "$PRODUCT_BASE" \
         "${lane_tickets[@]}"
       seed_hash="$(sha256_file "$PRODUCT_SEED_BUNDLE")"
+      prepare_product_seed_accounting "$root" "$PRODUCT_SEED_ACCOUNTING" \
+        "${lane_tickets[@]}"
+      accounting_hash="$(sha256_file "$PRODUCT_SEED_ACCOUNTING")"
     fi
     python3 - "$root/runtime/product-source.json" "$PRODUCT_BASE" \
       "$(git -C "$PRODUCT_SOURCE" rev-parse "$PRODUCT_BASE^{tree}")" "$lane_control_sha" \
-      "$seed_hash" -- \
+      "$seed_hash" "$accounting_hash" -- \
       "${lane_tickets[@]}" <<'PY'
 import json, os, sys
-path, base, tree, control, seed, separator, *tickets=sys.argv[1:]
+path, base, tree, control, seed, accounting, separator, *tickets=sys.argv[1:]
 if separator != "--": raise SystemExit(1)
 with open(path, "w", encoding="utf-8") as stream:
     json.dump({"schema":"factory-dev-product-source/v1","base_sha":base,
                "base_tree":tree,"lane_control_sha":control,
-               "seed_bundle_sha256":seed or None,"tickets":tickets},
+               "seed_bundle_sha256":seed or None,
+               "seed_accounting_sha256":accounting or None,"tickets":tickets},
               stream, sort_keys=True, separators=(",",":")); stream.write("\n")
 os.chmod(path, 0o600)
 PY
@@ -885,6 +890,51 @@ PY
   done
 }
 
+validate_product_seed_accounting() {
+  local manifest="$1"; shift
+  [[ "$manifest" == /* && -f "$manifest" && ! -L "$manifest" ]] ||
+    die "product seed accounting must be an absolute regular file"
+  refuse_production_path "$manifest"
+  [[ "$(stat -f '%Su:%Lp' "$manifest")" == "$(id -un):600" ]] ||
+    die "product seed accounting must be owner-only"
+  if ! python3 - "$manifest" "$@" <<'PY'
+import json, sys
+path, *tickets=sys.argv[1:]
+value=json.load(open(path, encoding="utf-8"))
+if value.get("schema") != "factory-dev-product-seed-accounting/v1": raise SystemExit(1)
+amounts=value.get("reserved_micro_usd")
+if not isinstance(amounts, dict) or set(amounts) != set(tickets): raise SystemExit(1)
+for ticket in tickets:
+    amount=amounts[ticket]
+    if (not isinstance(amount, int) or isinstance(amount, bool) or
+        amount < 0 or amount >= 100_000_000):
+        raise SystemExit(1)
+PY
+  then
+    die "product seed accounting is invalid or exhausted"
+  fi
+}
+
+prepare_product_seed_accounting() {
+  local root="$1" manifest="$2"; shift 2
+  validate_product_seed_accounting "$manifest" "$@"
+  mkdir -m 700 "$root/runtime/product-envelope"
+  python3 - "$manifest" "$root/product/factory/ENVELOPE.env" \
+    "$root/runtime/product-envelope" "$@" <<'PY'
+import json, os, pathlib, re, sys
+manifest, base_path, output, *tickets=sys.argv[1:]
+amounts=json.load(open(manifest, encoding="utf-8"))["reserved_micro_usd"]
+base=pathlib.Path(base_path).read_text(encoding="utf-8")
+for ticket in tickets:
+    remaining=(100_000_000-amounts[ticket])/1_000_000
+    text,count=re.subn(r"(?m)^PER_TICKET_BUDGET_USD=.*$",
+                       f"PER_TICKET_BUDGET_USD={remaining:.6f}",base,count=1)
+    if count != 1: raise SystemExit(1)
+    path=pathlib.Path(output,ticket+".env")
+    path.write_text(text,encoding="utf-8"); os.chmod(path,0o600)
+PY
+}
+
 append_commit_push() {
   local root="$1" line="$2" message="$3" work
   work="$root/worktrees/$TICKET"
@@ -1006,6 +1056,8 @@ PY
       sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md"
       sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json"
       sha256_file "$root/runtime/product-db/$ticket.env"
+      [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||
+        sha256_file "$root/runtime/product-envelope/$ticket.env"
     done
   } | sha256_text
 }
@@ -1464,13 +1516,17 @@ assert value["active_reserve_micro_usd"] == 0, value
 }
 
 product_role_run() {
-  local root="$1" ticket="$2" lease="$3" role="$4" instruction
+  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
     instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES."
   fi
+  envelope="$root/product/factory/ENVELOPE.env"
+  [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||
+    envelope="$root/runtime/product-envelope/$ticket.env"
   subscription_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+    FACTORY_ENVELOPE="$envelope" \
     "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
     --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
     "$instruction" || return
@@ -1974,13 +2030,14 @@ case "$command" in
     ;;
   product-plan)
     assert_macos
-    source_repo=""; base_sha=""; ticket_csv=""; seed_bundle=""
+    source_repo=""; base_sha=""; ticket_csv=""; seed_bundle=""; seed_accounting=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --source) source_repo="${2:-}"; shift 2 ;;
         --base-sha) base_sha="${2:-}"; shift 2 ;;
         --tickets) ticket_csv="${2:-}"; shift 2 ;;
         --seed-bundle) seed_bundle="${2:-}"; shift 2 ;;
+        --seed-accounting) seed_accounting="${2:-}"; shift 2 ;;
         *) usage ;;
       esac
     done
@@ -1988,6 +2045,11 @@ case "$command" in
     PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"; PRODUCT_SEED_BUNDLE="$seed_bundle"
     IFS=, read -r -a PRODUCT_TICKETS <<<"$ticket_csv"
     [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || usage
+    if [[ -n "$seed_bundle" || -n "$seed_accounting" ]]; then
+      [[ -n "$seed_bundle" && -n "$seed_accounting" ]] || usage
+      validate_product_seed_accounting "$seed_accounting" "${PRODUCT_TICKETS[@]}"
+    fi
+    PRODUCT_SEED_ACCOUNTING="$seed_accounting"
     root="$(create_lane product)"
     echo "ROOT=$root"
     if ! run_in_sandbox "$root" cursor __product-plan --root "$root"; then
