@@ -119,6 +119,7 @@ PY
     sha256_file "$cursor_home/.cursor/auth.json"
     sha256_file "$cursor_home/.cursor/cli-config.json"
     sha256_file "$session_home/.codex/auth.json"
+    sha256_file "$session_home/.claude/.credentials.json"
   } | sha256_text
 }
 
@@ -653,13 +654,20 @@ PY
   ln -s "$cursor" "$root/home/agent"
   if [[ "$mode" == subscription || "$mode" == product ]]; then
     mkdir -m 700 "$root/session-home"
-    mkdir -m 700 "$root/session-home/.cursor" "$root/session-home/.codex"
+    mkdir -m 700 "$root/session-home/.cursor" "$root/session-home/.codex" \
+      "$root/session-home/.claude"
     cp "$session_home/.cursor/auth.json" "$root/session-home/.cursor/auth.json"
     cp "$session_home/.cursor/cli-config.json" "$root/session-home/.cursor/cli-config.json"
     [[ -f "$session_home/.codex/auth.json" && ! -L "$session_home/.codex/auth.json" ]] ||
       die "Codex subscription session file is unavailable"
     cp "$session_home/.codex/auth.json" "$root/session-home/.codex/auth.json"
-    chmod 600 "$root/session-home/.cursor/"*.json "$root/session-home/.codex/auth.json"
+    [[ -f "$session_home/.claude/.credentials.json" &&
+       ! -L "$session_home/.claude/.credentials.json" ]] ||
+      die "Claude subscription session file is unavailable"
+    cp "$session_home/.claude/.credentials.json" \
+      "$root/session-home/.claude/.credentials.json"
+    chmod 600 "$root/session-home/.cursor/"*.json "$root/session-home/.codex/auth.json" \
+      "$root/session-home/.claude/.credentials.json"
     for tool in codex claude; do
       resolved="$(command -v "$tool" 2>/dev/null || true)"
       [[ "$resolved" == /* && -x "$resolved" ]] || die "$tool CLI is unavailable"
@@ -710,15 +718,12 @@ os.chmod(policy_path, 0o600); os.chmod(activation_path, 0o600)
 PY
   fi
   [[ "$mode" != subscription && "$mode" != product ]] || session_home="$root/session-home"
-  write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home" \
-    "$([[ "$mode" == subscription || "$mode" == product ]] && printf '%s' "$ACCOUNT_HOME")"
+  write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home" ""
   if [[ "$mode" == subscription || "$mode" == product ]]; then
     for tool in codex claude; do
-      tool_home=''
-      [[ "$tool" != claude ]] || tool_home="HOME=$ACCOUNT_HOME "
       cat >"$root/home/$tool" <<EOF
 #!/usr/bin/env bash
-${tool_home}exec "$(sandbox_exec)" -f "$root/runtime/native.sb" "$root/home/$tool-real" "\$@"
+exec "$(sandbox_exec)" -f "$root/runtime/native.sb" "$root/home/$tool-real" "\$@"
 EOF
       chmod 700 "$root/home/$tool"
     done
@@ -848,6 +853,7 @@ PY
     sha256_file "$cursor_home/.cursor/auth.json"
     sha256_file "$cursor_home/.cursor/cli-config.json"
     sha256_file "$session_home/.codex/auth.json"
+    sha256_file "$session_home/.claude/.credentials.json"
     for ticket in "${PRODUCT_TICKETS[@]}"; do
       git -C "$root/worktrees/$ticket" rev-parse HEAD 'HEAD^{tree}'
       sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md"
