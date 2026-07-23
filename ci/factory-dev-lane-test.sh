@@ -102,6 +102,17 @@ expect_failure "duplicate product tickets" test_env bash "$LANE" product-plan \
 [[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
    "$lane_count_before" ]] ||
   fail "invalid product input created a lane"
+DAY_LANE="$TMP/nysa-sf-dev.day"
+mkdir -p "$DAY_LANE/product"
+printf '{}\n' >"$DAY_LANE/marker.json"
+STALE_RUN_DAY="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).date()-datetime.timedelta(days=1))')"
+expect_failure "stale development budget day" env \
+  FACTORY_ROOT="$DAY_LANE/product" FACTORY_CLI_LANE_ROOT="$DAY_LANE" \
+  FACTORY_DEV_BUDGET_DAY="$STALE_RUN_DAY" \
+  bash "$ROOT/scripts/run-agent.sh" --role builder --ticket T-1 \
+  --prompt-file "$ROOT/roles/builder.md" --workdir "$DAY_LANE/product" -- task
+grep -Fq 'development budget day changed; no task was submitted' "$OUT" ||
+  fail "stale development budget day did not fail before reservation"
 if sed -n '/^subscription_env()/,/^}/p' "$LANE" | grep -q 'remote.origin.pushurl'; then
   fail "subscription host environment disables its own trusted push destination"
 fi
@@ -185,6 +196,8 @@ die() { return 1; }
 SEED_ACCOUNTING="$TMP/seed-accounting.json"
 SEED_BUNDLE="$TMP/seed.bundle"
 SEED_BASE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SEED_DAY="$(date -u +%F)"
+SEED_NONCE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 printf '%s\n' seed >"$SEED_BUNDLE"
 chmod 600 "$SEED_BUNDLE"
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -195,6 +208,12 @@ printf '%s\n' \
 chmod 600 "$SEED_ACCOUNTING"
 validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1 ||
   fail "valid cumulative seed accounting was rejected"
+SEED_ACCOUNTING_LINK="$TMP/seed-accounting-link.json"
+ln "$SEED_ACCOUNTING" "$SEED_ACCOUNTING_LINK"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "hard-linked cumulative seed accounting was accepted"
+fi
+unlink "$SEED_ACCOUNTING_LINK"
 if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-2; then
   fail "selected exhausted cumulative seed accounting was accepted"
 fi
@@ -232,6 +251,68 @@ grep -qx 'GLOBAL_DAILY_CAP_USD=270.000000' \
   fail "excluded ticket spend did not reduce the resumed global cap"
 [[ ! -e "$SEED_ROOT/runtime/product-envelope/T-2.env" ]] ||
   fail "excluded ticket received an active budget envelope"
+
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":130000000,\"T-2\":140000000,\"T-3\":80000000,\"T-4\":100000000}}" \
+  >"$SEED_ACCOUNTING"
+validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" \
+  T-1 T-3 ||
+  fail "operator-authorized cumulative seed accounting was rejected"
+SEED_ROOT_V3="$TMP/seed-root-v3"
+mkdir -p "$SEED_ROOT_V3/product/factory" "$SEED_ROOT_V3/runtime"
+cp "$SEED_ROOT/product/factory/ENVELOPE.env" \
+  "$SEED_ROOT_V3/product/factory/ENVELOPE.env"
+prepare_product_seed_accounting "$SEED_ROOT_V3" "$SEED_ACCOUNTING" \
+  "$SEED_BUNDLE" "$SEED_BASE" T-1 T-3
+grep -qx 'PER_TICKET_BUDGET_USD=70.000000' \
+  "$SEED_ROOT_V3/runtime/product-envelope/T-1.env" ||
+  fail "authorized ticket cap did not carry cumulative spend"
+grep -qx 'PER_TICKET_BUDGET_USD=120.000000' \
+  "$SEED_ROOT_V3/runtime/product-envelope/T-3.env" ||
+  fail "authorized sibling ticket cap did not carry cumulative spend"
+grep -qx 'GLOBAL_DAILY_CAP_USD=250.000000' \
+  "$SEED_ROOT_V3/runtime/product-envelope/global.env" ||
+  fail "authorized aggregate cap did not carry cumulative spend"
+grep -qx "$SEED_DAY" "$SEED_ROOT_V3/runtime/product-envelope/budget-day" ||
+  fail "authorized budget day was not carried"
+eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
+physical() { (cd "$1" 2>/dev/null && pwd -P); }
+consume_product_seed_authorization "$SEED_ACCOUNTING" \
+  "$(sha256_file "$SEED_ACCOUNTING")"
+CONSUMPTION="$TMP/.seed-accounting-consumptions/$SEED_NONCE.used/receipt"
+[[ "$(stat -f '%Su:%Lp' "$CONSUMPTION")" == "$(id -un):600" ]] ||
+  fail "seed authorization consumption receipt is unsafe"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_ACCOUNTING" \
+    "$(sha256_file "$SEED_ACCOUNTING")"); then
+  fail "seed authorization was consumed twice"
+fi
+die() { return 1; }
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":200000000}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "authorized exhausted ticket accounting was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000001,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":0}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "unauthorized aggregate cap was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"agent\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":0}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "agent-authored budget authorization was accepted"
+fi
+STALE_SEED_DAY="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).date()-datetime.timedelta(days=1))')"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$STALE_SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":0}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "stale authorized budget day was accepted"
+fi
 
 eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
 SOURCE_ROOT_TEST="$TMP/source-binding"

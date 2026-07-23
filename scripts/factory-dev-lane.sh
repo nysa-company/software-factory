@@ -908,20 +908,41 @@ validate_product_seed_accounting() {
   [[ "$manifest" == /* && -f "$manifest" && ! -L "$manifest" ]] ||
     die "product seed accounting must be an absolute regular file"
   refuse_production_path "$manifest"
-  [[ "$(stat -f '%Su:%Lp' "$manifest")" == "$(id -un):600" ]] ||
-    die "product seed accounting must be owner-only"
+  [[ "$(stat -f '%Su:%Lp:%l' "$manifest")" == "$(id -un):600:1" ]] || {
+    die "product seed accounting must be owner-only"; return 1;
+  }
   [[ "$bundle" == /* && -f "$bundle" && ! -L "$bundle" ]] ||
     die "product seed bundle must be an absolute regular file"
   refuse_production_path "$bundle"
-  [[ "$(stat -f '%Su:%Lp' "$bundle")" == "$(id -un):600" ]] ||
-    die "product seed bundle must be owner-only"
+  [[ "$(stat -f '%Su:%Lp:%l' "$bundle")" == "$(id -un):600:1" ]] || {
+    die "product seed bundle must be owner-only"; return 1;
+  }
   if ! python3 - "$manifest" "$(sha256_file "$bundle")" "$base" "$@" <<'PY'
 import json, re, sys
 path, bundle_sha, base, *tickets=sys.argv[1:]
 value=json.load(open(path, encoding="utf-8"))
-if (set(value) != {"schema","seed_bundle_sha256","base_sha","reserved_micro_usd"} or
-    value.get("schema") != "factory-dev-product-seed-accounting/v2" or
-    value.get("seed_bundle_sha256") != bundle_sha or value.get("base_sha") != base):
+common={"schema","seed_bundle_sha256","base_sha","reserved_micro_usd"}
+if (value.get("seed_bundle_sha256") != bundle_sha or
+    value.get("base_sha") != base):
+    raise SystemExit(1)
+if value.get("schema") == "factory-dev-product-seed-accounting/v2":
+    if set(value) != common: raise SystemExit(1)
+    ticket_cap, aggregate_cap=100_000_000, 500_000_000
+elif value.get("schema") == "factory-dev-product-seed-accounting/v3":
+    if set(value) != common | {
+        "ticket_cap_micro_usd","aggregate_cap_micro_usd","authorized_by",
+        "authorization_nonce","budget_day"
+    }: raise SystemExit(1)
+    ticket_cap=value["ticket_cap_micro_usd"]
+    aggregate_cap=value["aggregate_cap_micro_usd"]
+    if (ticket_cap != 200_000_000 or aggregate_cap != 700_000_000 or
+        value["authorized_by"] != "operator" or
+        not re.fullmatch(r"[0-9a-f]{64}", value["authorization_nonce"]) or
+        value["budget_day"] != __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc
+        ).date().isoformat()):
+        raise SystemExit(1)
+else:
     raise SystemExit(1)
 amounts=value.get("reserved_micro_usd")
 if (not isinstance(amounts, dict) or not set(tickets) <= set(amounts) or
@@ -932,8 +953,11 @@ for ticket, amount in amounts.items():
     if (not isinstance(amount, int) or isinstance(amount, bool) or
         amount < 0):
         raise SystemExit(1)
-if any(amounts[ticket] >= 100_000_000 for ticket in tickets): raise SystemExit(1)
-if sum(amounts.values()) >= 500_000_000: raise SystemExit(1)
+if value["schema"].endswith("/v3") and any(
+    amount > ticket_cap for amount in amounts.values()
+): raise SystemExit(1)
+if any(amounts[ticket] >= ticket_cap for ticket in tickets): raise SystemExit(1)
+if sum(amounts.values()) >= aggregate_cap: raise SystemExit(1)
 PY
   then
     die "product seed accounting is invalid or exhausted"
@@ -948,20 +972,62 @@ prepare_product_seed_accounting() {
     "$root/runtime/product-envelope" "$@" <<'PY'
 import json, os, pathlib, re, sys
 manifest, base_path, output, *tickets=sys.argv[1:]
-amounts=json.load(open(manifest, encoding="utf-8"))["reserved_micro_usd"]
+value=json.load(open(manifest, encoding="utf-8"))
+amounts=value["reserved_micro_usd"]
+if value["schema"].endswith("/v3"):
+    if (value.get("ticket_cap_micro_usd") != 200_000_000 or
+        value.get("aggregate_cap_micro_usd") != 700_000_000 or
+        value.get("authorized_by") != "operator"):
+        raise SystemExit(1)
+    ticket_cap=value["ticket_cap_micro_usd"]
+    aggregate_cap=value["aggregate_cap_micro_usd"]
+    day=pathlib.Path(output,"budget-day")
+    day.write_text(value["budget_day"]+"\n",encoding="utf-8"); os.chmod(day,0o600)
+else:
+    ticket_cap,aggregate_cap=100_000_000,500_000_000
 base=pathlib.Path(base_path).read_text(encoding="utf-8")
 for ticket in tickets:
-    remaining=(100_000_000-amounts[ticket])/1_000_000
+    remaining=(ticket_cap-amounts[ticket])/1_000_000
     text,count=re.subn(r"(?m)^PER_TICKET_BUDGET_USD=.*$",
                        f"PER_TICKET_BUDGET_USD={remaining:.6f}",base,count=1)
     if count != 1: raise SystemExit(1)
     path=pathlib.Path(output,ticket+".env")
     path.write_text(text,encoding="utf-8"); os.chmod(path,0o600)
-remaining=500_000_000-sum(amounts.values())
+remaining=aggregate_cap-sum(amounts.values())
 path=pathlib.Path(output,"global.env")
 path.write_text(f"GLOBAL_DAILY_CAP_USD={remaining/1_000_000:.6f}\n",encoding="utf-8")
 os.chmod(path,0o600)
 PY
+}
+
+consume_product_seed_authorization() {
+  local manifest="$1" expected="$2" parent root digest nonce day marker
+  [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["schema"])' \
+    "$manifest")" == factory-dev-product-seed-accounting/v3 ]] || return 0
+  parent="$(physical "$(dirname "$manifest")")"
+  refuse_production_path "$parent"
+  [[ "$(stat -f '%Su:%Lp' "$parent")" == "$(id -un):700" ]] ||
+    die "product seed authorization parent must be owner-only"
+  read -r nonce day < <(python3 - "$manifest" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+print(value["authorization_nonce"], value["budget_day"])
+PY
+)
+  digest="$(sha256_file "$manifest")"
+  [[ "$digest" == "$expected" ]] ||
+    die "product seed authorization drifted after lane creation"
+  root="$parent/.seed-accounting-consumptions"
+  if [[ ! -e "$root" ]]; then mkdir -m 700 "$root" 2>/dev/null || true; fi
+  [[ -d "$root" && ! -L "$root" &&
+     "$(stat -f '%Su:%Lp' "$root")" == "$(id -un):700" ]] ||
+    die "product seed authorization consumption root is unsafe"
+  marker="$root/$nonce.used"
+  mkdir -m 700 "$marker" 2>/dev/null ||
+    die "product seed authorization was already consumed"
+  printf 'schema=factory-dev-product-seed-authorization-consumption/v1\nmanifest_sha256=%s\nbudget_day=%s\n' \
+    "$digest" "$day" >"$marker/receipt"
+  chmod 600 "$marker/receipt"
 }
 
 append_commit_push() {
@@ -1062,6 +1128,8 @@ product_approval_hash() {
     sha256_file "$root/runtime/claude-settings.json"
     sha256_file "$root/runtime/product-containers.json"
     sha256_file "$root/runtime/docker-host"
+    [[ ! -f "$root/runtime/product-envelope/budget-day" ]] ||
+      sha256_file "$root/runtime/product-envelope/budget-day"
     printf '%s\n' "$(python3 - "$root/runtime/docker" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
@@ -1563,6 +1631,7 @@ product_role_run() {
     envelope="$root/runtime/product-envelope/$ticket.env"
   subscription_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
     FACTORY_ENVELOPE="$envelope" \
+    FACTORY_DEV_BUDGET_DAY="$(cat "$root/runtime/product-envelope/budget-day" 2>/dev/null || true)" \
     "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
     --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
     "$instruction" || return
@@ -2109,6 +2178,8 @@ PY
       [[ -n "$seed_bundle" && -n "$seed_accounting" ]] || usage
       validate_product_seed_accounting "$seed_accounting" "$seed_bundle" "$base_sha" \
         "${PRODUCT_TICKETS[@]}"
+      consume_product_seed_authorization "$seed_accounting" \
+        "$(sha256_file "$seed_accounting")"
     fi
     PRODUCT_SEED_ACCOUNTING="$seed_accounting"
     root="$(create_lane product)"
