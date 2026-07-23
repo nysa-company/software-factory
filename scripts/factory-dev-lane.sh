@@ -345,11 +345,13 @@ PY
   if [[ -f "$root/runtime/product-containers.json" ]]; then
     while IFS= read -r container; do
       [[ -n "$container" ]] || continue
-      label="$(docker inspect --format '{{ index .Config.Labels "nysa.factory.dev-lane-root" }}' \
+      label="$(DOCKER_HOST="$(cat "$root/runtime/docker-host")" "$root/runtime/docker" \
+        inspect --format '{{ index .Config.Labels "nysa.factory.dev-lane-root" }}' \
         "$container" 2>/dev/null || true)"
       [[ -z "$label" || "$label" == "$root" ]] ||
         die "cleanup refused a container whose lane label drifted"
-      [[ -z "$label" ]] || docker rm -f "$container" >/dev/null ||
+      [[ -z "$label" ]] || DOCKER_HOST="$(cat "$root/runtime/docker-host")" \
+        "$root/runtime/docker" rm -f "$container" >/dev/null ||
         die "cleanup could not remove a lane container"
     done < <(python3 - "$root/runtime/product-containers.json" <<'PY'
 import json, sys
@@ -704,6 +706,17 @@ PY
       [[ -x "$resolved" || -f "$resolved" ]] || die "Node 22 $tool is unavailable"
       ln -s "$resolved" "$root/home/$tool"
     done
+    resolved="$(command -v docker 2>/dev/null || true)"
+    [[ "$resolved" == /* && -x "$resolved" ]] || die "Docker is unavailable"
+    resolved="$(python3 - "$resolved" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+    ln -s "$resolved" "$root/runtime/docker"
+    docker context inspect --format '{{.Endpoints.docker.Host}}' >"$root/runtime/docker-host" ||
+      die "Docker context is unavailable"
+    chmod 600 "$root/runtime/docker-host"
   fi
   if [[ "$mode" == mock-concurrency ]]; then
     cat > "$root/home/mock-provider-cli" <<'PY'
@@ -884,6 +897,12 @@ product_approval_hash() {
     sha256_file "$root/runtime/native.sb"
     sha256_file "$root/runtime/claude-settings.json"
     sha256_file "$root/runtime/product-containers.json"
+    sha256_file "$root/runtime/docker-host"
+    printf '%s\n' "$(python3 - "$root/runtime/docker" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)" "$(sha256_file "$root/runtime/docker")"
     for tool in agent codex claude; do
       real="$(python3 - "$root/home/$tool" <<'PY'
 import os, sys
@@ -909,7 +928,8 @@ PY
 provision_product_databases() {
   local root="$1" ticket nonce name password database port env_file
   local -a names=()
-  command -v docker >/dev/null 2>&1 || die "Docker is unavailable for isolated product databases"
+  [[ -x "$root/runtime/docker" && -f "$root/runtime/docker-host" ]] ||
+    die "Docker is unavailable for isolated product databases"
   mkdir -m 700 "$root/runtime/product-db"
   nonce="$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
@@ -919,12 +939,13 @@ provision_product_databases() {
     env_file="$root/runtime/product-db/$ticket.env"
     printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_DB=%s\n' "$password" "$database" >"$env_file"
     chmod 600 "$env_file"
-    docker run -d --name "$name" \
+    DOCKER_HOST="$(cat "$root/runtime/docker-host")" "$root/runtime/docker" run -d --name "$name" \
       --label "nysa.factory.dev-lane-root=$root" --env-file "$env_file" \
       -p 127.0.0.1::5432 pgvector/pgvector:0.8.5-pg16 >/dev/null ||
       die "could not start isolated database for $ticket"
     names+=("$name")
-    port="$(docker port "$name" 5432/tcp | sed -n 's/.*://p' | tail -n1)"
+    port="$(DOCKER_HOST="$(cat "$root/runtime/docker-host")" "$root/runtime/docker" \
+      port "$name" 5432/tcp | sed -n 's/.*://p' | tail -n1)"
     [[ "$port" =~ ^[0-9]+$ ]] || die "could not resolve isolated database port"
     printf 'POSTGRES_PORT=%s\nDATABASE_URL=postgresql://postgres:%s@127.0.0.1:%s/%s\n' \
       "$port" "$password" "$port" "$database" >>"$env_file"
