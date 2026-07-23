@@ -1371,7 +1371,8 @@ raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
 fi
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 &&
       ( "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
-        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ) ]]; then
+        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ) &&
+      -n "${FACTORY_PROVIDER_DB:-}" ]]; then
   LEGACY_INTERVAL_ID="legacy-$RUN_ID"
   LEGACY_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
   LEGACY_ENTER_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
