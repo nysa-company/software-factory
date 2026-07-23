@@ -2213,8 +2213,61 @@ PY
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
 }
 
+product_export_patch() {
+  local root="$1" ticket="$2" base="$3" head="$4" output="$5"
+  local reviewed temporary
+  reviewed="$(FACTORY_LEDGER="$root/product/factory/runtime-ledger.csv" \
+    python3 - "$root/kit/scripts/ticket-pr.py" "$root/product" "$ticket" <<'PY'
+import importlib.util, pathlib, sys
+spec=importlib.util.spec_from_file_location("ticket_pr", sys.argv[1])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+print(module.latest_reviewer_head(pathlib.Path(sys.argv[2]), sys.argv[3]))
+PY
+  )" || return 1
+  python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" <<'PY' ||
+import re, sys
+verdicts=re.findall(
+    r"^\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*$",
+    open(sys.argv[1],encoding="utf-8").read(), re.I|re.M)
+if not verdicts or verdicts[-1].upper() != "APPROVE": raise SystemExit(1)
+PY
+    return 1
+  git -C "$root/worktrees/$ticket" merge-base --is-ancestor "$base" "$reviewed" &&
+    git -C "$root/worktrees/$ticket" merge-base --is-ancestor "$reviewed" "$head" ||
+    return 1
+  python3 - "$root/worktrees/$ticket" "$base" "$reviewed" "$head" <<'PY' ||
+import subprocess, sys
+work, base, reviewed, head=sys.argv[1:]
+git=lambda *args: subprocess.check_output(
+    ["git","-C",work,*args],text=True).splitlines()
+if any(not path.startswith("factory/")
+       for path in git("diff","--name-only",reviewed,head)):
+    raise SystemExit(1)
+for line in git("diff","--raw","--no-abbrev",base,reviewed,
+                "--",".",":(exclude)factory"):
+    fields=line.split("\t",1)[0].split()
+    if len(fields) < 2 or fields[0][1:] in {"120000","160000"} or \
+       fields[1] in {"120000","160000"}:
+        raise SystemExit(1)
+for line in git("diff","--name-status","-M",base,reviewed):
+    fields=line.split("\t")
+    if fields[0].startswith(("R","C")) and len(fields) == 3 and \
+       (fields[1].startswith("factory/") != fields[2].startswith("factory/")):
+        raise SystemExit(1)
+PY
+    return 1
+  temporary="$(mktemp "$output.tmp.XXXXXX")" || return 1
+  if ! git -C "$root/worktrees/$ticket" diff --binary "$base" "$reviewed" -- . \
+      ':(exclude)factory' >"$temporary" || [[ ! -s "$temporary" ]]; then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$output" || { rm -f "$temporary"; return 1; }
+  printf '%s\n' "$reviewed"
+}
+
 export_product_internal() {
-  local root="$1" ticket base head branch export_dir
+  local root="$1" ticket base head branch export_dir reviewed
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -2245,9 +2298,6 @@ assert all(name == "terminal" for name in value.get("counts", {})), value
       die "product ticket remote does not match trusted host output: $ticket"
     grep -qx 'State: Review' "$root/worktrees/$ticket/factory/tickets/$ticket.md" ||
       die "product ticket is not in Review: $ticket"
-    grep -Eq '^reviewer round [0-9]+: APPROVE$' \
-      "$root/worktrees/$ticket/factory/tickets/$ticket.md" ||
-      die "product ticket lacks an approved review: $ticket"
     python3 - "$root/product/factory/runs" "$ticket" <<'PY' ||
 import pathlib, sys
 root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; roles={}
@@ -2263,10 +2313,10 @@ PY
       die "product ticket role evidence is incomplete: $ticket"
     git -C "$root/origin.git" bundle create "$export_dir/$ticket.bundle" \
       "refs/heads/$branch" >/dev/null
-    git -C "$root/worktrees/$ticket" diff --binary "$base" "$head" -- . \
-      ':(exclude)factory/KIT_PIN' ':(exclude)factory/PROJECT.env' \
-      >"$export_dir/$ticket.patch"
-    [[ -s "$export_dir/$ticket.patch" ]] || die "product ticket export is empty: $ticket"
+    reviewed="$(product_export_patch "$root" "$ticket" "$base" "$head" \
+      "$export_dir/$ticket.patch")" ||
+      die "product ticket has no safe approved application patch: $ticket"
+    printf '%s\n' "$reviewed" >"$export_dir/$ticket.reviewed"
   done
   python3 - "$root/runtime/product-source.json" "$export_dir/manifest.json" \
     "$root" "${PRODUCT_TICKETS[@]}" <<'PY'
@@ -2279,11 +2329,15 @@ for ticket in tickets:
     tree=subprocess.check_output(["git","-C",str(work),"rev-parse","HEAD^{tree}"],text=True).strip()
     route=work/"factory"/"route-plans"/(ticket+".json")
     patch=export/(ticket+".patch"); bundle=export/(ticket+".bundle")
+    reviewed=(export/(ticket+".reviewed")).read_text(encoding="utf-8").strip()
+    reviewed_tree=subprocess.check_output(
+        ["git","-C",str(work),"rev-parse",reviewed+"^{tree}"],text=True).strip()
     digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
     records.append({"ticket":ticket,"head_sha":head,"head_tree":tree,
+                    "reviewed_sha":reviewed,"reviewed_tree":reviewed_tree,
                     "route_plan_sha256":digest(route),"patch_sha256":digest(patch),
                     "bundle_sha256":digest(bundle)})
-value={"schema":"factory-dev-product-export/v1","base_sha":source["base_sha"],
+value={"schema":"factory-dev-product-export/v2","base_sha":source["base_sha"],
        "base_tree":source["base_tree"],"factory_sha":subprocess.check_output(
        ["git","-C",str(pathlib.Path(root,"kit")),"rev-parse","HEAD"],text=True).strip(),
        "tickets":records}

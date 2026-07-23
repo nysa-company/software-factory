@@ -47,6 +47,13 @@ consuming approval, claiming a lease, reserving budget, or submitting a task.
 
 Seeded retries require an owner-only, single-link accounting manifest bound to the exact seed-bundle digest and approved base SHA. Its full historical ticket map is retained even when only a subset resumes. V2 keeps the default $100 ticket and $500 aggregate ceilings; an explicit operator-authored v3 record permits only the bounded $200 ticket and $700 aggregate development-proof ceilings. V3 also binds one authorization nonce and UTC budget day; planning consumes that nonce in the owner-only artifact directory before creating a runnable lane, and day drift stops before reservation. Prior reservations reduce both limits. Missing history, reuse, an exhausted selected ticket, aggregate exhaustion, unauthorized limits, bundle/base drift, duplicate tickets, seeded symlinks or submodules, and unsafe ticket files fail before provider execution.
 
+`product-export` binds each application patch to the latest successful
+Reviewer head, rejects later non-Factory changes, and excludes the complete
+reserved `factory/` namespace. The exact Git bundle retains retry and audit
+history only; it is never an application artifact. Apply only the projected
+patch to a fresh isolated product branch, then refresh and reverify it against
+current protected main.
+
 ## Real Cursor lifecycle
 
 The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`:

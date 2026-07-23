@@ -178,6 +178,82 @@ AMBIENT_AUTH_READY=1 \
     "$READINESS_ROOT/home/codex" login status >/dev/null ||
   fail "role environment disagreed with lane-local readiness"
 
+EXPORT_ROOT="$TMP/product-export"
+EXPORT_WORK="$EXPORT_ROOT/worktrees/T-1"
+mkdir -p "$EXPORT_ROOT/product/factory/runs" "$EXPORT_WORK/app" \
+  "$EXPORT_WORK/factory/tickets"
+ln -s "$ROOT" "$EXPORT_ROOT/kit"
+git -C "$EXPORT_WORK" init -q
+git -C "$EXPORT_WORK" config user.name 'Factory Dev Lane'
+git -C "$EXPORT_WORK" config user.email factory-dev@local
+printf '%s\n' old >"$EXPORT_WORK/app/source.txt"
+printf '%s\n' 'State: Ready' >"$EXPORT_WORK/factory/tickets/T-1.md"
+printf '%s\n' sibling >"$EXPORT_WORK/factory/tickets/T-2.md"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm base
+EXPORT_BASE="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+mkdir -p "$EXPORT_WORK/docs" "$EXPORT_WORK/factory/route-plans"
+printf '%s\n' new >"$EXPORT_WORK/app/source.txt"
+printf '\000\001\002' >"$EXPORT_WORK/app/binary.dat"
+printf '%s\n' reviewed >"$EXPORT_WORK/docs/contract.md"
+printf '%s\n' 'State: Review' 'reviewer round 1: APPROVE' \
+  >"$EXPORT_WORK/factory/tickets/T-1.md"
+printf '%s\n' changed >"$EXPORT_WORK/factory/tickets/T-2.md"
+printf '%s\n' lane >"$EXPORT_WORK/factory/PROJECT.env"
+printf '%s\n' '{}' >"$EXPORT_WORK/factory/route-plans/T-1.json"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm reviewed
+EXPORT_REVIEWED="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+printf '%s\n' evidence >"$EXPORT_WORK/factory/tickets/T-1-bundle.md"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm narrator
+EXPORT_HEAD="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+cat >"$EXPORT_ROOT/product/factory/runs/export-review.meta" <<EOF
+ticket=T-1
+role=reviewer
+phase=completed
+accounting_schema=1
+accounting_state=completed
+go_issued=1
+task_submitted=1
+exit_status=0
+role_exit=ok
+run_id=export-review
+cost_basis=estimated_tokens
+role_head_before=$EXPORT_REVIEWED
+EOF
+cat >"$EXPORT_ROOT/product/factory/runtime-ledger.csv" <<'EOF'
+date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version
+2026-01-01,00:00:00,T-1,reviewer,mock,3,1,0.00,0,export-review,test,test,pinned_route_plan,estimated_tokens,test
+EOF
+eval "$(sed -n '/^product_export_patch()/,/^export_product_internal()/p' \
+  "$LANE" | sed '$d')"
+EXPORT_PATCH="$EXPORT_ROOT/T-1.patch"
+[[ "$(product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+  "$EXPORT_HEAD" "$EXPORT_PATCH")" == "$EXPORT_REVIEWED" ]] ||
+  fail "approved product patch did not bind the Reviewer head"
+EXPORT_APPLY="$TMP/product-export-apply"
+git clone -q "$EXPORT_WORK" "$EXPORT_APPLY"
+git -C "$EXPORT_APPLY" checkout -q "$EXPORT_BASE"
+git -C "$EXPORT_APPLY" apply --check "$EXPORT_PATCH" ||
+  fail "approved product patch is not applicable"
+patch_paths="$(git -C "$EXPORT_APPLY" apply --numstat "$EXPORT_PATCH" | cut -f3-)"
+for expected_path in app/source.txt app/binary.dat docs/contract.md; do
+  grep -Fxq "$expected_path" <<<"$patch_paths" ||
+    fail "approved product patch omitted $expected_path"
+done
+if grep -Eq '^factory(/|$)' <<<"$patch_paths"; then
+  fail "approved product patch exported Factory control state"
+fi
+printf '%s\n' drift >>"$EXPORT_WORK/app/source.txt"
+git -C "$EXPORT_WORK" add app/source.txt
+git -C "$EXPORT_WORK" commit -qm post-review-drift
+if product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+    "$(git -C "$EXPORT_WORK" rev-parse HEAD)" "$EXPORT_ROOT/drift.patch" \
+    >/dev/null; then
+  fail "post-review product drift was exportable"
+fi
+
 VERDICT="$TMP/reviewer.out"
 printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter cursor-anthropic --input "$VERDICT")" == APPROVE ]] ||
