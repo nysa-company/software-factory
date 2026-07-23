@@ -248,6 +248,10 @@ mkdir "$TMP/other-parent"
 expect_failure "TMP parent drift cleanup" env TMPDIR="$TMP/other-parent" \
   bash "$LANE" clean --root "$lane_root"
 
+printf 'pid=%s\n' "$$" >"$lane_root/runtime/live-cleanup-test.pid"
+expect_failure "live process cleanup" clean_cmd "$lane_root"
+rm "$lane_root/runtime/live-cleanup-test.pid"
+
 clean_cmd "$lane_root"
 [[ ! -e "$lane_root" ]] || fail "clean retained the lane"
 expect_failure "repeat cleanup" clean_cmd "$lane_root"

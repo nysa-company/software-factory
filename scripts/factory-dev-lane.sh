@@ -12,6 +12,9 @@ PY
 )"
 TICKET=T-900001
 TICKETS=(T-900001 T-900002 T-900003 T-900004)
+PRODUCT_SOURCE=""
+PRODUCT_BASE=""
+PRODUCT_TICKETS=()
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
 if [[ "${FACTORY_DEV_LANE_TEST_MODE:-0}" == 1 &&
@@ -31,6 +34,9 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <T-NNN,...>
+       factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
+       factory-dev-lane.sh product-export --root <absolute-lane-root>
        factory-dev-lane.sh clean --root <absolute-lane-root>
 EOF
   exit 2
@@ -66,8 +72,7 @@ PY
 }
 
 subscription_ready() {
-  local root="$1" session_home
-  session_home="$(cursor_session_home)"
+  local root="$1" session_home="$1/session-home"
   HOME="$session_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 ||
     die "Cursor subscription authentication is unavailable"
   HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1 ||
@@ -78,7 +83,7 @@ subscription_ready() {
 
 subscription_approval_hash() {
   local root="$1" session_home real tool
-  session_home="$(cursor_session_home)"
+  session_home="$root/session-home"
   {
     python3 - "$root/marker.json" <<'PY'
 import json, sys
@@ -100,8 +105,12 @@ PY
     sha256_file "$root/runtime/provider-policy.json"
     sha256_file "$root/runtime/provider-activation.json"
     sha256_file "$root/home/record-provider-call"
+    sha256_file "$root/home/.factory/global.env"
+    sha256_file "$root/runtime/cursor.sb"
+    sha256_file "$root/runtime/native.sb"
     sha256_file "$session_home/.cursor/auth.json"
     sha256_file "$session_home/.cursor/cli-config.json"
+    sha256_file "$session_home/.codex/auth.json"
   } | sha256_text
 }
 
@@ -291,6 +300,38 @@ if (not stat.S_ISDIR(r.st_mode) or stat.S_IMODE(r.st_mode) != 0o700 or
     stat.S_IMODE(m.st_mode) != 0o600):
     raise SystemExit("lane changed immediately before cleanup")
 PY
+  if [[ -f "$root/runtime/provider-state.sqlite3" ]]; then
+    python3 "$root/kit/scripts/provider-coordinator.py" \
+      --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+if value.get("active_reserve_micro_usd") != 0:
+    raise SystemExit("provider reservations are still active")
+if any(name != "terminal" for name in value.get("counts", {})):
+    raise SystemExit("provider attempts have not reached terminal state")
+' || die "cleanup refused while provider reservations remain"
+  fi
+  python3 - "$root" <<'PY' || die "cleanup refused while a lane process remains"
+import os, pathlib, re, sys
+root=pathlib.Path(sys.argv[1])
+for path in root.rglob("*.pid"):
+    try:
+        text=path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        raise SystemExit(f"unreadable pid evidence: {path}")
+    match=re.search(r"(?:^|\n)pid=([1-9][0-9]*)(?:\n|$)", text)
+    if match is None and text.strip().isdigit():
+        match=re.match(r"([1-9][0-9]*)", text.strip())
+    if match is None:
+        continue
+    try:
+        os.kill(int(match.group(1)), 0)
+    except ProcessLookupError:
+        continue
+    except PermissionError:
+        raise SystemExit(f"cannot prove pid is stopped: {path}")
+    raise SystemExit(f"live pid evidence: {path}")
+PY
   rm -rf -- "$root"
   echo "CLEANED=$root"
 }
@@ -363,6 +404,7 @@ for item in bridge_paths:
     cursor_network += (f"(allow file-read* (subpath {json.dumps(item)}))\n"
                        f"(allow file-write* (subpath {json.dumps(item)}))\n")
 pathlib.Path(root, "runtime/cursor.sb").write_text("".join(base) + cursor_network)
+pathlib.Path(root, "runtime/native.sb").write_text("".join(base) + cursor_network)
 PY
   chmod 600 "$root/runtime/"*.sb
 }
@@ -400,6 +442,82 @@ create_lane() {
   cp "$root/kit/scripts/lib/sandbox-ps.py" "$root/home/ps"
   chmod 755 "$root/home/ps"
 
+  if [[ "$mode" == product ]]; then
+    [[ "$PRODUCT_SOURCE" == /* && -d "$PRODUCT_SOURCE" && ! -L "$PRODUCT_SOURCE" ]] ||
+      die "product source must be an absolute, non-symlink repository"
+    [[ "$PRODUCT_BASE" =~ ^[0-9a-f]{40}$ ]] || die "product base must be a full commit SHA"
+    [[ -z "$(git -C "$PRODUCT_SOURCE" status --porcelain --untracked-files=all)" ]] ||
+      die "product source must be clean"
+    [[ "$(git -C "$PRODUCT_SOURCE" rev-parse HEAD)" == "$PRODUCT_BASE" ]] ||
+      die "product source HEAD does not match the approved base"
+    git clone -q --no-local --no-hardlinks "$PRODUCT_SOURCE" "$root/product"
+    git -C "$root/product" checkout -q --detach "$PRODUCT_BASE"
+    git -C "$root/product" remote remove origin
+    git -C "$root/product" branch -f main "$PRODUCT_BASE"
+    lane_tickets=("${PRODUCT_TICKETS[@]}")
+    [[ "${#lane_tickets[@]}" -eq 4 ]] || die "product lane requires exactly four tickets"
+    mkdir -p "$root/product/factory/route-plans" "$root/product/factory/runs"
+    for ticket in "${lane_tickets[@]}"; do
+      [[ "$ticket" =~ ^T-[0-9]+$ ]] || die "invalid product ticket"
+      [[ -f "$root/product/factory/tickets/$ticket.md" &&
+         ! -L "$root/product/factory/tickets/$ticket.md" ]] ||
+        die "product ticket is missing or unsafe: $ticket"
+      git -C "$root/product" ls-files --error-unmatch "factory/tickets/$ticket.md" >/dev/null ||
+        die "product ticket is not committed: $ticket"
+      grep -Eq '^State: (Backlog|Ready)$' "$root/product/factory/tickets/$ticket.md" ||
+        die "product ticket is not at a plannable boundary: $ticket"
+      [[ ! -e "$root/product/factory/route-plans/$ticket.json" ]] ||
+        die "product ticket already has a route plan: $ticket"
+    done
+    python3 - "$root/product/factory/PROJECT.env" "$root/worktrees" <<'PY'
+from pathlib import Path
+import re, sys
+path=Path(sys.argv[1]); text=path.read_text(encoding="utf-8")
+text=re.sub(r"(?m)^MAX_CONCURRENT_TICKETS=.*$", "MAX_CONCURRENT_TICKETS=4", text)
+if "MAX_CONCURRENT_TICKETS=" not in text:
+    text += "\nMAX_CONCURRENT_TICKETS=4\n"
+text=re.sub(r'(?m)^WORKTREES_DIR=.*$', f'WORKTREES_DIR="{sys.argv[2]}"', text)
+path.write_text(text, encoding="utf-8")
+for ticket in sys.argv[3:]:
+    pass
+PY
+    printf '%s\n' "$sha" >"$root/product/factory/KIT_PIN"
+    for ticket in "${lane_tickets[@]}"; do
+      python3 - "$root/product/factory/tickets/$ticket.md" <<'PY'
+from pathlib import Path
+import re, sys
+path=Path(sys.argv[1]); text=path.read_text(encoding="utf-8")
+text, count=re.subn(r"(?m)^State: (?:Backlog|Ready)$", "State: Ready", text, count=1)
+if count != 1: raise SystemExit(1)
+path.write_text(text, encoding="utf-8")
+PY
+    done
+    git -C "$root/product" add factory/PROJECT.env factory/KIT_PIN factory/tickets
+    git -C "$root/product" -c user.name='Factory Dev Lane' -c user.email=factory-dev@local \
+      commit -qm 'Configure isolated Contract 1.7 product lane'
+    lane_control_sha="$(git -C "$root/product" rev-parse HEAD)"
+    git init -q --bare "$root/origin.git"
+    git -C "$root/product" remote add origin "$root/origin.git"
+    git -C "$root/product" switch -q main
+    git -C "$root/product" reset -q --hard "$lane_control_sha"
+    git -C "$root/product" push -q -u origin main
+    for ticket in "${lane_tickets[@]}"; do
+      git -C "$root/product" worktree add -q -b "ticket/$ticket" \
+        "$root/worktrees/$ticket" "$lane_control_sha"
+      git -C "$root/worktrees/$ticket" push -q -u origin "ticket/$ticket"
+    done
+    python3 - "$root/runtime/product-source.json" "$PRODUCT_BASE" \
+      "$(git -C "$PRODUCT_SOURCE" rev-parse "$PRODUCT_BASE^{tree}")" "$lane_control_sha" \
+      "${lane_tickets[@]}" <<'PY'
+import json, os, sys
+path, base, tree, control, *tickets=sys.argv[1:]
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump({"schema":"factory-dev-product-source/v1","base_sha":base,
+               "base_tree":tree,"lane_control_sha":control,"tickets":tickets},
+              stream, sort_keys=True, separators=(",",":")); stream.write("\n")
+os.chmod(path, 0o600)
+PY
+  else
   mkdir -p "$root/product"
   git -C "$SOURCE_ROOT" archive "$sha" conformance/app | tar -x -C "$root/product"
   mv "$root/product/conformance/app" "$root/product/app"
@@ -492,7 +610,8 @@ EOF
       "$root/worktrees/$ticket" main
     git -C "$root/worktrees/$ticket" push -q -u origin "ticket/$ticket"
   done
-  if [[ "$mode" == cursor || "$mode" == subscription ]]; then
+  fi
+  if [[ "$mode" == cursor || "$mode" == subscription || "$mode" == product ]]; then
     cursor="$(cursor_bin)"
     timeout_bin="$(command -v timeout 2>/dev/null || true)"
     [[ "$timeout_bin" == /* && -x "$timeout_bin" ]] ||
@@ -514,7 +633,15 @@ PY
     session_home=""
   fi
   ln -s "$cursor" "$root/home/agent"
-  if [[ "$mode" == subscription ]]; then
+  if [[ "$mode" == subscription || "$mode" == product ]]; then
+    mkdir -m 700 "$root/session-home"
+    mkdir -m 700 "$root/session-home/.cursor" "$root/session-home/.codex"
+    cp "$session_home/.cursor/auth.json" "$root/session-home/.cursor/auth.json"
+    cp "$session_home/.cursor/cli-config.json" "$root/session-home/.cursor/cli-config.json"
+    [[ -f "$session_home/.codex/auth.json" && ! -L "$session_home/.codex/auth.json" ]] ||
+      die "Codex subscription session file is unavailable"
+    cp "$session_home/.codex/auth.json" "$root/session-home/.codex/auth.json"
+    chmod 600 "$root/session-home/.cursor/"*.json "$root/session-home/.codex/auth.json"
     for tool in codex claude; do
       resolved="$(command -v "$tool" 2>/dev/null || true)"
       [[ "$resolved" == /* && -x "$resolved" ]] || die "$tool CLI is unavailable"
@@ -525,7 +652,7 @@ print(os.path.realpath(sys.argv[1]))
 PY
 )"
       refuse_production_path "$resolved"
-      ln -s "$resolved" "$root/home/$tool"
+      ln -s "$resolved" "$root/home/$tool-real"
     done
   fi
   if [[ "$mode" == mock-concurrency ]]; then
@@ -564,7 +691,17 @@ with open(activation_path, "w", encoding="utf-8") as handle:
 os.chmod(policy_path, 0o600); os.chmod(activation_path, 0o600)
 PY
   fi
+  [[ "$mode" != subscription && "$mode" != product ]] || session_home="$root/session-home"
   write_seatbelt_profiles "$root" "$cursor" "$bridge" "$session_home"
+  if [[ "$mode" == subscription || "$mode" == product ]]; then
+    for tool in codex claude; do
+      cat >"$root/home/$tool" <<EOF
+#!/usr/bin/env bash
+exec "$(sandbox_exec)" -f "$root/runtime/native.sb" "$root/home/$tool-real" "\$@"
+EOF
+      chmod 700 "$root/home/$tool"
+    done
+  fi
   python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
     "$tmp_parent" <<'PY'
 import json, os, sys
@@ -643,7 +780,7 @@ lane_cursor_env() {
 subscription_env() {
   local root="$1" project session_home cursor_version codex_version claude_version; shift
   project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
-  session_home="$(cursor_session_home)"
+  session_home="$root/session-home"
   cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   codex_version="$("$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   claude_version="$("$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
@@ -655,18 +792,141 @@ subscription_env() {
     FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
     FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
     FACTORY_CURSOR_SESSION_HOME="$session_home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
+    FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
     FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
+    FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
     CURSOR_AGENT_VERSION="$cursor_version" CODEX_PINNED="$codex_version" \
     CLAUDE_CODE_PINNED="$claude_version" \
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl \
     GIT_CONFIG_VALUE_0=disabled://factory-provider-push "$@"
 }
 
+product_approval_hash() {
+  local root="$1" ticket tool real session_home="$1/session-home"
+  {
+    sha256_file "$root/marker.json"
+    sha256_file "$root/runtime/product-source.json"
+    git -C "$root/kit" rev-parse HEAD 'HEAD^{tree}'
+    sha256_file "$root/home/.factory/global.env"
+    sha256_file "$root/runtime/provider-policy.json"
+    sha256_file "$root/runtime/provider-activation.json"
+    sha256_file "$root/runtime/cursor.sb"
+    sha256_file "$root/runtime/native.sb"
+    for tool in agent codex claude; do
+      real="$(python3 - "$root/home/$tool" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      printf '%s\n' "$real" "$(sha256_file "$real")" \
+        "$("$root/home/$tool" --version 2>/dev/null | head -n1)"
+    done
+    sha256_file "$session_home/.cursor/auth.json"
+    sha256_file "$session_home/.cursor/cli-config.json"
+    sha256_file "$session_home/.codex/auth.json"
+    for ticket in "${PRODUCT_TICKETS[@]}"; do
+      git -C "$root/worktrees/$ticket" rev-parse HEAD 'HEAD^{tree}'
+      sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md"
+      sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json"
+    done
+  } | sha256_text
+}
+
+load_product_tickets() {
+  local root="$1" line
+  PRODUCT_TICKETS=()
+  while IFS= read -r line; do PRODUCT_TICKETS+=("$line"); done < <(
+    python3 - "$root/runtime/product-source.json" <<'PY'
+import json, re, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("schema") != "factory-dev-product-source/v1" or len(value.get("tickets", [])) != 4:
+    raise SystemExit(1)
+for ticket in value["tickets"]:
+    if not re.fullmatch(r"T-[0-9]+", ticket): raise SystemExit(1)
+    print(ticket)
+PY
+  ) || die "product source binding is malformed"
+  [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || die "product source binding is incomplete"
+}
+
+product_probe_and_plan() {
+  local root="$1" cursor_version codex_version claude_version ticket profile approval_hash
+  require_lane_mode "$root" product
+  load_product_tickets "$root"
+  validate_runtime_paths "$root"
+  subscription_ready "$root"
+  cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  codex_version="$("$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  claude_version="$("$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
+    die "product subscription CLI version probe was empty"
+  cat >"$root/home/.factory/global.env" <<EOF
+GLOBAL_DAILY_CAP_USD=500.00
+FACTORY_CURSOR_FALLBACK_ENABLED=1
+CURSOR_AGENT_VERSION=$cursor_version
+CODEX_PINNED=$codex_version
+CLAUDE_CODE_PINNED=$claude_version
+CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
+CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
+EOF
+  chmod 600 "$root/home/.factory/global.env"
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    profile=balanced-v2
+    [[ "$ticket" != "${PRODUCT_TICKETS[0]}" ]] || profile=cursor-priority-v1
+    subscription_env "$root" "$root/kit/scripts/model-control.sh" activate \
+      --profile "$profile" >/dev/null
+    subscription_env "$root" "$root/kit/scripts/model-control.sh" pin \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" >/dev/null
+  done
+  python3 - "$root/runtime/provider-policy.json" \
+    "$root/runtime/provider-activation.json" "$root" "${PRODUCT_TICKETS[@]}" <<'PY'
+import hashlib, json, os, pathlib, sys
+policy_path, activation_path, root, *tickets=sys.argv[1:]
+def limit(concurrent, starts):
+    return {"max_concurrent":concurrent,"max_starts":starts,"window_seconds":60}
+policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
+        "global":limit(4,24),
+        "provider_families":{"openai":limit(4,24),"anthropic":limit(4,24)},
+        "account_routes":{"cursor":limit(1,6),"codex-native":limit(2,12),
+                          "claude-native":limit(2,12)}}
+raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
+routes={}
+for ticket in tickets:
+    plan=json.loads(pathlib.Path(root,"worktrees",ticket,"factory","route-plans",ticket+".json").read_text())
+    for value in plan["resolution"]["selections"].values():
+        routes[value["route_id"]]={"account_route":value["account_route_id"],
+            "adapter":value["adapter"],"model":value["selection_id"],
+            "provider_family":value["provider_family"]}
+activation={"enabled":True,"mode":"cli-concurrent-v1",
+            "policy_sha256":hashlib.sha256(raw.encode()).hexdigest(),"routes":routes,
+            "schema":"nysa.software-factory.provider-activation/v2"}
+pathlib.Path(policy_path).write_text(raw+"\n")
+pathlib.Path(activation_path).write_text(json.dumps(activation,sort_keys=True,separators=(",",":"))+"\n")
+os.chmod(policy_path,0o600); os.chmod(activation_path,0o600)
+PY
+  python3 "$root/kit/scripts/provider-activation.py" \
+    --config "$root/runtime/provider-activation.json" \
+    --policy "$root/runtime/provider-policy.json" \
+    --contract-version 1.7.0 --status >/dev/null || die "product activation policy is invalid"
+  approval_hash="$(product_approval_hash "$root")"
+  printf 'approval_hash=%s\nused=0\n' "$approval_hash" >"$root/runtime/product-approval"
+  chmod 600 "$root/runtime/product-approval"
+  echo "APPROVE_HASH=$approval_hash"
+  echo "TICKETS=${PRODUCT_TICKETS[*]}"
+  echo "PROVIDER_LIMITS=global:4,cursor:1,codex:2,claude:2"
+}
+
 next_stage() {
-  local root="$1"
-  lane_env "$root" "$root/kit/scripts/next-stage.sh" --ticket "$TICKET" \
-    --workdir "$root/worktrees/$TICKET"
+  local root="$1" lease="${2:-}"
+  if [[ -n "$lease" ]]; then
+    lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+      "$root/kit/scripts/next-stage.sh" --ticket "$TICKET" --lease "$lease" \
+      --workdir "$root/worktrees/$TICKET"
+  else
+    lane_env "$root" "$root/kit/scripts/next-stage.sh" --ticket "$TICKET" \
+      --workdir "$root/worktrees/$TICKET"
+  fi
 }
 
 run_mock_internal() {
@@ -842,7 +1102,7 @@ timeline, ticket, *command=sys.argv[1:]
 with open(timeline, "a", encoding="utf-8") as handle:
     handle.write(f"start {ticket} {time.monotonic_ns()}\n")
     handle.flush(); os.fsync(handle.fileno())
-completed=subprocess.run(command, check=False, start_new_session=True)
+completed=subprocess.run(command, check=False)
 with open(timeline, "a", encoding="utf-8") as handle:
     handle.write(f"end {ticket} {time.monotonic_ns()} {completed.returncode}\n")
     handle.flush(); os.fsync(handle.fileno())
@@ -952,6 +1212,222 @@ assert value["active_reserve_micro_usd"] == 0, value
   echo "PROVIDER_SPLIT=cursor:1,codex:2,claude:1"
   echo "PROVIDER_OVERLAP_MILLISECONDS=$(( (end_ns - start_ns) / 1000000 ))"
   echo "ACCOUNTED_RESERVATION_USD=1.00"
+}
+
+product_role_run() {
+  local root="$1" ticket="$2" lease="$3" role="$4" instruction latest
+  instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
+  if [[ "$role" == reviewer ]]; then
+    instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES."
+  fi
+  subscription_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+    "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
+    --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
+    "$instruction" || return
+  if [[ "$role" == reviewer ]]; then
+    latest="$(python3 - "$root/product/factory/runs" "$ticket" <<'PY'
+import pathlib, sys
+root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; matches=[]
+for meta in root.glob("*.meta"):
+    values={}
+    for line in meta.read_text(errors="replace").splitlines():
+        if "=" in line:
+            key,value=line.split("=",1); values[key]=value
+    if values.get("ticket") == ticket and values.get("role") == "reviewer":
+        matches.append((meta.stat().st_mtime_ns, meta.with_suffix(".out")))
+if not matches: raise SystemExit(1)
+print(max(matches)[1])
+PY
+)" || return 1
+    grep -Eiq '^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$' \
+      "$latest" || return 1
+    (TICKET="$ticket"; append_commit_push "$root" 'reviewer round 1: APPROVE' \
+      "$ticket: record isolated review") || return
+  elif [[ "$role" == narrator ]]; then
+    (TICKET="$ticket"; set_review_state "$root") || return
+  fi
+}
+
+run_product_internal() {
+  local root="$1" supplied="$2" stored day i ticket lease_json stage role account now
+  local total_active done_count failed_count progress pid rc
+  local -a leases pids accounts states renewals
+  require_lane_mode "$root" product
+  load_product_tickets "$root"
+  validate_runtime_paths "$root"
+  [[ -f "$root/runtime/product-approval" && ! -L "$root/runtime/product-approval" ]] ||
+    die "product approval is missing or already used"
+  stored="$(sed -n 's/^approval_hash=//p' "$root/runtime/product-approval")"
+  [[ "$stored" == "$supplied" && \
+     "$(sed -n 's/^used=//p' "$root/runtime/product-approval")" == 0 ]] ||
+    die "product approval hash does not match or was already used"
+  [[ "$(product_approval_hash "$root")" == "$supplied" ]] ||
+    die "product approval inputs drifted after planning"
+  subscription_ready "$root"
+  subscription_provider_idle || die "another subscription provider call is active"
+  mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
+  mkdir -p "$root/runtime/product-scheduler"
+  chmod 700 "$root/runtime/product-scheduler"
+  for i in 0 1 2 3; do
+    ticket="${PRODUCT_TICKETS[$i]}"
+    lease_json="$(subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" \
+      claim --ticket "$ticket")" || die "could not claim product ticket lease: $ticket"
+    leases[$i]="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
+      <<<"$lease_json")"
+    pids[$i]=0; accounts[$i]=""; states[$i]=idle; renewals[$i]=0
+  done
+  done_count=0; failed_count=0
+  while [[ "$done_count" -lt 4 && $((done_count + failed_count)) -lt 4 ]]; do
+    progress=0
+    for i in 0 1 2 3; do
+      [[ "${states[$i]}" == running ]] || continue
+      pid="${pids[$i]}"
+      if ! kill -0 "$pid" 2>/dev/null; then
+        rc=0; wait "$pid" || rc=$?
+        if [[ "$rc" -eq 0 ]]; then states[$i]=idle; else states[$i]=failed; failed_count=$((failed_count + 1)); fi
+        pids[$i]=0; accounts[$i]=""; progress=1
+      fi
+    done
+    for i in 0 1 2 3; do
+      [[ "${states[$i]}" == idle ]] || continue
+      ticket="${PRODUCT_TICKETS[$i]}"; now="$(date +%s)"
+      if [[ $((now - renewals[$i])) -ge 120 ]]; then
+        subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" renew \
+          --ticket "$ticket" --lease "${leases[$i]}" >/dev/null || {
+            states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+          }
+        renewals[$i]="$now"
+      fi
+      stage="$(TICKET="$ticket"; next_stage "$root" "${leases[$i]}")" || {
+        states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+      }
+      if [[ "$stage" == AWAIT-OPERATOR* ]]; then
+        [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] || {
+          states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+        }
+        subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
+          --ticket "$ticket" --lease "${leases[$i]}" >/dev/null || {
+            states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+          }
+        states[$i]=done; done_count=$((done_count + 1)); progress=1; continue
+      fi
+      [[ "$stage" == RUN\ * ]] || { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
+      role="${stage#RUN }"
+      account="$(python3 - "$root/worktrees/$ticket/factory/route-plans/$ticket.json" "$role" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["resolution"]["selections"][sys.argv[2]]["account_route_id"])
+PY
+)" || { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
+      total_active=0; cursor_active=0; codex_active=0; claude_active=0
+      for value in "${accounts[@]}"; do
+        [[ -n "$value" ]] || continue; total_active=$((total_active + 1))
+        case "$value" in cursor) cursor_active=$((cursor_active + 1));; codex-native) codex_active=$((codex_active + 1));; claude-native) claude_active=$((claude_active + 1));; esac
+      done
+      [[ "$total_active" -lt 4 ]] || continue
+      case "$account" in
+        cursor) [[ "$cursor_active" -lt 1 ]] || continue ;;
+        codex-native) [[ "$codex_active" -lt 2 ]] || continue ;;
+        claude-native) [[ "$claude_active" -lt 2 ]] || continue ;;
+        *) states[$i]=failed; failed_count=$((failed_count + 1)); continue ;;
+      esac
+      product_role_run "$root" "$ticket" "${leases[$i]}" "$role" \
+        >"$root/runtime/product-scheduler/$ticket-$role.log" 2>&1 &
+      pids[$i]=$!; accounts[$i]="$account"; states[$i]=running; progress=1
+    done
+    [[ "$progress" -eq 1 ]] || sleep 1
+  done
+  for i in 0 1 2 3; do
+    [[ "${states[$i]}" != running ]] || wait "${pids[$i]}" || true
+    if [[ "${states[$i]}" == failed ]]; then
+      subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
+        --ticket "${PRODUCT_TICKETS[$i]}" --lease "${leases[$i]}" >/dev/null || true
+    fi
+  done
+  [[ "$done_count" -eq 4 && "$failed_count" -eq 0 ]] ||
+    die "one or more product lifecycles failed; successful siblings were retained"
+  subscription_provider_idle || die "product lifecycle left a provider process"
+  echo "STATUS=AWAIT-OPERATOR"
+  echo "TICKETS=${PRODUCT_TICKETS[*]}"
+}
+
+export_product_internal() {
+  local root="$1" ticket base head branch export_dir
+  require_lane_mode "$root" product
+  load_product_tickets "$root"
+  validate_runtime_paths "$root"
+  [[ ! -e "$root/runtime/product-approval" ]] || die "product run approval is still unused"
+  python3 "$root/kit/scripts/provider-coordinator.py" \
+    --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+assert value.get("active_reserve_micro_usd") == 0, value
+assert all(name == "terminal" for name in value.get("counts", {})), value
+' || die "product provider attempts have not drained"
+  [[ ! -d "$root/product/factory/.dispatch-leases" ||
+     -z "$(find "$root/product/factory/.dispatch-leases" -type f -print -quit)" ]] ||
+    die "product dispatcher leases have not drained"
+  [[ ! -d "$root/product/factory/.active-runs" ||
+     -z "$(find "$root/product/factory/.active-runs" -mindepth 1 -print -quit)" ]] ||
+    die "product active-run claims have not drained"
+  base="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base_sha"])' \
+    "$root/runtime/product-source.json")"
+  export_dir="$root/export"
+  [[ ! -e "$export_dir" ]] || die "product export already exists"
+  mkdir -m 700 "$export_dir"
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    branch="ticket/$ticket"; head="$(git -C "$root/worktrees/$ticket" rev-parse HEAD)"
+    [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] ||
+      die "product ticket worktree is dirty: $ticket"
+    [[ "$head" == "$(git -C "$root/origin.git" rev-parse "refs/heads/$branch")" ]] ||
+      die "product ticket remote does not match trusted host output: $ticket"
+    grep -qx 'State: Review' "$root/worktrees/$ticket/factory/tickets/$ticket.md" ||
+      die "product ticket is not in Review: $ticket"
+    grep -Eq '^reviewer round [0-9]+: APPROVE$' \
+      "$root/worktrees/$ticket/factory/tickets/$ticket.md" ||
+      die "product ticket lacks an approved review: $ticket"
+    python3 - "$root/product/factory/runs" "$ticket" <<'PY' ||
+import pathlib, sys
+root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; roles={}
+for path in root.glob("*.meta"):
+    values=dict(line.split("=",1) for line in path.read_text(errors="replace").splitlines() if "=" in line)
+    if values.get("ticket") == ticket and values.get("accounting_state") == "completed" and values.get("exit_status") == "0":
+        roles[values.get("role")]=path
+expected={"planner","spec-linter","test-author","builder","reviewer","narrator"}
+if set(roles) != expected: raise SystemExit(1)
+PY
+      die "product ticket role evidence is incomplete: $ticket"
+    git -C "$root/origin.git" bundle create "$export_dir/$ticket.bundle" \
+      "refs/heads/$branch" >/dev/null
+    git -C "$root/worktrees/$ticket" diff --binary "$base" "$head" -- . \
+      ':(exclude)factory/KIT_PIN' ':(exclude)factory/PROJECT.env' \
+      >"$export_dir/$ticket.patch"
+    [[ -s "$export_dir/$ticket.patch" ]] || die "product ticket export is empty: $ticket"
+  done
+  python3 - "$root/runtime/product-source.json" "$export_dir/manifest.json" \
+    "$root" "${PRODUCT_TICKETS[@]}" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys
+source_path, out_path, root, *tickets=sys.argv[1:]
+source=json.load(open(source_path, encoding="utf-8")); records=[]
+for ticket in tickets:
+    work=pathlib.Path(root,"worktrees",ticket); export=pathlib.Path(root,"export")
+    head=subprocess.check_output(["git","-C",str(work),"rev-parse","HEAD"],text=True).strip()
+    tree=subprocess.check_output(["git","-C",str(work),"rev-parse","HEAD^{tree}"],text=True).strip()
+    route=work/"factory"/"route-plans"/(ticket+".json")
+    patch=export/(ticket+".patch"); bundle=export/(ticket+".bundle")
+    digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+    records.append({"ticket":ticket,"head_sha":head,"head_tree":tree,
+                    "route_plan_sha256":digest(route),"patch_sha256":digest(patch),
+                    "bundle_sha256":digest(bundle)})
+value={"schema":"factory-dev-product-export/v1","base_sha":source["base_sha"],
+       "base_tree":source["base_tree"],"factory_sha":subprocess.check_output(
+       ["git","-C",str(pathlib.Path(root,"kit")),"rev-parse","HEAD"],text=True).strip(),
+       "tickets":records}
+pathlib.Path(out_path).write_text(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n")
+os.chmod(out_path,0o600)
+PY
+  chmod 600 "$export_dir/"*
+  echo "EXPORT_ROOT=$export_dir"
+  echo "TICKETS=${PRODUCT_TICKETS[*]}"
 }
 
 cursor_probe_and_pin() {
@@ -1184,6 +1660,48 @@ case "$command" in
     run_in_sandbox "$root" cursor __subscription-run \
       --root "$root" --approve-hash "$approve"
     ;;
+  product-plan)
+    assert_macos
+    source_repo=""; base_sha=""; ticket_csv=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --source) source_repo="${2:-}"; shift 2 ;;
+        --base-sha) base_sha="${2:-}"; shift 2 ;;
+        --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ "$source_repo" == /* && "$base_sha" =~ ^[0-9a-f]{40}$ && -n "$ticket_csv" ]] || usage
+    PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"
+    IFS=, read -r -a PRODUCT_TICKETS <<<"$ticket_csv"
+    [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || usage
+    root="$(create_lane product)"
+    echo "ROOT=$root"
+    if ! run_in_sandbox "$root" cursor __product-plan --root "$root"; then
+      echo "ROOT=$root" >&2
+      die "product planning failed; lane retained for inspection"
+    fi
+    ;;
+  product-run)
+    assert_macos
+    root=""; approve=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --approve-hash) approve="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
+    root="$(validate_lane "$root")"
+    run_in_sandbox "$root" cursor __product-run --root "$root" --approve-hash "$approve"
+    ;;
+  product-export)
+    root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage
+    [[ $# -eq 0 && -n "$root" ]] || usage
+    root="$(validate_lane "$root")"
+    run_in_sandbox "$root" mock __product-export --root "$root"
+    ;;
   clean)
     root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage
     [[ $# -eq 0 && -n "$root" ]] || usage
@@ -1217,6 +1735,22 @@ case "$command" in
     root="$(validate_lane "${2:-}")"; approve="${4:-}"
     [[ "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     run_subscription_internal "$root" "$approve"
+    ;;
+  __product-plan)
+    [[ "${1:-}" == --root ]] || usage
+    root="$(validate_lane "${2:-}")"
+    product_probe_and_plan "$root"
+    ;;
+  __product-run)
+    [[ "${1:-}" == --root && "${3:-}" == --approve-hash ]] || usage
+    root="$(validate_lane "${2:-}")"; approve="${4:-}"
+    [[ "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
+    run_product_internal "$root" "$approve"
+    ;;
+  __product-export)
+    [[ "${1:-}" == --root ]] || usage
+    root="$(validate_lane "${2:-}")"
+    export_product_internal "$root"
     ;;
   *) usage ;;
 esac
