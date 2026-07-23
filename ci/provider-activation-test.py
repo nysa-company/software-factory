@@ -172,6 +172,19 @@ class ActivationTest(unittest.TestCase):
         self.write()
         self.assertEqual(self.command(contract="1.7.0").returncode, 2)
 
+    def test_cli_activation_allows_two_cursor_subscription_calls(self):
+        self.policy["account_routes"]["cursor"]["max_concurrent"] = 2
+        digest = self.write_policy()
+        self.value = {
+            "enabled": True, "mode": "cli-concurrent-v1",
+            "policy_sha256": digest,
+            "routes": {"route-a": {"account_route": "cursor", "adapter": "cursor-openai",
+                                     "model": "gpt-5.6-sol-high", "provider_family": "openai"}},
+            "schema": "nysa.software-factory.provider-activation/v2",
+        }
+        self.write()
+        self.assertEqual(self.command(contract="1.7.0").returncode, 0)
+
     def test_cli_activation_rejects_invalid_unselected_route(self):
         self.value = {
             "enabled": True,

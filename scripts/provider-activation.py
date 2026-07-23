@@ -114,7 +114,7 @@ def validate_cli_policy(policy, routes, expected_hash):
     for route in routes.values():
         family = policy.get("provider_families", {}).get(route["provider_family"], {})
         account = policy.get("account_routes", {}).get(route["account_route"], {})
-        account_maximum = 1 if route["adapter"].startswith("cursor-") else 2
+        account_maximum = 2
         if (not capacity(family.get("max_concurrent"), 4) or
                 not capacity(account.get("max_concurrent"), account_maximum)):
             raise ActivationError("CLI concurrency route capacity is unsafe")
