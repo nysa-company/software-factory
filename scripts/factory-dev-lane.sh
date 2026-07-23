@@ -72,8 +72,9 @@ PY
 }
 
 subscription_ready() {
-  local root="$1" session_home="$1/session-home"
-  HOME="$session_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 ||
+  local root="$1" session_home="$1/session-home" cursor_home
+  cursor_home="$(cursor_session_home)"
+  HOME="$cursor_home" "$root/home/timeout" 10 "$root/home/agent" status >/dev/null 2>&1 ||
     die "Cursor subscription authentication is unavailable"
   (cd "$root" && HOME="$session_home" "$root/home/timeout" 10 "$root/home/codex" login status >/dev/null 2>&1) ||
     die "Codex subscription authentication is unavailable"
@@ -82,8 +83,9 @@ subscription_ready() {
 }
 
 subscription_approval_hash() {
-  local root="$1" session_home real tool
+  local root="$1" session_home real tool cursor_home
   session_home="$root/session-home"
+  cursor_home="$(cursor_session_home)"
   {
     python3 - "$root/marker.json" <<'PY'
 import json, sys
@@ -108,8 +110,8 @@ PY
     sha256_file "$root/home/.factory/global.env"
     sha256_file "$root/runtime/cursor.sb"
     sha256_file "$root/runtime/native.sb"
-    sha256_file "$session_home/.cursor/auth.json"
-    sha256_file "$session_home/.cursor/cli-config.json"
+    sha256_file "$cursor_home/.cursor/auth.json"
+    sha256_file "$cursor_home/.cursor/cli-config.json"
     sha256_file "$session_home/.codex/auth.json"
   } | sha256_text
 }
@@ -778,9 +780,10 @@ lane_cursor_env() {
 }
 
 subscription_env() {
-  local root="$1" project session_home cursor_version codex_version claude_version; shift
+  local root="$1" project session_home cursor_home cursor_version codex_version claude_version; shift
   project="factory-dev-lane-$(basename "$root" | sed 's/^nysa-sf-dev\.//' | tr '[:upper:]' '[:lower:]')"
   session_home="$root/session-home"
+  cursor_home="$(cursor_session_home)"
   cursor_version="$("$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   codex_version="$(cd "$root" && "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   claude_version="$(cd "$root" && "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
@@ -791,7 +794,7 @@ subscription_env() {
     FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
     FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
     FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
-    FACTORY_CURSOR_SESSION_HOME="$session_home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
+    FACTORY_CURSOR_SESSION_HOME="$cursor_home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
     FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
     FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
@@ -803,7 +806,8 @@ subscription_env() {
 }
 
 product_approval_hash() {
-  local root="$1" ticket tool real session_home="$1/session-home"
+  local root="$1" ticket tool real session_home="$1/session-home" cursor_home
+  cursor_home="$(cursor_session_home)"
   {
     sha256_file "$root/marker.json"
     sha256_file "$root/runtime/product-source.json"
@@ -822,8 +826,8 @@ PY
       printf '%s\n' "$real" "$(sha256_file "$real")" \
         "$(cd "$root" && "$root/home/$tool" --version 2>/dev/null | head -n1)"
     done
-    sha256_file "$session_home/.cursor/auth.json"
-    sha256_file "$session_home/.cursor/cli-config.json"
+    sha256_file "$cursor_home/.cursor/auth.json"
+    sha256_file "$cursor_home/.cursor/cli-config.json"
     sha256_file "$session_home/.codex/auth.json"
     for ticket in "${PRODUCT_TICKETS[@]}"; do
       git -C "$root/worktrees/$ticket" rev-parse HEAD 'HEAD^{tree}'
@@ -851,7 +855,7 @@ PY
 }
 
 product_probe_and_plan() {
-  local root="$1" cursor_version codex_version claude_version ticket profile approval_hash
+  local root="$1" cursor_version codex_version claude_version ticket profile profile_hash approval_hash
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -874,8 +878,17 @@ EOF
   for ticket in "${PRODUCT_TICKETS[@]}"; do
     profile=balanced-v2
     [[ "$ticket" != "${PRODUCT_TICKETS[0]}" ]] || profile=cursor-priority-v1
+    profile_hash="$(python3 - "$root/kit/scripts/model-routing/profiles-v1.json" "$profile" <<'PY'
+import hashlib, json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+profile=next(item for item in value["profiles"] if item["profile_id"] == sys.argv[2])
+raw=json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",",":"))
+print(hashlib.sha256(raw.encode()).hexdigest())
+PY
+)" || die "could not bind product routing profile"
     subscription_env "$root" "$root/kit/scripts/model-control.sh" activate \
-      --profile "$profile" >/dev/null
+      --profile "$profile" --approve-hash "$profile_hash" \
+      --approved-by factory-dev-lane >/dev/null
     subscription_env "$root" "$root/kit/scripts/model-control.sh" pin \
       --ticket "$ticket" --workdir "$root/worktrees/$ticket" >/dev/null
   done
