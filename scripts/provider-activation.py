@@ -89,7 +89,21 @@ def main() -> None:
             or info.st_size > 1_000_000
         ):
             raise ActivationError("activation configuration is unsafe")
-        raw = path.read_text(encoding="utf-8")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(descriptor)
+            if ((opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or
+                    not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or
+                    opened.st_size > 1_000_000):
+                raise ActivationError("activation configuration changed while opening")
+            with os.fdopen(descriptor, encoding="utf-8") as handle:
+                descriptor = -1
+                raw = handle.read(1_000_001)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(raw.encode("utf-8")) > 1_000_000:
+            raise ActivationError("activation configuration is too large")
         value = json.loads(raw)
         common_invalid = (
             not isinstance(value, dict)
@@ -106,7 +120,7 @@ def main() -> None:
                 raise ActivationError("activation configuration is invalid")
             output_schema = OUTPUT_SCHEMA_V1
             route_validator = valid_v1_route
-            execution_mode = "isolated-v1"
+            execution_mode = "api-isolated-v1"
         elif schema == SCHEMA_V2:
             if args.contract_version != "1.7.0":
                 raise ActivationError("contract 1.6 does not support CLI activation")

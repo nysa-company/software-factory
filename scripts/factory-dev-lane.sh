@@ -451,30 +451,18 @@ PY
   fi
   ln -s "$cursor" "$root/home/agent"
   if [[ "$mode" == mock-concurrency ]]; then
-    cat > "$root/home/mock-container" <<'PY'
+    cat > "$root/home/mock-provider-cli" <<'PY'
 #!/usr/bin/env python3
-import io, json, os, sys, tarfile, time
+import os, time
 from pathlib import Path
-args=sys.argv[1:]
-if args[0] == "create": print("lane-container")
-elif args[0] == "start": print("lane-container")
-elif args[0] == "exec" and "-i" in args: sys.stdin.buffer.read()
-elif args[0] == "exec" and "tar" in args and "-c" in args:
-    out=io.BytesIO()
-    with tarfile.open(fileobj=out, mode="w") as archive:
-        directory=tarfile.TarInfo("artifacts"); directory.type=tarfile.DIRTYPE; directory.mode=0o700; archive.addfile(directory)
-        raw=b'{"ok":true}\n'; item=tarfile.TarInfo("artifacts/result.json"); item.size=len(raw); item.mode=0o600; archive.addfile(item, io.BytesIO(raw))
-    sys.stdout.buffer.write(out.getvalue())
-elif args[0] == "exec":
-    timeline=Path(os.environ["FACTORY_DEV_LANE_TIMELINE"])
-    with timeline.open("a", encoding="utf-8") as handle: handle.write(f"start {os.getpid()} {time.monotonic_ns()}\n")
-    time.sleep(2)
-    with timeline.open("a", encoding="utf-8") as handle: handle.write(f"end {os.getpid()} {time.monotonic_ns()}\n")
-elif args[0] == "rm": pass
-elif args[0] == "inspect": print(json.dumps({"Running": True}))
-else: raise SystemExit("unsupported mock container command")
+timeline=Path(os.environ["FACTORY_DEV_LANE_TIMELINE"])
+with timeline.open("a", encoding="utf-8") as handle:
+    handle.write(f"start {os.getpid()} {time.monotonic_ns()}\n")
+time.sleep(2)
+with timeline.open("a", encoding="utf-8") as handle:
+    handle.write(f"end {os.getpid()} {time.monotonic_ns()}\n")
 PY
-    chmod 700 "$root/home/mock-container"
+    chmod 700 "$root/home/mock-provider-cli"
     python3 - "$root/runtime/provider-policy.json" <<'PY'
 import json, os, sys
 limit={"max_concurrent":4,"max_starts":32,"window_seconds":60}
@@ -598,61 +586,31 @@ PY
 }
 
 run_mock_concurrency_internal() {
-  local root="$1" ticket request output pid day worker image worker_sha policy_sha start_ns end_ns
+  local root="$1" ticket output pid day start_ns end_ns attempt
   local -a pids=()
   require_lane_mode "$root" mock-concurrency
   validate_runtime_paths "$root"
   day="$(date -u +%F)"
-  worker="$root/kit/worker/provider-worker.mjs"
-  image="$(python3 - "$root/kit/worker/image-lock.json" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))["image_reference"])
-PY
-)"
-  worker_sha="$(sha256_file "$worker")"
-  policy_sha="$(python3 - "$root/runtime/provider-policy.json" <<'PY'
-import hashlib, json, sys
-value=json.load(open(sys.argv[1], encoding="utf-8"))
-raw=json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",",":"))
-print(hashlib.sha256(raw.encode()).hexdigest())
-PY
-)"
   : > "$root/runtime/provider-timeline"
   chmod 600 "$root/runtime/provider-timeline"
   for ticket in "${TICKETS[@]}"; do
-    request="$root/runtime/provider-inputs/$ticket.json"
-    python3 - "$request" "$root/worktrees/$ticket" "$root/runtime/provider-inputs/$ticket.input" \
-      "$ticket" "$image" "$worker" "$worker_sha" "$policy_sha" <<'PY'
-import json, os, subprocess, sys
-request, worktree, input_path, ticket, image, worker, worker_sha, policy_sha=sys.argv[1:]
-with open(input_path, "w", encoding="utf-8") as handle: handle.write('{"kind":"lane-mock"}\n')
-base=subprocess.check_output(["git", "-C", worktree, "rev-parse", "HEAD"], text=True).strip()
-value={"attempt_id":f"{ticket}-builder-lane","base_sha":base,
-       "command":["node","/workspace/payload/worker"],"image":image,"input":input_path,
-       "policy_sha256":policy_sha,"role":"builder","route_id":"mock-api-lane",
-       "schema":"nysa.software-factory.provider-execution-request/v3","source":worktree,
-       "ticket":ticket,"worker_program":worker,"worker_sha256":worker_sha}
-with open(request, "w", encoding="utf-8") as handle:
-    json.dump(value, handle, sort_keys=True, separators=(",",":")); handle.write("\n")
-os.chmod(request, 0o600); os.chmod(input_path, 0o600)
-PY
-    require_lane_path "$root" "$request"
+    attempt="$ticket-builder-lane"
     output="$root/runtime/provider-inputs/$ticket.out"
     lane_env "$root" FACTORY_DEV_LANE_TIMELINE="$root/runtime/provider-timeline" \
-      python3 "$root/kit/scripts/provider-runtime.py" \
+      python3 "$root/kit/scripts/provider-cli-runtime.py" \
+        --coordinator "$root/kit/scripts/provider-coordinator.py" \
         --db "$root/runtime/provider-state.sqlite3" \
         --policy "$root/runtime/provider-policy.json" \
-        --executor "$root/kit/scripts/provider-executor.py" \
-        --container-runtime "$root/home/mock-container" execute \
-        --request "$request" --attempt-root "$root/runtime/provider-attempts" \
+        --attempt-id "$attempt" \
         --provider-family mock --account-route lane-local \
         --reserve-micro-usd 1000000 --product-id "factory-dev-lane-$(basename "$root")" \
-        --budget-day "$day" --product-daily-cap-micro-usd 4000000 \
-        --ticket-cap-micro-usd 1000000 --machine-daily-cap-micro-usd 4000000 \
-        --timeout 30 >"$output" 2>&1 &
+        --ticket-id "$ticket" --budget-day "$day" \
+        --product-cap-micro-usd 4000000 --ticket-cap-micro-usd 1000000 \
+        --machine-cap-micro-usd 4000000 -- "$root/home/mock-provider-cli" \
+        >"$output" 2>&1 &
     pids+=("$!")
   done
-  for pid in "${pids[@]}"; do wait "$pid" || die "isolated mock provider failed"; done
+  for pid in "${pids[@]}"; do wait "$pid" || die "subscription CLI mock provider failed"; done
   read -r start_ns end_ns < <(python3 - "$root/runtime/provider-timeline" <<'PY'
 import sys
 events=[line.split() for line in open(sys.argv[1], encoding="utf-8")]
@@ -663,6 +621,14 @@ if len(starts)!=4 or len(ends)!=4 or max(starts)>=min(ends):
 print(min(starts), max(ends))
 PY
   ) || die "four provider calls did not overlap"
+  for ticket in "${TICKETS[@]}"; do
+    attempt="$ticket-builder-lane"
+    python3 "$root/kit/scripts/provider-coordinator.py" \
+      --db "$root/runtime/provider-state.sqlite3" terminalize \
+      --operation-id "$attempt-host-terminal" --attempt-id "$attempt" \
+      --expected-version 4 --result succeeded --charge-micro-usd 1000000 >/dev/null ||
+      die "trusted host could not terminalize $attempt"
+  done
   python3 "$root/kit/scripts/provider-coordinator.py" \
     --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
 import json, sys
@@ -677,6 +643,7 @@ assert value["active_reserve_micro_usd"] == 0, value
   done
   for pid in "${pids[@]}"; do wait "$pid" || die "synthetic lifecycle failed"; done
   echo "PROVIDER_CALLS=4"
+  echo "PROVIDER_MODE=cli-concurrent-v1"
   echo "PROVIDER_OVERLAP_MILLISECONDS=$(( (end_ns - start_ns) / 1000000 ))"
 }
 

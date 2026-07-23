@@ -18,7 +18,7 @@ The command creates a private `nysa-sf-dev.*` directory directly under `TMPDIR`,
 bash scripts/factory-dev-lane.sh mock-concurrency
 ```
 
-This runs four identity-bound mock provider attempts through the existing Contract 1.6 coordinator, runtime, and executor at once, then completes four disposable Planner-through-Narrator lifecycles. The fake container transport, policy, database, attempts, locks, inputs, worktrees, project identity, ports, timeline, home, and temporary files are unique to the owner-only lane root. The command proves temporal overlap, drains all reservations, leaves each ticket clean and locally pushed in `Review`, and must finish in less than 15 minutes. It does not start a broker, use credentials, or permit a real provider call.
+This runs four identity-bound mock subscription commands through the Contract 1.7 CLI runtime and existing transactional coordinator at once, then completes four disposable Planner-through-Narrator lifecycles. The policy, database, worktrees, project identity, ports, timeline, home, and temporary files are unique to the owner-only lane root. The command proves temporal overlap, retains reservations until trusted-host terminalization, drains them, leaves each ticket clean and locally pushed in `Review`, and must finish in less than 15 minutes. It does not use credentials or permit a real provider call.
 
 Focused provider tests separately hold four loopback broker requests open, cancel one by controller signal, admit a replacement only into that released slot, and verify timeout cleanup. Capacity is released only after token revocation and request drain are both proven.
 

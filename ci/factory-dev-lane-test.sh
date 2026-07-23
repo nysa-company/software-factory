@@ -271,6 +271,8 @@ concurrency_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 [[ "$concurrency_root" == "$TMP/lanes"/nysa-sf-dev.* ]] ||
   fail "concurrency mock returned an unsafe root"
 grep -qx 'PROVIDER_CALLS=4' "$OUT" || fail "concurrency mock did not run four providers"
+grep -qx 'PROVIDER_MODE=cli-concurrent-v1' "$OUT" ||
+  fail "concurrency mock did not use the subscription CLI coordinator path"
 overlap_ms="$(sed -n 's/^PROVIDER_OVERLAP_MILLISECONDS=//p' "$OUT")"
 [[ "$overlap_ms" =~ ^[0-9]+$ && "$overlap_ms" -ge 2000 && "$overlap_ms" -lt 5000 ]] ||
   fail "four provider calls did not overlap for one bounded interval"

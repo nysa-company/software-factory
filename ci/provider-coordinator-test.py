@@ -123,9 +123,12 @@ class ProviderCoordinatorTest(unittest.TestCase):
         )
 
     def test_six_way_coupled_limit_and_terminal_release(self):
-        admitted = [self.reserve(f"run-{number}") for number in range(6)]
+        admitted = [
+            self.reserve(f"run-{number}", ticket=f"T-{number + 100}")
+            for number in range(6)
+        ]
         self.assertTrue(all(item["admitted"] for item in admitted))
-        denied = self.reserve("run-7")
+        denied = self.reserve("run-7", ticket="T-107")
         self.assertFalse(denied["admitted"])
         self.assertIn(
             {"limit": "max_concurrent", "scope": "coupled"}, denied["denials"]
@@ -328,6 +331,7 @@ class ProviderCoordinatorTest(unittest.TestCase):
                 f"parallel-{number}",
                 operation=f"parallel-reserve-{number}",
                 now=200,
+                ticket=f"T-{number + 200}",
             ))
 
         threads = [threading.Thread(target=reserve, args=(number,)) for number in range(7)]

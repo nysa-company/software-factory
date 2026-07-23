@@ -162,6 +162,10 @@ CANCEL_REQUEST_FILE=""
 CANCELLATION_REASON=""
 CANCELLATION_PREVIEW_HASH=""
 CANCELLATION_ACCEPTED=0
+CLI_ATTEMPT_ID=""
+CLI_ATTEMPT_ACTIVE=0
+PROVIDER_EXECUTION_MODE="legacy-serialized"
+PROVIDER_BUDGET_MICRO_VALUES=()
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
@@ -535,6 +539,9 @@ write_manifest() {
     echo "gateway_id=$(meta_value "${SELECTED_GATEWAY_ID:-}")"
     echo "inference_provider_id=$(meta_value "${SELECTED_PROVIDER_ID:-}")"
     echo "account_route_id=$(meta_value "${SELECTED_ACCOUNT_ROUTE_ID:-}")"
+    echo "provider_execution_mode=$(meta_value "${PROVIDER_EXECUTION_MODE:-legacy-serialized}")"
+    echo "provider_attempt_id=$(meta_value "${CLI_ATTEMPT_ID:-}")"
+    echo "activation_policy_sha256=$(meta_value "${ACTIVATED_POLICY_HASH:-}")"
     echo "transport=$(meta_value "${SELECTED_TRANSPORT:-}")"
     echo "policy_hash=$(meta_value "${SELECTED_POLICY_HASH:-}")"
     echo "route_plan_sha256=$(meta_value "${SELECTED_ROUTE_PLAN_SHA256:-}")"
@@ -672,7 +679,15 @@ stop_before_adapter_gate() {
 
 verify_control_interval_integrity() {
   local registered_status_after
-  if ! printf '%s' "$RUNS_META_SNAPSHOT" | \
+  if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+    if ! printf '%s' "$RUNS_META_SNAPSHOT" | python3 \
+        "$KIT_DIR/scripts/lib/runs-integrity.py" check-concurrent \
+        "$RUNS_DIR" "$ACTIVE_RUNS_DIR" \
+        "$KIT_DIR/scripts/provider-coordinator.py" "$FACTORY_PROVIDER_DB"; then
+      CONTROL_PLANE_MUTATION=1
+      STATUS=11
+    fi
+  elif ! printf '%s' "$RUNS_META_SNAPSHOT" | \
       python3 "$KIT_DIR/scripts/lib/runs-integrity.py" check "$RUNS_DIR"; then
     CONTROL_PLANE_MUTATION=1
     STATUS=11
@@ -682,7 +697,7 @@ verify_control_interval_integrity() {
     CONTROL_PLANE_MUTATION=1
     STATUS=11
   fi
-  if ! provider_lock_is_owned; then
+  if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]] && ! provider_lock_is_owned; then
     echo "role_exit_control_plane_mutation: provider lock changed during provider execution" >&2
     CONTROL_PLANE_MUTATION=1
     STATUS=11
@@ -794,9 +809,49 @@ elif before["spec_lint"] != after["spec_lint"]:
 PY
 }
 
+reconcile_cli_attempt() {
+  [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && -n "$CLI_ATTEMPT_ID" ]] || return 0
+  local output parsed state version result charge
+  output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" || return 1
+  parsed="$(printf '%s' "$output" | python3 -c '
+import json, sys
+attempts = json.load(sys.stdin).get("attempts", [])
+if len(attempts) != 1:
+    raise SystemExit(1)
+print(attempts[0]["state"])
+print(attempts[0]["version"])
+')" || return 1
+  state="${parsed%%$'\n'*}"
+  version="${parsed#*$'\n'}"
+  if [[ "$state" == "terminal" ]]; then
+    CLI_ATTEMPT_ACTIVE=0
+    return 0
+  fi
+  case "$state" in
+    prepared|reserved) result="failed_pre_go"; charge=0 ;;
+    GO|submitted)
+      case "${1:-failed}" in
+        succeeded|cancelled|failed) result="${1:-failed}" ;;
+        *) result="failed" ;;
+      esac
+      charge="${PROVIDER_BUDGET_MICRO_VALUES[0]}"
+      ;;
+    *) return 1 ;;
+  esac
+  python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" terminalize \
+    --operation-id "$CLI_ATTEMPT_ID-host-terminal-$version" \
+    --attempt-id "$CLI_ATTEMPT_ID" --expected-version "$version" \
+    --result "$result" --charge-micro-usd "$charge" >/dev/null || return 1
+  CLI_ATTEMPT_ACTIVE=0
+}
+
 cleanup() {
   local status=$? accounting_finalized=0
   terminate_run_group || true
+  reconcile_cli_attempt "$([[ "$status" -eq 130 || "$status" -eq 143 ]] && printf cancelled || printf failed)" ||
+    echo "WARNING: CLI provider reservation retained for operator reconciliation" >&2
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
       rm -f "$RUN_PID_FILE"
@@ -1064,16 +1119,20 @@ ADAPTER="$SELECTED"
 ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
 ISOLATED_RUN=0
+CLI_CONCURRENT_RUN=0
+PARALLEL_PROVIDER_RUN=0
 ISOLATED_PROTOCOL=""
 ISOLATED_BROKER_PATH=""
 ISOLATED_MODEL=""
 ISOLATED_PROVIDER_FAMILY=""
 ISOLATED_ACCOUNT_ROUTE=""
-if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" &&
+if [[ ( "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
+        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   if ! ACTIVATION_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-activation.py" \
       --config "$FACTORY_PROVIDER_ACTIVATION" \
+      --contract-version "$FACTORY_RELEASE_CONTRACT_VERSION" \
       --route-id "$SELECTED_ROUTE_ID" 2>/dev/null)"; then
     echo "isolated-v1 activation is invalid for the selected route" >&2
     exit 3
@@ -1083,9 +1142,11 @@ import json, sys
 value = json.load(sys.stdin)
 if value.get("status") != "enabled":
     raise SystemExit(1)
-for key in ("protocol", "broker_path", "model", "provider_family", "account_route"):
-    selected = value.get(key)
-    if not isinstance(selected, str) or "\n" in selected:
+keys = ("execution_mode", "protocol", "broker_path", "adapter", "model",
+        "provider_family", "account_route", "policy_sha256")
+for key in keys:
+    selected = value.get(key, "api-isolated-v1" if key == "execution_mode" else "-")
+    if not isinstance(selected, str) or "\n" in selected or selected == "":
         raise SystemExit(1)
     print(selected)
 ' 2>/dev/null)"; then
@@ -1096,16 +1157,41 @@ for key in ("protocol", "broker_path", "model", "provider_family", "account_rout
   while IFS= read -r activation_value; do
     ACTIVATION_VALUES+=("$activation_value")
   done <<< "$ACTIVATION_VALUES_OUTPUT"
-  if [[ "${#ACTIVATION_VALUES[@]}" -eq 5 ]]; then
-      ISOLATED_PROTOCOL="${ACTIVATION_VALUES[0]}"
-      ISOLATED_BROKER_PATH="${ACTIVATION_VALUES[1]}"
-      ISOLATED_MODEL="${ACTIVATION_VALUES[2]}"
-      ISOLATED_PROVIDER_FAMILY="${ACTIVATION_VALUES[3]}"
-      ISOLATED_ACCOUNT_ROUTE="${ACTIVATION_VALUES[4]}"
+  if [[ "${#ACTIVATION_VALUES[@]}" -eq 8 ]]; then
+      EXECUTION_MODE="${ACTIVATION_VALUES[0]}"
+      ISOLATED_PROTOCOL="${ACTIVATION_VALUES[1]}"
+      ISOLATED_BROKER_PATH="${ACTIVATION_VALUES[2]}"
+      ACTIVATED_ADAPTER="${ACTIVATION_VALUES[3]}"
+      ISOLATED_MODEL="${ACTIVATION_VALUES[4]}"
+      ISOLATED_PROVIDER_FAMILY="${ACTIVATION_VALUES[5]}"
+      ISOLATED_ACCOUNT_ROUTE="${ACTIVATION_VALUES[6]}"
+      ACTIVATED_POLICY_HASH="${ACTIVATION_VALUES[7]}"
       if [[ "$ISOLATED_MODEL" == "$SELECTED_MODEL" &&
             "$ISOLATED_PROVIDER_FAMILY" == "$SELECTED_FAMILY" &&
             "$ISOLATED_ACCOUNT_ROUTE" == "$SELECTED_ACCOUNT_ROUTE_ID" ]]; then
-        [[ "$ROLE" == "reviewer" ]] || ISOLATED_RUN=1
+        if [[ "$EXECUTION_MODE" == "api-isolated-v1" &&
+              "$ACTIVATED_ADAPTER" == - && "$ACTIVATED_POLICY_HASH" == - ]]; then
+          [[ "$ROLE" == "reviewer" ]] || ISOLATED_RUN=1
+        elif [[ "$EXECUTION_MODE" == "cli-concurrent-v1" &&
+                "$FACTORY_RELEASE_CONTRACT_VERSION" == "1.7.0" &&
+                "$ACTIVATED_ADAPTER" == "$ADAPTER" &&
+                "$ACTIVATED_POLICY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+          CURRENT_POLICY_HASH="$(python3 - "$FACTORY_PROVIDER_POLICY" <<'PY'
+import hashlib, json, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+raw=json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",",":"))
+print(hashlib.sha256(raw.encode()).hexdigest())
+PY
+          )" || { echo "CLI concurrency policy is unavailable" >&2; exit 3; }
+          [[ "$CURRENT_POLICY_HASH" == "$ACTIVATED_POLICY_HASH" ]] || {
+            echo "CLI concurrency activation policy does not match" >&2
+            exit 3
+          }
+          CLI_CONCURRENT_RUN=1
+        else
+          echo "provider activation execution mode is invalid" >&2
+          exit 3
+        fi
       else
         echo "isolated-v1 activation does not match the selected route identity" >&2
         exit 3
@@ -1114,6 +1200,14 @@ for key in ("protocol", "broker_path", "model", "provider_family", "account_rout
     echo "isolated-v1 activation returned incomplete selection data" >&2
     exit 3
   fi
+fi
+if [[ "$ISOLATED_RUN" -eq 1 || "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  PARALLEL_PROVIDER_RUN=1
+fi
+if [[ "$ISOLATED_RUN" -eq 1 ]]; then
+  PROVIDER_EXECUTION_MODE="api-isolated-v1"
+elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  PROVIDER_EXECUTION_MODE="cli-concurrent-v1"
 fi
 
 # Serialize claim creation with kill-switch publication. Claims are mkdir
@@ -1161,7 +1255,7 @@ token=$CLAIM_TOKEN"
 printf '%s\n' "$ACTIVE_RUN_EXPECTED" > "$ACTIVE_RUN_FILE/owner"
 ACTIVE_RUN_EXPECTED="$(cat "$ACTIVE_RUN_FILE/owner")"
 
-if [[ "$ISOLATED_RUN" -eq 0 ]]; then
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]]; then
   # Legacy contracts retain the interval-wide product provider lock.
   PROVIDER_LOCK_TRANSIENTS=0
   for i in $(seq 1 "$LOCK_ATTEMPTS"); do
@@ -1213,9 +1307,71 @@ RUN_STARTED_AT="$(date -u +%FT%TZ)"
 TODAY="${RUN_STARTED_AT%%T*}"
 RUN_START_TIME="${RUN_STARTED_AT#*T}"; RUN_START_TIME="${RUN_START_TIME%Z}"
 RESERVED_USD="$PER_RUN_BUDGET_USD"
-if [[ "$ISOLATED_RUN" -eq 0 &&
-      "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" &&
-      -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]]; then
+  while IFS= read -r micro_value; do
+    PROVIDER_BUDGET_MICRO_VALUES+=("$micro_value")
+  done < <(python3 - "$RESERVED_USD" "$DAILY_CAP_USD" \
+    "$PER_TICKET_BUDGET_USD" "${GLOBAL_DAILY_CAP_USD:-1000000000}" <<'PY'
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import sys
+try:
+    for value in sys.argv[1:]:
+        amount = (Decimal(value) * Decimal(1_000_000)).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+        if amount < 0 or amount > 10**15:
+            raise ValueError
+        print(int(amount))
+except (InvalidOperation, ValueError):
+    raise SystemExit(1)
+PY
+  )
+  if [[ "${#PROVIDER_BUDGET_MICRO_VALUES[@]}" -ne 4 ]]; then
+    echo "provider budget conversion failed; no task was submitted" >&2
+    exit 3
+  fi
+fi
+if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  CLI_ATTEMPT_ID="$RUN_ID-cli"
+  CLI_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+  CLI_RESERVATION="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" reserve \
+    --operation-id "$CLI_ATTEMPT_ID-reserve" \
+    --attempt-id "$CLI_ATTEMPT_ID" \
+    --provider-family "$SELECTED_FAMILY" \
+    --account-route "$SELECTED_ACCOUNT_ROUTE_ID" \
+    --reserve-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[0]}" \
+    --product-id "$CLI_PRODUCT_ID" \
+    --ticket-id "$TICKET" \
+    --budget-day "$TODAY" \
+    --product-daily-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[1]}" \
+    --ticket-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[2]}" \
+    --machine-daily-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}" \
+    --policy "$FACTORY_PROVIDER_POLICY" \
+    --expected-policy-sha256 "$ACTIVATED_POLICY_HASH")" || {
+      echo "CLI provider reservation failed; no task was submitted" >&2
+      exit 8
+    }
+  if ! printf '%s' "$CLI_RESERVATION" | python3 -c '
+import json, sys
+raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
+'; then
+    python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+      --db "$FACTORY_PROVIDER_DB" terminalize \
+      --operation-id "$CLI_ATTEMPT_ID-capacity-denied" \
+      --attempt-id "$CLI_ATTEMPT_ID" --expected-version 1 \
+      --result capacity_denied --charge-micro-usd 0 >/dev/null || {
+        echo "CLI provider denial could not be terminalized" >&2
+        exit 8
+      }
+    echo "CLI provider capacity or budget refused; no task was submitted" >&2
+    exit 8
+  fi
+  CLI_ATTEMPT_ACTIVE=1
+fi
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 &&
+      ( "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
+        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ) ]]; then
   LEGACY_INTERVAL_ID="legacy-$RUN_ID"
   LEGACY_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
   LEGACY_ENTER_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
@@ -1301,7 +1457,7 @@ if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
   sleep "$FACTORY_TEST_BEFORE_REGISTER_SLEEP"
 fi
 
-if [[ "$ISOLATED_RUN" -eq 0 ]]; then
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]]; then
 # --- serialized legacy cap check with budget reservation ---
 # mkdir is atomic: it is the lock. Reservation counts this run's full per-run
 # budget against the caps, so N concurrent runs cannot all squeeze past.
@@ -1405,7 +1561,7 @@ if [[ -n "$GLOBAL_LEDGER" ]]; then
   GLOBAL_LEDGER_SNAPSHOT="$(snapshot_global_ledger "$GLOBAL_LEDGER")"
 fi
 fi
-if [[ "$ISOLATED_RUN" -eq 1 ]]; then
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]]; then
   LEDGER_FAMILY="$(meta_value "$SELECTED_FAMILY")"
   LEDGER_MODEL="$(meta_value "$SELECTED_MODEL")"
   LEDGER_REASON="$(meta_value "$SELECTION_REASON")"
@@ -1421,7 +1577,7 @@ if ! refresh_runtime_ledger; then
   echo "effective ledger could not be materialized; refusing launch" >&2
   exit 3
 fi
-if [[ "$ISOLATED_RUN" -eq 0 ]]; then
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]]; then
   rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 fi
 
@@ -1468,26 +1624,7 @@ if [[ "$ISOLATED_RUN" -eq 1 ]]; then
     echo "isolated-v1 broker URL is unavailable" >&2
     STATUS=3
   else
-    MICRO_VALUES=()
-    while IFS= read -r micro_value; do
-      MICRO_VALUES+=("$micro_value")
-    done < <(python3 - "$RESERVED_USD" "$DAILY_CAP_USD" \
-      "$PER_TICKET_BUDGET_USD" "${GLOBAL_DAILY_CAP_USD:-1000000000}" <<'PY'
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
-import sys
-try:
-    for value in sys.argv[1:]:
-        amount = (Decimal(value) * Decimal(1_000_000)).to_integral_value(
-            rounding=ROUND_CEILING
-        )
-        if amount < 0 or amount > 10**15:
-            raise ValueError
-        print(int(amount))
-except (InvalidOperation, ValueError):
-    raise SystemExit(1)
-PY
-    )
-    if [[ "${#MICRO_VALUES[@]}" -ne 4 ]]; then
+    if [[ "${#PROVIDER_BUDGET_MICRO_VALUES[@]}" -ne 4 ]]; then
       echo "isolated-v1 budget conversion failed" >&2
       STATUS=3
     else
@@ -1517,10 +1654,10 @@ PY
           --account-route "$ISOLATED_ACCOUNT_ROUTE"
           --product-id "$ISOLATED_PRODUCT_ID"
           --budget-day "$TODAY"
-          --reserve-micro-usd "${MICRO_VALUES[0]}"
-          --product-cap-micro-usd "${MICRO_VALUES[1]}"
-          --ticket-cap-micro-usd "${MICRO_VALUES[2]}"
-          --machine-cap-micro-usd "${MICRO_VALUES[3]}"
+          --reserve-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[0]}"
+          --product-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[1]}"
+          --ticket-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[2]}"
+          --machine-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}"
           --prompt-file "$PROMPT_FILE"
           --task "$TASK"
         --image-lock "$KIT_DIR/worker/image-lock.json"
@@ -1530,6 +1667,31 @@ PY
       fi
     fi
   fi
+elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  TASK_COMMAND=(
+    /usr/bin/env -u GH_TOKEN -u OPENAI_API_KEY -u ANTHROPIC_API_KEY
+    python3 "$KIT_DIR/scripts/provider-cli-runtime.py"
+      --coordinator "$KIT_DIR/scripts/provider-coordinator.py"
+      --db "$FACTORY_PROVIDER_DB"
+      --policy "$FACTORY_PROVIDER_POLICY"
+      --attempt-id "$CLI_ATTEMPT_ID"
+      --provider-family "$SELECTED_FAMILY"
+      --account-route "$SELECTED_ACCOUNT_ROUTE_ID"
+      --reserve-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[0]}"
+      --product-id "$CLI_PRODUCT_ID"
+      --ticket-id "$TICKET"
+      --budget-day "$TODAY"
+      --product-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[1]}"
+      --ticket-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[2]}"
+      --machine-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}"
+      --pre-reserved
+      -- /usr/bin/env -i
+        "HOME=$HOME" "PATH=$PATH" "TMPDIR=${TMPDIR:-/tmp}"
+        "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "LANG=${LANG:-C}"
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl
+        GIT_CONFIG_VALUE_0=disabled://factory-provider-must-not-push
+        "$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK"
+  )
 else
   TASK_COMMAND=("$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK")
 fi
@@ -1639,8 +1801,14 @@ else
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
-      elif ! RUNS_META_SNAPSHOT="$(python3 "$KIT_DIR/scripts/lib/runs-integrity.py" \
-          snapshot "$RUNS_DIR")"; then
+      elif ! RUNS_META_SNAPSHOT="$(
+        if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+          python3 "$KIT_DIR/scripts/lib/runs-integrity.py" \
+            snapshot-one "$RUNS_DIR" "$(basename "$MANIFEST")"
+        else
+          python3 "$KIT_DIR/scripts/lib/runs-integrity.py" snapshot "$RUNS_DIR"
+        fi
+      )"; then
         echo "could not snapshot run manifests; no task was submitted" >&2
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
@@ -1690,7 +1858,21 @@ else
             STATUS=11
           fi
         fi
-        verify_control_interval_integrity
+        if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+          for _integrity_lock_try in $(seq 1 "$LOCK_ATTEMPTS"); do
+            mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
+            sleep 0.1
+          done
+          if [[ "$HELD_LAUNCH_LOCK" -ne 1 ]]; then
+            echo "role_exit_control_plane_mutation: launch lock stuck before concurrent integrity check" >&2
+            CONTROL_PLANE_MUTATION=1
+            STATUS=11
+          else
+            verify_control_interval_integrity
+          fi
+        else
+          verify_control_interval_integrity
+        fi
       fi
     fi
   fi
@@ -1851,7 +2033,19 @@ else
   FINAL_ACCOUNTING_STATE="completed"
 fi
 
-if [[ "$ISOLATED_RUN" -eq 0 ]] && ! provider_lock_is_owned; then
+if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  CLI_TERMINAL_RESULT="failed"
+  [[ "$STATUS" -ne 0 ]] || CLI_TERMINAL_RESULT="succeeded"
+  [[ "$CANCELLATION_ACCEPTED" -eq 0 ]] || CLI_TERMINAL_RESULT="cancelled"
+  if ! reconcile_cli_attempt "$CLI_TERMINAL_RESULT"; then
+    echo "role_exit_control_plane_mutation: CLI provider attempt could not be terminalized" >&2
+    CONTROL_PLANE_MUTATION=1
+    ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+    STATUS=11
+  fi
+fi
+
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]] && ! provider_lock_is_owned; then
   echo "role_exit_control_plane_mutation: provider lock changed before terminal accounting" >&2
   CONTROL_PLANE_MUTATION=1
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"

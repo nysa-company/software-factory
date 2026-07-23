@@ -510,6 +510,14 @@ def admit_mutation(connection, attempt_id, expected_version, policy, policy_hash
     denials.extend(limit_checks(
         connection, policy, row["provider_family"], row["account_route"], now
     ))
+    if connection.execute(
+        """SELECT count(*) FROM attempts AS a
+           JOIN attempt_budgets AS b ON b.attempt_id=a.attempt_id
+           WHERE a.state IN ('reserved','GO','submitted')
+             AND b.product_id=? AND b.ticket_id=?""",
+        (row["product_id"], row["ticket_id"]),
+    ).fetchone()[0]:
+        denials.append({"limit": "max_concurrent", "scope": "ticket"})
     denials.extend(budget_checks(connection, row))
     if denials:
         return {
@@ -635,8 +643,14 @@ def admit_command(connection, args):
 def reserve_command(connection, args):
     values = common_attempt_values(args)
     policy, policy_hash = load_policy(Path(args.policy))
+    if (args.expected_policy_sha256 is not None and
+            args.expected_policy_sha256 != policy_hash):
+        raise CoordinatorError("provider policy does not match the activated digest")
     now = now_value(args)
-    request = dict(values, now=args.now, policy_sha256=policy_hash)
+    request = dict(
+        values, now=args.now, policy_sha256=policy_hash,
+        expected_policy_sha256=args.expected_policy_sha256,
+    )
 
     def reserve():
         prepared = prepare_mutation(connection, values, now)
@@ -901,6 +915,7 @@ def parser():
         )
     prepare.set_defaults(handler=prepare_command)
     reserve.add_argument("--policy", required=True)
+    reserve.add_argument("--expected-policy-sha256")
     reserve.set_defaults(handler=reserve_command)
 
     admit = mutation("admit")
