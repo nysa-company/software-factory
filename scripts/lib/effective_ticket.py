@@ -25,6 +25,7 @@ STATES = {
     "Approved": "approved",
     "Blocked-Escalated": "blocked-escalated",
     "Done": "done",
+    "Canceled": "canceled",
 }
 PROTECTED_TICKET_FIELDS = (
     "Priority", "Initiative", "State", "Operator-Approval",

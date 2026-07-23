@@ -264,6 +264,16 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Ready")
 
+    def test_operator_can_cancel_a_backlog_ticket(self):
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["state"] = {"id": config()["states"]["canceled"], "name": "Canceled"}
+        self.reconcile()
+        self.assertEqual(
+            self.mapping["tickets"]["T-001"]["operator"]["state"], "Canceled"
+        )
+        self.assertEqual(issue["state"]["name"], "Canceled")
+
     def test_legacy_issue_bootstraps_operator_fields_before_pull(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"
@@ -441,6 +451,7 @@ class LinearSyncTest(unittest.TestCase):
             "awaiting approval",
             "blocked-escalated",
             "done",
+            "canceled",
         ):
             text = replace_state(path.read_text(), LINEAR.STATES[state][0])
             path.write_text(text)

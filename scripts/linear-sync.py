@@ -58,6 +58,7 @@ STATES = {
     "approved": ("Approved", "started"),
     "blocked-escalated": ("Blocked-Escalated", "started"),
     "done": ("Done", "completed"),
+    "canceled": ("Canceled", "canceled"),
 }
 STATE_COLORS = {
     "backlog": "#BEC2C8",
@@ -69,6 +70,7 @@ STATE_COLORS = {
     "approved": "#4CB782",
     "blocked-escalated": "#EB5757",
     "done": "#27AE60",
+    "canceled": "#6B7280",
 }
 STATE_POSITIONS = {
     "backlog": 0.0,
@@ -80,9 +82,7 @@ STATE_POSITIONS = {
     "approved": 5000.0,
     "blocked-escalated": 6000.0,
     "done": 0.0,
-}
-AUXILIARY_STATE_COLORS = {
-    "canceled": "#6B7280",
+    "canceled": 0.0,
 }
 LEGACY_STATES = {"in progress": "planning"}
 PRIORITIES = {"none": 0, "urgent": 1, "high": 2, "normal": 3, "low": 4}
@@ -127,12 +127,13 @@ What changes, why, and source links.
 """
 OPERATOR_TRANSITIONS = {
     ("backlog", "ready"),
+    ("backlog", "canceled"),
     ("awaiting approval", "approved"),
 }
 
 BANNER = (
     "**Factory-managed issue.** Linear owns priority, Project membership, "
-    "Backlog → Ready, Awaiting Approval → Approved, and approved unblock "
+    "Backlog → Ready/Canceled, Awaiting Approval → Approved, and approved unblock "
     "decisions. Contract, execution stage, logs, evidence, and cost are "
     "projected from the product repo."
 )
@@ -483,20 +484,6 @@ def setup(key, mapping, map_path, dry=False):
                     {"id": state["id"], "input": update},
                 )
         state_ids[lower] = state["id"]
-
-    for name, color in AUXILIARY_STATE_COLORS.items():
-        state = by_state.get(name)
-        if state and state.get("color", "").lower() != color.lower():
-            if dry:
-                log(f"DRY would recolor workflow state {state['name']}")
-            else:
-                gql(
-                    key,
-                    """mutation($id: String!, $input: WorkflowStateUpdateInput!) {
-                         workflowStateUpdate(id: $id, input: $input) { success }
-                       }""",
-                    {"id": state["id"], "input": {"color": color}},
-                )
 
     by_label = {item["name"].lower(): item for item in existing["labels"]["nodes"]}
     label_ids = {}
