@@ -2101,7 +2101,7 @@ REAL_MANIFEST="$(awk -F= '$1=="ticket" && $2=="T-777" {print FILENAME}' \
   "$LAUNCH_PRODUCT/factory/runs/"*.meta | tail -1)"
 grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release SHA"
 grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release tree"
-grep -qF "contract_version=1.6.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
+grep -qF "contract_version=1.7.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
 grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" || fail "real sealed run manifest omitted physical release path"
 grep -qF "role=planner" "$REAL_MANIFEST" || fail "real sealed run did not use the sequencer-authorized role"
 grep -qF "adapter=mock" "$REAL_MANIFEST" || fail "isolated launcher did not enforce the mock adapter"
