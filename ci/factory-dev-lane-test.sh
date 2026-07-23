@@ -91,6 +91,17 @@ EOF
 chmod +x "$FAKE_CURSOR"
 
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
+lane_count_before="$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+expect_failure "production product source" test_env bash "$LANE" product-plan \
+  --source "$CALLER_HOME/Projects/nysa-company/nysa-app" \
+  --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --tickets T-1,T-2,T-3,T-4
+expect_failure "duplicate product tickets" test_env bash "$LANE" product-plan \
+  --source "$TMP/safe-source" --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --tickets T-1,T-1,T-2,T-3
+[[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
+   "$lane_count_before" ]] ||
+  fail "invalid product input created a lane"
 if sed -n '/^subscription_env()/,/^}/p' "$LANE" | grep -q 'remote.origin.pushurl'; then
   fail "subscription host environment disables its own trusted push destination"
 fi
@@ -153,6 +164,13 @@ product_scheduler_admits cursor anthropic codex-native:openai cursor:openai ||
 if product_scheduler_admits cursor anthropic codex-native:openai cursor:openai cursor:anthropic; then
   fail "scheduler exceeded the Cursor account cap"
 fi
+product_scheduler_admits new-account new-family \
+  cursor:openai codex-native:anthropic claude-native:openai ||
+  fail "scheduler rejected an available fourth global slot"
+if product_scheduler_admits new-account new-family \
+  cursor:openai codex-native:anthropic claude-native:openai fourth:anthropic; then
+  fail "scheduler exceeded the global concurrency cap"
+fi
 eval "$(sed -n '/^product_role_retryable()/,/^}/p' "$LANE")"
 printf '%s\n' 'Resolved Cursor model is unavailable' >"$TMP/retryable-role.log"
 product_role_retryable "$TMP/retryable-role.log" ||
@@ -165,12 +183,106 @@ eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
 refuse_production_path() { :; }
 die() { return 1; }
 SEED_ACCOUNTING="$TMP/seed-accounting.json"
-printf '%s\n' '{"schema":"factory-dev-product-seed-accounting/v1","reserved_micro_usd":{"T-1":90000000,"T-2":0}}' >"$SEED_ACCOUNTING"
+SEED_BUNDLE="$TMP/seed.bundle"
+SEED_BASE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+printf '%s\n' seed >"$SEED_BUNDLE"
+chmod 600 "$SEED_BUNDLE"
+sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+seed_bundle_sha="$(sha256_file "$SEED_BUNDLE")"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":90000000,\"T-2\":140000000}}" \
+  >"$SEED_ACCOUNTING"
 chmod 600 "$SEED_ACCOUNTING"
-validate_product_seed_accounting "$SEED_ACCOUNTING" T-1 T-2 ||
+validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1 ||
   fail "valid cumulative seed accounting was rejected"
-printf '%s\n' '{"schema":"factory-dev-product-seed-accounting/v1","reserved_micro_usd":{"T-1":100000000,"T-2":0}}' >"$SEED_ACCOUNTING"
-if validate_product_seed_accounting "$SEED_ACCOUNTING" T-1 T-2; then
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-2; then
+  fail "selected exhausted cumulative seed accounting was accepted"
+fi
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-3; then
+  fail "missing selected cumulative seed accounting was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":90000000,\"T-2\":410000000}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "exhausted cumulative global seed accounting was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":90000000,\"T-2\":140000000}}" \
+  >"$SEED_ACCOUNTING"
+printf '%s\n' changed >>"$SEED_BUNDLE"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "seed accounting detached from its bundle was accepted"
+fi
+printf '%s\n' seed >"$SEED_BUNDLE"
+eval "$(sed -n '/^prepare_product_seed_accounting()/,/^}/p' "$LANE")"
+SEED_ROOT="$TMP/seed-root"
+mkdir -p "$SEED_ROOT/product/factory" "$SEED_ROOT/runtime"
+printf '%s\n' \
+  'PER_RUN_BUDGET_USD=10.00' 'PER_TICKET_BUDGET_USD=100.00' \
+  'PER_RUN_MAX_TURNS=15' 'PER_RUN_TIMEOUT_MIN=20' 'DAILY_CAP_USD=1000.00' \
+  >"$SEED_ROOT/product/factory/ENVELOPE.env"
+prepare_product_seed_accounting "$SEED_ROOT" "$SEED_ACCOUNTING" \
+  "$SEED_BUNDLE" "$SEED_BASE" T-1
+grep -qx 'PER_TICKET_BUDGET_USD=10.000000' \
+  "$SEED_ROOT/runtime/product-envelope/T-1.env" ||
+  fail "selected ticket remaining budget was not carried"
+grep -qx 'GLOBAL_DAILY_CAP_USD=270.000000' \
+  "$SEED_ROOT/runtime/product-envelope/global.env" ||
+  fail "excluded ticket spend did not reduce the resumed global cap"
+[[ ! -e "$SEED_ROOT/runtime/product-envelope/T-2.env" ]] ||
+  fail "excluded ticket received an active budget envelope"
+
+eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
+SOURCE_ROOT_TEST="$TMP/source-binding"
+mkdir -p "$SOURCE_ROOT_TEST/runtime"
+printf '%s\n' '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3"]}' \
+  >"$SOURCE_ROOT_TEST/runtime/product-source.json"
+load_product_tickets "$SOURCE_ROOT_TEST"
+[[ "${PRODUCT_TICKETS[*]}" == 'T-1 T-2 T-3' ]] ||
+  fail "partial product source binding was rejected"
+for invalid_source in \
+  '{"schema":"factory-dev-product-source/v1","tickets":[]}' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-1"]}' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","bad"]}' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3","T-4","T-5"]}'; do
+  printf '%s\n' "$invalid_source" >"$SOURCE_ROOT_TEST/runtime/product-source.json"
+  if load_product_tickets "$SOURCE_ROOT_TEST"; then
+    fail "malformed partial product source binding was accepted: $invalid_source"
+  fi
+done
+
+eval "$(sed -n '/^run_product_internal()/,/^}/p' "$LANE")"
+CLAIM_ROOT="$TMP/claim-rollback"
+mkdir -p "$CLAIM_ROOT/runtime"
+printf '%s\n' 'approval_hash=test-approval' 'used=0' \
+  >"$CLAIM_ROOT/runtime/product-approval"
+require_lane_mode() { :; }
+load_product_tickets() { PRODUCT_TICKETS=(T-1 T-2 T-3); }
+validate_runtime_paths() { :; }
+product_approval_hash() { printf '%s\n' test-approval; }
+subscription_ready() { :; }
+subscription_provider_idle() { :; }
+subscription_env() {
+  local ignored="$1" command action ticket
+  shift
+  command="$1"; action="$2"; ticket="$4"
+  printf '%s %s\n' "$action" "$ticket" >>"$CLAIM_ROOT/lease-actions"
+  [[ "$action" != claim || "$ticket" != T-2 ]] || return 1
+  [[ "$action" != claim ]] || printf '{"lease_id":"lease-%s"}\n' "$ticket"
+}
+die() { exit 1; }
+if (run_product_internal "$CLAIM_ROOT" test-approval); then
+  fail "partial lease claim failure unexpectedly succeeded"
+fi
+[[ "$(cat "$CLAIM_ROOT/lease-actions")" == $'claim T-1\nclaim T-2\nrelease T-1' ]] ||
+  fail "partial lease claim failure did not release only prior leases"
+
+die() { return 1; }
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":100000000}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
   fail "exhausted cumulative seed accounting was accepted"
 fi
 grep -Fq 'FACTORY_ENVELOPE="$envelope"' "$LANE" ||

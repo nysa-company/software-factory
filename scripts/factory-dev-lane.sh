@@ -36,7 +36,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json>]
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json>]
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-export --root <absolute-lane-root>
        factory-dev-lane.sh clean --root <absolute-lane-root>
@@ -485,6 +485,7 @@ create_lane() {
   if [[ "$mode" == product ]]; then
     [[ "$PRODUCT_SOURCE" == /* && -d "$PRODUCT_SOURCE" && ! -L "$PRODUCT_SOURCE" ]] ||
       die "product source must be an absolute, non-symlink repository"
+    refuse_production_path "$PRODUCT_SOURCE"
     [[ "$PRODUCT_BASE" =~ ^[0-9a-f]{40}$ ]] || die "product base must be a full commit SHA"
     [[ -z "$(git -C "$PRODUCT_SOURCE" status --porcelain --untracked-files=all)" ]] ||
       die "product source must be clean"
@@ -495,7 +496,10 @@ create_lane() {
     git -C "$root/product" remote remove origin
     git -C "$root/product" branch -f main "$PRODUCT_BASE"
     lane_tickets=("${PRODUCT_TICKETS[@]}")
-    [[ "${#lane_tickets[@]}" -eq 4 ]] || die "product lane requires exactly four tickets"
+    [[ "${#lane_tickets[@]}" -eq 4 ||
+       ( -n "$PRODUCT_SEED_BUNDLE" && "${#lane_tickets[@]}" -ge 1 &&
+         "${#lane_tickets[@]}" -le 4 ) ]] ||
+      die "product lane requires four fresh tickets or one to four seeded tickets"
     mkdir -p "$root/product/factory/route-plans" "$root/product/factory/runs"
     for ticket in "${lane_tickets[@]}"; do
       [[ "$ticket" =~ ^T-[0-9]+$ ]] || die "invalid product ticket"
@@ -512,14 +516,13 @@ create_lane() {
     python3 - "$root/product/factory/PROJECT.env" "$root/worktrees" <<'PY'
 from pathlib import Path
 import re, sys
-path=Path(sys.argv[1]); text=path.read_text(encoding="utf-8")
+path=Path(sys.argv[1]); worktrees=sys.argv[2]
+text=path.read_text(encoding="utf-8")
 text=re.sub(r"(?m)^MAX_CONCURRENT_TICKETS=.*$", "MAX_CONCURRENT_TICKETS=4", text)
 if "MAX_CONCURRENT_TICKETS=" not in text:
     text += "\nMAX_CONCURRENT_TICKETS=4\n"
-text=re.sub(r'(?m)^WORKTREES_DIR=.*$', f'WORKTREES_DIR="{sys.argv[2]}"', text)
+text=re.sub(r'(?m)^WORKTREES_DIR=.*$', f'WORKTREES_DIR="{worktrees}"', text)
 path.write_text(text, encoding="utf-8")
-for ticket in sys.argv[3:]:
-    pass
 PY
     printf '%s\n' "$sha" >"$root/product/factory/KIT_PIN"
     for ticket in "${lane_tickets[@]}"; do
@@ -551,6 +554,7 @@ PY
         "${lane_tickets[@]}"
       seed_hash="$(sha256_file "$PRODUCT_SEED_BUNDLE")"
       prepare_product_seed_accounting "$root" "$PRODUCT_SEED_ACCOUNTING" \
+        "$PRODUCT_SEED_BUNDLE" "$PRODUCT_BASE" \
         "${lane_tickets[@]}"
       accounting_hash="$(sha256_file "$PRODUCT_SEED_ACCOUNTING")"
     fi
@@ -847,6 +851,11 @@ seed_product_worktrees() {
       if ! python3 - "$root/worktrees/$ticket" "$commit" "$ticket" <<'PY'
 import subprocess, sys
 worktree, commit, ticket=sys.argv[1:]
+raw=subprocess.check_output(
+    ["git","-C",worktree,"diff-tree","--no-commit-id","--raw","-r",commit],
+    text=True).splitlines()
+if any(line.split("\t",1)[0].split()[1] in {"120000","160000"} for line in raw):
+    raise SystemExit(1)
 paths=subprocess.check_output(
     ["git","-C",worktree,"diff-tree","--no-commit-id","--name-only","-r",commit],
     text=True).splitlines()
@@ -865,6 +874,10 @@ PY
         die "product seed commit did not apply cleanly: $ticket"
       index=$((index + 1))
     done
+    require_lane_path "$root" "$root/worktrees/$ticket/factory/tickets/$ticket.md"
+    [[ -f "$root/worktrees/$ticket/factory/tickets/$ticket.md" &&
+       ! -L "$root/worktrees/$ticket/factory/tickets/$ticket.md" ]] ||
+      die "product seed ticket file is unsafe: $ticket"
     python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" \
       "$(git -C "$root/kit" rev-parse HEAD)" <<'PY'
 from pathlib import Path
@@ -891,24 +904,36 @@ PY
 }
 
 validate_product_seed_accounting() {
-  local manifest="$1"; shift
+  local manifest="$1" bundle="$2" base="$3"; shift 3
   [[ "$manifest" == /* && -f "$manifest" && ! -L "$manifest" ]] ||
     die "product seed accounting must be an absolute regular file"
   refuse_production_path "$manifest"
   [[ "$(stat -f '%Su:%Lp' "$manifest")" == "$(id -un):600" ]] ||
     die "product seed accounting must be owner-only"
-  if ! python3 - "$manifest" "$@" <<'PY'
-import json, sys
-path, *tickets=sys.argv[1:]
+  [[ "$bundle" == /* && -f "$bundle" && ! -L "$bundle" ]] ||
+    die "product seed bundle must be an absolute regular file"
+  refuse_production_path "$bundle"
+  [[ "$(stat -f '%Su:%Lp' "$bundle")" == "$(id -un):600" ]] ||
+    die "product seed bundle must be owner-only"
+  if ! python3 - "$manifest" "$(sha256_file "$bundle")" "$base" "$@" <<'PY'
+import json, re, sys
+path, bundle_sha, base, *tickets=sys.argv[1:]
 value=json.load(open(path, encoding="utf-8"))
-if value.get("schema") != "factory-dev-product-seed-accounting/v1": raise SystemExit(1)
+if (set(value) != {"schema","seed_bundle_sha256","base_sha","reserved_micro_usd"} or
+    value.get("schema") != "factory-dev-product-seed-accounting/v2" or
+    value.get("seed_bundle_sha256") != bundle_sha or value.get("base_sha") != base):
+    raise SystemExit(1)
 amounts=value.get("reserved_micro_usd")
-if not isinstance(amounts, dict) or set(amounts) != set(tickets): raise SystemExit(1)
-for ticket in tickets:
-    amount=amounts[ticket]
+if (not isinstance(amounts, dict) or not set(tickets) <= set(amounts) or
+    any(not isinstance(ticket, str) or
+        not re.fullmatch(r"T-[0-9]+", ticket) for ticket in amounts)):
+    raise SystemExit(1)
+for ticket, amount in amounts.items():
     if (not isinstance(amount, int) or isinstance(amount, bool) or
-        amount < 0 or amount >= 100_000_000):
+        amount < 0):
         raise SystemExit(1)
+if any(amounts[ticket] >= 100_000_000 for ticket in tickets): raise SystemExit(1)
+if sum(amounts.values()) >= 500_000_000: raise SystemExit(1)
 PY
   then
     die "product seed accounting is invalid or exhausted"
@@ -916,8 +941,8 @@ PY
 }
 
 prepare_product_seed_accounting() {
-  local root="$1" manifest="$2"; shift 2
-  validate_product_seed_accounting "$manifest" "$@"
+  local root="$1" manifest="$2" bundle="$3" base="$4"; shift 4
+  validate_product_seed_accounting "$manifest" "$bundle" "$base" "$@"
   mkdir -m 700 "$root/runtime/product-envelope"
   python3 - "$manifest" "$root/product/factory/ENVELOPE.env" \
     "$root/runtime/product-envelope" "$@" <<'PY'
@@ -932,6 +957,10 @@ for ticket in tickets:
     if count != 1: raise SystemExit(1)
     path=pathlib.Path(output,ticket+".env")
     path.write_text(text,encoding="utf-8"); os.chmod(path,0o600)
+remaining=500_000_000-sum(amounts.values())
+path=pathlib.Path(output,"global.env")
+path.write_text(f"GLOBAL_DAILY_CAP_USD={remaining/1_000_000:.6f}\n",encoding="utf-8")
+os.chmod(path,0o600)
 PY
 }
 
@@ -1099,20 +1128,26 @@ PY
 }
 
 load_product_tickets() {
-  local root="$1" line
+  local root="$1" line serialized
   PRODUCT_TICKETS=()
-  while IFS= read -r line; do PRODUCT_TICKETS+=("$line"); done < <(
-    python3 - "$root/runtime/product-source.json" <<'PY'
+  serialized="$(python3 - "$root/runtime/product-source.json" <<'PY'
 import json, re, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
-if value.get("schema") != "factory-dev-product-source/v1" or len(value.get("tickets", [])) != 4:
+tickets=value.get("tickets", [])
+if (value.get("schema") != "factory-dev-product-source/v1" or
+    not 1 <= len(tickets) <= 4 or len(set(tickets)) != len(tickets) or
+    any(not isinstance(ticket, str) or
+        not re.fullmatch(r"T-[0-9]+", ticket) for ticket in tickets)):
     raise SystemExit(1)
-for ticket in value["tickets"]:
-    if not re.fullmatch(r"T-[0-9]+", ticket): raise SystemExit(1)
+for ticket in tickets:
     print(ticket)
 PY
-  ) || die "product source binding is malformed"
-  [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || die "product source binding is incomplete"
+  )" || die "product source binding is malformed"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && PRODUCT_TICKETS+=("$line")
+  done <<<"$serialized"
+  [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 4 ]] ||
+    die "product source binding is incomplete"
 }
 
 product_probe_and_plan() {
@@ -1127,7 +1162,7 @@ product_probe_and_plan() {
   [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
     die "product subscription CLI version probe was empty"
   cat >"$root/home/.factory/global.env" <<EOF
-GLOBAL_DAILY_CAP_USD=500.00
+$(cat "$root/runtime/product-envelope/global.env" 2>/dev/null || printf '%s\n' 'GLOBAL_DAILY_CAP_USD=500.00')
 FACTORY_CURSOR_FALLBACK_ENABLED=1
 CURSOR_AGENT_VERSION=$cursor_version
 CODEX_PINNED=$codex_version
@@ -1137,7 +1172,8 @@ CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
 EOF
   chmod 600 "$root/home/.factory/global.env"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
-    if [[ "$ticket" == "${PRODUCT_TICKETS[1]}" ]]; then
+    if [[ "${#PRODUCT_TICKETS[@]}" -gt 1 &&
+          "$ticket" == "${PRODUCT_TICKETS[1]}" ]]; then
       for unsafe_route in claude-fable claude-sonnet; do
         subscription_env "$root" "$root/kit/scripts/model-control.sh" disable \
           --scope-type route --scope-id "$unsafe_route" \
@@ -1595,7 +1631,7 @@ product_role_retryable() {
 
 run_product_internal() {
   local root="$1" supplied="$2" stored day i ticket lease_json stage role account family now
-  local done_count failed_count progress pid rc
+  local done_count failed_count progress pid rc prior rollback_failed
   local -a leases pids accounts families states renewals retries retry_after roles active_routes
   require_lane_mode "$root" product
   load_product_tickets "$root"
@@ -1613,19 +1649,32 @@ run_product_internal() {
   mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
   mkdir -p "$root/runtime/product-scheduler"
   chmod 700 "$root/runtime/product-scheduler"
-  for i in 0 1 2 3; do
+  for i in "${!PRODUCT_TICKETS[@]}"; do
     ticket="${PRODUCT_TICKETS[$i]}"
     lease_json="$(subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" \
-      claim --ticket "$ticket")" || die "could not claim product ticket lease: $ticket"
+      claim --ticket "$ticket")" || {
+        rollback_failed=0
+        prior=0
+        while [[ "$prior" -lt "$i" ]]; do
+          subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
+            --ticket "${PRODUCT_TICKETS[$prior]}" --lease "${leases[$prior]}" \
+            >/dev/null || rollback_failed=1
+          prior=$((prior + 1))
+        done
+        [[ "$rollback_failed" -eq 0 ]] ||
+          die "could not claim $ticket or release prior product ticket leases"
+        die "could not claim product ticket lease: $ticket"
+      }
     leases[$i]="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
       <<<"$lease_json")"
     pids[$i]=0; accounts[$i]=""; families[$i]=""; states[$i]=idle; renewals[$i]=0
     retries[$i]=0; retry_after[$i]=0; roles[$i]=""
   done
   done_count=0; failed_count=0
-  while [[ "$done_count" -lt 4 && $((done_count + failed_count)) -lt 4 ]]; do
+  while [[ "$done_count" -lt "${#PRODUCT_TICKETS[@]}" &&
+           $((done_count + failed_count)) -lt "${#PRODUCT_TICKETS[@]}" ]]; do
     progress=0
-    for i in 0 1 2 3; do
+    for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == running ]] || continue
       pid="${pids[$i]}"
       if ! kill -0 "$pid" 2>/dev/null; then
@@ -1642,7 +1691,7 @@ run_product_internal() {
         pids[$i]=0; accounts[$i]=""; families[$i]=""; progress=1
       fi
     done
-    for i in 0 1 2 3; do
+    for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == idle ]] || continue
       ticket="${PRODUCT_TICKETS[$i]}"; now="$(date +%s)"
       [[ "$now" -ge "${retry_after[$i]}" ]] || continue
@@ -1691,7 +1740,7 @@ PY
       # Bash 3.2 treats an expanded empty array as unbound under `set -u`.
       # Keep one ignored sentinel so the first role can be admitted safely.
       active_routes=("")
-      for value in 0 1 2 3; do
+      for value in "${!PRODUCT_TICKETS[@]}"; do
         [[ -n "${accounts[$value]}" ]] || continue
         active_routes+=("${accounts[$value]}:${families[$value]}")
       done
@@ -1702,14 +1751,14 @@ PY
     done
     [[ "$progress" -eq 1 ]] || sleep 1
   done
-  for i in 0 1 2 3; do
+  for i in "${!PRODUCT_TICKETS[@]}"; do
     [[ "${states[$i]}" != running ]] || wait "${pids[$i]}" || true
     if [[ "${states[$i]}" == failed ]]; then
       subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
         --ticket "${PRODUCT_TICKETS[$i]}" --lease "${leases[$i]}" >/dev/null || true
     fi
   done
-  [[ "$done_count" -eq 4 && "$failed_count" -eq 0 ]] ||
+  [[ "$done_count" -eq "${#PRODUCT_TICKETS[@]}" && "$failed_count" -eq 0 ]] ||
     die "one or more product lifecycles failed; successful siblings were retained"
   subscription_provider_idle || die "product lifecycle left a provider process"
   echo "STATUS=AWAIT-OPERATOR"
@@ -2042,12 +2091,24 @@ case "$command" in
       esac
     done
     [[ "$source_repo" == /* && "$base_sha" =~ ^[0-9a-f]{40}$ && -n "$ticket_csv" ]] || usage
+    refuse_production_path "$source_repo"
     PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"; PRODUCT_SEED_BUNDLE="$seed_bundle"
     IFS=, read -r -a PRODUCT_TICKETS <<<"$ticket_csv"
-    [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || usage
+    if [[ -n "$seed_bundle" ]]; then
+      [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 4 ]] || usage
+    else
+      [[ "${#PRODUCT_TICKETS[@]}" -eq 4 ]] || usage
+    fi
+    python3 - "${PRODUCT_TICKETS[@]}" <<'PY' || usage
+import re, sys
+tickets=sys.argv[1:]
+if len(set(tickets)) != len(tickets) or any(not re.fullmatch(r"T-[0-9]+", t) for t in tickets):
+    raise SystemExit(1)
+PY
     if [[ -n "$seed_bundle" || -n "$seed_accounting" ]]; then
       [[ -n "$seed_bundle" && -n "$seed_accounting" ]] || usage
-      validate_product_seed_accounting "$seed_accounting" "${PRODUCT_TICKETS[@]}"
+      validate_product_seed_accounting "$seed_accounting" "$seed_bundle" "$base_sha" \
+        "${PRODUCT_TICKETS[@]}"
     fi
     PRODUCT_SEED_ACCOUNTING="$seed_accounting"
     root="$(create_lane product)"

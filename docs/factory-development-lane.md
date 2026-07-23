@@ -1,6 +1,6 @@
 # Factory development lane
 
-Use this macOS-only lane to exercise a committed Software Factory branch against a disposable synthetic product before the normal release process. It does not install, register, certify, or activate a kit and never uses Nysa product state.
+Use this macOS-only lane to exercise a committed Software Factory branch against a disposable synthetic product or an explicitly isolated product-source worktree before the normal release process. It does not install, register, certify, or activate a kit.
 
 ## Mock lifecycle
 
@@ -33,6 +33,12 @@ bash scripts/factory-dev-lane.sh subscription-run \
 ```
 
 The canary uses existing authenticated Cursor, Codex, and Claude subscription CLIs—never API keys—for one Cursor, two Codex, and one Claude call. It reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Cursor remains capped at one process because its temporary bridge is shared. Planning binds executable paths, bytes, versions, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
+
+## Isolated product proof and resume
+
+`product-plan` requires four tickets for a fresh proof. A seeded retry may select one to four unfinished tickets, so completed siblings are not rerun. The source must be a clean isolated worktree; the canonical Nysa checkout is refused. The lane clones it into a private product, replaces its remote with a local bare origin, and has no GitHub or Linear route.
+
+Seeded retries require an owner-only v2 accounting manifest bound to the exact seed-bundle digest and approved base SHA. Its full historical ticket map is retained even when only a subset resumes. Prior reservations reduce both each selected ticket's remaining $100 ceiling and the lane's remaining aggregate $500 ceiling. Missing history, an exhausted selected ticket, aggregate exhaustion, bundle/base drift, duplicate tickets, seeded symlinks or submodules, and unsafe ticket files fail before provider execution.
 
 ## Real Cursor lifecycle
 
