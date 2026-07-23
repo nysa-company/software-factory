@@ -528,14 +528,24 @@ validate_product_seed_accounting "$SEED_ACCOUNTING_V4_HIGH" "$SEED_BUNDLE" \
   "$SEED_BASE" T-1 T-2 ||
   fail "higher operator-authorized development caps were rejected"
 eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^product_seed_lineage_id()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^write_product_seed_lineage()/,/^}/p' "$LANE")"
 physical() { (cd "$1" 2>/dev/null && pwd -P); }
 SEED_LINEAGE="$TMP/seed-lineage.json"
-SEED_LINEAGE_ID="$(printf 'lineage-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+SEED_LINEAGE_ID="$(product_seed_lineage_id "$SEED_ACCOUNTING")"
 SEED_MANIFEST_SHA="$(sha256_file "$SEED_ACCOUNTING")"
+write_product_seed_lineage "$SEED_ACCOUNTING" "$SEED_LINEAGE"
+ROGUE_LINEAGE="$TMP/rogue-lineage.json"
 printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$SEED_LINEAGE_ID\",\"parent_manifest_sha256\":null,\"manifest_sha256\":\"$SEED_MANIFEST_SHA\"}" \
-  >"$SEED_LINEAGE"
-chmod 600 "$SEED_LINEAGE"
+  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$(printf rogue | shasum -a 256 | awk '{print $1}')\",\"parent_manifest_sha256\":null,\"manifest_sha256\":\"$SEED_MANIFEST_SHA\"}" \
+  >"$ROGUE_LINEAGE"
+chmod 600 "$ROGUE_LINEAGE"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_ACCOUNTING" \
+    "$SEED_MANIFEST_SHA" "$ROGUE_LINEAGE"); then
+  fail "caller-selected sibling lineage identity was accepted"
+fi
+die() { return 1; }
 consume_product_seed_authorization "$SEED_ACCOUNTING" \
   "$SEED_MANIFEST_SHA" "$SEED_LINEAGE"
 CONSUMPTION="$TMP/.seed-accounting-lineages/$SEED_LINEAGE_ID/nonces/$SEED_NONCE.used/receipt"
@@ -561,13 +571,10 @@ SEED_SUCCESSOR_SHA="$(sha256_file "$SEED_SUCCESSOR")"
 SEED_SIBLING_SHA="$(sha256_file "$SEED_SIBLING")"
 SEED_SUCCESSOR_LINEAGE="$TMP/seed-successor-lineage.json"
 SEED_SIBLING_LINEAGE="$TMP/seed-sibling-lineage.json"
-printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$SEED_LINEAGE_ID\",\"parent_manifest_sha256\":\"$SEED_MANIFEST_SHA\",\"manifest_sha256\":\"$SEED_SUCCESSOR_SHA\"}" \
-  >"$SEED_SUCCESSOR_LINEAGE"
-printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$SEED_LINEAGE_ID\",\"parent_manifest_sha256\":\"$SEED_MANIFEST_SHA\",\"manifest_sha256\":\"$SEED_SIBLING_SHA\"}" \
-  >"$SEED_SIBLING_LINEAGE"
-chmod 600 "$SEED_SUCCESSOR_LINEAGE" "$SEED_SIBLING_LINEAGE"
+write_product_seed_lineage "$SEED_SUCCESSOR" "$SEED_SUCCESSOR_LINEAGE" \
+  "$SEED_ACCOUNTING"
+write_product_seed_lineage "$SEED_SIBLING" "$SEED_SIBLING_LINEAGE" \
+  "$SEED_ACCOUNTING"
 consume_product_seed_authorization "$SEED_SUCCESSOR" \
   "$SEED_SUCCESSOR_SHA" "$SEED_SUCCESSOR_LINEAGE"
 die() { exit 1; }

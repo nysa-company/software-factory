@@ -37,6 +37,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
+       factory-dev-lane.sh product-seed-lineage --accounting <absolute-json> --output <absolute-json> [--parent-accounting <absolute-json>]
        factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
@@ -1141,7 +1142,7 @@ PY
 consume_product_seed_authorization() {
   local manifest="$1" expected="$2" lineage_record="$3"
   local parent root digest nonce day marker lineage_id lineage_parent lineage_values
-  local accounting_values lineage lock head
+  local accounting_values expected_lineage lineage lock head
   [[ "$lineage_record" == /* && -f "$lineage_record" && ! -L "$lineage_record" &&
      "$(stat -f '%Su:%Lp:%l' "$lineage_record")" == "$(id -un):600:1" ]] ||
     die "product seed lineage must be an owner-only regular file"
@@ -1168,6 +1169,10 @@ print(value["lineage_id"], value["parent_manifest_sha256"] or "none")
 PY
   )" || die "product seed lineage is malformed or detached"
   read -r lineage_id lineage_parent <<<"$lineage_values"
+  expected_lineage="$(product_seed_lineage_id "$manifest")" ||
+    die "product seed accounting scope is malformed"
+  [[ "$lineage_id" == "$expected_lineage" ]] ||
+    die "product seed lineage identity does not match accounting scope"
   accounting_values="$(python3 - "$manifest" "$digest" <<'PY'
 import hashlib, json, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -1215,6 +1220,58 @@ PY
   ); then
     die "product seed accounting lineage is stale or already consumed"
   fi
+}
+
+product_seed_lineage_id() {
+  python3 - "$1" <<'PY'
+import hashlib, json, re, sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+base=value.get("base_sha")
+reserved=value.get("reserved_micro_usd")
+if (not isinstance(base,str) or not re.fullmatch(r"[0-9a-f]{40}",base) or
+    not isinstance(reserved,dict) or not reserved or
+    any(not re.fullmatch(r"T-[0-9]+", ticket) for ticket in reserved)):
+    raise SystemExit(1)
+scope=json.dumps({"base_sha":base,"tickets":sorted(reserved)},
+                 sort_keys=True,separators=(",",":"))
+print(hashlib.sha256(("factory-dev-product-seed-lineage/v1\0"+scope).encode()).hexdigest())
+PY
+}
+
+write_product_seed_lineage() {
+  local manifest="$1" output="$2" parent_manifest="${3:-}"
+  local artifact_dir digest lineage_id parent_digest=null parent_lineage
+  [[ "$manifest" == /* && -f "$manifest" && ! -L "$manifest" &&
+     "$(stat -f '%Su:%Lp:%l' "$manifest")" == "$(id -un):600:1" ]] ||
+    die "product seed accounting must be an owner-only regular file"
+  [[ "$output" == /* && ! -e "$output" && ! -L "$output" ]] ||
+    die "product seed lineage output must be a new absolute path"
+  refuse_production_path "$manifest"; refuse_production_path "$output"
+  artifact_dir="$(physical "$(dirname "$output")")"
+  [[ "$artifact_dir" == "$(physical "$(dirname "$manifest")")" &&
+     "$(stat -f '%Su:%Lp' "$artifact_dir")" == "$(id -un):700" ]] ||
+    die "product seed lineage artifacts must share one owner-only directory"
+  digest="$(sha256_file "$manifest")"
+  lineage_id="$(product_seed_lineage_id "$manifest")" ||
+    die "product seed accounting scope is malformed"
+  if [[ -n "$parent_manifest" ]]; then
+    [[ "$parent_manifest" == /* && -f "$parent_manifest" && ! -L "$parent_manifest" &&
+       "$(stat -f '%Su:%Lp:%l' "$parent_manifest")" == "$(id -un):600:1" &&
+       "$(physical "$(dirname "$parent_manifest")")" == "$artifact_dir" ]] ||
+      die "parent seed accounting must be an owner-only sibling file"
+    refuse_production_path "$parent_manifest"
+    parent_lineage="$(product_seed_lineage_id "$parent_manifest")" ||
+      die "parent seed accounting scope is malformed"
+    [[ "$parent_lineage" == "$lineage_id" ]] ||
+      die "parent seed accounting belongs to a different lineage"
+    parent_digest="\"$(sha256_file "$parent_manifest")\""
+  fi
+  (umask 077
+   set -o noclobber
+   printf '%s\n' \
+     "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$lineage_id\",\"parent_manifest_sha256\":$parent_digest,\"manifest_sha256\":\"$digest\"}" \
+     >"$output") || die "could not create product seed lineage"
+  chmod 600 "$output"
 }
 
 append_commit_push() {
@@ -2719,6 +2776,20 @@ case "$command" in
     root="$(validate_lane "$root")"
     run_in_sandbox "$root" cursor __subscription-run \
       --root "$root" --approve-hash "$approve"
+    ;;
+  product-seed-lineage)
+    accounting=""; output=""; parent_accounting=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --accounting) accounting="${2:-}"; shift 2 ;;
+        --output) output="${2:-}"; shift 2 ;;
+        --parent-accounting) parent_accounting="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$accounting" && -n "$output" ]] || usage
+    write_product_seed_lineage "$accounting" "$output" "$parent_accounting"
+    echo "SEED_LINEAGE=$output"
     ;;
   product-plan)
     assert_macos
