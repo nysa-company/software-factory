@@ -276,7 +276,15 @@ for readiness_tool in agent codex claude; do
 [[ "\$PWD" == "$READINESS_ROOT" ]]
 [[ "\${FACTORY_CURSOR_SESSION_HOME:-}" == "$READINESS_ROOT/session-home" ]]
 if [[ "\${1:-}" == --version ]]; then
+  if [[ "$readiness_tool" == claude ]]; then
+    printf '%s\n' '2.1.207 (Claude Code)'
+    exit 0
+  fi
   printf '%s\n' "$readiness_tool 1.0-test"
+  exit 0
+fi
+if [[ "$readiness_tool" == claude && "\${1:-}" == --help ]]; then
+  printf '%s\n' '--max-budget-usd --output-format --append-system-prompt --model --effort'
   exit 0
 fi
 if [[ "$readiness_tool" == codex && -f "\$HOME/.transient-auth" ]]; then
