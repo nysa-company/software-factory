@@ -457,6 +457,9 @@ for entry in pathlib.Path(root, "home").iterdir():
         for relative in ("usr/libexec/git-core", "usr/share/git-core/templates"):
             item=developer / relative
             if item.is_dir() and str(item) not in tools: tools.append(str(item))
+if pathlib.Path(root, "home/node").is_symlink():
+    for item in ("/opt/homebrew", "/usr/local"):
+        if os.path.isdir(item) and item not in tools: tools.append(item)
 reads=[]
 session=[] if not session_home else [
     str(pathlib.Path(session_home, ".cursor", name).resolve())
@@ -514,6 +517,38 @@ for item in native_auth:
 pathlib.Path(root, "runtime/native.sb").write_text("".join(base) + cursor_network + native_extra)
 PY
   chmod 600 "$root/runtime/"*.sb
+}
+
+prepare_product_dependencies() {
+  local root="$1" ticket work
+  shift
+  [[ -f "$root/product/package-lock.json" &&
+     ! -L "$root/product/package-lock.json" ]] || return 0
+  ( cd "$root"
+    HOME="$root/home" TMPDIR="$root/tmp" \
+      "$(sandbox_exec)" -f "$root/runtime/native.sb" \
+        env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+          PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+          "$root/home/node" -e \
+            'if (process.versions.node.split(".")[0] !== "22") process.exit(1)' ) ||
+    die "product dependency installation requires the pinned Node 22 runtime"
+  for ticket in "$@"; do
+    work="$root/worktrees/$ticket"
+    [[ -f "$work/package.json" && ! -L "$work/package.json" &&
+       -f "$work/package-lock.json" && ! -L "$work/package-lock.json" ]] ||
+      die "product dependency manifests are missing or unsafe: $ticket"
+    ( cd "$work"
+      HOME="$root/home" TMPDIR="$root/tmp" \
+        "$(sandbox_exec)" -f "$root/runtime/native.sb" \
+          env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+            PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+            npm_config_cache="$root/runtime/npm-cache" \
+            "$root/home/npm" ci --prefix "$work" --no-audit --no-fund \
+            >"$root/runtime/npm-ci-$ticket.log" 2>&1 ) ||
+      die "pinned product dependency installation failed: $ticket"
+    [[ -z "$(git -C "$work" status --porcelain --untracked-files=all)" ]] ||
+      die "product dependency installation changed the tracked worktree: $ticket"
+  done
 }
 
 create_lane() {
@@ -898,6 +933,8 @@ EOF
       chmod 700 "$root/home/$tool"
     done
   fi
+  [[ "$mode" != product ]] ||
+    prepare_product_dependencies "$root" "${lane_tickets[@]}"
   validate_runtime_paths "$root"
   trap - EXIT
   printf '%s\n' "$root"

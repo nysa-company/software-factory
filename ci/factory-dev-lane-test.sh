@@ -138,6 +138,66 @@ grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the checkpoint lane-root binding"
 grep -Fq 'FACTORY_CLI_INTERNAL_SANDBOX=1' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the development sandbox marker"
+seatbelt_source="$(sed -n '/^write_seatbelt_profiles()/,/^}/p' "$LANE")"
+grep -Fq 'for item in ("/opt/homebrew", "/usr/local"):' <<<"$seatbelt_source" ||
+  fail "development sandbox dropped the trusted Node toolchain roots"
+if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
+  fail "development sandbox made the host toolchain writable"
+fi
+eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
+sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
+DEPENDENCY_ROOT="$TMP/nysa-sf-dev.dependencies"
+mkdir -p "$DEPENDENCY_ROOT"/{home,product,runtime,tmp,worktrees/T-1,worktrees/T-2,worktrees/T-FAIL,worktrees/T-DRIFT}
+: >"$DEPENDENCY_ROOT/runtime/native.sb"
+printf '{}\n' >"$DEPENDENCY_ROOT/product/package-lock.json"
+cat >"$DEPENDENCY_ROOT/home/node" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$DEPENDENCY_ROOT/home/npm" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+prefix=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == --prefix ]]; then prefix="$2"; shift 2; else shift; fi
+done
+[[ -n "$prefix" ]]
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
+printf '%s\n' "$(basename "$prefix")" >>"$root/runtime/npm-calls"
+case "$(basename "$prefix")" in
+  T-FAIL) exit 9 ;;
+  T-DRIFT) printf '\n' >>"$prefix/package.json" ;;
+esac
+mkdir -p "$prefix/node_modules/.bin"
+EOF
+chmod +x "$DEPENDENCY_ROOT/home/node" "$DEPENDENCY_ROOT/home/npm"
+for dependency_ticket in T-1 T-2 T-FAIL T-DRIFT; do
+  dependency_work="$DEPENDENCY_ROOT/worktrees/$dependency_ticket"
+  printf '{"scripts":{}}\n' >"$dependency_work/package.json"
+  printf '{}\n' >"$dependency_work/package-lock.json"
+  printf 'node_modules/\n' >"$dependency_work/.gitignore"
+  git -C "$dependency_work" init -q
+  git -C "$dependency_work" add .
+  git -C "$dependency_work" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Create dependency fixture'
+done
+( die() { printf '%s\n' "$*" >&2; exit 1; }
+  prepare_product_dependencies "$DEPENDENCY_ROOT" T-1 T-2 ) ||
+  fail "pinned dependency bootstrap rejected clean ticket worktrees"
+[[ "$(cat "$DEPENDENCY_ROOT/runtime/npm-calls")" == $'T-1\nT-2' ]] ||
+  fail "pinned dependency bootstrap did not run exactly once per ticket"
+for dependency_ticket in T-1 T-2; do
+  [[ -d "$DEPENDENCY_ROOT/worktrees/$dependency_ticket/node_modules" ]] ||
+    fail "pinned dependency bootstrap omitted ticket-local node_modules"
+done
+if ( die() { exit 1; }
+     prepare_product_dependencies "$DEPENDENCY_ROOT" T-FAIL ); then
+  fail "pinned dependency bootstrap accepted an npm failure"
+fi
+if ( die() { exit 1; }
+     prepare_product_dependencies "$DEPENDENCY_ROOT" T-DRIFT ); then
+  fail "pinned dependency bootstrap accepted tracked-tree drift"
+fi
 lane_count_before="$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 expect_failure "production product source" test_env bash "$LANE" product-plan \
   --source "$CALLER_HOME/Projects/nysa-company/nysa-app" \
