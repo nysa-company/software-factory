@@ -115,7 +115,9 @@ def validate_cli_policy(policy, routes, expected_hash):
     for route in routes.values():
         family = policy.get("provider_families", {}).get(route["provider_family"], {})
         account = policy.get("account_routes", {}).get(route["account_route"], {})
-        adapter_maximum = 4 if route["adapter"] in {"codex", "mock"} else 2
+        adapter_maximum = (
+            4 if route["adapter"] in {"codex", "claude-code", "mock"} else 2
+        )
         account_maximum[route["account_route"]] = min(
             account_maximum.get(route["account_route"], adapter_maximum),
             adapter_maximum,

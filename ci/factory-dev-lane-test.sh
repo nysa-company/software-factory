@@ -118,21 +118,23 @@ expect_failure "lane-local absolute role path" \
     "$LANE_PATH_BASE" HEAD
 subscription_plan_source="$(sed -n \
   '/^subscription_probe_and_plan()/,/^run_subscription_internal()/p' "$LANE")"
-grep -Fq '"account_routes":{"lane-codex-subscription":limit(4)}' \
+grep -Fq '"account_routes":{account:limit(4)}' \
   <<<"$subscription_plan_source" ||
-  fail "subscription canary does not grant one Codex account four slots"
-grep -Fq '"adapter":"codex"' <<<"$subscription_plan_source" ||
-  fail "subscription canary does not route through Codex"
-if grep -Eq 'cursor-openai|claude-code|lane-cursor-subscription|lane-claude-subscription' \
-  <<<"$subscription_plan_source"; then
-  fail "subscription canary retained a mixed-adapter route"
-fi
+  fail "subscription canary does not grant the selected account four slots"
+grep -Fq '"claude":("claude-code","sonnet","anthropic","lane-claude-subscription")' \
+  <<<"$subscription_plan_source" ||
+  fail "subscription canary does not support native Claude"
+grep -Fq '"codex":("codex","gpt-5.6-sol","openai","lane-codex-subscription")' \
+  <<<"$subscription_plan_source" ||
+  fail "subscription canary does not preserve Codex"
 subscription_run_source="$(sed -n \
   '/^run_subscription_internal()/,/^product_role_run()/p' "$LANE")"
-grep -Fq 'PROVIDER_SPLIT=codex:4' <<<"$subscription_run_source" ||
-  fail "subscription canary does not report four Codex calls"
+grep -Fq 'PROVIDER_SPLIT=$selected:4' <<<"$subscription_run_source" ||
+  fail "subscription canary does not report four selected-adapter calls"
 grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
-  fail "subscription canary readiness is not Codex-only"
+  fail "subscription canary lost Codex readiness"
+grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
+  fail "subscription canary lacks Claude readiness"
 lane_env_source="$(sed -n '/^lane_env()/,/^lane_cursor_env()/p' "$LANE")"
 grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the checkpoint lane-root binding"

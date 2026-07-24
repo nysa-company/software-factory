@@ -219,6 +219,10 @@ LEASE_HEARTBEAT_PID=""
 LEASE_HEARTBEAT_FAILED=0
 CLI_ATTEMPT_ID=""
 CLI_ATTEMPT_ACTIVE=0
+CLI_RUNTIME_ROOT=""
+CLI_PROVIDER_HOME=""
+CLI_PROVIDER_TMPDIR=""
+CLI_CLAUDE_CONFIG_DIR=""
 PROVIDER_EXECUTION_MODE="legacy-serialized"
 PROVIDER_BUDGET_MICRO_VALUES=()
 RUN_OUTPUT_SHA256=""
@@ -943,6 +947,68 @@ print(attempts[0]["version"])
   CLI_ATTEMPT_ACTIVE=0
 }
 
+prepare_cli_runtime() {
+  [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == "claude-code" ]] || return 0
+  [[ -n "$DEVELOPMENT_LANE_ROOT" && "$CLI_ATTEMPT_ID" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "Claude CLI isolation requires a valid development-lane attempt" >&2
+    return 1
+  }
+  local base="$DEVELOPMENT_LANE_ROOT/runtime/cli-attempts"
+  local source="$HOME/.claude/.credentials.json"
+  [[ -f "$source" && ! -L "$source" ]] || {
+    echo "lane-local Claude subscription credential is unavailable" >&2
+    return 1
+  }
+  mkdir -p "$base"
+  chmod 700 "$base"
+  CLI_RUNTIME_ROOT="$base/$CLI_ATTEMPT_ID"
+  mkdir -m 700 "$CLI_RUNTIME_ROOT" || {
+    echo "Claude CLI attempt runtime already exists" >&2
+    return 1
+  }
+  mkdir -m 700 "$CLI_RUNTIME_ROOT/home" "$CLI_RUNTIME_ROOT/config" \
+    "$CLI_RUNTIME_ROOT/tmp"
+  printf '%s\n' "$CLI_ATTEMPT_ID" >"$CLI_RUNTIME_ROOT/owner"
+  cp "$source" "$CLI_RUNTIME_ROOT/config/.credentials.json"
+  chmod 600 "$CLI_RUNTIME_ROOT/owner" \
+    "$CLI_RUNTIME_ROOT/config/.credentials.json"
+  CLI_PROVIDER_HOME="$CLI_RUNTIME_ROOT/home"
+  CLI_PROVIDER_TMPDIR="$CLI_RUNTIME_ROOT/tmp"
+  CLI_CLAUDE_CONFIG_DIR="$CLI_RUNTIME_ROOT/config"
+}
+
+cleanup_cli_runtime() {
+  [[ -n "$CLI_RUNTIME_ROOT" ]] || return 0
+  [[ "$RUN_GROUP_TERMINATED" -eq 1 ]] || {
+    echo "WARNING: retaining Claude CLI runtime because its process group survived" >&2
+    return 0
+  }
+  python3 - "$CLI_RUNTIME_ROOT" "$DEVELOPMENT_LANE_ROOT" "$CLI_ATTEMPT_ID" <<'PY'
+import os
+import pathlib
+import shutil
+import sys
+
+root = pathlib.Path(sys.argv[1])
+lane = pathlib.Path(sys.argv[2])
+attempt = sys.argv[3]
+expected_parent = lane / "runtime" / "cli-attempts"
+if (
+    not root.is_absolute()
+    or root.parent != expected_parent
+    or root.name != attempt
+    or root.is_symlink()
+    or not root.is_dir()
+    or (root / "owner").is_symlink()
+    or (root / "owner").read_text(encoding="utf-8") != attempt + "\n"
+    or root.stat().st_uid != os.geteuid()
+):
+    raise SystemExit(1)
+shutil.rmtree(root)
+PY
+  CLI_RUNTIME_ROOT=""
+}
+
 release_active_run_claim() {
   [[ "$OWNS_ACTIVE_RUN" -eq 1 ]] || return 0
   if [[ -d "$ACTIVE_RUN_FILE" && ! -L "$ACTIVE_RUN_FILE" &&
@@ -966,6 +1032,8 @@ cleanup() {
   elif [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
     echo "WARNING: CLI provider reservation retained because its process group survived" >&2
   fi
+  cleanup_cli_runtime ||
+    echo "WARNING: Claude CLI runtime retained for operator reconciliation" >&2
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
       rm -f "$RUN_PID_FILE"
@@ -1828,6 +1896,11 @@ RUN_OUTPUT_TEMP=""
 # The controller may read project model state while selecting a route, but
 # task-bearing adapters must never inherit mutation-capable state paths.
 unset FACTORY_MODEL_STATE_ROOT FACTORY_PROJECT
+CLI_PROVIDER_HOME="$HOME"
+CLI_PROVIDER_TMPDIR="${TMPDIR:-/tmp}"
+if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == "claude-code" ]]; then
+  prepare_cli_runtime || exit 6
+fi
 TASK_COMMAND=()
 STATUS=0
 if [[ "$ISOLATED_RUN" -eq 1 ]]; then
@@ -1897,7 +1970,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --machine-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}"
       --pre-reserved
       -- /usr/bin/env -i
-        "HOME=$HOME" "PATH=$PATH" "TMPDIR=${TMPDIR:-/tmp}"
+        "HOME=$CLI_PROVIDER_HOME" "PATH=$PATH" "TMPDIR=$CLI_PROVIDER_TMPDIR"
         "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "LANG=${LANG:-C}"
         "CODEX_PINNED=${CODEX_PINNED:-}" "CLAUDE_CODE_PINNED=${CLAUDE_CODE_PINNED:-}"
         "CURSOR_AGENT_VERSION=${CURSOR_AGENT_VERSION:-}"
@@ -1906,6 +1979,10 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         "FACTORY_CURSOR_SESSION_HOME=${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
         "FACTORY_CURSOR_INTERNAL_SANDBOX=${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}"
         "FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT=${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}"
+        "FACTORY_CLI_INTERNAL_SANDBOX=${FACTORY_CLI_INTERNAL_SANDBOX:-0}"
+        "FACTORY_CLI_ATTEMPT_ID=$CLI_ATTEMPT_ID"
+        "FACTORY_CLAUDE_SETTINGS=${FACTORY_CLAUDE_SETTINGS:-}"
+        "CLAUDE_CONFIG_DIR=$CLI_CLAUDE_CONFIG_DIR"
         "FACTORY_ROLE=$ROLE"
         "FACTORY_PROBE_TIMEOUT_SEC=${FACTORY_PROBE_TIMEOUT_SEC:-10}"
         "FACTORY_TEST_MODE=${FACTORY_TEST_MODE:-0}"

@@ -40,6 +40,44 @@ if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
     echo "lane-local Claude sandbox settings are unavailable" >&2
     exit 6
   }
+  python3 - "${HOME:-}" "${CLAUDE_CONFIG_DIR:-}" "${TMPDIR:-}" \
+    "${FACTORY_CLI_ATTEMPT_ID:-}" <<'PY' || {
+import os
+import pathlib
+import stat
+import sys
+
+home, config, tmp = map(pathlib.Path, sys.argv[1:4])
+attempt = sys.argv[4]
+paths = (home, config, tmp)
+root = home.parent
+if (
+    not attempt
+    or any(not path.is_absolute() or path.is_symlink() or not path.is_dir()
+           for path in paths)
+    or config.parent != root
+    or tmp.parent != root
+    or root.name != attempt
+    or (root / "owner").read_text(encoding="utf-8") != attempt + "\n"
+):
+    raise SystemExit(1)
+for path in (*paths, root):
+    info = path.stat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise SystemExit(1)
+credential = config / ".credentials.json"
+info = credential.lstat()
+if (
+    not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) & 0o077
+):
+    raise SystemExit(1)
+PY
+    echo "Claude CLI attempt runtime is unsafe" >&2
+    exit 6
+  }
   CLAUDE_PERMISSION_ARGS=(--settings "$FACTORY_CLAUDE_SETTINGS"
     --permission-mode acceptEdits --no-session-persistence --disable-slash-commands)
 fi

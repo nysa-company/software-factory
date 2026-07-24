@@ -27,15 +27,22 @@ Focused provider tests separately hold four loopback broker requests open, cance
 After the mock proof passes and no provider call is active, plan and run the one-use canary:
 
 ```bash
-bash scripts/factory-dev-lane.sh subscription-plan
+bash scripts/factory-dev-lane.sh subscription-plan --adapter codex
 bash scripts/factory-dev-lane.sh subscription-run \
   --root <root-from-plan> --approve-hash <hash-from-plan>
 ```
 
-The canary uses one existing authenticated Codex subscription CLI session—never an API key—for four same-account Codex calls. It copies only the Codex session into the lane-local home, reserves $0.25 per synthetic ticket ($1 total), requires all four calls to overlap, validates exact output, charges the full conservative reservation, and rejects any worktree mutation. Planning binds the Codex executable path, bytes, version, provider identity status, policy, activation, lane nonce, and product tree; execution consumes that approval before admission and stops if another task-bearing subscription CLI process is active.
+Choose `codex` or `claude`. The canary uses one existing authenticated
+subscription CLI session—never an API key—for four same-account calls. It
+copies only the selected session into the lane-local home, reserves $0.25 per
+synthetic ticket ($1 total), requires all four calls to overlap, validates exact
+output, charges the full conservative reservation, and rejects worktree
+mutation. Native Claude additionally receives a separate owner-only home,
+configuration directory, temporary directory, and credential copy per attempt;
+those roots are removed only after their process groups drain.
 
-The subscription canary copies only its Codex CLI session; product lanes copy
-their three configured CLI sessions into the owner-only lane root once.
+The subscription canary copies only its selected CLI session; product lanes
+copy their three configured CLI sessions into the owner-only lane root once.
 Readiness, version evidence, approval hashing, and role execution then use the
 same clean environment and only those copied files from the lane root as their
 working directory; ambient authentication variables, the caller's working
@@ -72,8 +79,8 @@ development lane. The runner keeps the ticket lease heartbeat active and
 releases the product launch lock while waiting, then reacquires it and
 revalidates controls before proceeding. Budget, policy, identity, and rate
 denials remain immediate. Development activation permits four calls for one
-Codex account; Cursor and native Claude remain capped at two, and the native
-Claude circuit breaker remains in force.
+Codex account or one native Claude account. Cursor remains capped at two
+because its pinned CLI still shares one hard-coded scratch bridge.
 
 The PR-less development Narrator marks Preview and Screenshots as backend-only
 N/A when the frozen contract has no browser or visual surface, including an

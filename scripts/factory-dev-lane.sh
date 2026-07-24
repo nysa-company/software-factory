@@ -36,7 +36,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh mock-concurrency [--keep]
        factory-dev-lane.sh cursor-plan
        factory-dev-lane.sh cursor-run --root <absolute-lane-root> --approve-hash <sha256>
-       factory-dev-lane.sh subscription-plan
+       factory-dev-lane.sh subscription-plan [--adapter codex|claude]
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-seed-lineage --accounting <absolute-json> --output <absolute-json> [--parent-accounting <absolute-json>]
        factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json> --seed-checkpoint <absolute-json>]
@@ -133,6 +133,16 @@ codex_subscription_ready() {
   done
 }
 
+claude_subscription_ready() {
+  local root="$1" i
+  for i in 1 2 3; do
+    subscription_base_env "$root" "$root/home/timeout" 10 \
+      "$root/home/claude" auth status >/dev/null 2>&1 && return
+    [[ "$i" -lt 3 ]] || die "Claude subscription authentication is unavailable"
+    sleep 1
+  done
+}
+
 ensure_cursor_file_credential_config() {
   local config="$1/home/.factory/global.env"
   if grep -q '^AGENT_CLI_CREDENTIAL_STORE=' "$config"; then
@@ -144,8 +154,14 @@ ensure_cursor_file_credential_config() {
 }
 
 subscription_approval_hash() {
-  local root="$1" session_home real
+  local root="$1" session_home real adapter tool credential
   session_home="$root/session-home"
+  adapter="$(cat "$root/subscription-adapter")"
+  case "$adapter" in
+    codex) tool=codex; credential="$session_home/.codex/auth.json" ;;
+    claude) tool=claude; credential="$session_home/.claude/.credentials.json" ;;
+    *) return 1 ;;
+  esac
   {
     python3 - "$root/marker.json" <<'PY'
 import json, sys
@@ -154,21 +170,28 @@ print(value["kit_sha"]); print(value["nonce"])
 PY
     git -C "$root/kit" rev-parse 'HEAD^{tree}'
     git -C "$root/product" rev-parse 'HEAD^{tree}'
-    real="$(python3 - "$root/home/codex" <<'PY'
+    printf '%s\n' "$adapter"
+    real="$(python3 - "$root/home/$tool" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
 )"
     printf '%s\n' "$real" "$(sha256_file "$real")" \
-      "$(subscription_base_env "$root" "$root/home/codex" --version 2>/dev/null | head -n1)"
-    subscription_base_env "$root" "$root/home/codex" login status 2>/dev/null |
-      sha256_text
+      "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
+    if [[ "$adapter" == codex ]]; then
+      subscription_base_env "$root" "$root/home/codex" login status 2>/dev/null |
+        sha256_text
+    else
+      subscription_base_env "$root" "$root/home/claude" auth status 2>/dev/null |
+        sha256_text
+    fi
     sha256_file "$root/runtime/provider-policy.json"
     sha256_file "$root/runtime/provider-activation.json"
     sha256_file "$root/home/record-provider-call"
     sha256_file "$root/home/.factory/global.env"
     sha256_file "$root/runtime/native.sb"
-    sha256_file "$session_home/.codex/auth.json"
+    sha256_file "$credential"
+    [[ "$adapter" != claude ]] || sha256_file "$root/runtime/claude-settings.json"
   } | sha256_text
 }
 
@@ -552,8 +575,12 @@ prepare_product_dependencies() {
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter
   local -a subscription_tools
+  subscription_adapter="${FACTORY_SUBSCRIPTION_ADAPTER:-codex}"
+  [[ "$mode" != subscription || "$subscription_adapter" == codex ||
+     "$subscription_adapter" == claude ]] ||
+    die "unsupported subscription canary adapter"
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -563,6 +590,10 @@ create_lane() {
   root="$(physical "$root")"
   chmod 700 "$root"
   refuse_production_path "$root"
+  if [[ "$mode" == subscription ]]; then
+    printf '%s\n' "$subscription_adapter" >"$root/subscription-adapter"
+    chmod 600 "$root/subscription-adapter"
+  fi
   nonce="$(basename "$root" | sed 's/^nysa-sf-dev\.//')"
   project="factory-dev-lane-$(printf '%s' "$nonce" | tr '[:upper:]' '[:lower:]')"
   mkdir -p "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev-$(basename "$root")" \
@@ -819,24 +850,31 @@ PY
   ln -s "$cursor" "$root/home/agent"
   if [[ "$mode" == subscription || "$mode" == product ]]; then
     mkdir -m 700 "$root/session-home"
-    mkdir -m 700 "$root/session-home/.codex"
-    [[ -f "$session_home/.codex/auth.json" && ! -L "$session_home/.codex/auth.json" ]] ||
-      die "Codex subscription session file is unavailable"
-    cp "$session_home/.codex/auth.json" "$root/session-home/.codex/auth.json"
-    chmod 600 "$root/session-home/.codex/auth.json"
-    subscription_tools=(codex)
-    if [[ "$mode" == product ]]; then
-      mkdir -m 700 "$root/session-home/.cursor" "$root/session-home/.claude"
-      cp "$session_home/.cursor/auth.json" "$root/session-home/.cursor/auth.json"
-      cp "$session_home/.cursor/cli-config.json" "$root/session-home/.cursor/cli-config.json"
+    subscription_tools=()
+    if [[ "$mode" == product || "$subscription_adapter" == codex ]]; then
+      mkdir -m 700 "$root/session-home/.codex"
+      [[ -f "$session_home/.codex/auth.json" && ! -L "$session_home/.codex/auth.json" ]] ||
+        die "Codex subscription session file is unavailable"
+      cp "$session_home/.codex/auth.json" "$root/session-home/.codex/auth.json"
+      chmod 600 "$root/session-home/.codex/auth.json"
+      subscription_tools+=(codex)
+    fi
+    if [[ "$mode" == product || "$subscription_adapter" == claude ]]; then
+      mkdir -m 700 "$root/session-home/.claude"
       [[ -f "$session_home/.claude/.credentials.json" &&
          ! -L "$session_home/.claude/.credentials.json" ]] ||
         die "Claude subscription session file is unavailable"
       cp "$session_home/.claude/.credentials.json" \
         "$root/session-home/.claude/.credentials.json"
+      chmod 600 "$root/session-home/.claude/.credentials.json"
+      subscription_tools+=(claude)
+    fi
+    if [[ "$mode" == product ]]; then
+      mkdir -m 700 "$root/session-home/.cursor"
+      cp "$session_home/.cursor/auth.json" "$root/session-home/.cursor/auth.json"
+      cp "$session_home/.cursor/cli-config.json" "$root/session-home/.cursor/cli-config.json"
       chmod 600 "$root/session-home/.cursor/"*.json \
         "$root/session-home/.claude/.credentials.json"
-      subscription_tools+=(claude)
     fi
     for tool in "${subscription_tools[@]}"; do
       resolved="$(command -v "$tool" 2>/dev/null || true)"
@@ -923,8 +961,11 @@ with open(path,"w",encoding="utf-8") as stream:
     json.dump(value,stream,sort_keys=True,separators=(",",":")); stream.write("\n")
 os.chmod(path,0o600)
 PY
-    subscription_tools=(codex)
-    [[ "$mode" != product ]] || subscription_tools+=(claude)
+    if [[ "$mode" == subscription ]]; then
+      subscription_tools=("$subscription_adapter")
+    else
+      subscription_tools=(codex claude)
+    fi
     for tool in "${subscription_tools[@]}"; do
       cat >"$root/home/$tool" <<EOF
 #!/usr/bin/env bash
@@ -1697,6 +1738,14 @@ codex_subscription_env() {
   subscription_base_env "$root" env CODEX_PINNED="$codex_version" "$@"
 }
 
+claude_subscription_env() {
+  local root="$1" claude_version
+  shift
+  claude_version="$(subscription_base_env "$root" \
+    "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+  subscription_base_env "$root" env CLAUDE_CODE_PINNED="$claude_version" "$@"
+}
+
 product_approval_hash() {
   local root="$1" ticket tool real session_home="$1/session-home" cursor_home
   cursor_home="$session_home"
@@ -2191,17 +2240,7 @@ CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
 EOF
   chmod 600 "$root/home/.factory/global.env"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
-    if [[ "${#PRODUCT_TICKETS[@]}" -gt 1 &&
-          "$ticket" == "${PRODUCT_TICKETS[1]}" ]]; then
-      for unsafe_route in claude-fable claude-sonnet; do
-        subscription_env "$root" "$root/kit/scripts/model-control.sh" disable \
-          --scope-type route --scope-id "$unsafe_route" \
-          --reason runtime_isolation_failure --ttl-seconds 86400 \
-          --operator-id factory-dev-lane >/dev/null
-      done
-    fi
     profile=balanced-v2
-    [[ "$ticket" != "${PRODUCT_TICKETS[0]}" ]] || profile=cursor-priority-v1
     profile_hash="$(python3 - "$root/kit/scripts/model-routing/profiles-v1.json" "$profile" <<'PY'
 import hashlib, json, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -2220,19 +2259,15 @@ PY
 import json, pathlib, sys
 root, *tickets=sys.argv[1:]
 production={"planner","builder","narrator"}; checking={"spec-linter","test-author","reviewer"}
-for index,ticket in enumerate(tickets):
+for ticket in tickets:
     plan=json.loads(pathlib.Path(root,"worktrees",ticket,"factory","route-plans",ticket+".json").read_text())
     selections=plan["resolution"]["selections"]
     if any(selections[r]["provider_family"]==selections[c]["provider_family"] for r in production for c in checking):
         raise SystemExit("role-family separation failed")
-    if index == 0:
-        if any(not value["adapter"].startswith("cursor-") for value in selections.values()):
-            raise SystemExit("cursor ticket route drifted")
-    else:
-        if any(selections[r]["adapter"] != "codex" for r in production):
-            raise SystemExit("native production route drifted")
-        if any(selections[r]["adapter"] != "cursor-anthropic" for r in checking):
-            raise SystemExit("checking circuit breaker did not select Cursor Claude")
+    if any(selections[r]["adapter"] != "codex" for r in production):
+        raise SystemExit("native production route drifted")
+    if any(selections[r]["adapter"] != "claude-code" for r in checking):
+        raise SystemExit("native checking route drifted")
 PY
     die "product route-family or circuit-breaker validation failed"
   python3 - "$root/runtime/provider-policy.json" \
@@ -2243,8 +2278,9 @@ def limit(concurrent, starts):
     return {"max_concurrent":concurrent,"max_starts":starts,"window_seconds":60}
 policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
         "global":limit(4,24),
-        "provider_families":{"openai":limit(4,24),"anthropic":limit(2,12)},
-        "account_routes":{"cursor":limit(2,15),"codex-native":limit(4,18)}}
+        "provider_families":{"openai":limit(4,24),"anthropic":limit(4,24)},
+        "account_routes":{"cursor":limit(2,15),"codex-native":limit(4,18),
+                          "claude-native":limit(4,18)}}
 raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
 routes={}
 for ticket in tickets:
@@ -2284,7 +2320,7 @@ PY
   chmod 600 "$root/runtime/product-approval"
   echo "APPROVE_HASH=$approval_hash"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
-  echo "PROVIDER_LIMITS=global:4,cursor:2,codex:4,claude:2"
+  echo "PROVIDER_LIMITS=global:4,cursor:2,codex:4,claude:4"
 }
 
 next_stage() {
@@ -2417,37 +2453,56 @@ PY
 }
 
 subscription_probe_and_plan() {
-  local root="$1" codex_version approval_hash
+  local root="$1" adapter version approval_hash pin_key
   require_lane_mode "$root" subscription
   validate_runtime_paths "$root"
-  codex_subscription_ready "$root"
-  codex_version="$(subscription_base_env "$root" \
-    "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
-  [[ -n "$codex_version" ]] ||
+  adapter="$(cat "$root/subscription-adapter")"
+  case "$adapter" in
+    codex)
+      codex_subscription_ready "$root"
+      version="$(subscription_base_env "$root" \
+        "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+      pin_key=CODEX_PINNED
+      ;;
+    claude)
+      claude_subscription_ready "$root"
+      version="$(subscription_base_env "$root" \
+        "$root/home/claude" --version 2>/dev/null | awk 'NF {print $1; exit}')"
+      pin_key=CLAUDE_CODE_PINNED
+      ;;
+    *) die "unsupported subscription canary adapter" ;;
+  esac
+  [[ -n "$version" ]] ||
     die "subscription CLI version probe was empty"
   cat > "$root/home/.factory/global.env" <<EOF
 GLOBAL_DAILY_CAP_USD=1.00
-CODEX_PINNED=$codex_version
+$pin_key=$version
 EOF
   chmod 600 "$root/home/.factory/global.env"
-  python3 - "$root/runtime/provider-policy.json" "$root/runtime/provider-activation.json" <<'PY'
+  python3 - "$root/runtime/provider-policy.json" \
+    "$root/runtime/provider-activation.json" "$adapter" <<'PY'
 import hashlib, json, os, sys
 
-policy_path, activation_path=sys.argv[1:]
+policy_path, activation_path, selected=sys.argv[1:]
+values={
+    "codex":("codex","gpt-5.6-sol","openai","lane-codex-subscription"),
+    "claude":("claude-code","sonnet","anthropic","lane-claude-subscription"),
+}
+adapter, model, family, account=values[selected]
 def limit(concurrent):
     return {"max_concurrent":concurrent,"max_starts":4,"window_seconds":60}
 policy={
     "schema":"factory-provider-concurrency-policy/v1",
     "coupled_max_concurrent":4,
     "global":limit(4),
-    "provider_families":{"openai":limit(4)},
-    "account_routes":{"lane-codex-subscription":limit(4)},
+    "provider_families":{family:limit(4)},
+    "account_routes":{account:limit(4)},
 }
 raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
 routes={
     f"lane-subscription-T-{number}":{
-        "account_route":"lane-codex-subscription","adapter":"codex",
-        "model":"gpt-5.6-sol","provider_family":"openai"}
+        "account_route":account,"adapter":adapter,
+        "model":model,"provider_family":family}
     for number in range(900001, 900005)
 }
 activation={"enabled":True,"mode":"cli-concurrent-v1",
@@ -2484,14 +2539,14 @@ PY
   printf 'approval_hash=%s\nused=0\n' "$approval_hash" > "$root/runtime/subscription-approval"
   chmod 600 "$root/runtime/subscription-approval"
   echo "APPROVE_HASH=$approval_hash"
-  echo "PROVIDER_SPLIT=codex:4"
+  echo "PROVIDER_SPLIT=$adapter:4"
   echo "AGGREGATE_RESERVATION_USD=1.00"
 }
 
 run_subscription_internal() {
   local root="$1" supplied="$2" stored ticket adapter family account model attempt output pid
-  local day start_ns end_ns result command_path terminal_result
-  local -a pids=() attempts=() outputs=()
+  local day start_ns end_ns result command_path terminal_result selected attempt_root
+  local -a pids=() attempts=() outputs=() attempt_roots=()
   require_lane_mode "$root" subscription
   validate_runtime_paths "$root"
   [[ -f "$root/runtime/subscription-approval" && ! -L "$root/runtime/subscription-approval" ]] ||
@@ -2501,7 +2556,12 @@ run_subscription_internal() {
     die "subscription approval hash does not match or was already used"
   [[ "$(subscription_approval_hash "$root")" == "$supplied" ]] ||
     die "subscription approval inputs drifted after planning"
-  codex_subscription_ready "$root"
+  selected="$(cat "$root/subscription-adapter")"
+  case "$selected" in
+    codex) codex_subscription_ready "$root" ;;
+    claude) claude_subscription_ready "$root" ;;
+    *) die "unsupported subscription canary adapter" ;;
+  esac
   subscription_provider_idle || die "another subscription provider call is active"
   mv "$root/runtime/subscription-approval" "$root/runtime/subscription-approval.used"
   day="$(date -u +%F)"
@@ -2510,12 +2570,33 @@ run_subscription_internal() {
   for ticket in "${TICKETS[@]}"; do
     [[ "$ticket" =~ ^T-90000[1-4]$ ]] ||
       die "unexpected subscription canary ticket"
-    adapter=codex; family=openai; account=lane-codex-subscription
-    model=gpt-5.6-sol
+    if [[ "$selected" == codex ]]; then
+      adapter=codex; family=openai; account=lane-codex-subscription
+      model=gpt-5.6-sol
+    else
+      adapter=claude-code; family=anthropic; account=lane-claude-subscription
+      model=sonnet
+    fi
     attempt="$ticket-subscription-canary"
     output="$root/runtime/provider-inputs/$ticket.out"
     command_path="$root/kit/scripts/adapters/$adapter.sh"
-    codex_subscription_env "$root" python3 "$root/kit/scripts/provider-cli-runtime.py" \
+    if [[ "$selected" == claude ]]; then
+      attempt_root="$root/runtime/cli-attempts/$attempt"
+      mkdir -p "$root/runtime/cli-attempts"
+      chmod 700 "$root/runtime/cli-attempts"
+      mkdir -m 700 "$attempt_root" "$attempt_root/home" \
+        "$attempt_root/config" "$attempt_root/tmp"
+      printf '%s\n' "$attempt" >"$attempt_root/owner"
+      cp "$root/session-home/.claude/.credentials.json" \
+        "$attempt_root/config/.credentials.json"
+      chmod 600 "$attempt_root/owner" "$attempt_root/config/.credentials.json"
+      attempt_roots+=("$attempt_root")
+      claude_subscription_env "$root" env \
+        HOME="$attempt_root/home" TMPDIR="$attempt_root/tmp" \
+        CLAUDE_CONFIG_DIR="$attempt_root/config" \
+        FACTORY_CLI_INTERNAL_SANDBOX=1 FACTORY_CLI_ATTEMPT_ID="$attempt" \
+        FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
+        python3 "$root/kit/scripts/provider-cli-runtime.py" \
       --coordinator "$root/kit/scripts/provider-coordinator.py" \
       --db "$root/runtime/provider-state.sqlite3" \
       --policy "$root/runtime/provider-policy.json" \
@@ -2530,6 +2611,23 @@ run_subscription_internal() {
       --model "$model" --effort low -- \
       "Reply with exactly CANARY_OK. Do not read, execute, or modify files." \
       >"$output" 2>&1 &
+    else
+      codex_subscription_env "$root" python3 "$root/kit/scripts/provider-cli-runtime.py" \
+      --coordinator "$root/kit/scripts/provider-coordinator.py" \
+      --db "$root/runtime/provider-state.sqlite3" \
+      --policy "$root/runtime/provider-policy.json" \
+      --attempt-id "$attempt" --provider-family "$family" --account-route "$account" \
+      --reserve-micro-usd 250000 --product-id "factory-dev-lane-$(basename "$root")" \
+      --ticket-id "$ticket" --budget-day "$day" \
+      --product-cap-micro-usd 1000000 --ticket-cap-micro-usd 250000 \
+      --machine-cap-micro-usd 1000000 -- \
+      "$root/home/record-provider-call" "$root/runtime/provider-timeline" "$ticket" \
+      "$command_path" --budget 0.25 --max-turns 1 --timeout-min 3 \
+      --prompt-file /dev/null --workdir "$root/worktrees/$ticket" \
+      --model "$model" --effort low -- \
+      "Reply with exactly CANARY_OK. Do not read, execute, or modify files." \
+      >"$output" 2>&1 &
+    fi
     pids+=("$!"); attempts+=("$attempt"); outputs+=("$output")
   done
   result=0
@@ -2570,9 +2668,19 @@ assert value["counts"] == {"terminal":4}, value
 assert value["active_reserve_micro_usd"] == 0, value
 ' || die "subscription canary reservations did not drain"
   subscription_provider_idle || die "subscription canary left a provider process"
+  for attempt_root in "${attempt_roots[@]}"; do
+    python3 - "$attempt_root" "$root" <<'PY' ||
+import pathlib, shutil, sys
+path=pathlib.Path(sys.argv[1]); root=pathlib.Path(sys.argv[2])
+if path.parent != root/"runtime"/"cli-attempts" or path.is_symlink():
+    raise SystemExit(1)
+shutil.rmtree(path)
+PY
+      die "subscription canary Claude runtime cleanup failed"
+  done
   echo "PROVIDER_CALLS=4"
   echo "PROVIDER_MODE=cli-concurrent-v1"
-  echo "PROVIDER_SPLIT=codex:4"
+  echo "PROVIDER_SPLIT=$selected:4"
   echo "PROVIDER_OVERLAP_MILLISECONDS=$(( (end_ns - start_ns) / 1000000 ))"
   echo "ACCOUNTED_RESERVATION_USD=1.00"
 }
@@ -3730,8 +3838,15 @@ case "$command" in
     ;;
   subscription-plan)
     assert_macos
-    [[ $# -eq 0 ]] || usage
-    root="$(create_lane subscription)"
+    adapter=codex
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --adapter) adapter="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ "$adapter" == codex || "$adapter" == claude ]] || usage
+    root="$(export FACTORY_SUBSCRIPTION_ADAPTER="$adapter"; create_lane subscription)"
     echo "ROOT=$root"
     if ! run_in_sandbox "$root" subscription __subscription-plan --root "$root"; then
       echo "ROOT=$root" >&2
