@@ -267,6 +267,11 @@ git -C "$EXPORT_WORK" add .
 git -C "$EXPORT_WORK" commit -qm base
 EXPORT_BASE="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
 mkdir -p "$EXPORT_WORK/docs" "$EXPORT_WORK/factory/route-plans"
+mkdir -p "$EXPORT_WORK/app/tests"
+printf '%s\n' acceptance >"$EXPORT_WORK/app/tests/acceptance.test"
+printf '%s\n' 'State: Building' >"$EXPORT_WORK/factory/tickets/T-1.md"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm 'T-1: author acceptance tests'
 printf '%s\n' new >"$EXPORT_WORK/app/source.txt"
 printf '\000\001\002' >"$EXPORT_WORK/app/binary.dat"
 printf '%s\n' reviewed >"$EXPORT_WORK/docs/contract.md"
@@ -300,7 +305,7 @@ cat >"$EXPORT_ROOT/product/factory/runtime-ledger.csv" <<'EOF'
 date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version
 2026-01-01,00:00:00,T-1,reviewer,mock,3,1,0.00,0,export-review,test,test,pinned_route_plan,estimated_tokens,test
 EOF
-eval "$(sed -n '/^product_export_patch()/,/^export_product_internal()/p' \
+eval "$(sed -n '/^product_export_patch()/,/^select_product_export_tickets()/p' \
   "$LANE" | sed '$d')"
 EXPORT_PATCH="$EXPORT_ROOT/T-1.patch"
 [[ "$(product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
@@ -319,6 +324,26 @@ done
 if grep -Eq '^factory(/|$)' <<<"$patch_paths"; then
   fail "approved product patch exported Factory control state"
 fi
+EXPORT_MBOX="$EXPORT_ROOT/T-1.mbox"
+product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" "$EXPORT_REVIEWED" \
+  "$EXPORT_MBOX" ||
+  fail "approved product mailbox was not created"
+git -C "$EXPORT_APPLY" config user.name 'Factory Export Test'
+git -C "$EXPORT_APPLY" config user.email factory-export@local
+git -C "$EXPORT_APPLY" am "$EXPORT_MBOX" >/dev/null ||
+  fail "approved product mailbox is not applicable"
+[[ "$(git -C "$EXPORT_APPLY" rev-list --count "$EXPORT_BASE..HEAD")" == 2 ]] ||
+  fail "product mailbox collapsed Test-author and Builder commits"
+[[ "$(git -C "$EXPORT_APPLY" log -1 --format=%s "$EXPORT_BASE..HEAD~1")" == \
+   'T-1: author acceptance tests' ]] ||
+  fail "product mailbox did not preserve Test-author before Builder"
+if git -C "$EXPORT_APPLY" diff-tree --no-commit-id --name-only -r \
+    "$EXPORT_BASE..HEAD" | grep -Eq '^factory(/|$)'; then
+  fail "product mailbox exported Factory control state"
+fi
+git -C "$EXPORT_APPLY" diff --exit-code "$EXPORT_REVIEWED" -- . \
+  ':(exclude)factory' >/dev/null ||
+  fail "product mailbox tree differs from the reviewed application projection"
 printf '%s\n' drift >>"$EXPORT_WORK/app/source.txt"
 git -C "$EXPORT_WORK" add app/source.txt
 git -C "$EXPORT_WORK" commit -qm post-review-drift
@@ -378,15 +403,26 @@ PY
 then
   fail "concurrent Cursor Reviewer did not use native read-only mode"
 fi
+grep -Fq 'FACTORY_DEV_PRLESS_EVIDENCE_V1' "$ROOT/roles/narrator.md" ||
+  fail "Narrator backend-only exception lacks its trusted development marker"
+grep -Fq 'Not applicable — backend-only contract' "$ROOT/roles/narrator.md" ||
+  fail "Narrator cannot represent an explicitly backend-only preview"
+grep -Fq 'never weakens the normal' \
+  "$ROOT/roles/narrator.md" ||
+  fail "Narrator backend-only exception weakens production preview evidence"
+sed -n '/^product_role_run()/,/^}/p' "$LANE" |
+  grep -Fq 'Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1' ||
+  fail "development product runner did not supply the PR-less evidence marker"
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
     --adapter codex --input "$VERDICT"
 done
-product_role_source="$(sed -n '/^product_role_run()/,/^product_role_retryable()/p' "$LANE")"
+product_role_source="$(sed -n '/^product_role_run()/,/^product_reconcile_reviewer()/p' "$LANE")"
 printf '%s\n' "$product_role_source" | grep -Fq '"$role" == builder' ||
   fail "product Builder no longer owns the Review-state transition"
-if printf '%s\n' "$product_role_source" | grep -Fq '"$role" == narrator'; then
+if [[ "$(printf '%s\n' "$product_role_source" |
+    grep -Fc 'set_review_state "$root"')" != 1 ]]; then
   fail "product Narrator still owns the late Review-state transition"
 fi
 

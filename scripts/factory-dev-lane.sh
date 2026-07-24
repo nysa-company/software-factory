@@ -2184,11 +2184,20 @@ assert value["active_reserve_micro_usd"] == 0, value
 }
 
 product_role_run() {
-  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope
+  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
     instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES. If requesting changes, add exactly one standalone FIX-OWNER: builder, FIX-OWNER: test-author, or FIX-OWNER: both line; approvals must not include FIX-OWNER."
+  elif [[ "$role" == narrator ]]; then
+    evidence="$(python3 - "$root/product/factory/runtime-ledger.csv" "$ticket" <<'PY'
+import csv, sys
+rows=[row for row in csv.DictReader(open(sys.argv[1],encoding="utf-8"))
+      if row.get("ticket")==sys.argv[2]]
+print(f"attempts={len(rows)} cost_usd={sum(float(row['cost_usd']) for row in rows):.2f}")
+PY
+)" || return
+    instruction="$instruction Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1. This isolated development lane has no GitHub PR, deploy, or network. Only if the frozen contract explicitly has no browser, HTTP, or deployable surface, write all standard bundle sections, mark Preview and Screenshots exactly 'Not applicable — backend-only contract', label the bundle development-only and not a production attestation, and summarize the already committed Reviewer-approved deterministic evidence. Do not rerun tests or commands. Trusted accounting: $evidence."
   fi
   envelope="$root/product/factory/ENVELOPE.env"
   [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||
@@ -2200,7 +2209,23 @@ product_role_run() {
     "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
     --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
     "$instruction" || return
-  if [[ "$role" == reviewer ]]; then
+  if [[ "$role" == narrator ]]; then
+    python3 - "$root/worktrees/$ticket/factory/tickets/$ticket-bundle.md" <<'PY' || return
+import pathlib, re, sys
+path=pathlib.Path(sys.argv[1])
+text=path.read_text(encoding="utf-8")
+required=("What this does","Preview","Screenshots","Acceptance criteria",
+          "Risk","Cost","Rollback")
+if any(not re.search(rf"^#+\s+.*{re.escape(name)}",text,re.I|re.M)
+       for name in required):
+    raise SystemExit("development evidence bundle is incomplete")
+if text.count("Not applicable — backend-only contract") < 2:
+    raise SystemExit("development evidence bundle lacks backend-only N/A evidence")
+if not re.search(r"development-only",text,re.I) or \
+   not re.search(r"approve to merge",text,re.I):
+    raise SystemExit("development evidence bundle lacks status or approval question")
+PY
+  elif [[ "$role" == reviewer ]]; then
     (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || return
   elif [[ "$role" == builder ]]; then
     (TICKET="$ticket"; set_review_state "$root") || return
@@ -2316,7 +2341,7 @@ active=maximum=0
 for _, delta in sorted(events, key=lambda item:(item[0],-item[1])):
     active += delta
     maximum=max(maximum,active)
-successful={}
+successful={}; successful_heads={}
 for path in runs.glob("*.meta"):
     values={}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -2325,13 +2350,17 @@ for path in runs.glob("*.meta"):
     if values.get("phase")=="completed" and values.get("exit_status")=="0":
         key=(values.get("ticket"),values.get("role"))
         successful[key]=successful.get(key,0)+1
+        head_key=key+(values.get("role_head_before"),)
+        successful_heads[head_key]=successful_heads.get(head_key,0)+1
 report={
   "schema":"factory-dev-product-timing/v1",
   "batch_started_at":started,
   "batch_terminal_at":finished,
   "elapsed_seconds":max(0,finished-started),
   "maximum_provider_overlap":maximum,
-  "successful_role_replay_count":sum(max(0,count-1) for count in successful.values()),
+  "successful_role_replay_count":sum(
+      max(0,count-1) for count in successful_heads.values()),
+  "repeat_role_call_count":sum(max(0,count-1) for count in successful.values()),
   "attempts":[{
     key:attempt[key] for key in (
       "attempt_id","ticket_id","prepared_at","admitted_at","go_at",
@@ -2568,6 +2597,35 @@ PY
   printf '%s\n' "$reviewed"
 }
 
+product_export_mbox() {
+  local root="$1" ticket="$2" base="$3" reviewed="$4" output="$5"
+  local temporary
+  python3 - "$root/worktrees/$ticket" "$base" "$reviewed" <<'PY' || return 1
+import subprocess, sys
+work, base, reviewed=sys.argv[1:]
+def git(*args):
+    return subprocess.check_output(
+        ["git","-C",work,*args],text=True).splitlines()
+if git("rev-list","--min-parents=2",base+".."+reviewed):
+    raise SystemExit(1)
+for commit in git("rev-list","--reverse",base+".."+reviewed):
+    for line in git("diff-tree","--root","-r","--no-commit-id","--raw",
+                    "--no-abbrev",commit,"--",".",":(exclude)factory"):
+        fields=line.split("\t",1)[0].split()
+        if len(fields) < 2 or fields[0][1:] in {"120000","160000"} or \
+           fields[1] in {"120000","160000"}:
+            raise SystemExit(1)
+PY
+  temporary="$(mktemp "$output.tmp.XXXXXX")" || return 1
+  if ! git -C "$root/worktrees/$ticket" format-patch --stdout --binary \
+      "$base..$reviewed" -- . ':(exclude)factory' >"$temporary" ||
+      [[ ! -s "$temporary" ]]; then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$output" || { rm -f "$temporary"; return 1; }
+}
+
 select_product_export_tickets() {
   local selected_csv="$1"
   local -a selected
@@ -2636,6 +2694,9 @@ PY
     reviewed="$(product_export_patch "$root" "$ticket" "$base" "$head" \
       "$export_dir/$ticket.patch")" ||
       die "product ticket has no safe approved application patch: $ticket"
+    product_export_mbox "$root" "$ticket" "$base" "$reviewed" \
+      "$export_dir/$ticket.mbox" ||
+      die "product ticket has no safe role-preserving application mailbox: $ticket"
     printf '%s\n' "$reviewed" >"$export_dir/$ticket.reviewed"
   done
   python3 - "$root/runtime/product-source.json" "$export_dir/manifest.json" \
@@ -2648,7 +2709,8 @@ for ticket in tickets:
     head=subprocess.check_output(["git","-C",str(work),"rev-parse","HEAD"],text=True).strip()
     tree=subprocess.check_output(["git","-C",str(work),"rev-parse","HEAD^{tree}"],text=True).strip()
     route=work/"factory"/"route-plans"/(ticket+".json")
-    patch=export/(ticket+".patch"); bundle=export/(ticket+".bundle")
+    patch=export/(ticket+".patch"); mbox=export/(ticket+".mbox")
+    bundle=export/(ticket+".bundle")
     reviewed=(export/(ticket+".reviewed")).read_text(encoding="utf-8").strip()
     reviewed_tree=subprocess.check_output(
         ["git","-C",str(work),"rev-parse",reviewed+"^{tree}"],text=True).strip()
@@ -2656,8 +2718,9 @@ for ticket in tickets:
     records.append({"ticket":ticket,"head_sha":head,"head_tree":tree,
                     "reviewed_sha":reviewed,"reviewed_tree":reviewed_tree,
                     "route_plan_sha256":digest(route),"patch_sha256":digest(patch),
+                    "mbox_sha256":digest(mbox),
                     "bundle_sha256":digest(bundle)})
-value={"schema":"factory-dev-product-export/v2","base_sha":source["base_sha"],
+value={"schema":"factory-dev-product-export/v3","base_sha":source["base_sha"],
        "base_tree":source["base_tree"],"factory_sha":subprocess.check_output(
        ["git","-C",str(pathlib.Path(root,"kit")),"rev-parse","HEAD"],text=True).strip(),
        "tickets":records}

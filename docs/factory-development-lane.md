@@ -79,14 +79,18 @@ For sequential protected-base refreshes, keep using the existing committed
 and requires a fresh Reviewer and Narrator bound after the exact merge. This
 lane does not add a second refresh or checkpoint format.
 
-`product-export` binds each application patch to the latest successful
+`product-export` binds each application artifact to the latest successful
 Reviewer head, rejects later non-Factory changes, and excludes the complete
 reserved `factory/` namespace. The exact Git bundle retains retry and audit
-history only; it is never an application artifact. Apply only the projected
-patch to a fresh isolated product branch, then refresh and reverify it against
-current protected main. When successful siblings finish in different retained
-lanes, `product-export --tickets T-NNN,...` exports only the named completed
-subset while applying the same role-evidence and Reviewer checks.
+history only; it is never an application artifact. The role-preserving
+`T-NNN.mbox` is the canonical application artifact; apply it with `git am` to
+a fresh isolated product branch so Test-author and Builder commits remain
+separate. The flattened patch remains diagnostic compatibility output and must
+not be committed as one product change. Refresh and reverify the resulting
+branch against current protected main. When successful siblings finish in
+different retained lanes, `product-export --tickets T-NNN,...` exports only
+the named completed subset while applying the same role-evidence and Reviewer
+checks.
 
 ## Real Cursor lifecycle
 
