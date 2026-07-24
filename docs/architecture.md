@@ -163,9 +163,9 @@ data. Shell commands, substitutions, and unsupported keys are rejected.
 Calibrate a route only after its task-free identity/readiness probe, adapter
 contract, and conformance smokes pass. Cursor output is redacted while
 streaming; the redacted `.out` artifact remains local and ignored, while the
-manifest and ledger carry durable provenance. Factory Cursor prompts end with
-a trusted execution requirement that keeps every role in the default agent
-execution mode rather than Cursor's Plan or Ask modes.
+manifest and ledger carry durable provenance. Mutating Factory Cursor roles
+stay in the default agent execution mode. Reviewer stays in native read-only
+Ask mode with noninteractive approval so it can run read-only terminal checks.
 
 The disabled experimental Kimi route uses Claude CLI transport, the OpenRouter
 gateway, and Moonshot inference for `moonshotai/kimi-k2.6`. It is in no profile

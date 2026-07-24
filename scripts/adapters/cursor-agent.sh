@@ -89,7 +89,7 @@ fi
 if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
   FULL_TASK="$FULL_TASK
 
-Reviewer CLI control: remain read-only, inspect the supplied change, and return the required verdict without editing or committing."
+Reviewer CLI control: remain in native read-only Ask mode, inspect the supplied change, run the required deterministic checks with read-only terminal access, and return the required verdict without editing or committing."
 else
   FULL_TASK="$FULL_TASK
 
@@ -117,7 +117,7 @@ set +e
   CURSOR_ARGS=(--print --output-format stream-json \
     --workspace "$WORKDIR" --trust --model "$MODEL")
   if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
-    CURSOR_ARGS=(--mode ask "${CURSOR_ARGS[@]}")
+    CURSOR_ARGS=(--mode ask --force "${CURSOR_ARGS[@]}")
   else
     CURSOR_ARGS=(--force "${CURSOR_ARGS[@]}")
   fi

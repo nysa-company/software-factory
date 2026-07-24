@@ -397,11 +397,13 @@ if ! python3 - "$TMP/cursor-args" <<'PY'
 import sys
 args = open(sys.argv[1], encoding="utf-8").read().splitlines()
 assert args[args.index("--mode") + 1] == "ask"
-assert "--force" not in args
+assert "--force" in args
 assert "Reviewer CLI control: remain read-only" in args[-1]
+assert "run the required deterministic checks" in args[-1]
+assert "read-only terminal access" in args[-1]
 PY
 then
-  fail "concurrent Cursor Reviewer did not use native read-only mode"
+  fail "concurrent Cursor Reviewer did not use executable read-only mode"
 fi
 grep -Fq 'FACTORY_DEV_PRLESS_EVIDENCE_V1' "$ROOT/roles/narrator.md" ||
   fail "Narrator backend-only exception lacks its trusted development marker"
