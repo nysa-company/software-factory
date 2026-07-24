@@ -79,10 +79,10 @@ def changed_paths(repo, base, reviewed):
             raise ValueError("unsupported application change")
         path = fields[index]
         index += 1
-        if not safe_path(path) or path == "factory" or path.startswith("factory/"):
-            if path == "factory" or path.startswith("factory/"):
-                continue
+        if not safe_path(path):
             raise ValueError("changed application path is unsafe")
+        if path == "factory" or path.startswith("factory/"):
+            continue
         changes.append(path)
     if len(changes) != len(set(changes)):
         raise ValueError("application change set overlaps")
