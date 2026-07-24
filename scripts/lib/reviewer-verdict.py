@@ -6,6 +6,17 @@ import json
 import pathlib
 import re
 
+CALLBACK_OWNER = re.compile(
+    r"^(\s*)FIX-OWNER:\s*(builder|test-author|both)"
+    r"(The background `[^`\r\n]+` run finished[^\r\n]*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+CALLBACK_SUMMARY = re.compile(
+    r"^(\s*)\*\*REQUEST CHANGES / FIX-OWNER:\s*"
+    r"(builder|test-author|both)\*\*\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 def verdict_signals(raw: str) -> list[str]:
     signals = []
@@ -41,6 +52,32 @@ def parse_review(raw: str, contract_version: str) -> tuple[str, str]:
     elif owners:
         raise ValueError("FIX-OWNER requires contract 1.7")
     return verdict, owner
+
+
+def normalize_cursor_callback(raw: str) -> str:
+    corrupted = list(CALLBACK_OWNER.finditer(raw))
+    if not corrupted:
+        return raw
+    summaries = list(CALLBACK_SUMMARY.finditer(raw))
+    if len(corrupted) != len(summaries) or any(
+        owner.start() >= summary.start()
+        for owner, summary in zip(corrupted, summaries)
+    ):
+        raise ValueError("reviewer background callback lacks a later summary")
+    if {match.group(2).lower() for match in corrupted} != {
+        match.group(2).lower() for match in summaries
+    }:
+        raise ValueError("reviewer background callback owner contradicts its summary")
+    raw = CALLBACK_OWNER.sub(
+        lambda match: (
+            f"{match.group(1)}FIX-OWNER: {match.group(2).lower()}\n"
+            f"{match.group(1)}{match.group(3)}"
+        ),
+        raw,
+    )
+    return CALLBACK_SUMMARY.sub(
+        lambda match: f"{match.group(1)}REQUEST CHANGES", raw
+    )
 
 
 def assistant_text(event: dict):
@@ -79,8 +116,10 @@ def cursor_review(raw: str, contract_version: str) -> str:
                 results.append(result)
         if event.get("type") == "assistant":
             content = assistant_text(event)
-            if isinstance(content, str) and verdict_signals(content):
-                assistants.append(content)
+            if isinstance(content, str):
+                normalized = normalize_cursor_callback(content)
+                if verdict_signals(normalized):
+                    assistants.append((content, normalized))
     if len(results) != 1:
         raise ValueError("reviewer stream must contain exactly one successful result")
     if len(assistants) > 1:
@@ -88,23 +127,24 @@ def cursor_review(raw: str, contract_version: str) -> str:
     if not assistants:
         return results[0]
 
-    assistant = assistants[0]
+    assistant, normalized_assistant = assistants[0]
     if assistant not in results[0]:
         raise ValueError("reviewer assistant is not bound to the successful result")
-    verdict, owner = parse_review(assistant, contract_version)
-    terminal_signals = verdict_signals(results[0])
+    verdict, owner = parse_review(normalized_assistant, contract_version)
+    normalized_terminal = normalize_cursor_callback(results[0])
+    terminal_signals = verdict_signals(normalized_terminal)
     if set(terminal_signals) != {verdict}:
         raise ValueError("reviewer assistant contradicts the successful result")
     terminal_owners = {
         match.group(1).lower()
-        for line in results[0].splitlines()
+        for line in normalized_terminal.splitlines()
         if (match := re.fullmatch(
             r"\s*FIX-OWNER:\s*(builder|test-author|both)\s*", line, re.I
         ))
     }
     if terminal_owners != ({owner} if owner else set()):
         raise ValueError("reviewer assistant owner contradicts the successful result")
-    return assistant
+    return normalized_assistant
 
 
 def parse_verdict(raw: str, adapter: str, contract_version: str) -> tuple[str, str]:

@@ -130,6 +130,45 @@ class CursorStreamTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not bound to the successful result", result.stderr)
 
+    def test_reviewer_normalizes_exact_background_callback_pair(self) -> None:
+        review = (
+            "Findings complete.\n"
+            "FIX-OWNER: bothThe background `npm test` run finished with code 0.\n"
+            "**REQUEST CHANGES / FIX-OWNER: both**"
+        )
+        result = self.run_verdict(
+            [
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": review}]},
+                },
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": f"{review}\n\nSummary:\n{review}",
+                },
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "REQUEST CHANGES\tboth\n")
+
+    def test_reviewer_refuses_background_callback_owner_disagreement(self) -> None:
+        review = (
+            "FIX-OWNER: builderThe background `npm test` run finished with code 0.\n"
+            "**REQUEST CHANGES / FIX-OWNER: both**"
+        )
+        result = self.run_verdict(
+            [
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": review}]},
+                },
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("owner contradicts its summary", result.stderr)
+
     def test_reviewer_keeps_terminal_only_compatibility(self) -> None:
         result = self.run_verdict(
             [
