@@ -134,7 +134,8 @@ class CursorStreamTest(unittest.TestCase):
         review = (
             "Findings complete.\n"
             "FIX-OWNER: bothThe background `npm test` run finished with code 0.\n"
-            "**REQUEST CHANGES / FIX-OWNER: both**"
+            "No follow-up action needed — my review above already stands as "
+            "**REQUEST CHANGES / FIX-OWNER: both**."
         )
         result = self.run_verdict(
             [
@@ -155,7 +156,8 @@ class CursorStreamTest(unittest.TestCase):
     def test_reviewer_refuses_background_callback_owner_disagreement(self) -> None:
         review = (
             "FIX-OWNER: builderThe background `npm test` run finished with code 0.\n"
-            "**REQUEST CHANGES / FIX-OWNER: both**"
+            "No follow-up action needed — my review above already stands as "
+            "**REQUEST CHANGES / FIX-OWNER: both**."
         )
         result = self.run_verdict(
             [

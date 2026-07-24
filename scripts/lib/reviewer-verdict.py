@@ -12,8 +12,9 @@ CALLBACK_OWNER = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 CALLBACK_SUMMARY = re.compile(
-    r"^(\s*)\*\*REQUEST CHANGES / FIX-OWNER:\s*"
-    r"(builder|test-author|both)\*\*\s*$",
+    r"^No follow-up action needed — my review above already stands as "
+    r"\*\*REQUEST CHANGES / FIX-OWNER: "
+    r"(builder|test-author|both)\*\*\.$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -65,7 +66,7 @@ def normalize_cursor_callback(raw: str) -> str:
     ):
         raise ValueError("reviewer background callback lacks a later summary")
     if {match.group(2).lower() for match in corrupted} != {
-        match.group(2).lower() for match in summaries
+        match.group(1).lower() for match in summaries
     }:
         raise ValueError("reviewer background callback owner contradicts its summary")
     raw = CALLBACK_OWNER.sub(
@@ -75,9 +76,7 @@ def normalize_cursor_callback(raw: str) -> str:
         ),
         raw,
     )
-    return CALLBACK_SUMMARY.sub(
-        lambda match: f"{match.group(1)}REQUEST CHANGES", raw
-    )
+    return CALLBACK_SUMMARY.sub("REQUEST CHANGES", raw)
 
 
 def assistant_text(event: dict):
