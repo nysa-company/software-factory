@@ -3473,11 +3473,16 @@ PY
     }
     if [[ "$profile" == cursor ]]; then
       bridge="$(cursor_tmp_bridge)"
-      [[ ! -e "$bridge" && ! -L "$bridge" ]] ||
-        die "Cursor temporary bridge path is already in use"
+      if [[ -e "$bridge" || -L "$bridge" ]]; then
+        [[ -d "$bridge" && ! -L "$bridge" ]] &&
+          subscription_provider_idle &&
+          cleanup_empty_cursor_bridge "$bridge" ||
+          die "Cursor temporary bridge path is already in use"
+      fi
       mkdir -p "$root/runtime/cursor-tmp"
       chmod 700 "$root/runtime/cursor-tmp"
-      ln -s "$root/runtime/cursor-tmp" "$bridge"
+      ln -s "$root/runtime/cursor-tmp" "$bridge" ||
+        die "Cursor temporary bridge claim failed"
       trap cleanup_bridge EXIT HUP INT TERM
     fi
     cd "$root"

@@ -574,6 +574,76 @@ expect_failure "nonempty Cursor-replaced bridge" \
   cleanup_empty_cursor_bridge "$REPLACED_BRIDGE"
 [[ -f "$REPLACED_BRIDGE/provider-state" ]] ||
   fail "Cursor bridge cleanup removed unrecognized provider state"
+(
+  BRIDGE_CLAIM_ROOT="$TMP/cursor-bridge-claim"
+  BRIDGE_CLAIM_PATH="$TMP/cursor-bridge-claim-path"
+  mkdir -p "$BRIDGE_CLAIM_ROOT/kit/scripts" "$BRIDGE_CLAIM_ROOT/runtime" \
+    "$BRIDGE_CLAIM_ROOT/home" "$BRIDGE_CLAIM_ROOT/tmp" \
+    "$BRIDGE_CLAIM_ROOT/session-home" "$BRIDGE_CLAIM_PATH/empty-session"
+  cat >"$BRIDGE_CLAIM_ROOT/kit/scripts/factory-dev-lane.sh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == verify && -L "$2" ]]
+[[ "$(python3 - "$2" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)" == "$3" ]]
+EOF
+  chmod +x "$BRIDGE_CLAIM_ROOT/kit/scripts/factory-dev-lane.sh"
+  eval "$(sed -n '/^run_in_sandbox()/,/^}/p' "$LANE")"
+  cursor_tmp_bridge() { printf '%s\n' "$BRIDGE_CLAIM_PATH"; }
+  subscription_provider_idle() { :; }
+  die() { echo "$*" >&2; exit 1; }
+  run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+    "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp" ||
+    fail "safe empty Cursor bridge was not reclaimed and atomically claimed"
+  [[ ! -e "$BRIDGE_CLAIM_PATH" && ! -L "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "reclaimed Cursor bridge survived normal cleanup"
+
+  mkdir -p "$BRIDGE_CLAIM_PATH/empty-session"
+  subscription_provider_idle() { return 1; }
+  expect_failure "active-provider Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -d "$BRIDGE_CLAIM_PATH/empty-session" ]] ||
+    fail "active-provider refusal changed the Cursor bridge"
+  rm -rf "$BRIDGE_CLAIM_PATH"
+
+  subscription_provider_idle() { :; }
+  mkdir -p "$BRIDGE_CLAIM_PATH"
+  printf '%s\n' unsafe >"$BRIDGE_CLAIM_PATH/provider-state"
+  expect_failure "nonempty Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -f "$BRIDGE_CLAIM_PATH/provider-state" ]] ||
+    fail "nonempty Cursor bridge refusal removed provider state"
+  rm -rf "$BRIDGE_CLAIM_PATH"
+
+  mkdir "$BRIDGE_CLAIM_PATH"
+  chmod 777 "$BRIDGE_CLAIM_PATH"
+  expect_failure "unsafe-mode Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -d "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "unsafe-mode Cursor bridge refusal removed the directory"
+  chmod 700 "$BRIDGE_CLAIM_PATH"
+  rmdir "$BRIDGE_CLAIM_PATH"
+
+  printf '%s\n' unsafe >"$BRIDGE_CLAIM_PATH"
+  expect_failure "file Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -f "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "file Cursor bridge refusal removed the file"
+  rm "$BRIDGE_CLAIM_PATH"
+
+  ln -s "$BRIDGE_CLAIM_ROOT" "$BRIDGE_CLAIM_PATH"
+  expect_failure "symlink Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -L "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "symlink Cursor bridge refusal removed the link"
+)
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
