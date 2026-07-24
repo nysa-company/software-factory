@@ -40,6 +40,10 @@ if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
     echo "lane-local Claude sandbox settings are unavailable" >&2
     exit 6
   }
+  [[ "${CLAUDE_CODE_TMPDIR:-}" == "${TMPDIR:-}" ]] || {
+    echo "Claude CLI temporary root is not attempt-local" >&2
+    exit 6
+  }
   python3 - "${HOME:-}" "${CLAUDE_CONFIG_DIR:-}" "${TMPDIR:-}" \
     "${FACTORY_CLI_ATTEMPT_ID:-}" <<'PY' || {
 import os

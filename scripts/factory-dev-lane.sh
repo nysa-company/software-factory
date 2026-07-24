@@ -2594,6 +2594,7 @@ run_subscription_internal() {
       claude_subscription_env "$root" env \
         HOME="$attempt_root/home" TMPDIR="$attempt_root/tmp" \
         CLAUDE_CONFIG_DIR="$attempt_root/config" \
+        CLAUDE_CODE_TMPDIR="$attempt_root/tmp" \
         FACTORY_CLI_INTERNAL_SANDBOX=1 FACTORY_CLI_ATTEMPT_ID="$attempt" \
         FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
         python3 "$root/kit/scripts/provider-cli-runtime.py" \

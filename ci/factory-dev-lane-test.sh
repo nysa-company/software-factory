@@ -137,6 +137,8 @@ grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lacks Claude readiness"
 grep -Fq 'if [[ "$selected" == claude ]]; then' <<<"$subscription_run_source" ||
   fail "Codex canary still expands the Bash-3.2-empty Claude runtime array"
+grep -Fq 'CLAUDE_CODE_TMPDIR="$attempt_root/tmp"' <<<"$subscription_run_source" ||
+  fail "Claude canary does not isolate the CLI hard-coded temp root"
 lane_env_source="$(sed -n '/^lane_env()/,/^lane_cursor_env()/p' "$LANE")"
 grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the checkpoint lane-root binding"
