@@ -108,6 +108,11 @@ grep -Fq 'PROVIDER_SPLIT=codex:4' <<<"$subscription_run_source" ||
   fail "subscription canary does not report four Codex calls"
 grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary readiness is not Codex-only"
+lane_env_source="$(sed -n '/^lane_env()/,/^lane_cursor_env()/p' "$LANE")"
+grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
+  fail "trusted product helpers lost the checkpoint lane-root binding"
+grep -Fq 'FACTORY_CLI_INTERNAL_SANDBOX=1' <<<"$lane_env_source" ||
+  fail "trusted product helpers lost the development sandbox marker"
 lane_count_before="$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 expect_failure "production product source" test_env bash "$LANE" product-plan \
   --source "$CALLER_HOME/Projects/nysa-company/nysa-app" \

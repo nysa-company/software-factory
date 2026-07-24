@@ -1608,6 +1608,7 @@ lane_env() {
     FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
     FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
     FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
+    FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
     FACTORY_HERMES_CONTRACT_VERSION=1.7.0 "$@"
 }
