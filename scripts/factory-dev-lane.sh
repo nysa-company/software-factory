@@ -1244,10 +1244,10 @@ elif value.get("schema") == "factory-dev-product-seed-accounting/v3":
             __import__("datetime").timezone.utc
         ).date().isoformat()):
         raise SystemExit(1)
-elif value.get("schema") in {
+elif value.get("schema") in (
     "factory-dev-product-seed-accounting/v4",
     "factory-dev-product-seed-accounting/v5",
-}:
+):
     extra=set()
     if value["schema"].endswith("/v5"):
         extra={"checkpoint_sha256","parent_manifest_sha256",
@@ -3090,6 +3090,31 @@ PY
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
 }
 
+product_export_roles_complete() {
+  local root="$1" ticket="$2"
+  python3 - "$root/product/factory/runs" "$ticket" \
+    "$root/runtime/product-checkpoint-import.json" <<'PY'
+import json, pathlib, sys
+root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; checkpoint=pathlib.Path(sys.argv[3])
+roles={}; current=set()
+if checkpoint.is_file():
+    value=json.load(open(checkpoint,encoding="utf-8"))
+    records=[item for item in value["tickets"] if item["ticket"] == ticket]
+    if records:
+        roles.update({role:"checkpoint" for role in records[0]["roles"]})
+for path in root.glob("*.meta"):
+    values=dict(line.split("=",1) for line in path.read_text(errors="replace").splitlines()
+                if "=" in line)
+    if (values.get("ticket") == ticket and
+        values.get("accounting_state") in {"completed", "abandoned_conservative"} and
+        values.get("exit_status") == "0"):
+        roles[values.get("role")]=path; current.add(values.get("role"))
+expected={"planner","spec-linter","test-author","builder","reviewer","narrator"}
+if set(roles) != expected or not {"reviewer","narrator"} <= current:
+    raise SystemExit(1)
+PY
+}
+
 export_product_internal() {
   local root="$1" selected_csv="${2:-}" ticket base head branch export_dir reviewed
   require_lane_mode "$root" product
@@ -3123,26 +3148,7 @@ assert all(name == "terminal" for name in value.get("counts", {})), value
       die "product ticket remote does not match trusted host output: $ticket"
     grep -qx 'State: Review' "$root/worktrees/$ticket/factory/tickets/$ticket.md" ||
       die "product ticket is not in Review: $ticket"
-    python3 - "$root/product/factory/runs" "$ticket" \
-      "$root/runtime/product-checkpoint-import.json" <<'PY' ||
-import json, pathlib, sys
-root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; checkpoint=pathlib.Path(sys.argv[3])
-roles={}; current=set()
-if checkpoint.is_file():
-    value=json.load(open(checkpoint,encoding="utf-8"))
-    records=[item for item in value["tickets"] if item["ticket"] == ticket]
-    if records:
-        roles.update({role:"checkpoint" for role in records[0]["roles"]})
-for path in root.glob("*.meta"):
-    values=dict(line.split("=",1) for line in path.read_text(errors="replace").splitlines() if "=" in line)
-    if (values.get("ticket") == ticket and
-        values.get("accounting_state") in {"completed", "abandoned_conservative"} and
-        values.get("exit_status") == "0"):
-        roles[values.get("role")]=path; current.add(values.get("role"))
-expected={"planner","spec-linter","test-author","builder","reviewer","narrator"}
-if set(roles) != expected or not {"reviewer","narrator"} <= current:
-    raise SystemExit(1)
-PY
+    product_export_roles_complete "$root" "$ticket" ||
       die "product ticket role evidence is incomplete: $ticket"
     git -C "$root/origin.git" bundle create "$export_dir/$ticket.bundle" \
       "refs/heads/$branch" >/dev/null

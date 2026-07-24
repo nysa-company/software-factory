@@ -781,6 +781,71 @@ expect_failure "v5 internal aggregate defense" prepare_product_seed_accounting \
   "$SEED_ROOT_V5_BAD" "$SEED_ACCOUNTING_V5_CAP_BAD" "$SEED_BUNDLE" \
   "$SEED_BASE" T-1
 eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
+
+CHECKPOINT_SEQ_REPO="$TMP/checkpoint-sequencer"
+git clone -q "$ROOT" "$CHECKPOINT_SEQ_REPO"
+for ticket in T-991 T-992; do
+  printf '%s\n' "# $ticket checkpoint fixture" '' 'State: Ready' \
+    >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/$ticket.md"
+done
+printf '%s\n' '# T-993 checkpoint fixture' '' 'State: Review' \
+  'SPEC-LINT: PASS' \
+  >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-993.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add checkpoint sequencing fixtures'
+CHECKPOINT_SEQ_HEAD="$(git -C "$CHECKPOINT_SEQ_REPO" rev-parse HEAD)"
+CHECKPOINT_SEQ_TREE="$(git -C "$CHECKPOINT_SEQ_REPO" rev-parse 'HEAD^{tree}')"
+CHECKPOINT_LANE="$TMP/nysa-sf-dev.checkpoint"
+mkdir -m 700 -p "$CHECKPOINT_LANE/runtime"
+printf '%s\n' '{"mode":"product"}' >"$CHECKPOINT_LANE/marker.json"
+chmod 600 "$CHECKPOINT_LANE/marker.json"
+CHECKPOINT_IMPORT="$CHECKPOINT_LANE/runtime/product-checkpoint-import.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint-import/v1\",\"checkpoint_sha256\":\"$SEED_NONCE\",\"tickets\":[{\"ticket\":\"T-991\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\"],\"spec_verdicts\":[],\"expected_next_stage\":\"RUN spec-linter\"},{\"ticket\":\"T-993\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"RUN reviewer\"}]}" \
+  >"$CHECKPOINT_IMPORT"
+chmod 600 "$CHECKPOINT_IMPORT"
+CHECKPOINT_LEDGER="$CHECKPOINT_SEQ_REPO/conformance/factory/checkpoint-ledger.csv"
+head -n 1 "$CHECKPOINT_SEQ_REPO/conformance/factory/ledger.csv" >"$CHECKPOINT_LEDGER"
+checkpoint_next_stage() {
+  env FACTORY_ROOT="$CHECKPOINT_SEQ_REPO/conformance" \
+    FACTORY_LEDGER="$CHECKPOINT_LEDGER" \
+    FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+    FACTORY_CLI_LANE_ROOT="$CHECKPOINT_LANE" \
+    FACTORY_DEV_PRODUCT_CHECKPOINT="$CHECKPOINT_IMPORT" \
+    bash "$CHECKPOINT_SEQ_REPO/scripts/next-stage.sh" \
+      --ticket "$1" --workdir "$CHECKPOINT_SEQ_REPO/conformance"
+}
+[[ "$(checkpoint_next_stage T-991)" == "RUN spec-linter" ]] ||
+  fail "Planner checkpoint did not resume at Spec-linter"
+[[ "$(checkpoint_next_stage T-993)" == "RUN reviewer" ]] ||
+  fail "Builder checkpoint did not resume at Reviewer"
+[[ "$(checkpoint_next_stage T-992)" == "RUN planner" ]] ||
+  fail "ticket omitted from checkpoint did not remain at Planner"
+cp "$CHECKPOINT_IMPORT" "$CHECKPOINT_IMPORT.good"
+sed 's/SPEC-LINT: PASS/SPEC-LINT: FAIL/' \
+  "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
+expect_failure "checkpoint spec drift" checkpoint_next_stage T-993
+cp "$CHECKPOINT_IMPORT.good" "$CHECKPOINT_IMPORT"
+sed "0,/$CHECKPOINT_SEQ_TREE/s//$SEED_BASE/" \
+  "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
+expect_failure "checkpoint head tree drift" checkpoint_next_stage T-991
+mv "$CHECKPOINT_IMPORT.good" "$CHECKPOINT_IMPORT"
+
+eval "$(sed -n '/^product_export_roles_complete()/,/^export_product_internal()/p' \
+  "$LANE" | sed '$d')"
+EXPORT_GATE_ROOT="$TMP/checkpoint-export-gate"
+mkdir -p "$EXPORT_GATE_ROOT/product/factory/runs" "$EXPORT_GATE_ROOT/runtime"
+cp "$CHECKPOINT_IMPORT" "$EXPORT_GATE_ROOT/runtime/product-checkpoint-import.json"
+printf '%s\n' 'ticket=T-993' 'role=reviewer' 'accounting_state=completed' \
+  'exit_status=0' >"$EXPORT_GATE_ROOT/product/factory/runs/reviewer.meta"
+expect_failure "checkpoint export without current Narrator" \
+  product_export_roles_complete "$EXPORT_GATE_ROOT" T-993
+printf '%s\n' 'ticket=T-993' 'role=narrator' 'accounting_state=completed' \
+  'exit_status=0' >"$EXPORT_GATE_ROOT/product/factory/runs/narrator.meta"
+product_export_roles_complete "$EXPORT_GATE_ROOT" T-993 ||
+  fail "checkpoint export rejected current Reviewer and Narrator"
+
 eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^product_seed_lineage_id()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^write_product_seed_lineage()/,/^}/p' "$LANE")"
