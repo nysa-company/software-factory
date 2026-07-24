@@ -143,6 +143,12 @@ different retained lanes, `product-export --tickets T-NNN,...` exports only
 the named completed subset while applying the same role-evidence and Reviewer
 checks.
 
+Reviewer reconciliation uses the invoking trusted controller after validating
+the retained lane pin. For Cursor streams, one successful terminal result may
+repeat its single verdict-bearing assistant event; the controller accepts only
+an exact embedded assistant result and rejects multiple assistants,
+contradictions, duplicate repair ownership, or an unbound result.
+
 ## Real Cursor lifecycle
 
 The real probe is an explicit release gate. Put an authenticated Cursor `agent` binary on `PATH`:

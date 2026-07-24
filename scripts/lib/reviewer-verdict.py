@@ -7,23 +7,7 @@ import pathlib
 import re
 
 
-def parse_verdict(raw: str, adapter: str, contract_version: str) -> tuple[str, str]:
-    """Return the canonical verdict and Contract 1.7 repair owner."""
-    if adapter.startswith("cursor-"):
-        results = []
-        for line in raw.splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "result" and event.get("subtype") == "success":
-                result = event.get("result")
-                if isinstance(result, str):
-                    results.append(result)
-        if len(results) != 1:
-            raise ValueError("reviewer stream must contain exactly one successful result")
-        raw = results[0]
-
+def verdict_signals(raw: str) -> list[str]:
     signals = []
     for line in raw.splitlines():
         stripped = line.strip()
@@ -32,6 +16,11 @@ def parse_verdict(raw: str, adapter: str, contract_version: str) -> tuple[str, s
         signals.extend(match.upper() for match in re.findall(
             r"\*\*(APPROVE|REQUEST CHANGES)(?:\.)?\*\*", stripped, re.I
         ))
+    return signals
+
+
+def parse_review(raw: str, contract_version: str) -> tuple[str, str]:
+    signals = verdict_signals(raw)
     if not signals or len(set(signals)) != 1:
         raise ValueError("reviewer result must contain one unambiguous verdict")
     verdict = signals[0]
@@ -52,6 +41,58 @@ def parse_verdict(raw: str, adapter: str, contract_version: str) -> tuple[str, s
     elif owners:
         raise ValueError("FIX-OWNER requires contract 1.7")
     return verdict, owner
+
+
+def cursor_review(raw: str, contract_version: str) -> str:
+    results = []
+    assistants = []
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "result" and event.get("subtype") == "success":
+            result = event.get("result")
+            if isinstance(result, str):
+                results.append(result)
+        if event.get("type") == "assistant":
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str) and verdict_signals(content):
+                assistants.append(content)
+    if len(results) != 1:
+        raise ValueError("reviewer stream must contain exactly one successful result")
+    if len(assistants) > 1:
+        raise ValueError("reviewer stream contains multiple verdict-bearing assistants")
+    if not assistants:
+        return results[0]
+
+    assistant = assistants[0]
+    if assistant not in results[0]:
+        raise ValueError("reviewer assistant is not bound to the successful result")
+    verdict, owner = parse_review(assistant, contract_version)
+    terminal_signals = verdict_signals(results[0])
+    if set(terminal_signals) != {verdict}:
+        raise ValueError("reviewer assistant contradicts the successful result")
+    terminal_owners = {
+        match.group(1).lower()
+        for line in results[0].splitlines()
+        if (match := re.fullmatch(
+            r"\s*FIX-OWNER:\s*(builder|test-author|both)\s*", line, re.I
+        ))
+    }
+    if terminal_owners != ({owner} if owner else set()):
+        raise ValueError("reviewer assistant owner contradicts the successful result")
+    return assistant
+
+
+def parse_verdict(raw: str, adapter: str, contract_version: str) -> tuple[str, str]:
+    """Return the canonical verdict and Contract 1.7 repair owner."""
+    if adapter.startswith("cursor-"):
+        raw = cursor_review(raw, contract_version)
+    return parse_review(raw, contract_version)
 
 
 def main() -> None:

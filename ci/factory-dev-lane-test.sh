@@ -792,8 +792,13 @@ grep -qx 'reviewer round 1: REQUEST CHANGES' "$review_ticket" ||
 grep -qx 'reviewer round 1 FIX-OWNER: test-author' "$review_ticket" ||
   fail "request-changes repair ownership was not recorded durably"
 product_reconcile_source="$(sed -n '/^product_reconcile_reviewer()/,/^}/p' "$LANE")"
-printf '%s\n' "$product_reconcile_source" | grep -Fq 'scripts/ticket-state.sh' ||
-  fail "development scheduler does not use the shared trusted reconciliation helper"
+printf '%s\n' "$product_reconcile_source" |
+  grep -Fq '"$SOURCE_ROOT/scripts/ticket-state.sh"' ||
+  fail "development scheduler does not use the corrected trusted controller"
+if printf '%s\n' "$product_reconcile_source" |
+   grep -Fq '"$root/kit/scripts/ticket-state.sh"'; then
+  fail "development scheduler still uses the retained kit for reconciliation"
+fi
 printf '%s\n' "$product_reconcile_source" | grep -Fq -- '--action reviewer-reconcile' ||
   fail "development scheduler does not request shared reviewer reconciliation"
 eval "$product_reconcile_source"

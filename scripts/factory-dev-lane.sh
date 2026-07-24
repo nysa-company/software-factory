@@ -2620,7 +2620,7 @@ for path in runs.glob("*.meta"):
         raise SystemExit(0)
 raise SystemExit(1)
 PY
-  lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
+  lane_env "$root" "$SOURCE_ROOT/scripts/ticket-state.sh" \
     --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
     --action reviewer-reconcile >/dev/null
 }

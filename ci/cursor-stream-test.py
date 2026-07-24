@@ -15,9 +15,128 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STREAM = ROOT / "scripts/lib/cursor-stream.py"
 ADAPTER = ROOT / "scripts/adapters/cursor-anthropic.sh"
+VERDICT = ROOT / "scripts/lib/reviewer-verdict.py"
 
 
 class CursorStreamTest(unittest.TestCase):
+    def run_verdict(
+        self, events: list[dict], contract: str = "1.7.0"
+    ) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as raw:
+            stream = Path(raw) / "review.out"
+            stream.write_text("".join(json.dumps(event) + "\n" for event in events))
+            return subprocess.run(
+                [
+                    str(VERDICT),
+                    "--adapter",
+                    "cursor-anthropic",
+                    "--input",
+                    str(stream),
+                    "--contract-version",
+                    contract,
+                    "--format",
+                    "fields",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_reviewer_prefers_one_terminal_bound_assistant(self) -> None:
+        review = "Review complete.\n\nREQUEST CHANGES\nFIX-OWNER: builder"
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": f"{review}\n\nSummary:\n{review}",
+                },
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "REQUEST CHANGES\tbuilder\n")
+
+    def test_reviewer_refuses_multiple_verdict_assistants(self) -> None:
+        review = "REQUEST CHANGES\nFIX-OWNER: builder"
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("multiple verdict-bearing assistants", result.stderr)
+
+    def test_reviewer_refuses_duplicate_owner_inside_assistant(self) -> None:
+        review = (
+            "REQUEST CHANGES\nFIX-OWNER: builder\nFIX-OWNER: builder"
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires exactly one FIX-OWNER", result.stderr)
+
+    def test_reviewer_refuses_terminal_contradiction(self) -> None:
+        review = "REQUEST CHANGES\nFIX-OWNER: builder"
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": f"{review}\n\nAPPROVE",
+                },
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("contradicts the successful result", result.stderr)
+
+    def test_reviewer_refuses_unbound_assistant(self) -> None:
+        review = "REQUEST CHANGES\nFIX-OWNER: builder"
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "REQUEST CHANGES\nFIX-OWNER: test-author",
+                },
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not bound to the successful result", result.stderr)
+
+    def test_reviewer_keeps_terminal_only_compatibility(self) -> None:
+        result = self.run_verdict(
+            [
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "Reviewed safely.\n\nAPPROVE",
+                }
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "APPROVE\t\n")
+
+    def test_reviewer_requires_one_success_terminal(self) -> None:
+        review = "APPROVE"
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exactly one successful result", result.stderr)
+
     def run_stream(
         self, events: list[dict], repeated_error_limit: int
     ) -> subprocess.CompletedProcess:
