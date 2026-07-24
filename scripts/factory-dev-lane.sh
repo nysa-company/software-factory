@@ -1856,7 +1856,11 @@ product_resume_stage() {
     claim --ticket "$ticket")" || return 1
   lease="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
     <<<"$lease_json")" || return 1
-  stage="$(TICKET="$ticket"; next_stage "$root" "$lease")" || rc=$?
+  stage="$(
+    TICKET="$ticket"
+    product_reconcile_reviewer "$root" "$ticket" "$lease" &&
+      next_stage "$root" "$lease"
+  )" || rc=$?
   subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
     --ticket "$ticket" --lease "$lease" >/dev/null || return 1
   [[ "$rc" -eq 0 ]] || return "$rc"
@@ -2625,7 +2629,7 @@ PY
     validate_product_dev_bundle \
       "$root/worktrees/$ticket/factory/tickets/$ticket-bundle.md" || return
   elif [[ "$role" == reviewer ]]; then
-    (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || return
+    (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket" "$lease") || return
   fi
 }
 
@@ -2668,7 +2672,8 @@ PY
 }
 
 product_reconcile_reviewer() {
-  local root="$1" ticket="$2"
+  local root="$1" ticket="$2" lease="${3:-}"
+  [[ "$lease" =~ ^[0-9a-f]{64}$ ]] || return 1
   python3 - "$root/product/factory/runs" "$ticket" <<'PY' || return 0
 import pathlib, sys
 runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]
@@ -2682,7 +2687,8 @@ for path in runs.glob("*.meta"):
         raise SystemExit(0)
 raise SystemExit(1)
 PY
-  lane_env "$root" "$SOURCE_ROOT/scripts/ticket-state.sh" \
+  lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+    "$SOURCE_ROOT/scripts/ticket-state.sh" \
     --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
     --action reviewer-reconcile >/dev/null
 }
@@ -2937,7 +2943,8 @@ run_product_internal() {
           }
         renewals[$i]="$now"
       fi
-      (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || {
+      (TICKET="$ticket"; product_reconcile_reviewer \
+        "$root" "$ticket" "${leases[$i]}") || {
         failed_stages[$i]=reviewer-reconcile
         states[$i]=failed; failed_count=$((failed_count + 1)); continue;
       }

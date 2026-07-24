@@ -966,16 +966,83 @@ eval "$product_reconcile_source"
 RECONCILE_GUARD="$TMP/reviewer-reconcile-guard"
 mkdir -p "$RECONCILE_GUARD/product/factory/runs"
 lane_env() { printf '%s\n' called >>"$RECONCILE_GUARD/calls"; }
-product_reconcile_reviewer "$RECONCILE_GUARD" T-1 ||
+RECONCILE_LEASE="$(printf 'a%.0s' {1..64})"
+product_reconcile_reviewer "$RECONCILE_GUARD" T-1 "$RECONCILE_LEASE" ||
   fail "scheduler rejected a ticket before its first Reviewer output"
 [[ ! -e "$RECONCILE_GUARD/calls" ]] ||
   fail "scheduler reconciled before a successful Reviewer output existed"
 printf '%s\n' ticket=T-1 role=reviewer phase=completed exit_status=0 \
   >"$RECONCILE_GUARD/product/factory/runs/reviewer.meta"
-product_reconcile_reviewer "$RECONCILE_GUARD" T-1 ||
+product_reconcile_reviewer "$RECONCILE_GUARD" T-1 "$RECONCILE_LEASE" ||
   fail "scheduler did not reconcile a successful Reviewer output"
 [[ "$(cat "$RECONCILE_GUARD/calls")" == called ]] ||
   fail "scheduler did not use the shared reconciliation helper exactly once"
+expect_failure "review reconciliation without claimed lease" \
+  product_reconcile_reviewer "$RECONCILE_GUARD" T-1
+resume_stage_source="$(sed -n '/^product_resume_stage()/,/^}/p' "$LANE")"
+resume_plan_source="$(sed -n '/^product_resume_plan()/,/^}/p' "$LANE")"
+python3 - "$resume_plan_source" <<'PY' ||
+import sys
+text=sys.argv[1]
+stage=text.index('stage="$(product_resume_stage')
+basis=text.index('basis="$(product_resume_basis_hash')
+validate=text.index('validate_product_resume_basis')
+approval=text.index('approval_hash="$(product_approval_hash')
+assert stage < basis < validate < approval
+PY
+  fail "resume approval is not bound to the post-reconcile head and stage"
+eval "$resume_stage_source"
+RESUME_REVIEW_ROOT="$TMP/resume-reviewer-reconcile"
+mkdir -p "$RESUME_REVIEW_ROOT/kit/scripts" "$RESUME_REVIEW_ROOT/runtime"
+RESUME_REVIEW_TRACE="$RESUME_REVIEW_ROOT/trace"
+RESUME_REVIEW_LEASE="$(printf 'b%.0s' {1..64})"
+subscription_env() {
+  local ignored_root="$1" ignored_command="$2" operation="$3"
+  shift 3
+  printf '%s\n' "$operation" >>"$RESUME_REVIEW_TRACE"
+  if [[ "$operation" == claim ]]; then
+    printf '{"lease_id":"%s"}\n' "$RESUME_REVIEW_LEASE"
+  fi
+}
+product_reconcile_reviewer() {
+  [[ "$2" == T-054 && "$3" == "$RESUME_REVIEW_LEASE" ]] || return 1
+  printf '%s\n' reconciled >>"$RESUME_REVIEW_TRACE"
+  printf '%s\n' post-reconcile >"$RESUME_REVIEW_ROOT/head"
+}
+next_stage() {
+  [[ "$2" == "$RESUME_REVIEW_LEASE" &&
+     "$(<"$RESUME_REVIEW_ROOT/head")" == post-reconcile ]] || return 1
+  printf '%s\n' next-stage >>"$RESUME_REVIEW_TRACE"
+  printf '%s\n' 'FIX test-author'
+}
+[[ "$(product_resume_stage "$RESUME_REVIEW_ROOT" T-054)" == 'FIX test-author' ]] ||
+  fail "retained successful Reviewer did not resume at its owned repair stage"
+[[ "$(cat "$RESUME_REVIEW_TRACE")" == \
+   $'claim\nreconciled\nnext-stage\nrelease' ]] ||
+  fail "resume did not reconcile before stage resolution and release its lease"
+product_reconcile_reviewer() {
+  printf '%s\n' reconcile-refused >>"$RESUME_REVIEW_TRACE"
+  return 9
+}
+: >"$RESUME_REVIEW_TRACE"
+expect_failure "resume reviewer reconciliation refusal" \
+  product_resume_stage "$RESUME_REVIEW_ROOT" T-054
+[[ "$(cat "$RESUME_REVIEW_TRACE")" == \
+   $'claim\nreconcile-refused\nrelease' ]] ||
+  fail "failed resume reconciliation replayed a role or retained its lease"
+product_reconcile_reviewer() {
+  printf '%s\n' reconciled >>"$RESUME_REVIEW_TRACE"
+}
+next_stage() {
+  printf '%s\n' sequencing-refused >>"$RESUME_REVIEW_TRACE"
+  return 10
+}
+: >"$RESUME_REVIEW_TRACE"
+expect_failure "post-reconcile resume sequencing refusal" \
+  product_resume_stage "$RESUME_REVIEW_ROOT" T-054
+[[ "$(cat "$RESUME_REVIEW_TRACE")" == \
+   $'claim\nreconciled\nsequencing-refused\nrelease' ]] ||
+  fail "failed post-reconcile sequencing retained its lease"
 eval "$(sed -n \
   '/^product_transition_contract_blocked()/,/^product_reconcile_reviewer()/p' \
   "$LANE" | sed '$d')"
