@@ -2509,6 +2509,46 @@ assert value["active_reserve_micro_usd"] == 0, value
   echo "ACCOUNTED_RESERVATION_USD=1.00"
 }
 
+validate_product_dev_bundle() {
+  python3 - "$1" <<'PY'
+import pathlib, re, sys
+text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+required=("What this does","Preview","Screenshots","Acceptance criteria",
+          "Risk","Cost","Rollback")
+if any(not re.search(rf"^#+\s+.*{re.escape(name)}",text,re.I|re.M)
+       for name in required):
+    raise SystemExit("development evidence bundle is incomplete")
+headings=list(re.finditer(r"^#+\s+(.+?)\s*$",text,re.M))
+def section(name):
+    for index, heading in enumerate(headings):
+        if name.casefold() in heading.group(1).casefold():
+            end=headings[index+1].start() if index+1 < len(headings) else len(text)
+            return text[heading.end():end]
+    return ""
+preview=section("Preview")
+screenshots=section("Screenshots")
+backend_na=r"(?m)^Not applicable — backend-only contract\s*$"
+preview_deferred=(
+    re.search(r"\b(?:unavailable|pending)\b",preview,re.I)
+    and re.search(r"\b(?:PR|deploy|publication)\b",preview,re.I)
+)
+screenshots_deferred=(
+    re.search(r"\bunavailable\b",screenshots,re.I)
+    and re.search(r"\bno\s+(?:UI|browser|visual(?:\s+surface)?)\b",screenshots,re.I)
+)
+if not re.search(backend_na,screenshots) and not (
+    preview_deferred and screenshots_deferred
+):
+    raise SystemExit("development evidence bundle lacks backend-only screenshot evidence")
+if not re.search(backend_na,preview) and not preview_deferred:
+    raise SystemExit("development evidence bundle lacks backend-only preview evidence")
+if not re.search(r"development-only",text,re.I) or \
+   not re.search(r"not a production attestation",text,re.I) or \
+   not re.search(r"approve to merge",text,re.I):
+    raise SystemExit("development evidence bundle lacks status or approval question")
+PY
+}
+
 product_role_run() {
   local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint="" rc=0
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
@@ -2523,7 +2563,7 @@ rows=[row for row in csv.DictReader(open(sys.argv[1],encoding="utf-8"))
 print(f"attempts={len(rows)} cost_usd={sum(float(row['cost_usd']) for row in rows):.2f}")
 PY
 )" || return
-    instruction="$instruction Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1. This isolated development lane has no GitHub PR, deploy, or network. Only if the frozen contract explicitly has no browser, HTTP, or deployable surface, write all standard bundle sections, mark Preview and Screenshots exactly 'Not applicable — backend-only contract', label the bundle development-only and not a production attestation, and summarize the already committed Reviewer-approved deterministic evidence. Do not rerun tests or commands. Trusted accounting: $evidence."
+    instruction="$instruction Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1. This isolated development lane has no GitHub PR, deploy, or network. If the frozen contract explicitly has no browser or visual surface, including a backend-only HTTP API, write all standard bundle sections and mark Preview and Screenshots exactly 'Not applicable — backend-only contract'. For an HTTP API, Preview may instead state that it is unavailable or pending until the PR/deploy publication gate, provided Screenshots explicitly says unavailable and that the contract has no UI or visual surface. Label the bundle development-only and not a production attestation, and summarize the already committed Reviewer-approved deterministic evidence. The PR/deploy preview is a later publication gate and must not block this development bundle. Do not rerun tests or commands. Trusted accounting: $evidence."
   fi
   envelope="$root/product/factory/ENVELOPE.env"
   [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||
@@ -2545,21 +2585,8 @@ PY
     return "$rc"
   fi
   if [[ "$role" == narrator ]]; then
-    python3 - "$root/worktrees/$ticket/factory/tickets/$ticket-bundle.md" <<'PY' || return
-import pathlib, re, sys
-path=pathlib.Path(sys.argv[1])
-text=path.read_text(encoding="utf-8")
-required=("What this does","Preview","Screenshots","Acceptance criteria",
-          "Risk","Cost","Rollback")
-if any(not re.search(rf"^#+\s+.*{re.escape(name)}",text,re.I|re.M)
-       for name in required):
-    raise SystemExit("development evidence bundle is incomplete")
-if text.count("Not applicable — backend-only contract") < 2:
-    raise SystemExit("development evidence bundle lacks backend-only N/A evidence")
-if not re.search(r"development-only",text,re.I) or \
-   not re.search(r"approve to merge",text,re.I):
-    raise SystemExit("development evidence bundle lacks status or approval question")
-PY
+    validate_product_dev_bundle \
+      "$root/worktrees/$ticket/factory/tickets/$ticket-bundle.md" || return
   elif [[ "$role" == reviewer ]]; then
     (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || return
   elif [[ "$role" == builder ]]; then

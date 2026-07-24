@@ -550,9 +550,57 @@ grep -Fq 'Not applicable — backend-only contract' "$ROOT/roles/narrator.md" ||
 grep -Fq 'never weakens the normal' \
   "$ROOT/roles/narrator.md" ||
   fail "Narrator backend-only exception weakens production preview evidence"
-sed -n '/^product_role_run()/,/^}/p' "$LANE" |
+grep -Fq 'backend-only HTTP API' "$ROOT/roles/narrator.md" ||
+  fail "Narrator still excludes backend-only HTTP APIs from development evidence"
+product_role_source="$(sed -n '/^product_role_run()/,/^product_transition_contract_blocked()/p' "$LANE")"
+printf '%s\n' "$product_role_source" |
   grep -Fq 'Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1' ||
   fail "development product runner did not supply the PR-less evidence marker"
+printf '%s\n' "$product_role_source" |
+  grep -Fq 'including a backend-only HTTP API' ||
+  fail "development product runner still excludes backend-only HTTP APIs"
+printf '%s\n' "$product_role_source" |
+  grep -Fq 'later publication gate and must not block this development bundle' ||
+  fail "development Narrator can still block on the later publication preview"
+eval "$(sed -n '/^validate_product_dev_bundle()/,/^}/p' "$LANE")"
+cat >"$TMP/http-backend-bundle.md" <<'EOF'
+# Development-only evidence — not a production attestation
+## What this does
+Adds a backend HTTP API.
+## Preview
+Not applicable — backend-only contract
+## Screenshots
+Not applicable — backend-only contract
+## Acceptance criteria
+| Criterion | Evidence | Result |
+| --- | --- | --- |
+| HTTP behavior | focused API test | Pass |
+## Risk
+Internal change.
+## Cost
+$1.00, one attempt.
+## Rollback
+Revert the later PR.
+Approve to merge, or send back with what's wrong?
+EOF
+validate_product_dev_bundle "$TMP/http-backend-bundle.md" ||
+  fail "development validator rejected a backend-only HTTP API bundle"
+sed '/^## Preview$/,/^## Screenshots$/{
+  /Not applicable — backend-only contract/c\
+Unavailable in this sandbox; pending until the PR/deploy publication gate.
+}' "$TMP/http-backend-bundle.md" >"$TMP/pending-http-backend-bundle.md"
+validate_product_dev_bundle "$TMP/pending-http-backend-bundle.md" ||
+  fail "development validator rejected a pending HTTP publication preview"
+sed '/^## Screenshots$/,/^## Acceptance criteria$/{
+  /Not applicable — backend-only contract/c\
+**Unavailable — no preview deploy exists.** This backend HTTP contract has no UI or visual surface.
+}' "$TMP/pending-http-backend-bundle.md" >"$TMP/retained-http-backend-bundle.md"
+validate_product_dev_bundle "$TMP/retained-http-backend-bundle.md" ||
+  fail "development validator rejected the retained HTTP bundle shape"
+sed 's/no UI or visual surface/a changed UI/' \
+  "$TMP/retained-http-backend-bundle.md" >"$TMP/visual-bundle-without-evidence.md"
+expect_failure "visual bundle without preview evidence" \
+  validate_product_dev_bundle "$TMP/visual-bundle-without-evidence.md"
 subscription_cases="$(sed -n '/^  subscription-plan)/,/^  product-seed-lineage)/p' "$LANE")"
 printf '%s\n' "$subscription_cases" |
   grep -Fq 'run_in_sandbox "$root" subscription __subscription-plan' ||

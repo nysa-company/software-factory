@@ -73,6 +73,14 @@ denials remain immediate. Development activation permits four calls for one
 Codex account; Cursor and native Claude remain capped at two, and the native
 Claude circuit breaker remains in force.
 
+The PR-less development Narrator marks Preview and Screenshots as backend-only
+N/A when the frozen contract has no browser or visual surface, including an
+HTTP API. An HTTP Preview may instead be recorded as unavailable in the sandbox
+and pending the PR/deploy publication gate when Screenshots also explicitly
+records that they are unavailable and the contract has no UI or visual surface.
+The bundle remains explicitly development-only and not a production
+attestation; that later gate does not block sandbox evidence.
+
 ## Isolated product proof and resume
 
 `product-plan` accepts one to four tickets after the dedicated four-call mock and subscription proofs establish the capacity ceiling. A seeded retry may select one to four unfinished tickets, so completed siblings are not rerun. The source must be a clean isolated worktree; the canonical Nysa checkout is refused. The lane clones it into a private product, replaces its remote with a local bare origin, and has no GitHub or Linear route.
