@@ -192,6 +192,27 @@ for row in rows:
 PY
 }
 
+cleanup_empty_cursor_bridge() {
+  python3 - "$1" <<'PY'
+import os, pathlib, stat, sys
+root=pathlib.Path(sys.argv[1])
+info=root.lstat()
+if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+    stat.S_IMODE(info.st_mode) & 0o022):
+    raise SystemExit(1)
+directories=[]
+for path in root.rglob("*"):
+    current=path.lstat()
+    if (not stat.S_ISDIR(current.st_mode) or current.st_uid != os.getuid() or
+        stat.S_IMODE(current.st_mode) & 0o022):
+        raise SystemExit(1)
+    directories.append(path)
+for path in sorted(directories,key=lambda item:len(item.parts),reverse=True):
+    path.rmdir()
+root.rmdir()
+PY
+}
+
 assert_macos() {
   local os
   if [[ "$TEST_MODE" -eq 1 ]]; then
@@ -2835,6 +2856,10 @@ PY
 )"
       if [[ -L "$bridge" && "$target" == "$root/runtime/cursor-tmp" ]]; then
         rm -f -- "$bridge"
+      elif [[ -d "$bridge" && ! -L "$bridge" ]] &&
+           subscription_provider_idle &&
+           cleanup_empty_cursor_bridge "$bridge"; then
+        :
       else
         echo "factory-dev-lane: Cursor temporary bridge changed; refusing cleanup" >&2
         return 1

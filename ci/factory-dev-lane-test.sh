@@ -420,6 +420,20 @@ printf '%s\n' "$subscription_cases" |
 printf '%s\n' "$subscription_cases" |
   grep -Fq 'run_in_sandbox "$root" subscription __subscription-run' ||
   fail "Codex subscription execution still depends on the Cursor scratch bridge"
+eval "$(sed -n '/^cleanup_empty_cursor_bridge()/,/^}/p' "$LANE")"
+REPLACED_BRIDGE="$TMP/replaced-cursor-bridge"
+mkdir -p "$REPLACED_BRIDGE/empty-session"
+chmod 755 "$REPLACED_BRIDGE" "$REPLACED_BRIDGE/empty-session"
+cleanup_empty_cursor_bridge "$REPLACED_BRIDGE" ||
+  fail "empty Cursor-replaced bridge was not cleanable"
+[[ ! -e "$REPLACED_BRIDGE" ]] ||
+  fail "empty Cursor-replaced bridge survived cleanup"
+mkdir -p "$REPLACED_BRIDGE"
+printf '%s\n' unsafe >"$REPLACED_BRIDGE/provider-state"
+expect_failure "nonempty Cursor-replaced bridge" \
+  cleanup_empty_cursor_bridge "$REPLACED_BRIDGE"
+[[ -f "$REPLACED_BRIDGE/provider-state" ]] ||
+  fail "Cursor bridge cleanup removed unrecognized provider state"
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
