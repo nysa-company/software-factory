@@ -56,7 +56,9 @@ noninteractive Factory boundary. If the operator does not complete it in that
 window, or a copied OAuth access token has less than five minutes remaining,
 the development controller proceeds with the next authenticated
 profile-authorized route. An explicit authentication failure falls back
-immediately. Family separation and adapter concurrency ceilings still apply;
+immediately. This five-minute rule applies equally to Codex, Claude, and
+Cursor, and one ticket waiting for authorization never blocks its siblings.
+Family separation and adapter concurrency ceilings still apply;
 the Factory never waits on a login prompt or starts an unauthenticated task.
 Retained-product resumes run that probe before hashing the plan and again
 before validating it for execution; the internal run reuses the second result
