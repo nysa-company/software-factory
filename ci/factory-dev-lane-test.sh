@@ -413,6 +413,13 @@ grep -Fq 'never weakens the normal' \
 sed -n '/^product_role_run()/,/^}/p' "$LANE" |
   grep -Fq 'Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1' ||
   fail "development product runner did not supply the PR-less evidence marker"
+subscription_cases="$(sed -n '/^  subscription-plan)/,/^  product-seed-lineage)/p' "$LANE")"
+printf '%s\n' "$subscription_cases" |
+  grep -Fq 'run_in_sandbox "$root" subscription __subscription-plan' ||
+  fail "Codex subscription planning still depends on the Cursor scratch bridge"
+printf '%s\n' "$subscription_cases" |
+  grep -Fq 'run_in_sandbox "$root" subscription __subscription-run' ||
+  fail "Codex subscription execution still depends on the Cursor scratch bridge"
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \

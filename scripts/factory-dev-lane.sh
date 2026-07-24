@@ -2850,7 +2850,7 @@ PY
       trap cleanup_bridge EXIT HUP INT TERM
     fi
     cd "$root"
-    if [[ "$profile" == cursor ]]; then
+    if [[ "$profile" == cursor || "$profile" == subscription ]]; then
       env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
         PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
         FACTORY_CURSOR_SESSION_HOME="$cursor_home" \
@@ -2949,7 +2949,7 @@ case "$command" in
     [[ $# -eq 0 ]] || usage
     root="$(create_lane subscription)"
     echo "ROOT=$root"
-    if ! run_in_sandbox "$root" cursor __subscription-plan --root "$root"; then
+    if ! run_in_sandbox "$root" subscription __subscription-plan --root "$root"; then
       echo "ROOT=$root" >&2
       die "subscription canary planning failed; lane retained for inspection"
     fi
@@ -2966,7 +2966,7 @@ case "$command" in
     done
     [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
-    run_in_sandbox "$root" cursor __subscription-run \
+    run_in_sandbox "$root" subscription __subscription-run \
       --root "$root" --approve-hash "$approve"
     ;;
   product-seed-lineage)
