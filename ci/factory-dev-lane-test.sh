@@ -1057,6 +1057,112 @@ printf '%s\n' 'ticket=T-993' 'role=narrator' 'accounting_state=completed' \
 product_export_roles_complete "$EXPORT_GATE_ROOT" T-993 ||
   fail "checkpoint export rejected current Reviewer and Narrator"
 
+eval "$(sed -n '/^write_product_checkpoint_import()/,/^validate_product_seed_accounting()/p' \
+  "$LANE" | sed '$d')"
+eval "$(sed -n '/^write_product_checkpoint()/,/^product_export_roles_complete()/p' \
+  "$LANE" | sed '$d')"
+CHAIN_ROOT="$TMP/checkpoint-chain"
+mkdir -p "$CHAIN_ROOT/runtime" "$CHAIN_ROOT/product/factory/runs" \
+  "$CHAIN_ROOT/worktrees"
+CHAIN_NONCE="$(printf 'checkpoint-chain-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+for ticket in T-046 T-048; do
+  work="$CHAIN_ROOT/worktrees/$ticket"
+  git init -q "$work"
+  mkdir -p "$work/factory/tickets" "$work/factory/route-plans"
+  if [[ "$ticket" == T-046 ]]; then
+    printf '%s\n' "# $ticket chain fixture" '' 'State: Ready' \
+      >"$work/factory/tickets/$ticket.md"
+  else
+    printf '%s\n' "# $ticket chain fixture" '' 'State: Review' 'SPEC-LINT: PASS' \
+      >"$work/factory/tickets/$ticket.md"
+  fi
+  printf '%s\n' '{"route":"checkpoint-chain"}' \
+    >"$work/factory/route-plans/$ticket.json"
+  git -C "$work" add factory
+  git -C "$work" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Import checkpoint prefix'
+  git -C "$work" update-ref "refs/remotes/origin/ticket/$ticket" HEAD
+done
+CHAIN_T46_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse HEAD)"
+CHAIN_T46_TREE="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse 'HEAD^{tree}')"
+CHAIN_T48_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-048" rev-parse HEAD)"
+CHAIN_T48_TREE="$(git -C "$CHAIN_ROOT/worktrees/T-048" rev-parse 'HEAD^{tree}')"
+CHAIN_SOURCE="$CHAIN_ROOT/source-checkpoint.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"source_factory_sha\":\"$CHAIN_T46_HEAD\",\"source_factory_tree\":\"$CHAIN_T46_TREE\",\"source_marker_sha256\":\"$CHAIN_NONCE\",\"source_product_sha256\":\"$CHAIN_NONCE\",\"prior_accounting_sha256\":null,\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"lane_charges_micro_usd\":{\"T-046\":11000000,\"T-048\":13000000},\"tickets\":[{\"ticket\":\"T-046\",\"head_sha\":\"$CHAIN_T46_HEAD\",\"head_tree\":\"$CHAIN_T46_TREE\",\"ticket_blob\":\"$CHAIN_T46_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN spec-linter\",\"state\":\"Ready\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t46-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T46_HEAD\"}],\"spec_verdicts\":[]},{\"ticket\":\"T-048\",\"head_sha\":\"$CHAIN_T48_HEAD\",\"head_tree\":\"$CHAIN_T48_TREE\",\"ticket_blob\":\"$CHAIN_T48_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN reviewer\",\"state\":\"Review\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t48-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"spec-linter\",\"run_id\":\"prior-t48-spec\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"test-author\",\"run_id\":\"prior-t48-tests\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"builder\",\"run_id\":\"prior-t48-builder\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"}],\"spec_verdicts\":[\"SPEC-LINT: PASS\"]}]}" \
+  >"$CHAIN_SOURCE"
+chmod 600 "$CHAIN_SOURCE"
+PRODUCT_TICKETS=(T-046 T-048)
+write_product_checkpoint_import "$CHAIN_ROOT" "$CHAIN_SOURCE"
+cmp -s "$CHAIN_SOURCE" "$CHAIN_ROOT/runtime/product-checkpoint-source.json" ||
+  fail "checkpoint import did not retain the exact source"
+[[ "$(stat -f '%Su:%Lp:%l' \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.json")" == "$(id -un):600:1" ]] ||
+  fail "retained checkpoint source is unsafe"
+printf '%s\n' 'SPEC-LINT: FAIL — retry Planner' \
+  >>"$CHAIN_ROOT/worktrees/T-046/factory/tickets/T-046.md"
+git -C "$CHAIN_ROOT/worktrees/T-046" add factory/tickets/T-046.md
+git -C "$CHAIN_ROOT/worktrees/T-046" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Record current Spec-linter failure'
+git -C "$CHAIN_ROOT/worktrees/T-046" update-ref \
+  refs/remotes/origin/ticket/T-046 HEAD
+CHAIN_CURRENT_OUT="$CHAIN_ROOT/product/factory/runs/current-spec.out"
+printf '%s\n' 'SPEC-LINT: FAIL — retry Planner' >"$CHAIN_CURRENT_OUT"
+CHAIN_CURRENT_OUT_SHA="$(sha256_file "$CHAIN_CURRENT_OUT")"
+printf '%s\n' 'run_id=current-spec' 'ticket=T-046' 'role=spec-linter' \
+  'phase=completed' 'accounting_state=completed' 'contract_version=1.7.0' \
+  'exit_status=0' 'role_exit=ok' 'task_submitted=1' 'go_issued=1' \
+  "output_sha256=$CHAIN_CURRENT_OUT_SHA" "role_head_before=$CHAIN_T46_HEAD" \
+  'effective_cost=7.000000' \
+  >"$CHAIN_ROOT/product/factory/runs/current-spec.meta"
+printf '%s\n' 'ticket,role,run_id,exit_status' \
+  'T-046,spec-linter,current-spec,0' \
+  >"$CHAIN_ROOT/product/factory/runtime-ledger.csv"
+CHAIN_CHECKPOINT_SHA="$(sha256_file "$CHAIN_SOURCE")"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-source/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"lane_control_sha\":\"$CHAIN_T46_HEAD\",\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"seed_accounting_sha256\":\"$CHAIN_NONCE\",\"seed_lineage_sha256\":\"$CHAIN_NONCE\",\"seed_checkpoint_sha256\":\"$CHAIN_CHECKPOINT_SHA\",\"tickets\":[\"T-046\",\"T-048\"]}" \
+  >"$CHAIN_ROOT/runtime/product-source.json"
+printf '%s\n' \
+  "{\"kit_sha\":\"$CHAIN_T46_HEAD\",\"kit_tree\":\"$CHAIN_T46_TREE\"}" \
+  >"$CHAIN_ROOT/marker.json"
+printf '%s\n' 'new chained bundle' >"$CHAIN_ROOT/seed.bundle"
+write_product_checkpoint "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" \
+  "$CHAIN_ROOT/chained.json" T-046 T-048 ||
+  fail "checkpoint chaining rejected valid prior roles"
+python3 - "$CHAIN_ROOT/chained.json" "$CHAIN_SOURCE" "$CHAIN_NONCE" <<'PY' ||
+import json, sys
+chained=json.load(open(sys.argv[1])); source=json.load(open(sys.argv[2]))
+new={item["ticket"]:item for item in chained["tickets"]}
+old={item["ticket"]:item for item in source["tickets"]}
+if (new["T-046"]["next_stage"] != "RUN planner" or
+    new["T-046"]["roles"][0] != old["T-046"]["roles"][0] or
+    [run["role"] for run in new["T-046"]["roles"]] !=
+        ["planner","spec-linter"] or
+    new["T-048"]["next_stage"] != "RUN reviewer" or
+    new["T-048"]["roles"] != old["T-048"]["roles"] or
+    chained["lane_charges_micro_usd"] != {"T-046":7000000,"T-048":0} or
+    chained["prior_accounting_sha256"] != sys.argv[3]):
+    raise SystemExit(1)
+PY
+  fail "chained checkpoint lost sequence, evidence, accounting, or stage"
+CHAIN_IMPORT="$CHAIN_ROOT/runtime/product-checkpoint-import.json"
+cp "$CHAIN_IMPORT" "$CHAIN_IMPORT.good"
+CHAIN_ROGUE_HEAD="$(printf 'detached checkpoint head\n' | \
+  git -C "$CHAIN_ROOT/worktrees/T-046" -c user.name=Test \
+    -c user.email=test@local commit-tree "$CHAIN_T46_TREE")"
+sed "s/\"import_head\":\"$CHAIN_T46_HEAD\"/\"import_head\":\"$CHAIN_ROGUE_HEAD\"/" \
+  "$CHAIN_IMPORT.good" >"$CHAIN_IMPORT"
+expect_failure "detached imported checkpoint head" write_product_checkpoint \
+  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/detached.json" T-046 T-048
+mv "$CHAIN_IMPORT.good" "$CHAIN_IMPORT"
+cp "$CHAIN_ROOT/runtime/product-checkpoint-source.json" \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.good"
+printf '\n' >>"$CHAIN_ROOT/runtime/product-checkpoint-source.json"
+expect_failure "altered retained checkpoint source" write_product_checkpoint \
+  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/altered.json" T-046 T-048
+mv "$CHAIN_ROOT/runtime/product-checkpoint-source.good" \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.json"
+
 eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^product_seed_lineage_id()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^write_product_seed_lineage()/,/^}/p' "$LANE")"

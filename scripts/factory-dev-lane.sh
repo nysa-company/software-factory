@@ -1203,10 +1203,12 @@ PY
 write_product_checkpoint_import() {
   local root="$1" checkpoint="$2"
   python3 - "$checkpoint" "$root/runtime/product-checkpoint-import.json" \
-    "$root" "${PRODUCT_TICKETS[@]}" <<'PY'
+    "$root/runtime/product-checkpoint-source.json" "$root" \
+    "${PRODUCT_TICKETS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
-checkpoint_path, output, root, *_tickets=sys.argv[1:]
-source=json.load(open(checkpoint_path,encoding="utf-8"))
+checkpoint_path, output, retained, root, *_tickets=sys.argv[1:]
+raw=open(checkpoint_path,"rb").read()
+source=json.loads(raw)
 records=[]
 for item in source["tickets"]:
     ticket=item["ticket"]
@@ -1223,9 +1225,12 @@ for item in source["tickets"]:
     })
 value={
     "schema":"factory-dev-product-checkpoint-import/v1",
-    "checkpoint_sha256":hashlib.sha256(open(checkpoint_path,"rb").read()).hexdigest(),
+    "checkpoint_sha256":hashlib.sha256(raw).hexdigest(),
     "tickets":records,
 }
+retained_path=pathlib.Path(retained)
+fd=os.open(retained_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(fd,"wb") as stream: stream.write(raw)
 path=pathlib.Path(output)
 path.write_text(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n",
                 encoding="utf-8")
@@ -1671,6 +1676,8 @@ product_approval_hash() {
       sha256_file "$root/runtime/product-envelope/budget-day"
     [[ ! -f "$root/runtime/product-checkpoint-import.json" ]] ||
       sha256_file "$root/runtime/product-checkpoint-import.json"
+    [[ ! -f "$root/runtime/product-checkpoint-source.json" ]] ||
+      sha256_file "$root/runtime/product-checkpoint-source.json"
     printf '%s\n' "$(python3 - "$root/runtime/docker" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
@@ -1854,7 +1861,8 @@ PY
       "$root/runtime/product-containers.json" \
       "$root/runtime/product-envelope/global.env" \
       "$root/runtime/product-envelope/budget-day" \
-      "$root/runtime/product-checkpoint-import.json"; do
+      "$root/runtime/product-checkpoint-import.json" \
+      "$root/runtime/product-checkpoint-source.json"; do
       [[ -f "$path" ]] || continue
       printf '%s=%s\n' "${path#$root/}" "$(sha256_file "$path")"
     done
@@ -3068,8 +3076,20 @@ PY
   git -C "$root/origin.git" bundle create "$output/seed.bundle" "${refs[@]}" >/dev/null ||
     die "product checkpoint bundle could not be created"
   chmod 600 "$output/seed.bundle"
-  python3 - "$root" "$output/seed.bundle" \
-    "$output/checkpoint.json" "${PRODUCT_TICKETS[@]}" <<'PY' ||
+  write_product_checkpoint "$root" "$output/seed.bundle" \
+    "$output/checkpoint.json" "${PRODUCT_TICKETS[@]}" ||
+    die "product checkpoint evidence is incomplete or ambiguous"
+  cleanup=0
+  trap - RETURN
+  echo "CHECKPOINT=$output/checkpoint.json"
+  echo "SEED_BUNDLE=$output/seed.bundle"
+  echo "TICKETS=${PRODUCT_TICKETS[*]}"
+}
+
+write_product_checkpoint() {
+  local root="$1" bundle="$2" output="$3"; shift 3
+  python3 - "$root" "$bundle" \
+    "$output" "$@" <<'PY'
 import csv, hashlib, json, os, pathlib, re, stat, subprocess, sys
 from decimal import Decimal
 root=pathlib.Path(sys.argv[1]); bundle=pathlib.Path(sys.argv[2])
@@ -3077,6 +3097,40 @@ output=pathlib.Path(sys.argv[3]); tickets=sys.argv[4:]
 source_path=root/"runtime/product-source.json"
 source=json.load(open(source_path,encoding="utf-8"))
 marker_path=root/"marker.json"; marker=json.load(open(marker_path,encoding="utf-8"))
+import_path=root/"runtime/product-checkpoint-import.json"
+retained_path=root/"runtime/product-checkpoint-source.json"
+prior={}
+if import_path.exists() or retained_path.exists():
+    imported_info=import_path.lstat()
+    if (not stat.S_ISREG(imported_info.st_mode) or imported_info.st_nlink != 1 or
+        stat.S_IMODE(imported_info.st_mode) != 0o600 or
+        imported_info.st_uid != os.getuid()):
+        raise SystemExit(1)
+    info=retained_path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+        stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid()):
+        raise SystemExit(1)
+    imported=json.load(open(import_path,encoding="utf-8"))
+    retained_raw=retained_path.read_bytes()
+    retained_sha=hashlib.sha256(retained_raw).hexdigest()
+    checkpoint=json.loads(retained_raw)
+    if (imported.get("schema") != "factory-dev-product-checkpoint-import/v1" or
+        imported.get("checkpoint_sha256") != retained_sha or
+        source.get("seed_checkpoint_sha256") != retained_sha or
+        checkpoint.get("schema") != "factory-dev-product-checkpoint/v1"):
+        raise SystemExit(1)
+    checkpoint_records={item["ticket"]:item for item in checkpoint["tickets"]}
+    if (len(checkpoint_records) != len(checkpoint["tickets"]) or
+        {item.get("ticket") for item in imported.get("tickets",[])} !=
+            set(checkpoint_records)):
+        raise SystemExit(1)
+    for item in imported.get("tickets",[]):
+        old=checkpoint_records.get(item.get("ticket"))
+        if (not old or item.get("roles") != [run["role"] for run in old["roles"]] or
+            item.get("spec_verdicts") != old["spec_verdicts"] or
+            item.get("expected_next_stage") != old["next_stage"]):
+            raise SystemExit(1)
+        prior[item["ticket"]] = (item,old)
 runs=root/"product/factory/runs"
 ledger=root/"product/factory/runtime-ledger.csv"
 manifests={}
@@ -3099,7 +3153,17 @@ for _path,values in manifests.values():
 records=[]
 for ticket in tickets:
     work=root/"worktrees"/ticket; ref="refs/remotes/origin/ticket/"+ticket
-    successful=[]
+    successful=list(prior.get(ticket,({},{}))[1].get("roles",[]))
+    imported=prior.get(ticket,({},{}))[0]
+    if imported:
+        git=lambda *args: subprocess.check_output(
+            ["git","-C",str(work),*args],text=True).strip()
+        if (git("rev-parse",imported["import_head"]) != imported["import_head"] or
+            git("rev-parse",imported["import_head"]+"^{tree}") !=
+                imported["import_tree"] or
+            subprocess.call(["git","-C",str(work),"merge-base","--is-ancestor",
+                             imported["import_head"],ref]) != 0):
+            raise SystemExit(1)
     for row in rows:
         if row.get("ticket") != ticket or row.get("exit_status") != "0": continue
         role=row.get("role"); run_id=row.get("run_id")
@@ -3186,12 +3250,6 @@ output.write_text(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n",
                   encoding="utf-8")
 os.chmod(output,0o600)
 PY
-    die "product checkpoint evidence is incomplete or ambiguous"
-  cleanup=0
-  trap - RETURN
-  echo "CHECKPOINT=$output/checkpoint.json"
-  echo "SEED_BUNDLE=$output/seed.bundle"
-  echo "TICKETS=${PRODUCT_TICKETS[*]}"
 }
 
 product_export_roles_complete() {

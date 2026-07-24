@@ -97,6 +97,14 @@ matching successful current-lane ledger evidence. Reviewer and Narrator are
 never checkpointed and must run under the new kit before `product-export`
 succeeds.
 
+Import also retains an owner-only exact copy of the source checkpoint. A later
+checkpoint export verifies that copy against the imported digest and
+product-source binding, then prepends its exact role records to the current
+lane's successful records. This permits another corrected kit to continue the
+same pre-Reviewer sequence without losing prior output hashes or replaying
+successful roles; copy drift, import drift, or a detached imported head refuses
+export.
+
 Role instructions identify each disposable database environment through a
 worktree-relative path, never the lane's physical temporary path. A shared
 sentinel rejects any newly added absolute `nysa-sf-dev.*` path before the
