@@ -184,6 +184,8 @@ ROLE_HEAD_BEFORE=""
 ROLE_BRANCH_BEFORE=""
 ROLE_REMOTE_BEFORE=""
 ROLE_PROTECTED_BEFORE=""
+ROLE_ESCALATION_REQUESTED=0
+ROLE_ESCALATION_INVALID=0
 PRODUCT_REMOTE=""
 ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
@@ -2126,6 +2128,39 @@ with open(sys.argv[1], "rb") as handle:
     print(hashlib.sha256(handle.read()).hexdigest())
 PY
 )"
+ROLE_ESCALATION_PARSE="$(python3 - "$RUNS_DIR/$RUN_ID.out" \
+  "$PROVIDER_CONTRACT_VERSION" "$ROLE" <<'PY'
+import sys
+
+output, contract, role = sys.argv[1:]
+lines = open(output, encoding="utf-8", errors="replace").read().splitlines()
+candidates = [
+    line for line in lines
+    if line.lstrip().upper().startswith("ROLE-ESCALATE:")
+]
+if not candidates:
+    print("none")
+elif (
+    contract == "1.7.0"
+    and role in {"planner", "test-author", "builder"}
+    and candidates == ["ROLE-ESCALATE: CONTRACT-BLOCKED"]
+):
+    print("contract-blocked")
+else:
+    print("invalid")
+PY
+)" || ROLE_ESCALATION_PARSE=invalid
+case "$ROLE_ESCALATION_PARSE" in
+  none) ;;
+  contract-blocked)
+    if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+      ROLE_ESCALATION_REQUESTED=1
+    else
+      ROLE_ESCALATION_INVALID=1
+    fi
+    ;;
+  *) ROLE_ESCALATION_INVALID=1 ;;
+esac
 
 if ! stop_lease_heartbeat; then
   echo "role_exit_control_plane_mutation: dispatcher lease heartbeat failed" >&2
@@ -2149,7 +2184,9 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_PROTECTED_AFTER="$(ticket_evidence_snapshot "$TICKET_FILE" 2>/dev/null)" ||
     ROLE_PROTECTED_AFTER="__invalid__"
   if [[ "$PROVIDER_STATUS" -eq 0 ]]; then
-    if [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" ]]; then
+    if [[ "$ROLE_ESCALATION_INVALID" -eq 1 ]]; then
+      ROLE_EXIT_STATUS="role_exit_invalid_escalation"
+    elif [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_wrong_branch"
     elif [[ "$ROLE" == "reviewer" &&
             ( -n "$ROLE_DIRTY" || "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ) ]]; then
@@ -2185,11 +2222,18 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
           "$ROLE_HEAD_AFTER" "$ROLE_TRACKING_BEFORE"; then
           ROLE_EXIT_STATUS="role_exit_remote_mismatch"
         else
-          ROLE_EXIT_STATUS="ok"
+          if [[ "$ROLE_ESCALATION_REQUESTED" -eq 1 ]]; then
+            ROLE_EXIT_STATUS="role_exit_contract_blocked"
+          else
+            ROLE_EXIT_STATUS="ok"
+          fi
         fi
       fi
     fi
-    if [[ "$ROLE_EXIT_STATUS" != "ok" ]]; then
+    if [[ "$ROLE_EXIT_STATUS" == "role_exit_contract_blocked" ]]; then
+      echo "role_exit_contract_blocked: durable role output requests operator escalation" >&2
+      STATUS=12
+    elif [[ "$ROLE_EXIT_STATUS" != "ok" ]]; then
       echo "$ROLE_EXIT_STATUS: successful provider run did not leave durable role output" >&2
       STATUS=11
     fi

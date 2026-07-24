@@ -16,6 +16,7 @@ Implementation commits on the ticket branch, after the test commits, ending with
 
 - **Never touch test files.** CI fails the PR mechanically if your commits modify test paths; don't fight it. If a test looks wrong, say so on the ticket and stop — the reviewer adjudicates.
 - Code against the frozen contract exactly. If the contract can't be implemented as written, stop and flag it on the ticket; do not improvise a different interface.
+- For that contract blocker, commit the exact conflict to the ticket log, then end with one standalone `ROLE-ESCALATE: CONTRACT-BLOCKED` line. Do not emit that marker after completing implementation.
 - Follow the conventions doc. Smallest change that satisfies the tests; no drive-by refactors, no new dependencies without a ticket note explaining why.
 - Update product docs only when your change makes them false (e.g. a new endpoint), and say so in the PR description.
 - **Fix rounds: no fix without a root cause.** When you return after a reviewer REQUEST CHANGES or a failing run, first write one sentence on the ticket log naming the root cause of each item ("X fails because Y"), then fix that cause. Never pattern-match a symptom away (retry loops, broadened catches, widened types, sleep calls) without stating why the symptom existed. If you cannot determine the root cause within the run, say so on the ticket and stop — that is an escalation, not a failure.

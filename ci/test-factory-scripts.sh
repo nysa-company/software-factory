@@ -2976,6 +2976,111 @@ else
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
 fi
 
+# Contract 1.7 roles may commit a blocker without completing their stage.
+setup_role_exit_fixture T-643
+ROLE_BLOCKED_STATUS=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role builder --ticket T-643 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    $'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED' \
+  > "$TMP/role-contract-blocked.out" 2>&1 || ROLE_BLOCKED_STATUS=$?
+ROLE_BLOCKED_META=("$ROLE_EXIT_ROOT"/factory/runs/*.meta)
+ROLE_BLOCKED_LOCAL="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_BLOCKED_REMOTE="$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-643)"
+ROLE_BLOCKED_STAGE="$(FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_LEDGER="$ROLE_EXIT_ROOT/factory/runtime-ledger.csv" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+  "$NEXT_STAGE" --ticket T-643 --workdir "$ROLE_EXIT_WORKTREE" 2>/dev/null || true)"
+if [[ "$ROLE_BLOCKED_STATUS" -eq 12 &&
+      "$ROLE_BLOCKED_LOCAL" == "$ROLE_BLOCKED_REMOTE" &&
+      "$ROLE_BLOCKED_STAGE" == "RUN planner" ]] &&
+   grep -q '^phase=completed$' "${ROLE_BLOCKED_META[0]}" &&
+   grep -q '^accounting_state=completed$' "${ROLE_BLOCKED_META[0]}" &&
+   grep -q '^exit_status=12$' "${ROLE_BLOCKED_META[0]}" &&
+   grep -q '^role_exit=role_exit_contract_blocked$' "${ROLE_BLOCKED_META[0]}"; then
+  pass "contract blocker is pushed and accounted without completing the role"
+else
+  fail "contract blocker did not remain a non-successful durable role result" \
+    "status=$ROLE_BLOCKED_STATUS next=$ROLE_BLOCKED_STAGE"
+fi
+
+setup_role_exit_fixture T-644
+ROLE_BLOCKED_NO_COMMIT=0
+FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-644 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    $'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED' \
+  > "$TMP/role-contract-blocked-no-commit.out" 2>&1 ||
+  ROLE_BLOCKED_NO_COMMIT=$?
+if [[ "$ROLE_BLOCKED_NO_COMMIT" -eq 11 ]] &&
+   grep -q 'role_exit_no_commit' "$TMP/role-contract-blocked-no-commit.out"; then
+  pass "contract blocker still requires a durable commit"
+else
+  fail "contract blocker bypassed the durable commit requirement" \
+    "status=$ROLE_BLOCKED_NO_COMMIT"
+fi
+
+for escalation_case in malformed duplicate wrong-role; do
+  case "$escalation_case" in
+    malformed)
+      escalation_ticket=T-645
+      escalation_role=planner
+      escalation_task=$'blocked\nROLE-ESCALATE: CONTRACT'
+      ;;
+    duplicate)
+      escalation_ticket=T-646
+      escalation_role=test-author
+      escalation_task=$'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED\nROLE-ESCALATE: CONTRACT-BLOCKED'
+      ;;
+    wrong-role)
+      escalation_ticket=T-647
+      escalation_role=spec-linter
+      escalation_task=$'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED'
+      ;;
+  esac
+  setup_role_exit_fixture "$escalation_ticket"
+  ROLE_BAD_ESCALATION=0
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+    FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+    FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+    FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role "$escalation_role" --ticket "$escalation_ticket" \
+      --workdir "$ROLE_EXIT_WORKTREE" -- "$escalation_task" \
+    > "$TMP/role-escalation-$escalation_case.out" 2>&1 ||
+    ROLE_BAD_ESCALATION=$?
+  if [[ "$ROLE_BAD_ESCALATION" -eq 11 ]] &&
+     grep -q 'role_exit_invalid_escalation' \
+       "$TMP/role-escalation-$escalation_case.out"; then
+    pass "contract blocker refuses $escalation_case output"
+  else
+    fail "contract blocker accepted $escalation_case output" \
+      "status=$ROLE_BAD_ESCALATION"
+  fi
+done
+
+setup_role_exit_fixture T-648
+ROLE_LEGACY_COMMIT=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role builder --ticket T-648 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "ordinary legacy commit" > "$TMP/role-legacy-commit.out" 2>&1 ||
+  ROLE_LEGACY_COMMIT=$?
+if [[ "$ROLE_LEGACY_COMMIT" -eq 0 ]]; then
+  pass "contract 1.6 ordinary role completion is unchanged"
+else
+  fail "contract blocker changed ordinary contract 1.6 completion" \
+    "status=$ROLE_LEGACY_COMMIT"
+fi
+
 setup_role_exit_fixture T-642
 ROLE_UNTRACKED_STATUS=0
 MOCK_MUTATE_WORKDIR_UNTRACKED=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \

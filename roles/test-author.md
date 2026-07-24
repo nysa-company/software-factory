@@ -19,6 +19,7 @@ The reconciled Markdown ticket in Building with its acceptance criteria and froz
 - Tests must fail for the right reason before implementation (missing feature), not from setup errors. Run them once to confirm.
 - No trivially-passing tests: every test must assert observable behavior from the contract. A test that would pass against an empty implementation is a defect in your work.
 - If the contract is ambiguous or untestable as written, stop and flag it on the ticket — do not guess.
+- For that contract blocker, commit the exact ambiguity to the ticket log, then end with one standalone `ROLE-ESCALATE: CONTRACT-BLOCKED` line. Do not emit that marker after completing the tests.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
 - Commit all test and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 
