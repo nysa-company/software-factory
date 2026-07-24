@@ -89,7 +89,7 @@ fi
 if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
   FULL_TASK="$FULL_TASK
 
-Reviewer CLI control: remain in native read-only Ask mode, inspect the supplied change, run the required deterministic checks with read-only terminal access, and return the required verdict without editing or committing."
+Reviewer CLI control: remain read-only in native Ask mode, inspect the supplied change, run the required deterministic checks with read-only terminal access, and return the required verdict without editing or committing."
 else
   FULL_TASK="$FULL_TASK
 
