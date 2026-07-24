@@ -44,13 +44,31 @@ class CursorStreamTest(unittest.TestCase):
 
     def test_reviewer_prefers_one_terminal_bound_assistant(self) -> None:
         review = "Review complete.\n\nREQUEST CHANGES\nFIX-OWNER: builder"
+        assistants = [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": f"Progress {index}"}]
+                },
+            }
+            for index in range(6)
+        ]
+        assistants.append(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": review}]},
+            }
+        )
         result = self.run_verdict(
-            [
-                {"type": "assistant", "message": {"content": review}},
+            assistants
+            + [
                 {
                     "type": "result",
                     "subtype": "success",
-                    "result": f"{review}\n\nSummary:\n{review}",
+                    "result": (
+                        "Progress 0\nProgress 1\nProgress 2\nProgress 3\n"
+                        f"Progress 4\nProgress 5\n{review}\n\nSummary:\n{review}"
+                    ),
                 },
             ]
         )

@@ -43,6 +43,26 @@ def parse_review(raw: str, contract_version: str) -> tuple[str, str]:
     return verdict, owner
 
 
+def assistant_text(event: dict):
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    texts = []
+    for block in content:
+        if not isinstance(block, dict):
+            raise ValueError("reviewer assistant contains malformed content")
+        if block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if not isinstance(text, str):
+            raise ValueError("reviewer assistant contains malformed text")
+        texts.append(text)
+    return "\n".join(texts)
+
+
 def cursor_review(raw: str, contract_version: str) -> str:
     results = []
     assistants = []
@@ -58,8 +78,7 @@ def cursor_review(raw: str, contract_version: str) -> str:
             if isinstance(result, str):
                 results.append(result)
         if event.get("type") == "assistant":
-            message = event.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
+            content = assistant_text(event)
             if isinstance(content, str) and verdict_signals(content):
                 assistants.append(content)
     if len(results) != 1:
