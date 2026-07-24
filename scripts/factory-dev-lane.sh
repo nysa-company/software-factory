@@ -2898,7 +2898,9 @@ product_prepare_role_state() {
 import re, sys
 matches=re.findall(r"^State:\s*(\S(?:.*\S)?)\s*$",
                    open(sys.argv[1],encoding="utf-8").read(),re.I|re.M)
-if len(matches) != 1 or matches[0] not in {"Ready","Planning","Building","Review"}:
+if len(matches) != 1 or matches[0] not in {
+    "Ready", "Planning", "Building", "Review", "Blocked-Escalated"
+}:
     raise SystemExit(1)
 print(matches[0])
 PY
