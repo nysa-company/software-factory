@@ -234,6 +234,114 @@ done
 sed -n '/^product_resume_plan()/,/^}/p' "$LANE" |
   grep -q 'subscription_ready "\$root"' ||
   fail "product resume planning does not stabilize authentication before approval"
+(
+  eval "$(sed -n '/^load_product_tickets()/,/^product_resume_drained()/p' \
+    "$LANE" | sed '$d')"
+  eval "$(sed -n '/^validate_product_resume_basis()/,/^restore_product_resume_source()/p' \
+    "$LANE" | sed '$d')"
+  sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+  sha256_text() { shasum -a 256 | awk '{print $1}'; }
+  die() { printf 'resume fixture failed: %s\n' "$*" >&2; return 1; }
+  require_lane_mode() { :; }
+  validate_runtime_paths() { :; }
+  product_resume_drained() { :; }
+  ensure_cursor_file_credential_config() { :; }
+  subscription_ready() { :; }
+  product_role_for_stage() {
+    case "$1" in
+      'RUN reviewer'|'RUN builder') return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  product_approval_hash() { printf '%064d\n' 1; }
+
+  RESUME_ROOT="$TMP/targeted-resume"
+  SOURCE_ROOT="$TMP/targeted-resume-controller"
+  mkdir -p "$RESUME_ROOT/kit/scripts" "$RESUME_ROOT/runtime/product-envelope" \
+    "$RESUME_ROOT/product/factory" "$RESUME_ROOT/worktrees" "$SOURCE_ROOT"
+  git -C "$SOURCE_ROOT" init -q
+  git -C "$SOURCE_ROOT" config user.name 'Factory Test'
+  git -C "$SOURCE_ROOT" config user.email factory-test@local
+  printf 'controller\n' >"$SOURCE_ROOT/controller"
+  git -C "$SOURCE_ROOT" add controller
+  git -C "$SOURCE_ROOT" commit -qm 'controller'
+  git init -q --bare "$RESUME_ROOT/origin.git"
+  cat >"$RESUME_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"active_reserve_micro_usd":0,"attempts":[],"counts":{}}))
+PY
+  chmod +x "$RESUME_ROOT/kit/scripts/provider-coordinator.py"
+  : >"$RESUME_ROOT/runtime/provider-state.sqlite3"
+  python3 - "$RESUME_ROOT/runtime/product-source.json" <<'PY'
+import json, sys
+value={
+  "schema":"factory-dev-product-source/v1",
+  "tickets":["T-046","T-047","T-048"],
+  "base_sha":"a"*40,
+  "base_tree":"b"*40,
+  "lane_control_sha":"c"*40,
+}
+open(sys.argv[1],"w",encoding="utf-8").write(
+  json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+)
+PY
+  for ticket in T-046 T-047 T-048; do
+    work="$RESUME_ROOT/worktrees/$ticket"
+    mkdir -p "$work/factory/tickets" "$work/factory/route-plans"
+    git -C "$work" init -q
+    git -C "$work" config user.name 'Factory Test'
+    git -C "$work" config user.email factory-test@local
+    printf '# %s\nState: Building\n' "$ticket" >"$work/factory/tickets/$ticket.md"
+    printf '{}\n' >"$work/factory/route-plans/$ticket.json"
+    git -C "$work" add .
+    git -C "$work" commit -qm "$ticket fixture"
+    git -C "$work" push -q "$RESUME_ROOT/origin.git" \
+      "HEAD:refs/heads/ticket/$ticket"
+    printf 'PER_TICKET_BUDGET_USD=100.00\n' \
+      >"$RESUME_ROOT/runtime/product-envelope/$ticket.env"
+  done
+  STAGE_TRACE="$RESUME_ROOT/stages"
+  : >"$STAGE_TRACE"
+  product_resume_stage() {
+    printf '%s\n' "$2" >>"$STAGE_TRACE"
+    case "$2" in
+      T-048) printf 'RUN reviewer\n' ;;
+      T-047) printf 'RUN builder\n' ;;
+      *) return 1 ;;
+    esac
+  }
+
+  first="$(product_resume_plan "$RESUME_ROOT" T-048)"
+  [[ "$first" == *'TICKETS=T-048'* &&
+     -s "$STAGE_TRACE" &&
+     -z "$(grep -Fvx T-048 "$STAGE_TRACE")" ]] ||
+    fail "targeted resume resolved an excluded blocked sibling or lost T-048 stage"
+  python3 - "$RESUME_ROOT/runtime/product-source.json" <<'PY' ||
+import json, sys
+v=json.load(open(sys.argv[1],encoding="utf-8"))
+assert v["tickets"] == ["T-048"]
+assert v["resume_original_tickets"] == ["T-046","T-047","T-048"]
+PY
+    fail "targeted resume lost its original ticket universe"
+
+  rm "$RESUME_ROOT/runtime/product-approval"
+  : >"$STAGE_TRACE"
+  second="$(product_resume_plan "$RESUME_ROOT" T-047)"
+  [[ "$second" == *'TICKETS=T-047'* &&
+     -s "$STAGE_TRACE" &&
+     -z "$(grep -Fvx T-047 "$STAGE_TRACE")" ]] ||
+    fail "subsequent targeted resume could not select another original sibling"
+
+  printf 'excluded drift\n' >>"$RESUME_ROOT/worktrees/T-046/excluded"
+  git -C "$RESUME_ROOT/worktrees/T-046" add excluded
+  git -C "$RESUME_ROOT/worktrees/T-046" commit -qm 'drift excluded sibling'
+  git -C "$RESUME_ROOT/worktrees/T-046" push -q "$RESUME_ROOT/origin.git" \
+    "HEAD:refs/heads/ticket/T-046"
+  if validate_product_resume_basis "$RESUME_ROOT"; then
+    fail "targeted resume accepted excluded sibling head/tree drift"
+  fi
+)
 sed -n '/^run_product_internal()/,/^}/p' "$LANE" |
   grep -Fq '[[ "$readiness_proven" == 1 ]] || subscription_ready "$root"' ||
   fail "product runtime cannot reuse the trusted resume readiness proof"

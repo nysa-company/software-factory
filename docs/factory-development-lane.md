@@ -54,9 +54,14 @@ and an exact `product-resume-plan` command as the next control step, together
 with the failed stage, completed roles, remaining ticket budget, and retained
 root. That explicit same-lane resume revalidates readiness, evidence, clean
 heads, routes, envelopes, budget day, and the mechanical next stage before
-issuing a new one-use approval. Every batch also writes an owner-only timing
-report with coordinator admission/GO/submission/terminal timestamps, elapsed
-time, successful-role replay count, and maximum provider overlap.
+issuing a new one-use approval. A targeted resume resolves a stage and claims a
+lease only for its selected tickets. Excluded original siblings may remain
+unfinished or blocked; their clean heads, local origins, trees, ticket files,
+route plans, envelopes, and runtime evidence remain hash-bound, so they cannot
+drift and a later resume can select a different subset from the original
+ticket set. Every batch also writes an owner-only timing report with
+coordinator admission/GO/submission/terminal timestamps, elapsed time,
+successful-role replay count, and maximum provider overlap.
 
 The product scheduler launches every eligible ticket without interpreting
 provider capacity. The coordinator owns atomic admission and may wait up to

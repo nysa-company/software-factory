@@ -1814,9 +1814,15 @@ product_resume_stage() {
 }
 
 product_resume_basis_hash() {
-  local root="$1" ticket stage status evidence
+  local root="$1"; shift
+  local ticket stage status evidence
+  local -a selected=("$@")
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     return 1
+  if [[ "${#selected[@]}" -eq 0 ]]; then
+    load_product_tickets "$root"
+    selected=("${PRODUCT_TICKETS[@]}")
+  fi
   load_product_resume_original_tickets "$root"
   status="$(python3 "$root/kit/scripts/provider-coordinator.py" \
     --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
@@ -1855,13 +1861,17 @@ PY
       [[ "$(git -C "$root/worktrees/$ticket" rev-parse HEAD)" == \
         "$(git -C "$root/origin.git" rev-parse "refs/heads/ticket/$ticket")" ]] ||
         return 1
-      stage="$(product_resume_stage "$root" "$ticket")" || return 1
-      printf 'ticket=%s\nhead=%s\norigin=%s\ntree=%s\nstage=%s\n' \
+      printf 'ticket=%s\nhead=%s\norigin=%s\ntree=%s\n' \
         "$ticket" \
         "$(git -C "$root/worktrees/$ticket" rev-parse HEAD)" \
         "$(git -C "$root/origin.git" rev-parse "refs/heads/ticket/$ticket")" \
-        "$(git -C "$root/worktrees/$ticket" rev-parse 'HEAD^{tree}')" \
-        "$stage"
+        "$(git -C "$root/worktrees/$ticket" rev-parse 'HEAD^{tree}')"
+      if printf '%s\n' "${selected[@]}" | grep -Fxq "$ticket"; then
+        stage="$(product_resume_stage "$root" "$ticket")" || return 1
+        printf 'selected=1\nstage=%s\n' "$stage"
+      else
+        printf 'selected=0\n'
+      fi
       printf 'ticket_file=%s\nroute_plan=%s\nenvelope=%s\n' \
         "$(sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md")" \
         "$(sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json")" \
@@ -1971,12 +1981,13 @@ product_resume_plan() {
   load_product_resume_original_tickets "$root"
   validate_runtime_paths "$root"
   IFS=, read -r -a selected <<<"$selected_csv"
-  [[ "${#selected[@]}" -ge 1 && "${#selected[@]}" -le "${#PRODUCT_TICKETS[@]}" ]] ||
+  [[ "${#selected[@]}" -ge 1 &&
+     "${#selected[@]}" -le "${#PRODUCT_RESUME_ORIGINAL_TICKETS[@]}" ]] ||
     die "product resume selection is empty or wider than the active lane"
-  python3 - "${PRODUCT_TICKETS[@]}" -- "${selected[@]}" <<'PY' ||
+  python3 - "${PRODUCT_RESUME_ORIGINAL_TICKETS[@]}" -- "${selected[@]}" <<'PY' ||
 import re, sys
-current=sys.argv[1:sys.argv.index("--")]; selected=sys.argv[sys.argv.index("--")+1:]
-if (len(set(selected)) != len(selected) or not set(selected) <= set(current) or
+original=sys.argv[1:sys.argv.index("--")]; selected=sys.argv[sys.argv.index("--")+1:]
+if (len(set(selected)) != len(selected) or not set(selected) <= set(original) or
     any(not re.fullmatch(r"T-[0-9]+", ticket) for ticket in selected)):
     raise SystemExit(1)
 PY
@@ -1985,18 +1996,13 @@ PY
     die "product resume requires a fully drained, current-day lane"
   ensure_cursor_file_credential_config "$root"
   subscription_ready "$root"
-  for ticket in "${PRODUCT_TICKETS[@]}"; do
+  for ticket in "${selected[@]}"; do
     stage="$(product_resume_stage "$root" "$ticket")" ||
       die "product resume could not resolve the current stage: $ticket"
-    if printf '%s\n' "${selected[@]}" | grep -Fxq "$ticket"; then
-      product_role_for_stage "$stage" >/dev/null ||
-        die "selected product resume ticket is not runnable: $ticket"
-    else
-      [[ "$stage" == AWAIT-OPERATOR* ]] ||
-        die "excluded product resume ticket is not complete: $ticket"
-    fi
+    product_role_for_stage "$stage" >/dev/null ||
+      die "selected product resume ticket is not runnable: $ticket"
   done
-  basis="$(product_resume_basis_hash "$root")" ||
+  basis="$(product_resume_basis_hash "$root" "${selected[@]}")" ||
     die "product resume basis could not be proven"
   python3 - "$root/runtime/product-source.json" \
     "$root/runtime/product-resume.json" "$basis" -- \
