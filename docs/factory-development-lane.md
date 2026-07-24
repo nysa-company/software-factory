@@ -75,7 +75,8 @@ Claude circuit breaker remains in force.
 
 The PR-less development Narrator marks Preview and Screenshots as backend-only
 N/A when the frozen contract has no browser or visual surface, including an
-HTTP API. An HTTP Preview may instead be recorded as unavailable in the sandbox
+HTTP API. The marker may be followed immediately by a period and explanation.
+An HTTP Preview may instead be recorded as unavailable in the sandbox
 and pending the PR/deploy publication gate when Screenshots also explicitly
 records that they are unavailable and the contract has no UI or visual surface.
 The bundle remains explicitly development-only and not a production

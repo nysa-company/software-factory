@@ -2527,7 +2527,7 @@ def section(name):
     return ""
 preview=section("Preview")
 screenshots=section("Screenshots")
-backend_na=r"(?m)^Not applicable — backend-only contract\s*$"
+backend_na=r"(?m)^Not applicable — backend-only contract(?:[.]|$)"
 preview_deferred=(
     re.search(r"\b(?:unavailable|pending)\b",preview,re.I)
     and re.search(r"\b(?:PR|deploy|publication)\b",preview,re.I)
@@ -2563,7 +2563,7 @@ rows=[row for row in csv.DictReader(open(sys.argv[1],encoding="utf-8"))
 print(f"attempts={len(rows)} cost_usd={sum(float(row['cost_usd']) for row in rows):.2f}")
 PY
 )" || return
-    instruction="$instruction Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1. This isolated development lane has no GitHub PR, deploy, or network. If the frozen contract explicitly has no browser or visual surface, including a backend-only HTTP API, write all standard bundle sections and mark Preview and Screenshots exactly 'Not applicable — backend-only contract'. For an HTTP API, Preview may instead state that it is unavailable or pending until the PR/deploy publication gate, provided Screenshots explicitly says unavailable and that the contract has no UI or visual surface. Label the bundle development-only and not a production attestation, and summarize the already committed Reviewer-approved deterministic evidence. The PR/deploy preview is a later publication gate and must not block this development bundle. Do not rerun tests or commands. Trusted accounting: $evidence."
+    instruction="$instruction Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1. This isolated development lane has no GitHub PR, deploy, or network. If the frozen contract explicitly has no browser or visual surface, including a backend-only HTTP API, write all standard bundle sections and begin Preview and Screenshots with 'Not applicable — backend-only contract'; an immediate period and explanation are allowed. For an HTTP API, Preview may instead state that it is unavailable or pending until the PR/deploy publication gate, provided Screenshots explicitly says unavailable and that the contract has no UI or visual surface. Label the bundle development-only and not a production attestation, and summarize the already committed Reviewer-approved deterministic evidence. The PR/deploy preview is a later publication gate and must not block this development bundle. Do not rerun tests or commands. Trusted accounting: $evidence."
   fi
   envelope="$root/product/factory/ENVELOPE.env"
   [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||

@@ -14,13 +14,14 @@ The approved-by-reviewer PR, its preview deploy URL, the ticket, CI results, and
 2. **Preview link** to click, with a one-line "what to try". Only when the
    trusted host supplies `FACTORY_DEV_PRLESS_EVIDENCE_V1` and the frozen
    contract explicitly has no browser or visual surface, including a
-   backend-only HTTP API, write `Not applicable — backend-only contract` and
-   name the focused verification instead. For an HTTP API, the Preview section
+   backend-only HTTP API, begin with `Not applicable — backend-only contract`
+   and name the focused verification instead; an immediate period and
+   explanation are allowed. For an HTTP API, the Preview section
    may instead say that preview is unavailable in the sandbox and pending the
    PR/deploy publication gate.
 3. **Screenshots** of the changed behavior (before/after where it helps;
    side-by-side with the product's design reference where one exists). Use the
-   same explicit `Not applicable — backend-only contract` only under that
+   same explicit `Not applicable — backend-only contract` prefix only under that
    trusted development marker and when the frozen contract rules out a visual
    surface. For a backend-only HTTP API, you may instead state explicitly that
    screenshots are unavailable and that the contract has no UI or visual

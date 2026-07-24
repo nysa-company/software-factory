@@ -585,6 +585,10 @@ Approve to merge, or send back with what's wrong?
 EOF
 validate_product_dev_bundle "$TMP/http-backend-bundle.md" ||
   fail "development validator rejected a backend-only HTTP API bundle"
+sed 's/^Not applicable — backend-only contract$/Not applicable — backend-only contract. No browser or visual surface exists./' \
+  "$TMP/http-backend-bundle.md" >"$TMP/annotated-backend-bundle.md"
+validate_product_dev_bundle "$TMP/annotated-backend-bundle.md" ||
+  fail "development validator rejected an annotated backend-only marker"
 sed '/^## Preview$/,/^## Screenshots$/{
   /Not applicable — backend-only contract/c\
 Unavailable in this sandbox; pending until the PR/deploy publication gate.
