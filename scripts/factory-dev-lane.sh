@@ -1083,7 +1083,7 @@ PY
           $'Software Factory <factory@local>\nSoftware Factory <factory@local>' ]] ||
           die "product seed route identity is unrecognized: $ticket"
         python3 - "$root/worktrees/$ticket" "$commit" "$ticket" <<'PY' ||
-import subprocess, sys
+import re, subprocess, sys
 worktree, commit, ticket=sys.argv[1:]
 raw=subprocess.check_output(
     ["git","-C",worktree,"diff-tree","--no-commit-id","--raw","-r",commit],
@@ -1091,10 +1091,31 @@ raw=subprocess.check_output(
 paths=subprocess.check_output(
     ["git","-C",worktree,"diff-tree","--no-commit-id","--name-status","-r",commit],
     text=True).splitlines()
-if (len(raw) != 1 or len(paths) != 1 or
-    raw[0].split("\t",1)[0].split()[1] in {"120000","160000"} or
-    paths[0] != f"A\tfactory/route-plans/{ticket}.json"):
+route=f"factory/route-plans/{ticket}.json"
+ticket_path=f"factory/tickets/{ticket}.md"
+statuses=dict(line.split("\t",1) for line in paths)
+if (len(raw) != len(paths) or
+    any(line.split("\t",1)[0].split()[1] in {"120000","160000"}
+        for line in raw) or
+    statuses.get(route) != "A" or
+    set(statuses) not in ({route},{route,ticket_path}) or
+    (ticket_path in statuses and statuses[ticket_path] != "M")):
     raise SystemExit(1)
+if ticket_path in statuses:
+    before=subprocess.check_output(
+        ["git","-C",worktree,"show",commit+"^:"+ticket_path],text=True)
+    after=subprocess.check_output(
+        ["git","-C",worktree,"show",commit+":"+ticket_path],text=True)
+    pattern=re.compile(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$",re.I)
+    def without_kit(text, require_one):
+        lines=text.splitlines()
+        matches=[line for line in lines if line.lower().startswith("kit-sha:")]
+        if ((require_one and len(matches) != 1) or len(matches) > 1 or
+            any(not pattern.fullmatch(line) for line in matches)):
+            raise SystemExit(1)
+        return [line for line in lines if not line.lower().startswith("kit-sha:")]
+    if without_kit(before,False) != without_kit(after,True):
+        raise SystemExit(1)
 PY
           die "product seed route boundary crosses an unsafe path: $ticket"
         index=$((index + 1))

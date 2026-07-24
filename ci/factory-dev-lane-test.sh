@@ -990,7 +990,10 @@ git -C "$SEED_HISTORY" add app/before
 git -C "$SEED_HISTORY" -c user.name='Software Factory' \
   -c user.email=factory@local commit -qm 'T-1: retain earlier lifecycle output'
 printf '%s\n' '{}' >"$SEED_HISTORY/factory/route-plans/T-1.json"
-git -C "$SEED_HISTORY" add factory/route-plans/T-1.json
+printf '%s\n' 'Kit-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  >>"$SEED_HISTORY/factory/tickets/T-1.md"
+git -C "$SEED_HISTORY" add factory/route-plans/T-1.json \
+  factory/tickets/T-1.md
 git -C "$SEED_HISTORY" -c user.name='Software Factory' \
   -c user.email=factory@local commit -qm 'T-1: pin kit and model route plan'
 printf '%s\n' after >"$SEED_HISTORY/app/after"
@@ -1034,6 +1037,9 @@ seed_product_worktrees "$SEED_HISTORY_ROOT" "$TMP/seed-history.bundle" \
 grep -qx 'State: Ready' \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
   fail "retained ticket was not reset to its evidence-backed start"
+grep -qx "Kit-SHA: $(git -C "$SEED_HISTORY_ROOT/kit" rev-parse HEAD)" \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
+  fail "retained ticket did not receive the current development kit"
 if grep -Eq '^(SPEC-LINT:|reviewer round )' \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md"; then
   fail "retained ticket kept stale role evidence"
