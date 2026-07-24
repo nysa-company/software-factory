@@ -1031,6 +1031,9 @@ PY
     fi
     git -C "$root/worktrees/$ticket" merge-base --is-ancestor \
       "$base" "refs/retry/$ticket" || die "product seed does not descend from the approved base"
+    python3 "$root/kit/scripts/lib/lane-path-sentinel.py" \
+      "$root/worktrees/$ticket" "$base" "refs/retry/$ticket" ||
+      die "product seed contains a lane-local absolute path: $ticket"
     commits=()
     while IFS= read -r commit; do commits+=("$commit"); done < <(
       git -C "$root/worktrees/$ticket" rev-list --reverse \
@@ -2498,7 +2501,7 @@ assert value["active_reserve_micro_usd"] == 0, value
 product_role_run() {
   local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint="" rc=0
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
-  instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
+  instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables from the ticket worktree with: set -a; source \"\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env\"; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
     instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES. If requesting changes, add exactly one standalone FIX-OWNER: builder, FIX-OWNER: test-author, or FIX-OWNER: both line; approvals must not include FIX-OWNER."
   elif [[ "$role" == narrator ]]; then
@@ -2520,7 +2523,7 @@ PY
     FACTORY_ENVELOPE="$envelope" \
     FACTORY_DEV_PRODUCT_CHECKPOINT="$checkpoint" \
     FACTORY_DEV_BUDGET_DAY="$(cat "$root/runtime/product-envelope/budget-day" 2>/dev/null || true)" \
-    FACTORY_DEV_PROVIDER_WAIT_SECONDS=300 \
+    FACTORY_DEV_PROVIDER_WAIT_SECONDS=900 \
     "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
     --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
     "$instruction" || rc=$?
@@ -3025,7 +3028,7 @@ PY
 }
 
 export_product_checkpoint_internal() {
-  local root="$1" selected_csv="$2" output="$3" ticket branch head cleanup=1
+  local root="$1" selected_csv="$2" output="$3" ticket branch head base cleanup=1
   local -a refs=()
   require_lane_mode "$root" product
   load_product_tickets "$root"
@@ -3046,12 +3049,20 @@ export_product_checkpoint_internal() {
     --runtime-ledger "$root/product/factory/runtime-ledger.csv" \
     --runs-dir "$root/product/factory/runs" >/dev/null ||
     die "product checkpoint accounting could not be reduced"
+  base="$(python3 - "$root/runtime/product-source.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1],encoding="utf-8"))["base_sha"])
+PY
+)" || die "product checkpoint source is invalid"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
     branch="ticket/$ticket"
     head="$(git -C "$root/origin.git" rev-parse "refs/heads/$branch")"
     [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] &&
       git -C "$root/worktrees/$ticket" merge-base --is-ancestor "$head" HEAD ||
       die "product checkpoint ticket is dirty or has no trusted-host prefix: $ticket"
+    python3 "$root/kit/scripts/lib/lane-path-sentinel.py" \
+      "$root/worktrees/$ticket" "$base" "$head" ||
+      die "product checkpoint contains a lane-local absolute path: $ticket"
     refs+=("refs/heads/$branch")
   done
   git -C "$root/origin.git" bundle create "$output/seed.bundle" "${refs[@]}" >/dev/null ||

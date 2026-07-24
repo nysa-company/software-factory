@@ -64,6 +64,17 @@ REPO_ROOT="${FACTORY_ROOT:-$("$FACTORY_TRUSTED_GIT_BIN" rev-parse --show-topleve
 FACTORY_DIR="$REPO_ROOT/factory"
 BUDGET_DAY=""
 PROVIDER_WAIT_SECONDS=0
+DEVELOPMENT_LANE_ROOT=""
+if [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
+      "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* &&
+      -f "$FACTORY_CLI_LANE_ROOT/marker.json" ]]; then
+  case "$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" in
+    "$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)/product" | \
+    "$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)/product"/*)
+      DEVELOPMENT_LANE_ROOT="$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)"
+      ;;
+  esac
+fi
 if [[ -n "${FACTORY_DEV_BUDGET_DAY:-}" ]]; then
   [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
      "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* &&
@@ -101,7 +112,7 @@ if [[ -n "${FACTORY_DEV_PROVIDER_WAIT_SECONDS:-}" ]]; then
 fi
 unset FACTORY_DEV_BUDGET_DAY
 unset FACTORY_DEV_PROVIDER_WAIT_SECONDS
-readonly BUDGET_DAY PROVIDER_WAIT_SECONDS
+readonly BUDGET_DAY PROVIDER_WAIT_SECONDS DEVELOPMENT_LANE_ROOT
 
 # Direct callers may anchor FACTORY_ROOT inside a linked worktree. Runtime
 # accounting still belongs beside the same product path in the main checkout.
@@ -2206,6 +2217,10 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       ROLE_EXIT_STATUS="ok"
     elif [[ "$ROLE_HEAD_AFTER" == "$ROLE_HEAD_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_no_commit"
+    elif [[ -n "$DEVELOPMENT_LANE_ROOT" ]] &&
+         ! python3 "$KIT_DIR/scripts/lib/lane-path-sentinel.py" \
+           "$WORKDIR" "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER"; then
+      ROLE_EXIT_STATUS="role_exit_lane_path_leak"
     elif [[ "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     else

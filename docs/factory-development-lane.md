@@ -65,7 +65,7 @@ successful-role replay count, and maximum provider overlap.
 
 The product scheduler launches every eligible ticket without interpreting
 provider capacity. The coordinator owns atomic admission and may wait up to
-five minutes only for transient concurrency capacity in this marker-bound
+fifteen minutes only for transient concurrency capacity in this marker-bound
 development lane. The runner keeps the ticket lease heartbeat active and
 releases the product launch lock while waiting, then reacquires it and
 revalidates controls before proceeding. Budget, policy, identity, and rate
@@ -96,6 +96,12 @@ prefix of the ticket log; later current-lane verdicts are accepted only with
 matching successful current-lane ledger evidence. Reviewer and Narrator are
 never checkpointed and must run under the new kit before `product-export`
 succeeds.
+
+Role instructions identify each disposable database environment through a
+worktree-relative path, never the lane's physical temporary path. A shared
+sentinel rejects any newly added absolute `nysa-sf-dev.*` path before the
+trusted host pushes role output and again at checkpoint import and export, so
+a retained contract cannot bind itself to either its old or current lane.
 
 For sequential protected-base refreshes, keep using the existing committed
 `ticket-refresh/v1` attestation path. It already invalidates the old approval

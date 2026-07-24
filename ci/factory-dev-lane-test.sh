@@ -91,6 +91,30 @@ EOF
 chmod +x "$FAKE_CURSOR"
 
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
+LANE_PATH_REPO="$TMP/lane-path-repo"
+git init -q "$LANE_PATH_REPO"
+printf '%s\n' 'source ../../runtime/product-db/T-1.env' \
+  >"$LANE_PATH_REPO/contract.md"
+git -C "$LANE_PATH_REPO" add contract.md
+git -C "$LANE_PATH_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add portable contract'
+LANE_PATH_BASE="$(git -C "$LANE_PATH_REPO" rev-parse HEAD)"
+printf '%s\n' 'portable role output' >>"$LANE_PATH_REPO/contract.md"
+git -C "$LANE_PATH_REPO" add contract.md
+git -C "$LANE_PATH_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add portable role output'
+python3 "$ROOT/scripts/lib/lane-path-sentinel.py" "$LANE_PATH_REPO" \
+  "$LANE_PATH_BASE" HEAD ||
+  fail "portable development role output was rejected"
+printf '%s\n' \
+  "source '/private/tmp/old lane/nysa-sf-dev.stale/runtime/product-db/T-1.env'" \
+  >>"$LANE_PATH_REPO/contract.md"
+git -C "$LANE_PATH_REPO" add contract.md
+git -C "$LANE_PATH_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add stale lane path'
+expect_failure "lane-local absolute role path" \
+  python3 "$ROOT/scripts/lib/lane-path-sentinel.py" "$LANE_PATH_REPO" \
+    "$LANE_PATH_BASE" HEAD
 subscription_plan_source="$(sed -n \
   '/^subscription_probe_and_plan()/,/^run_subscription_internal()/p' "$LANE")"
 grep -Fq '"account_routes":{"lane-codex-subscription":limit(4)}' \
@@ -557,6 +581,27 @@ done
 product_role_source="$(sed -n '/^product_role_run()/,/^product_reconcile_reviewer()/p' "$LANE")"
 printf '%s\n' "$product_role_source" | grep -Fq '"$role" == builder' ||
   fail "product Builder no longer owns the Review-state transition"
+printf '%s\n' "$product_role_source" |
+  grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' ||
+  fail "development product wait is not the bounded fifteen-minute policy"
+printf '%s\n' "$product_role_source" |
+  grep -Fq '\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env' ||
+  fail "product role instruction does not use a portable database path"
+if printf '%s\n' "$product_role_source" |
+   grep -Fq "source '\$root/runtime/product-db"; then
+  fail "product role instruction still exposes a physical lane path"
+fi
+seed_source="$(sed -n \
+  '/^seed_product_worktrees()/,/^write_product_checkpoint_import()/p' "$LANE")"
+printf '%s\n' "$seed_source" |
+  grep -Fq 'scripts/lib/lane-path-sentinel.py' ||
+  fail "checkpoint import lost its lane-path sentinel"
+checkpoint_export_source="$(sed -n \
+  '/^export_product_checkpoint_internal()/,/^product_export_roles_complete()/p' \
+  "$LANE")"
+printf '%s\n' "$checkpoint_export_source" |
+  grep -Fq 'scripts/lib/lane-path-sentinel.py' ||
+  fail "checkpoint export lost its lane-path sentinel"
 if [[ "$(printf '%s\n' "$product_role_source" |
     grep -Fc 'set_review_state "$root"')" != 1 ]]; then
   fail "product Narrator still owns the late Review-state transition"

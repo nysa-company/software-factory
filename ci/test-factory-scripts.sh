@@ -2904,9 +2904,10 @@ fi
 # Successful mutating roles must commit cleanly; the wrapper owns the push.
 setup_role_exit_fixture() {
   local ticket="$1" authorized_role="${2:-planner}"
-  ROLE_EXIT_ROOT="$TMP/role-exit-$ticket"
-  ROLE_EXIT_WORKTREE="$TMP/role-exit-$ticket-worktree"
-  ROLE_EXIT_REMOTE="$TMP/role-exit-$ticket.git"
+  local fixture_parent="${ROLE_EXIT_PARENT:-$TMP}"
+  ROLE_EXIT_ROOT="$fixture_parent/role-exit-$ticket"
+  ROLE_EXIT_WORKTREE="$fixture_parent/role-exit-$ticket-worktree"
+  ROLE_EXIT_REMOTE="$fixture_parent/role-exit-$ticket.git"
   write_envelope "$ROLE_EXIT_ROOT"
   write_ticket "$ROLE_EXIT_ROOT" "$ticket"
   case "$authorized_role" in
@@ -2993,6 +2994,54 @@ else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
 fi
+
+ROLE_LANE_ROOT="$TMP/nysa-sf-dev.role-output"
+mkdir -p "$ROLE_LANE_ROOT/product"
+printf '%s\n' '{"mode":"product"}' >"$ROLE_LANE_ROOT/marker.json"
+ROLE_EXIT_PARENT="$ROLE_LANE_ROOT/product"
+setup_role_exit_fixture T-649 spec-linter
+ROLE_LANE_REMOTE_BEFORE="$(git --git-dir="$ROLE_EXIT_REMOTE" \
+  rev-parse refs/heads/ticket/T-649)"
+ROLE_LANE_LEAK_STATUS=0
+MOCK_SPEC_LINT_VERDICT='FAIL — /private/tmp/nysa-sf-dev.stale/runtime/db.env' \
+  FACTORY_CLI_LANE_ROOT="$ROLE_LANE_ROOT" FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role spec-linter --ticket T-649 \
+    --workdir "$ROLE_EXIT_WORKTREE" -- "lane path leak" \
+    >"$TMP/role-lane-path.out" 2>&1 || ROLE_LANE_LEAK_STATUS=$?
+ROLE_LANE_REMOTE_AFTER="$(git --git-dir="$ROLE_EXIT_REMOTE" \
+  rev-parse refs/heads/ticket/T-649)"
+if [[ "$ROLE_LANE_LEAK_STATUS" -eq 11 &&
+      "$ROLE_LANE_REMOTE_BEFORE" == "$ROLE_LANE_REMOTE_AFTER" ]] &&
+   grep -q 'role_exit_lane_path_leak' "$TMP/role-lane-path.out" &&
+   grep -q '^role_exit=role_exit_lane_path_leak$' \
+     "$ROLE_EXIT_ROOT/factory/runs/"*.meta; then
+  pass "development role output cannot push a lane-local absolute path"
+else
+  fail "development role output cannot push a lane-local absolute path" \
+    "status=$ROLE_LANE_LEAK_STATUS"
+fi
+
+setup_role_exit_fixture T-650
+ROLE_PORTABLE_STATUS=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_CLI_LANE_ROOT="$ROLE_LANE_ROOT" \
+  FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-650 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "portable role output" >"$TMP/role-portable.out" 2>&1 ||
+  ROLE_PORTABLE_STATUS=$?
+if [[ "$ROLE_PORTABLE_STATUS" -eq 0 &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-650)" ]]; then
+  pass "development role sentinel accepts portable output"
+else
+  fail "development role sentinel accepts portable output" \
+    "status=$ROLE_PORTABLE_STATUS"
+fi
+unset ROLE_EXIT_PARENT
 
 # Contract 1.7 roles may commit a blocker without completing their stage.
 setup_role_exit_fixture T-643 builder
