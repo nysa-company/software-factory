@@ -2668,16 +2668,18 @@ assert value["counts"] == {"terminal":4}, value
 assert value["active_reserve_micro_usd"] == 0, value
 ' || die "subscription canary reservations did not drain"
   subscription_provider_idle || die "subscription canary left a provider process"
-  for attempt_root in "${attempt_roots[@]}"; do
-    python3 - "$attempt_root" "$root" <<'PY' ||
+  if [[ "$selected" == claude ]]; then
+    for attempt_root in "${attempt_roots[@]}"; do
+      python3 - "$attempt_root" "$root" <<'PY' ||
 import pathlib, shutil, sys
 path=pathlib.Path(sys.argv[1]); root=pathlib.Path(sys.argv[2])
 if path.parent != root/"runtime"/"cli-attempts" or path.is_symlink():
     raise SystemExit(1)
 shutil.rmtree(path)
 PY
-      die "subscription canary Claude runtime cleanup failed"
-  done
+        die "subscription canary Claude runtime cleanup failed"
+    done
+  fi
   echo "PROVIDER_CALLS=4"
   echo "PROVIDER_MODE=cli-concurrent-v1"
   echo "PROVIDER_SPLIT=$selected:4"
