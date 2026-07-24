@@ -3022,25 +3022,10 @@ PY
 product_export_mbox() {
   local root="$1" ticket="$2" base="$3" reviewed="$4" output="$5"
   local temporary
-  python3 - "$root/worktrees/$ticket" "$base" "$reviewed" <<'PY' || return 1
-import subprocess, sys
-work, base, reviewed=sys.argv[1:]
-def git(*args):
-    return subprocess.check_output(
-        ["git","-C",work,*args],text=True).splitlines()
-if git("rev-list","--min-parents=2",base+".."+reviewed):
-    raise SystemExit(1)
-for commit in git("rev-list","--reverse",base+".."+reviewed):
-    for line in git("diff-tree","--root","-r","--no-commit-id","--raw",
-                    "--no-abbrev",commit,"--",".",":(exclude)factory"):
-        fields=line.split("\t",1)[0].split()
-        if len(fields) < 2 or fields[0][1:] in {"120000","160000"} or \
-           fields[1] in {"120000","160000"}:
-            raise SystemExit(1)
-PY
   temporary="$(mktemp "$output.tmp.XXXXXX")" || return 1
-  if ! git -C "$root/worktrees/$ticket" format-patch --stdout --binary \
-      "$base..$reviewed" -- . ':(exclude)factory' >"$temporary" ||
+  if ! python3 "$SOURCE_ROOT/scripts/lib/product-export-mbox.py" \
+      --repo "$root/worktrees/$ticket" --ticket "$ticket" \
+      --base "$base" --reviewed "$reviewed" --output "$temporary" ||
       [[ ! -s "$temporary" ]]; then
     rm -f "$temporary"
     return 1

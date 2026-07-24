@@ -141,16 +141,18 @@ lane does not add a second refresh or checkpoint format.
 
 `product-export` binds each application artifact to the latest successful
 Reviewer head, rejects later non-Factory changes, and excludes the complete
-reserved `factory/` namespace. The exact Git bundle retains retry and audit
-history only; it is never an application artifact. The role-preserving
-`T-NNN.mbox` is the canonical application artifact; apply it with `git am` to
-a fresh isolated product branch so Test-author and Builder commits remain
-separate. The flattened patch remains diagnostic compatibility output and must
-not be committed as one product change. Refresh and reverify the resulting
-branch against current protected main. When successful siblings finish in
-different retained lanes, `product-export --tickets T-NNN,...` exports only
-the named completed subset while applying the same role-evidence and Reviewer
-checks.
+reserved `factory/` namespace. The exact Git bundle retains detailed role,
+retry, and audit history only; it is never an application artifact. The
+canonical `T-NNN.mbox` projects the approved application tree into exactly two
+trusted-host publication commits: all final `TEST_PATHS` changes first, then
+all remaining application changes. Unsafe path policies, empty strata,
+symlinks, submodules, and tree drift refuse export. Apply the mailbox with
+`git am` to a fresh isolated product branch. The flattened patch remains
+diagnostic compatibility output and must not be committed as one product
+change. Refresh and reverify the resulting branch against current protected
+main. When successful siblings finish in different retained lanes,
+`product-export --tickets T-NNN,...` exports only the named completed subset
+while applying the same role-evidence and Reviewer checks.
 
 Reviewer reconciliation uses the invoking trusted controller after validating
 the retained lane pin. For Cursor streams, one successful terminal result may

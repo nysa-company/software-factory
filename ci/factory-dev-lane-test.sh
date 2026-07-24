@@ -401,6 +401,7 @@ git -C "$EXPORT_WORK" config user.email factory-dev@local
 printf '%s\n' old >"$EXPORT_WORK/app/source.txt"
 printf '%s\n' 'State: Ready' >"$EXPORT_WORK/factory/tickets/T-1.md"
 printf '%s\n' sibling >"$EXPORT_WORK/factory/tickets/T-2.md"
+printf '%s\n' 'TEST_PATHS="app/tests/"' >"$EXPORT_WORK/factory/PROJECT.env"
 git -C "$EXPORT_WORK" add .
 git -C "$EXPORT_WORK" commit -qm base
 EXPORT_BASE="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
@@ -410,16 +411,21 @@ printf '%s\n' acceptance >"$EXPORT_WORK/app/tests/acceptance.test"
 printf '%s\n' 'State: Building' >"$EXPORT_WORK/factory/tickets/T-1.md"
 git -C "$EXPORT_WORK" add .
 git -C "$EXPORT_WORK" commit -qm 'T-1: author acceptance tests'
+EXPORT_TEST_AUTHOR_1="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
 printf '%s\n' new >"$EXPORT_WORK/app/source.txt"
+git -C "$EXPORT_WORK" add app/source.txt
+git -C "$EXPORT_WORK" commit -qm 'T-1: build initial implementation'
+printf '%s\n' acceptance repaired >"$EXPORT_WORK/app/tests/acceptance.test"
+git -C "$EXPORT_WORK" add app/tests/acceptance.test
+git -C "$EXPORT_WORK" commit -qm 'T-1: repair acceptance tests'
 printf '\000\001\002' >"$EXPORT_WORK/app/binary.dat"
 printf '%s\n' reviewed >"$EXPORT_WORK/docs/contract.md"
 printf '%s\n' 'State: Review' 'reviewer round 1: APPROVE' \
   >"$EXPORT_WORK/factory/tickets/T-1.md"
 printf '%s\n' changed >"$EXPORT_WORK/factory/tickets/T-2.md"
-printf '%s\n' lane >"$EXPORT_WORK/factory/PROJECT.env"
 printf '%s\n' '{}' >"$EXPORT_WORK/factory/route-plans/T-1.json"
 git -C "$EXPORT_WORK" add .
-git -C "$EXPORT_WORK" commit -qm reviewed
+git -C "$EXPORT_WORK" commit -qm 'T-1: repair implementation'
 EXPORT_REVIEWED="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
 printf '%s\n' evidence >"$EXPORT_WORK/factory/tickets/T-1-bundle.md"
 git -C "$EXPORT_WORK" add .
@@ -466,15 +472,38 @@ EXPORT_MBOX="$EXPORT_ROOT/T-1.mbox"
 product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" "$EXPORT_REVIEWED" \
   "$EXPORT_MBOX" ||
   fail "approved product mailbox was not created"
+product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" "$EXPORT_REVIEWED" \
+  "$EXPORT_ROOT/T-1-repeat.mbox" ||
+  fail "approved product mailbox was not reproducible"
+cmp -s "$EXPORT_MBOX" "$EXPORT_ROOT/T-1-repeat.mbox" ||
+  fail "approved product mailbox changed for identical reviewed input"
+[[ -z "$(find "$EXPORT_ROOT" -maxdepth 1 -type d \
+  -name 'factory-export-mbox.*' -print -quit)" ]] ||
+  fail "product mailbox left its lane-local temporary repository"
 git -C "$EXPORT_APPLY" config user.name 'Factory Export Test'
 git -C "$EXPORT_APPLY" config user.email factory-export@local
 git -C "$EXPORT_APPLY" am "$EXPORT_MBOX" >/dev/null ||
   fail "approved product mailbox is not applicable"
 [[ "$(git -C "$EXPORT_APPLY" rev-list --count "$EXPORT_BASE..HEAD")" == 2 ]] ||
-  fail "product mailbox collapsed Test-author and Builder commits"
-[[ "$(git -C "$EXPORT_APPLY" log -1 --format=%s "$EXPORT_BASE..HEAD~1")" == \
-   'T-1: author acceptance tests' ]] ||
-  fail "product mailbox did not preserve Test-author before Builder"
+  fail "product mailbox did not produce exactly two publication strata"
+[[ "$(git -C "$EXPORT_APPLY" log -1 --format=%s HEAD~1)" == \
+   'T-1: publish approved tests' ]] ||
+  fail "product mailbox did not publish the final test stratum first"
+[[ "$(git -C "$EXPORT_APPLY" log -1 --format=%s HEAD)" == \
+   'T-1: publish approved implementation' ]] ||
+  fail "product mailbox did not publish the implementation stratum last"
+first_paths="$(git -C "$EXPORT_APPLY" diff-tree --no-commit-id --name-only -r HEAD~1)"
+[[ -n "$first_paths" ]] &&
+  [[ -z "$(grep -Ev '^app/tests/' <<<"$first_paths")" ]] ||
+  fail "product mailbox test stratum is not pure"
+second_paths="$(git -C "$EXPORT_APPLY" diff-tree --no-commit-id --name-only -r HEAD)"
+[[ -n "$second_paths" ]] &&
+  [[ -z "$(grep -E '^app/tests/' <<<"$second_paths")" ]] ||
+  fail "product mailbox implementation stratum contains tests"
+(cd "$EXPORT_APPLY" &&
+  BASE_REF="$EXPORT_BASE" TEST_PATHS='app/tests/' EXEMPT_PATHS='factory/' \
+    bash "$ROOT/ci/test-immutability-check.sh" >/dev/null) ||
+  fail "product mailbox does not satisfy tests-first immutability"
 if git -C "$EXPORT_APPLY" diff-tree --no-commit-id --name-only -r \
     "$EXPORT_BASE..HEAD" | grep -Eq '^factory(/|$)'; then
   fail "product mailbox exported Factory control state"
@@ -482,6 +511,10 @@ fi
 git -C "$EXPORT_APPLY" diff --exit-code "$EXPORT_REVIEWED" -- . \
   ':(exclude)factory' >/dev/null ||
   fail "product mailbox tree differs from the reviewed application projection"
+if product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+    "$EXPORT_TEST_AUTHOR_1" "$EXPORT_ROOT/empty-stratum.mbox"; then
+  fail "product mailbox accepted an empty implementation stratum"
+fi
 printf '%s\n' drift >>"$EXPORT_WORK/app/source.txt"
 git -C "$EXPORT_WORK" add app/source.txt
 git -C "$EXPORT_WORK" commit -qm post-review-drift
@@ -489,6 +522,13 @@ if product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
     "$(git -C "$EXPORT_WORK" rev-parse HEAD)" "$EXPORT_ROOT/drift.patch" \
     >/dev/null; then
   fail "post-review product drift was exportable"
+fi
+ln -s source.txt "$EXPORT_WORK/app/unsafe-link"
+git -C "$EXPORT_WORK" add app/unsafe-link
+git -C "$EXPORT_WORK" commit -qm 'unsafe application link'
+if product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+    "$(git -C "$EXPORT_WORK" rev-parse HEAD)" "$EXPORT_ROOT/symlink.mbox"; then
+  fail "product mailbox accepted an application symlink"
 fi
 eval "$(sed -n '/^select_product_export_tickets()/,/^}/p' "$LANE")"
 PRODUCT_TICKETS=(T-1 T-2)
@@ -729,8 +769,7 @@ if printf '%s\n' "$checkpoint_export_source" |
    grep -Fq '"$root/kit/scripts/lib/lane-path-sentinel.py"'; then
   fail "checkpoint export still requires the retained kit sentinel"
 fi
-printf '%s\n' "$checkpoint_export_source" |
-  grep -Fq '["lane_control_sha"]' ||
+grep -Fq '["lane_control_sha"]' <<<"$checkpoint_export_source" ||
   fail "checkpoint export does not exclude trusted lane-control output"
 (
   RETAINED="$TMP/retained-pre-sentinel"
