@@ -73,8 +73,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The PR-less development Narrator accepts frozen backend HTTP contracts with canonical backend-only N/A evidence or with Preview explicitly pending/unavailable until the PR/deploy gate and Screenshots explicitly unavailable because there is no UI or visual surface. Its bundle is development-only and not a production attestation.
 - The Contract 1.7 development scheduler authenticates durable contract-blocked role manifests before moving only that ticket to Blocked-Escalated. Its lease drains, siblings continue, and the blocker is excluded from ordinary resume instructions.
 - Isolated broker-stage cancellation and deterministic failure release capacity only after token revocation and upstream-request drain are both proven; otherwise the conservative full reservation remains active. Executor success is not durable until bound-container removal succeeds.
+- Contract 1.7 concurrent adapters keep timeout and provider descendants in one Factory-owned process group with a kernel-derived start identity. Completed development tickets emit owner-only readiness records and may export independently after only their own attempts, lease, claim, head, and evidence drain. Spec-linter reserves FAIL for material ambiguity or trust/data/external-effect risk and records non-blocking exhaustive coverage as `SPEC-WARN`.
 
 ## Log
+
+- 2026-07-24: Retained sandbox lanes exposed fabricated cancellation start identities, provider descendants outside the recorded group, repeated equivalent Spec-linter findings, and whole-batch export waits. The development branch now fixes those shared boundaries, preserves prior timing batches, and leaves production activation and Contract 1.6 serialization unchanged.
 
 - 2026-07-24: Development subscription authorization is bounded to five
   minutes. Native Claude OAuth with less than five minutes remaining is

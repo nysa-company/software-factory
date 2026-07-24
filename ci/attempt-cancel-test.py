@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -192,6 +193,45 @@ class AttemptCancellationTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(IDENTITY.IdentityError, "membership changed"):
                 IDENTITY.signal_group(identity, signal.SIGKILL)
+
+    def test_sandbox_start_identity_matches_host_and_foreground_timeout_group(self):
+        timeout = shutil.which("timeout")
+        if timeout is None:
+            self.skipTest("GNU timeout is unavailable")
+        process = subprocess.Popen(
+            [
+                timeout, "--foreground", "30",
+                sys.executable, "-c", "import time; time.sleep(30)",
+            ],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.processes.append(process)
+        for _ in range(100):
+            table = IDENTITY.process_table()
+            members = [item for item in table.values() if item.pgid == process.pid]
+            if len(members) >= 2:
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("foreground timeout did not retain its child process group")
+        observed = subprocess.check_output(
+            [
+                sys.executable, str(ROOT / "scripts/lib/sandbox-ps.py"),
+                "-o", "lstart=", "-p", str(process.pid),
+            ],
+            text=True,
+        ).strip()
+        self.assertEqual(" ".join(observed.split()), table[process.pid].started)
+        self.manifest(process, table[process.pid].started, go="1")
+        identity = IDENTITY.load_identity(self.runs, "run-1")
+        self.assertGreaterEqual(len(identity.members), 2)
+        reaper = threading.Thread(target=process.wait)
+        reaper.start()
+        self.assertIn(IDENTITY.terminate(identity, 0.2), {"TERM", "KILL"})
+        reaper.join(timeout=2)
+        self.assertFalse(IDENTITY.group_alive(process.pid))
 
     def test_pre_go_cancel_is_zero_cost_and_replay_safe(self):
         process, started = self.spawn()

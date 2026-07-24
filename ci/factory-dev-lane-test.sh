@@ -20,6 +20,11 @@ trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BAS
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
+grep -Fq 'SPEC-WARN: <one-line recommendation>' "$ROOT/roles/spec-linter.md" &&
+  grep -Fq 'PASS may include `SPEC-WARN` recommendations' \
+    "$ROOT/roles/spec-linter.md" ||
+  fail "Spec-linter contract does not distinguish warnings from blockers"
+
 expect_failure() {
   local label="$1"
   shift
@@ -775,7 +780,8 @@ grep -Fq 'exit "$status"'\'' EXIT' \
   git init -q --bare "$SEQUENTIAL_ROOT/origin.git"
   cat >"$SEQUENTIAL_ROOT/kit/scripts-provider-coordinator.py" <<'PY'
 import json
-print(json.dumps({"active_reserve_micro_usd":0,"counts":{}}))
+print(json.dumps({"attempts":[{
+  "attempt_id":"active-sibling","ticket_id":"T-2","state":"admitted"}]}))
 PY
   mkdir -p "$SEQUENTIAL_ROOT/kit/scripts"
   mv "$SEQUENTIAL_ROOT/kit/scripts-provider-coordinator.py" \
@@ -802,12 +808,28 @@ PY
 import json, sys
 json.dump({"base_sha":"0"*40,"base_tree":"1"*40},open(sys.argv[1],"w"))
 PY
+  mkdir -p "$SEQUENTIAL_ROOT/product/factory/.dispatch-leases" \
+    "$SEQUENTIAL_ROOT/product/factory/.active-runs/T-2.builder.lock"
+  : >"$SEQUENTIAL_ROOT/product/factory/.dispatch-leases/T-2.json"
 
   first="$(export_product_internal "$SEQUENTIAL_ROOT" T-1)"
   [[ "$first" == *"EXPORT_ROOT=$SEQUENTIAL_ROOT/export"* &&
-     -f "$SEQUENTIAL_ROOT/export/manifest.json" ]] ||
-    fail "default product export output is incompatible"
+    -f "$SEQUENTIAL_ROOT/export/manifest.json" ]] ||
+    fail "completed ticket could not export while its sibling remained active"
   first_digest="$(shasum -a 256 "$SEQUENTIAL_ROOT/export/manifest.json")"
+  if (export_product_internal "$SEQUENTIAL_ROOT" T-2 \
+      "$SEQUENTIAL_ROOT/exports/active-sibling" >/dev/null 2>&1); then
+    fail "active sibling was exportable"
+  fi
+  [[ ! -e "$SEQUENTIAL_ROOT/exports/active-sibling" ]] ||
+    fail "refused active-sibling export left its output claim"
+  rm "$SEQUENTIAL_ROOT/product/factory/.dispatch-leases/T-2.json"
+  rmdir "$SEQUENTIAL_ROOT/product/factory/.active-runs/T-2.builder.lock"
+  cat >"$SEQUENTIAL_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+import json
+print(json.dumps({"attempts":[{
+  "attempt_id":"finished-sibling","ticket_id":"T-2","state":"terminal"}]}))
+PY
   second="$(export_product_internal "$SEQUENTIAL_ROOT" T-2 \
     "$SEQUENTIAL_ROOT/exports/second")"
   [[ "$second" == *"EXPORT_ROOT=$SEQUENTIAL_ROOT/exports/second"* &&
@@ -1376,13 +1398,23 @@ python3 - "$TIMING_ROOT/runtime/product-timing.json" <<'PY' ||
 import json, pathlib, stat, sys
 path=pathlib.Path(sys.argv[1]); value=json.loads(path.read_text())
 assert stat.S_IMODE(path.stat().st_mode)==0o600
-assert value["schema"]=="factory-dev-product-timing/v1"
+assert value["schema"]=="factory-dev-product-timing/v2"
 assert value["elapsed_seconds"]==30
+assert value["batches"]==[{
+    "batch_started_at":5,"batch_terminal_at":35,"elapsed_seconds":30}]
 assert value["maximum_provider_overlap"]==2
 assert value["successful_role_replay_count"]==1
 assert len(value["attempts"])==2
 PY
   fail "product timing evidence was incomplete"
+product_write_timing_report "$TIMING_ROOT" 40 50
+python3 - "$TIMING_ROOT/runtime/product-timing.json" <<'PY' ||
+import json, sys
+value=json.load(open(sys.argv[1]))
+assert value["elapsed_seconds"]==10
+assert [item["elapsed_seconds"] for item in value["batches"]]==[30,10]
+PY
+  fail "product timing evidence overwrote a prior resume batch"
 eval "$(sed -n '/^product_role_for_stage()/,/^}/p' "$LANE")"
 if product_role_for_stage 'FIX builder-or-test-author' >/dev/null; then
   fail "development lane guessed Builder for ambiguous repair ownership"
@@ -2161,6 +2193,9 @@ for invalid_source in \
 done
 
 eval "$(sed -n '/^run_product_internal()/,/^}/p' "$LANE")"
+eval "$(sed -n \
+  '/^product_mark_await_operator()/,/^product_write_timing_report()/p' \
+  "$LANE" | sed '$d')"
 CLAIM_ROOT="$TMP/claim-rollback"
 mkdir -p "$CLAIM_ROOT/runtime"
 printf '%s\n' 'approval_hash=test-approval' 'used=0' \
@@ -2193,6 +2228,8 @@ printf '%s\n' 'approval_hash=test-approval' 'used=0' \
 for ticket in T-1 T-2 T-3; do
   mkdir -p "$PARTIAL_ROOT/worktrees/$ticket"
   git -C "$PARTIAL_ROOT/worktrees/$ticket" init -q
+  git -C "$PARTIAL_ROOT/worktrees/$ticket" -c user.name=Test \
+    -c user.email=test@local commit -qm "initialize $ticket" --allow-empty
 done
 subscription_env() {
   local ignored="$1" command action ticket
@@ -2209,6 +2246,19 @@ die() { exit 1; }
 partial_output="$(run_product_internal "$PARTIAL_ROOT" test-approval)"
 grep -qx 'STATUS=AWAIT-OPERATOR' <<<"$partial_output" ||
   fail "partial product lifecycle did not reach operator approval"
+for ticket in T-1 T-2 T-3; do
+  grep -qx "TICKET_STATUS=$ticket:AWAIT-OPERATOR" <<<"$partial_output" ||
+    fail "partial product lifecycle omitted ticket readiness: $ticket"
+  python3 - "$PARTIAL_ROOT/runtime/product-scheduler/$ticket.await-operator.json" \
+    "$ticket" <<'PY' || fail "ticket readiness record is incomplete"
+import json, os, stat, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+assert value["schema"]=="factory-dev-ticket-ready/v1"
+assert value["ticket"]==sys.argv[2] and value["status"]=="AWAIT-OPERATOR"
+assert value["elapsed_seconds"] >= 0
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode)==0o600
+PY
+done
 [[ "$(cat "$PARTIAL_ROOT/lease-actions")" == \
    $'claim T-1\nclaim T-2\nclaim T-3\nrenew T-1\nrelease T-1\nrenew T-2\nrelease T-2\nrenew T-3\nrelease T-3' ]] ||
   fail "partial product lifecycle did not claim, renew, and release exactly its tickets"

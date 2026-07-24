@@ -39,12 +39,20 @@ FULL_TASK="$TASK"
 
 $TASK"
 
+run_with_timeout() {
+  if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then
+    timeout --foreground "$@"
+  else
+    timeout "$@"
+  fi
+}
+
 # First-real-run finding (2026-07-12): workspace-write is not enough — it
 # blocks TCP listen (tests spawn a real server) and blocks git commits from
 # worktrees (their .git metadata lives in the main repo, outside the sandbox).
 # Same call as the claude adapter: bypass the CLI sandbox; containment comes
 # from the envelope (budget, timeout), the worktree, and CI gates.
-OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+OUT="$(cd "$WORKDIR" && run_with_timeout "$((TIMEOUT_MIN * 60))" \
   codex exec --json --dangerously-bypass-approvals-and-sandbox \
     -m "$MODEL" -c "model_reasoning_effort=$EFFORT" "$FULL_TASK" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"

@@ -81,6 +81,11 @@ batch also writes an owner-only timing report with
 coordinator admission/GO/submission/terminal timestamps, elapsed time,
 successful-role replay count, and maximum provider overlap.
 
+Each completed ticket publishes an owner-only readiness record after its lease
+and role process drain. A selected-ticket `product-export` checks only that
+ticket's provider attempts, lease, claim, head, evidence, and worktree, so an
+approved sibling can be exported while another ticket continues.
+
 The product scheduler launches every eligible ticket without interpreting
 provider capacity. The coordinator owns atomic admission and may wait up to
 fifteen minutes only for transient concurrency capacity in this marker-bound
@@ -90,6 +95,11 @@ revalidates controls before proceeding. Budget, policy, identity, and rate
 denials remain immediate. Development activation permits four calls for one
 Codex account or one native Claude account. Cursor remains capped at two
 because its pinned CLI still shares one hard-coded scratch bridge.
+
+Concurrent CLI adapters request GNU timeout foreground mode so timeout and the
+provider remain in the Factory-owned process group. The sandbox process
+inspector reports the same kernel-derived start identity as host `ps`;
+targeted cancellation refuses identity drift and drains only that group.
 
 The PR-less development Narrator marks Preview and Screenshots as backend-only
 N/A when the frozen contract has no browser or visual surface, including an

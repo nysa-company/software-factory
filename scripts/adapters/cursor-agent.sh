@@ -124,8 +124,13 @@ set +e
   if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
     CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
   fi
-  exec env HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
-    "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
+  if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then
+    exec env HOME="$CURSOR_HOME" timeout --foreground "$((TIMEOUT_MIN * 60))" \
+      "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
+  else
+    exec env HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
+      "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
+  fi
 ) >"$RAW_STREAM" 2>&1 &
 CURSOR_PRODUCER_PID="$!"
 python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \

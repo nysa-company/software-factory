@@ -4,6 +4,7 @@
 import ctypes
 import os
 import sys
+import time
 
 
 class ProcBsdInfo(ctypes.Structure):
@@ -33,7 +34,7 @@ class ProcBsdInfo(ctypes.Structure):
     ]
 
 
-def process_table():
+def load_libproc():
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     libproc.proc_listpids.argtypes = [
         ctypes.c_uint32,
@@ -50,6 +51,19 @@ def process_table():
         ctypes.c_int,
     ]
     libproc.proc_pidinfo.restype = ctypes.c_int
+    return libproc
+
+
+def process_start(info):
+    value = time.localtime(info.start_tvsec)
+    return (
+        f"{time.strftime('%a %b', value)} {value.tm_mday} "
+        f"{time.strftime('%H:%M:%S %Y', value)}"
+    )
+
+
+def process_table():
+    libproc = load_libproc()
     needed = libproc.proc_listpids(1, 0, None, 0)
     if needed <= 0:
         raise SystemExit(2)
@@ -67,9 +81,9 @@ def process_table():
             pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)
         )
         if size == ctypes.sizeof(info) and info.pid == pid and info.pgid > 1:
-            rows.append((pid, info.pgid))
-    for pid, pgid in sorted(rows):
-        print(pid, pgid, "sandbox-start-" + str(pid))
+            rows.append((pid, info.pgid, process_start(info)))
+    for pid, pgid, started in sorted(rows):
+        print(pid, pgid, started)
 
 
 if sys.argv[1:] == ["-axo", "pid=,pgid=,lstart="]:
@@ -83,8 +97,14 @@ elif "-o" in sys.argv and "-p" in sys.argv:
     if output == "pgid=":
         print(os.getpgid(pid))
     elif output == "lstart=":
-        os.kill(pid, 0)
-        print("sandbox-start-" + str(pid))
+        info = ProcBsdInfo()
+        libproc = load_libproc()
+        size = libproc.proc_pidinfo(
+            pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if size != ctypes.sizeof(info) or info.pid != pid:
+            raise SystemExit(1)
+        print(process_start(info))
     else:
         raise SystemExit(2)
 else:

@@ -27,6 +27,14 @@ done
 TASK="${*:-}"
 CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions)
 
+run_with_timeout() {
+  if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then
+    timeout --foreground "$@"
+  else
+    timeout "$@"
+  fi
+}
+
 command -v claude >/dev/null || { echo "claude CLI not installed" >&2; exit 6; }
 INSTALLED="$(claude --version 2>/dev/null | head -n1 || true)"
 case "$INSTALLED" in
@@ -96,12 +104,12 @@ fi
 # isolated development lane instead requires fail-closed Claude sandbox
 # settings and autonomous edit permission without the bypass flag.
 if [[ -s "$PROMPT_FILE" ]]; then
-  OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+  OUT="$(cd "$WORKDIR" && run_with_timeout "$((TIMEOUT_MIN * 60))" \
     claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
     "${CLAUDE_PERMISSION_ARGS[@]}" \
     --append-system-prompt "$(cat "$PROMPT_FILE")" 2>&1)" || STATUS=$?
 else
-  OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+  OUT="$(cd "$WORKDIR" && run_with_timeout "$((TIMEOUT_MIN * 60))" \
     claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
     "${CLAUDE_PERMISSION_ARGS[@]}" 2>&1)" || STATUS=$?
 fi

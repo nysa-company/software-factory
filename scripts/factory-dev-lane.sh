@@ -2982,6 +2982,52 @@ print(f"{max(0,cap-used)/1_000_000:.6f}")
 PY
 }
 
+product_mark_await_operator() {
+  local root="$1" ticket="$2" batch_started="$3" head output
+  head="$(git -C "$root/worktrees/$ticket" rev-parse HEAD)" || return
+  output="$root/runtime/product-scheduler/$ticket.await-operator.json"
+  python3 - "$output" "$ticket" "$head" "$batch_started" <<'PY'
+import datetime as dt
+import json
+import os
+import pathlib
+import sys
+import tempfile
+
+path=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; head=sys.argv[3]
+batch_started=int(sys.argv[4]); reached_at=int(dt.datetime.now().timestamp())
+value={
+    "batch_started_at":batch_started,
+    "elapsed_seconds":max(0,reached_at-batch_started),
+    "head_sha":head,
+    "reached_at":dt.datetime.now(dt.timezone.utc).replace(
+        microsecond=0).isoformat().replace("+00:00","Z"),
+    "reached_at_epoch":reached_at,
+    "schema":"factory-dev-ticket-ready/v1",
+    "status":"AWAIT-OPERATOR",
+    "ticket":ticket,
+}
+if path.exists():
+    prior=json.loads(path.read_text(encoding="utf-8"))
+    if (prior.get("schema"),prior.get("ticket"),prior.get("status"),
+        prior.get("head_sha"),prior.get("batch_started_at")) == (
+        value["schema"],ticket,value["status"],head,batch_started):
+        raise SystemExit(0)
+    raise SystemExit("ticket readiness record drifted")
+fd, temporary=tempfile.mkstemp(prefix=path.name+".",dir=path.parent)
+try:
+    os.fchmod(fd,0o600)
+    with os.fdopen(fd,"w",encoding="utf-8") as stream:
+        json.dump(value,stream,sort_keys=True,separators=(",",":"))
+        stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
+    os.link(temporary,path)
+finally:
+    pathlib.Path(temporary).unlink(missing_ok=True)
+PY
+  printf 'TICKET_STATUS=%s:AWAIT-OPERATOR\n' "$ticket"
+  printf 'TICKET_READY=%s\n' "$output"
+}
+
 product_write_timing_report() {
   local root="$1" started="$2" finished="$3"
   python3 - "$root/kit/scripts/provider-coordinator.py" \
@@ -3013,11 +3059,25 @@ for path in runs.glob("*.meta"):
         successful[key]=successful.get(key,0)+1
         head_key=key+(values.get("role_head_before"),)
         successful_heads[head_key]=successful_heads.get(head_key,0)+1
-report={
-  "schema":"factory-dev-product-timing/v1",
+batch={
   "batch_started_at":started,
   "batch_terminal_at":finished,
   "elapsed_seconds":max(0,finished-started),
+}
+prior_batches=[]
+if output.is_file():
+    prior=json.loads(output.read_text(encoding="utf-8"))
+    if prior.get("schema") == "factory-dev-product-timing/v2":
+        prior_batches=prior.get("batches",[])
+    elif prior.get("schema") == "factory-dev-product-timing/v1":
+        prior_batches=[{
+          key:prior[key] for key in (
+            "batch_started_at","batch_terminal_at","elapsed_seconds")
+        }]
+report={
+  "schema":"factory-dev-product-timing/v2",
+  **batch,
+  "batches":prior_batches+[batch],
   "maximum_provider_overlap":maximum,
   "successful_role_replay_count":sum(
       max(0,count-1) for count in successful_heads.values()),
@@ -3138,6 +3198,9 @@ run_product_internal() {
           --ticket "$ticket" --lease "${leases[$i]}" >/dev/null || {
             states[$i]=failed; failed_count=$((failed_count + 1)); continue;
           }
+        product_mark_await_operator "$root" "$ticket" "$batch_started" || {
+          states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+        }
         states[$i]=done; done_count=$((done_count + 1)); progress=1; continue
       fi
       role="$(product_role_for_stage "$stage")" ||
@@ -3582,18 +3645,42 @@ export_product_internal() {
   validate_runtime_paths "$root"
   [[ ! -e "$root/runtime/product-approval" ]] || die "product run approval is still unused"
   python3 "$root/kit/scripts/provider-coordinator.py" \
-    --db "$root/runtime/provider-state.sqlite3" status | python3 -c '
+    --db "$root/runtime/provider-state.sqlite3" status |
+    python3 -c '
 import json, sys
+selected=set(sys.argv[1:])
 value=json.load(sys.stdin)
-assert value.get("active_reserve_micro_usd") == 0, value
-assert all(name == "terminal" for name in value.get("counts", {})), value
-' || die "product provider attempts have not drained"
-  [[ ! -d "$root/product/factory/.dispatch-leases" ||
-     -z "$(find "$root/product/factory/.dispatch-leases" -type f -print -quit)" ]] ||
-    die "product dispatcher leases have not drained"
-  [[ ! -d "$root/product/factory/.active-runs" ||
-     -z "$(find "$root/product/factory/.active-runs" -mindepth 1 -print -quit)" ]] ||
-    die "product active-run claims have not drained"
+assert not [
+    attempt for attempt in value.get("attempts",[])
+    if attempt.get("ticket_id") in selected and attempt.get("state") != "terminal"
+], value
+' "${PRODUCT_TICKETS[@]}" ||
+    die "selected product provider attempts have not drained"
+  python3 - "$root/product/factory/.dispatch-leases" \
+    "$root/product/factory/.active-runs" "${PRODUCT_TICKETS[@]}" <<'PY' ||
+import pathlib, re, stat, sys
+leases=pathlib.Path(sys.argv[1]); claims=pathlib.Path(sys.argv[2])
+selected=set(sys.argv[3:])
+if leases.exists():
+    for path in leases.iterdir():
+        info=path.lstat()
+        match=re.fullmatch(r"(T-[0-9]+)\.json",path.name)
+        if not match or not stat.S_ISREG(info.st_mode) or path.is_symlink():
+            raise SystemExit(1)
+        if match.group(1) in selected:
+            raise SystemExit(1)
+if claims.exists():
+    for path in claims.iterdir():
+        info=path.lstat()
+        match=re.fullmatch(
+            r"(T-[0-9]+)\.(planner|spec-linter|test-author|builder|reviewer|narrator)\.lock",
+            path.name)
+        if not match or not stat.S_ISDIR(info.st_mode) or path.is_symlink():
+            raise SystemExit(1)
+        if match.group(1) in selected:
+            raise SystemExit(1)
+PY
+    die "selected product lease or active-run claim has not drained"
   base="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base_sha"])' \
     "$root/runtime/product-source.json")"
   export_dir="${requested_output:-$root/export}"
