@@ -250,7 +250,10 @@ fi
 
 READINESS_ROOT="$TMP/nysa-sf-dev.readiness"
 mkdir -p "$READINESS_ROOT/home" "$READINESS_ROOT/session-home" \
-  "$READINESS_ROOT/session-home/.claude" "$READINESS_ROOT/tmp"
+  "$READINESS_ROOT/session-home/.claude" \
+  "$READINESS_ROOT/kit/scripts/lib" "$READINESS_ROOT/tmp"
+cp "$ROOT/scripts/lib/backend-policy.sh" \
+  "$READINESS_ROOT/kit/scripts/lib/backend-policy.sh"
 python3 - "$READINESS_ROOT/session-home/.claude/.credentials.json" <<'PY'
 import json, os, sys, time
 path=sys.argv[1]
@@ -321,6 +324,10 @@ printf '%s\n' 0 >"$READINESS_ROOT/session-home/.transient-auth"
 ) || fail "subscription readiness did not outwait transient authentication"
 [[ "$(<"$READINESS_ROOT/session-home/.transient-auth")" == 2 ]] ||
   fail "subscription readiness did not exercise bounded authentication retries"
+(
+  die() { exit 1; }
+  claude_subscription_ready "$READINESS_ROOT"
+) || fail "Claude-only canary readiness did not validate the copied OAuth lifetime"
 for unused_tool in agent claude; do
   printf '%s\n' '#!/usr/bin/env bash' 'exit 1' \
     >"$READINESS_ROOT/home/$unused_tool"
