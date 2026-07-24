@@ -171,6 +171,101 @@ class CursorStreamTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("owner contradicts its summary", result.stderr)
 
+    def test_reviewer_ignores_identical_late_callback_restatement(self) -> None:
+        review = (
+            "Review complete.\n\n"
+            "REQUEST CHANGES\n\n"
+            "FIX-OWNER: test-author\n"
+            "That background `npm test` run already completed. No further "
+            "action needed — the review verdict stands as posted:\n\n"
+            "**REQUEST CHANGES** — `FIX-OWNER: test-author` "
+            "(the same two findings)."
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "REQUEST CHANGES\ttest-author\n")
+
+    def test_reviewer_refuses_conflicting_late_callback_owner(self) -> None:
+        review = (
+            "REQUEST CHANGES\n"
+            "FIX-OWNER: test-author\n\n"
+            "**REQUEST CHANGES** — `FIX-OWNER: builder` (callback)."
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("contradicts its primary verdict", result.stderr)
+
+    def test_reviewer_refuses_callback_without_primary_owner(self) -> None:
+        review = (
+            "REQUEST CHANGES\n\n"
+            "**REQUEST CHANGES** — `FIX-OWNER: test-author` (callback)."
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("contradicts its primary verdict", result.stderr)
+
+    def test_reviewer_refuses_extra_standalone_pair_before_callback(self) -> None:
+        review = (
+            "REQUEST CHANGES\n"
+            "FIX-OWNER: test-author\n"
+            "REQUEST CHANGES\n"
+            "FIX-OWNER: test-author\n\n"
+            "**REQUEST CHANGES** — `FIX-OWNER: test-author` (callback)."
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("contradicts its primary verdict", result.stderr)
+
+    def test_reviewer_refuses_callback_after_approval(self) -> None:
+        review = (
+            "APPROVE\n\n"
+            "**REQUEST CHANGES** — `FIX-OWNER: test-author` (callback)."
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("contradicts its primary verdict", result.stderr)
+
+    def test_reviewer_callback_keeps_contract_16_owner_refusal(self) -> None:
+        review = (
+            "REQUEST CHANGES\n"
+            "FIX-OWNER: test-author\n\n"
+            "**REQUEST CHANGES** — `FIX-OWNER: test-author` (callback)."
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ],
+            contract="1.6.0",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FIX-OWNER requires contract 1.7", result.stderr)
+
     def test_reviewer_keeps_terminal_only_compatibility(self) -> None:
         result = self.run_verdict(
             [

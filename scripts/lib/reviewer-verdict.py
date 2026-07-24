@@ -8,13 +8,15 @@ import re
 
 CALLBACK_OWNER = re.compile(
     r"^(\s*)FIX-OWNER:\s*(builder|test-author|both)"
-    r"(The background `[^`\r\n]+` run finished[^\r\n]*)$",
+    r"((?:The|That) background `[^`\r\n]+`[^\r\n]*)$",
     re.IGNORECASE | re.MULTILINE,
 )
 CALLBACK_SUMMARY = re.compile(
-    r"^No follow-up action needed — my review above already stands as "
+    r"^(?:No follow-up action needed — my review above already stands as "
     r"\*\*REQUEST CHANGES / FIX-OWNER: "
-    r"(builder|test-author|both)\*\*\.$",
+    r"(?P<slash>builder|test-author|both)\*\*\.|"
+    r"\*\*REQUEST CHANGES\*\*\s+—\s+`FIX-OWNER:\s*"
+    r"(?P<inline>builder|test-author|both)`[^\r\n]*)$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -57,25 +59,50 @@ def parse_review(raw: str, contract_version: str) -> tuple[str, str]:
 
 def normalize_cursor_callback(raw: str) -> str:
     corrupted = list(CALLBACK_OWNER.finditer(raw))
-    if not corrupted:
-        return raw
+    if corrupted:
+        raw = CALLBACK_OWNER.sub(
+            lambda match: (
+                f"{match.group(1)}FIX-OWNER: {match.group(2).lower()}\n"
+                f"{match.group(1)}{match.group(3)}"
+            ),
+            raw,
+        )
     summaries = list(CALLBACK_SUMMARY.finditer(raw))
-    if len(corrupted) != len(summaries) or any(
-        owner.start() >= summary.start()
-        for owner, summary in zip(corrupted, summaries)
-    ):
-        raise ValueError("reviewer background callback lacks a later summary")
-    if {match.group(2).lower() for match in corrupted} != {
-        match.group(1).lower() for match in summaries
-    }:
-        raise ValueError("reviewer background callback owner contradicts its summary")
-    raw = CALLBACK_OWNER.sub(
-        lambda match: (
-            f"{match.group(1)}FIX-OWNER: {match.group(2).lower()}\n"
-            f"{match.group(1)}{match.group(3)}"
-        ),
-        raw,
-    )
+    summary_owners = [
+        (match.group("slash") or match.group("inline")).lower()
+        for match in summaries
+    ]
+    if corrupted:
+        if len(corrupted) != len(summaries) or any(
+            owner.start() >= summary.start()
+            for owner, summary in zip(corrupted, summaries)
+        ):
+            raise ValueError("reviewer background callback lacks a later summary")
+        if {match.group(2).lower() for match in corrupted} != set(summary_owners):
+            raise ValueError(
+                "reviewer background callback owner contradicts its summary"
+            )
+    elif summaries:
+        if len(summaries) != 1:
+            raise ValueError("reviewer background callback is ambiguous")
+        prefix = raw[:summaries[0].start()]
+        primary_verdicts = [
+            line.strip().upper()
+            for line in prefix.splitlines()
+            if re.fullmatch(r"\s*(?:APPROVE|REQUEST CHANGES)\s*", line, re.I)
+        ]
+        primary_owners = [
+            match.group(1).lower()
+            for line in prefix.splitlines()
+            if (match := re.fullmatch(
+                r"\s*FIX-OWNER:\s*(builder|test-author|both)\s*", line, re.I
+            ))
+        ]
+        if primary_verdicts != ["REQUEST CHANGES"] or \
+           primary_owners != summary_owners:
+            raise ValueError(
+                "reviewer background callback contradicts its primary verdict"
+            )
     return CALLBACK_SUMMARY.sub("REQUEST CHANGES", raw)
 
 
