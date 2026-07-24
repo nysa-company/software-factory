@@ -1339,8 +1339,7 @@ if value["schema"].endswith(("/v3", "/v4", "/v5")):
     if (value["schema"].endswith("/v3") and
         (value.get("ticket_cap_micro_usd") != 200_000_000 or
          value.get("aggregate_cap_micro_usd") != 700_000_000) or
-        value["schema"].endswith("/v4") and
-         value["schema"].endswith(("/v4", "/v5")) and
+        value["schema"].endswith(("/v4", "/v5")) and
          value.get("aggregate_cap_micro_usd") not in
             (1_000_000_000, 1_500_000_000) or
         value.get("authorized_by") != "operator"):

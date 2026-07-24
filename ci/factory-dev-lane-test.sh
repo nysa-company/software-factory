@@ -737,8 +737,10 @@ chmod 600 "$SEED_ACCOUNTING_V4_HIGH"
 validate_product_seed_accounting "$SEED_ACCOUNTING_V4_HIGH" "$SEED_BUNDLE" \
   "$SEED_BASE" T-1 T-2 ||
   fail "higher operator-authorized development caps were rejected"
-eval "$(sed -n '/^validate_product_checkpoint()/,/^}/p' "$LANE")"
-eval "$(sed -n '/^validate_checkpoint_accounting()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^validate_product_checkpoint()/,/^seed_product_worktrees()/p' \
+  "$LANE" | sed '$d')"
+eval "$(sed -n '/^validate_checkpoint_accounting()/,/^prepare_product_seed_accounting()/p' \
+  "$LANE" | sed '$d')"
 SEED_CHECKPOINT="$TMP/seed-checkpoint.json"
 printf '%s\n' \
   "{\"schema\":\"factory-dev-product-checkpoint/v1\",\"base_sha\":\"$SEED_BASE\",\"base_tree\":\"$SEED_BASE\",\"source_factory_sha\":\"$SEED_BASE\",\"source_factory_tree\":\"$SEED_BASE\",\"source_marker_sha256\":\"$SEED_NONCE\",\"source_product_sha256\":\"$SEED_NONCE\",\"prior_accounting_sha256\":null,\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"lane_charges_micro_usd\":{\"T-1\":10000000,\"T-2\":20000000,\"T-3\":30000000,\"T-4\":40000000},\"tickets\":[{\"ticket\":\"T-1\",\"head_sha\":\"$SEED_BASE\",\"head_tree\":\"$SEED_BASE\",\"ticket_blob\":\"$SEED_BASE\",\"route_plan_sha256\":\"$SEED_NONCE\",\"next_stage\":\"RUN spec-linter\",\"state\":\"Ready\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"checkpoint-planner\",\"manifest_sha256\":\"$SEED_NONCE\",\"output_sha256\":\"$SEED_NONCE\",\"role_head_before\":\"$SEED_BASE\"}],\"spec_verdicts\":[]}]}" \
@@ -766,6 +768,19 @@ chmod 600 "$SEED_ACCOUNTING_V5_BAD"
 if validate_checkpoint_accounting "$SEED_ACCOUNTING_V5_BAD" "$SEED_CHECKPOINT"; then
   fail "underreported checkpoint accounting was accepted"
 fi
+SEED_ACCOUNTING_V5_CAP_BAD="$TMP/accounting-v5-cap-bad.json"
+sed 's/"aggregate_cap_micro_usd":1500000000/"aggregate_cap_micro_usd":1500000001/' \
+  "$SEED_ACCOUNTING_V5" >"$SEED_ACCOUNTING_V5_CAP_BAD"
+chmod 600 "$SEED_ACCOUNTING_V5_CAP_BAD"
+SEED_ROOT_V5_BAD="$TMP/seed-root-v5-bad"
+mkdir -p "$SEED_ROOT_V5_BAD/product/factory" "$SEED_ROOT_V5_BAD/runtime"
+cp "$SEED_ROOT/product/factory/ENVELOPE.env" \
+  "$SEED_ROOT_V5_BAD/product/factory/ENVELOPE.env"
+validate_product_seed_accounting() { :; }
+expect_failure "v5 internal aggregate defense" prepare_product_seed_accounting \
+  "$SEED_ROOT_V5_BAD" "$SEED_ACCOUNTING_V5_CAP_BAD" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1
+eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^product_seed_lineage_id()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^write_product_seed_lineage()/,/^}/p' "$LANE")"
