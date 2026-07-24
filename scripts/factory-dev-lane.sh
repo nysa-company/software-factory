@@ -932,7 +932,10 @@ if (set(value) != {"schema","base_sha","base_tree","source_factory_sha",
     len({item.get("ticket") for item in value["tickets"]}) != len(value["tickets"]) or
     not set(item.get("ticket") for item in value["tickets"]) <= set(tickets) or
     not isinstance(value.get("lane_charges_micro_usd"),dict) or
-    set(value["lane_charges_micro_usd"]) != set(tickets) or
+    not set(tickets) <= set(value["lane_charges_micro_usd"]) or
+    any(not isinstance(ticket,str) or
+        not re.fullmatch(r"T-[0-9]+",ticket)
+        for ticket in value["lane_charges_micro_usd"]) or
     any(not isinstance(amount,int) or isinstance(amount,bool) or amount < 0
         for amount in value["lane_charges_micro_usd"].values())):
     raise SystemExit(1)
@@ -1031,7 +1034,7 @@ PY
     fi
     git -C "$root/worktrees/$ticket" merge-base --is-ancestor \
       "$base" "refs/retry/$ticket" || die "product seed does not descend from the approved base"
-    python3 "$root/kit/scripts/lib/lane-path-sentinel.py" \
+    python3 "$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py" \
       "$root/worktrees/$ticket" "$base" "refs/retry/$ticket" ||
       die "product seed contains a lane-local absolute path: $ticket"
     commits=()
@@ -3068,7 +3071,7 @@ PY
     [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] &&
       git -C "$root/worktrees/$ticket" merge-base --is-ancestor "$head" HEAD ||
       die "product checkpoint ticket is dirty or has no trusted-host prefix: $ticket"
-    python3 "$root/kit/scripts/lib/lane-path-sentinel.py" \
+    python3 "$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py" \
       "$root/worktrees/$ticket" "$base" "$head" ||
       die "product checkpoint contains a lane-local absolute path: $ticket"
     refs+=("refs/heads/$branch")
@@ -3099,7 +3102,7 @@ source=json.load(open(source_path,encoding="utf-8"))
 marker_path=root/"marker.json"; marker=json.load(open(marker_path,encoding="utf-8"))
 import_path=root/"runtime/product-checkpoint-import.json"
 retained_path=root/"runtime/product-checkpoint-source.json"
-prior={}
+prior={}; checkpoint=None
 if import_path.exists() or retained_path.exists():
     imported_info=import_path.lstat()
     if (not stat.S_ISREG(imported_info.st_mode) or imported_info.st_nlink != 1 or
@@ -3141,7 +3144,8 @@ for path in runs.glob("*.meta"):
                 path.read_text(encoding="utf-8").splitlines() if "=" in line)
     manifests[values.get("run_id")]=(path,values)
 rows=list(csv.DictReader(open(ledger,encoding="utf-8",newline="")))
-history=source.get("resume_original_tickets",source["tickets"])
+history=(list(checkpoint["lane_charges_micro_usd"]) if checkpoint else
+         source.get("resume_original_tickets",source["tickets"]))
 charges={ticket:0 for ticket in history}
 for _path,values in manifests.values():
     ticket=values.get("ticket")

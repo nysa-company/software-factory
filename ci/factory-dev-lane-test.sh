@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_ROOT="$ROOT"
 LANE="${FACTORY_DEV_LANE_UNDER_TEST:-$ROOT/scripts/factory-dev-lane.sh}"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-dev-lane-test.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
@@ -600,8 +601,54 @@ checkpoint_export_source="$(sed -n \
   '/^export_product_checkpoint_internal()/,/^product_export_roles_complete()/p' \
   "$LANE")"
 printf '%s\n' "$checkpoint_export_source" |
-  grep -Fq 'scripts/lib/lane-path-sentinel.py' ||
-  fail "checkpoint export lost its lane-path sentinel"
+  grep -Fq '"$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py"' ||
+  fail "checkpoint export does not use the trusted controller sentinel"
+if printf '%s\n' "$checkpoint_export_source" |
+   grep -Fq '"$root/kit/scripts/lib/lane-path-sentinel.py"'; then
+  fail "checkpoint export still requires the retained kit sentinel"
+fi
+(
+  RETAINED="$TMP/retained-pre-sentinel"
+  mkdir -p "$RETAINED/runtime" "$RETAINED/worktrees" "$RETAINED/kit/scripts/lib"
+  git init -q "$RETAINED/source"
+  printf '%s\n' portable >"$RETAINED/source/output.txt"
+  git -C "$RETAINED/source" add output.txt
+  git -C "$RETAINED/source" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Base'
+  RETAINED_BASE="$(git -C "$RETAINED/source" rev-parse HEAD)"
+  git -C "$RETAINED/source" checkout -qb ticket/T-997
+  printf '%s\n' retained >>"$RETAINED/source/output.txt"
+  git -C "$RETAINED/source" add output.txt
+  git -C "$RETAINED/source" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Retained role output'
+  git clone -q --bare "$RETAINED/source" "$RETAINED/origin.git"
+  git clone -q "$RETAINED/origin.git" "$RETAINED/worktrees/T-997"
+  git -C "$RETAINED/worktrees/T-997" checkout -q ticket/T-997
+  printf '{"base_sha":"%s"}\n' "$RETAINED_BASE" \
+    >"$RETAINED/runtime/product-source.json"
+  chmod 700 "$RETAINED"
+  RETAINED_OUTPUT_PARENT="$TMP/retained-checkpoint-output"
+  mkdir -m 700 "$RETAINED_OUTPUT_PARENT"
+
+  require_lane_mode() { :; }
+  load_product_tickets() { PRODUCT_TICKETS=(T-997); }
+  select_product_export_tickets() { PRODUCT_TICKETS=(T-997); }
+  validate_runtime_paths() { :; }
+  product_resume_drained() { :; }
+  refuse_production_path() { :; }
+  subscription_env() { :; }
+  write_product_checkpoint() {
+    printf '%s\n' retained >"$3"
+  }
+  eval "$(sed -n \
+    '/^export_product_checkpoint_internal()/,/^write_product_checkpoint()/p' \
+    "$LANE" | sed '$d')"
+  export_product_checkpoint_internal "$RETAINED" T-997 \
+    "$RETAINED_OUTPUT_PARENT/checkpoint-1" >"$OUT"
+  [[ -s "$RETAINED_OUTPUT_PARENT/checkpoint-1/seed.bundle" &&
+     -s "$RETAINED_OUTPUT_PARENT/checkpoint-1/checkpoint.json" ]] ||
+    fail "checkpoint export from a pre-sentinel retained kit failed"
+)
 if [[ "$(printf '%s\n' "$product_role_source" |
     grep -Fc 'set_review_state "$root"')" != 1 ]]; then
   fail "product Narrator still owns the late Review-state transition"
@@ -946,6 +993,17 @@ chmod 600 "$SEED_ACCOUNTING_V5"
 validate_product_checkpoint "$SEED_CHECKPOINT" "$SEED_BUNDLE" "$SEED_BASE" \
   T-1 T-2 T-3 T-4 ||
   fail "valid partial pre-Reviewer checkpoint was rejected"
+validate_product_checkpoint "$SEED_CHECKPOINT" "$SEED_BUNDLE" "$SEED_BASE" \
+  T-1 T-2 ||
+  fail "targeted checkpoint lost full original-ticket charges"
+SEED_CHECKPOINT_MISSING_CHARGE="$TMP/seed-checkpoint-missing-charge.json"
+sed 's/,\"T-2\":20000000//' "$SEED_CHECKPOINT" \
+  >"$SEED_CHECKPOINT_MISSING_CHARGE"
+chmod 600 "$SEED_CHECKPOINT_MISSING_CHARGE"
+if validate_product_checkpoint "$SEED_CHECKPOINT_MISSING_CHARGE" \
+  "$SEED_BUNDLE" "$SEED_BASE" T-1 T-2; then
+  fail "targeted checkpoint accepted a selected ticket without accounting"
+fi
 validate_product_seed_accounting "$SEED_ACCOUNTING_V5" "$SEED_BUNDLE" \
   "$SEED_BASE" T-1 T-2 T-3 T-4 ||
   fail "valid checkpoint accounting was rejected"
@@ -1089,7 +1147,7 @@ CHAIN_T48_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-048" rev-parse HEAD)"
 CHAIN_T48_TREE="$(git -C "$CHAIN_ROOT/worktrees/T-048" rev-parse 'HEAD^{tree}')"
 CHAIN_SOURCE="$CHAIN_ROOT/source-checkpoint.json"
 printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-checkpoint/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"source_factory_sha\":\"$CHAIN_T46_HEAD\",\"source_factory_tree\":\"$CHAIN_T46_TREE\",\"source_marker_sha256\":\"$CHAIN_NONCE\",\"source_product_sha256\":\"$CHAIN_NONCE\",\"prior_accounting_sha256\":null,\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"lane_charges_micro_usd\":{\"T-046\":11000000,\"T-048\":13000000},\"tickets\":[{\"ticket\":\"T-046\",\"head_sha\":\"$CHAIN_T46_HEAD\",\"head_tree\":\"$CHAIN_T46_TREE\",\"ticket_blob\":\"$CHAIN_T46_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN spec-linter\",\"state\":\"Ready\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t46-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T46_HEAD\"}],\"spec_verdicts\":[]},{\"ticket\":\"T-048\",\"head_sha\":\"$CHAIN_T48_HEAD\",\"head_tree\":\"$CHAIN_T48_TREE\",\"ticket_blob\":\"$CHAIN_T48_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN reviewer\",\"state\":\"Review\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t48-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"spec-linter\",\"run_id\":\"prior-t48-spec\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"test-author\",\"run_id\":\"prior-t48-tests\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"builder\",\"run_id\":\"prior-t48-builder\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"}],\"spec_verdicts\":[\"SPEC-LINT: PASS\"]}]}" \
+  "{\"schema\":\"factory-dev-product-checkpoint/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"source_factory_sha\":\"$CHAIN_T46_HEAD\",\"source_factory_tree\":\"$CHAIN_T46_TREE\",\"source_marker_sha256\":\"$CHAIN_NONCE\",\"source_product_sha256\":\"$CHAIN_NONCE\",\"prior_accounting_sha256\":null,\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"lane_charges_micro_usd\":{\"T-045\":0,\"T-046\":11000000,\"T-047\":0,\"T-048\":13000000},\"tickets\":[{\"ticket\":\"T-046\",\"head_sha\":\"$CHAIN_T46_HEAD\",\"head_tree\":\"$CHAIN_T46_TREE\",\"ticket_blob\":\"$CHAIN_T46_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN spec-linter\",\"state\":\"Ready\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t46-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T46_HEAD\"}],\"spec_verdicts\":[]},{\"ticket\":\"T-048\",\"head_sha\":\"$CHAIN_T48_HEAD\",\"head_tree\":\"$CHAIN_T48_TREE\",\"ticket_blob\":\"$CHAIN_T48_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN reviewer\",\"state\":\"Review\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t48-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"spec-linter\",\"run_id\":\"prior-t48-spec\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"test-author\",\"run_id\":\"prior-t48-tests\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"builder\",\"run_id\":\"prior-t48-builder\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"}],\"spec_verdicts\":[\"SPEC-LINT: PASS\"]}]}" \
   >"$CHAIN_SOURCE"
 chmod 600 "$CHAIN_SOURCE"
 PRODUCT_TICKETS=(T-046 T-048)
@@ -1120,7 +1178,7 @@ printf '%s\n' 'ticket,role,run_id,exit_status' \
   >"$CHAIN_ROOT/product/factory/runtime-ledger.csv"
 CHAIN_CHECKPOINT_SHA="$(sha256_file "$CHAIN_SOURCE")"
 printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-source/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"lane_control_sha\":\"$CHAIN_T46_HEAD\",\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"seed_accounting_sha256\":\"$CHAIN_NONCE\",\"seed_lineage_sha256\":\"$CHAIN_NONCE\",\"seed_checkpoint_sha256\":\"$CHAIN_CHECKPOINT_SHA\",\"tickets\":[\"T-046\",\"T-048\"]}" \
+  "{\"schema\":\"factory-dev-product-source/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"lane_control_sha\":\"$CHAIN_T46_HEAD\",\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"seed_accounting_sha256\":\"$CHAIN_NONCE\",\"seed_lineage_sha256\":\"$CHAIN_NONCE\",\"seed_checkpoint_sha256\":\"$CHAIN_CHECKPOINT_SHA\",\"tickets\":[\"T-046\",\"T-048\"],\"resume_original_tickets\":[\"T-045\",\"T-046\",\"T-047\",\"T-048\"]}" \
   >"$CHAIN_ROOT/runtime/product-source.json"
 printf '%s\n' \
   "{\"kit_sha\":\"$CHAIN_T46_HEAD\",\"kit_tree\":\"$CHAIN_T46_TREE\"}" \
@@ -1140,17 +1198,75 @@ if (new["T-046"]["next_stage"] != "RUN planner" or
         ["planner","spec-linter"] or
     new["T-048"]["next_stage"] != "RUN reviewer" or
     new["T-048"]["roles"] != old["T-048"]["roles"] or
-    chained["lane_charges_micro_usd"] != {"T-046":7000000,"T-048":0} or
+    chained["lane_charges_micro_usd"] !=
+        {"T-045":0,"T-046":7000000,"T-047":0,"T-048":0} or
     chained["prior_accounting_sha256"] != sys.argv[3]):
     raise SystemExit(1)
 PY
   fail "chained checkpoint lost sequence, evidence, accounting, or stage"
+validate_product_checkpoint "$CHAIN_ROOT/chained.json" \
+  "$CHAIN_ROOT/seed.bundle" "$CHAIN_T46_HEAD" T-046 T-048 ||
+  fail "two-ticket export with four-ticket charge history was rejected"
+rm -f "$CHAIN_ROOT/runtime/product-checkpoint-import.json" \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.json"
+PRODUCT_TICKETS=(T-046 T-048)
+write_product_checkpoint_import "$CHAIN_ROOT" "$CHAIN_ROOT/chained.json"
+python3 - "$CHAIN_ROOT/runtime/product-checkpoint-import.json" <<'PY' ||
+import json, sys
+if [item["ticket"] for item in
+    json.load(open(sys.argv[1],encoding="utf-8"))["tickets"]] != ["T-046","T-048"]:
+    raise SystemExit(1)
+PY
+  fail "two-ticket checkpoint import changed the selected ticket set"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-source/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"lane_control_sha\":\"$CHAIN_T46_HEAD\",\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"seed_accounting_sha256\":\"$CHAIN_NONCE\",\"seed_lineage_sha256\":\"$CHAIN_NONCE\",\"seed_checkpoint_sha256\":\"$(sha256_file "$CHAIN_ROOT/chained.json")\",\"tickets\":[\"T-046\",\"T-048\"]}" \
+  >"$CHAIN_ROOT/runtime/product-source.json"
+rm -f "$CHAIN_ROOT/product/factory/runs/current-spec.meta" \
+  "$CHAIN_ROOT/product/factory/runs/current-spec.out"
+printf '%s\n' 'ticket,role,run_id,exit_status' \
+  >"$CHAIN_ROOT/product/factory/runtime-ledger.csv"
+printf '%s\n' 'second chained bundle' >"$CHAIN_ROOT/seed-2.bundle"
+chmod 600 "$CHAIN_ROOT/seed-2.bundle"
+write_product_checkpoint "$CHAIN_ROOT" "$CHAIN_ROOT/seed-2.bundle" \
+  "$CHAIN_ROOT/chained-2.json" T-046 T-048 ||
+  fail "second targeted checkpoint chain lost its full accounting universe"
+python3 - "$CHAIN_ROOT/chained-2.json" <<'PY' ||
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+if (set(value["lane_charges_micro_usd"]) !=
+        {"T-045","T-046","T-047","T-048"} or
+    any(value["lane_charges_micro_usd"].values())):
+    raise SystemExit(1)
+PY
+  fail "second targeted checkpoint did not retain four-ticket charge keys"
+validate_product_checkpoint "$CHAIN_ROOT/chained-2.json" \
+  "$CHAIN_ROOT/seed-2.bundle" "$CHAIN_T46_HEAD" T-046 T-048 ||
+  fail "second targeted checkpoint failed selected-ticket validation"
+CHAIN_SECOND_SHA="$(sha256_file "$CHAIN_ROOT/chained-2.json")"
+CHAIN_SECOND_BUNDLE_SHA="$(sha256_file "$CHAIN_ROOT/seed-2.bundle")"
+CHAIN_V5="$CHAIN_ROOT/accounting-v5.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v5\",\"seed_bundle_sha256\":\"$CHAIN_SECOND_BUNDLE_SHA\",\"checkpoint_sha256\":\"$CHAIN_SECOND_SHA\",\"parent_manifest_sha256\":\"$CHAIN_NONCE\",\"checkpoint_charges_micro_usd\":{\"T-045\":0,\"T-046\":0,\"T-047\":0,\"T-048\":0},\"base_sha\":\"$CHAIN_T46_HEAD\",\"ticket_caps_micro_usd\":{\"T-045\":350000000,\"T-046\":350000000,\"T-047\":350000000,\"T-048\":350000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$CHAIN_NONCE\",\"budget_day\":\"$(date -u +%F)\",\"reserved_micro_usd\":{\"T-045\":0,\"T-046\":0,\"T-047\":0,\"T-048\":0}}" \
+  >"$CHAIN_V5"
+chmod 600 "$CHAIN_V5"
+validate_product_seed_accounting "$CHAIN_V5" "$CHAIN_ROOT/seed-2.bundle" \
+  "$CHAIN_T46_HEAD" T-046 T-048 ||
+  fail "second targeted checkpoint v5 successor was rejected"
+validate_checkpoint_accounting "$CHAIN_V5" "$CHAIN_ROOT/chained-2.json" ||
+  fail "second targeted checkpoint detached from its v5 successor"
 CHAIN_IMPORT="$CHAIN_ROOT/runtime/product-checkpoint-import.json"
 cp "$CHAIN_IMPORT" "$CHAIN_IMPORT.good"
+CHAIN_IMPORTED_T46_HEAD="$(python3 - "$CHAIN_IMPORT" <<'PY'
+import json, sys
+print(next(item["import_head"] for item in
+    json.load(open(sys.argv[1],encoding="utf-8"))["tickets"]
+    if item["ticket"] == "T-046"))
+PY
+)"
 CHAIN_ROGUE_HEAD="$(printf 'detached checkpoint head\n' | \
   git -C "$CHAIN_ROOT/worktrees/T-046" -c user.name=Test \
     -c user.email=test@local commit-tree "$CHAIN_T46_TREE")"
-sed "s/\"import_head\":\"$CHAIN_T46_HEAD\"/\"import_head\":\"$CHAIN_ROGUE_HEAD\"/" \
+sed "s/\"import_head\":\"$CHAIN_IMPORTED_T46_HEAD\"/\"import_head\":\"$CHAIN_ROGUE_HEAD\"/" \
   "$CHAIN_IMPORT.good" >"$CHAIN_IMPORT"
 expect_failure "detached imported checkpoint head" write_product_checkpoint \
   "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/detached.json" T-046 T-048

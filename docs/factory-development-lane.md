@@ -110,6 +110,14 @@ worktree-relative path, never the lane's physical temporary path. A shared
 sentinel rejects any newly added absolute `nysa-sf-dev.*` path before the
 trusted host pushes role output and again at checkpoint import and export, so
 a retained contract cannot bind itself to either its old or current lane.
+Checkpoint boundaries use the invoking trusted controller's sentinel after
+the retained lane's exact kit pin is validated, so an older kit need not
+contain a checker introduced by the correcting controller.
+Targeted checkpoint records may cover a subset of the original lane, while
+their charge map keeps every original ticket so cumulative accounting and
+lineage cannot forget excluded spend. Repeated chaining takes that full key
+universe from the retained checkpoint rather than the new lane's selected
+ticket list.
 
 For sequential protected-base refreshes, keep using the existing committed
 `ticket-refresh/v1` attestation path. It already invalidates the old approval
