@@ -1093,7 +1093,8 @@ paths=subprocess.check_output(
     text=True).splitlines()
 route=f"factory/route-plans/{ticket}.json"
 ticket_path=f"factory/tickets/{ticket}.md"
-statuses=dict(line.split("\t",1) for line in paths)
+statuses={path: status for status, path in
+          (line.split("\t",1) for line in paths)}
 if (len(raw) != len(paths) or
     any(line.split("\t",1)[0].split()[1] in {"120000","160000"}
         for line in raw) or
@@ -3573,17 +3574,24 @@ raise SystemExit(1 if json.load(open(sys.argv[1])).get("schema","").endswith("/v
 PY
           die "checkpoint accounting requires its checkpoint"
       fi
-      consume_product_seed_authorization "$seed_accounting" \
-        "$(sha256_file "$seed_accounting")" "$seed_lineage"
     fi
     PRODUCT_SEED_ACCOUNTING="$seed_accounting"; PRODUCT_SEED_LINEAGE="$seed_lineage"
     PRODUCT_SEED_CHECKPOINT="$seed_checkpoint"
     root="$(create_lane product)"
-    echo "ROOT=$root"
-    if ! run_in_sandbox "$root" cursor __product-plan --root "$root"; then
+    plan_output=""
+    if ! plan_output="$(run_in_sandbox "$root" cursor __product-plan --root "$root")"; then
       echo "ROOT=$root" >&2
       die "product planning failed; lane retained for inspection"
     fi
+    if [[ -n "$seed_accounting" ]] &&
+       ! (consume_product_seed_authorization "$seed_accounting" \
+           "$(sha256_file "$seed_accounting")" "$seed_lineage"); then
+      clean_lane "$root" ||
+        die "seed authorization lost its race and lane cleanup failed: $root"
+      die "product seed accounting lineage is stale or already consumed"
+    fi
+    echo "ROOT=$root"
+    printf '%s\n' "$plan_output"
     ;;
   product-resume-plan)
     assert_macos

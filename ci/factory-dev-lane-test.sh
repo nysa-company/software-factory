@@ -581,6 +581,16 @@ for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_RECOMMENDED=1' \
   grep -Fq "$expected" <<<"$run_product_source" ||
     fail "product failure omitted explicit same-lane resume handoff: $expected"
 done
+product_plan_case="$(sed -n '/^  product-plan)/,/^  product-resume-plan)/p' "$LANE")"
+python3 - "$product_plan_case" <<'PY' ||
+import sys
+text=sys.argv[1]
+if text.index("run_in_sandbox") >= text.index("consume_product_seed_authorization"):
+    raise SystemExit(1)
+if text.index("consume_product_seed_authorization") >= text.index('echo "ROOT=$root"'):
+    raise SystemExit(1)
+PY
+  fail "seed authorization is exposed before successful lane planning"
 eval "$(sed -n '/^product_completed_roles()/,/^run_product_internal()/p' \
   "$LANE" | sed '$d')"
 TIMING_ROOT="$TMP/product-timing"
