@@ -86,8 +86,11 @@ checkpoint digest once. A later product plan may import checkpoint records for
 only a subset of its tickets, leaving omitted tickets at the clean source
 `Ready` boundary while retaining their historical spend. Import discards old
 routes, pins and approves the new kit and routes, and reproduces the exact next
-stage before issuing an approval. Reviewer and Narrator are never checkpointed
-and must run under the new kit before `product-export` succeeds.
+stage before issuing an approval. Imported Spec-linter verdicts remain an exact
+prefix of the ticket log; later current-lane verdicts are accepted only with
+matching successful current-lane ledger evidence. Reviewer and Narrator are
+never checkpointed and must run under the new kit before `product-export`
+succeeds.
 
 For sequential protected-base refreshes, keep using the existing committed
 `ticket-refresh/v1` attestation path. It already invalidates the old approval

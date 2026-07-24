@@ -859,11 +859,32 @@ checkpoint_next_stage() {
   fail "Builder checkpoint did not resume at Reviewer"
 [[ "$(checkpoint_next_stage T-992)" == "RUN planner" ]] ||
   fail "ticket omitted from checkpoint did not remain at Planner"
+
+printf '%s\n' 'SPEC-LINT: FAIL — current-lane finding' \
+  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-991.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-991.md
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Record current-lane checkpoint verdict'
+printf '%s\n' \
+  '2026-07-24,00:00:00,T-991,spec-linter,mock,test,1,0.10,0,current-lint,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+[[ "$(checkpoint_next_stage T-991)" == "RUN planner" ]] ||
+  fail "current-lane verdict did not extend the checkpoint prefix"
+
 cp "$CHECKPOINT_IMPORT" "$CHECKPOINT_IMPORT.good"
 sed 's/SPEC-LINT: PASS/SPEC-LINT: FAIL/' \
   "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
-expect_failure "checkpoint spec drift" checkpoint_next_stage T-993
+expect_failure "altered checkpoint spec prefix" checkpoint_next_stage T-993
 cp "$CHECKPOINT_IMPORT.good" "$CHECKPOINT_IMPORT"
+
+printf '%s\n' 'SPEC-LINT: PASS' \
+  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-991.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-991.md
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add unmatched current-lane verdict'
+expect_failure "current-lane verdict without successful run" \
+  checkpoint_next_stage T-991
+
 sed "s/\"import_tree\":\"$CHECKPOINT_SEQ_TREE\"/\"import_tree\":\"$SEED_BASE\"/" \
   "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
 expect_failure "checkpoint head tree drift" checkpoint_next_stage T-991

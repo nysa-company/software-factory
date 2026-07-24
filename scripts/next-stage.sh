@@ -505,7 +505,10 @@ if (not isinstance(roles,list) or not roles or
     raise SystemExit(1)
 text=pathlib.Path(ticket_file).read_text(encoding="utf-8")
 specs=re.findall(r"^SPEC-LINT: (?:PASS|FAIL(?: — .+)?)$",text,re.M)
-if specs != record["spec_verdicts"]: raise SystemExit(1)
+checkpoint_specs=record["spec_verdicts"]
+if (not isinstance(checkpoint_specs,list) or
+    specs[:len(checkpoint_specs)] != checkpoint_specs):
+    raise SystemExit(1)
 print(*(roles.count(role) for role in
         ("planner","spec-linter","test-author","builder")))
 PY
