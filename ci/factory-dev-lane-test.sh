@@ -1000,7 +1000,7 @@ git -C "$SEED_HISTORY" add app/before
 git -C "$SEED_HISTORY" -c user.name='Software Factory' \
   -c user.email=factory@local commit -qm 'T-1: retain earlier lifecycle output'
 printf '%s\n' '{}' >"$SEED_HISTORY/factory/route-plans/T-1.json"
-printf '%s\n' 'Kit-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+printf '\n%s\n' 'Kit-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   >>"$SEED_HISTORY/factory/tickets/T-1.md"
 git -C "$SEED_HISTORY" add factory/route-plans/T-1.json \
   factory/tickets/T-1.md

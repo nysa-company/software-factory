@@ -1114,7 +1114,10 @@ if ticket_path in statuses:
         if ((require_one and len(matches) != 1) or len(matches) > 1 or
             any(not pattern.fullmatch(line) for line in matches)):
             raise SystemExit(1)
-        return [line for line in lines if not line.lower().startswith("kit-sha:")]
+        lines=[line for line in lines if not line.lower().startswith("kit-sha:")]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return lines
     if without_kit(before,False) != without_kit(after,True):
         raise SystemExit(1)
 PY
