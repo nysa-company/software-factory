@@ -3014,7 +3014,7 @@ ROLE_BLOCKED_STAGE="$(FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   "$NEXT_STAGE" --ticket T-643 --workdir "$ROLE_EXIT_WORKTREE" 2>/dev/null || true)"
 if [[ "$ROLE_BLOCKED_STATUS" -eq 12 &&
       "$ROLE_BLOCKED_LOCAL" == "$ROLE_BLOCKED_REMOTE" &&
-      "$ROLE_BLOCKED_STAGE" == "RUN planner" ]] &&
+      "$ROLE_BLOCKED_STAGE" == "RUN builder" ]] &&
    grep -q '^phase=completed$' "${ROLE_BLOCKED_META[0]}" &&
    grep -q '^accounting_state=completed$' "${ROLE_BLOCKED_META[0]}" &&
    grep -q '^exit_status=12$' "${ROLE_BLOCKED_META[0]}" &&
