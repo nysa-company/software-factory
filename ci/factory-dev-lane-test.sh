@@ -520,7 +520,7 @@ sed -n '/^run_product_internal()/,/^}/p' "$LANE" |
   grep -Fq '[[ "$readiness_proven" == 1 ]] || subscription_ready "$root"' ||
   fail "product runtime cannot reuse the trusted resume readiness proof"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
-  grep -Fq 'ensure_product_budget_day "$root"' ||
+  grep -Fq 'ensure_product_budget_day "$root" "$DAILY_CAP_USD"' ||
   fail "fresh product planning does not bind a resumable budget day"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
   grep -Fq 'GLOBAL_DAILY_CAP_USD=%s' ||
@@ -528,13 +528,17 @@ sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
 eval "$(sed -n '/^ensure_product_budget_day()/,/^}/p' "$LANE")"
 BUDGET_DAY_ROOT="$TMP/product-budget-day"
 mkdir -p "$BUDGET_DAY_ROOT/runtime"
-ensure_product_budget_day "$BUDGET_DAY_ROOT" ||
-  fail "fresh product planning could not create its budget day"
+ensure_product_budget_day "$BUDGET_DAY_ROOT" 1400.00 ||
+  fail "fresh product planning could not create its budget envelope"
 [[ "$(cat "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day")" == \
    "$(date -u +%F)" ]] ||
   fail "fresh product planning wrote the wrong budget day"
 [[ "$(stat -f '%Lp' "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day")" == 600 ]] ||
   fail "fresh product budget day is not owner-only"
+[[ "$(cat "$BUDGET_DAY_ROOT/runtime/product-envelope/global.env")" == \
+   "GLOBAL_DAILY_CAP_USD=1400.00" &&
+   "$(stat -f '%Lp' "$BUDGET_DAY_ROOT/runtime/product-envelope/global.env")" == 600 ]] ||
+  fail "fresh product planning did not persist its owner-only global cap"
 printf '%s\n' 2000-01-01 \
   >"$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day"
 chmod 600 "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day"
