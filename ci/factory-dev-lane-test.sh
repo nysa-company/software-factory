@@ -1400,14 +1400,14 @@ ROLE_STATE_TICKET="$ROLE_STATE_ROOT/worktrees/T-1/factory/tickets/T-1.md"
 mkdir -p "$(dirname "$ROLE_STATE_TICKET")"
 printf '%s\n' 'State: Ready' >"$ROLE_STATE_TICKET"
 lane_env() {
-  local ignored_root="$1" command="$2" target="" workdir="" ticket="" state_file
+  local ignored_root="$1" command="$2" target="" workdir="" ticket="" action="" state_file
   shift 2
   [[ "$command" == "$ROOT/scripts/ticket-state.sh" ]] || return 1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --ticket) ticket="$2"; shift 2 ;;
       --workdir) workdir="$2"; shift 2 ;;
-      --action) [[ "$2" == transition ]] || return 1; shift 2 ;;
+      --action) action="$2"; shift 2 ;;
       --state) target="$2"; shift 2 ;;
       *) return 1 ;;
     esac
@@ -1415,6 +1415,13 @@ lane_env() {
   [[ "$workdir" == "$ignored_root/worktrees/$ticket" ]] ||
     return 1
   state_file="$workdir/factory/tickets/$ticket.md"
+  if [[ "$action" == materialize ]]; then
+    grep -qx 'Resume-State: Planning' "$state_file" || return 1
+    sed -i '' 's/^State: Blocked-Escalated$/State: Planning/' "$state_file"
+    printf '%s\n' materialize >>"$ignored_root/transitions"
+    return
+  fi
+  [[ "$action" == transition ]] || return 1
   python3 - "$state_file" "$target" <<'PY'
 import re, sys
 path,target=sys.argv[1:]
@@ -1452,6 +1459,14 @@ if product_prepare_role_state "$ROLE_STATE_ROOT" T-1 spec-linter; then
 fi
 [[ ! -s "$ROLE_STATE_ROOT/transitions" ]] ||
   fail "invalid role state mutated the ticket before refusal"
+printf '%s\n' 'State: Blocked-Escalated' 'Resume-State: Planning' \
+  >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+product_prepare_role_state "$ROLE_STATE_ROOT" T-1 planner ||
+  fail "operator-resolved blocked Planner could not materialize its resume state"
+grep -qx 'State: Planning' "$ROLE_STATE_TICKET" &&
+  [[ "$(cat "$ROLE_STATE_ROOT/transitions")" == materialize ]] ||
+  fail "blocked resume did not reuse the shared operator materialization path"
 eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
 refuse_production_path() { :; }
 die() { return 1; }

@@ -2903,6 +2903,14 @@ if len(matches) != 1 or matches[0] not in {"Ready","Planning","Building","Review
 print(matches[0])
 PY
 )" || return
+  if [[ "$current" == "Blocked-Escalated" && "$target" == "Planning" ]]; then
+    lane_env "$root" "$SOURCE_ROOT/scripts/ticket-state.sh" \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+      --action materialize >/dev/null || return
+    current="$(sed -n 's/^State:[[:space:]]*//p' \
+      "$root/worktrees/$ticket/factory/tickets/$ticket.md")"
+    [[ "$current" == "Planning" ]] || return
+  fi
   while [[ "$current" != "$target" ]]; do
     case "$current:$target" in
       Ready:Planning|Ready:Building)
