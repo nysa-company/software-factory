@@ -661,6 +661,140 @@ if (die() { exit 1; }; select_product_export_tickets T-2,T-2) ||
   fail "product export accepted an unsafe ticket selection"
 fi
 
+export_internal_source="$(sed -n '/^export_product_internal()/,/^cursor_probe_and_pin()/p' \
+  "$LANE" | sed '$d')"
+grep -Fq 'export_dir="${requested_output:-$root/export}"' \
+  <<<"$export_internal_source" ||
+  fail "product export changed its default output compatibility"
+grep -Fq 'exit "$status"'\'' EXIT' \
+  <<<"$export_internal_source" ||
+  fail "product export cleanup does not preserve failure status"
+(
+  require_lane_path() {
+    case "$2" in "$1"/*) ;; *) return 1 ;; esac
+  }
+  refuse_production_path() { :; }
+  physical() { (cd "$1" && pwd -P); }
+  die() { printf 'export fixture failed: %s\n' "$*" >&2; exit 1; }
+  eval "$(sed -n '/^validate_product_export_output()/,/^select_product_export_tickets()/p' \
+    "$LANE" | sed '$d')"
+
+  PATH_ROOT="$TMP/nysa-sf-dev.export-paths"
+  mkdir -m 700 "$PATH_ROOT"
+  mkdir -m 700 "$PATH_ROOT/exports" "$PATH_ROOT/runtime"
+  validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/export"
+  validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/exports/first"
+  if (validate_product_export_output "$PATH_ROOT" "$TMP/outside-export") ||
+     (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT") ||
+     (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/runtime/export"); then
+    fail "product export accepted an outside, root, or sensitive output"
+  fi
+  mkdir "$PATH_ROOT/exports/existing"
+  if (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/exports/existing"); then
+    fail "product export accepted an existing output"
+  fi
+  ln -s missing "$PATH_ROOT/exports/symlink"
+  if (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/exports/symlink"); then
+    fail "product export accepted a symlink output"
+  fi
+  mkdir -m 700 "$PATH_ROOT/physical-parent"
+  ln -s physical-parent "$PATH_ROOT/linked-parent"
+  if (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/linked-parent/output"); then
+    fail "product export accepted a symlinked parent"
+  fi
+)
+(
+  die() { printf 'sequential export fixture failed: %s\n' "$*" >&2; exit 1; }
+  require_lane_mode() { :; }
+  validate_runtime_paths() { :; }
+  require_lane_path() {
+    case "$2" in "$1"/*) ;; *) return 1 ;; esac
+  }
+  refuse_production_path() { :; }
+  physical() { (cd "$1" && pwd -P); }
+  load_product_tickets() { PRODUCT_TICKETS=(T-1 T-2); }
+  product_export_roles_complete() { :; }
+  product_export_patch() {
+    printf 'patch for %s\n' "$2" >"$5"
+    git -C "$1/worktrees/$2" rev-parse HEAD
+  }
+  product_export_mbox() { printf 'mbox for %s\n' "$2" >"$5"; }
+  eval "$(sed -n '/^validate_product_export_output()/,/^select_product_export_tickets()/p' \
+    "$LANE" | sed '$d')"
+  eval "$(sed -n '/^select_product_export_tickets()/,/^}/p' "$LANE")"
+  eval "$export_internal_source"
+
+  SEQUENTIAL_ROOT="$TMP/nysa-sf-dev.sequential-export"
+  mkdir -m 700 "$SEQUENTIAL_ROOT"
+  mkdir -p "$SEQUENTIAL_ROOT/product/factory/runs" \
+    "$SEQUENTIAL_ROOT/worktrees" "$SEQUENTIAL_ROOT/runtime" \
+    "$SEQUENTIAL_ROOT/exports"
+  chmod 700 "$SEQUENTIAL_ROOT/exports"
+  git init -q "$SEQUENTIAL_ROOT/kit"
+  git -C "$SEQUENTIAL_ROOT/kit" config user.name Test
+  git -C "$SEQUENTIAL_ROOT/kit" config user.email test@local
+  printf 'kit\n' >"$SEQUENTIAL_ROOT/kit/file"
+  git -C "$SEQUENTIAL_ROOT/kit" add file
+  git -C "$SEQUENTIAL_ROOT/kit" commit -qm kit
+  git init -q --bare "$SEQUENTIAL_ROOT/origin.git"
+  cat >"$SEQUENTIAL_ROOT/kit/scripts-provider-coordinator.py" <<'PY'
+import json
+print(json.dumps({"active_reserve_micro_usd":0,"counts":{}}))
+PY
+  mkdir -p "$SEQUENTIAL_ROOT/kit/scripts"
+  mv "$SEQUENTIAL_ROOT/kit/scripts-provider-coordinator.py" \
+    "$SEQUENTIAL_ROOT/kit/scripts/provider-coordinator.py"
+  for ticket in T-1 T-2; do
+    work="$SEQUENTIAL_ROOT/worktrees/$ticket"
+    git init -q "$work"
+    git -C "$work" config user.name Test
+    git -C "$work" config user.email test@local
+    mkdir -p "$work/app" "$work/factory/tickets" "$work/factory/route-plans"
+    printf 'base\n' >"$work/app/value"
+    git -C "$work" add .
+    git -C "$work" commit -qm base
+    printf '%s\n' "$ticket" >"$work/app/value"
+    printf '%s\n' 'State: Review' 'reviewer round 1: APPROVE' \
+      >"$work/factory/tickets/$ticket.md"
+    printf '{}\n' >"$work/factory/route-plans/$ticket.json"
+    git -C "$work" add .
+    git -C "$work" commit -qm reviewed
+    git -C "$work" push -q "$SEQUENTIAL_ROOT/origin.git" \
+      "HEAD:refs/heads/ticket/$ticket"
+  done
+  python3 - "$SEQUENTIAL_ROOT/runtime/product-source.json" <<'PY'
+import json, sys
+json.dump({"base_sha":"0"*40,"base_tree":"1"*40},open(sys.argv[1],"w"))
+PY
+
+  first="$(export_product_internal "$SEQUENTIAL_ROOT" T-1)"
+  [[ "$first" == *"EXPORT_ROOT=$SEQUENTIAL_ROOT/export"* &&
+     -f "$SEQUENTIAL_ROOT/export/manifest.json" ]] ||
+    fail "default product export output is incompatible"
+  first_digest="$(shasum -a 256 "$SEQUENTIAL_ROOT/export/manifest.json")"
+  second="$(export_product_internal "$SEQUENTIAL_ROOT" T-2 \
+    "$SEQUENTIAL_ROOT/exports/second")"
+  [[ "$second" == *"EXPORT_ROOT=$SEQUENTIAL_ROOT/exports/second"* &&
+     -f "$SEQUENTIAL_ROOT/exports/second/manifest.json" &&
+     "$(shasum -a 256 "$SEQUENTIAL_ROOT/export/manifest.json")" == \
+       "$first_digest" ]] ||
+    fail "sequential sibling export changed the first output"
+  export_product_internal "$SEQUENTIAL_ROOT" T-1 \
+    "$SEQUENTIAL_ROOT/exports/overlap" >/dev/null ||
+    fail "overlapping ticket selection was not output-independent"
+  [[ "$(shasum -a 256 "$SEQUENTIAL_ROOT/export/T-1.patch" | awk '{print $1}')" == \
+     "$(shasum -a 256 "$SEQUENTIAL_ROOT/exports/overlap/T-1.patch" | awk '{print $1}')" ]] ||
+    fail "overlapping ticket export changed the artifact"
+
+  product_export_patch() { return 1; }
+  if (export_product_internal "$SEQUENTIAL_ROOT" T-2 \
+      "$SEQUENTIAL_ROOT/exports/failed" >/dev/null 2>&1); then
+    fail "failed product export unexpectedly succeeded"
+  fi
+  [[ ! -e "$SEQUENTIAL_ROOT/exports/failed" ]] ||
+    fail "failed product export left its claimed output"
+)
+
 VERDICT="$TMP/reviewer.out"
 printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' >"$VERDICT"
 [[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter cursor-anthropic --input "$VERDICT")" == APPROVE ]] ||

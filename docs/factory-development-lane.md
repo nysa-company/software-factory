@@ -166,6 +166,11 @@ change. Refresh and reverify the resulting branch against current protected
 main. When successful siblings finish in different retained lanes,
 `product-export --tickets T-NNN,...` exports only the named completed subset
 while applying the same role-evidence and Reviewer checks.
+The default output remains the new `export/` directory at the lane root. After
+that target is consumed, a later resumed sibling may use `--output` with a
+different new owner-only directory strictly inside the lane root. Sensitive
+lane subtrees, symlinks, existing targets, and outside paths are refused; a
+failed export removes only the output claim it created.
 
 Reviewer reconciliation uses the invoking trusted controller after validating
 the retained lane pin. For Cursor streams, one successful terminal result may

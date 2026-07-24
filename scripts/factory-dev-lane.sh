@@ -42,7 +42,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json> --seed-checkpoint <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
-       factory-dev-lane.sh product-export --root <absolute-lane-root> [--tickets <T-NNN,...>]
+       factory-dev-lane.sh product-export --root <absolute-lane-root> [--tickets <T-NNN,...>] [--output <absolute-new-lane-local-directory>]
        factory-dev-lane.sh product-checkpoint-export --root <absolute-lane-root> --tickets <T-NNN,...> --output <absolute-new-directory>
        factory-dev-lane.sh clean --root <absolute-lane-root>
 EOF
@@ -3144,6 +3144,25 @@ product_export_mbox() {
   mv -f "$temporary" "$output" || { rm -f "$temporary"; return 1; }
 }
 
+validate_product_export_output() {
+  local root="$1" output="$2" parent
+  [[ "$output" == "$root"/* && ! -e "$output" && ! -L "$output" ]] ||
+    die "product export output must be a new strict child of the lane root"
+  require_lane_path "$root" "$output"
+  case "$output" in
+    "$root/kit"|"$root/kit"/*|"$root/product"|"$root/product"/*|\
+    "$root/worktrees"|"$root/worktrees"/*|"$root/runtime"|"$root/runtime"/*|\
+    "$root/session"|"$root/session"/*|"$root/session-home"|"$root/session-home"/*|\
+    "$root/home"|"$root/home"/*|"$root/tmp"|"$root/tmp"/*|\
+    "$root/credentials"|"$root/credentials"/*)
+      die "product export output overlaps a sensitive lane path" ;;
+  esac
+  parent="$(dirname "$output")"
+  [[ -d "$parent" && ! -L "$parent" && "$(physical "$parent")" == "$parent" &&
+     "$(stat -f '%Su:%Lp' "$parent")" == "$(id -un):700" ]] ||
+    die "product export output parent must be an owner-only physical directory"
+}
+
 select_product_export_tickets() {
   local selected_csv="$1"
   local -a selected
@@ -3405,7 +3424,8 @@ PY
 }
 
 export_product_internal() {
-  local root="$1" selected_csv="${2:-}" ticket base head branch export_dir reviewed
+  local root="$1" selected_csv="${2:-}" requested_output="${3:-}"
+  local ticket base head branch export_dir reviewed cleanup=1
   require_lane_mode "$root" product
   load_product_tickets "$root"
   select_product_export_tickets "$selected_csv"
@@ -3426,9 +3446,12 @@ assert all(name == "terminal" for name in value.get("counts", {})), value
     die "product active-run claims have not drained"
   base="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base_sha"])' \
     "$root/runtime/product-source.json")"
-  export_dir="$root/export"
-  [[ ! -e "$export_dir" ]] || die "product export already exists"
-  mkdir -m 700 "$export_dir"
+  export_dir="${requested_output:-$root/export}"
+  validate_product_export_output "$root" "$export_dir"
+  mkdir -m 700 "$export_dir" ||
+    die "product export output could not be claimed"
+  trap 'status=$?; [[ "$cleanup" -eq 0 ]] || rm -rf -- "$export_dir"; exit "$status"' EXIT
+  trap '[[ "$cleanup" -eq 0 ]] || rm -rf -- "$export_dir"' RETURN
   for ticket in "${PRODUCT_TICKETS[@]}"; do
     branch="ticket/$ticket"; head="$(git -C "$root/worktrees/$ticket" rev-parse HEAD)"
     [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] ||
@@ -3450,12 +3473,12 @@ assert all(name == "terminal" for name in value.get("counts", {})), value
     printf '%s\n' "$reviewed" >"$export_dir/$ticket.reviewed"
   done
   python3 - "$root/runtime/product-source.json" "$export_dir/manifest.json" \
-    "$root" "${PRODUCT_TICKETS[@]}" <<'PY'
+    "$root" "$export_dir" "${PRODUCT_TICKETS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
-source_path, out_path, root, *tickets=sys.argv[1:]
+source_path, out_path, root, export_dir, *tickets=sys.argv[1:]
 source=json.load(open(source_path, encoding="utf-8")); records=[]
 for ticket in tickets:
-    work=pathlib.Path(root,"worktrees",ticket); export=pathlib.Path(root,"export")
+    work=pathlib.Path(root,"worktrees",ticket); export=pathlib.Path(export_dir)
     head=subprocess.check_output(["git","-C",str(work),"rev-parse","HEAD"],text=True).strip()
     tree=subprocess.check_output(["git","-C",str(work),"rev-parse","HEAD^{tree}"],text=True).strip()
     route=work/"factory"/"route-plans"/(ticket+".json")
@@ -3478,6 +3501,8 @@ pathlib.Path(out_path).write_text(json.dumps(value,sort_keys=True,separators=(",
 os.chmod(out_path,0o600)
 PY
   chmod 600 "$export_dir/"*
+  cleanup=0
+  trap - EXIT RETURN
   echo "EXPORT_ROOT=$export_dir"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
 }
@@ -3854,22 +3879,21 @@ PY
     fi
     ;;
   product-export)
-    root=""; ticket_csv=""
+    root=""; ticket_csv=""; output=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --root) root="${2:-}"; shift 2 ;;
         --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        --output) output="${2:-}"; shift 2 ;;
         *) usage ;;
       esac
     done
     [[ -n "$root" ]] || usage
     root="$(validate_lane "$root")"
-    if [[ -n "$ticket_csv" ]]; then
-      run_in_sandbox "$root" mock __product-export --root "$root" \
-        --tickets "$ticket_csv"
-    else
-      run_in_sandbox "$root" mock __product-export --root "$root"
-    fi
+    args=(__product-export --root "$root")
+    [[ -z "$ticket_csv" ]] || args+=(--tickets "$ticket_csv")
+    [[ -z "$output" ]] || args+=(--output "$output")
+    run_in_sandbox "$root" mock "${args[@]}"
     ;;
   product-checkpoint-export)
     root=""; ticket_csv=""; output=""
@@ -3932,10 +3956,16 @@ PY
     ;;
   __product-export)
     [[ "${1:-}" == --root ]] || usage
-    root="$(validate_lane "${2:-}")"; shift 2; ticket_csv=""
-    if [[ "${1:-}" == --tickets ]]; then ticket_csv="${2:-}"; shift 2; fi
+    root="$(validate_lane "${2:-}")"; shift 2; ticket_csv=""; output=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        --output) output="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
     [[ $# -eq 0 ]] || usage
-    export_product_internal "$root" "$ticket_csv"
+    export_product_internal "$root" "$ticket_csv" "$output"
     ;;
   *) usage ;;
 esac
