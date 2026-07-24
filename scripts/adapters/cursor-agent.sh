@@ -97,33 +97,52 @@ Cursor CLI control: stay in the default execution mode. Do not switch to Plan or
 fi
 
 NORMALIZED="$(mktemp "${TMPDIR:-/tmp}/factory-cursor-metrics.XXXXXX")"
+RAW_STREAM="$(mktemp "${TMPDIR:-/tmp}/factory-cursor-stream.XXXXXX")"
+rm -f "$RAW_STREAM"
+mkfifo "$RAW_STREAM"
+CURSOR_PRODUCER_PID=""
 cleanup_cursor() {
-  rm -f "$NORMALIZED"
+  if [[ -n "$CURSOR_PRODUCER_PID" ]] &&
+     kill -0 "$CURSOR_PRODUCER_PID" 2>/dev/null; then
+    kill -TERM "$CURSOR_PRODUCER_PID" 2>/dev/null || true
+    wait "$CURSOR_PRODUCER_PID" 2>/dev/null || true
+  fi
+  rm -f "$NORMALIZED" "$RAW_STREAM"
 }
 trap cleanup_cursor EXIT
 
 set +e
 (
-  cd "$WORKDIR" &&
-    CURSOR_ARGS=(--print --output-format stream-json \
-      --workspace "$WORKDIR" --trust --model "$MODEL") &&
-    if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
-      CURSOR_ARGS=(--mode ask "${CURSOR_ARGS[@]}")
-    else
-      CURSOR_ARGS=(--force "${CURSOR_ARGS[@]}")
-    fi &&
-    if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
-      CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
-    fi &&
-    HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
-      "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
-) 2>&1 | python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \
-  "$NORMALIZED" "$MODEL" "$EXPECTED_REPORTED_MODEL" "$WORKDIR" "$MAX_TURNS"
-PIPE_RESULT="${PIPESTATUS[*]}"
-STATUS="${PIPE_RESULT%% *}"
-STREAM_STATUS="${PIPE_RESULT##* }"
+  cd "$WORKDIR" || exit
+  CURSOR_ARGS=(--print --output-format stream-json \
+    --workspace "$WORKDIR" --trust --model "$MODEL")
+  if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
+    CURSOR_ARGS=(--mode ask "${CURSOR_ARGS[@]}")
+  else
+    CURSOR_ARGS=(--force "${CURSOR_ARGS[@]}")
+  fi
+  if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+    CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
+  fi
+  exec env HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
+    "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
+) >"$RAW_STREAM" 2>&1 &
+CURSOR_PRODUCER_PID="$!"
+python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \
+  "$NORMALIZED" "$MODEL" "$EXPECTED_REPORTED_MODEL" "$WORKDIR" "$MAX_TURNS" \
+  "${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}" <"$RAW_STREAM"
+STREAM_STATUS="$?"
+if [[ "$STREAM_STATUS" == 15 ]] &&
+   kill -0 "$CURSOR_PRODUCER_PID" 2>/dev/null; then
+  kill -TERM "$CURSOR_PRODUCER_PID" 2>/dev/null || true
+fi
+wait "$CURSOR_PRODUCER_PID"
+STATUS="$?"
+CURSOR_PRODUCER_PID=""
 set -e
-if [[ "$STREAM_STATUS" != "0" && "$STATUS" == "0" ]]; then
+if [[ "$STREAM_STATUS" == 15 ]]; then
+  STATUS=15
+elif [[ "$STREAM_STATUS" != "0" && "$STATUS" == "0" ]]; then
   echo "Cursor output validation/redaction failed" >&2
   STATUS=9
 fi
