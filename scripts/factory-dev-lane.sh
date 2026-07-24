@@ -1867,6 +1867,33 @@ product_resume_stage() {
   printf '%s\n' "$stage"
 }
 
+product_resume_envelope_binding() {
+  local root="$1" ticket="$2"
+  python3 - "$root" "$ticket" <<'PY'
+import hashlib, os, stat, sys
+root, ticket=sys.argv[1:]
+override=os.path.join(root,"runtime","product-envelope",ticket+".env")
+fallback=os.path.join(root,"runtime","product-envelope","global.env")
+path=override if os.path.lexists(override) else fallback
+try:
+    before=os.lstat(path)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+        stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1):
+        raise ValueError
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    with os.fdopen(fd,"rb") as stream:
+        after=os.fstat(stream.fileno())
+        if (before.st_dev,before.st_ino,before.st_mode,before.st_nlink) != (
+            after.st_dev,after.st_ino,after.st_mode,after.st_nlink
+        ): raise ValueError
+        digest=hashlib.sha256(stream.read()).hexdigest()
+except (AttributeError, OSError, ValueError):
+    raise SystemExit(1)
+print("envelope_source="+os.path.relpath(path,root))
+print("envelope_sha256="+digest)
+PY
+}
+
 product_resume_basis_hash() {
   local root="$1"; shift
   local ticket stage status evidence
@@ -1927,10 +1954,10 @@ PY
       else
         printf 'selected=0\n'
       fi
-      printf 'ticket_file=%s\nroute_plan=%s\nenvelope=%s\n' \
+      printf 'ticket_file=%s\nroute_plan=%s\n' \
         "$(sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md")" \
-        "$(sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json")" \
-        "$(sha256_file "$root/runtime/product-envelope/$ticket.env")"
+        "$(sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json")"
+      product_resume_envelope_binding "$root" "$ticket" || return 1
     done
   } | sha256_text
 }

@@ -385,7 +385,12 @@ PY
       "HEAD:refs/heads/ticket/$ticket"
     printf 'PER_TICKET_BUDGET_USD=100.00\n' \
       >"$RESUME_ROOT/runtime/product-envelope/$ticket.env"
+    chmod 600 "$RESUME_ROOT/runtime/product-envelope/$ticket.env"
   done
+  printf 'GLOBAL_DAILY_CAP_USD=500.00\n' \
+    >"$RESUME_ROOT/runtime/product-envelope/global.env"
+  chmod 600 "$RESUME_ROOT/runtime/product-envelope/global.env"
+  rm "$RESUME_ROOT/runtime/product-envelope/T-048.env"
   STAGE_TRACE="$RESUME_ROOT/stages"
   : >"$STAGE_TRACE"
   product_resume_stage() {
@@ -397,6 +402,14 @@ PY
     esac
   }
 
+  RESUME_STDERR="$RESUME_ROOT/resume.stderr"
+  fallback_binding="$(
+    product_resume_envelope_binding "$RESUME_ROOT" T-048 2>"$RESUME_STDERR"
+  )"
+  [[ "$fallback_binding" == \
+    $'envelope_source=runtime/product-envelope/global.env\nenvelope_sha256='* &&
+     ! -s "$RESUME_STDERR" ]] ||
+    fail "global resume-envelope fallback was not bound silently"
   first="$(product_resume_plan "$RESUME_ROOT" T-048)"
   [[ "$first" == *'TICKETS=T-048'* &&
      -s "$STAGE_TRACE" &&
@@ -410,6 +423,16 @@ assert v["resume_original_tickets"] == ["T-046","T-047","T-048"]
 PY
     fail "targeted resume lost its original ticket universe"
 
+  cp "$RESUME_ROOT/runtime/product-envelope/global.env" \
+    "$RESUME_ROOT/runtime/product-envelope/global.saved"
+  printf 'GLOBAL_DAILY_CAP_USD=499.00\n' \
+    >"$RESUME_ROOT/runtime/product-envelope/global.env"
+  if validate_product_resume_basis "$RESUME_ROOT"; then
+    fail "targeted resume accepted effective global envelope drift"
+  fi
+  mv "$RESUME_ROOT/runtime/product-envelope/global.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/global.env"
+
   rm "$RESUME_ROOT/runtime/product-approval"
   : >"$STAGE_TRACE"
   second="$(product_resume_plan "$RESUME_ROOT" T-047)"
@@ -417,6 +440,43 @@ PY
      -s "$STAGE_TRACE" &&
      -z "$(grep -Fvx T-047 "$STAGE_TRACE")" ]] ||
     fail "subsequent targeted resume could not select another original sibling"
+  override_binding="$(product_resume_envelope_binding "$RESUME_ROOT" T-047)"
+  [[ "$override_binding" == \
+    $'envelope_source=runtime/product-envelope/T-047.env\nenvelope_sha256='* ]] ||
+    fail "targeted resume did not bind the ticket envelope override"
+
+  cp "$RESUME_ROOT/runtime/product-envelope/T-047.env" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.saved"
+  printf 'PER_TICKET_BUDGET_USD=99.00\n' \
+    >"$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  if validate_product_resume_basis "$RESUME_ROOT"; then
+    fail "targeted resume accepted ticket envelope drift"
+  fi
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.env" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.saved"
+  ln -s global.env "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  : >"$RESUME_STDERR"
+  if product_resume_envelope_binding "$RESUME_ROOT" T-047 \
+      >/dev/null 2>"$RESUME_STDERR"; then
+    fail "targeted resume accepted an unsafe ticket envelope"
+  fi
+  [[ ! -s "$RESUME_STDERR" ]] ||
+    fail "unsafe ticket envelope emitted stderr"
+  rm "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.env" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.saved"
+  mkdir "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  if product_resume_envelope_binding "$RESUME_ROOT" T-047 >/dev/null 2>&1; then
+    fail "targeted resume accepted a nonregular ticket envelope"
+  fi
+  rmdir "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.env"
 
   printf 'excluded drift\n' >>"$RESUME_ROOT/worktrees/T-046/excluded"
   git -C "$RESUME_ROOT/worktrees/T-046" add excluded

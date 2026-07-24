@@ -53,13 +53,15 @@ model-availability miss. After the lane drains it reports the failed ticket set
 and an exact `product-resume-plan` command as the next control step, together
 with the failed stage, completed roles, remaining ticket budget, and retained
 root. That explicit same-lane resume revalidates readiness, evidence, clean
-heads, routes, envelopes, budget day, and the mechanical next stage before
-issuing a new one-use approval. A targeted resume resolves a stage and claims a
-lease only for its selected tickets. Excluded original siblings may remain
+heads, routes, effective envelopes, budget day, and the mechanical next stage
+before issuing a new one-use approval. A targeted resume resolves a stage and
+claims a lease only for its selected tickets. Excluded original siblings may remain
 unfinished or blocked; their clean heads, local origins, trees, ticket files,
-route plans, envelopes, and runtime evidence remain hash-bound, so they cannot
-drift and a later resume can select a different subset from the original
-ticket set. Every batch also writes an owner-only timing report with
+route plans, and runtime evidence remain hash-bound, so they cannot drift and a
+later resume can select a different subset from the original ticket set. An
+effective envelope is the owner-only regular ticket override when present or
+the lane's global envelope otherwise; unsafe overrides refuse planning. Every
+batch also writes an owner-only timing report with
 coordinator admission/GO/submission/terminal timestamps, elapsed time,
 successful-role replay count, and maximum provider overlap.
 
