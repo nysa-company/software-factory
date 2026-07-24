@@ -951,12 +951,12 @@ for item in value["tickets"]:
         raise SystemExit(1)
     roles=[]
     for run in item["roles"]:
-        if set(run) != {"role","run_id","manifest_sha256","output_sha256",
-                       "role_head_before"} or run["role"] not in allowed or
+        if (set(run) != {"role","run_id","manifest_sha256","output_sha256",
+                        "role_head_before"} or run["role"] not in allowed or
             not re.fullmatch(r"[A-Za-z0-9._-]+",run["run_id"]) or
             not sha256(run["manifest_sha256"]) or
             not sha256(run["output_sha256"]) or
-            not sha40(run["role_head_before"]):
+            not sha40(run["role_head_before"])):
             raise SystemExit(1)
         roles.append(run["role"])
     if any(role in {"reviewer","narrator"} for role in roles):
