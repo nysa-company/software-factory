@@ -2903,12 +2903,30 @@ fi
 
 # Successful mutating roles must commit cleanly; the wrapper owns the push.
 setup_role_exit_fixture() {
-  local ticket="$1"
+  local ticket="$1" authorized_role="${2:-planner}"
   ROLE_EXIT_ROOT="$TMP/role-exit-$ticket"
   ROLE_EXIT_WORKTREE="$TMP/role-exit-$ticket-worktree"
   ROLE_EXIT_REMOTE="$TMP/role-exit-$ticket.git"
   write_envelope "$ROLE_EXIT_ROOT"
   write_ticket "$ROLE_EXIT_ROOT" "$ticket"
+  case "$authorized_role" in
+    planner) ;;
+    spec-linter)
+      ledger_row "$ticket" planner >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ;;
+    test-author)
+      ledger_row "$ticket" planner >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ledger_row "$ticket" spec-linter >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      printf 'SPEC-LINT: PASS\n' >>"$ROLE_EXIT_ROOT/factory/tickets/$ticket.md"
+      ;;
+    builder)
+      ledger_row "$ticket" planner >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ledger_row "$ticket" spec-linter >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ledger_row "$ticket" test-author >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      printf 'SPEC-LINT: PASS\n' >>"$ROLE_EXIT_ROOT/factory/tickets/$ticket.md"
+      ;;
+    *) fail "invalid role-exit fixture stage: $authorized_role" ;;
+  esac
   git -C "$ROLE_EXIT_ROOT" add "factory/tickets/$ticket.md"
   git -C "$ROLE_EXIT_ROOT" -c user.name=test -c user.email=test@example.com \
     commit -qm "ticket fixture"
@@ -2977,7 +2995,7 @@ else
 fi
 
 # Contract 1.7 roles may commit a blocker without completing their stage.
-setup_role_exit_fixture T-643
+setup_role_exit_fixture T-643 builder
 ROLE_BLOCKED_STATUS=0
 MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
@@ -3043,7 +3061,7 @@ for escalation_case in malformed duplicate wrong-role; do
       escalation_task=$'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED'
       ;;
   esac
-  setup_role_exit_fixture "$escalation_ticket"
+  setup_role_exit_fixture "$escalation_ticket" "$escalation_role"
   ROLE_BAD_ESCALATION=0
   MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
     FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
@@ -3064,7 +3082,7 @@ for escalation_case in malformed duplicate wrong-role; do
   fi
 done
 
-setup_role_exit_fixture T-648
+setup_role_exit_fixture T-648 builder
 ROLE_LEGACY_COMMIT=0
 MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \

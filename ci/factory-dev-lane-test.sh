@@ -1018,7 +1018,9 @@ git -C "$SEED_HISTORY_ROOT/product" -c user.name='Factory Dev Lane' \
 git -C "$SEED_HISTORY_ROOT/product" worktree add -q -b ticket/T-1 \
   "$SEED_HISTORY_ROOT/worktrees/T-1" HEAD
 git -C "$SEED_HISTORY_ROOT/worktrees/T-1" push -q -u origin ticket/T-1
-eval "$(sed -n '/^seed_product_worktrees()/,/^}/p' "$LANE")"
+eval "$(sed -n \
+  '/^seed_product_worktrees()/,/^write_product_checkpoint_import()/p' \
+  "$LANE" | sed '$d')"
 require_lane_path() { :; }
 die() { exit 1; }
 seed_product_worktrees "$SEED_HISTORY_ROOT" "$TMP/seed-history.bundle" \
