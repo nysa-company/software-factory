@@ -2194,6 +2194,32 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain --untracked-files=all 2>/dev/null || true)"
   ROLE_PROTECTED_AFTER="$(ticket_evidence_snapshot "$TICKET_FILE" 2>/dev/null)" ||
     ROLE_PROTECTED_AFTER="__invalid__"
+  ROLE_DURABLE_ESCALATION_PARSE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    diff --no-ext-diff --unified=0 "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER" -- \
+    "factory/tickets/$TICKET.md" 2>/dev/null | awk \
+    -v contract="$PROVIDER_CONTRACT_VERSION" -v role="$ROLE" '
+      /^\+[^+]/ {
+        line=substr($0, 2)
+        upper=toupper(line)
+        sub(/^[[:space:]]+/, "", upper)
+        if (upper ~ /^ROLE-ESCALATE:/) {
+          candidates++
+          if (upper == "ROLE-ESCALATE: CONTRACT-BLOCKED") exact++
+        }
+      }
+      END {
+        if (candidates == 0) print "none"
+        else if (contract == "1.7.0" &&
+                 (role == "planner" || role == "test-author" || role == "builder") &&
+                 candidates == 1 && exact == 1) print "contract-blocked"
+        else print "invalid"
+      }'
+  )" || ROLE_DURABLE_ESCALATION_PARSE=invalid
+  case "$ROLE_DURABLE_ESCALATION_PARSE" in
+    none) ;;
+    contract-blocked) ROLE_ESCALATION_REQUESTED=1 ;;
+    *) ROLE_ESCALATION_INVALID=1 ;;
+  esac
   if [[ "$PROVIDER_STATUS" -eq 0 ]]; then
     if [[ "$ROLE_ESCALATION_INVALID" -eq 1 ]]; then
       ROLE_EXIT_STATUS="role_exit_invalid_escalation"

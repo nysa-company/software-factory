@@ -3074,6 +3074,79 @@ else
     "status=$ROLE_BLOCKED_STATUS next=$ROLE_BLOCKED_STAGE"
 fi
 
+install_contract_blocker_hook() {
+  local ticket="$1" marker="$2" count="${3:-1}" hook
+  hook="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse --git-path hooks/pre-commit)"
+  mkdir -p "$(dirname "$hook")"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
+    printf 'for _ in $(seq 1 %s); do printf "%%s\\\\n" %q >> %q; done\n' \
+      "$count" "$marker" "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+    printf 'git -C %q add %q\n' "$ROLE_EXIT_WORKTREE" "factory/tickets/$ticket.md"
+  } >"$hook"
+  chmod +x "$hook"
+}
+
+# The committed ticket marker is the durable fallback when a provider omits
+# the matching terminal-response marker.
+setup_role_exit_fixture T-651 test-author
+install_contract_blocker_hook T-651 'ROLE-ESCALATE: CONTRACT-BLOCKED'
+ROLE_DURABLE_BLOCKED=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CONTRACT_VERSION=1.7.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role test-author --ticket T-651 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "durable blocker" >"$TMP/role-durable-contract-blocked.out" 2>&1 ||
+  ROLE_DURABLE_BLOCKED=$?
+ROLE_DURABLE_META=("$ROLE_EXIT_ROOT"/factory/runs/*.meta)
+if [[ "$ROLE_DURABLE_BLOCKED" -eq 12 ]] &&
+   grep -q '^role_exit=role_exit_contract_blocked$' "${ROLE_DURABLE_META[0]}" &&
+   git --git-dir="$ROLE_EXIT_REMOTE" show \
+     refs/heads/ticket/T-651:factory/tickets/T-651.md |
+     grep -Fxq 'ROLE-ESCALATE: CONTRACT-BLOCKED'; then
+  pass "durable ticket marker stops a contract-blocked role"
+else
+  fail "durable ticket marker did not stop the role" \
+    "status=$ROLE_DURABLE_BLOCKED"
+fi
+
+for durable_case in duplicate wrong-role; do
+  case "$durable_case" in
+    duplicate)
+      durable_ticket=T-652
+      durable_role=builder
+      durable_count=2
+      ;;
+    wrong-role)
+      durable_ticket=T-653
+      durable_role=spec-linter
+      durable_count=1
+      ;;
+  esac
+  setup_role_exit_fixture "$durable_ticket" "$durable_role"
+  install_contract_blocker_hook "$durable_ticket" \
+    'ROLE-ESCALATE: CONTRACT-BLOCKED' "$durable_count"
+  ROLE_BAD_DURABLE=0
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+    FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+    FACTORY_CONTRACT_VERSION=1.7.0 \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+    FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role "$durable_role" --ticket "$durable_ticket" \
+      --workdir "$ROLE_EXIT_WORKTREE" -- "invalid durable blocker" \
+    >"$TMP/role-durable-$durable_case.out" 2>&1 || ROLE_BAD_DURABLE=$?
+  if [[ "$ROLE_BAD_DURABLE" -eq 11 ]] &&
+     grep -q 'role_exit_invalid_escalation' \
+       "$TMP/role-durable-$durable_case.out"; then
+    pass "durable contract blocker refuses $durable_case marker"
+  else
+    fail "durable contract blocker accepted $durable_case marker" \
+      "status=$ROLE_BAD_DURABLE"
+  fi
+done
+
 setup_role_exit_fixture T-644
 ROLE_BLOCKED_NO_COMMIT=0
 FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
