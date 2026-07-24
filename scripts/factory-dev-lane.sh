@@ -2190,7 +2190,7 @@ for path in runs.glob("*.meta"):
         key, separator, value=line.partition("=")
         if separator: values[key]=value
     if (values.get("ticket")==ticket and values.get("role")=="reviewer" and
-        values.get("phase")=="terminal" and values.get("exit_status")=="0"):
+        values.get("phase")=="completed" and values.get("exit_status")=="0"):
         raise SystemExit(0)
 raise SystemExit(1)
 PY
@@ -2235,7 +2235,7 @@ for path in runs.glob("*.meta"):
     for line in path.read_text(encoding="utf-8").splitlines():
         key, separator, value=line.partition("=")
         if separator: values[key]=value
-    if (values.get("ticket")==ticket and values.get("phase")=="terminal" and
+    if (values.get("ticket")==ticket and values.get("phase")=="completed" and
         values.get("exit_status")=="0"):
         completed.add(values.get("role"))
 print(",".join(role for role in order if role in completed) or "none")
@@ -2294,7 +2294,7 @@ for path in runs.glob("*.meta"):
     for line in path.read_text(encoding="utf-8").splitlines():
         key, separator, value=line.partition("=")
         if separator: values[key]=value
-    if values.get("phase")=="terminal" and values.get("exit_status")=="0":
+    if values.get("phase")=="completed" and values.get("exit_status")=="0":
         key=(values.get("ticket"),values.get("role"))
         successful[key]=successful.get(key,0)+1
 report={

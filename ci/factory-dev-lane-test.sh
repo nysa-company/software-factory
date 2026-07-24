@@ -439,7 +439,7 @@ product_reconcile_reviewer "$RECONCILE_GUARD" T-1 ||
   fail "scheduler rejected a ticket before its first Reviewer output"
 [[ ! -e "$RECONCILE_GUARD/calls" ]] ||
   fail "scheduler reconciled before a successful Reviewer output existed"
-printf '%s\n' ticket=T-1 role=reviewer phase=terminal exit_status=0 \
+printf '%s\n' ticket=T-1 role=reviewer phase=completed exit_status=0 \
   >"$RECONCILE_GUARD/product/factory/runs/reviewer.meta"
 product_reconcile_reviewer "$RECONCILE_GUARD" T-1 ||
   fail "scheduler did not reconcile a successful Reviewer output"
@@ -504,7 +504,7 @@ chmod +x "$TIMING_ROOT/kit/scripts/provider-coordinator.py"
 printf '%s\n' 'PER_TICKET_BUDGET_USD=100.00' \
   >"$TIMING_ROOT/product/factory/ENVELOPE.env"
 for timing_run in one two; do
-  printf '%s\n' phase=terminal ticket=T-1 role=planner exit_status=0 \
+  printf '%s\n' phase=completed ticket=T-1 role=planner exit_status=0 \
     >"$TIMING_ROOT/product/factory/runs/$timing_run.meta"
 done
 [[ "$(product_completed_roles "$TIMING_ROOT" T-1)" == planner ]] ||
