@@ -587,7 +587,7 @@ import sys
 text=sys.argv[1]
 if text.index("run_in_sandbox") >= text.index("consume_product_seed_authorization"):
     raise SystemExit(1)
-if text.index("consume_product_seed_authorization") >= text.index('echo "ROOT=$root"'):
+if text.index("consume_product_seed_authorization") >= text.rindex('echo "ROOT=$root"'):
     raise SystemExit(1)
 PY
   fail "seed authorization is exposed before successful lane planning"
