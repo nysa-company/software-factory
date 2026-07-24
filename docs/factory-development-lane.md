@@ -113,6 +113,8 @@ a retained contract cannot bind itself to either its old or current lane.
 Checkpoint boundaries use the invoking trusted controller's sentinel after
 the retained lane's exact kit pin is validated, so an older kit need not
 contain a checker introduced by the correcting controller.
+The scan begins at the recorded lane-control commit, excluding Factory-owned
+setup while still checking every later role commit.
 Targeted checkpoint records may cover a subset of the original lane, while
 their charge map keeps every original ticket so cumulative accounting and
 lineage cannot forget excluded spend. Repeated chaining takes that full key

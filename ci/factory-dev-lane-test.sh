@@ -607,6 +607,9 @@ if printf '%s\n' "$checkpoint_export_source" |
    grep -Fq '"$root/kit/scripts/lib/lane-path-sentinel.py"'; then
   fail "checkpoint export still requires the retained kit sentinel"
 fi
+printf '%s\n' "$checkpoint_export_source" |
+  grep -Fq '["lane_control_sha"]' ||
+  fail "checkpoint export does not exclude trusted lane-control output"
 (
   RETAINED="$TMP/retained-pre-sentinel"
   mkdir -p "$RETAINED/runtime" "$RETAINED/worktrees" "$RETAINED/kit/scripts/lib"
@@ -616,6 +619,14 @@ fi
   git -C "$RETAINED/source" -c user.name=Test -c user.email=test@local \
     commit -qm 'Base'
   RETAINED_BASE="$(git -C "$RETAINED/source" rev-parse HEAD)"
+  mkdir -p "$RETAINED/source/factory"
+  printf '%s\n' \
+    'WORKTREES_DIR="/private/tmp/nysa-sf-dev.trusted-control/worktrees"' \
+    >"$RETAINED/source/factory/PROJECT.env"
+  git -C "$RETAINED/source" add factory/PROJECT.env
+  git -C "$RETAINED/source" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Trusted lane control'
+  RETAINED_CONTROL="$(git -C "$RETAINED/source" rev-parse HEAD)"
   git -C "$RETAINED/source" checkout -qb ticket/T-997
   printf '%s\n' retained >>"$RETAINED/source/output.txt"
   git -C "$RETAINED/source" add output.txt
@@ -624,7 +635,8 @@ fi
   git clone -q --bare "$RETAINED/source" "$RETAINED/origin.git"
   git clone -q "$RETAINED/origin.git" "$RETAINED/worktrees/T-997"
   git -C "$RETAINED/worktrees/T-997" checkout -q ticket/T-997
-  printf '{"base_sha":"%s"}\n' "$RETAINED_BASE" \
+  printf '{"base_sha":"%s","lane_control_sha":"%s"}\n' \
+    "$RETAINED_BASE" "$RETAINED_CONTROL" \
     >"$RETAINED/runtime/product-source.json"
   chmod 700 "$RETAINED"
   RETAINED_OUTPUT_PARENT="$TMP/retained-checkpoint-output"

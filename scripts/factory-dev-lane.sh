@@ -3062,7 +3062,7 @@ export_product_checkpoint_internal() {
     die "product checkpoint accounting could not be reduced"
   base="$(python3 - "$root/runtime/product-source.json" <<'PY'
 import json, sys
-print(json.load(open(sys.argv[1],encoding="utf-8"))["base_sha"])
+print(json.load(open(sys.argv[1],encoding="utf-8"))["lane_control_sha"])
 PY
 )" || die "product checkpoint source is invalid"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
