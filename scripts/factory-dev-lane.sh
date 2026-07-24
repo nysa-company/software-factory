@@ -2464,7 +2464,7 @@ assert value["active_reserve_micro_usd"] == 0, value
 }
 
 product_role_run() {
-  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint=""
+  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint="" rc=0
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
@@ -2491,7 +2491,13 @@ PY
     FACTORY_DEV_PROVIDER_WAIT_SECONDS=300 \
     "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
     --prompt-file "$root/kit/roles/$role.md" --workdir "$root/worktrees/$ticket" -- \
-    "$instruction" || return
+    "$instruction" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    if [[ "$rc" -eq 12 ]]; then
+      product_transition_contract_blocked "$root" "$ticket" "$role" || return 11
+    fi
+    return "$rc"
+  fi
   if [[ "$role" == narrator ]]; then
     python3 - "$root/worktrees/$ticket/factory/tickets/$ticket-bundle.md" <<'PY' || return
 import pathlib, re, sys
@@ -2513,6 +2519,44 @@ PY
   elif [[ "$role" == builder ]]; then
     (TICKET="$ticket"; set_review_state "$root") || return
   fi
+}
+
+product_transition_contract_blocked() {
+  local root="$1" ticket="$2" role="$3"
+  python3 - "$root/product/factory/runs" "$ticket" "$role" <<'PY' || return
+import pathlib, stat, sys
+
+runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; role=sys.argv[3]
+candidates=[]
+for path in runs.glob("*.meta"):
+    info=path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit("unsafe role manifest")
+    values={}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value=line.partition("=")
+        if not separator or key in values:
+            raise SystemExit("malformed role manifest")
+        values[key]=value
+    if values.get("ticket") == ticket and values.get("role") == role:
+        candidates.append(values)
+if not candidates:
+    raise SystemExit("contract blocker manifest is missing")
+latest=max(candidates, key=lambda value: (
+    value.get("started_at",""), value.get("run_id","")))
+required={
+    "contract_version":"1.7.0",
+    "phase":"completed",
+    "accounting_state":"completed",
+    "exit_status":"12",
+    "role_exit":"role_exit_contract_blocked",
+}
+if any(latest.get(key) != value for key, value in required.items()):
+    raise SystemExit("contract blocker manifest is invalid")
+PY
+  lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
+    --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+    --action transition --state Blocked-Escalated >/dev/null
 }
 
 product_reconcile_reviewer() {
@@ -2671,7 +2715,8 @@ PY
 run_product_internal() {
   local root="$1" supplied="$2" readiness_proven="${3:-0}"
   local stored day i ticket lease_json stage role account family now
-  local done_count failed_count progress pid rc prior rollback_failed resume_csv
+  local done_count failed_count blocked_count progress pid rc prior
+  local rollback_failed resume_csv blocked_csv
   local batch_started batch_finished completed remaining
   local -a leases pids states renewals roles resume_reasons failed_stages
   require_lane_mode "$root" product
@@ -2715,9 +2760,9 @@ run_product_internal() {
     roles[$i]=""; resume_reasons[$i]=control-boundary-failure
     failed_stages[$i]=control-boundary
   done
-  done_count=0; failed_count=0
+  done_count=0; failed_count=0; blocked_count=0
   while [[ "$done_count" -lt "${#PRODUCT_TICKETS[@]}" &&
-           $((done_count + failed_count)) -lt "${#PRODUCT_TICKETS[@]}" ]]; do
+           $((done_count + failed_count + blocked_count)) -lt "${#PRODUCT_TICKETS[@]}" ]]; do
     progress=0
     for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == running ]] || continue
@@ -2726,6 +2771,8 @@ run_product_internal() {
         rc=0; wait "$pid" || rc=$?
         if [[ "$rc" -eq 0 ]]; then
           states[$i]=idle
+        elif [[ "$rc" -eq 12 ]]; then
+          states[$i]=blocked; blocked_count=$((blocked_count + 1))
         else
           resume_reasons[$i]="$(product_resume_reason \
             "$root/runtime/product-scheduler/${PRODUCT_TICKETS[$i]}-${roles[$i]}.log")"
@@ -2791,7 +2838,7 @@ PY
   done
   for i in "${!PRODUCT_TICKETS[@]}"; do
     [[ "${states[$i]}" != running ]] || wait "${pids[$i]}" || true
-    if [[ "${states[$i]}" == failed ]]; then
+    if [[ "${states[$i]}" == failed || "${states[$i]}" == blocked ]]; then
       subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
         --ticket "${PRODUCT_TICKETS[$i]}" --lease "${leases[$i]}" >/dev/null || true
     fi
@@ -2799,7 +2846,8 @@ PY
   batch_finished="$(date +%s)"
   product_write_timing_report "$root" "$batch_started" "$batch_finished" ||
     die "could not persist product timing evidence"
-  if [[ "$done_count" -ne "${#PRODUCT_TICKETS[@]}" || "$failed_count" -ne 0 ]]; then
+  if [[ "$done_count" -ne "${#PRODUCT_TICKETS[@]}" ||
+        "$failed_count" -ne 0 || "$blocked_count" -ne 0 ]]; then
     resume_csv=""
     for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == failed ]] || continue
@@ -2817,13 +2865,26 @@ PY
       printf 'REMAINING_BUDGET_USD=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
         "$remaining" >&2
     done
-    printf 'STATUS=RESUME-REQUIRED\nRESUME_RECOMMENDED=1\nRESUME_TICKETS=%s\n' \
-      "$resume_csv" >&2
-    printf 'RESUME_NEXT=product-resume-plan\n' >&2
+    if [[ -n "$resume_csv" ]]; then
+      printf 'STATUS=RESUME-REQUIRED\nRESUME_RECOMMENDED=1\nRESUME_TICKETS=%s\n' \
+        "$resume_csv" >&2
+      printf 'RESUME_NEXT=product-resume-plan\n' >&2
+      printf "RESUME_COMMAND=bash '%s/scripts/factory-dev-lane.sh' product-resume-plan --root '%s' --tickets '%s'\n" \
+        "$SOURCE_ROOT" "$root" "$resume_csv" >&2
+    fi
+    blocked_csv=""
+    for i in "${!PRODUCT_TICKETS[@]}"; do
+      [[ "${states[$i]}" == blocked ]] || continue
+      blocked_csv="${blocked_csv:+$blocked_csv,}${PRODUCT_TICKETS[$i]}"
+      printf 'BLOCKED_STAGE=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
+        "${failed_stages[$i]}" >&2
+    done
+    if [[ -n "$blocked_csv" ]]; then
+      printf 'STATUS=BLOCKED-ESCALATED\nBLOCKED_TICKETS=%s\n' \
+        "$blocked_csv" >&2
+    fi
     printf 'RETAINED_ROOT=%s\n' "$root" >&2
-    printf "RESUME_COMMAND=bash '%s/scripts/factory-dev-lane.sh' product-resume-plan --root '%s' --tickets '%s'\n" \
-      "$SOURCE_ROOT" "$root" "$resume_csv" >&2
-    die "one or more product lifecycles failed; successful siblings were retained"
+    die "one or more product lifecycles stopped; successful siblings were retained"
   fi
   subscription_provider_idle || die "product lifecycle left a provider process"
   echo "STATUS=AWAIT-OPERATOR"

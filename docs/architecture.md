@@ -230,6 +230,10 @@ Its trusted ticket-state reconciliation binds a successful Reviewer's
 read-only head and durable output digest, records the canonical verdict and
 explicit repair owner, and commits a rejection's Review-to-Building transition
 in the same host-owned change.
+The development scheduler also authenticates a durable Contract 1.7
+Planner, Test-author, or Builder contract-blocked result before moving only
+that ticket to `Blocked-Escalated`. Its lease is released, sibling lifecycles
+continue, and it is not offered as an ordinary resumable failure.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

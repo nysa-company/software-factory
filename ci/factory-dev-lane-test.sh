@@ -120,7 +120,7 @@ expect_failure "two-ticket source validation" test_env bash "$LANE" product-plan
   --source "$TMP/safe-source" --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --tickets T-1,T-2
 grep -Fq 'product source must be an absolute, non-symlink repository' "$OUT" ||
-  fail "two-ticket development batch was rejected by argument validation"
+  fail "two-ticket source validation returned: $(sed -n '1p' "$OUT")"
 [[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
    "$lane_count_before" ]] ||
   fail "invalid product input created a lane"
@@ -523,6 +523,27 @@ product_reconcile_reviewer "$RECONCILE_GUARD" T-1 ||
   fail "scheduler did not reconcile a successful Reviewer output"
 [[ "$(cat "$RECONCILE_GUARD/calls")" == called ]] ||
   fail "scheduler did not use the shared reconciliation helper exactly once"
+eval "$(sed -n \
+  '/^product_transition_contract_blocked()/,/^product_reconcile_reviewer()/p' \
+  "$LANE" | sed '$d')"
+BLOCKED_ROOT="$TMP/contract-blocked"
+mkdir -p "$BLOCKED_ROOT/product/factory/runs" "$BLOCKED_ROOT/worktrees/T-1"
+printf '%s\n' \
+  'run_id=blocked-run' 'ticket=T-1' 'role=builder' \
+  'contract_version=1.7.0' 'phase=completed' 'accounting_state=completed' \
+  'exit_status=12' 'role_exit=role_exit_contract_blocked' \
+  'started_at=2026-07-23T00:00:00Z' \
+  >"$BLOCKED_ROOT/product/factory/runs/blocked.meta"
+lane_env() { printf '%s\n' "$*" >"$BLOCKED_ROOT/transition"; }
+product_transition_contract_blocked "$BLOCKED_ROOT" T-1 builder ||
+  fail "authenticated contract blocker was not transitioned"
+grep -Fq -- '--action transition --state Blocked-Escalated' \
+  "$BLOCKED_ROOT/transition" ||
+  fail "contract blocker did not use the trusted blocked transition"
+sed -i '' 's/^role_exit=.*/role_exit=ok/' \
+  "$BLOCKED_ROOT/product/factory/runs/blocked.meta"
+expect_failure "forged contract blocker" \
+  product_transition_contract_blocked "$BLOCKED_ROOT" T-1 builder
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
@@ -555,7 +576,8 @@ fi
 for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_RECOMMENDED=1' \
   'RESUME_TICKETS=' 'RESUME_NEXT=product-resume-plan' 'FAILED_STAGE=' \
   'COMPLETED_ROLES=' 'REMAINING_BUDGET_USD=' 'RETAINED_ROOT=' \
-  'RESUME_COMMAND='; do
+  'RESUME_COMMAND=' 'STATUS=BLOCKED-ESCALATED' 'BLOCKED_TICKETS=' \
+  'BLOCKED_STAGE='; do
   grep -Fq "$expected" <<<"$run_product_source" ||
     fail "product failure omitted explicit same-lane resume handoff: $expected"
 done
