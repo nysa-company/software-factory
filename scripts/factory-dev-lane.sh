@@ -2229,6 +2229,10 @@ product_probe_and_plan() {
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
+  source "$root/kit/scripts/lib/plain-config.sh"
+  factory_load_plain_config "$root/product/factory/ENVELOPE.env" envelope \
+    "$FACTORY_ENVELOPE_CONFIG_KEYS" "$FACTORY_ENVELOPE_REQUIRED_KEYS" ||
+    die "product envelope is invalid"
   ensure_product_budget_day "$root" ||
     die "product budget day is missing, stale, or unsafe"
   subscription_ready "$root"
@@ -2241,7 +2245,7 @@ product_probe_and_plan() {
   [[ -n "$cursor_version" && -n "$codex_version" && -n "$claude_version" ]] ||
     die "product subscription CLI version probe was empty"
   cat >"$root/home/.factory/global.env" <<EOF
-$(cat "$root/runtime/product-envelope/global.env" 2>/dev/null || printf '%s\n' 'GLOBAL_DAILY_CAP_USD=500.00')
+$(cat "$root/runtime/product-envelope/global.env" 2>/dev/null || printf 'GLOBAL_DAILY_CAP_USD=%s\n' "$DAILY_CAP_USD")
 FACTORY_CURSOR_FALLBACK_ENABLED=1
 AGENT_CLI_CREDENTIAL_STORE=file
 CURSOR_AGENT_VERSION=$cursor_version

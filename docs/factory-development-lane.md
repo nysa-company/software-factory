@@ -98,6 +98,10 @@ records that they are unavailable and the contract has no UI or visual surface.
 The bundle remains explicitly development-only and not a production
 attestation; that later gate does not block sandbox evidence.
 
+Fresh product lanes derive their lane-local machine-day cap from the validated
+isolated product envelope. A seeded lane retains its stricter cumulative
+accounting override. Neither path reads or changes the host production cap.
+
 ## Isolated product proof and resume
 
 `product-plan` accepts one to four tickets after the dedicated four-call mock and subscription proofs establish the capacity ceiling. A seeded retry may select one to four unfinished tickets, so completed siblings are not rerun. The source must be a clean isolated worktree; the canonical Nysa checkout is refused. The lane clones it into a private product, replaces its remote with a local bare origin, and has no GitHub or Linear route.
