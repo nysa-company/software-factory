@@ -2626,8 +2626,6 @@ PY
       "$root/worktrees/$ticket/factory/tickets/$ticket-bundle.md" || return
   elif [[ "$role" == reviewer ]]; then
     (TICKET="$ticket"; product_reconcile_reviewer "$root" "$ticket") || return
-  elif [[ "$role" == builder ]]; then
-    (TICKET="$ticket"; set_review_state "$root") || return
   fi
 }
 
@@ -2711,6 +2709,44 @@ product_role_for_stage() {
     RUN\ *) printf '%s\n' "${1#RUN }" ;;
     *) return 1 ;;
   esac
+}
+
+product_prepare_role_state() {
+  local root="$1" ticket="$2" role="$3" target current
+  case "$role" in
+    planner|spec-linter) target=Planning ;;
+    test-author|builder) target=Building ;;
+    reviewer|narrator) target=Review ;;
+    *) return 1 ;;
+  esac
+  current="$(python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" <<'PY'
+import re, sys
+matches=re.findall(r"^State:\s*(\S(?:.*\S)?)\s*$",
+                   open(sys.argv[1],encoding="utf-8").read(),re.I|re.M)
+if len(matches) != 1 or matches[0] not in {"Ready","Planning","Building","Review"}:
+    raise SystemExit(1)
+print(matches[0])
+PY
+)" || return
+  while [[ "$current" != "$target" ]]; do
+    case "$current:$target" in
+      Ready:Planning|Ready:Building)
+        current=Planning
+        ;;
+      Planning:Building)
+        current=Building
+        ;;
+      Building:Review)
+        current=Review
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    lane_env "$root" "$SOURCE_ROOT/scripts/ticket-state.sh" \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+      --action transition --state "$current" >/dev/null || return
+  done
 }
 
 product_completed_roles() {
@@ -2924,6 +2960,10 @@ run_product_internal() {
         { states[$i]=failed; failed_count=$((failed_count + 1)); continue; }
       roles[$i]="$role"
       failed_stages[$i]="$role"
+      product_prepare_role_state "$root" "$ticket" "$role" || {
+        failed_stages[$i]=state-transition
+        states[$i]=failed; failed_count=$((failed_count + 1)); continue
+      }
       read -r account family < <(python3 - "$root/worktrees/$ticket/factory/route-plans/$ticket.json" "$role" <<'PY'
 import json, sys
 selection=json.load(open(sys.argv[1]))["resolution"]["selections"][sys.argv[2]]

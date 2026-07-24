@@ -802,8 +802,23 @@ for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no v
     --adapter codex --input "$VERDICT"
 done
 product_role_source="$(sed -n '/^product_role_run()/,/^product_reconcile_reviewer()/p' "$LANE")"
-printf '%s\n' "$product_role_source" | grep -Fq '"$role" == builder' ||
-  fail "product Builder no longer owns the Review-state transition"
+if grep -Fq '"$role" == builder' <<<"$product_role_source" ||
+   grep -Fq 'set_review_state "$root"' <<<"$product_role_source"; then
+  fail "product Builder still owns a bespoke Review-state transition"
+fi
+product_scheduler_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()/p' "$LANE")"
+grep -Fq 'product_prepare_role_state "$root" "$ticket" "$role"' \
+  <<<"$product_scheduler_source" ||
+  fail "development scheduler does not prepare shared role state before launch"
+python3 - "$product_scheduler_source" <<'PY' ||
+import sys
+text=sys.argv[1]
+prepare=text.index('product_prepare_role_state "$root" "$ticket" "$role"')
+launch=text.index('product_role_run "$root" "$ticket"',prepare)
+assert prepare < launch
+assert "failed_stages[$i]=state-transition" in text[prepare:launch]
+PY
+  fail "development role-state refusal is not pre-provider"
 printf '%s\n' "$product_role_source" |
   grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' ||
   fail "development product wait is not the bounded fifteen-minute policy"
@@ -882,11 +897,6 @@ grep -Fq '["lane_control_sha"]' <<<"$checkpoint_export_source" ||
      -s "$RETAINED_OUTPUT_PARENT/checkpoint-1/checkpoint.json" ]] ||
     fail "checkpoint export from a pre-sentinel retained kit failed"
 )
-if [[ "$(printf '%s\n' "$product_role_source" |
-    grep -Fc 'set_review_state "$root"')" != 1 ]]; then
-  fail "product Narrator still owns the late Review-state transition"
-fi
-
 REC="$TMP/reviewer-reconcile"
 mkdir -p "$REC/product/factory/runs" "$REC/worktrees/T-900001/factory/tickets"
 ln -s "$ROOT" "$REC/kit"
@@ -1087,6 +1097,64 @@ fi
 if product_role_for_stage AWAIT-OPERATOR >/dev/null; then
   fail "operator boundary was mapped to a provider role"
 fi
+eval "$(sed -n '/^product_prepare_role_state()/,/^}/p' "$LANE")"
+ROLE_STATE_ROOT="$TMP/role-state-parity"
+ROLE_STATE_TICKET="$ROLE_STATE_ROOT/worktrees/T-1/factory/tickets/T-1.md"
+mkdir -p "$(dirname "$ROLE_STATE_TICKET")"
+printf '%s\n' 'State: Ready' >"$ROLE_STATE_TICKET"
+lane_env() {
+  local ignored_root="$1" command="$2" target="" workdir="" ticket="" state_file
+  shift 2
+  [[ "$command" == "$ROOT/scripts/ticket-state.sh" ]] || return 1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ticket) ticket="$2"; shift 2 ;;
+      --workdir) workdir="$2"; shift 2 ;;
+      --action) [[ "$2" == transition ]] || return 1; shift 2 ;;
+      --state) target="$2"; shift 2 ;;
+      *) return 1 ;;
+    esac
+  done
+  [[ "$workdir" == "$ignored_root/worktrees/$ticket" ]] ||
+    return 1
+  state_file="$workdir/factory/tickets/$ticket.md"
+  python3 - "$state_file" "$target" <<'PY'
+import re, sys
+path,target=sys.argv[1:]
+text=open(path,encoding="utf-8").read()
+current=re.search(r"^State:\s*(.+)$",text,re.M).group(1)
+allowed={("Ready","Planning"),("Planning","Building"),("Building","Review")}
+if (current,target) not in allowed: raise SystemExit(1)
+open(path,"w",encoding="utf-8").write(
+    re.sub(r"^State:\s*.*$",f"State: {target}",text,count=1,flags=re.M))
+PY
+  printf '%s\n' "$target" >>"$ignored_root/transitions"
+}
+role_states=""
+for role in planner spec-linter test-author builder reviewer narrator; do
+  product_prepare_role_state "$ROLE_STATE_ROOT" T-1 "$role" ||
+    fail "development role state preparation rejected $role"
+  state="$(sed -n 's/^State: //p' "$ROLE_STATE_TICKET")"
+  role_states="${role_states:+$role_states }$state"
+done
+[[ "$role_states" == \
+   'Planning Planning Building Building Review Review' ]] ||
+  fail "development and shared role-state sequences diverged: $role_states"
+[[ "$(cat "$ROLE_STATE_ROOT/transitions")" == $'Planning\nBuilding\nReview' ]] ||
+  fail "no-op development stages created redundant state transitions"
+printf '%s\n' 'State: Ready' >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+product_prepare_role_state "$ROLE_STATE_ROOT" T-1 spec-linter ||
+  fail "authenticated Ready checkpoint could not normalize before Spec-linter"
+grep -qx 'State: Planning' "$ROLE_STATE_TICKET" ||
+  fail "Ready checkpoint did not normalize to Planning before Spec-linter"
+printf '%s\n' 'State: Review' >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+if product_prepare_role_state "$ROLE_STATE_ROOT" T-1 spec-linter; then
+  fail "regressive Spec-linter state was accepted"
+fi
+[[ ! -s "$ROLE_STATE_ROOT/transitions" ]] ||
+  fail "invalid role state mutated the ticket before refusal"
 eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
 refuse_production_path() { :; }
 die() { return 1; }
@@ -1302,8 +1370,19 @@ checkpoint_next_stage() {
     bash "$CHECKPOINT_SEQ_REPO/scripts/next-stage.sh" \
       --ticket "$1" --workdir "$CHECKPOINT_SEQ_REPO/conformance"
 }
-[[ "$(checkpoint_next_stage T-991)" == "RUN spec-linter" ]] ||
+AUTH_CHECKPOINT_STAGE="$(checkpoint_next_stage T-991)"
+[[ "$AUTH_CHECKPOINT_STAGE" == "RUN spec-linter" ]] ||
   fail "Planner checkpoint did not resume at Spec-linter"
+mkdir -p "$CHECKPOINT_LANE/worktrees/T-991/factory/tickets"
+cp "$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-991.md" \
+  "$CHECKPOINT_LANE/worktrees/T-991/factory/tickets/T-991.md"
+: >"$CHECKPOINT_LANE/transitions"
+product_prepare_role_state "$CHECKPOINT_LANE" T-991 \
+  "$(product_role_for_stage "$AUTH_CHECKPOINT_STAGE")" ||
+  fail "authenticated Ready checkpoint could not normalize before Spec-linter"
+grep -qx 'State: Planning' \
+  "$CHECKPOINT_LANE/worktrees/T-991/factory/tickets/T-991.md" ||
+  fail "authenticated Ready checkpoint remained outside Planning"
 [[ "$(checkpoint_next_stage T-993)" == "RUN reviewer" ]] ||
   fail "Builder checkpoint did not resume at Reviewer"
 [[ "$(checkpoint_next_stage T-992)" == "RUN planner" ]] ||
@@ -1811,6 +1890,7 @@ subscription_env() {
   [[ "$action" != claim ]] || printf '{"lease_id":"lease-%s"}\n' "$ticket"
 }
 product_reconcile_reviewer() { :; }
+product_prepare_role_state() { :; }
 next_stage() { printf '%s\n' AWAIT-OPERATOR; }
 product_write_timing_report() { :; }
 die() { exit 1; }
