@@ -849,7 +849,7 @@ sed 's/SPEC-LINT: PASS/SPEC-LINT: FAIL/' \
   "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
 expect_failure "checkpoint spec drift" checkpoint_next_stage T-993
 cp "$CHECKPOINT_IMPORT.good" "$CHECKPOINT_IMPORT"
-sed "0,/$CHECKPOINT_SEQ_TREE/s//$SEED_BASE/" \
+sed "s/\"import_tree\":\"$CHECKPOINT_SEQ_TREE\"/\"import_tree\":\"$SEED_BASE\"/" \
   "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
 expect_failure "checkpoint head tree drift" checkpoint_next_stage T-991
 mv "$CHECKPOINT_IMPORT.good" "$CHECKPOINT_IMPORT"
