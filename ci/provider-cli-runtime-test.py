@@ -185,6 +185,80 @@ class ProviderCliRuntimeTest(unittest.TestCase):
             str(claims), str(COORDINATOR), str(self.db),
         ], input=snapshot, text=True, capture_output=True)
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        waiting_attempt = f"1700000000-{os.getpid()}-cli"
+        subprocess.run([
+            sys.executable, str(COORDINATOR), "--db", str(self.db), "prepare",
+            "--operation-id", "waiting-prepare", "--attempt-id", waiting_attempt,
+            "--provider-family", "openai", "--account-route", "codex",
+            "--reserve-micro-usd", "1000000", "--product-id", "product",
+            "--ticket-id", "T-2", "--budget-day", "2026-07-23",
+            "--product-daily-cap-micro-usd", "4000000",
+            "--ticket-cap-micro-usd", "1000000",
+            "--machine-daily-cap-micro-usd", "4000000",
+        ], check=True, capture_output=True, text=True)
+        waiting_claim = claims / "T-2.test-author.lock"
+        waiting_claim.mkdir()
+        (waiting_claim / "owner").write_text(
+            f"pid={os.getpid()}\nprocess_start={start}\n"
+            f"token={'2' * 32}\n"
+        )
+        for state in ("prepared", "reserved"):
+            accepted = subprocess.run([
+                sys.executable, str(INTEGRITY), "check-concurrent", str(runs),
+                str(claims), str(COORDINATOR), str(self.db),
+            ], input=snapshot, text=True, capture_output=True)
+            self.assertEqual(accepted.returncode, 0, (state, accepted.stderr))
+            if state == "prepared":
+                subprocess.run([
+                    sys.executable, str(COORDINATOR), "--db", str(self.db),
+                    "admit", "--operation-id", "waiting-admit",
+                    "--attempt-id", waiting_attempt, "--expected-version", "1",
+                    "--policy", str(self.policy),
+                ], check=True, capture_output=True, text=True)
+        subprocess.run([
+            sys.executable, str(COORDINATOR), "--db", str(self.db), "terminalize",
+            "--operation-id", "waiting-terminal", "--attempt-id", waiting_attempt,
+            "--expected-version", "2", "--result", "cancelled",
+            "--charge-micro-usd", "0",
+        ], check=True, capture_output=True, text=True)
+        rejected_terminal = subprocess.run([
+            sys.executable, str(INTEGRITY), "check-concurrent", str(runs),
+            str(claims), str(COORDINATOR), str(self.db),
+        ], input=snapshot, text=True, capture_output=True)
+        self.assertNotEqual(rejected_terminal.returncode, 0)
+        (waiting_claim / "owner").unlink()
+        waiting_claim.rmdir()
+        wrong_pid_attempt = f"1700000001-{os.getpid() + 1}-cli"
+        subprocess.run([
+            sys.executable, str(COORDINATOR), "--db", str(self.db), "prepare",
+            "--operation-id", "wrong-pid-prepare",
+            "--attempt-id", wrong_pid_attempt, "--provider-family", "openai",
+            "--account-route", "codex", "--reserve-micro-usd", "1000000",
+            "--product-id", "product", "--ticket-id", "T-3",
+            "--budget-day", "2026-07-23",
+            "--product-daily-cap-micro-usd", "4000000",
+            "--ticket-cap-micro-usd", "1000000",
+            "--machine-daily-cap-micro-usd", "4000000",
+        ], check=True, capture_output=True, text=True)
+        wrong_claim = claims / "T-3.builder.lock"
+        wrong_claim.mkdir()
+        (wrong_claim / "owner").write_text(
+            f"pid={os.getpid()}\nprocess_start={start}\n"
+            f"token={'3' * 32}\n"
+        )
+        rejected_pid = subprocess.run([
+            sys.executable, str(INTEGRITY), "check-concurrent", str(runs),
+            str(claims), str(COORDINATOR), str(self.db),
+        ], input=snapshot, text=True, capture_output=True)
+        self.assertNotEqual(rejected_pid.returncode, 0)
+        subprocess.run([
+            sys.executable, str(COORDINATOR), "--db", str(self.db), "terminalize",
+            "--operation-id", "wrong-pid-terminal",
+            "--attempt-id", wrong_pid_attempt, "--expected-version", "1",
+            "--result", "cancelled", "--charge-micro-usd", "0",
+        ], check=True, capture_output=True, text=True)
+        (wrong_claim / "owner").unlink()
+        wrong_claim.rmdir()
         sibling = runs / "run-1.meta"
         original = sibling.read_bytes()
         sibling.write_text(sibling.read_text().replace("provider_attempt_id=sibling-1", "provider_attempt_id=forged"))

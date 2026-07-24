@@ -5,6 +5,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 import subprocess
@@ -212,9 +213,12 @@ def concurrent_check(directory, active_directory, coordinator, database, expecte
                 read_manifest(runs_descriptor, own_name) != expected["manifests"][own_name]):
             raise ValueError("owned run manifest changed")
         live = {}
+        referenced_attempts = set()
         for name in manifest_names(runs_descriptor):
             content = base64.b64decode(read_manifest(runs_descriptor, name), validate=True)
             values = parse_manifest(content, name)
+            if values.get("provider_attempt_id"):
+                referenced_attempts.add(values["provider_attempt_id"])
             if (values.get("accounting_state") == "reserved" and
                     values.get("provider_execution_mode") == "cli-concurrent-v1"):
                 key = (values.get("ticket"), values.get("role"))
@@ -224,6 +228,7 @@ def concurrent_check(directory, active_directory, coordinator, database, expecte
     finally:
         os.close(runs_descriptor)
 
+    claim_owners = {}
     claims_descriptor, _ = open_real_directory(active_directory, "active runs root")
     try:
         claims = sorted(os.listdir(claims_descriptor))
@@ -251,6 +256,7 @@ def concurrent_check(directory, active_directory, coordinator, database, expecte
                 observed = " ".join(observed.split())
                 if observed != fields["process_start"]:
                     raise ValueError("active run claim owner is not live")
+                claim_owners[name] = fields
             finally:
                 os.close(claim_descriptor)
     finally:
@@ -274,8 +280,27 @@ def concurrent_check(directory, active_directory, coordinator, database, expecte
                 attempt.get("policy_sha256") != values.get("activation_policy_sha256")):
             raise ValueError("concurrent run lacks an authorized provider attempt")
         expected_claims.add(".".join((ticket, role)) + ".lock")
-    if set(claims) != expected_claims:
+    missing = expected_claims - set(claims)
+    if missing:
         raise ValueError("active claims do not match authorized concurrent runs")
+    for name in set(claims) - expected_claims:
+        match = re.fullmatch(
+            r"(T-[0-9]+)\.(planner|spec-linter|test-author|builder|reviewer|narrator)\.lock",
+            name,
+        )
+        if not match:
+            raise ValueError("active claims do not match authorized concurrent runs")
+        ticket = match.group(1)
+        pid = claim_owners[name]["pid"]
+        waiting = [
+            attempt for attempt in attempts.values()
+            if attempt.get("ticket_id") == ticket
+            and attempt.get("state") in {"prepared", "reserved"}
+            and re.fullmatch(rf"[0-9]+-{re.escape(pid)}-cli", attempt["attempt_id"])
+            and attempt["attempt_id"] not in referenced_attempts
+        ]
+        if len(waiting) != 1:
+            raise ValueError("active claims do not match authorized concurrent runs")
     return True
 
 
