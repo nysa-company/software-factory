@@ -424,8 +424,19 @@ else
     "probes=$PROFILE_PROBE_COUNT result=$PROFILE_RESULT"
 fi
 
+CLAUDE_AUTH_ROOT="$TMP/claude-auth-readiness"
+mkdir -p "$CLAUDE_AUTH_ROOT"
+chmod 700 "$CLAUDE_AUTH_ROOT"
+python3 - "$CLAUDE_AUTH_ROOT/.credentials.json" <<'PY'
+import json, os, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"claudeAiOauth":{"expiresAt":int(time.time() * 1000) + 3_600_000}}, handle)
+    handle.write("\n")
+os.chmod(sys.argv[1], 0o600)
+PY
 CONTRACT_PROFILE="$(PATH="$STUB_BIN:$PATH" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
   FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
   FACTORY_PROBE_CURSOR_OPENAI=READY:test FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
   "$ROOT/scripts/adapters/contract-test.sh" --profile claude-priority-v1 2>&1)"
@@ -498,6 +509,23 @@ if [[ "$EMPTY_CODEX_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" &&
 else
   fail "empty primary version probes permit startup fallback" \
     "codex=$EMPTY_CODEX_VERSION_PROBE claude=$EMPTY_CLAUDE_VERSION_PROBE missing=$MISSING_CLAUDE_FLAG_PROBE help=$FAILED_CLAUDE_HELP_PROBE"
+fi
+
+python3 - "$CLAUDE_AUTH_ROOT/.credentials.json" <<'PY'
+import json, os, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"claudeAiOauth":{"expiresAt":int(time.time() * 1000) - 1}}, handle)
+    handle.write("\n")
+os.chmod(sys.argv[1], 0o600)
+PY
+EXPIRED_CLAUDE_PROBE="$(PATH="$STUB_BIN:$PATH" CLAUDE_CODE_PINNED=2.1.207 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$EXPIRED_CLAUDE_PROBE" == "UNAVAILABLE:authentication_expired" ]]; then
+  pass "expired Claude OAuth falls back before task submission"
+else
+  fail "expired Claude OAuth falls back before task submission" "$EXPIRED_CLAUDE_PROBE"
 fi
 
 run_mock() {

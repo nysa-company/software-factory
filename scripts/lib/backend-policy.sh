@@ -129,6 +129,41 @@ factory_probe_override() {
   return 0
 }
 
+factory_claude_oauth_readiness() {
+  local config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  python3 - "$config_dir/.credentials.json" <<'PY'
+import json
+import os
+import pathlib
+import stat
+import sys
+import time
+
+path = pathlib.Path(sys.argv[1])
+try:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_nlink != 1
+        or metadata.st_mode & 0o077
+    ):
+        raise ValueError
+    oauth = json.loads(path.read_text(encoding="utf-8"))["claudeAiOauth"]
+    expires_at = oauth["expiresAt"]
+    if isinstance(expires_at, bool) or not isinstance(expires_at, int):
+        raise ValueError
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    print("INVALID:credential_invalid")
+    raise SystemExit
+
+if expires_at <= int(time.time() * 1000) + 300_000:
+    print("UNAVAILABLE:authentication_expired")
+else:
+    print("READY:credential_fresh")
+PY
+}
+
 factory_probe_adapter() {
   local adapter="$1" explicit_model="${2:-}"
   local installed installed_version help model expected_family actual_family
@@ -207,6 +242,14 @@ factory_probe_adapter() {
           return 0
         fi
       done
+      installed="$(factory_claude_oauth_readiness 2>/dev/null || true)"
+      case "$installed" in
+        READY:*) ;;
+        UNAVAILABLE:*)
+          PROBE_STATE="UNAVAILABLE"; PROBE_REASON="${installed#*:}"; return 0 ;;
+        *)
+          PROBE_STATE="INVALID"; PROBE_REASON="credential_invalid"; return 0 ;;
+      esac
       if ! timeout "$probe_timeout" claude auth status >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi

@@ -102,7 +102,7 @@ subscription_base_env() {
 }
 
 subscription_ready() {
-  local root="$1" i
+  local root="$1" i claude_ready=0
   for i in 1 2 3; do
     subscription_base_env "$root" "$root/home/timeout" 10 \
       "$root/home/agent" status >/dev/null 2>&1 && break
@@ -116,11 +116,15 @@ subscription_ready() {
     sleep 1
   done
   for i in 1 2 3; do
-    subscription_base_env "$root" "$root/home/timeout" 10 \
-      "$root/home/claude" auth status >/dev/null 2>&1 && break
-    [[ "$i" -lt 3 ]] || die "Claude subscription authentication is unavailable"
+    claude_subscription_probe "$root" && {
+      claude_ready=1
+      break
+    }
     sleep 1
   done
+  if [[ "$claude_ready" == 0 ]]; then
+    echo "DEVELOPMENT_PROVIDER_FALLBACK=claude-code->cursor-anthropic" >&2
+  fi
 }
 
 codex_subscription_ready() {
@@ -136,11 +140,19 @@ codex_subscription_ready() {
 claude_subscription_ready() {
   local root="$1" i
   for i in 1 2 3; do
-    subscription_base_env "$root" "$root/home/timeout" 10 \
-      "$root/home/claude" auth status >/dev/null 2>&1 && return
+    claude_subscription_probe "$root" && return
     [[ "$i" -lt 3 ]] || die "Claude subscription authentication is unavailable"
     sleep 1
   done
+}
+
+claude_subscription_probe() {
+  local root="$1"
+  subscription_base_env "$root" bash -c '
+    source "$1"
+    factory_probe_adapter claude-code
+    [[ "$PROBE_STATE" == READY ]]
+  ' _ "$root/kit/scripts/lib/backend-policy.sh"
 }
 
 ensure_cursor_file_credential_config() {
@@ -2266,8 +2278,8 @@ for ticket in tickets:
         raise SystemExit("role-family separation failed")
     if any(selections[r]["adapter"] != "codex" for r in production):
         raise SystemExit("native production route drifted")
-    if any(selections[r]["adapter"] != "claude-code" for r in checking):
-        raise SystemExit("native checking route drifted")
+    if any(selections[r]["adapter"] not in {"claude-code","cursor-anthropic"} for r in checking):
+        raise SystemExit("checking route drifted outside approved Anthropic adapters")
 PY
     die "product route-family or circuit-breaker validation failed"
   python3 - "$root/runtime/provider-policy.json" \

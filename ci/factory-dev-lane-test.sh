@@ -250,7 +250,15 @@ fi
 
 READINESS_ROOT="$TMP/nysa-sf-dev.readiness"
 mkdir -p "$READINESS_ROOT/home" "$READINESS_ROOT/session-home" \
-  "$READINESS_ROOT/tmp"
+  "$READINESS_ROOT/session-home/.claude" "$READINESS_ROOT/tmp"
+python3 - "$READINESS_ROOT/session-home/.claude/.credentials.json" <<'PY'
+import json, os, sys, time
+path=sys.argv[1]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({"claudeAiOauth":{"expiresAt":int(time.time() * 1000) + 3_600_000}}, handle)
+    handle.write("\n")
+os.chmod(path, 0o600)
+PY
 cat >"$READINESS_ROOT/home/timeout" <<'EOF'
 #!/usr/bin/env bash
 shift
