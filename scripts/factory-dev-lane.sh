@@ -1762,11 +1762,38 @@ tmp.write_text(raw,encoding="utf-8"); os.chmod(tmp,0o600); os.replace(tmp,path)
 PY
 }
 
+ensure_product_budget_day() {
+  local root="$1"
+  python3 - "$root/runtime/product-envelope" "$(date -u +%F)" <<'PY'
+import os, pathlib, stat, sys
+directory=pathlib.Path(sys.argv[1]); today=sys.argv[2]
+if not directory.exists():
+    directory.mkdir(mode=0o700)
+info=directory.lstat()
+if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+    stat.S_IMODE(info.st_mode) != 0o700):
+    raise SystemExit(1)
+path=directory/"budget-day"
+if path.exists() or path.is_symlink():
+    info=path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+        info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600 or
+        path.read_text(encoding="utf-8") != today+"\n"):
+        raise SystemExit(1)
+else:
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,"w",encoding="utf-8") as stream:
+        stream.write(today+"\n"); stream.flush(); os.fsync(stream.fileno())
+PY
+}
+
 product_probe_and_plan() {
   local root="$1" cursor_version codex_version claude_version ticket profile profile_hash approval_hash
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
+  ensure_product_budget_day "$root" ||
+    die "product budget day is missing, stale, or unsafe"
   subscription_ready "$root"
   cursor_version="$(subscription_base_env "$root" \
     "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
