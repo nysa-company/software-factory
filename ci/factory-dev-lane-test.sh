@@ -737,6 +737,35 @@ chmod 600 "$SEED_ACCOUNTING_V4_HIGH"
 validate_product_seed_accounting "$SEED_ACCOUNTING_V4_HIGH" "$SEED_BUNDLE" \
   "$SEED_BASE" T-1 T-2 ||
   fail "higher operator-authorized development caps were rejected"
+eval "$(sed -n '/^validate_product_checkpoint()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^validate_checkpoint_accounting()/,/^}/p' "$LANE")"
+SEED_CHECKPOINT="$TMP/seed-checkpoint.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint/v1\",\"base_sha\":\"$SEED_BASE\",\"base_tree\":\"$SEED_BASE\",\"source_factory_sha\":\"$SEED_BASE\",\"source_factory_tree\":\"$SEED_BASE\",\"source_marker_sha256\":\"$SEED_NONCE\",\"source_product_sha256\":\"$SEED_NONCE\",\"prior_accounting_sha256\":null,\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"lane_charges_micro_usd\":{\"T-1\":10000000,\"T-2\":20000000,\"T-3\":30000000,\"T-4\":40000000},\"tickets\":[{\"ticket\":\"T-1\",\"head_sha\":\"$SEED_BASE\",\"head_tree\":\"$SEED_BASE\",\"ticket_blob\":\"$SEED_BASE\",\"route_plan_sha256\":\"$SEED_NONCE\",\"next_stage\":\"RUN spec-linter\",\"state\":\"Ready\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"checkpoint-planner\",\"manifest_sha256\":\"$SEED_NONCE\",\"output_sha256\":\"$SEED_NONCE\",\"role_head_before\":\"$SEED_BASE\"}],\"spec_verdicts\":[]}]}" \
+  >"$SEED_CHECKPOINT"
+chmod 600 "$SEED_CHECKPOINT"
+SEED_CHECKPOINT_SHA="$(sha256_file "$SEED_CHECKPOINT")"
+SEED_ACCOUNTING_V5="$TMP/accounting-v5.json"
+SEED_NONCE_V5="$(printf 'v5-checkpoint-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v5\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"checkpoint_sha256\":\"$SEED_CHECKPOINT_SHA\",\"parent_manifest_sha256\":null,\"checkpoint_charges_micro_usd\":{\"T-1\":10000000,\"T-2\":20000000,\"T-3\":30000000,\"T-4\":40000000},\"base_sha\":\"$SEED_BASE\",\"ticket_caps_micro_usd\":{\"T-1\":350000000,\"T-2\":350000000,\"T-3\":300000000,\"T-4\":300000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE_V5\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":10000000,\"T-2\":20000000,\"T-3\":30000000,\"T-4\":40000000}}" \
+  >"$SEED_ACCOUNTING_V5"
+chmod 600 "$SEED_ACCOUNTING_V5"
+validate_product_checkpoint "$SEED_CHECKPOINT" "$SEED_BUNDLE" "$SEED_BASE" \
+  T-1 T-2 T-3 T-4 ||
+  fail "valid partial pre-Reviewer checkpoint was rejected"
+validate_product_seed_accounting "$SEED_ACCOUNTING_V5" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1 T-2 T-3 T-4 ||
+  fail "valid checkpoint accounting was rejected"
+validate_checkpoint_accounting "$SEED_ACCOUNTING_V5" "$SEED_CHECKPOINT" ||
+  fail "checkpoint accounting was not bound to its evidence"
+SEED_ACCOUNTING_V5_BAD="$TMP/accounting-v5-bad.json"
+sed 's/"T-1":10000000,"T-2":20000000/"T-1":10000001,"T-2":20000000/' \
+  "$SEED_ACCOUNTING_V5" >"$SEED_ACCOUNTING_V5_BAD"
+chmod 600 "$SEED_ACCOUNTING_V5_BAD"
+if validate_checkpoint_accounting "$SEED_ACCOUNTING_V5_BAD" "$SEED_CHECKPOINT"; then
+  fail "underreported checkpoint accounting was accepted"
+fi
 eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^product_seed_lineage_id()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^write_product_seed_lineage()/,/^}/p' "$LANE")"
@@ -745,6 +774,24 @@ SEED_LINEAGE="$TMP/seed-lineage.json"
 SEED_LINEAGE_ID="$(product_seed_lineage_id "$SEED_ACCOUNTING")"
 SEED_MANIFEST_SHA="$(sha256_file "$SEED_ACCOUNTING")"
 write_product_seed_lineage "$SEED_ACCOUNTING" "$SEED_LINEAGE"
+SEED_V5_ROOT="$TMP/v5-lineage"
+mkdir -m 700 "$SEED_V5_ROOT"
+cp "$SEED_ACCOUNTING_V5" "$SEED_V5_ROOT/accounting.json"
+SEED_ACCOUNTING_V5_ISOLATED="$SEED_V5_ROOT/accounting.json"
+SEED_LINEAGE_V5="$SEED_V5_ROOT/lineage.json"
+write_product_seed_lineage "$SEED_ACCOUNTING_V5_ISOLATED" "$SEED_LINEAGE_V5"
+SEED_ACCOUNTING_V5_SHA="$(sha256_file "$SEED_ACCOUNTING_V5_ISOLATED")"
+consume_product_seed_authorization "$SEED_ACCOUNTING_V5_ISOLATED" \
+  "$SEED_ACCOUNTING_V5_SHA" "$SEED_LINEAGE_V5"
+CHECKPOINT_CONSUMPTION="$SEED_V5_ROOT/.seed-accounting-lineages/$(product_seed_lineage_id "$SEED_ACCOUNTING_V5_ISOLATED")/checkpoints/$SEED_CHECKPOINT_SHA.used/receipt"
+[[ "$(stat -f '%Su:%Lp' "$CHECKPOINT_CONSUMPTION")" == "$(id -un):600" ]] ||
+  fail "checkpoint consumption receipt is unsafe"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_ACCOUNTING_V5_ISOLATED" \
+    "$SEED_ACCOUNTING_V5_SHA" "$SEED_LINEAGE_V5"); then
+  fail "checkpoint authorization was consumed twice"
+fi
+die() { return 1; }
 ROGUE_LINEAGE="$TMP/rogue-lineage.json"
 printf '%s\n' \
   "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$(printf rogue | shasum -a 256 | awk '{print $1}')\",\"parent_manifest_sha256\":null,\"manifest_sha256\":\"$SEED_MANIFEST_SHA\"}" \

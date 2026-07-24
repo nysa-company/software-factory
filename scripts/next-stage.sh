@@ -460,6 +460,61 @@ count_authorization() { # role semantic-round
 }
 P="$(count_ok planner)"; SL="$(count_ok spec-linter)"; TA="$(count_ok test-author)"
 B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"
+if [[ -n "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]]; then
+  CHECKPOINT_COUNTS="$(python3 - "$FACTORY_DEV_PRODUCT_CHECKPOINT" \
+    "${FACTORY_CLI_LANE_ROOT:-}" "$CONTENT_ROOT" "$TICKET" "$COMMITTED_HEAD" \
+    "$TICKET_FILE" <<'PY'
+import json, os, pathlib, re, stat, subprocess, sys
+checkpoint, lane, work, ticket, head, ticket_file=sys.argv[1:]
+path=pathlib.Path(checkpoint); lane_path=pathlib.Path(lane)
+if (not lane_path.is_absolute() or not lane_path.name.startswith("nysa-sf-dev.") or
+    path.resolve() != (lane_path/"runtime/product-checkpoint-import.json").resolve()):
+    raise SystemExit(1)
+for item, mode in ((lane_path/"marker.json",0o600),(path,0o600)):
+    info=item.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+        info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
+        raise SystemExit(1)
+marker=json.load(open(lane_path/"marker.json",encoding="utf-8"))
+value=json.load(open(path,encoding="utf-8"))
+if (marker.get("mode") != "product" or
+    set(value) != {"schema","checkpoint_sha256","tickets"} or
+    value.get("schema") != "factory-dev-product-checkpoint-import/v1"):
+    raise SystemExit(1)
+records=[item for item in value["tickets"] if item.get("ticket") == ticket]
+if not records:
+    print("0 0 0 0")
+    raise SystemExit(0)
+if len(records) != 1: raise SystemExit(1)
+record=records[0]
+if set(record) != {"ticket","import_head","import_tree","roles",
+                   "spec_verdicts","expected_next_stage"}:
+    raise SystemExit(1)
+sha=lambda item: isinstance(item,str) and re.fullmatch(r"[0-9a-f]{40}",item)
+if (not sha(record["import_head"]) or not sha(record["import_tree"]) or
+    subprocess.run(["git","-C",work,"merge-base","--is-ancestor",
+                    record["import_head"],head]).returncode != 0):
+    raise SystemExit(1)
+actual=subprocess.check_output(
+    ["git","-C",work,"rev-parse",record["import_head"]+"^{tree}"],text=True).strip()
+if actual != record["import_tree"]: raise SystemExit(1)
+roles=record["roles"]
+if (not isinstance(roles,list) or not roles or
+    any(role not in {"planner","spec-linter","test-author","builder"}
+        for role in roles)):
+    raise SystemExit(1)
+text=pathlib.Path(ticket_file).read_text(encoding="utf-8")
+specs=re.findall(r"^SPEC-LINT: (?:PASS|FAIL(?: — .+)?)$",text,re.M)
+if specs != record["spec_verdicts"]: raise SystemExit(1)
+print(*(roles.count(role) for role in
+        ("planner","spec-linter","test-author","builder")))
+PY
+  )" || { echo "REFUSE development checkpoint binding is invalid"; exit 1; }
+  read -r CHECKPOINT_P CHECKPOINT_SL CHECKPOINT_TA CHECKPOINT_B \
+    <<<"$CHECKPOINT_COUNTS"
+  P=$((P + CHECKPOINT_P)); SL=$((SL + CHECKPOINT_SL))
+  TA=$((TA + CHECKPOINT_TA)); B=$((B + CHECKPOINT_B))
+fi
 
 # Reviewer verdicts must be recorded on the ticket file by the dispatcher.
 # Count them; they are the only stage input outside the ledger.

@@ -17,6 +17,7 @@ PRODUCT_BASE=""
 PRODUCT_SEED_BUNDLE=""
 PRODUCT_SEED_ACCOUNTING=""
 PRODUCT_SEED_LINEAGE=""
+PRODUCT_SEED_CHECKPOINT=""
 PRODUCT_TICKETS=()
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
@@ -38,10 +39,11 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh subscription-plan
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-seed-lineage --accounting <absolute-json> --output <absolute-json> [--parent-accounting <absolute-json>]
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json>]
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json> --seed-checkpoint <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-export --root <absolute-lane-root> [--tickets <T-NNN,...>]
+       factory-dev-lane.sh product-checkpoint-export --root <absolute-lane-root> --tickets <T-NNN,...> --output <absolute-new-directory>
        factory-dev-lane.sh clean --root <absolute-lane-root>
 EOF
   exit 2
@@ -515,7 +517,7 @@ PY
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" cleanup_trap
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap
   local -a subscription_tools
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     die "Software Factory source must be clean and committed"
@@ -640,20 +642,25 @@ PY
         "${lane_tickets[@]}"
       accounting_hash="$(sha256_file "$PRODUCT_SEED_ACCOUNTING")"
       lineage_hash="$(sha256_file "$PRODUCT_SEED_LINEAGE")"
+      if [[ -n "$PRODUCT_SEED_CHECKPOINT" ]]; then
+        checkpoint_hash="$(sha256_file "$PRODUCT_SEED_CHECKPOINT")"
+        write_product_checkpoint_import "$root" "$PRODUCT_SEED_CHECKPOINT"
+      fi
     fi
     python3 - "$root/runtime/product-source.json" "$PRODUCT_BASE" \
       "$(git -C "$PRODUCT_SOURCE" rev-parse "$PRODUCT_BASE^{tree}")" "$lane_control_sha" \
-      "$seed_hash" "$accounting_hash" "$lineage_hash" -- \
+      "$seed_hash" "$accounting_hash" "$lineage_hash" "$checkpoint_hash" -- \
       "${lane_tickets[@]}" <<'PY'
 import json, os, sys
-path, base, tree, control, seed, accounting, lineage, separator, *tickets=sys.argv[1:]
+path, base, tree, control, seed, accounting, lineage, checkpoint, separator, *tickets=sys.argv[1:]
 if separator != "--": raise SystemExit(1)
 with open(path, "w", encoding="utf-8") as stream:
     json.dump({"schema":"factory-dev-product-source/v1","base_sha":base,
                "base_tree":tree,"lane_control_sha":control,
                "seed_bundle_sha256":seed or None,
                "seed_accounting_sha256":accounting or None,
-               "seed_lineage_sha256":lineage or None,"tickets":tickets},
+               "seed_lineage_sha256":lineage or None,
+               "seed_checkpoint_sha256":checkpoint or None,"tickets":tickets},
               stream, sort_keys=True, separators=(",",":")); stream.write("\n")
 os.chmod(path, 0o600)
 PY
@@ -896,6 +903,87 @@ EOF
   printf '%s\n' "$root"
 }
 
+validate_product_checkpoint() {
+  local checkpoint="$1" bundle="$2" base="$3"; shift 3
+  [[ "$checkpoint" == /* && -f "$checkpoint" && ! -L "$checkpoint" &&
+     "$(stat -f '%Su:%Lp:%l' "$checkpoint")" == "$(id -un):600:1" ]] ||
+    die "product seed checkpoint must be an owner-only regular file"
+  refuse_production_path "$checkpoint"
+  python3 - "$checkpoint" "$(sha256_file "$bundle")" "$base" "$@" <<'PY' ||
+import json, re, sys
+path, bundle, base, *tickets=sys.argv[1:]
+value=json.load(open(path, encoding="utf-8"))
+sha40=lambda item: isinstance(item,str) and re.fullmatch(r"[0-9a-f]{40}",item)
+sha256=lambda item: isinstance(item,str) and re.fullmatch(r"[0-9a-f]{64}",item)
+if (set(value) != {"schema","base_sha","base_tree","source_factory_sha",
+                   "source_factory_tree","source_marker_sha256",
+                   "source_product_sha256","prior_accounting_sha256",
+                   "seed_bundle_sha256","lane_charges_micro_usd","tickets"} or
+    value.get("schema") != "factory-dev-product-checkpoint/v1" or
+    value.get("base_sha") != base or not sha40(value.get("base_tree")) or
+    not sha40(value.get("source_factory_sha")) or
+    not sha40(value.get("source_factory_tree")) or
+    not sha256(value.get("source_marker_sha256")) or
+    not sha256(value.get("source_product_sha256")) or
+    value.get("prior_accounting_sha256") is not None and
+        not sha256(value.get("prior_accounting_sha256")) or
+    value.get("seed_bundle_sha256") != bundle or
+    not isinstance(value.get("tickets"),list) or not value["tickets"] or
+    len({item.get("ticket") for item in value["tickets"]}) != len(value["tickets"]) or
+    not set(item.get("ticket") for item in value["tickets"]) <= set(tickets) or
+    not isinstance(value.get("lane_charges_micro_usd"),dict) or
+    set(value["lane_charges_micro_usd"]) != set(tickets) or
+    any(not isinstance(amount,int) or isinstance(amount,bool) or amount < 0
+        for amount in value["lane_charges_micro_usd"].values())):
+    raise SystemExit(1)
+allowed=("planner","spec-linter","test-author","builder")
+for item in value["tickets"]:
+    if set(item) != {"ticket","head_sha","head_tree","ticket_blob",
+                    "route_plan_sha256","next_stage","state","roles",
+                    "spec_verdicts"}:
+        raise SystemExit(1)
+    if (not sha40(item["head_sha"]) or not sha40(item["head_tree"]) or
+        not sha40(item["ticket_blob"]) or not sha256(item["route_plan_sha256"]) or
+        item["next_stage"] not in {"RUN planner","RUN spec-linter",
+                                   "RUN test-author","RUN builder","RUN reviewer"} or
+        item["state"] not in {"Ready","Planning","Building","Review"} or
+        not isinstance(item["roles"],list) or not item["roles"]):
+        raise SystemExit(1)
+    roles=[]
+    for run in item["roles"]:
+        if set(run) != {"role","run_id","manifest_sha256","output_sha256",
+                       "role_head_before"} or run["role"] not in allowed or
+            not re.fullmatch(r"[A-Za-z0-9._-]+",run["run_id"]) or
+            not sha256(run["manifest_sha256"]) or
+            not sha256(run["output_sha256"]) or
+            not sha40(run["role_head_before"]):
+            raise SystemExit(1)
+        roles.append(run["role"])
+    if any(role in {"reviewer","narrator"} for role in roles):
+        raise SystemExit(1)
+    specs=item["spec_verdicts"]
+    if (not isinstance(specs,list) or any(not isinstance(line,str) or
+        not re.fullmatch(r"SPEC-LINT: (?:PASS|FAIL(?: — .+)?)",line)
+        for line in specs)):
+        raise SystemExit(1)
+    failures=sum(line.startswith("SPEC-LINT: FAIL") for line in specs)
+    prefix=[]
+    for _ in range(failures): prefix += ["planner","spec-linter"]
+    if item["next_stage"] != "RUN planner": prefix += ["planner"]
+    if item["next_stage"] not in {"RUN planner","RUN spec-linter"}:
+        if len(specs) != failures+1 or specs[-1] != "SPEC-LINT: PASS":
+            raise SystemExit(1)
+        prefix += ["spec-linter"]
+    if item["next_stage"] in {"RUN builder","RUN reviewer"}:
+        prefix += ["test-author"]
+    if item["next_stage"] == "RUN reviewer":
+        prefix += ["builder"]
+    if roles != prefix:
+        raise SystemExit(1)
+PY
+    die "product seed checkpoint is malformed or detached"
+}
+
 seed_product_worktrees() {
   local root="$1" bundle="$2" base="$3" ticket commit subject index previous route_count
   local -a commits parents
@@ -908,9 +996,39 @@ seed_product_worktrees() {
   git -C "$root/product" bundle verify "$bundle" >/dev/null 2>&1 ||
     die "product seed bundle is invalid"
   for ticket in "$@"; do
+    if [[ -n "$PRODUCT_SEED_CHECKPOINT" ]] &&
+       ! python3 - "$PRODUCT_SEED_CHECKPOINT" "$ticket" <<'PY'
+import json, sys
+raise SystemExit(0 if sys.argv[2] in {
+    item["ticket"] for item in json.load(open(sys.argv[1]))["tickets"]
+} else 1)
+PY
+    then
+      continue
+    fi
     git -C "$root/worktrees/$ticket" fetch -q "$bundle" \
       "refs/heads/ticket/$ticket:refs/retry/$ticket" ||
       die "product seed bundle is missing $ticket"
+    if [[ -n "$PRODUCT_SEED_CHECKPOINT" ]]; then
+      python3 - "$PRODUCT_SEED_CHECKPOINT" "$root/worktrees/$ticket" \
+        "$ticket" <<'PY' || die "product checkpoint branch binding drifted: $ticket"
+import hashlib, json, subprocess, sys
+path, work, ticket=sys.argv[1:]
+item=next(item for item in json.load(open(path,encoding="utf-8"))["tickets"]
+          if item["ticket"] == ticket)
+git=lambda *args: subprocess.check_output(
+    ["git","-C",work,*args],text=True).strip()
+route=subprocess.check_output(
+    ["git","-C",work,"show","refs/retry/"+ticket+
+     ":factory/route-plans/"+ticket+".json"])
+if (git("rev-parse","refs/retry/"+ticket) != item["head_sha"] or
+    git("rev-parse","refs/retry/"+ticket+"^{tree}") != item["head_tree"] or
+    git("rev-parse","refs/retry/"+ticket+":factory/tickets/"+ticket+".md")
+        != item["ticket_blob"] or
+    hashlib.sha256(route).hexdigest() != item["route_plan_sha256"]):
+    raise SystemExit(1)
+PY
+    fi
     git -C "$root/worktrees/$ticket" merge-base --is-ancestor \
       "$base" "refs/retry/$ticket" || die "product seed does not descend from the approved base"
     commits=()
@@ -1017,10 +1135,16 @@ PY
        ! -L "$root/worktrees/$ticket/factory/tickets/$ticket.md" ]] ||
       die "product seed ticket file is unsafe: $ticket"
     python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" \
-      "$(git -C "$root/kit" rev-parse HEAD)" <<'PY'
+      "$(git -C "$root/kit" rev-parse HEAD)" "$PRODUCT_SEED_CHECKPOINT" \
+      "$ticket" <<'PY'
 from pathlib import Path
-import re, sys
-p=Path(sys.argv[1]); kit_sha=sys.argv[2]; lines=[]; kit_written=False
+import json, re, sys
+p=Path(sys.argv[1]); kit_sha=sys.argv[2]; checkpoint=sys.argv[3]
+ticket=sys.argv[4]; lines=[]; kit_written=False
+record=None
+if checkpoint:
+    record=next(item for item in json.load(open(checkpoint,encoding="utf-8"))["tickets"]
+                if item["ticket"] == ticket)
 for line in p.read_text(encoding="utf-8").splitlines():
     if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
         continue
@@ -1031,9 +1155,12 @@ for line in p.read_text(encoding="utf-8").splitlines():
             lines.append("Kit-SHA: " + kit_sha)
             kit_written=True
     else:
-        lines.append(re.sub(r"^State:\s*.*$", "State: Ready", line))
+        lines.append(re.sub(r"^State:\s*.*$",
+                            "State: "+(record["state"] if record else "Ready"),line))
 if not kit_written:
     lines.append("Kit-SHA: " + kit_sha)
+if record:
+    lines.extend(record["spec_verdicts"])
 p.write_text("\n".join(lines)+"\n", encoding="utf-8")
 PY
     git -C "$root/worktrees/$ticket" add "factory/tickets/$ticket.md"
@@ -1043,6 +1170,39 @@ PY
     fi
     git -C "$root/worktrees/$ticket" push -q origin "HEAD:refs/heads/ticket/$ticket"
   done
+}
+
+write_product_checkpoint_import() {
+  local root="$1" checkpoint="$2"
+  python3 - "$checkpoint" "$root/runtime/product-checkpoint-import.json" \
+    "$root" "${PRODUCT_TICKETS[@]}" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys
+checkpoint_path, output, root, *_tickets=sys.argv[1:]
+source=json.load(open(checkpoint_path,encoding="utf-8"))
+records=[]
+for item in source["tickets"]:
+    ticket=item["ticket"]
+    work=pathlib.Path(root,"worktrees",ticket)
+    git=lambda *args: subprocess.check_output(
+        ["git","-C",str(work),*args],text=True).strip()
+    records.append({
+        "ticket":ticket,
+        "import_head":git("rev-parse","HEAD"),
+        "import_tree":git("rev-parse","HEAD^{tree}"),
+        "roles":[run["role"] for run in item["roles"]],
+        "spec_verdicts":item["spec_verdicts"],
+        "expected_next_stage":item["next_stage"],
+    })
+value={
+    "schema":"factory-dev-product-checkpoint-import/v1",
+    "checkpoint_sha256":hashlib.sha256(open(checkpoint_path,"rb").read()).hexdigest(),
+    "tickets":records,
+}
+path=pathlib.Path(output)
+path.write_text(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n",
+                encoding="utf-8")
+os.chmod(path,0o600)
+PY
 }
 
 validate_product_seed_accounting() {
@@ -1084,11 +1244,18 @@ elif value.get("schema") == "factory-dev-product-seed-accounting/v3":
             __import__("datetime").timezone.utc
         ).date().isoformat()):
         raise SystemExit(1)
-elif value.get("schema") == "factory-dev-product-seed-accounting/v4":
+elif value.get("schema") in {
+    "factory-dev-product-seed-accounting/v4",
+    "factory-dev-product-seed-accounting/v5",
+}:
+    extra=set()
+    if value["schema"].endswith("/v5"):
+        extra={"checkpoint_sha256","parent_manifest_sha256",
+               "checkpoint_charges_micro_usd"}
     if set(value) != common | {
         "ticket_caps_micro_usd","aggregate_cap_micro_usd","authorized_by",
         "authorization_nonce","budget_day"
-    }: raise SystemExit(1)
+    } | extra: raise SystemExit(1)
     ticket_caps=value["ticket_caps_micro_usd"]
     aggregate_cap=value["aggregate_cap_micro_usd"]
     if (not isinstance(ticket_caps, dict) or
@@ -1099,6 +1266,16 @@ elif value.get("schema") == "factory-dev-product-seed-accounting/v4":
             __import__("datetime").timezone.utc
         ).date().isoformat()):
         raise SystemExit(1)
+    if value["schema"].endswith("/v5"):
+        digest=lambda item: isinstance(item,str) and re.fullmatch(r"[0-9a-f]{64}",item)
+        charges=value["checkpoint_charges_micro_usd"]
+        if (not digest(value["checkpoint_sha256"]) or
+            value["parent_manifest_sha256"] is not None and
+                not digest(value["parent_manifest_sha256"]) or
+            not isinstance(charges,dict) or set(charges) != set(value["reserved_micro_usd"]) or
+            any(not isinstance(amount,int) or isinstance(amount,bool) or amount < 0
+                for amount in charges.values())):
+            raise SystemExit(1)
 else:
     raise SystemExit(1)
 amounts=value.get("reserved_micro_usd")
@@ -1110,7 +1287,7 @@ for ticket, amount in amounts.items():
     if (not isinstance(amount, int) or isinstance(amount, bool) or
         amount < 0):
         raise SystemExit(1)
-if value["schema"].endswith("/v4"):
+if value["schema"].endswith(("/v4","/v5")):
     if (set(ticket_caps) != set(amounts) or
         any(not isinstance(cap, int) or isinstance(cap, bool) or
             cap < 1 or cap > 350_000_000 for cap in ticket_caps.values())):
@@ -1121,13 +1298,31 @@ if value["schema"].endswith("/v3") and any(
     amount > ticket_cap for amount in amounts.values()
 ): raise SystemExit(1)
 if any(amounts[ticket] >= (
-    ticket_caps[ticket] if value["schema"].endswith("/v4") else ticket_cap
+    ticket_caps[ticket] if value["schema"].endswith(("/v4","/v5")) else ticket_cap
 ) for ticket in tickets): raise SystemExit(1)
 if sum(amounts.values()) >= aggregate_cap: raise SystemExit(1)
 PY
   then
     die "product seed accounting is invalid or exhausted"
   fi
+}
+
+validate_checkpoint_accounting() {
+  local manifest="$1" checkpoint="$2"
+  python3 - "$manifest" "$checkpoint" <<'PY' ||
+import hashlib, json, sys
+accounting=json.load(open(sys.argv[1],encoding="utf-8"))
+checkpoint=json.load(open(sys.argv[2],encoding="utf-8"))
+charges=checkpoint["lane_charges_micro_usd"]
+if (accounting.get("schema") != "factory-dev-product-seed-accounting/v5" or
+    accounting.get("checkpoint_sha256") !=
+        hashlib.sha256(open(sys.argv[2],"rb").read()).hexdigest() or
+    accounting.get("checkpoint_charges_micro_usd") != charges or
+    accounting.get("parent_manifest_sha256") !=
+        checkpoint.get("prior_accounting_sha256")):
+    raise SystemExit(1)
+PY
+    die "product checkpoint accounting is detached or underreported"
 }
 
 prepare_product_seed_accounting() {
@@ -1140,12 +1335,13 @@ import json, os, pathlib, re, sys
 manifest, base_path, output, *tickets=sys.argv[1:]
 value=json.load(open(manifest, encoding="utf-8"))
 amounts=value["reserved_micro_usd"]
-if value["schema"].endswith(("/v3", "/v4")):
+if value["schema"].endswith(("/v3", "/v4", "/v5")):
     if (value["schema"].endswith("/v3") and
         (value.get("ticket_cap_micro_usd") != 200_000_000 or
          value.get("aggregate_cap_micro_usd") != 700_000_000) or
         value["schema"].endswith("/v4") and
-        value.get("aggregate_cap_micro_usd") not in
+         value["schema"].endswith(("/v4", "/v5")) and
+         value.get("aggregate_cap_micro_usd") not in
             (1_000_000_000, 1_500_000_000) or
         value.get("authorized_by") != "operator"):
         raise SystemExit(1)
@@ -1176,7 +1372,7 @@ PY
 consume_product_seed_authorization() {
   local manifest="$1" expected="$2" lineage_record="$3"
   local parent root digest nonce day marker lineage_id lineage_parent lineage_values
-  local accounting_values expected_lineage lineage lock head
+  local accounting_values expected_lineage lineage lock head checkpoint_digest accounting_parent
   [[ "$lineage_record" == /* && -f "$lineage_record" && ! -L "$lineage_record" &&
      "$(stat -f '%Su:%Lp:%l' "$lineage_record")" == "$(id -un):600:1" ]] ||
     die "product seed lineage must be an owner-only regular file"
@@ -1211,10 +1407,14 @@ PY
 import hashlib, json, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
 print(value.get("authorization_nonce", hashlib.sha256(sys.argv[2].encode()).hexdigest()),
-      value.get("budget_day", "legacy"))
+      value.get("budget_day", "legacy"), value.get("checkpoint_sha256","none"),
+      value.get("parent_manifest_sha256") or "none",
+      "v5" if value.get("schema","").endswith("/v5") else "legacy")
 PY
   )" || die "product seed accounting is malformed"
-  read -r nonce day <<<"$accounting_values"
+  read -r nonce day checkpoint_digest accounting_parent accounting_schema <<<"$accounting_values"
+  [[ "$accounting_schema" != v5 || "$accounting_parent" == "$lineage_parent" ]] ||
+    die "product seed accounting parent does not match its lineage"
   root="$parent/.seed-accounting-lineages"
   if [[ ! -e "$root" ]]; then mkdir -m 700 "$root" 2>/dev/null || true; fi
   [[ -d "$root" && ! -L "$root" &&
@@ -1230,11 +1430,17 @@ PY
       [[ "$lineage_parent" == none ]] || exit 1
       mkdir -m 700 "$lineage"
       mkdir -m 700 "$lineage/nonces"
+      mkdir -m 700 "$lineage/checkpoints"
+    fi
+    if [[ ! -e "$lineage/checkpoints" ]]; then
+      mkdir -m 700 "$lineage/checkpoints" || exit 1
     fi
     [[ -d "$lineage" && ! -L "$lineage" &&
        "$(stat -f '%Su:%Lp' "$lineage")" == "$(id -un):700" &&
        -d "$lineage/nonces" && ! -L "$lineage/nonces" &&
-       "$(stat -f '%Su:%Lp' "$lineage/nonces")" == "$(id -un):700" ]] || exit 1
+       "$(stat -f '%Su:%Lp' "$lineage/nonces")" == "$(id -un):700" &&
+       -d "$lineage/checkpoints" && ! -L "$lineage/checkpoints" &&
+       "$(stat -f '%Su:%Lp' "$lineage/checkpoints")" == "$(id -un):700" ]] || exit 1
     head="$lineage/head"
     if [[ "$lineage_parent" == none ]]; then
       [[ ! -e "$head" ]] || exit 1
@@ -1245,6 +1451,14 @@ PY
     fi
     marker="$lineage/nonces/$nonce.used"
     mkdir -m 700 "$marker" 2>/dev/null || exit 1
+    if [[ "$checkpoint_digest" != none ]]; then
+      mkdir -m 700 "$lineage/checkpoints/$checkpoint_digest.used" 2>/dev/null ||
+        exit 1
+      printf 'schema=factory-dev-product-checkpoint-consumption/v1\ncheckpoint_sha256=%s\nmanifest_sha256=%s\n' \
+        "$checkpoint_digest" "$digest" \
+        >"$lineage/checkpoints/$checkpoint_digest.used/receipt"
+      chmod 600 "$lineage/checkpoints/$checkpoint_digest.used/receipt"
+    fi
     printf 'schema=factory-dev-product-seed-authorization-consumption/v1\nmanifest_sha256=%s\nbudget_day=%s\n' \
       "$digest" "$day" >"$marker/receipt"
     chmod 600 "$marker/receipt"
@@ -1300,6 +1514,28 @@ write_product_seed_lineage() {
       die "parent seed accounting belongs to a different lineage"
     parent_digest="\"$(sha256_file "$parent_manifest")\""
   fi
+  python3 - "$manifest" "$parent_manifest" <<'PY' ||
+import hashlib, json, sys
+current=json.load(open(sys.argv[1],encoding="utf-8"))
+if current.get("schema") != "factory-dev-product-seed-accounting/v5":
+    raise SystemExit(0)
+parent_path=sys.argv[2]
+expected=current["parent_manifest_sha256"]
+charges=current["checkpoint_charges_micro_usd"]
+if parent_path:
+    raw=open(parent_path,"rb").read()
+    if expected != hashlib.sha256(raw).hexdigest(): raise SystemExit(1)
+    parent=json.loads(raw)
+    previous=parent["reserved_micro_usd"]
+else:
+    if expected is not None: raise SystemExit(1)
+    previous={ticket:0 for ticket in current["reserved_micro_usd"]}
+if (set(previous) != set(current["reserved_micro_usd"]) or
+    any(current["reserved_micro_usd"][ticket] != previous[ticket]+charges[ticket]
+        for ticket in previous)):
+    raise SystemExit(1)
+PY
+    die "checkpoint accounting is not the exact cumulative successor"
   (umask 077
    set -o noclobber
    printf '%s\n' \
@@ -1405,6 +1641,8 @@ product_approval_hash() {
     sha256_file "$root/runtime/docker-host"
     [[ ! -f "$root/runtime/product-envelope/budget-day" ]] ||
       sha256_file "$root/runtime/product-envelope/budget-day"
+    [[ ! -f "$root/runtime/product-checkpoint-import.json" ]] ||
+      sha256_file "$root/runtime/product-checkpoint-import.json"
     printf '%s\n' "$(python3 - "$root/runtime/docker" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
@@ -1571,7 +1809,8 @@ print(json.dumps(value,sort_keys=True,separators=(",",":")))
 import json, sys
 v=json.load(open(sys.argv[1], encoding="utf-8"))
 for key in ("schema","base_sha","base_tree","lane_control_sha",
-            "seed_bundle_sha256","seed_accounting_sha256","seed_lineage_sha256"):
+            "seed_bundle_sha256","seed_accounting_sha256","seed_lineage_sha256",
+            "seed_checkpoint_sha256"):
     print(f"{key}={json.dumps(v.get(key),sort_keys=True,separators=(',',':'))}")
 PY
     printf 'provider_status=%s\nevidence_sha256=%s\n' "$status" "$evidence"
@@ -1580,7 +1819,9 @@ PY
       "$root/runtime/provider-activation.json" \
       "$root/runtime/product-containers.json" \
       "$root/runtime/product-envelope/global.env" \
-      "$root/runtime/product-envelope/budget-day"; do
+      "$root/runtime/product-envelope/budget-day" \
+      "$root/runtime/product-checkpoint-import.json"; do
+      [[ -f "$path" ]] || continue
       printf '%s=%s\n' "${path#$root/}" "$(sha256_file "$path")"
     done
     for ticket in "${PRODUCT_RESUME_ORIGINAL_TICKETS[@]}"; do
@@ -1810,7 +2051,7 @@ PY
 }
 
 product_probe_and_plan() {
-  local root="$1" cursor_version codex_version claude_version ticket profile profile_hash approval_hash
+  local root="$1" cursor_version codex_version claude_version ticket profile profile_hash approval_hash expected
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -1911,6 +2152,20 @@ PY
     --policy "$root/runtime/provider-policy.json" \
     --contract-version 1.7.0 --status >/dev/null || die "product activation policy is invalid"
   provision_product_databases "$root"
+  if [[ -f "$root/runtime/product-checkpoint-import.json" ]]; then
+    while IFS=$'\t' read -r ticket expected; do
+      [[ -n "$ticket" ]] || continue
+      expected="$expected"
+      [[ "$(product_resume_stage "$root" "$ticket")" == "$expected" ]] ||
+        die "imported checkpoint did not reproduce its exact next stage: $ticket"
+    done < <(python3 - "$root/runtime/product-checkpoint-import.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+for item in value["tickets"]:
+    print(item["ticket"]+"\t"+item["expected_next_stage"])
+PY
+)
+  fi
   approval_hash="$(product_approval_hash "$root")"
   printf 'approval_hash=%s\nused=0\n' "$approval_hash" >"$root/runtime/product-approval"
   chmod 600 "$root/runtime/product-approval"
@@ -1920,13 +2175,18 @@ PY
 }
 
 next_stage() {
-  local root="$1" lease="${2:-}"
+  local root="$1" lease="${2:-}" checkpoint=""
+  [[ ! -f "$root/runtime/product-checkpoint-import.json" ]] ||
+    checkpoint="$root/runtime/product-checkpoint-import.json"
   if [[ -n "$lease" ]]; then
     lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+      FACTORY_DEV_PRODUCT_CHECKPOINT="$checkpoint" \
       "$root/kit/scripts/next-stage.sh" --ticket "$TICKET" --lease "$lease" \
       --workdir "$root/worktrees/$TICKET"
   else
-    lane_env "$root" "$root/kit/scripts/next-stage.sh" --ticket "$TICKET" \
+    lane_env "$root" \
+      FACTORY_DEV_PRODUCT_CHECKPOINT="$checkpoint" \
+      "$root/kit/scripts/next-stage.sh" --ticket "$TICKET" \
       --workdir "$root/worktrees/$TICKET"
   fi
 }
@@ -2205,7 +2465,7 @@ assert value["active_reserve_micro_usd"] == 0, value
 }
 
 product_role_run() {
-  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence
+  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint=""
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables with: set -a; source '$root/runtime/product-db/$ticket.env'; set +a. Never print those variables."
   if [[ "$role" == reviewer ]]; then
@@ -2223,8 +2483,11 @@ PY
   envelope="$root/product/factory/ENVELOPE.env"
   [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||
     envelope="$root/runtime/product-envelope/$ticket.env"
+  [[ ! -f "$root/runtime/product-checkpoint-import.json" ]] ||
+    checkpoint="$root/runtime/product-checkpoint-import.json"
   subscription_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
     FACTORY_ENVELOPE="$envelope" \
+    FACTORY_DEV_PRODUCT_CHECKPOINT="$checkpoint" \
     FACTORY_DEV_BUDGET_DAY="$(cat "$root/runtime/product-envelope/budget-day" 2>/dev/null || true)" \
     FACTORY_DEV_PROVIDER_WAIT_SECONDS=300 \
     "$root/kit/scripts/run-agent.sh" --role "$role" --ticket "$ticket" \
@@ -2299,11 +2562,16 @@ product_role_for_stage() {
 
 product_completed_roles() {
   local root="$1" ticket="$2"
-  python3 - "$root/product/factory/runs" "$ticket" <<'PY'
-import pathlib, sys
-runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]
+  python3 - "$root/product/factory/runs" "$ticket" \
+    "$root/runtime/product-checkpoint-import.json" <<'PY'
+import json, pathlib, sys
+runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; checkpoint=pathlib.Path(sys.argv[3])
 order=("planner","spec-linter","test-author","builder","reviewer","narrator")
 completed=set()
+if checkpoint.is_file():
+    value=json.load(open(checkpoint,encoding="utf-8"))
+    records=[item for item in value["tickets"] if item["ticket"] == ticket]
+    if records: completed.update(records[0]["roles"])
 for path in runs.glob("*.meta"):
     values={}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -2664,6 +2932,165 @@ PY
   PRODUCT_TICKETS=("${selected[@]}")
 }
 
+export_product_checkpoint_internal() {
+  local root="$1" selected_csv="$2" output="$3" ticket branch head cleanup=1
+  local -a refs=()
+  require_lane_mode "$root" product
+  load_product_tickets "$root"
+  select_product_export_tickets "$selected_csv"
+  validate_runtime_paths "$root"
+  product_resume_drained "$root" ||
+    die "product checkpoint requires a fully drained current-day lane"
+  [[ "$output" == /* && ! -e "$output" ]] ||
+    die "product checkpoint output must be a new absolute directory"
+  refuse_production_path "$output"
+  [[ "$(stat -f '%Su:%Lp' "$(dirname "$output")")" == "$(id -un):700" ]] ||
+    die "product checkpoint parent must be owner-only"
+  mkdir -m 700 "$output"
+  trap '[[ "$cleanup" -eq 0 ]] || rm -rf "$output"' RETURN
+  subscription_env "$root" python3 "$root/kit/scripts/ledger-view.py" refresh \
+    --factory-root "$root/product" \
+    --durable-ledger "$root/product/factory/ledger.csv" \
+    --runtime-ledger "$root/product/factory/runtime-ledger.csv" \
+    --runs-dir "$root/product/factory/runs" >/dev/null ||
+    die "product checkpoint accounting could not be reduced"
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    branch="ticket/$ticket"
+    head="$(git -C "$root/origin.git" rev-parse "refs/heads/$branch")"
+    [[ -z "$(git -C "$root/worktrees/$ticket" status --porcelain --untracked-files=all)" ]] &&
+      git -C "$root/worktrees/$ticket" merge-base --is-ancestor "$head" HEAD ||
+      die "product checkpoint ticket is dirty or has no trusted-host prefix: $ticket"
+    refs+=("refs/heads/$branch")
+  done
+  git -C "$root/origin.git" bundle create "$output/seed.bundle" "${refs[@]}" >/dev/null ||
+    die "product checkpoint bundle could not be created"
+  chmod 600 "$output/seed.bundle"
+  python3 - "$root" "$output/seed.bundle" \
+    "$output/checkpoint.json" "${PRODUCT_TICKETS[@]}" <<'PY' ||
+import csv, hashlib, json, os, pathlib, re, stat, subprocess, sys
+from decimal import Decimal
+root=pathlib.Path(sys.argv[1]); bundle=pathlib.Path(sys.argv[2])
+output=pathlib.Path(sys.argv[3]); tickets=sys.argv[4:]
+source_path=root/"runtime/product-source.json"
+source=json.load(open(source_path,encoding="utf-8"))
+marker_path=root/"marker.json"; marker=json.load(open(marker_path,encoding="utf-8"))
+runs=root/"product/factory/runs"
+ledger=root/"product/factory/runtime-ledger.csv"
+manifests={}
+for path in runs.glob("*.meta"):
+    info=path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1: raise SystemExit(1)
+    values=dict(line.split("=",1) for line in
+                path.read_text(encoding="utf-8").splitlines() if "=" in line)
+    manifests[values.get("run_id")]=(path,values)
+rows=list(csv.DictReader(open(ledger,encoding="utf-8",newline="")))
+history=source.get("resume_original_tickets",source["tickets"])
+charges={ticket:0 for ticket in history}
+for _path,values in manifests.values():
+    ticket=values.get("ticket")
+    if ticket not in charges: continue
+    state=values.get("accounting_state")
+    if state in {"completed","abandoned_conservative","cancelled_conservative"}:
+        amount=values.get("effective_cost") or values.get("reserved_usd")
+        charges[ticket] += int(Decimal(amount)*1_000_000)
+records=[]
+for ticket in tickets:
+    work=root/"worktrees"/ticket; ref="refs/remotes/origin/ticket/"+ticket
+    successful=[]
+    for row in rows:
+        if row.get("ticket") != ticket or row.get("exit_status") != "0": continue
+        role=row.get("role"); run_id=row.get("run_id")
+        if role in {"reviewer","narrator"}: continue
+        if role not in {
+            "planner","spec-linter","test-author","builder"
+        }: raise SystemExit(1)
+        path,values=manifests.get(run_id,(None,{}))
+        out=path.with_suffix(".out") if path else None
+        if (not path or not out.is_file() or out.is_symlink() or
+            values.get("phase") != "completed" or
+            values.get("accounting_state") not in {"completed","abandoned_conservative"} or
+            values.get("contract_version") != "1.7.0" or
+            values.get("exit_status") != "0" or values.get("role_exit") != "ok" or
+            values.get("task_submitted") != "1" or values.get("go_issued") != "1" or
+            values.get("output_sha256") != hashlib.sha256(out.read_bytes()).hexdigest() or
+            not re.fullmatch(r"[0-9a-f]{40}",values.get("role_head_before",""))):
+            raise SystemExit(1)
+        successful.append({
+            "role":role,"run_id":run_id,
+            "manifest_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
+            "output_sha256":values["output_sha256"],
+            "role_head_before":values["role_head_before"],
+        })
+    if not successful: raise SystemExit(1)
+    git=lambda *args: subprocess.check_output(
+        ["git","-C",str(work),*args],text=True).strip()
+    text=subprocess.check_output(
+        ["git","-C",str(work),"show",ref+":factory/tickets/"+ticket+".md"],
+        text=True)
+    state=re.findall(r"^State:\s*(Ready|Planning|Building|Review)\s*$",text,re.I|re.M)
+    if len(state) != 1: raise SystemExit(1)
+    all_specs=[line.strip() for line in re.findall(
+        r"^\s*SPEC-LINT: (?:PASS|FAIL(?: — .+)?)\s*$",text,re.M)]
+    role_names=[run["role"] for run in successful]
+    sl=role_names.count("spec-linter")
+    if len(all_specs) < sl: raise SystemExit(1)
+    specs=all_specs[:sl]
+    failures=sum(line.startswith("SPEC-LINT: FAIL") for line in specs)
+    prefix=[]
+    for _ in range(failures): prefix += ["planner","spec-linter"]
+    if role_names == prefix:
+        stage="RUN planner"
+    else:
+        prefix += ["planner"]
+        if role_names == prefix:
+            stage="RUN spec-linter"
+        else:
+            if len(specs) != failures+1 or specs[-1] != "SPEC-LINT: PASS":
+                raise SystemExit(1)
+            prefix += ["spec-linter"]
+            if role_names == prefix:
+                stage="RUN test-author"
+            else:
+                prefix += ["test-author"]
+                if role_names == prefix:
+                    stage="RUN builder"
+                else:
+                    prefix += ["builder"]
+                    if role_names != prefix: raise SystemExit(1)
+                    stage="RUN reviewer"
+    route=subprocess.check_output(
+        ["git","-C",str(work),"show",ref+":factory/route-plans/"+ticket+".json"])
+    records.append({
+        "ticket":ticket,"head_sha":git("rev-parse",ref),
+        "head_tree":git("rev-parse",ref+"^{tree}"),
+        "ticket_blob":git("rev-parse",ref+":factory/tickets/"+ticket+".md"),
+        "route_plan_sha256":hashlib.sha256(route).hexdigest(),
+        "next_stage":stage,"state":state[0].title(),
+        "roles":successful,"spec_verdicts":specs,
+    })
+value={
+    "schema":"factory-dev-product-checkpoint/v1",
+    "base_sha":source["base_sha"],"base_tree":source["base_tree"],
+    "source_factory_sha":marker["kit_sha"],"source_factory_tree":marker["kit_tree"],
+    "source_marker_sha256":hashlib.sha256(marker_path.read_bytes()).hexdigest(),
+    "source_product_sha256":hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    "prior_accounting_sha256":source.get("seed_accounting_sha256"),
+    "seed_bundle_sha256":hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    "lane_charges_micro_usd":charges,
+    "tickets":records,
+}
+output.write_text(json.dumps(value,sort_keys=True,separators=(",",":"))+"\n",
+                  encoding="utf-8")
+os.chmod(output,0o600)
+PY
+    die "product checkpoint evidence is incomplete or ambiguous"
+  cleanup=0
+  trap - RETURN
+  echo "CHECKPOINT=$output/checkpoint.json"
+  echo "SEED_BUNDLE=$output/seed.bundle"
+  echo "TICKETS=${PRODUCT_TICKETS[*]}"
+}
+
 export_product_internal() {
   local root="$1" selected_csv="${2:-}" ticket base head branch export_dir reviewed
   require_lane_mode "$root" product
@@ -2697,17 +3124,25 @@ assert all(name == "terminal" for name in value.get("counts", {})), value
       die "product ticket remote does not match trusted host output: $ticket"
     grep -qx 'State: Review' "$root/worktrees/$ticket/factory/tickets/$ticket.md" ||
       die "product ticket is not in Review: $ticket"
-    python3 - "$root/product/factory/runs" "$ticket" <<'PY' ||
-import pathlib, sys
-root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; roles={}
+    python3 - "$root/product/factory/runs" "$ticket" \
+      "$root/runtime/product-checkpoint-import.json" <<'PY' ||
+import json, pathlib, sys
+root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; checkpoint=pathlib.Path(sys.argv[3])
+roles={}; current=set()
+if checkpoint.is_file():
+    value=json.load(open(checkpoint,encoding="utf-8"))
+    records=[item for item in value["tickets"] if item["ticket"] == ticket]
+    if records:
+        roles.update({role:"checkpoint" for role in records[0]["roles"]})
 for path in root.glob("*.meta"):
     values=dict(line.split("=",1) for line in path.read_text(errors="replace").splitlines() if "=" in line)
     if (values.get("ticket") == ticket and
         values.get("accounting_state") in {"completed", "abandoned_conservative"} and
         values.get("exit_status") == "0"):
-        roles[values.get("role")]=path
+        roles[values.get("role")]=path; current.add(values.get("role"))
 expected={"planner","spec-linter","test-author","builder","reviewer","narrator"}
-if set(roles) != expected: raise SystemExit(1)
+if set(roles) != expected or not {"reviewer","narrator"} <= current:
+    raise SystemExit(1)
 PY
       die "product ticket role evidence is incomplete: $ticket"
     git -C "$root/origin.git" bundle create "$export_dir/$ticket.bundle" \
@@ -3011,7 +3446,7 @@ case "$command" in
   product-plan)
     assert_macos
     source_repo=""; base_sha=""; ticket_csv=""; seed_bundle=""; seed_accounting=""
-    seed_lineage=""
+    seed_lineage=""; seed_checkpoint=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --source) source_repo="${2:-}"; shift 2 ;;
@@ -3020,6 +3455,7 @@ case "$command" in
         --seed-bundle) seed_bundle="${2:-}"; shift 2 ;;
         --seed-accounting) seed_accounting="${2:-}"; shift 2 ;;
         --seed-lineage) seed_lineage="${2:-}"; shift 2 ;;
+        --seed-checkpoint) seed_checkpoint="${2:-}"; shift 2 ;;
         *) usage ;;
       esac
     done
@@ -3034,14 +3470,27 @@ tickets=sys.argv[1:]
 if len(set(tickets)) != len(tickets) or any(not re.fullmatch(r"T-[0-9]+", t) for t in tickets):
     raise SystemExit(1)
 PY
-    if [[ -n "$seed_bundle" || -n "$seed_accounting" || -n "$seed_lineage" ]]; then
+    if [[ -n "$seed_bundle" || -n "$seed_accounting" || -n "$seed_lineage" ||
+          -n "$seed_checkpoint" ]]; then
       [[ -n "$seed_bundle" && -n "$seed_accounting" && -n "$seed_lineage" ]] || usage
       validate_product_seed_accounting "$seed_accounting" "$seed_bundle" "$base_sha" \
         "${PRODUCT_TICKETS[@]}"
+      if [[ -n "$seed_checkpoint" ]]; then
+        validate_product_checkpoint "$seed_checkpoint" "$seed_bundle" "$base_sha" \
+          "${PRODUCT_TICKETS[@]}"
+        validate_checkpoint_accounting "$seed_accounting" "$seed_checkpoint"
+      else
+        python3 - "$seed_accounting" <<'PY' ||
+import json, sys
+raise SystemExit(1 if json.load(open(sys.argv[1])).get("schema","").endswith("/v5") else 0)
+PY
+          die "checkpoint accounting requires its checkpoint"
+      fi
       consume_product_seed_authorization "$seed_accounting" \
         "$(sha256_file "$seed_accounting")" "$seed_lineage"
     fi
     PRODUCT_SEED_ACCOUNTING="$seed_accounting"; PRODUCT_SEED_LINEAGE="$seed_lineage"
+    PRODUCT_SEED_CHECKPOINT="$seed_checkpoint"
     root="$(create_lane product)"
     echo "ROOT=$root"
     if ! run_in_sandbox "$root" cursor __product-plan --root "$root"; then
@@ -3115,6 +3564,20 @@ PY
     else
       run_in_sandbox "$root" mock __product-export --root "$root"
     fi
+    ;;
+  product-checkpoint-export)
+    root=""; ticket_csv=""; output=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        --output) output="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && -n "$ticket_csv" && -n "$output" ]] || usage
+    root="$(validate_lane "$root")"
+    export_product_checkpoint_internal "$root" "$ticket_csv" "$output"
     ;;
   clean)
     root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage

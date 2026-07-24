@@ -74,6 +74,21 @@ Claude circuit breaker remains in force.
 
 Seeded retries require an owner-only, single-link accounting manifest bound to the exact seed-bundle digest and approved base SHA. They also require an owner-only lineage record in one shared artifact directory; it binds the manifest digest, a lineage ID derived from the base and complete historical ticket set, and the previous manifest digest. Create it only with `product-seed-lineage --accounting <manifest> --output <new-record>`; add `--parent-accounting <previous-manifest>` for a successor. The helper requires all artifacts to share one owner-only directory and will not overwrite a record. Caller-selected IDs are rejected. An atomic lineage-head advance permits exactly one child of a cumulative accounting snapshot, so separately authorized sibling lanes cannot both spend from stale totals. A busy, reused, detached, or stale lineage stops before lane creation. Its full historical ticket map is retained even when only a subset resumes. A seed resets role sequencing to `Ready` and discards prior role verdict lines because runtime role evidence is lane-bound and cannot be inferred safely from Git history alone. V2 keeps the default $100 ticket and $500 aggregate ceilings; an explicit operator-authored v3 record permits only the bounded $200 ticket and $700 aggregate development-proof ceilings. V4 permits an operator-authored per-ticket cap map up to $350 per ticket with an exact $1,000 or $1,500 aggregate ceiling. V3 and V4 also bind one authorization nonce and UTC budget day; planning consumes that nonce through the same lineage transaction, and day drift stops before reservation. Prior reservations reduce both limits, and the resulting per-ticket envelope remains the coordinator's atomic admission cap. Missing history, reuse, an exhausted selected ticket, aggregate exhaustion, unauthorized limits, bundle/base/lineage drift, duplicate tickets, seeded symlinks or submodules, and unsafe ticket files fail before provider execution.
 
+When a corrected development kit must replace the kit pinned by a drained
+failed lane, `product-checkpoint-export` may retain only the exact successful
+Contract 1.7 prefix before Reviewer. The owner-only checkpoint binds the old
+kit, base, trusted local branch heads, route evidence, successful manifests and
+outputs, and the aggregate seed bundle. Wrapper-failed attempts are charged but
+never carried as successful. A v5 accounting successor binds the checkpoint,
+its full historical-ticket charges, its exact parent accounting digest, and a
+fresh authorization nonce; the lineage transaction consumes both the nonce and
+checkpoint digest once. A later product plan may import checkpoint records for
+only a subset of its tickets, leaving omitted tickets at the clean source
+`Ready` boundary while retaining their historical spend. Import discards old
+routes, pins and approves the new kit and routes, and reproduces the exact next
+stage before issuing an approval. Reviewer and Narrator are never checkpointed
+and must run under the new kit before `product-export` succeeds.
+
 For sequential protected-base refreshes, keep using the existing committed
 `ticket-refresh/v1` attestation path. It already invalidates the old approval
 and requires a fresh Reviewer and Narrator bound after the exact merge. This
