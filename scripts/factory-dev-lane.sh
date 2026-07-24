@@ -1034,9 +1034,6 @@ PY
     fi
     git -C "$root/worktrees/$ticket" merge-base --is-ancestor \
       "$base" "refs/retry/$ticket" || die "product seed does not descend from the approved base"
-    python3 "$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py" \
-      "$root/worktrees/$ticket" "$base" "refs/retry/$ticket" ||
-      die "product seed contains a lane-local absolute path: $ticket"
     commits=()
     while IFS= read -r commit; do commits+=("$commit"); done < <(
       git -C "$root/worktrees/$ticket" rev-list --reverse \
@@ -1076,6 +1073,9 @@ if (not paths or any(
 )): raise SystemExit(1)
 PY
       die "product seed control boundary crosses an unsafe path: $ticket"
+    python3 "$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py" \
+      "$root/worktrees/$ticket" "${commits[0]}" "refs/retry/$ticket" ||
+      die "product seed contains a lane-local absolute path: $ticket"
     route_count=0
     index=1
     while [[ "$index" -lt "${#commits[@]}" ]]; do

@@ -1403,7 +1403,9 @@ git -C "$SEED_HISTORY" -c user.name=Base -c user.email=base@local \
   commit -qm 'Create base'
 SEED_HISTORY_BASE="$(git -C "$SEED_HISTORY" rev-parse HEAD)"
 printf '%s\n' kit >"$SEED_HISTORY/factory/KIT_PIN"
-printf '%s\n' project >"$SEED_HISTORY/factory/PROJECT.env"
+printf '%s\n' \
+  'WORKTREES_DIR="/private/tmp/nysa-sf-dev.trusted-control/worktrees"' \
+  >"$SEED_HISTORY/factory/PROJECT.env"
 git -C "$SEED_HISTORY" add factory
 git -C "$SEED_HISTORY" -c user.name='Factory Dev Lane' \
   -c user.email=factory-dev@local commit -qm \
@@ -1436,7 +1438,8 @@ git init -q --bare "$SEED_HISTORY_ROOT/origin.git"
 git -C "$SEED_HISTORY_ROOT/product" remote set-url origin \
   "$SEED_HISTORY_ROOT/origin.git"
 printf '%s\n' kit >"$SEED_HISTORY_ROOT/product/factory/KIT_PIN"
-printf '%s\n' project >"$SEED_HISTORY_ROOT/product/factory/PROJECT.env"
+printf 'WORKTREES_DIR="%s"\n' "$SEED_HISTORY_ROOT/worktrees" \
+  >"$SEED_HISTORY_ROOT/product/factory/PROJECT.env"
 git -C "$SEED_HISTORY_ROOT/product" add factory
 git -C "$SEED_HISTORY_ROOT/product" -c user.name='Factory Dev Lane' \
   -c user.email=factory-dev@local commit -qm \
@@ -1467,6 +1470,26 @@ if grep -Eq '^(SPEC-LINT:|reviewer round )' \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md"; then
   fail "retained ticket kept stale role evidence"
 fi
+grep -Fxq "WORKTREES_DIR=\"$SEED_HISTORY_ROOT/worktrees\"" \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/PROJECT.env" ||
+  fail "retained seed replaced the new lane configuration"
+git -C "$SEED_HISTORY" checkout -q ticket/T-1
+printf '%s\n' \
+  "source '/private/tmp/nysa-sf-dev.untrusted/runtime/product-db/T-1.env'" \
+  >"$SEED_HISTORY/app/untrusted-path"
+git -C "$SEED_HISTORY" add app/untrusted-path
+git -C "$SEED_HISTORY" -c user.name=Provider -c user.email=provider@local \
+  commit -qm 'Add untrusted stale lane path'
+git -C "$SEED_HISTORY" bundle create "$TMP/seed-history-untrusted.bundle" \
+  ticket/T-1
+chmod 600 "$TMP/seed-history-untrusted.bundle"
+if ( seed_product_worktrees "$SEED_HISTORY_ROOT" \
+    "$TMP/seed-history-untrusted.bundle" "$SEED_HISTORY_BASE" T-1 \
+    >"$OUT" 2>&1 ); then
+  fail "untrusted retained lane path unexpectedly succeeded"
+fi
+grep -Fq 'lane-local absolute path detected in role output' "$OUT" ||
+  fail "untrusted retained lane path did not fail at the seed sentinel"
 die() { return 1; }
 
 RESUME_ROOT="$TMP/resume-drained"
