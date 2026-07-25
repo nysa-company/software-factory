@@ -743,6 +743,15 @@ PRODUCT_TICKETS=(T-1 T-2)
 select_product_export_tickets T-2
 [[ "${PRODUCT_TICKETS[*]}" == T-2 ]] ||
   fail "product export did not select the requested completed sibling"
+LOAD_TICKETS_ROOT="$TMP/load-product-tickets"
+mkdir -p "$LOAD_TICKETS_ROOT/runtime"
+printf '%s\n' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1"],"resume_original_tickets":["T-1","T-2"]}' \
+  >"$LOAD_TICKETS_ROOT/runtime/product-source.json"
+eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
+load_product_tickets "$LOAD_TICKETS_ROOT" retained
+[[ "${PRODUCT_TICKETS[*]}" == "T-1 T-2" ]] ||
+  fail "product export cannot recover retained siblings after a targeted resume"
 PRODUCT_TICKETS=(T-1 T-2)
 if (die() { exit 1; }; select_product_export_tickets T-2,T-2) ||
    (die() { exit 1; }; select_product_export_tickets T-3); then

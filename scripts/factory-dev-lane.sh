@@ -2071,12 +2071,15 @@ PY
 }
 
 load_product_tickets() {
-  local root="$1" line serialized
+  local root="$1" binding="${2:-current}" line serialized
   PRODUCT_TICKETS=()
-  serialized="$(python3 - "$root/runtime/product-source.json" <<'PY'
+  serialized="$(python3 - "$root/runtime/product-source.json" "$binding" <<'PY'
 import json, re, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
-tickets=value.get("tickets", [])
+binding=sys.argv[2]
+if binding not in {"current","retained"}: raise SystemExit(1)
+tickets=(value.get("resume_original_tickets", value.get("tickets", []))
+         if binding == "retained" else value.get("tickets", []))
 if (value.get("schema") != "factory-dev-product-source/v1" or
     not 1 <= len(tickets) <= 4 or len(set(tickets)) != len(tickets) or
     any(not isinstance(ticket, str) or
@@ -3896,7 +3899,7 @@ export_product_internal() {
   local root="$1" selected_csv="${2:-}" requested_output="${3:-}"
   local ticket base head branch export_dir reviewed cleanup=1
   require_lane_mode "$root" product
-  load_product_tickets "$root"
+  load_product_tickets "$root" "${selected_csv:+retained}"
   select_product_export_tickets "$selected_csv"
   validate_runtime_paths "$root"
   [[ ! -e "$root/runtime/product-approval" ]] || die "product run approval is still unused"
