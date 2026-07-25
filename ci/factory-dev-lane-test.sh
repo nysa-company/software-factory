@@ -365,6 +365,7 @@ sed -n '/^product_resume_plan()/,/^}/p' "$LANE" |
   validate_runtime_paths() { :; }
   product_resume_drained() { :; }
   ensure_cursor_file_credential_config() { :; }
+  refresh_product_subscription_credentials() { :; }
   subscription_ready() { :; }
   product_role_for_stage() {
     case "$1" in
@@ -1426,6 +1427,40 @@ fi
 if product_role_for_stage AWAIT-OPERATOR >/dev/null; then
   fail "operator boundary was mapped to a provider role"
 fi
+eval "$(sed -n '/^refresh_product_subscription_credentials()/,/^}/p' "$LANE")"
+CREDENTIAL_ROOT="$TMP/credential-refresh"
+CREDENTIAL_SOURCE="$CREDENTIAL_ROOT/source"
+mkdir -p "$CREDENTIAL_ROOT/lane/session-home"/{.cursor,.codex,.claude} \
+  "$CREDENTIAL_SOURCE"/{.cursor,.codex,.claude}
+chmod 700 "$CREDENTIAL_ROOT/lane/session-home"/{.cursor,.codex,.claude}
+for credential in \
+  .cursor/auth.json .cursor/cli-config.json \
+  .codex/auth.json .claude/.credentials.json; do
+  printf 'stale:%s\n' "$credential" \
+    >"$CREDENTIAL_ROOT/lane/session-home/$credential"
+  chmod 600 "$CREDENTIAL_ROOT/lane/session-home/$credential"
+  printf 'fresh:%s\n' "$credential" >"$CREDENTIAL_SOURCE/$credential"
+  chmod 600 "$CREDENTIAL_SOURCE/$credential"
+done
+cursor_session_home() { printf '%s\n' "$CREDENTIAL_SOURCE"; }
+die() { return 1; }
+refresh_product_subscription_credentials "$CREDENTIAL_ROOT/lane" ||
+  fail "safe subscription credentials did not refresh"
+for credential in .codex/auth.json .claude/.credentials.json; do
+  cmp -s "$CREDENTIAL_SOURCE/$credential" \
+    "$CREDENTIAL_ROOT/lane/session-home/$credential" ||
+    fail "subscription credential remained stale: $credential"
+  [[ "$(stat -f '%Su:%Lp:%l' \
+    "$CREDENTIAL_ROOT/lane/session-home/$credential")" == "$(id -un):600:1" ]] ||
+    fail "refreshed subscription credential is unsafe: $credential"
+done
+grep -qx 'stale:.cursor/auth.json' \
+  "$CREDENTIAL_ROOT/lane/session-home/.cursor/auth.json" &&
+  grep -qx 'stale:.cursor/cli-config.json' \
+    "$CREDENTIAL_ROOT/lane/session-home/.cursor/cli-config.json" ||
+  fail "native credential refresh changed Cursor session state"
+[[ -z "$(find "$CREDENTIAL_ROOT/lane/session-home" -name '*.refresh.*' -print -quit)" ]] ||
+  fail "subscription credential refresh left a temporary file"
 eval "$(sed -n '/^product_prepare_role_state()/,/^}/p' "$LANE")"
 ROLE_STATE_ROOT="$TMP/role-state-parity"
 ROLE_STATE_TICKET="$ROLE_STATE_ROOT/worktrees/T-1/factory/tickets/T-1.md"
@@ -1448,8 +1483,10 @@ lane_env() {
     return 1
   state_file="$workdir/factory/tickets/$ticket.md"
   if [[ "$action" == materialize ]]; then
-    grep -qx 'Resume-State: Planning' "$state_file" || return 1
-    sed -i '' 's/^State: Blocked-Escalated$/State: Planning/' "$state_file"
+    target="$(sed -n 's/^Resume-State: //p' "$state_file")"
+    [[ "$target" == Planning || "$target" == Building ||
+       "$target" == Review ]] || return 1
+    sed -i '' "s/^State: Blocked-Escalated$/State: $target/" "$state_file"
     printf '%s\n' materialize >>"$ignored_root/transitions"
     return
   fi
@@ -1499,6 +1536,13 @@ product_prepare_role_state "$ROLE_STATE_ROOT" T-1 planner ||
 grep -qx 'State: Planning' "$ROLE_STATE_TICKET" &&
   [[ "$(cat "$ROLE_STATE_ROOT/transitions")" == materialize ]] ||
   fail "blocked resume did not reuse the shared operator materialization path"
+printf '%s\n' 'State: Blocked-Escalated' 'Resume-State: Building' \
+  >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+product_prepare_role_state "$ROLE_STATE_ROOT" T-1 builder ||
+  fail "blocked Builder could not materialize its exact resume state"
+grep -qx 'State: Building' "$ROLE_STATE_TICKET" ||
+  fail "blocked Builder resumed through an earlier phase"
 eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
 refuse_production_path() { :; }
 die() { return 1; }

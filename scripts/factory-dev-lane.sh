@@ -165,6 +165,56 @@ ensure_cursor_file_credential_config() {
   fi
 }
 
+refresh_product_subscription_credentials() {
+  local root="$1" source_home
+  source_home="$(cursor_session_home)" ||
+    die "subscription session home is unavailable"
+  python3 - "$source_home" "$root/session-home" <<'PY' ||
+import os, pathlib, stat, sys, tempfile
+source_root=pathlib.Path(sys.argv[1]); target_root=pathlib.Path(sys.argv[2])
+if source_root.resolve() == target_root.resolve():
+    raise SystemExit(1)
+payloads=[]
+for relative in (".codex/auth.json", ".claude/.credentials.json"):
+    source=source_root/relative; target=target_root/relative
+    for directory, exact in ((source.parent,False),(target.parent,True)):
+        info=directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            info.st_mode & 0o022 or exact and stat.S_IMODE(info.st_mode) != 0o700):
+            raise SystemExit(1)
+    before=source.lstat(); current=target.lstat()
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+        stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1 or
+        not stat.S_ISREG(current.st_mode) or current.st_uid != os.getuid() or
+        stat.S_IMODE(current.st_mode) != 0o600 or current.st_nlink != 1):
+        raise SystemExit(1)
+    fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
+    with os.fdopen(fd,"rb") as stream:
+        opened=os.fstat(stream.fileno()); data=stream.read(); after=os.fstat(stream.fileno())
+    identity=lambda value: (
+        value.st_dev,value.st_ino,value.st_mode,value.st_nlink,
+        value.st_uid,value.st_size,value.st_mtime_ns,
+    )
+    if identity(before) != identity(opened) or identity(opened) != identity(after):
+        raise SystemExit(1)
+    payloads.append((target,data))
+for target,data in payloads:
+    fd,temporary=tempfile.mkstemp(prefix="."+target.name+".refresh.",dir=target.parent)
+    try:
+        os.fchmod(fd,0o600)
+        with os.fdopen(fd,"wb") as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary,target)
+        directory=os.open(target.parent,os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    finally:
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
+PY
+    die "subscription credential refresh boundary is unsafe"
+}
+
 subscription_approval_hash() {
   local root="$1" session_home real adapter tool credential
   session_home="$root/session-home"
@@ -2140,6 +2190,7 @@ PY
   product_resume_drained "$root" ||
     die "product resume requires a fully drained, current-day lane"
   ensure_cursor_file_credential_config "$root"
+  refresh_product_subscription_credentials "$root"
   subscription_ready "$root"
   for ticket in "${selected[@]}"; do
     stage="$(product_resume_stage "$root" "$ticket")" ||
@@ -2905,13 +2956,14 @@ if len(matches) != 1 or matches[0] not in {"Ready", "Planning", "Building", "Rev
 print(matches[0])
 PY
 )" || return
-  if [[ "$current" == "Blocked-Escalated" && "$target" == "Planning" ]]; then
+  if [[ "$current" == "Blocked-Escalated" ]]; then
     lane_env "$root" "$SOURCE_ROOT/scripts/ticket-state.sh" \
       --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
       --action materialize >/dev/null || return
     current="$(sed -n 's/^State:[[:space:]]*//p' \
       "$root/worktrees/$ticket/factory/tickets/$ticket.md")"
-    [[ "$current" == "Planning" ]] || return
+    [[ "$current" == "Planning" || "$current" == "Building" ||
+       "$current" == "Review" ]] || return
   fi
   while [[ "$current" != "$target" ]]; do
     case "$current:$target" in

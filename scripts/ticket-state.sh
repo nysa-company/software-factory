@@ -100,12 +100,12 @@ elif [[ "$ACTION" == "transition" ]]; then
     echo "pending operator fields require materialization before factory transition" >&2
     exit 1
   }
-  python3 - "$TMP" "$STATE" <<'PY'
+  python3 - "$TMP" "$STATE" "$CONTRACT_VERSION" <<'PY'
 import re
 import sys
 from pathlib import Path
 
-path, target = Path(sys.argv[1]), sys.argv[2]
+path, target, contract = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 text = path.read_text()
 match = re.search(r"^State:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
 if not match:
@@ -113,9 +113,9 @@ if not match:
 current = match.group(1).strip().lower()
 target_key = target.strip().lower()
 states = {
-    "planning": "Planning", "building": "Building", "review": "Review",
+    "ready": "Ready", "planning": "Planning", "building": "Building", "review": "Review",
     "awaiting approval": "Awaiting Approval", "blocked-escalated": "Blocked-Escalated",
-    "done": "Done",
+    "approved": "Approved", "done": "Done",
 }
 allowed = {
     ("ready", "planning"), ("planning", "building"), ("building", "review"),
@@ -127,7 +127,28 @@ if target_key == "blocked-escalated" and current in {
     allowed.add((current, target_key))
 if (current, target_key) not in allowed or target_key not in states:
     raise SystemExit(f"illegal factory transition: {current} -> {target_key}")
-path.write_text(re.sub(r"^State:\s*.*$", f"State: {states[target_key]}", text, count=1, flags=re.MULTILINE | re.IGNORECASE))
+text = re.sub(
+    r"^State:\s*.*$", f"State: {states[target_key]}", text,
+    count=1, flags=re.MULTILINE | re.IGNORECASE,
+)
+if target_key == "blocked-escalated" and contract == "1.7.0":
+    resume = f"Resume-State: {states[current]}"
+    resume_fields = re.findall(
+        r"^Resume-State:\s*.*$", text, re.MULTILINE | re.IGNORECASE,
+    )
+    if len(resume_fields) > 1:
+        raise SystemExit("ticket contains duplicate Resume-State fields")
+    if resume_fields:
+        text = re.sub(
+            r"^Resume-State:\s*.*$", resume, text,
+            count=1, flags=re.MULTILINE | re.IGNORECASE,
+        )
+    else:
+        text = re.sub(
+            r"^(State:\s*.*)$", rf"\1\n{resume}", text,
+            count=1, flags=re.MULTILINE | re.IGNORECASE,
+        )
+path.write_text(text)
 PY
 elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
   cmp -s "$TMP" "$TICKET_FILE" || {

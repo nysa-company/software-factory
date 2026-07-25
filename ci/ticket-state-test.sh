@@ -46,7 +46,8 @@ EOF
 chmod +x "$REMOTE/hooks/pre-receive"
 
 ticket_state() {
-  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$REMOTE" FACTORY_ROOT="$PRODUCT" \
+  FACTORY_HERMES_CONTRACT_VERSION="${TEST_CONTRACT:-}" \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$REMOTE" FACTORY_ROOT="$PRODUCT" \
     "$ROOT/scripts/ticket-state.sh" "$@"
 }
 
@@ -108,6 +109,14 @@ PY
 
 ticket_state \
   --ticket T-700 --workdir "$PRODUCT" --action transition --state Planning >/dev/null
+grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
+TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" --action transition \
+  --state Blocked-Escalated >/dev/null
+grep -q '^State: Blocked-Escalated$' "$PRODUCT/factory/tickets/T-700.md"
+grep -q '^Resume-State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
+printf '{"tickets":{"T-700":{"operator":{"state":"Planning","state_base":"blocked-escalated"}}}}\n' \
+  > "$PRODUCT/factory/linear-map.json"
+ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
 grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
 if ticket_state \

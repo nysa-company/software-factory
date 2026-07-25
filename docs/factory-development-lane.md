@@ -81,6 +81,12 @@ batch also writes an owner-only timing report with
 coordinator admission/GO/submission/terminal timestamps, elapsed time,
 successful-role replay count, and maximum provider overlap.
 
+Before creating a resume approval, the controller refreshes the isolated native
+Codex and Claude credential copies from their owner-controlled source files;
+the new digests are therefore approval-bound. A blocking transition also records
+its actual current phase as `Resume-State`, and resolution materializes that
+phase rather than assuming Planner.
+
 Each completed ticket publishes an owner-only readiness record after its lease
 and role process drain. A selected-ticket `product-export` checks only that
 ticket's provider attempts, lease, claim, head, evidence, and worktree, so an

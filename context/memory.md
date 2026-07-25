@@ -625,3 +625,12 @@ Development checkpoint evidence resolves ticket heads from the same lane-local
 bare origin used to build the seed bundle. Worktree remote-tracking refs are
 non-authoritative caches; stale values cannot detach checkpoint metadata from
 the exported commits.
+
+## 2026-07-25 — Decision 28: Resume refreshes credentials and exact role phase
+
+Category: System change
+
+A drained development resume refreshes its isolated native Codex and Claude
+credential copies before computing the one-use approval. Blocking transitions overwrite
+`Resume-State` with the actual current phase, and the scheduler materializes
+that phase for any role rather than assuming Planner.
