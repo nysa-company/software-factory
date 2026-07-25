@@ -2441,6 +2441,69 @@ grep -Fq 'lane-local absolute path detected in role output' "$OUT" ||
   fail "untrusted retained lane path did not fail at the seed sentinel"
 die() { return 1; }
 
+eval "$(sed -n '/^recover_product_failed_role_commit()/,/^}/p' "$LANE")"
+FAILED_ROLE_ROOT="$TMP/failed-role-resume"
+FAILED_ROLE_WORK="$FAILED_ROLE_ROOT/worktrees/T-72"
+mkdir -p "$FAILED_ROLE_ROOT/product/factory/runs" \
+  "$FAILED_ROLE_ROOT/runtime" "$FAILED_ROLE_ROOT/worktrees"
+chmod 700 "$FAILED_ROLE_ROOT/runtime"
+git init -q --bare "$FAILED_ROLE_ROOT/origin.git"
+git init -q "$FAILED_ROLE_WORK"
+printf '%s\n' base >"$FAILED_ROLE_WORK/base"
+git -C "$FAILED_ROLE_WORK" add base
+git -C "$FAILED_ROLE_WORK" -c user.name=Base -c user.email=base@local \
+  commit -qm 'Create trusted role base'
+git -C "$FAILED_ROLE_WORK" branch -m ticket/T-72
+git -C "$FAILED_ROLE_WORK" remote add origin "$FAILED_ROLE_ROOT/origin.git"
+git -C "$FAILED_ROLE_WORK" push -qu origin ticket/T-72
+FAILED_ROLE_BASE="$(git -C "$FAILED_ROLE_WORK" rev-parse HEAD)"
+mkdir -p "$FAILED_ROLE_WORK/apps/api/src"
+printf '%s\n' 'test("fails before implementation", () => {})' \
+  >"$FAILED_ROLE_WORK/apps/api/src/pipeline.test.ts"
+git -C "$FAILED_ROLE_WORK" add apps/api/src/pipeline.test.ts
+git -C "$FAILED_ROLE_WORK" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm \
+  'T-72: author failing production pipeline tests'
+FAILED_ROLE_HEAD="$(git -C "$FAILED_ROLE_WORK" rev-parse HEAD)"
+FAILED_ROLE_MANIFEST="$FAILED_ROLE_ROOT/product/factory/runs/budget-failed.meta"
+printf '%s\n' \
+  'run_id=budget-failed' 'phase=completed' 'accounting_state=completed' \
+  'reserved_usd=10.00' 'effective_cost=10.2822515' 'exit_status=7' \
+  'go_issued=1' 'task_submitted=1' \
+  'started_at=2026-07-25T23:00:00Z' \
+  'ticket=T-72' 'role=test-author' 'role_exit=provider_failed' \
+  "role_head_before=$FAILED_ROLE_BASE" \
+  "role_remote_before=$FAILED_ROLE_BASE" >"$FAILED_ROLE_MANIFEST"
+chmod 600 "$FAILED_ROLE_MANIFEST"
+FAILED_ROLE_MANIFEST_BEFORE="$(sha256_file "$FAILED_ROLE_MANIFEST")"
+recover_product_failed_role_commit "$FAILED_ROLE_ROOT" T-72 ||
+  fail "explicit resume could not recover a budget-failed durable role commit"
+[[ "$(git -C "$FAILED_ROLE_WORK" rev-parse HEAD)" == "$FAILED_ROLE_BASE" &&
+   "$(git -C "$FAILED_ROLE_ROOT/origin.git" \
+      rev-parse refs/heads/ticket/T-72)" == "$FAILED_ROLE_BASE" ]] ||
+  fail "failed role output advanced the trusted ticket branch"
+[[ "$(git -C "$FAILED_ROLE_WORK" \
+      rev-parse refs/factory-dev/discarded/T-72/budget-failed)" == \
+      "$FAILED_ROLE_HEAD" ]] ||
+  fail "failed durable role commit was not retained for diagnosis"
+[[ "$(sha256_file "$FAILED_ROLE_MANIFEST")" == \
+   "$FAILED_ROLE_MANIFEST_BEFORE" ]] ||
+  fail "failed role accounting was rewritten during resume recovery"
+python3 - "$FAILED_ROLE_ROOT/runtime/product-discarded/T-72-budget-failed.json" \
+  "$FAILED_ROLE_HEAD" "$FAILED_ROLE_MANIFEST_BEFORE" <<'PY' ||
+import json, os, stat, sys
+path, head, manifest=sys.argv[1:]
+value=json.load(open(path,encoding="utf-8"))
+assert stat.S_IMODE(os.stat(path).st_mode)==0o600
+assert value["schema"]=="factory-dev-discarded-role/v1"
+assert value["head_sha"]==head
+assert value["manifest_sha256"]==manifest
+assert value["role"]=="test-author"
+PY
+  fail "failed role recovery receipt was incomplete"
+recover_product_failed_role_commit "$FAILED_ROLE_ROOT" T-72 ||
+  fail "failed role recovery was not idempotent"
+
 RESUME_ROOT="$TMP/resume-drained"
 mkdir -p "$RESUME_ROOT/kit/scripts" "$RESUME_ROOT/runtime/product-envelope" \
   "$RESUME_ROOT/product/factory/.dispatch-leases" \

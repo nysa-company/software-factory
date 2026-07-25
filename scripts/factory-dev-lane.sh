@@ -2143,6 +2143,94 @@ print(digest.hexdigest())
 PY
 }
 
+recover_product_failed_role_commit() {
+  local root="$1" ticket="$2" work branch head remote record
+  local run_id role manifest manifest_sha tree ref receipt
+  work="$root/worktrees/$ticket"
+  head="$(git -C "$work" rev-parse HEAD)" || return 1
+  remote="$(git -C "$root/origin.git" rev-parse "refs/heads/ticket/$ticket")" ||
+    return 1
+  [[ "$head" != "$remote" ]] || return 0
+  branch="$(git -C "$work" symbolic-ref --quiet --short HEAD)" || return 1
+  [[ "$branch" == "ticket/$ticket" &&
+     -z "$(git -C "$work" status --porcelain --untracked-files=all)" ]] ||
+    return 1
+  record="$(python3 - "$root/product/factory/runs" "$ticket" "$remote" <<'PY'
+import hashlib, os, pathlib, re, stat, sys
+runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; remote=sys.argv[3]
+candidates=[]
+for path in runs.glob("*.meta"):
+    info=path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+        stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+        raise SystemExit(1)
+    values={}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value=line.partition("=")
+        if not separator or key in values: raise SystemExit(1)
+        values[key]=value
+    if values.get("ticket") == ticket:
+        candidates.append((values.get("started_at",""),values.get("run_id",""),
+                           path,values))
+if not candidates: raise SystemExit(1)
+_, run_id, path, values=max(candidates)
+if (not re.fullmatch(r"[A-Za-z0-9._-]+",run_id) or
+    values.get("phase") != "completed" or
+    values.get("accounting_state") != "completed" or
+    values.get("role_exit") != "provider_failed" or
+    values.get("exit_status") in {None,"0"} or
+    values.get("go_issued") != "1" or values.get("task_submitted") != "1" or
+    values.get("role") not in {"planner","spec-linter","test-author","builder"} or
+    values.get("role_head_before") != remote or
+    values.get("role_remote_before") != remote):
+    raise SystemExit(1)
+print("\t".join((run_id,values["role"],str(path),
+                hashlib.sha256(path.read_bytes()).hexdigest())))
+PY
+  )" || return 1
+  IFS=$'\t' read -r run_id role manifest manifest_sha <<<"$record"
+  [[ -n "$run_id" && -n "$role" && -n "$manifest" &&
+     "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+  git -C "$work" merge-base --is-ancestor "$remote" "$head" || return 1
+  [[ -z "$(git -C "$work" rev-list --min-parents=2 "$remote..$head")" ]] ||
+    return 1
+  git -C "$work" diff --check "$remote..$head" || return 1
+  python3 "$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py" \
+    "$work" "$remote" "$head" || return 1
+  tree="$(git -C "$work" rev-parse "$head^{tree}")" || return 1
+  ref="refs/factory-dev/discarded/$ticket/$run_id"
+  receipt="$root/runtime/product-discarded/$ticket-$run_id.json"
+  mkdir -p -m 700 "$root/runtime/product-discarded" || return 1
+  if git -C "$work" show-ref --verify --quiet "$ref"; then
+    [[ "$(git -C "$work" rev-parse "$ref")" == "$head" ]] || return 1
+  else
+    git -C "$work" update-ref "$ref" "$head" "" || return 1
+  fi
+  python3 - "$receipt" "$ticket" "$role" "$run_id" "$head" "$tree" \
+    "$remote" "$ref" "$manifest_sha" <<'PY' || return 1
+import json, os, pathlib, sys
+path=pathlib.Path(sys.argv[1])
+keys=("ticket","role","run_id","head_sha","head_tree","trusted_base_sha",
+      "diagnostic_ref","manifest_sha256")
+value={"schema":"factory-dev-discarded-role/v1",
+       **dict(zip(keys,sys.argv[2:]))}
+raw=json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+if path.exists():
+    if path.is_symlink() or path.read_text(encoding="utf-8") != raw:
+        raise SystemExit(1)
+else:
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,"w",encoding="utf-8") as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+PY
+  git -C "$work" reset --hard "$remote" >/dev/null || return 1
+  [[ "$(git -C "$work" rev-parse HEAD)" == "$remote" &&
+     -z "$(git -C "$work" status --porcelain --untracked-files=all)" ]] ||
+    return 1
+  printf 'RECOVERED_FAILED_ROLE_COMMIT=%s:%s:%s\n' \
+    "$ticket" "$role" "$head" >&2
+}
+
 product_resume_stage() {
   local root="$1" ticket="$2" lease_json lease stage rc=0
   lease_json="$(subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" \
@@ -2378,6 +2466,8 @@ PY
   product_cursor_enabled "$root" && cursor_enabled=1
   subscription_ready "$root" "$cursor_enabled"
   for ticket in "${selected[@]}"; do
+    recover_product_failed_role_commit "$root" "$ticket" ||
+      die "product resume could not safely retain failed role output: $ticket"
     stage="$(product_resume_stage "$root" "$ticket")" ||
       die "product resume could not resolve the current stage: $ticket"
     product_role_for_stage "$stage" >/dev/null ||
