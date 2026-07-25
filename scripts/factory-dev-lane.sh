@@ -102,13 +102,17 @@ subscription_base_env() {
 }
 
 subscription_ready() {
-  local root="$1" i claude_ready=0
-  for i in 1 2 3; do
-    subscription_base_env "$root" "$root/home/timeout" 10 \
-      "$root/home/agent" status >/dev/null 2>&1 && break
-    [[ "$i" -lt 3 ]] || die "Cursor subscription authentication is unavailable"
-    sleep 1
-  done
+  local root="$1" cursor_enabled="${2:-1}" i claude_ready=0
+  [[ "$cursor_enabled" == 0 || "$cursor_enabled" == 1 ]] ||
+    die "Cursor readiness policy is invalid"
+  if [[ "$cursor_enabled" == 1 ]]; then
+    for i in 1 2 3; do
+      subscription_base_env "$root" "$root/home/timeout" 10 \
+        "$root/home/agent" status >/dev/null 2>&1 && break
+      [[ "$i" -lt 3 ]] || die "Cursor subscription authentication is unavailable"
+      sleep 1
+    done
+  fi
   for i in 1 2 3; do
     subscription_base_env "$root" "$root/home/timeout" 10 \
       "$root/home/codex" login status >/dev/null 2>&1 && break
@@ -123,8 +127,38 @@ subscription_ready() {
     sleep 1
   done
   if [[ "$claude_ready" == 0 ]]; then
-    echo "DEVELOPMENT_PROVIDER_FALLBACK=claude-code->cursor-anthropic" >&2
+    if [[ "$cursor_enabled" == 1 ]]; then
+      echo "DEVELOPMENT_PROVIDER_FALLBACK=claude-code->cursor-anthropic" >&2
+    else
+      die "Claude subscription authentication is unavailable and Cursor fallback is disabled"
+    fi
   fi
+}
+
+product_cursor_enabled() {
+  local root="$1" path="$root/runtime/product-cursor-fallback" value
+  [[ -f "$path" && ! -L "$path" &&
+     "$(stat -f '%Su:%Lp:%l' "$path")" == "$(id -un):600:1" ]] ||
+    die "product Cursor fallback policy is missing or unsafe"
+  value="$(cat "$path")"
+  [[ "$value" == enabled || "$value" == disabled ]] ||
+    die "product Cursor fallback policy is invalid"
+  [[ "$value" == enabled ]]
+}
+
+configure_product_cursor_fallback() {
+  local root="$1" bridge profile=cursor policy=enabled
+  bridge="$(cursor_tmp_bridge)"
+  if [[ -e "$bridge" || -L "$bridge" ]]; then
+    profile=subscription
+    policy=disabled
+    echo "DEVELOPMENT_PROVIDER_FALLBACK=cursor-disabled-bridge-busy" >&2
+  fi
+  ( set -C
+    umask 077
+    printf '%s\n' "$policy" >"$root/runtime/product-cursor-fallback"
+  ) || die "product Cursor fallback policy already exists"
+  printf '%s\n' "$profile"
 }
 
 codex_subscription_ready() {
@@ -637,7 +671,7 @@ prepare_product_dependencies() {
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0
   local -a subscription_tools
   subscription_adapter="${FACTORY_SUBSCRIPTION_ADAPTER:-codex}"
   [[ "$mode" != subscription || "$subscription_adapter" == codex ||
@@ -680,6 +714,10 @@ PY
     'status=$?; trap - EXIT; clean_lane %q >/dev/null 2>&1 || printf "factory-dev-lane: incomplete lane retained for inspection: %%s\\n" %q >&2; exit "$status"' \
     "$root" "$root"
   trap "$cleanup_trap" EXIT
+  if [[ "$mode" == product ]]; then
+    configure_product_cursor_fallback "$root" >/dev/null
+    product_cursor_enabled "$root" && cursor_enabled=1
+  fi
   if [[ -x /usr/bin/xcode-select ]]; then
     developer="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
     if [[ -n "$developer" && -x "$developer/usr/bin/git" &&
@@ -886,7 +924,8 @@ EOF
     git -C "$root/worktrees/$ticket" push -q -u origin "ticket/$ticket"
   done
   fi
-  if [[ "$mode" == cursor || "$mode" == product ]]; then
+  if [[ "$mode" == cursor ||
+        ( "$mode" == product && "$cursor_enabled" == 1 ) ]]; then
     cursor="$(cursor_bin)"
     bridge="$(cursor_tmp_bridge)"
     session_home="$(cursor_session_home)"
@@ -931,13 +970,14 @@ PY
       chmod 600 "$root/session-home/.claude/.credentials.json"
       subscription_tools+=(claude)
     fi
-    if [[ "$mode" == product ]]; then
+    if [[ "$mode" == product && "$cursor_enabled" == 1 ]]; then
       mkdir -m 700 "$root/session-home/.cursor"
       cp "$session_home/.cursor/auth.json" "$root/session-home/.cursor/auth.json"
       cp "$session_home/.cursor/cli-config.json" "$root/session-home/.cursor/cli-config.json"
-      chmod 600 "$root/session-home/.cursor/"*.json \
-        "$root/session-home/.claude/.credentials.json"
+      chmod 600 "$root/session-home/.cursor/"*.json
     fi
+    [[ "$mode" != product ]] ||
+      chmod 600 "$root/session-home/.claude/.credentials.json"
     for tool in "${subscription_tools[@]}"; do
       resolved="$(command -v "$tool" 2>/dev/null || true)"
       [[ "$resolved" == /* && -x "$resolved" ]] || die "$tool CLI is unavailable"
@@ -1780,8 +1820,13 @@ lane_cursor_env() {
 subscription_env() {
   local root="$1" cursor_version codex_version claude_version
   shift
-  cursor_version="$(subscription_base_env "$root" \
-    "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  if [[ -f "$root/runtime/product-cursor-fallback" ]] &&
+     ! product_cursor_enabled "$root"; then
+    cursor_version=disabled
+  else
+    cursor_version="$(subscription_base_env "$root" \
+      "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  fi
   codex_version="$(subscription_base_env "$root" \
     "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   claude_version="$(subscription_base_env "$root" \
@@ -1809,8 +1854,9 @@ claude_subscription_env() {
 }
 
 product_approval_hash() {
-  local root="$1" ticket tool real session_home="$1/session-home" cursor_home
+  local root="$1" ticket tool real session_home="$1/session-home" cursor_home cursor_enabled=0
   cursor_home="$session_home"
+  product_cursor_enabled "$root" && cursor_enabled=1
   {
     sha256_file "$root/marker.json"
     sha256_file "$root/runtime/product-source.json"
@@ -1818,6 +1864,7 @@ product_approval_hash() {
     sha256_file "$root/home/.factory/global.env"
     sha256_file "$root/runtime/provider-policy.json"
     sha256_file "$root/runtime/provider-activation.json"
+    sha256_file "$root/runtime/product-cursor-fallback"
     sha256_file "$root/runtime/cursor.sb"
     sha256_file "$root/runtime/native.sb"
     sha256_file "$root/runtime/claude-settings.json"
@@ -1834,7 +1881,7 @@ import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
 )" "$(sha256_file "$root/runtime/docker")"
-    for tool in agent codex claude; do
+    for tool in codex claude; do
       real="$(python3 - "$root/home/$tool" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
@@ -1843,8 +1890,17 @@ PY
       printf '%s\n' "$real" "$(sha256_file "$real")" \
         "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
     done
-    sha256_file "$cursor_home/.cursor/auth.json"
-    sha256_file "$cursor_home/.cursor/cli-config.json"
+    if [[ "$cursor_enabled" == 1 ]]; then
+      real="$(python3 - "$root/home/agent" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      printf '%s\n' "$real" "$(sha256_file "$real")" \
+        "$(subscription_base_env "$root" "$root/home/agent" --version 2>/dev/null | head -n1)"
+      sha256_file "$cursor_home/.cursor/auth.json"
+      sha256_file "$cursor_home/.cursor/cli-config.json"
+    fi
     sha256_file "$session_home/.codex/auth.json"
     sha256_file "$session_home/.claude/.credentials.json"
     for ticket in "${PRODUCT_TICKETS[@]}"; do
@@ -2040,6 +2096,7 @@ PY
     for path in \
       "$root/runtime/provider-policy.json" \
       "$root/runtime/provider-activation.json" \
+      "$root/runtime/product-cursor-fallback" \
       "$root/runtime/product-containers.json" \
       "$root/runtime/product-envelope/global.env" \
       "$root/runtime/product-envelope/budget-day" \
@@ -2169,7 +2226,7 @@ PY
 
 product_resume_plan() {
   local root="$1"; shift
-  local selected_csv="$1" ticket stage basis approval_hash
+  local selected_csv="$1" ticket stage basis approval_hash cursor_enabled=0
   local -a selected
   require_lane_mode "$root" product
   load_product_tickets "$root"
@@ -2191,7 +2248,8 @@ PY
     die "product resume requires a fully drained, current-day lane"
   ensure_cursor_file_credential_config "$root"
   refresh_product_subscription_credentials "$root"
-  subscription_ready "$root"
+  product_cursor_enabled "$root" && cursor_enabled=1
+  subscription_ready "$root" "$cursor_enabled"
   for ticket in "${selected[@]}"; do
     stage="$(product_resume_stage "$root" "$ticket")" ||
       die "product resume could not resolve the current stage: $ticket"
@@ -2293,7 +2351,8 @@ PY
 }
 
 product_probe_and_plan() {
-  local root="$1" cursor_version codex_version claude_version ticket profile profile_hash approval_hash expected
+  local root="$1" cursor_enabled=0 cursor_version codex_version claude_version
+  local ticket profile profile_hash approval_hash expected
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
@@ -2303,9 +2362,14 @@ product_probe_and_plan() {
     die "product envelope is invalid"
   ensure_product_budget_day "$root" "$DAILY_CAP_USD" ||
     die "product budget day is missing, stale, or unsafe"
-  subscription_ready "$root"
-  cursor_version="$(subscription_base_env "$root" \
-    "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  product_cursor_enabled "$root" && cursor_enabled=1
+  subscription_ready "$root" "$cursor_enabled"
+  if [[ "$cursor_enabled" == 1 ]]; then
+    cursor_version="$(subscription_base_env "$root" \
+      "$root/home/agent" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
+  else
+    cursor_version=disabled
+  fi
   codex_version="$(subscription_base_env "$root" \
     "$root/home/codex" --version 2>/dev/null | awk 'NF {print $NF; exit}')"
   claude_version="$(subscription_base_env "$root" \
@@ -2314,7 +2378,7 @@ product_probe_and_plan() {
     die "product subscription CLI version probe was empty"
   cat >"$root/home/.factory/global.env" <<EOF
 $(cat "$root/runtime/product-envelope/global.env" 2>/dev/null || printf 'GLOBAL_DAILY_CAP_USD=%s\n' "$DAILY_CAP_USD")
-FACTORY_CURSOR_FALLBACK_ENABLED=1
+FACTORY_CURSOR_FALLBACK_ENABLED=$cursor_enabled
 AGENT_CLI_CREDENTIAL_STORE=file
 CURSOR_AGENT_VERSION=$cursor_version
 CODEX_PINNED=$codex_version
@@ -2339,9 +2403,10 @@ PY
     subscription_env "$root" "$root/kit/scripts/model-control.sh" pin \
       --ticket "$ticket" --workdir "$root/worktrees/$ticket" >/dev/null
   done
-  python3 - "$root" "${PRODUCT_TICKETS[@]}" <<'PY' ||
+  python3 - "$root" "$cursor_enabled" -- "${PRODUCT_TICKETS[@]}" <<'PY' ||
 import json, pathlib, sys
-root, *tickets=sys.argv[1:]
+root, cursor_enabled, separator, *tickets=sys.argv[1:]
+if separator != "--": raise SystemExit(1)
 production={"planner","builder","narrator"}; checking={"spec-linter","test-author","reviewer"}
 for ticket in tickets:
     plan=json.loads(pathlib.Path(root,"worktrees",ticket,"factory","route-plans",ticket+".json").read_text())
@@ -2352,6 +2417,10 @@ for ticket in tickets:
         raise SystemExit("native production route drifted")
     if any(selections[r]["adapter"] not in {"claude-code","cursor-anthropic"} for r in checking):
         raise SystemExit("checking route drifted outside approved Anthropic adapters")
+    if cursor_enabled == "0" and any(
+        value["adapter"].startswith("cursor-") for value in selections.values()
+    ):
+        raise SystemExit("native-only route unexpectedly selected Cursor")
 PY
     die "product route-family or circuit-breaker validation failed"
   python3 - "$root/runtime/provider-policy.json" \
@@ -2404,7 +2473,7 @@ PY
   chmod 600 "$root/runtime/product-approval"
   echo "APPROVE_HASH=$approval_hash"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
-  echo "PROVIDER_LIMITS=global:4,cursor:2,codex:4,claude:4"
+  echo "PROVIDER_LIMITS=global:4,cursor:$((2 * cursor_enabled)),codex:4,claude:4"
 }
 
 next_stage() {
@@ -3164,7 +3233,7 @@ PY
 
 run_product_internal() {
   local root="$1" supplied="$2" readiness_proven="${3:-0}"
-  local stored day i ticket lease_json stage role account family now
+  local stored day i ticket lease_json stage role account family now cursor_enabled=0
   local done_count failed_count blocked_count progress pid rc prior
   local rollback_failed resume_csv blocked_csv
   local batch_started batch_finished completed remaining
@@ -3182,7 +3251,9 @@ run_product_internal() {
     die "product approval inputs drifted after planning"
   [[ "$readiness_proven" == 0 || "$readiness_proven" == 1 ]] ||
     die "product readiness proof is invalid"
-  [[ "$readiness_proven" == 1 ]] || subscription_ready "$root"
+  product_cursor_enabled "$root" && cursor_enabled=1
+  [[ "$readiness_proven" == 1 ]] ||
+    subscription_ready "$root" "$cursor_enabled"
   subscription_provider_idle || die "another subscription provider call is active"
   mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
   batch_started="$(date +%s)"
@@ -3920,13 +3991,17 @@ PY
         return 1
       fi
     }
-    if [[ "$profile" == cursor ]]; then
+    if [[ "$profile" == cursor || "$profile" == product-cursor ]]; then
       bridge="$(cursor_tmp_bridge)"
       if [[ -e "$bridge" || -L "$bridge" ]]; then
-        [[ -d "$bridge" && ! -L "$bridge" ]] &&
-          subscription_provider_idle &&
-          cleanup_empty_cursor_bridge "$bridge" ||
-          die "Cursor temporary bridge path is already in use"
+        if [[ "$profile" == product-cursor ]]; then
+          die "Cursor temporary bridge path became busy after product planning"
+        else
+          [[ -d "$bridge" && ! -L "$bridge" ]] &&
+            subscription_provider_idle &&
+            cleanup_empty_cursor_bridge "$bridge" ||
+            die "Cursor temporary bridge path is already in use"
+        fi
       fi
       mkdir -p "$root/runtime/cursor-tmp"
       chmod 700 "$root/runtime/cursor-tmp"
@@ -3935,7 +4010,8 @@ PY
       trap cleanup_bridge EXIT HUP INT TERM
     fi
     cd "$root"
-    if [[ "$profile" == cursor || "$profile" == subscription ]]; then
+    if [[ "$profile" == cursor || "$profile" == product-cursor ||
+          "$profile" == subscription ]]; then
       env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
         PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
         FACTORY_CURSOR_SESSION_HOME="$cursor_home" \
@@ -4122,8 +4198,11 @@ PY
     PRODUCT_SEED_ACCOUNTING="$seed_accounting"; PRODUCT_SEED_LINEAGE="$seed_lineage"
     PRODUCT_SEED_CHECKPOINT="$seed_checkpoint"
     root="$(create_lane product)"
+    product_profile=subscription
+    product_cursor_enabled "$root" && product_profile=product-cursor
     plan_output=""
-    if ! plan_output="$(run_in_sandbox "$root" cursor __product-plan --root "$root")"; then
+    if ! plan_output="$(run_in_sandbox "$root" "$product_profile" \
+      __product-plan --root "$root")"; then
       echo "ROOT=$root" >&2
       die "product planning failed; lane retained for inspection"
     fi
@@ -4163,13 +4242,17 @@ PY
     done
     [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
+    product_profile=subscription
+    product_cursor_enabled "$root" && product_profile=product-cursor
     if python3 - "$root/runtime/product-source.json" <<'PY'
 import json, sys
 raise SystemExit(0 if "resume_sha256" in json.load(open(sys.argv[1])) else 1)
 PY
     then
       resume=1
-      subscription_ready "$root"
+      cursor_enabled=0
+      product_cursor_enabled "$root" && cursor_enabled=1
+      subscription_ready "$root" "$cursor_enabled"
       validate_product_resume_basis "$root" 1 ||
         die "product resume basis drifted before execution"
     fi
@@ -4179,7 +4262,7 @@ PY
       else
         exit $?
       fi
-    elif run_in_sandbox "$root" cursor __product-run \
+    elif run_in_sandbox "$root" "$product_profile" __product-run \
       --root "$root" --approve-hash "$approve"; then
       :
     else

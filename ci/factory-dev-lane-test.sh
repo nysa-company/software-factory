@@ -1059,6 +1059,36 @@ EOF
       "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
   [[ -L "$BRIDGE_CLAIM_PATH" ]] ||
     fail "symlink Cursor bridge refusal removed the link"
+  bridge_target_before="$(readlink "$BRIDGE_CLAIM_PATH")"
+  expect_failure "product Cursor bridge claim race" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" product-cursor verify \
+      "$BRIDGE_CLAIM_PATH" "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -L "$BRIDGE_CLAIM_PATH" &&
+     "$(readlink "$BRIDGE_CLAIM_PATH")" == "$bridge_target_before" ]] ||
+    fail "product Cursor bridge race changed the foreign path"
+)
+(
+  eval "$(sed -n '/^configure_product_cursor_fallback()/,/^}/p' "$LANE")"
+  FALLBACK_ROOT="$TMP/product-cursor-policy"
+  FALLBACK_BRIDGE="$TMP/product-cursor-policy-bridge"
+  mkdir -p "$FALLBACK_ROOT/runtime"
+  cursor_tmp_bridge() { printf '%s\n' "$FALLBACK_BRIDGE"; }
+  die() { echo "$*" >&2; exit 1; }
+  [[ "$(configure_product_cursor_fallback "$FALLBACK_ROOT")" == cursor ]] ||
+    fail "available Cursor bridge did not retain the optional fallback"
+  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == enabled ]] ||
+    fail "available Cursor bridge wrote the wrong lane policy"
+
+  rm -rf "$FALLBACK_ROOT"
+  mkdir -p "$FALLBACK_ROOT/runtime" "$FALLBACK_BRIDGE"
+  printf '%s\n' do-not-touch >"$FALLBACK_BRIDGE/foreign-state"
+  bridge_before="$(cksum "$FALLBACK_BRIDGE/foreign-state")"
+  [[ "$(configure_product_cursor_fallback "$FALLBACK_ROOT")" == subscription ]] ||
+    fail "busy Cursor bridge blocked native-only product planning"
+  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == disabled ]] ||
+    fail "busy Cursor bridge did not disable the lane's Cursor fallback"
+  [[ "$(cksum "$FALLBACK_BRIDGE/foreign-state")" == "$bridge_before" ]] ||
+    fail "native-only planning changed the pre-existing Cursor bridge"
 )
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
