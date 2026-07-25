@@ -10,8 +10,13 @@ FAKE_SANDBOX="$TMP/sandbox-exec"
 FAKE_CURSOR="$TMP/cursor-agent"
 OUT="$TMP/out"
 CALLER_HOME="$TMP/caller-home"
+SOCKET_PROBE_ROOT=""
 
 cleanup() {
+  if [[ "$SOCKET_PROBE_ROOT" == /private/tmp/nysa-sb.* ]]; then
+    chmod -R u+w "$SOCKET_PROBE_ROOT" 2>/dev/null || true
+    rm -rf "$SOCKET_PROBE_ROOT"
+  fi
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
@@ -57,7 +62,7 @@ cursor_env() {
   "$@"
 }
 
-clean_cmd() { TMPDIR="$TMP/lanes" bash "$LANE" clean --root "$1"; }
+clean_cmd() { test_env bash "$LANE" clean --root "$1"; }
 
 mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" "$CALLER_HOME/.cursor" \
   "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents" \
@@ -139,6 +144,10 @@ grep -Fq 'PROVIDER_SPLIT=$selected:4' <<<"$subscription_run_source" ||
 grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lost Codex readiness"
 create_lane_source="$(sed -n '/^create_lane()/,/^validate_lane()/p' "$LANE")"
+lane_tmp_source="$(sed -n '/^lane_tmp_parent()/,/^}/p' "$LANE")"
+grep -Fq 'physical /private/tmp' <<<"$lane_tmp_source" &&
+  grep -Fq 'if [[ "$TEST_MODE" -eq 1 ]]' <<<"$lane_tmp_source" ||
+  fail "real lane root is not short while the test root remains isolated"
 grep -Fq 'physical "$(dirname "$claude_token_source")"' <<<"$create_lane_source" ||
   fail "Claude token source was resolved as a directory instead of a file"
 grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
@@ -170,7 +179,7 @@ fi
 if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec &&
       -x /usr/bin/ruby ]]; then
   eval "$seatbelt_source"
-  SOCKET_PROBE_ROOT="$TMP/native-seatbelt-socket"
+  SOCKET_PROBE_ROOT="$(mktemp -d /private/tmp/nysa-sb.XXXXXX)"
   mkdir -p "$SOCKET_PROBE_ROOT"/{home,runtime/cli-attempts/A/tmp,tmp}
   chmod 700 "$SOCKET_PROBE_ROOT" "$SOCKET_PROBE_ROOT"/{home,runtime,tmp} \
     "$SOCKET_PROBE_ROOT/runtime/cli-attempts" \
@@ -190,6 +199,8 @@ if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec &&
     "$SOCKET_PROBE_ROOT/tmp/not-attempt.sock"
   grep -Fxq '(allow network-bind)' "$SOCKET_PROBE_ROOT/runtime/native.sb" &&
     fail "native Seatbelt gained blanket socket bind access"
+  rm -rf "$SOCKET_PROBE_ROOT"
+  SOCKET_PROBE_ROOT=""
 fi
 eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
 sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
@@ -2628,7 +2639,12 @@ rmdir "$lane_root"
 mv "$root_saved" "$lane_root"
 
 mkdir "$TMP/other-parent"
-expect_failure "TMP parent drift cleanup" env TMPDIR="$TMP/other-parent" \
+expect_failure "TMP parent drift cleanup" env \
+  FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DEV_LANE_UNAME=Darwin \
+  FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
+  FACTORY_DEV_LANE_ACCOUNT_HOME="$CALLER_HOME" \
+  HOME="$CALLER_HOME" TMPDIR="$TMP/other-parent" \
   bash "$LANE" clean --root "$lane_root"
 
 printf 'pid=%s\n' "$$" >"$lane_root/runtime/live-cleanup-test.pid"
