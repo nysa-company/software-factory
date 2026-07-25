@@ -2816,7 +2816,14 @@ product_role_run() {
   local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint="" rc=0
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables from the ticket worktree with: set -a; source \"\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env\"; set +a. Never print those variables."
-  if [[ "$role" == reviewer ]]; then
+  if [[ "$role" == planner || "$role" == spec-linter ]]; then
+    instruction="$instruction Efficiency boundary: inspect only. Do not run builds, tests, repo-check, or secret-scan; trusted later stages own those checks."
+  elif [[ "$role" == test-author ]]; then
+    instruction="$instruction Efficiency boundary: run only the focused tests you add or change, once to prove the missing behavior. Do not run the full suite, repo-check, or secret-scan; trusted publication owns broad deterministic gates."
+  elif [[ builder == "$role" ]]; then
+    instruction="$instruction Efficiency boundary: run the build and focused tests for this ticket only. Do not run the full suite, repo-check, or secret-scan; trusted publication owns broad deterministic gates."
+  elif [[ "$role" == reviewer ]]; then
+    instruction="$instruction Efficiency boundary: use existing CI and role evidence, and run only a focused read-only check needed to resolve a concrete uncertainty. Do not rerun the full suite, repo-check, or secret-scan; trusted publication owns broad deterministic gates."
     instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES. If requesting changes, add exactly one standalone FIX-OWNER: builder, FIX-OWNER: test-author, or FIX-OWNER: both line; approvals must not include FIX-OWNER."
   elif [[ "$role" == narrator ]]; then
     evidence="$(python3 - "$root/product/factory/runtime-ledger.csv" "$ticket" <<'PY'

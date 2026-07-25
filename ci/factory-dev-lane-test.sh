@@ -915,6 +915,17 @@ printf '%s\n' "$product_role_source" |
 printf '%s\n' "$product_role_source" |
   grep -Fq 'later publication gate and must not block this development bundle' ||
   fail "development Narrator can still block on the later publication preview"
+for boundary in \
+  'planner || "$role" == spec-linter' \
+  'run only the focused tests you add or change' \
+  'run the build and focused tests for this ticket only' \
+  'run only a focused read-only check needed to resolve a concrete uncertainty'; do
+  grep -Fq "$boundary" <<<"$product_role_source" ||
+    fail "development role efficiency boundary is incomplete: $boundary"
+done
+[[ "$(grep -Fc 'trusted publication owns broad deterministic gates' \
+  <<<"$product_role_source")" -eq 3 ]] ||
+  fail "development broad-check ownership is not exact"
 eval "$(sed -n '/^validate_product_dev_bundle()/,/^}/p' "$LANE")"
 cat >"$TMP/http-backend-bundle.md" <<'EOF'
 # Development-only evidence — not a production attestation
