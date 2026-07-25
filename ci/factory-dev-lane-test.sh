@@ -1184,6 +1184,14 @@ EOF
     fail "available Cursor bridge wrote the wrong lane policy"
 
   rm -rf "$FALLBACK_ROOT"
+  mkdir -p "$FALLBACK_ROOT/runtime"
+  [[ "$(FACTORY_DEV_LANE_CURSOR_FALLBACK=0 \
+    configure_product_cursor_fallback "$FALLBACK_ROOT")" == subscription ]] ||
+    fail "explicit native-only policy retained Cursor fallback"
+  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == disabled ]] ||
+    fail "explicit native-only policy wrote the wrong lane policy"
+
+  rm -rf "$FALLBACK_ROOT"
   mkdir -p "$FALLBACK_ROOT/runtime" "$FALLBACK_BRIDGE"
   printf '%s\n' do-not-touch >"$FALLBACK_BRIDGE/foreign-state"
   bridge_before="$(cksum "$FALLBACK_BRIDGE/foreign-state")"

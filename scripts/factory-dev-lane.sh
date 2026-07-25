@@ -149,7 +149,11 @@ product_cursor_enabled() {
 configure_product_cursor_fallback() {
   local root="$1" bridge profile=cursor policy=enabled
   bridge="$(cursor_tmp_bridge)"
-  if [[ -e "$bridge" || -L "$bridge" ]]; then
+  if [[ "${FACTORY_DEV_LANE_CURSOR_FALLBACK:-1}" == 0 ]]; then
+    profile=subscription
+    policy=disabled
+    echo "DEVELOPMENT_PROVIDER_FALLBACK=cursor-disabled-by-policy" >&2
+  elif [[ -e "$bridge" || -L "$bridge" ]]; then
     profile=subscription
     policy=disabled
     echo "DEVELOPMENT_PROVIDER_FALLBACK=cursor-disabled-bridge-busy" >&2
