@@ -197,13 +197,17 @@ if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
     fail "Claude role cannot commit beneath the Factory outer Seatbelt"
   [[ "$("$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" rev-list --count HEAD)" -eq 2 ]] ||
     fail "outer Seatbelt role commit was not durable"
-  /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
-    /usr/bin/ruby -rsocket -e 's=UNIXServer.new(ARGV[0]); s.close' \
-    "$OUTER_PROBE_ROOT/runtime/cli-attempts/A/tmp/srt-mux.sock" ||
+  ( cd "$OUTER_PROBE_ROOT"
+    /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+      /usr/bin/ruby --disable-gems -rsocket \
+      -e 's=UNIXServer.new(ARGV[0]); s.close' \
+      "$OUTER_PROBE_ROOT/runtime/cli-attempts/A/tmp/srt-mux.sock" ) ||
     fail "Claude attempt-local Unix socket is blocked by the outer Seatbelt"
-  if /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
-    /usr/bin/ruby -rsocket -e 's=UNIXServer.new(ARGV[0]); s.close' \
-    "$OUTER_PROBE_ROOT/tmp/outside.sock" 2>/dev/null; then
+  if ( cd "$OUTER_PROBE_ROOT"
+    /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+      /usr/bin/ruby --disable-gems -rsocket \
+      -e 's=UNIXServer.new(ARGV[0]); s.close' \
+      "$OUTER_PROBE_ROOT/tmp/outside.sock" 2>/dev/null ); then
     fail "native Seatbelt permits a Unix socket outside the attempt root"
   fi
 fi
