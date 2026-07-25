@@ -74,6 +74,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The Contract 1.7 development scheduler authenticates durable contract-blocked role manifests before moving only that ticket to Blocked-Escalated. Its lease drains, siblings continue, and the blocker is excluded from ordinary resume instructions.
 - Isolated broker-stage cancellation and deterministic failure release capacity only after token revocation and upstream-request drain are both proven; otherwise the conservative full reservation remains active. Executor success is not durable until bound-container removal succeeds.
 - Contract 1.7 concurrent adapters keep timeout and provider descendants in one Factory-owned process group with a kernel-derived start identity. Completed development tickets emit owner-only readiness records and may export independently after only their own attempts, lease, claim, head, and evidence drain. Spec-linter reserves FAIL for material ambiguity or trust/data/external-effect risk and records non-blocking exhaustive coverage as `SPEC-WARN`.
+- Cursor Reviewer reconciliation normalizes only exact, matching background-check callback restatements, including the bold `REQUEST CHANGES — FIX-OWNER` form. Missing summaries, conflicting owners or verdicts, and multiple verdict-bearing assistants still fail closed.
 
 ## Log
 
@@ -634,3 +635,12 @@ A drained development resume refreshes its isolated native Codex and Claude
 credential copies before computing the one-use approval. Blocking transitions overwrite
 `Resume-State` with the actual current phase, and the scheduler materializes
 that phase for any role rather than assuming Planner.
+
+## 2026-07-25 — Decision 29: Matching Cursor callbacks are one verdict
+
+Category: System change
+
+Cursor may attach a late background-check notice to an otherwise canonical
+Reviewer result. The shared parser accepts the observed bold summary only when
+its verdict and repair owner exactly match the preceding corrupted callback;
+ambiguity and contradiction remain refusals.
