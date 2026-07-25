@@ -660,7 +660,8 @@ default-deny filesystem boundary.
 Readiness resolves and pins that executable's exact semantic version before
 the shared backend probe, avoiding a stale default while preserving
 approval-bound version and executable drift checks.
-Claude's nested sandbox creates a Unix control socket; the outer Seatbelt
-profile permits binds only under the lane-owned `runtime/cli-attempts/`
-prefix. This preserves nested enforcement without allowing host or cross-lane
-socket paths.
+macOS refuses Claude's inner `sandbox_apply` when the CLI already runs beneath
+the Factory Seatbelt. The development lane therefore keeps the Factory-owned
+outer Seatbelt authoritative and disables only Claude's redundant inner
+Seatbelt; attempt-local homes, configuration, temporary directories,
+credentials, process groups, and cleanup remain mandatory.

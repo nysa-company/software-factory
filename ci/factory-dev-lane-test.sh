@@ -10,13 +10,8 @@ FAKE_SANDBOX="$TMP/sandbox-exec"
 FAKE_CURSOR="$TMP/cursor-agent"
 OUT="$TMP/out"
 CALLER_HOME="$TMP/caller-home"
-SOCKET_PROBE_ROOT=""
 
 cleanup() {
-  if [[ "$SOCKET_PROBE_ROOT" == /private/tmp/nysa-sb.* ]]; then
-    chmod -R u+w "$SOCKET_PROBE_ROOT" 2>/dev/null || true
-    rm -rf "$SOCKET_PROBE_ROOT"
-  fi
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
@@ -62,7 +57,7 @@ cursor_env() {
   "$@"
 }
 
-clean_cmd() { test_env bash "$LANE" clean --root "$1"; }
+clean_cmd() { TMPDIR="$TMP/lanes" bash "$LANE" clean --root "$1"; }
 
 mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" "$CALLER_HOME/.cursor" \
   "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents" \
@@ -144,10 +139,6 @@ grep -Fq 'PROVIDER_SPLIT=$selected:4' <<<"$subscription_run_source" ||
 grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lost Codex readiness"
 create_lane_source="$(sed -n '/^create_lane()/,/^validate_lane()/p' "$LANE")"
-lane_tmp_source="$(sed -n '/^lane_tmp_parent()/,/^}/p' "$LANE")"
-grep -Fq 'physical /private/tmp' <<<"$lane_tmp_source" &&
-  grep -Fq 'if [[ "$TEST_MODE" -eq 1 ]]' <<<"$lane_tmp_source" ||
-  fail "real lane root is not short while the test root remains isolated"
 grep -Fq 'physical "$(dirname "$claude_token_source")"' <<<"$create_lane_source" ||
   fail "Claude token source was resolved as a directory instead of a file"
 grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
@@ -170,37 +161,41 @@ grep -Fq '(allow file-read-data (literal "/dev/dtracehelper"))' \
 grep -Fq 'file-write-data (literal "/dev/dtracehelper")' \
   <<<"$seatbelt_source" &&
   fail "native Claude startup made dtracehelper writable"
-grep -Fq 'allow network-bind (prefix' <<<"$seatbelt_source" &&
-  grep -Fq 'root + "/runtime/cli-attempts/"' <<<"$seatbelt_source" ||
-  fail "native Claude sandbox cannot bind its attempt-local Unix socket"
+grep -Fq '"sandbox":{"enabled":False}' <<<"$create_lane_source" ||
+  fail "Claude still attempts an unsupported nested macOS Seatbelt"
+grep -Fq 'exec "$(sandbox_exec)" -f "$root/runtime/native.sb"' \
+  <<<"$create_lane_source" ||
+  fail "Claude lost the Factory-owned outer Seatbelt"
+grep -Fq 'CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions' \
+  "$ROOT/scripts/adapters/claude-code.sh" ||
+  fail "Claude cannot run role-owned git inside the outer Seatbelt"
 if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
   fail "development sandbox made the host toolchain writable"
 fi
-if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec &&
-      -x /usr/bin/ruby ]]; then
+if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
   eval "$seatbelt_source"
-  SOCKET_PROBE_ROOT="$(mktemp -d /private/tmp/nysa-sb.XXXXXX)"
-  mkdir -p "$SOCKET_PROBE_ROOT"/{home,runtime/cli-attempts/A/tmp,tmp}
-  chmod 700 "$SOCKET_PROBE_ROOT" "$SOCKET_PROBE_ROOT"/{home,runtime,tmp} \
-    "$SOCKET_PROBE_ROOT/runtime/cli-attempts" \
-    "$SOCKET_PROBE_ROOT/runtime/cli-attempts/A" \
-    "$SOCKET_PROBE_ROOT/runtime/cli-attempts/A/tmp"
-  write_seatbelt_profiles "$SOCKET_PROBE_ROOT" /usr/bin/true "" "" ""
-  seatbelt_bind_socket() {
-    ( cd "$SOCKET_PROBE_ROOT"
-      /usr/bin/sandbox-exec -f "$SOCKET_PROBE_ROOT/runtime/native.sb" \
-        /usr/bin/ruby --disable-gems -rsocket -e \
-        'socket=UNIXServer.new(ARGV[0]); socket.listen(1); socket.close' "$1" )
-  }
-  seatbelt_bind_socket \
-    "$SOCKET_PROBE_ROOT/runtime/cli-attempts/A/tmp/srt-mux.sock" ||
-    fail "native Seatbelt refused Claude's attempt-local Unix socket"
-  expect_failure "cross-attempt native Unix socket" seatbelt_bind_socket \
-    "$SOCKET_PROBE_ROOT/tmp/not-attempt.sock"
-  grep -Fxq '(allow network-bind)' "$SOCKET_PROBE_ROOT/runtime/native.sb" &&
-    fail "native Seatbelt gained blanket socket bind access"
-  rm -rf "$SOCKET_PROBE_ROOT"
-  SOCKET_PROBE_ROOT=""
+  OUTER_PROBE_ROOT="$TMP/native-outer-seatbelt"
+  REAL_GIT="$(/usr/bin/xcrun -f git)"
+  mkdir -p "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
+  chmod 700 "$OUTER_PROBE_ROOT" "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
+  ln -s "$REAL_GIT" "$OUTER_PROBE_ROOT/home/git"
+  write_seatbelt_profiles "$OUTER_PROBE_ROOT" /usr/bin/true "" "" ""
+  "$REAL_GIT" init -q "$OUTER_PROBE_ROOT/work"
+  printf 'before\n' >"$OUTER_PROBE_ROOT/work/ticket"
+  "$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" add ticket
+  "$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" \
+    -c user.name=Test -c user.email=test@local \
+    commit -qm before
+  ( cd "$OUTER_PROBE_ROOT/work"
+    /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+      /usr/bin/env -i HOME="$OUTER_PROBE_ROOT/home" PATH=/usr/bin:/bin \
+      /bin/sh -c 'printf "after\n" >>ticket &&
+        "$0" add ticket &&
+        "$0" -c user.name=Role -c user.email=role@local commit -qm after' \
+      "$REAL_GIT" ) ||
+    fail "Claude role cannot commit beneath the Factory outer Seatbelt"
+  [[ "$("$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" rev-list --count HEAD)" -eq 2 ]] ||
+    fail "outer Seatbelt role commit was not durable"
 fi
 eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
 sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
@@ -2639,12 +2634,7 @@ rmdir "$lane_root"
 mv "$root_saved" "$lane_root"
 
 mkdir "$TMP/other-parent"
-expect_failure "TMP parent drift cleanup" env \
-  FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
-  FACTORY_DEV_LANE_UNAME=Darwin \
-  FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
-  FACTORY_DEV_LANE_ACCOUNT_HOME="$CALLER_HOME" \
-  HOME="$CALLER_HOME" TMPDIR="$TMP/other-parent" \
+expect_failure "TMP parent drift cleanup" env TMPDIR="$TMP/other-parent" \
   bash "$LANE" clean --root "$lane_root"
 
 printf 'pid=%s\n' "$$" >"$lane_root/runtime/live-cleanup-test.pid"

@@ -50,13 +50,6 @@ EOF
 }
 
 physical() { (cd "$1" 2>/dev/null && pwd -P); }
-lane_tmp_parent() {
-  if [[ "$TEST_MODE" -eq 1 ]]; then
-    physical "${TMPDIR:-/tmp}"
-  else
-    physical /private/tmp
-  fi
-}
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 sha256_text() { shasum -a 256 | awk '{print $1}'; }
 
@@ -597,7 +590,7 @@ PY
 clean_lane() {
   local root current_tmp
   root="$(validate_lane "$1")"
-  current_tmp="$(lane_tmp_parent)"
+  current_tmp="$(physical "${TMPDIR:-/tmp}")"
   [[ "$(dirname "$root")" == "$current_tmp" ]] ||
     die "cleanup requires the lane's creation TMPDIR"
   python3 - "$root" <<'PY' || exit 1
@@ -685,7 +678,7 @@ for entry in pathlib.Path(root, "home").iterdir():
         if framework not in tools: tools.append(framework)
     if entry.name == "git" and target.parent.name == "bin" and target.parent.parent.name == "usr":
         developer=target.parent.parent.parent
-        for relative in ("usr/libexec/git-core", "usr/share/git-core/templates"):
+        for relative in ("usr/libexec/git-core", "usr/share/git-core"):
             item=developer / relative
             if item.is_dir() and str(item) not in tools: tools.append(str(item))
 if pathlib.Path(root, "home/node").is_symlink():
@@ -739,8 +732,7 @@ pathlib.Path(root, "runtime/cursor.sb").write_text("".join(base) + cursor_networ
 native_auth=[] if not native_auth_home else [
     str(pathlib.Path(native_auth_home, "Library", "Keychains").resolve())
 ]
-native_extra=('(allow file-read-data (literal "/dev/dtracehelper"))\n'
-              f'(allow network-bind (prefix {json.dumps(root + "/runtime/cli-attempts/")}))\n')
+native_extra='(allow file-read-data (literal "/dev/dtracehelper"))\n'
 for item in native_auth:
     p=pathlib.Path(item)
     for parent in [p, *p.parents]:
@@ -794,7 +786,7 @@ create_lane() {
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
   tree="$(git -C "$SOURCE_ROOT" rev-parse 'HEAD^{tree}')"
-  tmp_parent="$(lane_tmp_parent)"
+  tmp_parent="$(physical "${TMPDIR:-/tmp}")"
   root="$(mktemp -d "$tmp_parent/nysa-sf-dev.XXXXXX")"
   root="$(physical "$root")"
   chmod 700 "$root"
@@ -1184,9 +1176,7 @@ denied=[
     f"Read({home}/Projects/nysa-company/nysa-app/**)",
     "Bash(security *)", "Bash(ssh *)", "Bash(scp *)",
 ]
-value={"permissions":{"deny":denied},"sandbox":{"enabled":True,
-       "failIfUnavailable":True,"autoAllowBashIfSandboxed":True,
-       "allowUnsandboxedCommands":False}}
+value={"permissions":{"deny":denied},"sandbox":{"enabled":False}}
 with open(path,"w",encoding="utf-8") as stream:
     json.dump(value,stream,sort_keys=True,separators=(",",":")); stream.write("\n")
 os.chmod(path,0o600)
