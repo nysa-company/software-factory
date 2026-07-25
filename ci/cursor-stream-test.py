@@ -20,7 +20,10 @@ VERDICT = ROOT / "scripts/lib/reviewer-verdict.py"
 
 class CursorStreamTest(unittest.TestCase):
     def run_verdict(
-        self, events: list[dict], contract: str = "1.7.0"
+        self,
+        events: list[dict],
+        contract: str = "1.7.0",
+        adapter: str = "cursor-anthropic",
     ) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as raw:
             stream = Path(raw) / "review.out"
@@ -29,7 +32,7 @@ class CursorStreamTest(unittest.TestCase):
                 [
                     str(VERDICT),
                     "--adapter",
-                    "cursor-anthropic",
+                    adapter,
                     "--input",
                     str(stream),
                     "--contract-version",
@@ -41,6 +44,36 @@ class CursorStreamTest(unittest.TestCase):
                 capture_output=True,
                 check=False,
             )
+
+    def test_claude_reviewer_decodes_one_terminal_json_result(self) -> None:
+        review = (
+            "## Verdict\n\n"
+            "The fixture needs a test-only repair.\n\n"
+            "REQUEST CHANGES\nFIX-OWNER: test-author"
+        )
+        result = self.run_verdict(
+            [
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": review,
+                }
+            ],
+            adapter="claude-code",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "REQUEST CHANGES\ttest-author\n")
+
+    def test_claude_reviewer_refuses_multiple_terminal_results(self) -> None:
+        result = self.run_verdict(
+            [
+                {"type": "result", "subtype": "success", "result": "APPROVE"},
+                {"type": "result", "subtype": "success", "result": "APPROVE"},
+            ],
+            adapter="claude-code",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exactly one successful result", result.stderr)
 
     def test_reviewer_prefers_one_terminal_bound_assistant(self) -> None:
         review = "Review complete.\n\nREQUEST CHANGES\nFIX-OWNER: builder"

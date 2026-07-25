@@ -175,10 +175,31 @@ def cursor_review(raw: str, contract_version: str) -> str:
     return normalized_assistant
 
 
+def claude_review(raw: str) -> str:
+    results = []
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("type") == "result"
+            and event.get("subtype") == "success"
+            and isinstance(event.get("result"), str)
+        ):
+            results.append(event["result"])
+    if len(results) != 1:
+        raise ValueError("Claude reviewer output must contain exactly one successful result")
+    return results[0]
+
+
 def parse_verdict(raw: str, adapter: str, contract_version: str) -> tuple[str, str]:
     """Return the canonical verdict and Contract 1.7 repair owner."""
     if adapter.startswith("cursor-"):
         raw = cursor_review(raw, contract_version)
+    elif adapter == "claude-code":
+        raw = claude_review(raw)
     return parse_review(raw, contract_version)
 
 
