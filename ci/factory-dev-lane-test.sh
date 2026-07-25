@@ -1783,6 +1783,7 @@ eval "$(sed -n '/^write_product_checkpoint()/,/^product_export_roles_complete()/
 CHAIN_ROOT="$TMP/checkpoint-chain"
 mkdir -p "$CHAIN_ROOT/runtime" "$CHAIN_ROOT/product/factory/runs" \
   "$CHAIN_ROOT/worktrees"
+git init -q --bare "$CHAIN_ROOT/origin.git"
 CHAIN_NONCE="$(printf 'checkpoint-chain-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
 for ticket in T-046 T-048; do
   work="$CHAIN_ROOT/worktrees/$ticket"
@@ -1801,6 +1802,8 @@ for ticket in T-046 T-048; do
   git -C "$work" -c user.name=Test -c user.email=test@local \
     commit -qm 'Import checkpoint prefix'
   git -C "$work" update-ref "refs/remotes/origin/ticket/$ticket" HEAD
+  git -C "$work" push -q "$CHAIN_ROOT/origin.git" \
+    "HEAD:refs/heads/ticket/$ticket"
 done
 CHAIN_T46_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse HEAD)"
 CHAIN_T46_TREE="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse 'HEAD^{tree}')"
@@ -1823,8 +1826,12 @@ printf '%s\n' 'SPEC-LINT: FAIL — retry Planner' \
 git -C "$CHAIN_ROOT/worktrees/T-046" add factory/tickets/T-046.md
 git -C "$CHAIN_ROOT/worktrees/T-046" -c user.name=Test -c user.email=test@local \
   commit -qm 'Record current Spec-linter failure'
-git -C "$CHAIN_ROOT/worktrees/T-046" update-ref \
-  refs/remotes/origin/ticket/T-046 HEAD
+CHAIN_T46_CURRENT_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse HEAD)"
+git -C "$CHAIN_ROOT/worktrees/T-046" push -q "$CHAIN_ROOT/origin.git" \
+  "HEAD:refs/heads/ticket/T-046"
+[[ "$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse \
+  refs/remotes/origin/ticket/T-046)" == "$CHAIN_T46_HEAD" ]] ||
+  fail "checkpoint stale-ref fixture did not remain stale"
 CHAIN_CURRENT_OUT="$CHAIN_ROOT/product/factory/runs/current-spec.out"
 printf '%s\n' 'SPEC-LINT: FAIL — retry Planner' >"$CHAIN_CURRENT_OUT"
 CHAIN_CURRENT_OUT_SHA="$(sha256_file "$CHAIN_CURRENT_OUT")"
@@ -1848,12 +1855,14 @@ printf '%s\n' 'new chained bundle' >"$CHAIN_ROOT/seed.bundle"
 write_product_checkpoint "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" \
   "$CHAIN_ROOT/chained.json" T-046 T-048 ||
   fail "checkpoint chaining rejected valid prior roles"
-python3 - "$CHAIN_ROOT/chained.json" "$CHAIN_SOURCE" "$CHAIN_NONCE" <<'PY' ||
+python3 - "$CHAIN_ROOT/chained.json" "$CHAIN_SOURCE" "$CHAIN_NONCE" \
+  "$CHAIN_T46_CURRENT_HEAD" <<'PY' ||
 import json, sys
 chained=json.load(open(sys.argv[1])); source=json.load(open(sys.argv[2]))
 new={item["ticket"]:item for item in chained["tickets"]}
 old={item["ticket"]:item for item in source["tickets"]}
 if (new["T-046"]["next_stage"] != "RUN planner" or
+    new["T-046"]["head_sha"] != sys.argv[4] or
     new["T-046"]["roles"][0] != old["T-046"]["roles"][0] or
     [run["role"] for run in new["T-046"]["roles"]] !=
         ["planner","spec-linter"] or

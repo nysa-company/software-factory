@@ -152,6 +152,10 @@ matching successful current-lane ledger evidence. Reviewer and Narrator are
 never checkpointed and must run under the new kit before `product-export`
 succeeds.
 
+Checkpoint evidence and its seed bundle both resolve ticket heads from the
+lane-local bare origin. Worktree remote-tracking refs are caches and never
+checkpoint authority.
+
 Import also retains an owner-only exact copy of the source checkpoint. A later
 checkpoint export verifies that copy against the imported digest and
 product-source binding, then prepends its exact role records to the current

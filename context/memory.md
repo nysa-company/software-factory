@@ -616,3 +616,12 @@ Category: System change
 
 The reusable development lane runs a synthetic six-role lifecycle from committed factory source against a disposable local product and origin, without release installation, registration, activation, or canonical Nysa state. Mock verification remains under 15 minutes; real Cursor requires a one-use, content-bound approval. A complete real lifecycle reached `AWAIT-OPERATOR` with Cursor OpenAI for Planner, Builder, and Narrator, Cursor Fable for Spec-linter and Test-author, and Cursor Sonnet for read-only Reviewer. The lane reserves collision-free fixture ports, decodes the validated Cursor terminal result before verdict parsing, and retries one transient authentication or model-list miss while still failing closed after two misses.
 - Development Narrators may immediately explain a `Not applicable — backend-only contract` Preview or Screenshots marker; validation recognizes the marker at the start of the section text so valid evidence is not replayed for punctuation.
+
+## 2026-07-25 — Decision 27: Checkpoints use one branch authority
+
+Category: System change
+
+Development checkpoint evidence resolves ticket heads from the same lane-local
+bare origin used to build the seed bundle. Worktree remote-tracking refs are
+non-authoritative caches; stale values cannot detach checkpoint metadata from
+the exported commits.

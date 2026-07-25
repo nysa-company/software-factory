@@ -3513,7 +3513,10 @@ for _path,values in manifests.values():
         charges[ticket] += int(Decimal(amount)*1_000_000)
 records=[]
 for ticket in tickets:
-    work=root/"worktrees"/ticket; ref="refs/remotes/origin/ticket/"+ticket
+    work=root/"worktrees"/ticket
+    ref=subprocess.check_output(
+        ["git","-C",str(root/"origin.git"),"rev-parse","--verify",
+         "refs/heads/ticket/"+ticket],text=True).strip()
     successful=list(prior.get(ticket,({},{}))[1].get("roles",[]))
     imported=prior.get(ticket,({},{}))[0]
     if imported:
