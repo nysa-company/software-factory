@@ -176,9 +176,12 @@ if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
   eval "$seatbelt_source"
   OUTER_PROBE_ROOT="$TMP/native-outer-seatbelt"
   REAL_GIT="$(/usr/bin/xcrun -f git)"
+  REAL_PYTHON=/Library/Developer/CommandLineTools/usr/bin/python3
   mkdir -p "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
+  mkdir -p "$OUTER_PROBE_ROOT/runtime/cli-attempts/A/tmp"
   chmod 700 "$OUTER_PROBE_ROOT" "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
   ln -s "$REAL_GIT" "$OUTER_PROBE_ROOT/home/git"
+  ln -s "$REAL_PYTHON" "$OUTER_PROBE_ROOT/home/python3"
   write_seatbelt_profiles "$OUTER_PROBE_ROOT" /usr/bin/true "" "" ""
   "$REAL_GIT" init -q "$OUTER_PROBE_ROOT/work"
   printf 'before\n' >"$OUTER_PROBE_ROOT/work/ticket"
@@ -196,6 +199,17 @@ if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
     fail "Claude role cannot commit beneath the Factory outer Seatbelt"
   [[ "$("$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" rev-list --count HEAD)" -eq 2 ]] ||
     fail "outer Seatbelt role commit was not durable"
+  /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+    "$OUTER_PROBE_ROOT/home/python3" -c \
+    'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1)' \
+    "$OUTER_PROBE_ROOT/runtime/cli-attempts/A/tmp/srt-mux.sock" ||
+    fail "Claude attempt-local Unix socket is blocked by the outer Seatbelt"
+  if /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+    "$OUTER_PROBE_ROOT/home/python3" -c \
+    'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1)' \
+    "$OUTER_PROBE_ROOT/tmp/outside.sock" 2>/dev/null; then
+    fail "native Seatbelt permits a Unix socket outside the attempt root"
+  fi
 fi
 eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
 sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
