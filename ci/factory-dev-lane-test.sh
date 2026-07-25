@@ -393,6 +393,8 @@ print(json.dumps({"active_reserve_micro_usd":0,"attempts":[],"counts":{}}))
 PY
   chmod +x "$RESUME_ROOT/kit/scripts/provider-coordinator.py"
   : >"$RESUME_ROOT/runtime/provider-state.sqlite3"
+  printf '%s\n' disabled >"$RESUME_ROOT/runtime/product-cursor-fallback"
+  chmod 600 "$RESUME_ROOT/runtime/product-cursor-fallback"
   python3 - "$RESUME_ROOT/runtime/product-source.json" <<'PY'
 import json, sys
 value={
@@ -522,8 +524,10 @@ PY
     fail "targeted resume accepted excluded sibling head/tree drift"
   fi
 )
-sed -n '/^run_product_internal()/,/^}/p' "$LANE" |
-  grep -Fq '[[ "$readiness_proven" == 1 ]] || subscription_ready "$root"' ||
+run_product_readiness="$(sed -n '/^run_product_internal()/,/^}/p' "$LANE")"
+grep -Fq '[[ "$readiness_proven" == 1 ]] ||' <<<"$run_product_readiness" &&
+  grep -Fq 'subscription_ready "$root" "$cursor_enabled"' \
+    <<<"$run_product_readiness" ||
   fail "product runtime cannot reuse the trusted resume readiness proof"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
   grep -Fq 'ensure_product_budget_day "$root" "$DAILY_CAP_USD"' ||
