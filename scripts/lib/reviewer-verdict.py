@@ -15,6 +15,8 @@ CALLBACK_SUMMARY = re.compile(
     r"^(?:No follow-up action needed — my review above already stands as "
     r"\*\*REQUEST CHANGES / FIX-OWNER: "
     r"(?P<slash>builder|test-author|both)\*\*\.|"
+    r"\*\*REQUEST CHANGES — FIX-OWNER: "
+    r"(?P<bold>builder|test-author|both)\*\*[^\r\n]*|"
     r"\*\*REQUEST CHANGES\*\*\s+—\s+`FIX-OWNER:\s*"
     r"(?P<inline>builder|test-author|both)`[^\r\n]*)$",
     re.IGNORECASE | re.MULTILINE,
@@ -69,7 +71,7 @@ def normalize_cursor_callback(raw: str) -> str:
         )
     summaries = list(CALLBACK_SUMMARY.finditer(raw))
     summary_owners = [
-        (match.group("slash") or match.group("inline")).lower()
+        (match.group("slash") or match.group("bold") or match.group("inline")).lower()
         for match in summaries
     ]
     if corrupted:
