@@ -114,14 +114,11 @@ releases the product launch lock while waiting, then reacquires it and
 revalidates controls before proceeding. Budget, policy, identity, and rate
 denials remain immediate. Development activation permits four calls for one
 Codex account or one native Claude account. Cursor remains capped at two
-because its pinned CLI still shares one hard-coded scratch bridge.
-If that bridge already exists when a product lane is created, the controller
-does not inspect, reclaim, or wait on it. The lane immutably disables Cursor
-fallback, requires both native Codex and native Claude readiness, and continues
-through the existing subscription profile. The one-use approval binds this
-owner-only policy and the resulting native-only route plan. If an enabled lane
-loses the bridge-claim race, it stops without inspecting or changing the
-foreign path.
+until a real-provider canary validates a higher limit. Each concurrent Cursor
+attempt receives an owner-only home, configuration directory, data directory,
+temporary directory, and credential copy, so an unrelated legacy scratch
+bridge neither disables Cursor nor blocks product planning. Legacy serialized
+Cursor lanes retain their existing fail-closed bridge claim.
 
 Concurrent CLI adapters request GNU timeout foreground mode so timeout and the
 provider remain in the Factory-owned process group. The sandbox process

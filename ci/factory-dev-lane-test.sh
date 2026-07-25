@@ -1000,6 +1000,30 @@ expect_failure "unsafe attempt-local Cursor runtime" env \
     --model claude-sonnet-5-thinking-high --effort high -- build
 grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
   fail "unsafe attempt-local Cursor runtime did not fail closed"
+LONG_CURSOR_ATTEMPT="$TMP/$(printf '%060d' 0)/cli-attempts/A"
+mkdir -p "$(dirname "$LONG_CURSOR_ATTEMPT")"
+mkdir -m 700 "$LONG_CURSOR_ATTEMPT" "$LONG_CURSOR_ATTEMPT/home" \
+  "$LONG_CURSOR_ATTEMPT/home/.cursor" "$LONG_CURSOR_ATTEMPT/data" \
+  "$LONG_CURSOR_ATTEMPT/tmp"
+printf 'A\n' >"$LONG_CURSOR_ATTEMPT/owner"
+cp "$CALLER_HOME/.cursor/auth.json" "$CALLER_HOME/.cursor/cli-config.json" \
+  "$LONG_CURSOR_ATTEMPT/home/.cursor/"
+chmod 600 "$LONG_CURSOR_ATTEMPT/owner" \
+  "$LONG_CURSOR_ATTEMPT/home/.cursor/"*.json
+expect_failure "overlong attempt-local Cursor runtime" env \
+  FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
+  FACTORY_CLI_ATTEMPT_ID=A \
+  FACTORY_CURSOR_SESSION_HOME="$LONG_CURSOR_ATTEMPT/home" \
+  CURSOR_CONFIG_DIR="$LONG_CURSOR_ATTEMPT/home/.cursor" \
+  CURSOR_DATA_DIR="$LONG_CURSOR_ATTEMPT/data" \
+  TMPDIR="$LONG_CURSOR_ATTEMPT/tmp" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/builder.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- build
+grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
+  fail "overlong attempt-local Cursor runtime did not fail closed"
 grep -Fq 'FACTORY_DEV_PRLESS_EVIDENCE_V1' "$ROOT/roles/narrator.md" ||
   fail "Narrator backend-only exception lacks its trusted development marker"
 grep -Fq 'Not applicable — backend-only contract' "$ROOT/roles/narrator.md" ||
@@ -1195,13 +1219,19 @@ EOF
   mkdir -p "$FALLBACK_ROOT/runtime" "$FALLBACK_BRIDGE"
   printf '%s\n' do-not-touch >"$FALLBACK_BRIDGE/foreign-state"
   bridge_before="$(cksum "$FALLBACK_BRIDGE/foreign-state")"
-  [[ "$(configure_product_cursor_fallback "$FALLBACK_ROOT")" == subscription ]] ||
-    fail "busy Cursor bridge blocked native-only product planning"
-  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == disabled ]] ||
-    fail "busy Cursor bridge did not disable the lane's Cursor fallback"
+  [[ "$(configure_product_cursor_fallback "$FALLBACK_ROOT")" == cursor ]] ||
+    fail "unrelated Cursor bridge disabled isolated Cursor"
+  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == enabled ]] ||
+    fail "unrelated Cursor bridge wrote the wrong lane policy"
   [[ "$(cksum "$FALLBACK_BRIDGE/foreign-state")" == "$bridge_before" ]] ||
-    fail "native-only planning changed the pre-existing Cursor bridge"
+    fail "isolated Cursor planning changed the pre-existing bridge"
 )
+product_command_source="$(sed -n \
+  '/^  product-plan)/,/^  product-resume-plan)/p;
+   /^  product-run)/,/^  product-export)/p' "$LANE")"
+if grep -Fq 'product_profile=product-cursor' <<<"$product_command_source"; then
+  fail "isolated product planning still claims the legacy Cursor bridge"
+fi
 grep -Fq '"CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"' \
   "$ROOT/scripts/run-agent.sh" &&
   grep -Fq '"CURSOR_DATA_DIR=$CLI_CURSOR_DATA_DIR"' \

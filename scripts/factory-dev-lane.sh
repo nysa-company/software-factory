@@ -147,16 +147,11 @@ product_cursor_enabled() {
 }
 
 configure_product_cursor_fallback() {
-  local root="$1" bridge profile=cursor policy=enabled
-  bridge="$(cursor_tmp_bridge)"
+  local root="$1" profile=cursor policy=enabled
   if [[ "${FACTORY_DEV_LANE_CURSOR_FALLBACK:-1}" == 0 ]]; then
     profile=subscription
     policy=disabled
     echo "DEVELOPMENT_PROVIDER_FALLBACK=cursor-disabled-by-policy" >&2
-  elif [[ -e "$bridge" || -L "$bridge" ]]; then
-    profile=subscription
-    policy=disabled
-    echo "DEVELOPMENT_PROVIDER_FALLBACK=cursor-disabled-bridge-busy" >&2
   fi
   ( set -C
     umask 077
@@ -4331,7 +4326,6 @@ PY
     PRODUCT_SEED_CHECKPOINT="$seed_checkpoint"
     root="$(create_lane product)"
     product_profile=subscription
-    product_cursor_enabled "$root" && product_profile=product-cursor
     plan_output=""
     if ! plan_output="$(run_in_sandbox "$root" "$product_profile" \
       __product-plan --root "$root")"; then
@@ -4375,7 +4369,6 @@ PY
     [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
     product_profile=subscription
-    product_cursor_enabled "$root" && product_profile=product-cursor
     if python3 - "$root/runtime/product-source.json" <<'PY'
 import json, sys
 raise SystemExit(0 if "resume_sha256" in json.load(open(sys.argv[1])) else 1)
