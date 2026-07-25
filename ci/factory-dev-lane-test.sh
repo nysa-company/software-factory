@@ -2305,6 +2305,8 @@ CLAIM_ROOT="$TMP/claim-rollback"
 mkdir -p "$CLAIM_ROOT/runtime"
 printf '%s\n' 'approval_hash=test-approval' 'used=0' \
   >"$CLAIM_ROOT/runtime/product-approval"
+printf '%s\n' disabled >"$CLAIM_ROOT/runtime/product-cursor-fallback"
+chmod 600 "$CLAIM_ROOT/runtime/product-cursor-fallback"
 require_lane_mode() { :; }
 load_product_tickets() { PRODUCT_TICKETS=(T-1 T-2 T-3); }
 validate_runtime_paths() { :; }
@@ -2330,6 +2332,8 @@ PARTIAL_ROOT="$TMP/partial-run"
 mkdir -p "$PARTIAL_ROOT/runtime" "$PARTIAL_ROOT/worktrees"
 printf '%s\n' 'approval_hash=test-approval' 'used=0' \
   >"$PARTIAL_ROOT/runtime/product-approval"
+printf '%s\n' disabled >"$PARTIAL_ROOT/runtime/product-cursor-fallback"
+chmod 600 "$PARTIAL_ROOT/runtime/product-cursor-fallback"
 for ticket in T-1 T-2 T-3; do
   mkdir -p "$PARTIAL_ROOT/worktrees/$ticket"
   git -C "$PARTIAL_ROOT/worktrees/$ticket" init -q
