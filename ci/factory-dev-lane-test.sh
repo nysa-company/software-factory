@@ -2162,6 +2162,13 @@ eval "$(sed -n '/^product_resume_drained()/,/^}/p' "$LANE")"
 subscription_provider_idle() { :; }
 product_resume_drained "$RESUME_ROOT" ||
   fail "fully drained retained lane was rejected"
+printf '%s\n' 2000-01-01 >"$RESUME_ROOT/runtime/product-envelope/budget-day"
+if product_resume_drained "$RESUME_ROOT"; then
+  fail "ordinary resume accepted an expired budget day"
+fi
+product_resume_drained "$RESUME_ROOT" 0 0 ||
+  fail "drained checkpoint export could not cross a budget-day boundary"
+date -u +%F >"$RESUME_ROOT/runtime/product-envelope/budget-day"
 printf 'pid=%s\n' "$$" >"$RESUME_ROOT/runtime/live.pid"
 if product_resume_drained "$RESUME_ROOT"; then
   fail "retained lane with a live process was resumable"

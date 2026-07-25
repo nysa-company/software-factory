@@ -2024,7 +2024,8 @@ PY
 }
 
 product_resume_drained() {
-  local root="$1" approval_ready="${2:-0}" container label state
+  local root="$1" approval_ready="${2:-0}" require_current_day="${3:-1}"
+  local container label state
   [[ -f "$root/runtime/product-approval.used" &&
      ! -L "$root/runtime/product-approval.used" &&
      "$(stat -f '%Su:%Lp:%l' "$root/runtime/product-approval.used")" == \
@@ -2072,8 +2073,9 @@ for path in pathlib.Path(sys.argv[1]).rglob("*.pid"):
     except PermissionError: raise SystemExit(1)
     raise SystemExit(1)
 PY
-  [[ "$(cat "$root/runtime/product-envelope/budget-day")" == "$(date -u +%F)" ]] ||
-    return 1
+  [[ "$require_current_day" -eq 0 ||
+     "$(cat "$root/runtime/product-envelope/budget-day")" == "$(date -u +%F)" ]] ||
+      return 1
   while IFS= read -r container; do
     [[ -n "$container" ]] || continue
     read -r label state < <(DOCKER_HOST="$(cat "$root/runtime/docker-host")" \
@@ -3400,8 +3402,8 @@ export_product_checkpoint_internal() {
   load_product_tickets "$root"
   select_product_export_tickets "$selected_csv"
   validate_runtime_paths "$root"
-  product_resume_drained "$root" ||
-    die "product checkpoint requires a fully drained current-day lane"
+  product_resume_drained "$root" 0 0 ||
+    die "product checkpoint requires a fully drained lane"
   [[ "$output" == /* && ! -e "$output" ]] ||
     die "product checkpoint output must be a new absolute directory"
   refuse_production_path "$output"

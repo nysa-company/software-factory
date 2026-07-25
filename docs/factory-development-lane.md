@@ -137,7 +137,10 @@ outputs, and the aggregate seed bundle. Wrapper-failed attempts are charged but
 never carried as successful. A v5 accounting successor binds the checkpoint,
 its full historical-ticket charges, its exact parent accounting digest, and a
 fresh authorization nonce; the lineage transaction consumes both the nonce and
-checkpoint digest once. A later product plan may import checkpoint records for
+checkpoint digest once. Because checkpoint export cannot reserve or spend, a
+fully drained lane may export after its original UTC budget day ends; the v5
+successor still requires a fresh current-day authorization. A later product
+plan may import checkpoint records for
 only a subset of its tickets, leaving omitted tickets at the clean source
 `Ready` boundary while retaining their historical spend. Import discards old
 routes, pins and approves the new kit and routes, and reproduces the exact next
