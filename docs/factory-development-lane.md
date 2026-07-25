@@ -95,6 +95,12 @@ batch also writes an owner-only timing report with
 coordinator admission/GO/submission/terminal timestamps, elapsed time,
 successful-role replay count, and maximum provider overlap.
 
+If a failed mutating provider exits after creating clean local commits, explicit
+resume does not promote them. It verifies the latest failed attempt and trusted
+base, retains the exact commits under a lane-local diagnostic ref and owner-only
+receipt, restores the unchanged isolated-origin tip, and reruns that failed
+role. Accounting remains terminal and unchanged; ambiguous history refuses.
+
 Before creating a resume approval, the controller refreshes the isolated native
 Codex and Claude credential copies from their owner-controlled source files;
 the new digests are therefore approval-bound. A blocking transition also records

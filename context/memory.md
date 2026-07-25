@@ -61,6 +61,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   remain untouched.
 - Retained-product resumes stabilize lane-local subscription readiness before planning and before execution validation. The internal run reuses that execution proof, while each pinned role still verifies its exact route before reservation or task submission.
 - The development product scheduler never retries a failed role automatically. A drained failure reports the exact ticket set and hands control to `product-resume-plan`, which revalidates the retained lane and issues a fresh one-use approval before the same mechanical stage may run again. Targeted resume resolves stages and takes leases only for selected tickets while hash-binding every original sibling's clean Git and evidence state, including its owner-only ticket envelope or the effective global fallback; later resumes may choose another original subset.
+- A failed mutating development role may leave clean commits ahead of the trusted isolated origin. Explicit resume archives only an exact latest `provider_failed` linear history under a diagnostic ref and owner-only receipt, restores the unchanged trusted tip, and reruns that failed role; its terminal charge and failed manifest remain immutable.
 - Development product roles use the shared trusted ticket-state transition path before provider GO: Planner/Spec-linter run in Planning, Test-author/Builder in Building, and Reviewer/Narrator in Review. Authenticated legacy checkpoints may advance from Ready only through those legal forward states; mismatch refuses only that ticket.
 - The disposable lane also has a four-ticket mock-concurrency mode. It reuses the transactional coordinator and CLI runtime with one activated mock account, proves four-way provider overlap and reservation drain, then completes four synthetic role lifecycles; every runtime input must resolve beneath the validated owner-only lane root.
 - Fresh isolated product proofs still require four tickets; a seeded retry may select one to four unfinished tickets from an owner-only bundle. Its accounting manifest binds the exact bundle and base, carries the full historical reservation map, and reduces both selected-ticket and aggregate lane budgets. The trusted helper derives a stable lineage identity from that base and full ticket set; its owner-only record atomically advances one shared cumulative manifest head, preventing two fresh lanes from choosing different IDs or spending from the same parent snapshot. V2 retains $100/$500 defaults; operator-authored v3 permits only the explicitly approved $200/$700 development ceilings and consumes one nonce on one fixed UTC day before lane creation. Canonical product sources, duplicates, seeded symlinks/submodules, stale accounting siblings, and partial lease-claim residue fail closed.
@@ -666,3 +667,13 @@ the Factory Seatbelt. The development lane therefore keeps the Factory-owned
 outer Seatbelt authoritative and disables only Claude's redundant inner
 Seatbelt; attempt-local homes, configuration, temporary directories,
 credentials, process groups, and cleanup remain mandatory.
+
+## 2026-07-25 — Decision 31: Failed durable output is retained, not promoted
+
+Category: System change
+
+A provider budget failure can occur after a mutating role commits clean output.
+Explicit development resume now binds that exact failed manifest and linear
+commit history into an owner-only diagnostic receipt and ref, restores the
+unchanged isolated-origin tip, and reruns only the failed role. It never
+rewrites accounting or treats the failed provider result as successful.
