@@ -55,6 +55,60 @@ fi
 
 CURSOR_BIN="${CURSOR_AGENT_BIN:-agent}"
 CURSOR_HOME="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
+if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+  python3 - "$CURSOR_HOME" "${CURSOR_CONFIG_DIR:-}" "${CURSOR_DATA_DIR:-}" \
+    "${TMPDIR:-}" "${FACTORY_CLI_ATTEMPT_ID:-}" <<'PY' || {
+import os
+import pathlib
+import stat
+import sys
+
+home, config, data, tmp = map(pathlib.Path, sys.argv[1:5])
+attempt = sys.argv[5]
+runtime = data.parent
+expected = {
+    "home": runtime / "home",
+    "config": runtime / "home" / ".cursor",
+    "data": runtime / "data",
+    "tmp": runtime / "tmp",
+}
+paths = {"home": home, "config": config, "data": data, "tmp": tmp}
+if (
+    not attempt
+    or runtime.name != attempt
+    or runtime.parent.name != "cli-attempts"
+    or len(str(data / "projects")) > 84
+):
+    raise SystemExit(1)
+for name, path in paths.items():
+    if not path.is_absolute() or path != expected[name] or path.is_symlink():
+        raise SystemExit(1)
+    info = path.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise SystemExit(1)
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise SystemExit(1)
+owner = runtime / "owner"
+if (
+    owner.is_symlink()
+    or owner.read_text(encoding="utf-8") != attempt + "\n"
+    or stat.S_IMODE(owner.stat().st_mode) != 0o600
+):
+    raise SystemExit(1)
+for name in ("auth.json", "cli-config.json"):
+    path = config / name
+    info = path.stat()
+    if path.is_symlink() or not stat.S_ISREG(info.st_mode):
+        raise SystemExit(1)
+    if info.st_uid != os.geteuid() or info.st_nlink != 1:
+        raise SystemExit(1)
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise SystemExit(1)
+PY
+    echo "Cursor CLI attempt runtime is unsafe" >&2
+    exit 6
+  }
+fi
 command -v "$CURSOR_BIN" >/dev/null 2>&1 || {
   echo "Cursor Agent CLI not installed" >&2
   exit 6

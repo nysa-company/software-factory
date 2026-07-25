@@ -966,6 +966,42 @@ PY
 then
   fail "concurrent Cursor Reviewer did not use executable read-only mode"
 fi
+CURSOR_ATTEMPT="$TMP/cli-attempts/A"
+mkdir -p "$TMP/cli-attempts"
+mkdir -m 700 "$CURSOR_ATTEMPT" "$CURSOR_ATTEMPT/home" \
+  "$CURSOR_ATTEMPT/home/.cursor" "$CURSOR_ATTEMPT/data" "$CURSOR_ATTEMPT/tmp"
+printf 'A\n' >"$CURSOR_ATTEMPT/owner"
+cp "$CALLER_HOME/.cursor/auth.json" "$CALLER_HOME/.cursor/cli-config.json" \
+  "$CURSOR_ATTEMPT/home/.cursor/"
+chmod 600 "$CURSOR_ATTEMPT/owner" "$CURSOR_ATTEMPT/home/.cursor/"*.json
+set +e
+FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
+  FACTORY_CLI_ATTEMPT_ID=A FACTORY_CURSOR_SESSION_HOME="$CURSOR_ATTEMPT/home" \
+  CURSOR_CONFIG_DIR="$CURSOR_ATTEMPT/home/.cursor" \
+  CURSOR_DATA_DIR="$CURSOR_ATTEMPT/data" TMPDIR="$CURSOR_ATTEMPT/tmp" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/builder.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- build \
+    >"$OUT" 2>&1
+cursor_attempt_status=$?
+set -e
+[[ "$cursor_attempt_status" != 6 ]] ||
+  fail "valid attempt-local Cursor runtime was rejected"
+chmod 755 "$CURSOR_ATTEMPT/data"
+expect_failure "unsafe attempt-local Cursor runtime" env \
+  FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
+  FACTORY_CLI_ATTEMPT_ID=A FACTORY_CURSOR_SESSION_HOME="$CURSOR_ATTEMPT/home" \
+  CURSOR_CONFIG_DIR="$CURSOR_ATTEMPT/home/.cursor" \
+  CURSOR_DATA_DIR="$CURSOR_ATTEMPT/data" TMPDIR="$CURSOR_ATTEMPT/tmp" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/builder.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- build
+grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
+  fail "unsafe attempt-local Cursor runtime did not fail closed"
 grep -Fq 'FACTORY_DEV_PRLESS_EVIDENCE_V1' "$ROOT/roles/narrator.md" ||
   fail "Narrator backend-only exception lacks its trusted development marker"
 grep -Fq 'Not applicable — backend-only contract' "$ROOT/roles/narrator.md" ||
@@ -1160,6 +1196,13 @@ EOF
   [[ "$(cksum "$FALLBACK_BRIDGE/foreign-state")" == "$bridge_before" ]] ||
     fail "native-only planning changed the pre-existing Cursor bridge"
 )
+grep -Fq '"CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"' \
+  "$ROOT/scripts/run-agent.sh" &&
+  grep -Fq '"CURSOR_DATA_DIR=$CLI_CURSOR_DATA_DIR"' \
+    "$ROOT/scripts/run-agent.sh" &&
+  grep -Fq 'mkdir -m 700 "$CLI_PROVIDER_HOME/.cursor" "$CLI_RUNTIME_ROOT/data"' \
+    "$ROOT/scripts/run-agent.sh" ||
+  fail "concurrent Cursor does not use attempt-local config and data roots"
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \

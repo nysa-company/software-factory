@@ -223,6 +223,8 @@ CLI_RUNTIME_ROOT=""
 CLI_PROVIDER_HOME=""
 CLI_PROVIDER_TMPDIR=""
 CLI_CLAUDE_CONFIG_DIR=""
+CLI_CURSOR_CONFIG_DIR=""
+CLI_CURSOR_DATA_DIR=""
 PROVIDER_EXECUTION_MODE="legacy-serialized"
 PROVIDER_BUDGET_MICRO_VALUES=()
 RUN_OUTPUT_SHA256=""
@@ -948,33 +950,57 @@ print(attempts[0]["version"])
 }
 
 prepare_cli_runtime() {
-  [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == "claude-code" ]] || return 0
+  [[ "$CLI_CONCURRENT_RUN" -eq 1 ]] || return 0
+  case "$ADAPTER" in
+    claude-code|cursor-openai|cursor-anthropic) ;;
+    *) return 0 ;;
+  esac
   [[ -n "$DEVELOPMENT_LANE_ROOT" && "$CLI_ATTEMPT_ID" =~ ^[A-Za-z0-9._-]+$ ]] || {
-    echo "Claude CLI isolation requires a valid development-lane attempt" >&2
+    echo "subscription CLI isolation requires a valid development-lane attempt" >&2
     return 1
   }
   local base="$DEVELOPMENT_LANE_ROOT/runtime/cli-attempts"
-  local source="$HOME/.claude/.credentials.json"
-  [[ -f "$source" && ! -L "$source" ]] || {
-    echo "lane-local Claude subscription credential is unavailable" >&2
-    return 1
-  }
   mkdir -p "$base"
   chmod 700 "$base"
   CLI_RUNTIME_ROOT="$base/$CLI_ATTEMPT_ID"
   mkdir -m 700 "$CLI_RUNTIME_ROOT" || {
-    echo "Claude CLI attempt runtime already exists" >&2
+    echo "subscription CLI attempt runtime already exists" >&2
     return 1
   }
-  mkdir -m 700 "$CLI_RUNTIME_ROOT/home" "$CLI_RUNTIME_ROOT/config" \
-    "$CLI_RUNTIME_ROOT/tmp"
+  mkdir -m 700 "$CLI_RUNTIME_ROOT/home" "$CLI_RUNTIME_ROOT/tmp"
   printf '%s\n' "$CLI_ATTEMPT_ID" >"$CLI_RUNTIME_ROOT/owner"
-  cp "$source" "$CLI_RUNTIME_ROOT/config/.credentials.json"
-  chmod 600 "$CLI_RUNTIME_ROOT/owner" \
-    "$CLI_RUNTIME_ROOT/config/.credentials.json"
   CLI_PROVIDER_HOME="$CLI_RUNTIME_ROOT/home"
   CLI_PROVIDER_TMPDIR="$CLI_RUNTIME_ROOT/tmp"
-  CLI_CLAUDE_CONFIG_DIR="$CLI_RUNTIME_ROOT/config"
+  if [[ "$ADAPTER" == claude-code ]]; then
+    local source="$HOME/.claude/.credentials.json"
+    [[ -f "$source" && ! -L "$source" ]] || {
+      echo "lane-local Claude subscription credential is unavailable" >&2
+      return 1
+    }
+    mkdir -m 700 "$CLI_RUNTIME_ROOT/config"
+    cp "$source" "$CLI_RUNTIME_ROOT/config/.credentials.json"
+    chmod 600 "$CLI_RUNTIME_ROOT/config/.credentials.json"
+    CLI_CLAUDE_CONFIG_DIR="$CLI_RUNTIME_ROOT/config"
+  else
+    local cursor_source="${FACTORY_CURSOR_SESSION_HOME:-$HOME}/.cursor"
+    [[ -f "$cursor_source/auth.json" && ! -L "$cursor_source/auth.json" &&
+       -f "$cursor_source/cli-config.json" &&
+       ! -L "$cursor_source/cli-config.json" ]] || {
+      echo "lane-local Cursor subscription credential is unavailable" >&2
+      return 1
+    }
+    mkdir -m 700 "$CLI_PROVIDER_HOME/.cursor" "$CLI_RUNTIME_ROOT/data"
+    cp "$cursor_source/auth.json" "$cursor_source/cli-config.json" \
+      "$CLI_PROVIDER_HOME/.cursor/"
+    chmod 600 "$CLI_PROVIDER_HOME/.cursor/"*.json
+    CLI_CURSOR_CONFIG_DIR="$CLI_PROVIDER_HOME/.cursor"
+    CLI_CURSOR_DATA_DIR="$CLI_RUNTIME_ROOT/data"
+    [[ "${#CLI_CURSOR_DATA_DIR}" -le 75 ]] || {
+      echo "Cursor attempt data path is too long for isolated scratch" >&2
+      return 1
+    }
+  fi
+  chmod 600 "$CLI_RUNTIME_ROOT/owner"
 }
 
 cleanup_cli_runtime() {
@@ -1033,7 +1059,7 @@ cleanup() {
     echo "WARNING: CLI provider reservation retained because its process group survived" >&2
   fi
   cleanup_cli_runtime ||
-    echo "WARNING: Claude CLI runtime retained for operator reconciliation" >&2
+    echo "WARNING: subscription CLI runtime retained for operator reconciliation" >&2
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
       rm -f "$RUN_PID_FILE"
@@ -1898,7 +1924,7 @@ RUN_OUTPUT_TEMP=""
 unset FACTORY_MODEL_STATE_ROOT FACTORY_PROJECT
 CLI_PROVIDER_HOME="$HOME"
 CLI_PROVIDER_TMPDIR="${TMPDIR:-/tmp}"
-if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == "claude-code" ]]; then
+if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   prepare_cli_runtime || exit 6
 fi
 TASK_COMMAND=()
@@ -1976,7 +2002,9 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         "CURSOR_AGENT_VERSION=${CURSOR_AGENT_VERSION:-}"
         "CURSOR_AGENT_BIN=${CURSOR_AGENT_BIN:-agent}"
         "AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"
-        "FACTORY_CURSOR_SESSION_HOME=${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
+        "FACTORY_CURSOR_SESSION_HOME=$CLI_PROVIDER_HOME"
+        "CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"
+        "CURSOR_DATA_DIR=$CLI_CURSOR_DATA_DIR"
         "FACTORY_CURSOR_INTERNAL_SANDBOX=${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}"
         "FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT=${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}"
         "FACTORY_CLI_INTERNAL_SANDBOX=${FACTORY_CLI_INTERNAL_SANDBOX:-0}"
