@@ -174,7 +174,7 @@ if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
 fi
 if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
   eval "$seatbelt_source"
-  OUTER_PROBE_ROOT="$TMP/native-outer-seatbelt"
+  OUTER_PROBE_ROOT="$(mktemp -d /private/tmp/nysa-sb.XXXXXX)"
   REAL_GIT="$(/usr/bin/xcrun -f git)"
   mkdir -p "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
   mkdir -p "$OUTER_PROBE_ROOT/runtime/cli-attempts/A/tmp"
@@ -210,6 +210,7 @@ if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
       "$OUTER_PROBE_ROOT/tmp/outside.sock" 2>/dev/null ); then
     fail "native Seatbelt permits a Unix socket outside the attempt root"
   fi
+  rm -rf -- "$OUTER_PROBE_ROOT"
 fi
 eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
 sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
