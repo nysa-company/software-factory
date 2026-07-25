@@ -53,6 +53,9 @@ or new credential service is introduced.
 The native Seatbelt profile grants Claude read-only access to macOS
 `/dev/dtracehelper`, which its current executable requires even for version
 and authentication probes; write access and host configuration remain denied.
+It also permits Unix-socket binds only below the lane's
+`runtime/cli-attempts/` root so Claude's nested sandbox can start without
+opening host or cross-lane socket paths.
 Readiness, version evidence, approval hashing, and role execution then use the
 same clean environment and only those copied files from the lane root as their
 working directory; ambient authentication variables, the caller's working

@@ -161,8 +161,35 @@ grep -Fq '(allow file-read-data (literal "/dev/dtracehelper"))' \
 grep -Fq 'file-write-data (literal "/dev/dtracehelper")' \
   <<<"$seatbelt_source" &&
   fail "native Claude startup made dtracehelper writable"
+grep -Fq 'allow network-bind (prefix' <<<"$seatbelt_source" &&
+  grep -Fq 'root + "/runtime/cli-attempts/"' <<<"$seatbelt_source" ||
+  fail "native Claude sandbox cannot bind its attempt-local Unix socket"
 if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
   fail "development sandbox made the host toolchain writable"
+fi
+if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec &&
+      -x /usr/bin/ruby ]]; then
+  eval "$seatbelt_source"
+  SOCKET_PROBE_ROOT="$TMP/native-seatbelt-socket"
+  mkdir -p "$SOCKET_PROBE_ROOT"/{home,runtime/cli-attempts/A/tmp,tmp}
+  chmod 700 "$SOCKET_PROBE_ROOT" "$SOCKET_PROBE_ROOT"/{home,runtime,tmp} \
+    "$SOCKET_PROBE_ROOT/runtime/cli-attempts" \
+    "$SOCKET_PROBE_ROOT/runtime/cli-attempts/A" \
+    "$SOCKET_PROBE_ROOT/runtime/cli-attempts/A/tmp"
+  write_seatbelt_profiles "$SOCKET_PROBE_ROOT" /usr/bin/true "" "" ""
+  seatbelt_bind_socket() {
+    ( cd "$SOCKET_PROBE_ROOT"
+      /usr/bin/sandbox-exec -f "$SOCKET_PROBE_ROOT/runtime/native.sb" \
+        /usr/bin/ruby --disable-gems -rsocket -e \
+        'socket=UNIXServer.new(ARGV[0]); socket.listen(1); socket.close' "$1" )
+  }
+  seatbelt_bind_socket \
+    "$SOCKET_PROBE_ROOT/runtime/cli-attempts/A/tmp/srt-mux.sock" ||
+    fail "native Seatbelt refused Claude's attempt-local Unix socket"
+  expect_failure "cross-attempt native Unix socket" seatbelt_bind_socket \
+    "$SOCKET_PROBE_ROOT/tmp/not-attempt.sock"
+  grep -Fxq '(allow network-bind)' "$SOCKET_PROBE_ROOT/runtime/native.sb" &&
+    fail "native Seatbelt gained blanket socket bind access"
 fi
 eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
 sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }

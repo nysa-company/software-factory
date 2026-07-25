@@ -732,7 +732,8 @@ pathlib.Path(root, "runtime/cursor.sb").write_text("".join(base) + cursor_networ
 native_auth=[] if not native_auth_home else [
     str(pathlib.Path(native_auth_home, "Library", "Keychains").resolve())
 ]
-native_extra='(allow file-read-data (literal "/dev/dtracehelper"))\n'
+native_extra=('(allow file-read-data (literal "/dev/dtracehelper"))\n'
+              f'(allow network-bind (prefix {json.dumps(root + "/runtime/cli-attempts/")}))\n')
 for item in native_auth:
     p=pathlib.Path(item)
     for parent in [p, *p.parents]:
