@@ -644,3 +644,19 @@ Cursor may attach a late background-check notice to an otherwise canonical
 Reviewer result. The shared parser accepts the observed bold summary only when
 its verdict and repair owner exactly match the preceding corrupted callback;
 ambiguity and contradiction remain refusals.
+
+## 2026-07-25 — Decision 30: Claude setup tokens stay lane-local
+
+Category: System change
+
+When native Claude stores subscription authentication only in the macOS
+Keychain, the development controller may materialize an owner-only long-lived
+setup token into the existing isolated credential file. The token source,
+derived expiry, route, and one-use approval are bound together; API keys,
+shared Keychain access, and production credentials remain unavailable.
+Claude 2.1.209 also requires read-only `/dev/dtracehelper` access at startup;
+the native Seatbelt profile grants only that exact read while retaining its
+default-deny filesystem boundary.
+Readiness resolves and pins that executable's exact semantic version before
+the shared backend probe, avoiding a stale default while preserving
+approval-bound version and executable drift checks.

@@ -138,6 +138,9 @@ grep -Fq 'PROVIDER_SPLIT=$selected:4' <<<"$subscription_run_source" ||
   fail "subscription canary does not report four selected-adapter calls"
 grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lost Codex readiness"
+create_lane_source="$(sed -n '/^create_lane()/,/^validate_lane()/p' "$LANE")"
+grep -Fq 'physical "$(dirname "$claude_token_source")"' <<<"$create_lane_source" ||
+  fail "Claude token source was resolved as a directory instead of a file"
 grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lacks Claude readiness"
 grep -Fq 'if [[ "$selected" == claude ]]; then' <<<"$subscription_run_source" ||
@@ -152,6 +155,12 @@ grep -Fq 'FACTORY_CLI_INTERNAL_SANDBOX=1' <<<"$lane_env_source" ||
 seatbelt_source="$(sed -n '/^write_seatbelt_profiles()/,/^}/p' "$LANE")"
 grep -Fq 'for item in ("/opt/homebrew", "/usr/local"):' <<<"$seatbelt_source" ||
   fail "development sandbox dropped the trusted Node toolchain roots"
+grep -Fq '(allow file-read-data (literal "/dev/dtracehelper"))' \
+  <<<"$seatbelt_source" ||
+  fail "native Claude startup lost its read-only dtracehelper allowance"
+grep -Fq 'file-write-data (literal "/dev/dtracehelper")' \
+  <<<"$seatbelt_source" &&
+  fail "native Claude startup made dtracehelper writable"
 if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
   fail "development sandbox made the host toolchain writable"
 fi
@@ -282,7 +291,7 @@ for readiness_tool in agent codex claude; do
 [[ "\${FACTORY_CURSOR_SESSION_HOME:-}" == "$READINESS_ROOT/session-home" ]]
 if [[ "\${1:-}" == --version ]]; then
   if [[ "$readiness_tool" == claude ]]; then
-    printf '%s\n' '2.1.207 (Claude Code)'
+    printf '%s\n' '2.1.209 (Claude Code)'
     exit 0
   fi
   printf '%s\n' "$readiness_tool 1.0-test"
@@ -1506,6 +1515,63 @@ grep -qx 'stale:.cursor/auth.json' \
   fail "native credential refresh changed Cursor session state"
 [[ -z "$(find "$CREDENTIAL_ROOT/lane/session-home" -name '*.refresh.*' -print -quit)" ]] ||
   fail "subscription credential refresh left a temporary file"
+eval "$(sed -n '/^materialize_claude_subscription_token()/,/^}/p' "$LANE")"
+TOKEN_ROOT="$TMP/claude-token-materialize"
+mkdir -m 700 -p "$TOKEN_ROOT/source" "$TOKEN_ROOT/target"
+TOKEN_SOURCE="$TOKEN_ROOT/source/oauth.token"
+TOKEN_TARGET="$TOKEN_ROOT/target/.credentials.json"
+TOKEN_VALUE="sk-ant-oat01-$(printf 'A%.0s' {1..80})"
+printf '%s\n' "$TOKEN_VALUE" >"$TOKEN_SOURCE"
+chmod 600 "$TOKEN_SOURCE"
+materialize_claude_subscription_token "$TOKEN_SOURCE" "$TOKEN_TARGET" ||
+  fail "safe Claude subscription token did not materialize"
+python3 - "$TOKEN_SOURCE" "$TOKEN_TARGET" <<'PY' ||
+import json, pathlib, stat, sys, time
+source, target = map(pathlib.Path, sys.argv[1:])
+value = json.loads(target.read_text())
+oauth = value["claudeAiOauth"]
+expected = source.stat().st_mtime_ns // 1_000_000 + 365 * 24 * 60 * 60 * 1000
+assert stat.S_IMODE(target.stat().st_mode) == 0o600
+assert oauth["accessToken"] == source.read_text().strip()
+assert oauth["expiresAt"] == expected > int(time.time() * 1000) + 300_000
+assert oauth["refreshTokenExpiresAt"] == expected
+assert oauth["refreshToken"] == ""
+assert oauth["scopes"] == ["user:inference"]
+assert oauth["subscriptionType"] == "team"
+PY
+  fail "Claude subscription credential materialization was invalid"
+TOKEN_TARGET_BEFORE="$(cksum "$TOKEN_TARGET")"
+ln -s "$TOKEN_SOURCE" "$TOKEN_ROOT/source/link.token"
+expect_failure "symlinked Claude subscription token" \
+  materialize_claude_subscription_token \
+    "$TOKEN_ROOT/source/link.token" "$TOKEN_TARGET"
+[[ "$(cksum "$TOKEN_TARGET")" == "$TOKEN_TARGET_BEFORE" ]] ||
+  fail "unsafe Claude token source changed the materialized credential"
+
+mkdir -m 700 -p "$CREDENTIAL_ROOT/lane/runtime"
+printf '%s\n' "$TOKEN_SOURCE" \
+  >"$CREDENTIAL_ROOT/lane/runtime/claude-token-source"
+chmod 600 "$CREDENTIAL_ROOT/lane/runtime/claude-token-source"
+printf 'stale-again\n' \
+  >"$CREDENTIAL_ROOT/lane/session-home/.claude/.credentials.json"
+refuse_production_path() { :; }
+refresh_product_subscription_credentials "$CREDENTIAL_ROOT/lane" ||
+  fail "recorded Claude subscription token did not refresh"
+python3 - "$TOKEN_SOURCE" \
+  "$CREDENTIAL_ROOT/lane/session-home/.claude/.credentials.json" <<'PY' ||
+import json, pathlib, sys
+source, target = map(pathlib.Path, sys.argv[1:])
+assert json.loads(target.read_text())["claudeAiOauth"]["accessToken"] == \
+       source.read_text().strip()
+PY
+  fail "recorded Claude token source was not used"
+chmod 644 "$CREDENTIAL_ROOT/lane/runtime/claude-token-source"
+unsafe_token_record_refresh() (
+  die() { exit 1; }
+  refresh_product_subscription_credentials "$CREDENTIAL_ROOT/lane"
+)
+expect_failure "unsafe Claude token source record" \
+  unsafe_token_record_refresh
 eval "$(sed -n '/^product_prepare_role_state()/,/^}/p' "$LANE")"
 ROLE_STATE_ROOT="$TMP/role-state-parity"
 ROLE_STATE_TICKET="$ROLE_STATE_ROOT/worktrees/T-1/factory/tickets/T-1.md"

@@ -43,6 +43,16 @@ those roots are removed only after their process groups drain.
 
 The subscription canary copies only its selected CLI session; product lanes
 copy their three configured CLI sessions into the owner-only lane root once.
+When current Claude stores subscription state only in the macOS Keychain,
+`FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE` may name an owner-only `0600`
+token created by `claude setup-token`. The controller validates it without
+printing it and materializes the existing lane-local Claude credential format;
+its issuance-time file timestamp bounds the one-year expiry. The source path,
+credential copy, and approval remain lane-bound—no API key, shared Keychain,
+or new credential service is introduced.
+The native Seatbelt profile grants Claude read-only access to macOS
+`/dev/dtracehelper`, which its current executable requires even for version
+and authentication probes; write access and host configuration remain denied.
 Readiness, version evidence, approval hashing, and role execution then use the
 same clean environment and only those copied files from the lane root as their
 working directory; ambient authentication variables, the caller's working

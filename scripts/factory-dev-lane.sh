@@ -181,8 +181,11 @@ claude_subscription_ready() {
 }
 
 claude_subscription_probe() {
-  local root="$1"
-  subscription_base_env "$root" bash -c '
+  local root="$1" version
+  version="$(subscription_base_env "$root" "$root/home/claude" --version 2>/dev/null |
+    awk 'NR == 1 {print $1; exit}')"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  subscription_base_env "$root" env CLAUDE_CODE_PINNED="$version" bash -c '
     source "$1"
     factory_probe_adapter claude-code
     [[ "$PROBE_STATE" == READY ]]
@@ -199,17 +202,112 @@ ensure_cursor_file_credential_config() {
   fi
 }
 
+materialize_claude_subscription_token() {
+  local source="$1" target="$2"
+  python3 - "$source" "$target" <<'PY' ||
+import json, os, pathlib, re, stat, sys, tempfile, time
+source, target = map(pathlib.Path, sys.argv[1:])
+parent = target.parent
+try:
+    source_info = source.lstat()
+    parent_info = parent.lstat()
+    if (
+        not source.is_absolute()
+        or not stat.S_ISREG(source_info.st_mode)
+        or source_info.st_uid != os.geteuid()
+        or stat.S_IMODE(source_info.st_mode) != 0o600
+        or source_info.st_nlink != 1
+        or not stat.S_ISDIR(parent_info.st_mode)
+        or parent_info.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_info.st_mode) != 0o700
+    ):
+        raise ValueError
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        opened = os.fstat(stream.fileno())
+        token = stream.read().strip()
+        after = os.fstat(stream.fileno())
+    identity = lambda value: (
+        value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+        value.st_uid, value.st_size, value.st_mtime_ns,
+    )
+    if (
+        identity(source_info) != identity(opened)
+        or identity(opened) != identity(after)
+        or not re.fullmatch(r"sk-ant-oat01-[A-Za-z0-9_-]{80,}", token)
+    ):
+        raise ValueError
+    expires_at = source_info.st_mtime_ns // 1_000_000 + 365 * 24 * 60 * 60 * 1000
+    if expires_at <= int(time.time() * 1000) + 300_000:
+        raise ValueError
+    if target.exists() or target.is_symlink():
+        current = target.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_uid != os.geteuid()
+            or stat.S_IMODE(current.st_mode) != 0o600
+            or current.st_nlink != 1
+        ):
+            raise ValueError
+    value = {"claudeAiOauth": {
+        "accessToken": token,
+        "expiresAt": expires_at,
+        "refreshToken": "",
+        "refreshTokenExpiresAt": expires_at,
+        "scopes": ["user:inference"],
+        "subscriptionType": "team",
+    }}
+    fd, temporary = tempfile.mkstemp(
+        prefix="." + target.name + ".materialize.", dir=parent
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        directory = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
+    die "Claude subscription token boundary is unsafe"
+}
+
 refresh_product_subscription_credentials() {
-  local root="$1" source_home
+  local root="$1" source_home token_source="" include_claude=1
   source_home="$(cursor_session_home)" ||
     die "subscription session home is unavailable"
-  python3 - "$source_home" "$root/session-home" <<'PY' ||
+  if [[ -f "$root/runtime/claude-token-source" &&
+        ! -L "$root/runtime/claude-token-source" ]]; then
+    [[ "$(stat -f '%Su:%Lp:%l' "$root/runtime/claude-token-source")" == "$(id -un):600:1" ]] ||
+      die "Claude subscription token source record is unsafe"
+    token_source="$(cat "$root/runtime/claude-token-source")"
+    [[ "$token_source" == /* && "$token_source" != *$'\n'* ]] ||
+      die "Claude subscription token source is invalid"
+    include_claude=0
+  fi
+  python3 - "$source_home" "$root/session-home" "$include_claude" <<'PY' ||
 import os, pathlib, stat, sys, tempfile
 source_root=pathlib.Path(sys.argv[1]); target_root=pathlib.Path(sys.argv[2])
+include_claude=sys.argv[3] == "1"
 if source_root.resolve() == target_root.resolve():
     raise SystemExit(1)
 payloads=[]
-for relative in (".codex/auth.json", ".claude/.credentials.json"):
+relatives=[".codex/auth.json"]
+if include_claude:
+    relatives.append(".claude/.credentials.json")
+for relative in relatives:
     source=source_root/relative; target=target_root/relative
     for directory, exact in ((source.parent,False),(target.parent,True)):
         info=directory.lstat()
@@ -247,6 +345,11 @@ for target,data in payloads:
         except FileNotFoundError: pass
 PY
     die "subscription credential refresh boundary is unsafe"
+  if [[ -n "$token_source" ]]; then
+    refuse_production_path "$token_source"
+    materialize_claude_subscription_token "$token_source" \
+      "$root/session-home/.claude/.credentials.json"
+  fi
 }
 
 subscription_approval_hash() {
@@ -287,6 +390,8 @@ PY
     sha256_file "$root/home/.factory/global.env"
     sha256_file "$root/runtime/native.sb"
     sha256_file "$credential"
+    [[ ! -f "$root/runtime/claude-token-source" ]] ||
+      sha256_file "$root/runtime/claude-token-source"
     [[ "$adapter" != claude ]] || sha256_file "$root/runtime/claude-settings.json"
   } | sha256_text
 }
@@ -627,7 +732,7 @@ pathlib.Path(root, "runtime/cursor.sb").write_text("".join(base) + cursor_networ
 native_auth=[] if not native_auth_home else [
     str(pathlib.Path(native_auth_home, "Library", "Keychains").resolve())
 ]
-native_extra=""
+native_extra='(allow file-read-data (literal "/dev/dtracehelper"))\n'
 for item in native_auth:
     p=pathlib.Path(item)
     for parent in [p, *p.parents]:
@@ -671,7 +776,7 @@ prepare_product_dependencies() {
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0 claude_token_source=""
   local -a subscription_tools
   subscription_adapter="${FACTORY_SUBSCRIPTION_ADAPTER:-codex}"
   [[ "$mode" != subscription || "$subscription_adapter" == codex ||
@@ -962,12 +1067,27 @@ PY
     fi
     if [[ "$mode" == product || "$subscription_adapter" == claude ]]; then
       mkdir -m 700 "$root/session-home/.claude"
-      [[ -f "$session_home/.claude/.credentials.json" &&
-         ! -L "$session_home/.claude/.credentials.json" ]] ||
-        die "Claude subscription session file is unavailable"
-      cp "$session_home/.claude/.credentials.json" \
-        "$root/session-home/.claude/.credentials.json"
-      chmod 600 "$root/session-home/.claude/.credentials.json"
+      claude_token_source="${FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE:-}"
+      if [[ -n "$claude_token_source" ]]; then
+        [[ "$claude_token_source" == /* && -f "$claude_token_source" &&
+           ! -L "$claude_token_source" &&
+           "$claude_token_source" != *$'\n'* ]] ||
+          die "Claude subscription token source is unavailable"
+        claude_token_source="$(physical "$(dirname "$claude_token_source")")/$(basename "$claude_token_source")"
+        refuse_production_path "$claude_token_source"
+        printf '%s\n' "$claude_token_source" \
+          >"$root/runtime/claude-token-source"
+        chmod 600 "$root/runtime/claude-token-source"
+        materialize_claude_subscription_token "$claude_token_source" \
+          "$root/session-home/.claude/.credentials.json"
+      else
+        [[ -f "$session_home/.claude/.credentials.json" &&
+           ! -L "$session_home/.claude/.credentials.json" ]] ||
+          die "Claude subscription session file is unavailable"
+        cp "$session_home/.claude/.credentials.json" \
+          "$root/session-home/.claude/.credentials.json"
+        chmod 600 "$root/session-home/.claude/.credentials.json"
+      fi
       subscription_tools+=(claude)
     fi
     if [[ "$mode" == product && "$cursor_enabled" == 1 ]]; then
@@ -1903,6 +2023,8 @@ PY
     fi
     sha256_file "$session_home/.codex/auth.json"
     sha256_file "$session_home/.claude/.credentials.json"
+    [[ ! -f "$root/runtime/claude-token-source" ]] ||
+      sha256_file "$root/runtime/claude-token-source"
     for ticket in "${PRODUCT_TICKETS[@]}"; do
       git -C "$root/worktrees/$ticket" rev-parse HEAD 'HEAD^{tree}'
       sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md"
@@ -2097,6 +2219,7 @@ PY
       "$root/runtime/provider-policy.json" \
       "$root/runtime/provider-activation.json" \
       "$root/runtime/product-cursor-fallback" \
+      "$root/runtime/claude-token-source" \
       "$root/runtime/product-containers.json" \
       "$root/runtime/product-envelope/global.env" \
       "$root/runtime/product-envelope/budget-day" \
