@@ -660,7 +660,7 @@ PY
 write_seatbelt_profiles() {
   local root="$1" cursor="$2" bridge="${3:-}" session_home="${4:-}" native_auth_home="${5:-}"
   python3 - "$root" "$cursor" "$bridge" "$session_home" "$native_auth_home" <<'PY'
-import json, os, pathlib, sys
+import json, os, pathlib, stat, sys
 root, cursor, bridge, session_home, native_auth_home = sys.argv[1:]
 system = [
     "/System", "/bin", "/sbin", "/usr/bin", "/usr/lib", "/usr/libexec",
@@ -2178,7 +2178,7 @@ if (not re.fullmatch(r"[A-Za-z0-9._-]+",run_id) or
     values.get("phase") != "completed" or
     values.get("accounting_state") != "completed" or
     values.get("role_exit") != "provider_failed" or
-    values.get("exit_status") in {None,"0"} or
+    not re.fullmatch(r"[1-9][0-9]*",values.get("exit_status","")) or
     values.get("go_issued") != "1" or values.get("task_submitted") != "1" or
     values.get("role") not in {"planner","spec-linter","test-author","builder"} or
     values.get("role_head_before") != remote or
@@ -2200,7 +2200,16 @@ PY
   tree="$(git -C "$work" rev-parse "$head^{tree}")" || return 1
   ref="refs/factory-dev/discarded/$ticket/$run_id"
   receipt="$root/runtime/product-discarded/$ticket-$run_id.json"
-  mkdir -p -m 700 "$root/runtime/product-discarded" || return 1
+  python3 - "$root/runtime/product-discarded" <<'PY' || return 1
+import os, pathlib, stat, sys
+path=pathlib.Path(sys.argv[1])
+if not os.path.lexists(path):
+    os.mkdir(path,0o700)
+info=path.lstat()
+if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+    stat.S_IMODE(info.st_mode) != 0o700):
+    raise SystemExit(1)
+PY
   if git -C "$work" show-ref --verify --quiet "$ref"; then
     [[ "$(git -C "$work" rev-parse "$ref")" == "$head" ]] || return 1
   else
@@ -2216,7 +2225,11 @@ value={"schema":"factory-dev-discarded-role/v1",
        **dict(zip(keys,sys.argv[2:]))}
 raw=json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
 if path.exists():
-    if path.is_symlink() or path.read_text(encoding="utf-8") != raw:
+    info=path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or
+        info.st_uid != os.getuid() or info.st_nlink != 1 or
+        stat.S_IMODE(info.st_mode) != 0o600 or
+        path.read_text(encoding="utf-8") != raw):
         raise SystemExit(1)
 else:
     fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
