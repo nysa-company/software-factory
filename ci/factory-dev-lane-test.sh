@@ -974,7 +974,7 @@ printf 'A\n' >"$CURSOR_ATTEMPT/owner"
 cp "$CALLER_HOME/.cursor/auth.json" "$CALLER_HOME/.cursor/cli-config.json" \
   "$CURSOR_ATTEMPT/home/.cursor/"
 chmod 600 "$CURSOR_ATTEMPT/owner" "$CURSOR_ATTEMPT/home/.cursor/"*.json
-set +e
+cursor_attempt_status=0
 FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
   FACTORY_CLI_ATTEMPT_ID=A FACTORY_CURSOR_SESSION_HOME="$CURSOR_ATTEMPT/home" \
   CURSOR_CONFIG_DIR="$CURSOR_ATTEMPT/home/.cursor" \
@@ -984,9 +984,7 @@ FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
   "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
     --timeout-min 1 --prompt-file "$ROOT/roles/builder.md" --workdir "$TMP" \
     --model claude-sonnet-5-thinking-high --effort high -- build \
-    >"$OUT" 2>&1
-cursor_attempt_status=$?
-set -e
+    >"$OUT" 2>&1 || cursor_attempt_status=$?
 [[ "$cursor_attempt_status" != 6 ]] ||
   fail "valid attempt-local Cursor runtime was rejected"
 chmod 755 "$CURSOR_ATTEMPT/data"
