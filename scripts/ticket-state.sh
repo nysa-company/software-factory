@@ -15,11 +15,17 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$TICKET" =~ ^T-[0-9]+$ && -n "$WORKDIR" ]] || { echo "invalid ticket-state arguments" >&2; exit 2; }
 [[ "$ACTION" == "materialize" || "$ACTION" == "transition" ||
-   "$ACTION" == "reviewer-reconcile" ]] || { echo "invalid ticket-state action" >&2; exit 2; }
+   "$ACTION" == "reviewer-reconcile" ||
+   "$ACTION" == "qualification-backlog" ]] || { echo "invalid ticket-state action" >&2; exit 2; }
 [[ "$ACTION" != "transition" || -n "$STATE" ]] || { echo "transition requires --state" >&2; exit 2; }
 [[ "$ACTION" != "reviewer-reconcile" ||
    "$CONTRACT_VERSION" == "1.7.0" ]] || {
   echo "reviewer reconciliation requires contract 1.7.0" >&2
+  exit 1
+}
+[[ "$ACTION" != "qualification-backlog" ||
+   "$CONTRACT_VERSION" == "1.7.0" ]] || {
+  echo "qualification backlog return requires contract 1.7.0" >&2
   exit 1
 }
 
@@ -165,6 +171,37 @@ elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
     --head "$HEAD_BEFORE" \
     --contract-version "$CONTRACT_VERSION" \
     --output "$TMP"
+elif [[ "$ACTION" == "qualification-backlog" ]]; then
+  cmp -s "$TMP" "$TICKET_FILE" || {
+    echo "pending operator fields require materialization before backlog return" >&2
+    exit 1
+  }
+  git -C "$WORKDIR" show \
+    "refs/remotes/origin/main:factory/QUALIFICATION.json" > "$OPERATOR_VERSION_FILE" ||
+    { echo "protected qualification manifest is unavailable" >&2; exit 1; }
+  python3 - "$TMP" "$OPERATOR_VERSION_FILE" "$TICKET" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+ticket_path, qualification_path, ticket = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+text = ticket_path.read_text()
+qualification = json.loads(qualification_path.read_text())
+if (
+    qualification.get("schema") != "nysa.software-factory.qualification/v1"
+    or ticket not in qualification.get("tickets", [])
+):
+    raise SystemExit("protected qualification manifest does not authorize backlog return")
+states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
+if states != ["Planning"]:
+    raise SystemExit("qualification backlog return requires State Planning")
+if not re.search(r"^SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$", text, re.I | re.M):
+    raise SystemExit("qualification backlog return requires a spec-lint failure")
+ticket_path.write_text(re.sub(
+    r"^State:\s*.*$", "State: Backlog", text, count=1, flags=re.I | re.M,
+))
+PY
 fi
 
 CHANGED=0

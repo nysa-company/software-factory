@@ -99,6 +99,7 @@ Initiative: I-NNN
 Priority: none
 Risk class: low
 External: no
+Merge-Policy: manual
 
 ## Description
 
@@ -201,6 +202,16 @@ def field(text, name, default=""):
     return match.group(1).strip() if match else default
 
 
+def merge_policy(text):
+    matches = re.findall(r"^Merge-Policy:\s*(.*?)\s*$", text, re.MULTILINE | re.IGNORECASE)
+    if len(matches) > 1:
+        raise ValueError("ticket contains duplicate Merge-Policy fields")
+    policy = matches[0].lower() if matches else "manual"
+    if policy not in {"manual", "auto"}:
+        raise ValueError("Merge-Policy must be manual or auto")
+    return policy
+
+
 def section(text, name):
     match = re.search(
         rf"^##\s+{name}\b[^\n]*\n(.*?)(?=^##\s|\Z)",
@@ -229,12 +240,30 @@ def parse_ticket_text(ticket_id, path, text):
         "branch": field(text, "Branch"),
         "risk": field(text, "Risk class", "low").lower().split()[0],
         "external": field(text, "External", "no").lower() in ("yes", "true", "1"),
+        "merge_policy": merge_policy(text),
         "description": section(text, "Description"),
         "criteria": section(text, r"Acceptance criteria"),
         "log_lines": [
             line for line in section(text, "Log").splitlines() if line.strip().startswith("- ")
         ],
     }
+
+
+def protected_merge_policy(factory_dir, ticket_id):
+    repo = subprocess.run(
+        ["git", "-C", str(factory_dir), "rev-parse", "--show-toplevel"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    result = subprocess.run(
+        ["git", "-C", repo, "show", f"refs/remotes/origin/main:factory/tickets/{ticket_id}.md"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(f"{ticket_id}: protected origin/main ticket is unavailable")
+    return merge_policy(result.stdout)
 
 
 def parse_initiative(path):
@@ -920,6 +949,11 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
             desired_state_id = config["states"].get(ticket["state"])
         else:
             actual = None
+        if ticket["state"] == "awaiting approval" and ticket["merge_policy"] == "auto":
+            if protected_merge_policy(factory_dir, ticket["id"]) == "auto":
+                desired_state_id = config["states"].get("approved")
+            else:
+                log(f"{ticket['id']}: protected Merge-Policy is not auto; awaiting operator")
 
         description = build_description(ticket, stats)
         label_ids = desired_labels(ticket, config)

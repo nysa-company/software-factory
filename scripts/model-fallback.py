@@ -421,14 +421,7 @@ def recover(args):
     return result
 
 
-def apply(args):
-    approval = json.loads(Path(args.approval).read_text())
-    recovered = recover_applied(args, approval)
-    if recovered is not None:
-        return recovered
-    result = calculate(args, approval["nonce"])
-    if approval.get("approval_hash") != result["approval_hash"]:
-        raise FallbackError("Linear approval does not match the current fallback preview")
+def apply_result(args, approval, result):
     created_at = (
         dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         .replace("+00:00", "Z")
@@ -470,9 +463,68 @@ def apply(args):
     }
 
 
+def apply(args):
+    approval = json.loads(Path(args.approval).read_text())
+    recovered = recover_applied(args, approval)
+    if recovered is not None:
+        return recovered
+    result = calculate(args, approval["nonce"])
+    if approval.get("approval_hash") != result["approval_hash"]:
+        raise FallbackError("Linear approval does not match the current fallback preview")
+    return apply_result(args, approval, result)
+
+
+def qualification_apply(args):
+    result = calculate(args, secrets.token_hex(16))
+    failed = result["failed"]
+    if not failed.get("route_id", "").startswith("cursor-"):
+        raise FallbackError("qualification fallback requires a failed Cursor route")
+    expected_adapter = (
+        "claude-code"
+        if failed["role"] in {"spec-linter", "test-author", "reviewer"}
+        else "codex"
+    )
+    if result["resolution"]["selections"][failed["role"]]["adapter"] != expected_adapter:
+        raise FallbackError("qualification fallback did not resolve the approved direct CLI")
+    attempts = 0
+    for path in (Path(args.factory_root) / "factory/runs").glob("*.meta"):
+        if path.is_file() and not path.is_symlink():
+            value = read_meta(path)
+            attempts += (
+                value.get("ticket") == args.ticket
+                and value.get("role") == failed["role"]
+                and value.get("go_issued") == "1"
+            )
+    if attempts != 1:
+        raise FallbackError("qualification fallback is allowed only after the first role attempt")
+    raw = git(
+        Path(args.workdir), "show", "refs/remotes/origin/main:factory/QUALIFICATION.json"
+    )
+    try:
+        qualification = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise FallbackError("protected qualification manifest is malformed") from error
+    if (
+        qualification.get("schema") != "nysa.software-factory.qualification/v1"
+        or qualification.get("factory_sha") != result["journal"]["kit_sha"]
+        or args.ticket not in qualification.get("tickets", [])
+        or not isinstance(qualification.get("generation"), int)
+        or qualification["generation"] < 1
+    ):
+        raise FallbackError("protected qualification manifest does not authorize fallback")
+    approval = {
+        "approval_hash": result["approval_hash"],
+        "generation": qualification["generation"],
+        "manifest_digest": digest(raw),
+        "nonce": result["nonce"],
+        "schema": "ticket-model-fallback-qualification/v1",
+    }
+    return apply_result(args, approval, result)
+
+
 def parser():
     value = argparse.ArgumentParser()
-    value.add_argument("action", choices=("preview", "apply", "recover"))
+    value.add_argument("action", choices=("preview", "apply", "qualification-apply", "recover"))
     value.add_argument("--workdir", required=True)
     value.add_argument("--factory-root", required=True)
     value.add_argument("--project", required=True)
@@ -504,6 +556,8 @@ def main():
         value = preview(args)
     elif args.action == "recover":
         value = recover(args)
+    elif args.action == "qualification-apply":
+        value = qualification_apply(args)
     else:
         value = apply(args)
     print(canonical(value))

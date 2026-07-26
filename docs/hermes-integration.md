@@ -101,6 +101,7 @@ Model policy is task-free and sealed:
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
+~/.factory/bin/factory-launch <project> models fallback-auto --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason provider_unavailable --json
 ```
 
 The operator activates only the exact profile hash returned by preview.
@@ -164,6 +165,16 @@ journal as post-review factory metadata. A changed journal must pass the sealed
 model manager and prove an exact append-only suffix containing only
 release-migration revisions. Any rewritten route history, product, test,
 sibling-ticket, or other path change invalidates review before GitHub access.
+
+Contract 1.7 may bind a sandbox qualification to one exact kit SHA and ten
+protected ticket IDs through `factory/QUALIFICATION.json`. Dispatch admits only
+that set, holds capacity at three until three protected Done results, then
+raises it to four, respects tracked `Depends-On` edges, stops after ten, and
+marks the generation invalid when a started ticket exceeds ninety minutes.
+`Merge-Policy: auto` must already exist on protected main; a ticket branch
+cannot grant itself automatic approval. A first terminal Cursor availability
+failure may use `fallback-auto` to preserve its handoff and select the approved
+direct Codex or Claude Code route for the second and final role attempt.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission

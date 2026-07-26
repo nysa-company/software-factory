@@ -189,7 +189,7 @@ class LinearSyncTest(unittest.TestCase):
         )
         (self.factory / "tickets" / "T-001.md").write_text(
             "# T-001 — first ticket\n\nState: Backlog\nInitiative: I-001\n"
-            "Priority: none\nRisk class: medium\nExternal: yes\n\n"
+            "Priority: none\nRisk class: medium\nExternal: yes\nMerge-Policy: manual\n\n"
             "## Description\n\nBuild it.\n\n## Acceptance criteria\n\n1. It works.\n\n## Log\n"
         )
         (self.factory / "ledger.csv").write_text(
@@ -305,6 +305,36 @@ class LinearSyncTest(unittest.TestCase):
         operator = self.mapping["tickets"]["T-001"]["operator"]
         self.assertEqual(operator["state"], "Approved")
         self.assertEqual(operator["approval"], "Linear")
+
+    def test_protected_auto_merge_policy_advances_linear_approval(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Awaiting Approval")
+            .replace("Merge-Policy: manual", "Merge-Policy: auto")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        with patch.object(LINEAR, "protected_merge_policy", return_value="auto"):
+            self.reconcile()
+            self.assertEqual(issue["state"]["name"], "Approved")
+            self.reconcile()
+        operator = self.mapping["tickets"]["T-001"]["operator"]
+        self.assertEqual(operator["state"], "Approved")
+        self.assertEqual(operator["approval"], "Linear")
+
+    def test_unprotected_auto_merge_policy_waits_for_operator(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Awaiting Approval")
+            .replace("Merge-Policy: manual", "Merge-Policy: auto")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        with patch.object(LINEAR, "protected_merge_policy", return_value="manual"):
+            self.reconcile()
+        self.assertEqual(issue["state"]["name"], "Awaiting Approval")
 
     def test_blocked_ticket_resumes_only_to_declared_state(self):
         self.reconcile()

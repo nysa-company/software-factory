@@ -796,6 +796,26 @@ def field(text, name):
     return matches[0]
 
 
+def merge_policy(text):
+    matches = re.findall(r"^Merge-Policy:\s*(.*?)\s*$", text, re.I | re.M)
+    if len(matches) > 1:
+        raise Refusal("ticket must contain at most one Merge-Policy field")
+    policy = matches[0].lower() if matches else "manual"
+    if policy not in {"manual", "auto"}:
+        raise Refusal("Merge-Policy must be manual or auto")
+    return policy
+
+
+def protected_merge_policy(workdir, ticket):
+    result = git(
+        workdir, "show", f"refs/remotes/origin/main:factory/tickets/{ticket}.md",
+        check=False,
+    )
+    if result.returncode:
+        raise Refusal("protected origin/main ticket is unavailable")
+    return merge_policy(result.stdout)
+
+
 def replace_field(text, name, value):
     return re.sub(
         rf"^{re.escape(name)}:\s*.*$", f"{name}: {value}", text,
@@ -1477,6 +1497,8 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     bundle_path = workdir / "factory" / "tickets" / f"{args.ticket}-bundle.md"
     text = ticket_path.read_text()
+    if merge_policy(text) != protected_merge_policy(workdir, args.ticket):
+        raise Refusal("Merge-Policy differs from protected origin/main")
     if field(text, "State").lower() != "review":
         raise Refusal("bundle requires ticket State Review")
     bundle_text = bundle_path.read_text()

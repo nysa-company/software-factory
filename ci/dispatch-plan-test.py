@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,10 +13,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "dispatch-plan.py"
+SPEC = importlib.util.spec_from_file_location("dispatch_plan", HELPER)
+assert SPEC and SPEC.loader
+DISPATCH = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(DISPATCH)
 
 
 def run(*command, cwd=None):
@@ -95,6 +101,30 @@ class DispatchPlanTest(unittest.TestCase):
             )
             + "\n"
         )
+
+    def write_qualification(self, dependencies=None):
+        tickets = [f"T-{number}" for number in range(100, 110)]
+        for ticket in tickets:
+            self.ticket(ticket, "normal", "Ready")
+        for ticket, required in (dependencies or {}).items():
+            path = self.product / "factory/tickets" / f"{ticket}.md"
+            path.write_text(
+                path.read_text() + f"Depends-On: {','.join(required)}\n"
+            )
+        manifest = {
+            "factory_sha": "a" * 40,
+            "final_capacity": 4,
+            "generation": 1,
+            "initial_capacity": 3,
+            "ramp_after_done": 3,
+            "schema": "nysa.software-factory.qualification/v1",
+            "target_done": 10,
+            "tickets": tickets,
+        }
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        return tickets
 
     def command(self, action, expected=0):
         result = subprocess.run(
@@ -178,6 +208,51 @@ class DispatchPlanTest(unittest.TestCase):
         (self.product / "factory/.dispatch-leases/T-200.json").unlink()
         value = self.command("claim", expected=2)
         self.assertIn("divergent or unpushed", value["error"])
+
+    def test_qualification_ramps_filters_dependencies_and_completes(self):
+        tickets = self.write_qualification({"T-109": ["T-100"]})
+
+        def state(done):
+            def terminal(_product, ticket):
+                if ticket not in done:
+                    raise DISPATCH.ValidationError("not done")
+                return {"ticket": ticket}
+
+            with mock.patch.object(DISPATCH, "protected_terminal", side_effect=terminal):
+                return DISPATCH.qualification(
+                    self.product, self.product / "factory", 4
+                )
+
+        initial = state(set())
+        self.assertEqual(initial["capacity"], 3)
+        self.assertNotIn("T-100", initial["terminal"])
+        self.assertEqual(initial["dependencies"]["T-109"], ("T-100",))
+
+        ramped = state(set(tickets[:3]))
+        self.assertEqual(ramped["capacity"], 4)
+        self.assertEqual(ramped["done"], 3)
+        self.assertIn("T-100", ramped["terminal"])
+
+        complete = state(set(tickets))
+        self.assertEqual(complete["done"], complete["target_done"])
+
+    def test_qualification_rejects_dependency_cycle(self):
+        self.write_qualification({"T-100": ["T-101"], "T-101": ["T-100"]})
+        with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
+            DISPATCH.qualification(self.product, self.product / "factory", 4)
+
+    def test_qualification_marks_a_ticket_over_ninety_minutes_invalid(self):
+        self.write_qualification()
+        started = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=91)
+        (self.product / "factory/runtime-ledger.csv").write_text(
+            "date,time,ticket\n"
+            f"{started:%Y-%m-%d},{started:%H:%M:%S},T-100\n"
+        )
+        with mock.patch.object(
+            DISPATCH, "protected_terminal", side_effect=DISPATCH.ValidationError("not done")
+        ):
+            value = DISPATCH.qualification(self.product, self.product / "factory", 4)
+        self.assertEqual(value["overdue"], ["T-100"])
 
 
 if __name__ == "__main__":

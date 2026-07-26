@@ -7,6 +7,12 @@ helper output are not compatibility promises.
 
 ## 1.7.0 — 2026-07-22
 
+- Adds protected qualification manifests for an exact ten-ticket generation,
+  dependency-aware rolling capacity from three to four, a terminal stop, and a
+  ninety-minute invalidation boundary.
+- Adds protected per-ticket `Merge-Policy` preauthorization, qualification-only
+  Cursor-to-direct fallback after one terminal availability failure, and a
+  trusted spec-failure return to Backlog.
 - Adds owner-activated `cli-concurrent-v1` admission for the existing Codex,
   Claude Code, and Cursor subscription CLI routes without API credentials.
 - Reuses Contract 1.6's transactional coordinator for short atomic capacity

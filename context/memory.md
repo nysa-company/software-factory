@@ -147,6 +147,19 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - 2026-07-21: Contract 1.6 now defaults the single coupled ticket-worktree/provider capacity to four. Contracts 1.1–1.5 retain their default of one.
 - 2026-07-21: Normal Done validation anchors the receipt's complete-ledger digest to the unique immutable closeout commit, then requires protected main's current ledger to preserve those bytes as an unchanged prefix. Later ticket rows may append without invalidating earlier terminal evidence; historical ledger rewrites still fail closed.
 
+## 2026-07-25 — Decision 57: Sandbox qualification is one immutable rolling generation
+
+Category: System change
+
+A protected Contract 1.7 qualification manifest binds one exact Factory SHA to
+ten ticket IDs, tracked dependencies, capacity three ramping to four after
+three protected Done results, and a hard stop at ten; a started ticket beyond
+ninety minutes invalidates the generation. Protected `Merge-Policy: auto`
+preauthorizes the existing Linear approval path, while a first terminal Cursor
+availability failure may preserve its handoff and use the role-appropriate
+direct CLI for the second and final attempt. Spec-lint failure returns the
+ticket to Backlog for operator repair without stopping eligible siblings.
+
 ## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
 
 Category: Decision

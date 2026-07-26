@@ -137,6 +137,39 @@ again.
   -- <task>
 ```
 
+For a Contract 1.7 ticket listed in the protected qualification manifest, a
+terminal `credits_exhausted` or `provider_unavailable` Cursor failure permits
+exactly one recovery decision. Poll `models status --json` for no longer than
+two minutes. If the exact pinned route becomes ready, repeat the same
+next-stage, preflight, and role launch once. Otherwise preserve the failed
+attempt and switch that role to its approved direct CLI:
+
+```text
+~/.factory/bin/factory-launch <project> models fallback-auto \
+  --ticket <T-NNN> --failed-run <failed-run-id> \
+  --workdir <absolute-product-worktree> \
+  --reason <credits_exhausted|provider_unavailable> --json
+```
+
+Then repeat next-stage, preflight, and the role launch once. The helper permits
+this only after a first Cursor attempt, requires the protected qualification
+manifest, and selects Codex for Planner/Builder/Narrator or Claude Code for
+Spec-linter/Test-author/Reviewer. A second failure, semantic failure, timeout,
+malformed result, or unknown outcome stops that ticket without retrying its
+role; continue eligible sibling tickets.
+
+If a qualification ticket records `SPEC-LINT: FAIL`, do not spend a second
+planning round. Return it for specification repair, release its lease, and
+continue eligible siblings:
+
+```text
+~/.factory/bin/factory-launch <project> ticket-state \
+  --ticket <T-NNN> --workdir <absolute-product-worktree> \
+  --action qualification-backlog --json
+```
+
+Only the operator may move that Linear ticket from Backlog to Ready again.
+
 Use only a role in the contract manifest's `role_whitelist`. The launcher
 rejects alternate or symlinked prompt files, foreign worktrees, adapter
 overrides, malformed tickets, and empty tasks. The workdir must be a distinct
@@ -180,10 +213,12 @@ ticket text. The launcher verifies the same linked-worktree and exact ticket
 branch contract used for role launches. Never call
 `scripts/reorder-test-fixes.sh` directly.
 After opening the PR, contract 1.2 stops at the evidence boundary. Under
-contracts 1.3 and 1.4 invoke `ticket-attest --action bundle`; after the newer exact
-Linear approval overlay appears invoke `--action approval`. This requests
-protected auto-merge but does not approve or merge directly. Refusals are
-escalations; never use a generic transition to manufacture these states.
+contracts 1.3 through 1.7 invoke `ticket-attest --action bundle`. A protected
+`Merge-Policy: auto` lets Linear reconciliation advance Awaiting Approval to
+Approved; otherwise wait for the operator. After the newer exact Linear
+approval overlay appears invoke `--action approval`. This requests protected
+auto-merge but does not approve or merge directly. Refusals are escalations;
+never use a generic transition to manufacture these states.
 When concurrency is greater than one, pass the matching in-memory
 `--lease <opaque-lease-id>` to every ticket-attest action exactly as for
 sequencing and runs. Never write or quote that value in a log or receipt.
@@ -219,7 +254,8 @@ one there is no lease to release.
 
 The launcher is the only door. Do not call a mutable checkout's scripts,
 worker CLIs, or private launcher helpers directly. Do not add adapter
-overrides. Except for the documented exact-commit `done` network retry, do not
+overrides. Except for the documented Contract 1.7 qualification recovery and
+exact-commit `done` network retry, do not
 retry a refusal, post-submission failure, timeout, malformed result, unknown
 schema, unknown action, maintenance state, lock conflict, budget failure, pin
 failure, or release mismatch.

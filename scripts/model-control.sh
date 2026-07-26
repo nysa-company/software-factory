@@ -395,7 +395,7 @@ value.update(commit_sha=sys.argv[2], approved_by=sys.argv[3])
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
     ;;
-  fallback-plan|fallback)
+  fallback-plan|fallback|fallback-auto)
     ticket="" failed_run="" workdir="" reason="" allow_reviewer_family=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -416,6 +416,10 @@ PY
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ]] ||
       json_error "mid-ticket fallback requires contract 1.4.0 or newer"
+    if [[ "$command_name" == "fallback-auto" &&
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.7.0" ]]; then
+      json_error "automatic qualification fallback requires contract 1.7.0"
+    fi
     [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
       json_error "failed run identifier is invalid"
     [[ "$reason" == "credits_exhausted" || "$reason" == "provider_unavailable" ]] ||
@@ -471,6 +475,41 @@ PY
       fi
       cat "$preview_file"
       rm -f "$preview_file"
+      exit 0
+    fi
+    if [[ "$command_name" == "fallback-auto" ]]; then
+      launch_lock="$FACTORY_ROOT/factory/.launch.lock"
+      provider_lock="$FACTORY_ROOT/factory/.provider.lock"
+      ledger_lock="$FACTORY_ROOT/factory/.ledger.lock"
+      mkdir "$launch_lock" 2>/dev/null || json_error "launch lock is busy"
+      FALLBACK_LAUNCH_LOCK="$launch_lock"
+      [[ ! -e "$provider_lock" && ! -L "$provider_lock" &&
+         ! -e "$ledger_lock" && ! -L "$ledger_lock" ]] ||
+        json_error "provider or accounting state is busy"
+      expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
+      [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
+        json_error "remote tracking state is unavailable"
+      apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
+        json_error "could not allocate fallback result"
+      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" qualification-apply \
+        --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
+        --project "$FACTORY_PROJECT" --ticket "$ticket" \
+        --failed-run "$failed_run" --reason "$reason" \
+        --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$apply_file"; then
+        rm -f "$apply_file"
+        json_error "automatic qualification fallback failed"
+      fi
+      commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+        "$CONTROL_REMOTE" "$expected_remote_head")"
+      rmdir "$FALLBACK_LAUNCH_LOCK"
+      FALLBACK_LAUNCH_LOCK=""
+      python3 - "$apply_file" "$commit_sha" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+value["commit_sha"] = sys.argv[2]
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+      rm -f "$apply_file"
       exit 0
     fi
     approval_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-approval.XXXXXX")" ||

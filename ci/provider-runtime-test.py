@@ -178,7 +178,7 @@ class ProviderRuntimeTest(unittest.TestCase):
             thread.join(timeout=5)
         self.temporary.cleanup()
 
-    def request(self, attempt="attempt-1", policy_hash=None):
+    def request(self, attempt="attempt-1", policy_hash=None, ticket="T-123"):
         path = self.root / f"{attempt}.request.json"
         path.write_text(json.dumps({
             "attempt_id": attempt,
@@ -191,7 +191,7 @@ class ProviderRuntimeTest(unittest.TestCase):
             "route_id": "mock-route",
             "schema": "nysa.software-factory.provider-execution-request/v3",
             "source": str(self.root),
-            "ticket": "T-123",
+            "ticket": ticket,
             "worker_program": str(self.worker),
             "worker_sha256": hashlib.sha256(self.worker.read_bytes()).hexdigest(),
         }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
@@ -313,7 +313,7 @@ class ProviderRuntimeTest(unittest.TestCase):
             self.fail("broker did not listen")
         return broker_db, broker_port, credentials, secret
 
-    def broker_arguments(self, attempt, fixture, *, timeout="900"):
+    def broker_arguments(self, attempt, fixture, *, timeout="900", ticket="T-123"):
         broker_db, broker_port, credentials, _ = fixture
         provider_request = self.root / f"{attempt}.provider-request.json"
         provider_request.write_text(json.dumps({
@@ -322,7 +322,7 @@ class ProviderRuntimeTest(unittest.TestCase):
         os.chmod(provider_request, 0o600)
         return [
             "execute",
-            "--request", self.request(attempt),
+            "--request", self.request(attempt, ticket=ticket),
             "--attempt-root", self.attempts,
             "--provider-family", "mock",
             "--account-route", "local",
@@ -407,12 +407,14 @@ class ProviderRuntimeTest(unittest.TestCase):
         attempts = [f"attempt-{number}" for number in range(1, 5)]
         processes = [
             subprocess.Popen(
-                self.runtime_command(*self.broker_arguments(attempt, fixture)),
+                self.runtime_command(*self.broker_arguments(
+                    attempt, fixture, ticket=f"T-{200 + number}"
+                )),
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            for attempt in attempts
+            for number, attempt in enumerate(attempts, start=1)
         ]
         try:
             self.assertTrue(upstream.wait_for(4), "four broker calls did not overlap")

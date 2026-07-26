@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import json
 import os
@@ -24,9 +25,11 @@ from effective_ticket import (  # noqa: E402
     operator_fields,
     ticket_branch_prefix,
 )
+from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
+QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v1"
 TICKET = re.compile(r"^T-([0-9]+)$")
 PRIORITY = {"urgent": 0, "high": 1, "normal": 2, "low": 3, "none": 4}
 
@@ -119,6 +122,114 @@ def capacity(factory: Path) -> int:
     return selected
 
 
+def dependencies(text: str) -> tuple[str, ...]:
+    raw = field(text, "Depends-On", "none")
+    if raw.lower() == "none":
+        return ()
+    values = tuple(item.strip() for item in raw.split(","))
+    if (
+        not values
+        or any(not TICKET.fullmatch(item) for item in values)
+        or len(values) != len(set(values))
+    ):
+        raise DispatchError("ticket dependencies are invalid")
+    return values
+
+
+def qualification(
+    product: Path, factory: Path, configured_capacity: int
+) -> dict[str, Any] | None:
+    path = factory / "QUALIFICATION.json"
+    if not path.exists():
+        return None
+    value = json.loads(safe_file(path, "qualification manifest", 100_000))
+    keys = {
+        "factory_sha", "final_capacity", "generation", "initial_capacity",
+        "ramp_after_done", "schema", "target_done", "tickets",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise DispatchError("qualification manifest fields are invalid")
+    tickets = value["tickets"]
+    pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
+    if (
+        value["schema"] != QUALIFICATION_SCHEMA
+        or value["factory_sha"] != pin
+        or not isinstance(value["generation"], int)
+        or isinstance(value["generation"], bool)
+        or value["generation"] < 1
+        or not isinstance(tickets, list)
+        or len(tickets) != 10
+        or len(tickets) != len(set(tickets))
+        or any(not isinstance(item, str) or not TICKET.fullmatch(item) for item in tickets)
+        or value["target_done"] != len(tickets)
+        or not all(
+            isinstance(value[name], int) and not isinstance(value[name], bool)
+            for name in ("initial_capacity", "ramp_after_done", "final_capacity")
+        )
+        or not 1 < value["initial_capacity"] <= value["final_capacity"] <= configured_capacity
+        or not 1 <= value["ramp_after_done"] < value["target_done"]
+    ):
+        raise DispatchError("qualification manifest is invalid")
+
+    graph: dict[str, tuple[str, ...]] = {}
+    for ticket in tickets:
+        text = safe_file(factory / "tickets" / f"{ticket}.md", f"ticket {ticket}")
+        graph[ticket] = dependencies(text)
+        if ticket in graph[ticket]:
+            raise DispatchError("qualification ticket depends on itself")
+    pending = {ticket: {item for item in graph[ticket] if item in graph} for ticket in tickets}
+    while pending:
+        ready = {ticket for ticket, items in pending.items() if not items}
+        if not ready:
+            raise DispatchError("qualification dependencies contain a cycle")
+        pending = {
+            ticket: items - ready
+            for ticket, items in pending.items()
+            if ticket not in ready
+        }
+
+    terminal = set()
+    for ticket in set(tickets).union(*(set(items) for items in graph.values())):
+        try:
+            protected_terminal(product, ticket)
+        except ValidationError:
+            continue
+        terminal.add(ticket)
+    done = len(set(tickets) & terminal)
+    overdue = []
+    ledger = factory / "runtime-ledger.csv"
+    if ledger.is_file() and not ledger.is_symlink():
+        with ledger.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        now = dt.datetime.now(dt.timezone.utc)
+        for ticket in set(tickets) - terminal:
+            starts = []
+            for row in rows:
+                if row.get("ticket") != ticket:
+                    continue
+                try:
+                    started = dt.datetime.fromisoformat(
+                        f"{row['date']}T{row['time']}"
+                    ).replace(tzinfo=dt.timezone.utc)
+                except (KeyError, TypeError, ValueError):
+                    raise DispatchError("qualification runtime ledger timestamp is invalid")
+                starts.append(started)
+            if starts and (now - min(starts)).total_seconds() > 90 * 60:
+                overdue.append(ticket)
+    return {
+        **value,
+        "capacity": (
+            value["initial_capacity"]
+            if done < value["ramp_after_done"]
+            else value["final_capacity"]
+        ),
+        "dependencies": graph,
+        "done": done,
+        "overdue": sorted(overdue),
+        "terminal": terminal,
+    }
+
+
 def fresh_mapping(path: Path, maximum_age: int) -> dict[str, Any]:
     raw = safe_file(path, "Linear operator map")
     value = json.loads(raw)
@@ -190,7 +301,12 @@ def active_tickets(factory: Path) -> set[str]:
     return result
 
 
-def candidates(factory: Path, mapping: dict[str, Any], excluded: set[str]):
+def candidates(
+    factory: Path,
+    mapping: dict[str, Any],
+    excluded: set[str],
+    qualification_state: dict[str, Any] | None = None,
+):
     result = []
     tickets = factory / "tickets"
     safe_directory(tickets, "ticket directory")
@@ -201,7 +317,21 @@ def candidates(factory: Path, mapping: dict[str, Any], excluded: set[str]):
         match = TICKET.fullmatch(path.stem)
         if not match or path.stem in excluded:
             continue
+        if (
+            qualification_state is not None
+            and path.stem not in qualification_state["tickets"]
+        ):
+            continue
         text = safe_file(path, f"ticket {path.stem}")
+        ticket_dependencies = dependencies(text)
+        if (
+            qualification_state is not None
+            and any(
+                item not in qualification_state["terminal"]
+                for item in ticket_dependencies
+            )
+        ):
+            continue
         operator = operator_fields(mapping, path.stem)
         effective = apply_operator_fields(text, operator)
         ticket_pin = field(effective, "Kit-SHA")
@@ -230,6 +360,7 @@ def candidates(factory: Path, mapping: dict[str, Any], excluded: set[str]):
                     "resumable": resumable,
                     "state": field(effective, "State"),
                     "ticket": path.stem,
+                    "depends_on": list(ticket_dependencies),
                 },
             )
         )
@@ -368,8 +499,33 @@ def main() -> None:
             raise DispatchError("factory control blocks dispatch")
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout is dirty")
+        git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
         mapping = fresh_mapping(factory / "linear-map.json", args.max_linear_age)
         maximum = capacity(factory)
+        qualification_state = qualification(product, factory, maximum)
+        if qualification_state is not None:
+            maximum = qualification_state["capacity"]
+            if qualification_state["overdue"]:
+                print(canonical({
+                    "action": "ESCALATE",
+                    "qualification_generation": qualification_state["generation"],
+                    "qualification_overdue": qualification_state["overdue"],
+                    "reason_code": "qualification_invalid_duration",
+                    "schema": SCHEMA,
+                    "status": "error",
+                }))
+                return
+            if qualification_state["done"] == qualification_state["target_done"]:
+                print(canonical({
+                    "action": "WAIT",
+                    "qualification_done": qualification_state["done"],
+                    "qualification_generation": qualification_state["generation"],
+                    "qualification_target": qualification_state["target_done"],
+                    "reason_code": "qualification_complete",
+                    "schema": SCHEMA,
+                    "status": "WAIT",
+                }))
+                return
         if maximum == 1:
             raise DispatchError("autonomous dispatch requires bounded concurrency")
         lease_dir = factory / ".dispatch-leases"
@@ -389,7 +545,12 @@ def main() -> None:
                 "schema": SCHEMA, "status": "WAIT",
             }))
             return
-        selected = candidates(factory, mapping, leased | active_tickets(factory))
+        selected = candidates(
+            factory,
+            mapping,
+            leased | active_tickets(factory),
+            qualification_state,
+        )
         if not selected:
             print(canonical({
                 "action": "WAIT", "reason_code": "no_candidate",

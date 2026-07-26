@@ -2206,6 +2206,7 @@ assert commands["models"]["grammars"] == [
     "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json",
     "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
     "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
+    "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> [--allow-reviewer-family <safe-id>] --json",
 ]
 assert commands["models"]["state"] == {
@@ -2231,7 +2232,7 @@ assert commands["models"]["maintenance"] == {
     ],
     "refused": [
         "activate", "disable", "enable", "policy-apply", "pin", "migrate",
-        "fallback",
+        "fallback-auto", "fallback",
     ],
 }
 assert commands["preflight"]["arguments"] == [
@@ -2248,7 +2249,7 @@ assert commands["next-stage"]["contract_1_3_terminal_action"].startswith(
 )
 assert commands["ticket-state"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-product-worktree>",
-    "--action", "<materialize|transition|reviewer-reconcile>",
+    "--action", "<materialize|transition|reviewer-reconcile|qualification-backlog>",
     "[--state <ticket-state>]", "--json"
 ]
 assert commands["ticket-state"]["transition_states"] == [

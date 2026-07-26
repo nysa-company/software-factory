@@ -52,7 +52,7 @@ class FallbackTest(unittest.TestCase):
         git(self.repo, "remote", "add", "origin", str(self.remote))
 
         catalog, routes, profiles, profile_map = ROUTER.load_policy()
-        profile = profile_map[sorted(profile_map)[0]]
+        profile = profile_map["cursor-balanced-v2"]
         readiness = {
             route_id: {
                 "adapter_version": "test-v1",
@@ -87,6 +87,12 @@ class FallbackTest(unittest.TestCase):
         (self.repo / "factory/route-plans/T-1.json").write_text(
             ROUTER.canonical_json(journal) + "\n"
         )
+        (self.repo / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "schema": "nysa.software-factory.qualification/v1",
+            "tickets": ["T-1"],
+        }))
         (self.repo / "factory/tickets/T-1.md").write_text(
             "State: in-progress\nKit-SHA: " + "a" * 40 + "\n"
         )
@@ -97,6 +103,7 @@ class FallbackTest(unittest.TestCase):
         git(self.repo, "config", "remote.origin.pushurl", str(self.remote))
         git(self.repo, "config", "remote.origin.url", str(self.fetch_remote))
         self.head = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", self.head)
 
         failed = resolution["selections"]["builder"]
         readiness[failed["route_id"]]["state"] = "UNAVAILABLE"
@@ -233,6 +240,25 @@ class FallbackTest(unittest.TestCase):
             )["revisions"]),
             2,
         )
+
+    def test_qualification_apply_uses_direct_cli_once(self):
+        applied = self.command("qualification-apply")
+        journal = json.loads(
+            git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
+        )
+        selection = journal["revisions"][-1]["body"]["new_resolution"]["selections"]["builder"]
+        self.assertEqual(selection["adapter"], "codex")
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+
+    def test_qualification_apply_refuses_a_second_role_attempt(self):
+        second = self.product / "factory/runs/run-failed-2.meta"
+        second.write_text(
+            (self.product / "factory/runs/run-failed-1.meta").read_text()
+            .replace("run_id=run-failed-1", "run_id=run-failed-2")
+        )
+        result = self.command("qualification-apply", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("only after the first role attempt", result.stderr)
 
     def test_handoff_preserves_role_commits_and_remaining_dirty_work(self):
         git(self.repo, "add", "src/app.txt")

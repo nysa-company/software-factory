@@ -344,7 +344,7 @@ PY
         environment = {
             **self.environment,
             "FACTORY_PROBE_TRACE": str(trace),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.6.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.7.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": self.kit_sha,
             "FACTORY_RELEASE_TREE": release_tree,

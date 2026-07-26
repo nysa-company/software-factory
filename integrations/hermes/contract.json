@@ -119,6 +119,7 @@
           "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json",
           "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
           "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
+          "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
           "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> [--allow-reviewer-family <safe-id>] --json"
         ],
         "output": "deterministic JSON emitted directly by the selected release model-control helper",
@@ -138,6 +139,7 @@
           "migrate-plan": "ticket-model-route-migration-preview/v1",
           "migrate": "ticket-model-route-journal/v2 plus commit metadata",
           "fallback-plan": "ticket-model-fallback-preview/v1",
+          "fallback-auto": "ticket-model-route-journal/v2 plus qualification-bound handoff commit metadata",
           "fallback": "ticket-model-route-journal/v2 plus handoff commit metadata"
         },
         "json_marker": "required as the final launcher argument and stripped before helper invocation",
@@ -160,6 +162,7 @@
             "policy-apply",
             "pin",
             "migrate",
+            "fallback-auto",
             "fallback"
           ]
         },
@@ -302,11 +305,11 @@
           "--workdir",
           "<absolute-product-worktree>",
           "--action",
-          "<materialize|transition|reviewer-reconcile>",
+          "<materialize|transition|reviewer-reconcile|qualification-backlog>",
           "[--state <ticket-state>]",
           "--json"
         ],
-        "output": "the committed ticket state after applying the ignored operator overlay, requested transition, or Contract 1.7 Reviewer reconciliation",
+        "output": "the committed ticket state after applying the ignored operator overlay, requested transition, Contract 1.7 Reviewer reconciliation, or protected qualification backlog return",
         "transition_states": [
           "Planning",
           "Building",

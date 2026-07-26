@@ -1124,10 +1124,12 @@ PY
         add_certified_origin_env
         MODEL_MUTATION=1
         ;;
-      fallback-plan|fallback)
+      fallback-plan|fallback|fallback-auto)
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
            "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ]] ||
           die "mid-ticket model fallback requires contract 1.4.0 or newer"
+        [[ "$MODEL_ACTION" != "fallback-auto" || "$CONTRACT_VERSION" == "1.7.0" ]] ||
+          die "automatic qualification fallback requires contract 1.7.0"
         [[ ( $# -eq 10 || $# -eq 12 ) &&
            "$2" == "--ticket" && "$4" == "--failed-run" &&
            "$6" == "--workdir" && "$8" == "--reason" ]] || usage
@@ -1151,7 +1153,7 @@ PY
           MODEL_ARGS+=(--allow-reviewer-family "${11}")
         fi
         add_certified_origin_env
-        if [[ "$MODEL_ACTION" == "fallback" ]]; then
+        if [[ "$MODEL_ACTION" == "fallback" || "$MODEL_ACTION" == "fallback-auto" ]]; then
           MODEL_MUTATION=1
         fi
         ;;
@@ -1421,13 +1423,17 @@ PY
     TICKET="$2" TICKET_ACTION="$6"
     [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
     [[ "$TICKET_ACTION" == "materialize" || "$TICKET_ACTION" == "transition" ||
-       "$TICKET_ACTION" == "reviewer-reconcile" ]] ||
+       "$TICKET_ACTION" == "reviewer-reconcile" ||
+       "$TICKET_ACTION" == "qualification-backlog" ]] ||
       die "invalid ticket-state action"
     [[ "$TICKET_ACTION" != "transition" || -n "$TICKET_STATE_VALUE" ]] ||
       die "transition requires a state"
     [[ "$TICKET_ACTION" != "reviewer-reconcile" ||
        "$CONTRACT_VERSION" == "1.7.0" ]] ||
       die "reviewer reconciliation requires contract 1.7.0"
+    [[ "$TICKET_ACTION" != "qualification-backlog" ||
+       "$CONTRACT_VERSION" == "1.7.0" ]] ||
+      die "qualification backlog return requires contract 1.7.0"
     resolve_product_workdir "$4"
     validate_ticket_worktree "$TICKET"
     [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||

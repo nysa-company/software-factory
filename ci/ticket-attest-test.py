@@ -147,6 +147,7 @@ class TicketAttestTests(unittest.TestCase):
 
 State: {state}
 Priority: normal
+Merge-Policy: manual
 
 ## Factory checklist
 - [x] Reviewer approved
@@ -405,6 +406,17 @@ else:
             "reviewer-1,anthropic,mock,pinned_route_plan,conservative_reservation,1",
         ))
         self.bundle()
+
+    def test_bundle_refuses_changed_merge_policy(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Merge-Policy: manual", "Merge-Policy: auto",
+        ))
+        self.commit("grant branch auto merge")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        result = self.attest("bundle")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Policy differs from protected origin/main", result.stderr)
 
     def test_stale_approval_is_refused(self):
         self.bundle()
