@@ -3155,6 +3155,7 @@ def section(name):
 preview=section("Preview")
 screenshots=section("Screenshots")
 backend_na=r"(?m)^Not applicable — backend-only contract(?:[.]|$)"
+visual_deferred=r"(?m)^Deferred — publication visual gate(?:[.]|$)"
 preview_deferred=(
     re.search(r"\b(?:unavailable|pending)\b",preview,re.I)
     and re.search(r"\b(?:PR|deploy|publication)\b",preview,re.I)
@@ -3165,10 +3166,15 @@ screenshots_deferred=(
 )
 if not re.search(backend_na,screenshots) and not (
     preview_deferred and screenshots_deferred
-):
+) and not re.search(visual_deferred,screenshots):
     raise SystemExit("development evidence bundle lacks backend-only screenshot evidence")
-if not re.search(backend_na,preview) and not preview_deferred:
+if not re.search(backend_na,preview) and not preview_deferred and not \
+   re.search(visual_deferred,preview):
     raise SystemExit("development evidence bundle lacks backend-only preview evidence")
+if bool(re.search(visual_deferred,preview)) != bool(
+    re.search(visual_deferred,screenshots)
+):
+    raise SystemExit("development visual evidence deferral is incomplete")
 if not re.search(r"development-only",text,re.I) or \
    not re.search(r"not a production attestation",text,re.I) or \
    not re.search(r"approve to merge",text,re.I):
@@ -3197,7 +3203,7 @@ rows=[row for row in csv.DictReader(open(sys.argv[1],encoding="utf-8"))
 print(f"attempts={len(rows)} cost_usd={sum(float(row['cost_usd']) for row in rows):.2f}")
 PY
 )" || return
-    instruction="$instruction Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1. This isolated development lane has no GitHub PR, deploy, or network. If the frozen contract explicitly has no browser or visual surface, including a backend-only HTTP API, write all standard bundle sections and begin Preview and Screenshots with 'Not applicable — backend-only contract'; an immediate period and explanation are allowed. For an HTTP API, Preview may instead state that it is unavailable or pending until the PR/deploy publication gate, provided Screenshots explicitly says unavailable and that the contract has no UI or visual surface. Label the bundle development-only and not a production attestation, and summarize the already committed Reviewer-approved deterministic evidence. The PR/deploy preview is a later publication gate and must not block this development bundle. Do not rerun tests or commands. Trusted accounting: $evidence."
+    instruction="$instruction Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1. This isolated development lane has no GitHub PR, deploy, or network. Write all standard bundle sections. If the frozen contract has no browser or visual surface, including a backend-only HTTP API, begin Preview and Screenshots with 'Not applicable — backend-only contract'. If it has a visual surface, begin both sections with 'Deferred — publication visual gate', list the exact preview and screenshot checks required before merge, and mark affected criteria DEFERRED rather than PASS or FAIL. Label the bundle development-only and not a production attestation, and summarize the already committed Reviewer-approved deterministic evidence. The trusted publication gate must resolve every deferral before merge; the missing PR-less preview must not fail this development bundle. Do not rerun tests or commands. Trusted accounting: $evidence."
   fi
   envelope="$root/product/factory/ENVELOPE.env"
   [[ ! -f "$root/runtime/product-envelope/$ticket.env" ]] ||

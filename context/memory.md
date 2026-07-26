@@ -71,7 +71,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Development product export projects only the latest successful Reviewer's non-`factory/` tree changes and rejects later product drift. Exact bundles retain detailed role/retry/audit history but are never applied to canonical product branches; the canonical mailbox deterministically emits one pure final-test commit before one pure implementation commit with the same reviewed application tree. Unsafe or empty strata fail closed, preventing lane controls, route pins, sibling tickets, and unreviewed Narrator metadata from escaping.
 - Development product export keeps `root/export` as its default and accepts a distinct new owner-only lane-local output for a later sibling. Every output is an atomic claim outside sensitive lane subtrees; existing, symlinked, outside, or failed targets cannot accumulate or overwrite artifacts.
 - Contract 1.7 adds owner-activated subscription-CLI concurrency through the existing transactional coordinator. Activation v2 binds the exact allowed CLI route tuple and canonical provider-policy digest, permits Codex and native Claude account capacity through four, and keeps Cursor capped at two. Every concurrent native-Claude attempt receives an owner-only lane-local home, config, temporary directory, and credential copy removed only after process-group drain. Contract 1.6 accepts only API activation v1, and missing or invalid activation remains serialized. The marker-bound development lane may use coordinator-owned bounded pre-GO waiting for transient concurrency denial for up to fifteen minutes while its lease heartbeat runs and the product launch lock is released; budget and permanent denials remain immediate. Role instructions use worktree-relative database-environment paths, and a shared fail-closed sentinel rejects newly added absolute `nysa-sf-dev.*` paths before trusted-host push and at both checkpoint boundaries. Seed import authenticates the old linear lane-control boundary before excluding its Factory-owned path rewrite from that scan; every later route and role commit remains scanned, and replay preserves the new lane's configuration.
-- The PR-less development Narrator accepts frozen backend HTTP contracts with canonical backend-only N/A evidence or with Preview explicitly pending/unavailable until the PR/deploy gate and Screenshots explicitly unavailable because there is no UI or visual surface. Its bundle is development-only and not a production attestation.
+- The PR-less development Narrator accepts backend-only N/A evidence and
+  retains visual tickets with exact `Deferred — publication visual gate`
+  markers in Preview and Screenshots. Deferred criteria are not passes; the
+  trusted publication step must resolve them before merge. The bundle remains
+  development-only and not a production attestation.
 - The Contract 1.7 development scheduler authenticates durable contract-blocked role manifests against the protected qualification SHA and returns only that qualification ticket to Backlog. Outside qualification it retains Blocked-Escalated. Its lease drains and siblings continue.
 - Isolated broker-stage cancellation and deterministic failure release capacity only after token revocation and upstream-request drain are both proven; otherwise the conservative full reservation remains active. Executor success is not durable until bound-container removal succeeds.
 - Contract 1.7 concurrent adapters keep timeout and provider descendants in one Factory-owned process group with a kernel-derived start identity. Completed development tickets emit owner-only readiness records and may export independently after only their own attempts, lease, claim, head, and evidence drain. Spec-linter reserves FAIL for material ambiguity or trust/data/external-effect risk and records non-blocking exhaustive coverage as `SPEC-WARN`.
@@ -181,6 +185,16 @@ the trusted test harness retains its isolated caller-provided parent. The
 second qualification generation exposed that macOS's long per-user `TMPDIR`
 made otherwise-correct attempt-local Cursor data paths exceed the CLI limit
 before submission.
+
+## 2026-07-26 — Decision 60: PR-less visual evidence defers, never passes
+
+Category: System change
+
+The isolated development lane has no PR preview or browser network, so its
+Narrator may retain a visual ticket only by marking both Preview and
+Screenshots `Deferred — publication visual gate` and naming the exact checks.
+The deferral is not acceptance; trusted publication must resolve it before
+merge, while normal production Narrators still require live evidence.
 
 ## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
 

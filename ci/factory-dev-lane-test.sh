@@ -1092,6 +1092,8 @@ grep -Fq 'never weakens the normal' \
   fail "Narrator backend-only exception weakens production preview evidence"
 grep -Fq 'backend-only HTTP API' "$ROOT/roles/narrator.md" ||
   fail "Narrator still excludes backend-only HTTP APIs from development evidence"
+grep -Fq 'Deferred — publication visual gate' "$ROOT/roles/narrator.md" ||
+  fail "Narrator cannot defer visual evidence to trusted publication"
 product_role_source="$(sed -n '/^product_role_run()/,/^product_transition_contract_blocked()/p' "$LANE")"
 printf '%s\n' "$product_role_source" |
   grep -Fq 'Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1' ||
@@ -1100,8 +1102,8 @@ printf '%s\n' "$product_role_source" |
   grep -Fq 'including a backend-only HTTP API' ||
   fail "development product runner still excludes backend-only HTTP APIs"
 printf '%s\n' "$product_role_source" |
-  grep -Fq 'later publication gate and must not block this development bundle' ||
-  fail "development Narrator can still block on the later publication preview"
+  grep -Fq 'trusted publication gate must resolve every deferral before merge' ||
+  fail "development Narrator does not preserve the publication visual gate"
 printf '%s\n' "$product_role_source" |
   grep -Fq -- '--action qualification-backlog' &&
   printf '%s\n' "$product_role_source" |
@@ -1161,6 +1163,30 @@ sed 's/no UI or visual surface/a changed UI/' \
   "$TMP/retained-http-backend-bundle.md" >"$TMP/visual-bundle-without-evidence.md"
 expect_failure "visual bundle without preview evidence" \
   validate_product_dev_bundle "$TMP/visual-bundle-without-evidence.md"
+sed -e '/^## Preview$/,/^## Screenshots$/{
+  /Unavailable in this sandbox/c\
+Deferred — publication visual gate\
+Verify the authenticated preview before merge.
+}' -e '/^## Screenshots$/,/^## Acceptance criteria$/{
+  /Not applicable — backend-only contract/c\
+Deferred — publication visual gate\
+Capture the frozen viewports and compare them with the product references.
+}' "$TMP/pending-http-backend-bundle.md" >"$TMP/deferred-visual-bundle.md"
+validate_product_dev_bundle "$TMP/deferred-visual-bundle.md" ||
+  fail "development validator rejected an explicit visual publication deferral"
+sed '/^Deferred — publication visual gate$/{
+  x
+  /removed/{
+    x
+    d
+  }
+  x
+  h
+  s/.*/removed/
+  x
+}' "$TMP/deferred-visual-bundle.md" >"$TMP/incomplete-visual-deferral.md"
+expect_failure "incomplete visual evidence deferral" \
+  validate_product_dev_bundle "$TMP/incomplete-visual-deferral.md"
 subscription_cases="$(sed -n '/^  subscription-plan)/,/^  product-seed-lineage)/p' "$LANE")"
 printf '%s\n' "$subscription_cases" |
   grep -Fq 'run_in_sandbox "$root" subscription __subscription-plan' ||

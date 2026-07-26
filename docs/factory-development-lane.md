@@ -143,12 +143,13 @@ targeted cancellation refuses identity drift and drains only that group.
 
 The PR-less development Narrator marks Preview and Screenshots as backend-only
 N/A when the frozen contract has no browser or visual surface, including an
-HTTP API. The marker may be followed immediately by a period and explanation.
-An HTTP Preview may instead be recorded as unavailable in the sandbox
-and pending the PR/deploy publication gate when Screenshots also explicitly
-records that they are unavailable and the contract has no UI or visual surface.
-The bundle remains explicitly development-only and not a production
-attestation; that later gate does not block sandbox evidence.
+HTTP API. For a visual contract it marks both sections and every affected
+criterion `Deferred — publication visual gate`, then names the exact preview,
+viewport, reference, and comparison work required before merge. The bundle
+remains explicitly development-only and not a production attestation. A
+deferral lets the isolated lifecycle and export complete; it is not a pass and
+the trusted publication step must resolve it before merge. Normal production
+Narrators still require the real preview and screenshots.
 
 Fresh product lanes derive their lane-local machine-day cap from the validated
 isolated product envelope. A seeded lane retains its stricter cumulative
