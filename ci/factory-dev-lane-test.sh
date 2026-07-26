@@ -2745,6 +2745,7 @@ validate_runtime_paths() { :; }
 product_approval_hash() { printf '%s\n' test-approval; }
 subscription_ready() { :; }
 subscription_provider_idle() { :; }
+subscription_provider_wait() { subscription_provider_idle; }
 subscription_env() {
   local ignored="$1" command action ticket
   shift
