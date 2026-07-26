@@ -3190,7 +3190,7 @@ product_role_run() {
   latest_review="$(grep -Ei '^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*(APPROVE|REQUEST CHANGES)[[:space:]]*$' \
     "$root/worktrees/$ticket/factory/tickets/$ticket.md" 2>/dev/null | tail -n 1 || true)"
   if [[ "$latest_review" =~ REQUEST[[:space:]]CHANGES ]] &&
-     [[ "$role" == builder || "$role" == test-author ]]; then
+     [[ "$role" =~ ^(builder|test-author)$ ]]; then
     instruction="$instruction Repair round: the latest quoted 'Reviewer round N signed detail' block is the authoritative repair brief. Address exactly every actionable item in that block; do not substitute an older Builder concern or reconstruct the review from memory."
   fi
   if [[ "$role" == planner || "$role" == spec-linter ]]; then
