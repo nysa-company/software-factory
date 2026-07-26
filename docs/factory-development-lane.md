@@ -1,6 +1,6 @@
 # Factory development lane
 
-Use this macOS-only lane to exercise a committed Software Factory branch against a disposable synthetic product or an explicitly isolated product-source worktree before the normal release process. It does not install, register, certify, or activate a kit.
+Use this macOS-only lane to exercise a committed Software Factory branch against a disposable synthetic product or an explicitly isolated product-source worktree before the normal release process. It does not install, register, certify, or activate a kit. Real lanes use an owner-only root directly under `/private/tmp` so Cursor's bounded attempt-local paths remain below its macOS path limits; the trusted test harness keeps its caller-provided temporary parent.
 
 ## Mock lifecycle
 

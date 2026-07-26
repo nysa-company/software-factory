@@ -61,7 +61,7 @@ cursor_env() {
   "$@"
 }
 
-clean_cmd() { TMPDIR="$TMP/lanes" bash "$LANE" clean --root "$1"; }
+clean_cmd() { test_env bash "$LANE" clean --root "$1"; }
 
 mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" "$CALLER_HOME/.cursor" \
   "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents" \
@@ -608,6 +608,9 @@ sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
   grep -Fq 'profile=cursor-balanced-v2' ||
   fail "product planning does not use the approved Cursor-first profile"
+grep -Fq 'physical /private/tmp' "$LANE" &&
+  grep -Fq 'tmp_parent="$(lane_tmp_parent)"' "$LANE" ||
+  fail "real development lanes do not use the short macOS temporary root"
 eval "$(sed -n '/^ensure_product_budget_day()/,/^}/p' "$LANE")"
 BUDGET_DAY_ROOT="$TMP/product-budget-day"
 mkdir -p "$BUDGET_DAY_ROOT/runtime"
@@ -2897,6 +2900,7 @@ mv "$root_saved" "$lane_root"
 
 mkdir "$TMP/other-parent"
 expect_failure "TMP parent drift cleanup" env TMPDIR="$TMP/other-parent" \
+  FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
   bash "$LANE" clean --root "$lane_root"
 
 printf 'pid=%s\n' "$$" >"$lane_root/runtime/live-cleanup-test.pid"

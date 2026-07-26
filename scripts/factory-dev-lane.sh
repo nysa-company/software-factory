@@ -50,6 +50,13 @@ EOF
 }
 
 physical() { (cd "$1" 2>/dev/null && pwd -P); }
+lane_tmp_parent() {
+  if [[ "$TEST_MODE" -eq 1 ]]; then
+    physical "${TMPDIR:-/tmp}"
+  else
+    physical /private/tmp
+  fi
+}
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 sha256_text() { shasum -a 256 | awk '{print $1}'; }
 
@@ -589,7 +596,7 @@ PY
 clean_lane() {
   local root current_tmp
   root="$(validate_lane "$1")"
-  current_tmp="$(physical "${TMPDIR:-/tmp}")"
+  current_tmp="$(lane_tmp_parent)"
   [[ "$(dirname "$root")" == "$current_tmp" ]] ||
     die "cleanup requires the lane's creation TMPDIR"
   python3 - "$root" <<'PY' || exit 1
@@ -789,7 +796,7 @@ create_lane() {
     die "Software Factory source must be clean and committed"
   sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
   tree="$(git -C "$SOURCE_ROOT" rev-parse 'HEAD^{tree}')"
-  tmp_parent="$(physical "${TMPDIR:-/tmp}")"
+  tmp_parent="$(lane_tmp_parent)"
   root="$(mktemp -d "$tmp_parent/nysa-sf-dev.XXXXXX")"
   root="$(physical "$root")"
   chmod 700 "$root"

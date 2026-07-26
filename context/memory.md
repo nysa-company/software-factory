@@ -170,6 +170,16 @@ fallbacks. The first qualification generation exposed and invalidated the
 development controller's contradictory native-first override before any
 product merge.
 
+## 2026-07-26 — Decision 59: Real development roots stay short
+
+Category: System change
+
+Real development lanes use owner-only randomized roots under `/private/tmp`;
+the trusted test harness retains its isolated caller-provided parent. The
+second qualification generation exposed that macOS's long per-user `TMPDIR`
+made otherwise-correct attempt-local Cursor data paths exceed the CLI limit
+before submission.
+
 ## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
 
 Category: Decision
