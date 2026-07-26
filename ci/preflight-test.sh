@@ -8,14 +8,22 @@ export FACTORY_TRUSTED_TEST_HARNESS=1
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFLIGHT="$KIT_DIR/scripts/preflight.sh"
 KIT_HEAD_NOW="$(git -C "$KIT_DIR" rev-parse HEAD)"
+KIT_CONTRACT_VERSION="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["contract_version"])' \
+  "$KIT_DIR/integrations/hermes/contract.json")"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/preflight-test.XXXXXX")"
 STUB_BIN="$TMP/bin"
+TEST_HOME="$TMP/home"
 FAILURES=0
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-mkdir -p "$STUB_BIN"
+mkdir -p "$STUB_BIN" "$TEST_HOME/.claude"
+chmod 700 "$TEST_HOME" "$TEST_HOME/.claude"
+printf '%s\n' '{"claudeAiOauth":{"expiresAt":4102444800000}}' \
+  > "$TEST_HOME/.claude/.credentials.json"
+chmod 600 "$TEST_HOME/.claude/.credentials.json"
 
 # --- stub CLIs that satisfy contract-test.sh and version-pin checks ---
 write_stub_claude() {
@@ -155,6 +163,7 @@ run_preflight() {
   local role="" lease=""
   local env_args=(
     PATH="$STUB_BIN:$PATH"
+    HOME="$TEST_HOME"
     FACTORY_ROOT="$factory_root"
     FACTORY_GLOBAL_ENV="$TMP/default-global.env"
     CLAUDE_CODE_PINNED=
@@ -188,12 +197,13 @@ run_sealed_preflight() {
   local factory_root="$1" ticket="$2" release="$3" tree="$4"
   env \
     PATH="$STUB_BIN:$PATH" \
+    HOME="$TEST_HOME" \
     FACTORY_ROOT="$factory_root" \
     FACTORY_GLOBAL_ENV="$TMP/default-global.env" \
     FACTORY_RELEASE_SHA="$KIT_HEAD_NOW" \
     FACTORY_RELEASE_TREE="$tree" \
     FACTORY_RELEASE_PATH="$release" \
-    FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
+    FACTORY_RELEASE_CONTRACT_VERSION="$KIT_CONTRACT_VERSION" \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
     bash "$release/scripts/preflight.sh" --ticket "$ticket" 2>&1
 }
@@ -420,8 +430,11 @@ mkdir -p "$SEALED_PRODUCT"
 write_envelope "$SEALED_PRODUCT"
 write_ready_ticket "$SEALED_PRODUCT" "T-090"
 init_git_repo "$SEALED_PRODUCT"
-SEALED_OUT="$(run_sealed_preflight "$SEALED_PRODUCT" T-090 "$SEALED_RELEASE" "$SEALED_TREE")"
-if [[ "$SEALED_OUT" == *"PASS: kit pin matches sealed physical release"* &&
+SEALED_STATUS=0
+SEALED_OUT="$(run_sealed_preflight "$SEALED_PRODUCT" T-090 "$SEALED_RELEASE" "$SEALED_TREE")" ||
+  SEALED_STATUS=$?
+if [[ "$SEALED_STATUS" -eq 0 &&
+      "$SEALED_OUT" == *"PASS: kit pin matches sealed physical release"* &&
       "$SEALED_OUT" == *"PREFLIGHT PASS"* &&
       ! -e "$SEALED_RELEASE/.git" ]]; then
   echo "PASS: sealed no-.git release runs real preflight"
@@ -741,7 +754,10 @@ write_envelope "$NOWARN"
 write_ready_ticket "$NOWARN" "T-006"
 init_git_repo "$NOWARN"
 FAKE_HOME="$TMP/fakehome"
-mkdir -p "$FAKE_HOME"
+mkdir -p "$FAKE_HOME/.claude"
+chmod 700 "$FAKE_HOME" "$FAKE_HOME/.claude"
+cp "$TEST_HOME/.claude/.credentials.json" "$FAKE_HOME/.claude/.credentials.json"
+chmod 600 "$FAKE_HOME/.claude/.credentials.json"
 out="$(run_preflight "$NOWARN" "T-006" --home "$FAKE_HOME" --gh-token "")" || rc=$?
 rc="${rc:-0}"
 if [[ "$rc" -ne 0 ]]; then
