@@ -4,6 +4,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Fresh Contract 1.7 product planning removes stale canonical Spec-lint,
+  Reviewer, and repair-owner control lines while preserving historical prose
+  and quoted signed-review detail. Source tickets may retain prior lifecycle
+  evidence without confusing the new role sequencer.
+
 - This repository is a product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions in this repository use their own numbering, beginning at Decision 1.
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.

@@ -1683,6 +1683,23 @@ if text.index("consume_product_seed_authorization") >= text.rindex('echo "ROOT=$
     raise SystemExit(1)
 PY
   fail "seed authorization is exposed before successful lane planning"
+eval "$(sed -n '/^prepare_fresh_product_ticket()/,/^}/p' "$LANE")"
+FRESH_TICKET="$TMP/fresh-ticket.md"
+printf '%s\n' '# Fresh ticket' 'State: Backlog' \
+  'SPEC-LINT: FAIL — historical finding' '  SPEC-LINT: PASS' \
+  'Reviewer round 1 signed detail:' '> State: Done' \
+  'reviewer round 1: REQUEST CHANGES' \
+  'reviewer round 1 FIX-OWNER: test-author' >"$FRESH_TICKET"
+prepare_fresh_product_ticket "$FRESH_TICKET"
+grep -qx 'State: Ready' "$FRESH_TICKET" ||
+  fail "fresh product ticket did not reset to Ready"
+if grep -Eiq '^\s*SPEC-LINT:|^\s*reviewer round [0-9]+: (APPROVE|REQUEST CHANGES)|^\s*reviewer round [0-9]+ FIX-OWNER:' \
+    "$FRESH_TICKET"; then
+  fail "fresh product ticket retained stale role-control evidence"
+fi
+grep -qx 'Reviewer round 1 signed detail:' "$FRESH_TICKET" &&
+  grep -qx '> State: Done' "$FRESH_TICKET" ||
+  fail "fresh product ticket discarded quoted historical review evidence"
 eval "$(sed -n '/^product_completed_roles()/,/^run_product_internal()/p' \
   "$LANE" | sed '$d')"
 TIMING_ROOT="$TMP/product-timing"

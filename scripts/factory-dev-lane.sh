@@ -435,6 +435,28 @@ subscription_provider_wait() {
   done
 }
 
+prepare_fresh_product_ticket() {
+  python3 - "$1" <<'PY'
+from pathlib import Path
+import re, sys
+path=Path(sys.argv[1]); lines=[]; states=0
+for line in path.read_text(encoding="utf-8").splitlines():
+    if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
+        continue
+    if re.fullmatch(
+        r"\s*reviewer round\s+\d+:\s*(?:APPROVE|REQUEST CHANGES)\s*", line, re.I
+    ) or re.fullmatch(
+        r"\s*reviewer round\s+\d+\s+FIX-OWNER:\s*(?:builder|test-author|both)\s*",
+        line, re.I
+    ):
+        continue
+    line,count=re.subn(r"^State: (?:Backlog|Ready)$", "State: Ready", line)
+    states += count; lines.append(line)
+if states != 1: raise SystemExit(1)
+path.write_text("\n".join(lines)+"\n", encoding="utf-8")
+PY
+}
+
 cleanup_empty_cursor_bridge() {
   python3 - "$1" <<'PY'
 import os, pathlib, stat, sys
@@ -902,14 +924,8 @@ path.write_text(text, encoding="utf-8")
 PY
     printf '%s\n' "$sha" >"$root/product/factory/KIT_PIN"
     for ticket in "${lane_tickets[@]}"; do
-      python3 - "$root/product/factory/tickets/$ticket.md" <<'PY'
-from pathlib import Path
-import re, sys
-path=Path(sys.argv[1]); text=path.read_text(encoding="utf-8")
-text, count=re.subn(r"(?m)^State: (?:Backlog|Ready)$", "State: Ready", text, count=1)
-if count != 1: raise SystemExit(1)
-path.write_text(text, encoding="utf-8")
-PY
+      prepare_fresh_product_ticket "$root/product/factory/tickets/$ticket.md" ||
+        die "product ticket could not be reset to a fresh role boundary: $ticket"
     done
     git -C "$root/product" add factory/PROJECT.env factory/KIT_PIN factory/tickets
     git -C "$root/product" -c user.name='Factory Dev Lane' -c user.email=factory-dev@local \

@@ -168,6 +168,11 @@ accounting override. Neither path reads or changes the host production cap.
 ## Isolated product proof and resume
 
 `product-plan` accepts one to four tickets after the dedicated four-call mock and subscription proofs establish the capacity ceiling. A seeded retry may select one to four unfinished tickets, so completed siblings are not rerun. The source must be a clean isolated worktree; the canonical Nysa checkout is refused. The lane clones it into a private product, replaces its remote with a local bare origin, and has no GitHub or Linear route.
+Fresh planning resets each selected ticket to `Ready` and removes prior
+canonical Spec-lint verdict, Reviewer verdict, and repair-owner control lines
+before the new role sequence begins. Historical prose and quoted signed-review
+detail remain. This prevents an earlier lifecycle recorded in the source ticket
+from pre-advancing the new lane.
 When that product has a committed `package-lock.json`, the trusted controller
 runs pinned `npm ci` separately in every ticket worktree inside the lane
 sandbox before any provider role. The provider receives the host's Node 22
