@@ -76,7 +76,7 @@ paths = {"home": home, "config": config, "data": data, "tmp": tmp}
 if (
     not attempt
     or runtime.name != attempt
-    or runtime.parent.name != "cli-attempts"
+    or runtime.parent.name != "c"
     or len(str(data / "projects")) > 84
 ):
     raise SystemExit(1)

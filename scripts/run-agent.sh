@@ -960,6 +960,7 @@ prepare_cli_runtime() {
     return 1
   }
   local base="$DEVELOPMENT_LANE_ROOT/runtime/cli-attempts"
+  [[ "$ADAPTER" == cursor-* ]] && base="$DEVELOPMENT_LANE_ROOT/c"
   mkdir -p "$base"
   chmod 700 "$base"
   CLI_RUNTIME_ROOT="$base/$CLI_ATTEMPT_ID"
@@ -1009,7 +1010,8 @@ cleanup_cli_runtime() {
     echo "WARNING: retaining Claude CLI runtime because its process group survived" >&2
     return 0
   }
-  python3 - "$CLI_RUNTIME_ROOT" "$DEVELOPMENT_LANE_ROOT" "$CLI_ATTEMPT_ID" <<'PY'
+  python3 - "$CLI_RUNTIME_ROOT" "$DEVELOPMENT_LANE_ROOT" "$CLI_ATTEMPT_ID" \
+    "$ADAPTER" <<'PY'
 import os
 import pathlib
 import shutil
@@ -1018,7 +1020,8 @@ import sys
 root = pathlib.Path(sys.argv[1])
 lane = pathlib.Path(sys.argv[2])
 attempt = sys.argv[3]
-expected_parent = lane / "runtime" / "cli-attempts"
+adapter = sys.argv[4]
+expected_parent = lane / ("c" if adapter.startswith("cursor-") else "runtime/cli-attempts")
 if (
     not root.is_absolute()
     or root.parent != expected_parent

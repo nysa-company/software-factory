@@ -966,8 +966,8 @@ PY
 then
   fail "concurrent Cursor Reviewer did not use executable read-only mode"
 fi
-CURSOR_ATTEMPT="$TMP/cli-attempts/A"
-mkdir -p "$TMP/cli-attempts"
+CURSOR_ATTEMPT="$TMP/c/A"
+mkdir -p "$TMP/c"
 mkdir -m 700 "$CURSOR_ATTEMPT" "$CURSOR_ATTEMPT/home" \
   "$CURSOR_ATTEMPT/home/.cursor" "$CURSOR_ATTEMPT/data" "$CURSOR_ATTEMPT/tmp"
 printf 'A\n' >"$CURSOR_ATTEMPT/owner"
@@ -1000,7 +1000,7 @@ expect_failure "unsafe attempt-local Cursor runtime" env \
     --model claude-sonnet-5-thinking-high --effort high -- build
 grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
   fail "unsafe attempt-local Cursor runtime did not fail closed"
-LONG_CURSOR_ATTEMPT="$TMP/$(printf '%060d' 0)/cli-attempts/A"
+LONG_CURSOR_ATTEMPT="$TMP/$(printf '%060d' 0)/c/A"
 mkdir -p "$(dirname "$LONG_CURSOR_ATTEMPT")"
 mkdir -m 700 "$LONG_CURSOR_ATTEMPT" "$LONG_CURSOR_ATTEMPT/home" \
   "$LONG_CURSOR_ATTEMPT/home/.cursor" "$LONG_CURSOR_ATTEMPT/data" \
@@ -1024,6 +1024,45 @@ expect_failure "overlong attempt-local Cursor runtime" env \
     --model claude-sonnet-5-thinking-high --effort high -- build
 grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
   fail "overlong attempt-local Cursor runtime did not fail closed"
+(
+  eval "$(sed -n \
+    '/^prepare_cli_runtime()/,/^}/p;
+     /^cleanup_cli_runtime()/,/^}/p' "$ROOT/scripts/run-agent.sh")"
+  SHORT_LANE="$(mktemp -d /tmp/nysa-sf-dev.XXXXXX)"
+  SHORT_LANE="$(cd "$SHORT_LANE" && pwd -P)"
+  trap 'chmod -R u+w "$SHORT_LANE" 2>/dev/null || true; rm -rf "$SHORT_LANE"' EXIT
+  CLI_CONCURRENT_RUN=1
+  ADAPTER=cursor-anthropic
+  DEVELOPMENT_LANE_ROOT="$SHORT_LANE"
+  CLI_ATTEMPT_ID=1785024575-76769-cli
+  CLI_RUNTIME_ROOT=""
+  CLI_PROVIDER_HOME=""
+  CLI_PROVIDER_TMPDIR=""
+  CLI_CLAUDE_CONFIG_DIR=""
+  CLI_CURSOR_CONFIG_DIR=""
+  CLI_CURSOR_DATA_DIR=""
+  RUN_GROUP_TERMINATED=1
+  FACTORY_CURSOR_SESSION_HOME="$CALLER_HOME"
+  prepare_cli_runtime
+  [[ "$CLI_RUNTIME_ROOT" == "$SHORT_LANE/c/$CLI_ATTEMPT_ID" ]] ||
+    fail "Cursor attempt did not use the short lane-local root"
+  python3 - "$CLI_RUNTIME_ROOT" <<'PY' ||
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+assert len(str(root / "data")) <= 75
+assert len(str(root / "data" / "projects")) <= 84
+assert stat.S_IMODE(root.parent.stat().st_mode) == 0o700
+assert stat.S_IMODE(root.stat().st_mode) == 0o700
+PY
+    fail "normal development-lane Cursor attempt path exceeded its limits"
+  retained_runtime="$CLI_RUNTIME_ROOT"
+  cleanup_cli_runtime
+  [[ -z "$CLI_RUNTIME_ROOT" && ! -e "$retained_runtime" ]] ||
+    fail "Cursor attempt cleanup retained its isolated runtime"
+)
 grep -Fq 'FACTORY_DEV_PRLESS_EVIDENCE_V1' "$ROOT/roles/narrator.md" ||
   fail "Narrator backend-only exception lacks its trusted development marker"
 grep -Fq 'Not applicable — backend-only contract' "$ROOT/roles/narrator.md" ||
@@ -1235,6 +1274,8 @@ fi
 grep -Fq '"CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"' \
   "$ROOT/scripts/run-agent.sh" &&
   grep -Fq '"CURSOR_DATA_DIR=$CLI_CURSOR_DATA_DIR"' \
+    "$ROOT/scripts/run-agent.sh" &&
+  grep -Fq 'base="$DEVELOPMENT_LANE_ROOT/c"' \
     "$ROOT/scripts/run-agent.sh" &&
   grep -Fq 'mkdir -m 700 "$CLI_PROVIDER_HOME/.cursor" "$CLI_RUNTIME_ROOT/data"' \
     "$ROOT/scripts/run-agent.sh" ||
