@@ -35,7 +35,15 @@ def load_parser(path: Path):
         raise ValueError("reviewer verdict parser is unavailable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.parse_verdict
+    return module.parse_verdict, module.review_text
+
+
+def quote_review(review: str, round_number: int) -> str:
+    review = review.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not review or len(review.encode("utf-8")) > 131_072 or "\0" in review:
+        raise ValueError("reviewer detail is empty or exceeds the safe bound")
+    lines = "\n".join(f"> {line}" if line else ">" for line in review.splitlines())
+    return f"Reviewer round {round_number} signed detail:\n\n{lines}\n\n"
 
 
 def main() -> None:
@@ -122,17 +130,22 @@ def main() -> None:
         or value.get("role_remote_before") != args.head
     ):
         raise SystemExit("unmatched reviewer evidence is not bound to the current ticket head")
-    parse_verdict = load_parser(Path(__file__).with_name("reviewer-verdict.py"))
+    parse_verdict, review_text = load_parser(Path(__file__).with_name("reviewer-verdict.py"))
+    raw_output = output.read_text(encoding="utf-8", errors="replace")
     try:
         verdict, owner = parse_verdict(
-            output.read_text(encoding="utf-8", errors="replace"),
+            raw_output,
             value.get("adapter", ""),
             args.contract_version,
+        )
+        detail = quote_review(
+            review_text(raw_output, value.get("adapter", ""), args.contract_version),
+            len(verdicts) + 1,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     round_number = len(verdicts) + 1
-    addition = f"reviewer round {round_number}: {verdict}\n"
+    addition = detail + f"reviewer round {round_number}: {verdict}\n"
     if owner:
         addition += f"reviewer round {round_number} FIX-OWNER: {owner}\n"
     if verdict == "REQUEST CHANGES":

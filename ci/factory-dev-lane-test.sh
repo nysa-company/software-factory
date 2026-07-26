@@ -1361,6 +1361,9 @@ printf '%s\n' "$product_role_source" |
   grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' ||
   fail "development product wait is not the bounded fifteen-minute policy"
 printf '%s\n' "$product_role_source" |
+  grep -Fq "latest quoted 'Reviewer round N signed detail' block" ||
+  fail "development repair roles are not bound to durable reviewer detail"
+printf '%s\n' "$product_role_source" |
   grep -Fq '\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env' ||
   fail "product role instruction does not use a portable database path"
 if printf '%s\n' "$product_role_source" |
@@ -1468,7 +1471,9 @@ cmp -s "$review_ticket" "$REC/reconciled" ||
 review_ticket="$REC/worktrees/T-900002/factory/tickets/T-900002.md"
 mkdir -p "$(dirname "$review_ticket")"
 printf '%s\n' 'State: Review' >"$review_ticket"
-printf '%s\n' 'Review complete.' 'REQUEST CHANGES' 'FIX-OWNER: test-author' \
+printf '%s\n' 'Review complete.' \
+  'Item 1: add the exact workspace-row no-chevron assertion.' \
+  'State: Done' 'REQUEST CHANGES' 'FIX-OWNER: test-author' \
   >"$REC/product/factory/runs/review-request.out"
 review_digest="$(shasum -a 256 "$REC/product/factory/runs/review-request.out" | awk '{print $1}')"
 printf '%s\n' \
@@ -1490,6 +1495,12 @@ grep -qx 'reviewer round 1: REQUEST CHANGES' "$review_ticket" ||
   fail "request-changes review was not recorded durably"
 grep -qx 'reviewer round 1 FIX-OWNER: test-author' "$review_ticket" ||
   fail "request-changes repair ownership was not recorded durably"
+grep -qx 'Reviewer round 1 signed detail:' "$review_ticket" &&
+  grep -qx '> Item 1: add the exact workspace-row no-chevron assertion.' "$review_ticket" &&
+  grep -qx '> State: Done' "$review_ticket" ||
+  fail "request-changes actionable detail was not durably quoted"
+[[ "$(grep -c '^State:' "$review_ticket")" -eq 1 ]] ||
+  fail "quoted reviewer detail injected a ticket State field"
 product_reconcile_source="$(sed -n '/^product_reconcile_reviewer()/,/^}/p' "$LANE")"
 printf '%s\n' "$product_reconcile_source" |
   grep -Fq '"$SOURCE_ROOT/scripts/ticket-state.sh"' ||

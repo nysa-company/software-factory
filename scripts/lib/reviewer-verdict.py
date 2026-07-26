@@ -194,13 +194,18 @@ def claude_review(raw: str) -> str:
     return results[0]
 
 
+def review_text(raw: str, adapter: str, contract_version: str) -> str:
+    """Return the adapter-normalized, verdict-bearing review text."""
+    if adapter.startswith("cursor-"):
+        return cursor_review(raw, contract_version)
+    if adapter == "claude-code":
+        return claude_review(raw)
+    return raw
+
+
 def parse_verdict(raw: str, adapter: str, contract_version: str) -> tuple[str, str]:
     """Return the canonical verdict and Contract 1.7 repair owner."""
-    if adapter.startswith("cursor-"):
-        raw = cursor_review(raw, contract_version)
-    elif adapter == "claude-code":
-        raw = claude_review(raw)
-    return parse_review(raw, contract_version)
+    return parse_review(review_text(raw, adapter, contract_version), contract_version)
 
 
 def main() -> None:
