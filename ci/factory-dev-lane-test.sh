@@ -588,8 +588,17 @@ PY
 run_product_readiness="$(sed -n '/^run_product_internal()/,/^}/p' "$LANE")"
 grep -Fq '[[ "$readiness_proven" == 1 ]] ||' <<<"$run_product_readiness" &&
   grep -Fq 'subscription_ready "$root" "$cursor_enabled"' \
-    <<<"$run_product_readiness" ||
+  <<<"$run_product_readiness" ||
   fail "product runtime cannot reuse the trusted resume readiness proof"
+product_run_command="$(sed -n '/^  product-run)/,/^  product-export)/p' "$LANE")"
+python3 - "$product_run_command" <<'PY' ||
+import sys
+text=sys.argv[1]
+invalidate=text.index('invalidate_product_resume_approval "$root" "$approve"')
+run=text.index('run_product_internal "$root" "$approve" 1')
+assert invalidate < run
+PY
+  fail "resume-basis drift is not invalidated before provider execution"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
   grep -Fq 'ensure_product_budget_day "$root" "$DAILY_CAP_USD"' ||
   fail "fresh product planning does not bind a resumable budget day"
@@ -2564,13 +2573,51 @@ printf '%s\n' \
   used=0 \
   >"$RESUME_ROOT/runtime/product-approval.used"
 chmod 600 "$RESUME_ROOT/runtime/product-approval.used"
+python3 - "$RESUME_ROOT/runtime/product-source.json" \
+  "$RESUME_ROOT/runtime/product-resume.json" <<'PY'
+import hashlib, json, os, sys
+source_path,resume_path=sys.argv[1:]
+resume={"schema":"factory-dev-product-resume/v1","basis_sha256":"b"*64,
+        "original_tickets":["T-72","T-73"],"selected_tickets":["T-72"]}
+raw=json.dumps(resume,sort_keys=True,separators=(",",":"))+"\n"
+open(resume_path,"w",encoding="utf-8").write(raw)
+source={"schema":"factory-dev-product-source/v1","tickets":["T-72"],
+        "resume_original_tickets":["T-72","T-73"],
+        "resume_sha256":hashlib.sha256(raw.encode()).hexdigest()}
+open(source_path,"w",encoding="utf-8").write(
+    json.dumps(source,sort_keys=True,separators=(",",":"))+"\n"
+)
+os.chmod(source_path,0o600); os.chmod(resume_path,0o600)
+PY
+cp "$RESUME_ROOT/runtime/product-approval.used" \
+  "$RESUME_ROOT/runtime/product-approval"
 printf '%s\n' '{"containers":[]}' \
   >"$RESUME_ROOT/runtime/product-containers.json"
 date -u +%F >"$RESUME_ROOT/runtime/product-envelope/budget-day"
 eval "$(sed -n '/^product_resume_drained()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^invalidate_product_resume_approval()/,/^ensure_product_budget_day()/p' \
+  "$LANE" | sed '$d')"
 subscription_provider_idle() { :; }
+INVALIDATE_STDERR="$RESUME_ROOT/invalidate.stderr"
+invalidate_product_resume_approval "$RESUME_ROOT" \
+  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  2>"$INVALIDATE_STDERR" ||
+  fail "pre-GO resume-basis drift approval could not be invalidated"
+[[ ! -e "$RESUME_ROOT/runtime/product-approval" &&
+   "$(find "$RESUME_ROOT/runtime/product-discarded" -type f | wc -l | tr -d ' ')" == 2 &&
+   "$(cat "$INVALIDATE_STDERR")" == \
+     INVALIDATED_RESUME_APPROVAL=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] ||
+  fail "invalidated resume approval or evidence was incomplete"
+python3 - "$RESUME_ROOT/runtime/product-source.json" <<'PY' ||
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+assert value["tickets"] == ["T-72","T-73"]
+assert "resume_sha256" not in value
+assert "resume_original_tickets" not in value
+PY
+  fail "resume source was not restored after pre-GO drift"
 product_resume_drained "$RESUME_ROOT" ||
-  fail "fully drained retained lane was rejected"
+  fail "approval invalidation did not leave the lane checkpoint-drainable"
 printf '%s\n' 2000-01-01 >"$RESUME_ROOT/runtime/product-envelope/budget-day"
 if product_resume_drained "$RESUME_ROOT"; then
   fail "ordinary resume accepted an expired budget day"

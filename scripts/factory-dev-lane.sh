@@ -2452,6 +2452,63 @@ PY
   [[ "$actual" == "$expected" ]]
 }
 
+invalidate_product_resume_approval() {
+  local root="$1" expected="$2"
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || return 1
+  python3 - "$root/runtime/product-source.json" \
+    "$root/runtime/product-resume.json" "$root/runtime/product-approval" \
+    "$root/runtime/product-discarded" "$expected" <<'PY' || return 1
+import hashlib, json, os, pathlib, stat, sys
+source_path, resume_path, approval_path, discarded=map(
+    pathlib.Path, sys.argv[1:5]
+)
+expected=sys.argv[5]
+
+def regular_owner_only(path):
+    info=path.lstat()
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and
+            stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+
+if not regular_owner_only(source_path) or not regular_owner_only(resume_path):
+    raise SystemExit(1)
+resume_raw=resume_path.read_bytes()
+resume=json.loads(resume_raw)
+source=json.loads(source_path.read_text(encoding="utf-8"))
+if (resume.get("schema") != "factory-dev-product-resume/v1" or
+    source.get("resume_sha256") != hashlib.sha256(resume_raw).hexdigest()):
+    raise SystemExit(1)
+approval_raw=f"approval_hash={expected}\nused=0\n".encode()
+if os.path.lexists(discarded):
+    info=discarded.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+        stat.S_IMODE(info.st_mode) != 0o700):
+        raise SystemExit(1)
+else:
+    discarded.mkdir(mode=0o700)
+digest=hashlib.sha256(approval_raw).hexdigest()
+approval_archive=discarded/f"resume-approval-{digest}.invalidated"
+basis_archive=discarded/f"resume-basis-{digest}.json"
+if os.path.lexists(approval_path):
+    if not regular_owner_only(approval_path) or approval_path.read_bytes() != approval_raw:
+        raise SystemExit(1)
+elif not (approval_archive.exists() and regular_owner_only(approval_archive) and
+          approval_archive.read_bytes() == approval_raw):
+    raise SystemExit(1)
+for path, raw in ((approval_archive, approval_raw),(basis_archive, resume_raw)):
+    if path.exists():
+        if not regular_owner_only(path) or path.read_bytes() != raw:
+            raise SystemExit(1)
+        continue
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,"wb") as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+if os.path.lexists(approval_path):
+    approval_path.unlink()
+PY
+  restore_product_resume_source "$root" || return 1
+  printf 'INVALIDATED_RESUME_APPROVAL=%s\n' "$expected" >&2
+}
+
 product_resume_plan() {
   local root="$1"; shift
   local selected_csv="$1" ticket stage basis approval_hash cursor_enabled=0
@@ -4481,8 +4538,11 @@ PY
       cursor_enabled=0
       product_cursor_enabled "$root" && cursor_enabled=1
       subscription_ready "$root" "$cursor_enabled"
-      validate_product_resume_basis "$root" 1 ||
-        die "product resume basis drifted before execution"
+      if ! validate_product_resume_basis "$root" 1; then
+        invalidate_product_resume_approval "$root" "$approve" ||
+          die "product resume basis drifted and approval invalidation failed"
+        die "product resume basis drifted before execution; approval invalidated"
+      fi
     fi
     if [[ "$resume" -eq 1 ]]; then
       if run_product_internal "$root" "$approve" 1; then

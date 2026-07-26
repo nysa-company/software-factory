@@ -677,3 +677,13 @@ Explicit development resume now binds that exact failed manifest and linear
 commit history into an owner-only diagnostic receipt and ref, restores the
 unchanged isolated-origin tip, and reruns only the failed role. It never
 rewrites accounting or treats the failed provider result as successful.
+
+## 2026-07-26 — Decision 32: Pre-GO resume drift invalidates its approval
+
+Category: System change
+
+If a retained development resume changes after approval but before provider GO,
+the controller archives the exact unused approval and resume basis, removes the
+approval, restores the original ticket selection, and stops without a provider
+attempt. The existing checkpoint-export and v5 lineage path remains the sole
+cross-budget-day recovery mechanism.

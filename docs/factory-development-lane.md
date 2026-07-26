@@ -100,6 +100,11 @@ resume does not promote them. It verifies the latest failed attempt and trusted
 base, retains the exact commits under a lane-local diagnostic ref and owner-only
 receipt, restores the unchanged isolated-origin tip, and reruns that failed
 role. Accounting remains terminal and unchanged; ambiguous history refuses.
+If the resume basis drifts after its one-use approval is created but before
+provider GO, the controller archives the exact unused approval and resume
+basis, invalidates the approval, restores the original ticket selection, and
+submits no provider call. Checkpoint export or a new resume plan may then
+proceed through the existing controls.
 
 Before creating a resume approval, the controller refreshes the isolated native
 Codex and Claude credential copies from their owner-controlled source files;
