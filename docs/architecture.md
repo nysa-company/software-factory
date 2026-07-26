@@ -237,7 +237,9 @@ durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
 against the exact qualification kit SHA before returning only that ticket to
 `Backlog`. Outside qualification it retains the ordinary
 `Blocked-Escalated` workflow. In either case its lease is released and sibling
-lifecycles continue.
+lifecycles continue. A qualification Spec-linter `FAIL` also returns the
+ticket directly to Backlog instead of entering the ordinary replan/round-three
+authorization loop.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

@@ -3218,6 +3218,16 @@ PY
     fi
     return "$rc"
   fi
+  if [[ "$role" == spec-linter ]] &&
+     product_qualification_active "$root" "$ticket" &&
+     grep -Ei '^[[:space:]]*SPEC-LINT:[[:space:]]*(PASS|FAIL)([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' \
+       "$root/worktrees/$ticket/factory/tickets/$ticket.md" |
+       tail -n 1 | grep -Eiq 'SPEC-LINT:[[:space:]]*FAIL'; then
+    lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+      --action qualification-backlog >/dev/null || return 11
+    return 12
+  fi
   if [[ "$role" == narrator ]]; then
     validate_product_dev_bundle \
       "$root/worktrees/$ticket/factory/tickets/$ticket-bundle.md" || return
@@ -3226,10 +3236,14 @@ PY
   fi
 }
 
+product_qualification_active() {
+  git -C "$1/worktrees/$2" cat-file -e \
+    refs/remotes/origin/main:factory/QUALIFICATION.json 2>/dev/null
+}
+
 product_transition_contract_blocked() {
   local root="$1" ticket="$2" role="$3"
-  if git -C "$root/worktrees/$ticket" cat-file -e \
-    refs/remotes/origin/main:factory/QUALIFICATION.json 2>/dev/null; then
+  if product_qualification_active "$root" "$ticket"; then
     lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
       --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
       --action qualification-backlog --role "$role" >/dev/null
@@ -3564,7 +3578,13 @@ run_product_internal() {
         if [[ "$rc" -eq 0 ]]; then
           states[$i]=idle
         elif [[ "$rc" -eq 12 ]]; then
-          states[$i]=blocked; blocked_count=$((blocked_count + 1))
+          if grep -q '^State: Backlog$' \
+            "$root/worktrees/${PRODUCT_TICKETS[$i]}/factory/tickets/${PRODUCT_TICKETS[$i]}.md"; then
+            states[$i]=backlog
+          else
+            states[$i]=blocked
+          fi
+          blocked_count=$((blocked_count + 1))
         else
           resume_reasons[$i]="$(product_resume_reason \
             "$root/runtime/product-scheduler/${PRODUCT_TICKETS[$i]}-${roles[$i]}.log")"
@@ -3638,7 +3658,8 @@ PY
   done
   for i in "${!PRODUCT_TICKETS[@]}"; do
     [[ "${states[$i]}" != running ]] || wait "${pids[$i]}" || true
-    if [[ "${states[$i]}" == failed || "${states[$i]}" == blocked ]]; then
+    if [[ "${states[$i]}" == failed || "${states[$i]}" == blocked ||
+          "${states[$i]}" == backlog ]]; then
       subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
         --ticket "${PRODUCT_TICKETS[$i]}" --lease "${leases[$i]}" >/dev/null || true
     fi
@@ -3682,6 +3703,17 @@ PY
     if [[ -n "$blocked_csv" ]]; then
       printf 'STATUS=BLOCKED-ESCALATED\nBLOCKED_TICKETS=%s\n' \
         "$blocked_csv" >&2
+    fi
+    backlog_csv=""
+    for i in "${!PRODUCT_TICKETS[@]}"; do
+      [[ "${states[$i]}" == backlog ]] || continue
+      backlog_csv="${backlog_csv:+$backlog_csv,}${PRODUCT_TICKETS[$i]}"
+      printf 'BACKLOG_STAGE=%s:%s\n' "${PRODUCT_TICKETS[$i]}" \
+        "${failed_stages[$i]}" >&2
+    done
+    if [[ -n "$backlog_csv" ]]; then
+      printf 'STATUS=RETURNED-TO-BACKLOG\nBACKLOG_TICKETS=%s\n' \
+        "$backlog_csv" >&2
     fi
     printf 'RETAINED_ROOT=%s\n' "$root" >&2
     die "one or more product lifecycles stopped; successful siblings were retained"

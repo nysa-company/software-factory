@@ -1102,6 +1102,11 @@ printf '%s\n' "$product_role_source" |
 printf '%s\n' "$product_role_source" |
   grep -Fq 'later publication gate and must not block this development bundle' ||
   fail "development Narrator can still block on the later publication preview"
+printf '%s\n' "$product_role_source" |
+  grep -Fq -- '--action qualification-backlog' &&
+  printf '%s\n' "$product_role_source" |
+    grep -Fq 'SPEC-LINT:[[:space:]]*FAIL' ||
+  fail "qualification Spec-lint failure does not return directly to Backlog"
 for boundary in \
   'planner || "$role" == spec-linter' \
   'run only the focused tests you add or change' \
@@ -1562,13 +1567,13 @@ printf '%s\n' \
   'started_at=2026-07-23T00:00:00Z' \
   >"$BLOCKED_ROOT/product/factory/runs/blocked.meta"
 lane_env() { printf '%s\n' "$*" >"$BLOCKED_ROOT/transition"; }
-git() { [[ "$*" == *"cat-file -e"* ]]; }
+product_qualification_active() { :; }
 product_transition_contract_blocked "$BLOCKED_ROOT" T-1 builder ||
   fail "authenticated contract blocker was not transitioned"
 grep -Fq -- '--action qualification-backlog --role builder' \
   "$BLOCKED_ROOT/transition" ||
   fail "contract blocker did not use the trusted qualification backlog return"
-unset -f git
+unset -f product_qualification_active
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
@@ -1602,7 +1607,8 @@ for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_RECOMMENDED=1' \
   'RESUME_TICKETS=' 'RESUME_NEXT=product-resume-plan' 'FAILED_STAGE=' \
   'COMPLETED_ROLES=' 'REMAINING_BUDGET_USD=' 'RETAINED_ROOT=' \
   'RESUME_COMMAND=' 'STATUS=BLOCKED-ESCALATED' 'BLOCKED_TICKETS=' \
-  'BLOCKED_STAGE='; do
+  'BLOCKED_STAGE=' 'STATUS=RETURNED-TO-BACKLOG' 'BACKLOG_TICKETS=' \
+  'BACKLOG_STAGE='; do
   grep -Fq "$expected" <<<"$run_product_source" ||
     fail "product failure omitted explicit same-lane resume handoff: $expected"
 done
