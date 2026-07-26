@@ -2,6 +2,7 @@
 # Disposable, branch-local factory lifecycle. This is deliberately not wired
 # into factory-kit, the installed launcher, a registry, or launchd.
 set -euo pipefail
+export LANG=C LC_ALL=C LC_CTYPE=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"

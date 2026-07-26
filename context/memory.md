@@ -76,6 +76,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   markers in Preview and Screenshots. Deferred criteria are not passes; the
   trusted publication step must resolve them before merge. The bundle remains
   development-only and not a production attestation.
+- The macOS development-lane controller normalizes its complete process tree
+  to the native `C` locale before invoking Git, Perl-backed helpers, or
+  providers; caller `C.UTF-8` settings cannot flood evidence with unsupported
+  locale warnings.
 - The Contract 1.7 development scheduler authenticates durable contract-blocked role manifests against the protected qualification SHA and returns only that qualification ticket to Backlog. Outside qualification it retains Blocked-Escalated. Its lease drains and siblings continue.
 - Isolated broker-stage cancellation and deterministic failure release capacity only after token revocation and upstream-request drain are both proven; otherwise the conservative full reservation remains active. Executor success is not durable until bound-container removal succeeds.
 - Contract 1.7 concurrent adapters keep timeout and provider descendants in one Factory-owned process group with a kernel-derived start identity. Completed development tickets emit owner-only readiness records and may export independently after only their own attempts, lease, claim, head, and evidence drain. Spec-linter reserves FAIL for material ambiguity or trust/data/external-effect risk and records non-blocking exhaustive coverage as `SPEC-WARN`.
@@ -195,6 +199,15 @@ Narrator may retain a visual ticket only by marking both Preview and
 Screenshots `Deferred — publication visual gate` and naming the exact checks.
 The deferral is not acceptance; trusted publication must resolve it before
 merge, while normal production Narrators still require live evidence.
+
+## 2026-07-26 — Decision 61: Development controllers use the macOS C locale
+
+Category: System change
+
+The development-lane entry point exports `LANG`, `LC_ALL`, and `LC_CTYPE` as
+`C` before any helper runs. This prevents a caller's unsupported Linux
+`C.UTF-8` locale from flooding macOS Git/Perl evidence while retaining
+deterministic byte-oriented controller behavior.
 
 ## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
 

@@ -1085,6 +1085,8 @@ rm -rf -- "$CURSOR_LANE"
 CURSOR_LANE=""
 grep -Fq 'FACTORY_DEV_PRLESS_EVIDENCE_V1' "$ROOT/roles/narrator.md" ||
   fail "Narrator backend-only exception lacks its trusted development marker"
+grep -Fq 'export LANG=C LC_ALL=C LC_CTYPE=C' "$LANE" ||
+  fail "development lane does not normalize the macOS locale"
 grep -Fq 'Not applicable — backend-only contract' "$ROOT/roles/narrator.md" ||
   fail "Narrator cannot represent an explicitly backend-only preview"
 grep -Fq 'never weakens the normal' \
