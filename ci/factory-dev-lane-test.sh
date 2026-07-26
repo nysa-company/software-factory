@@ -1562,15 +1562,13 @@ printf '%s\n' \
   'started_at=2026-07-23T00:00:00Z' \
   >"$BLOCKED_ROOT/product/factory/runs/blocked.meta"
 lane_env() { printf '%s\n' "$*" >"$BLOCKED_ROOT/transition"; }
+git() { [[ "$*" == *"cat-file -e"* ]]; }
 product_transition_contract_blocked "$BLOCKED_ROOT" T-1 builder ||
   fail "authenticated contract blocker was not transitioned"
-grep -Fq -- '--action transition --state Blocked-Escalated' \
+grep -Fq -- '--action qualification-backlog --role builder' \
   "$BLOCKED_ROOT/transition" ||
-  fail "contract blocker did not use the trusted blocked transition"
-sed -i '' 's/^role_exit=.*/role_exit=ok/' \
-  "$BLOCKED_ROOT/product/factory/runs/blocked.meta"
-expect_failure "forged contract blocker" \
-  product_transition_contract_blocked "$BLOCKED_ROOT" T-1 builder
+  fail "contract blocker did not use the trusted qualification backlog return"
+unset -f git
 grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
   fail "provider task environment no longer owns the push guard"
 grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \

@@ -312,4 +312,43 @@ fi
 factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "$CAS_RACE"
 [[ "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" == "$CAS_NEW" ]]
 
-echo "PASS: ticket-state binds pushes, CAS tracking, and refuses evidence-sensitive transitions"
+# Qualification contract blockers return to Backlog only with a protected
+# qualification manifest and a matching authenticated role result.
+git -C "$PRODUCT" config --unset-all remote.origin.pushurl
+git -C "$PRODUCT" config --add remote.origin.pushurl "$REMOTE"
+git -C "$PRODUCT" fetch -q "$REMOTE" \
+  refs/heads/ticket/T-700:refs/remotes/origin/ticket/T-700
+printf 'factory/runs/\n' >> "$PRODUCT/.gitignore"
+cat > "$PRODUCT/factory/QUALIFICATION.json" <<'EOF'
+{"factory_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","final_capacity":4,"generation":1,"initial_capacity":3,"ramp_after_done":3,"schema":"nysa.software-factory.qualification/v1","target_done":10,"tickets":["T-700"]}
+EOF
+git -C "$PRODUCT" add .gitignore factory/QUALIFICATION.json
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "qualification fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/main
+git -C "$PRODUCT" fetch -q "$REMOTE" main:refs/remotes/origin/main
+grep -v '^Resume-State:' "$PRODUCT/factory/tickets/T-700.md" |
+  sed -E 's/^State: .*/State: Building/' > "$TMP/ticket"
+printf '\nROLE-ESCALATE: CONTRACT-BLOCKED\n' >> "$TMP/ticket"
+mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "contract blocker fixture"
+mkdir -p "$PRODUCT/factory/runs"
+printf '%s\n' \
+  'run_id=blocked-run' 'ticket=T-700' 'role=builder' \
+  'contract_version=1.7.0' 'phase=completed' \
+  'accounting_state=abandoned_conservative' \
+  'reserved_usd=10.00' 'effective_cost=10.00' \
+  'cost_basis=conservative_reservation' \
+  'exit_status=12' 'role_exit=role_exit_contract_blocked' \
+  'kit_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  'started_at=2026-07-25T00:00:00Z' \
+  > "$PRODUCT/factory/runs/blocked.meta"
+TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+  --action qualification-backlog --role builder >/dev/null
+grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"
+git --git-dir="$REMOTE" show refs/heads/ticket/T-700:factory/tickets/T-700.md |
+  grep -q '^State: Backlog$'
+
+echo "PASS: ticket-state binds pushes, qualification returns, CAS tracking, and evidence-sensitive transitions"

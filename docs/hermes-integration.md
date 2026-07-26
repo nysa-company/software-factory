@@ -171,6 +171,8 @@ protected ticket IDs through `factory/QUALIFICATION.json`. Dispatch admits only
 that set, holds capacity at three until three protected Done results, then
 raises it to four, respects tracked `Depends-On` edges, stops after ten, and
 marks the generation invalid when a started ticket exceeds ninety minutes.
+An authenticated Planner, Test-author, or Builder contract blocker returns
+only that qualification ticket to Backlog; siblings continue.
 `Merge-Policy: auto` must already exist on protected main; a ticket branch
 cannot grant itself automatic approval. A first terminal Cursor availability
 failure may use `fallback-auto` to preserve its handoff and select the approved

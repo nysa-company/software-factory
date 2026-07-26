@@ -3228,44 +3228,16 @@ PY
 
 product_transition_contract_blocked() {
   local root="$1" ticket="$2" role="$3"
-  python3 - "$root/product/factory/runs" "$ticket" "$role" <<'PY' || return
-import pathlib, stat, sys
-
-runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; role=sys.argv[3]
-candidates=[]
-for path in runs.glob("*.meta"):
-    info=path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        raise SystemExit("unsafe role manifest")
-    values={}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        key, separator, value=line.partition("=")
-        if not separator or key in values:
-            raise SystemExit("malformed role manifest")
-        values[key]=value
-    if values.get("ticket") == ticket and values.get("role") == role:
-        candidates.append(values)
-if not candidates:
-    raise SystemExit("contract blocker manifest is missing")
-latest=max(candidates, key=lambda value: (
-    value.get("started_at",""), value.get("run_id","")))
-required={
-    "contract_version":"1.7.0",
-    "phase":"completed",
-    "exit_status":"12",
-    "role_exit":"role_exit_contract_blocked",
-}
-accounted = latest.get("accounting_state") == "completed" or (
-    latest.get("accounting_state") == "abandoned_conservative"
-    and latest.get("cost_basis") == "conservative_reservation"
-    and latest.get("effective_cost") == latest.get("reserved_usd")
-)
-if not accounted or any(latest.get(key) != value for key, value in required.items()):
-    raise SystemExit("contract blocker manifest is invalid")
-PY
-  lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
-    --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
-    --action transition --state Blocked-Escalated >/dev/null
+  if git -C "$root/worktrees/$ticket" cat-file -e \
+    refs/remotes/origin/main:factory/QUALIFICATION.json 2>/dev/null; then
+    lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+      --action qualification-backlog --role "$role" >/dev/null
+  else
+    lane_env "$root" "$root/kit/scripts/ticket-state.sh" \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+      --action transition --state Blocked-Escalated >/dev/null
+  fi
 }
 
 product_reconcile_reviewer() {

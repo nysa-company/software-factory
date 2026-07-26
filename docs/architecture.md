@@ -232,10 +232,12 @@ Its trusted ticket-state reconciliation binds a successful Reviewer's
 read-only head and durable output digest, records the canonical verdict and
 explicit repair owner, and commits a rejection's Review-to-Building transition
 in the same host-owned change.
-The development scheduler also authenticates a durable Contract 1.7
-Planner, Test-author, or Builder contract-blocked result before moving only
-that ticket to `Blocked-Escalated`. Its lease is released, sibling lifecycles
-continue, and it is not offered as an ordinary resumable failure.
+During a protected qualification, the development scheduler authenticates a
+durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
+against the exact qualification kit SHA before returning only that ticket to
+`Backlog`. Outside qualification it retains the ordinary
+`Blocked-Escalated` workflow. In either case its lease is released and sibling
+lifecycles continue.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
