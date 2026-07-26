@@ -619,7 +619,6 @@ Category: System change
 
 The reusable development lane runs a synthetic six-role lifecycle from committed factory source against a disposable local product and origin, without release installation, registration, activation, or canonical Nysa state. Mock verification remains under 15 minutes; real Cursor requires a one-use, content-bound approval. A complete real lifecycle reached `AWAIT-OPERATOR` with Cursor OpenAI for Planner, Builder, and Narrator, Cursor Fable for Spec-linter and Test-author, and Cursor Sonnet for read-only Reviewer. The lane reserves collision-free fixture ports, decodes the validated Cursor terminal result before verdict parsing, and retries one transient authentication or model-list miss while still failing closed after two misses.
 - Development Narrators may immediately explain a `Not applicable — backend-only contract` Preview or Screenshots marker; validation recognizes the marker at the start of the section text so valid evidence is not replayed for punctuation.
-
 ## 2026-07-25 — Decision 27: Checkpoints use one branch authority
 
 Category: System change
@@ -687,3 +686,16 @@ the controller archives the exact unused approval and resume basis, removes the
 approval, restores the original ticket selection, and stops without a provider
 attempt. The existing checkpoint-export and v5 lineage path remains the sole
 cross-budget-day recovery mechanism.
+
+## 2026-07-25 — Decision 33: T-072 is canceled with diagnostics retained
+
+Category: Context
+
+The operator canceled T-072 before publication. Its final branch head,
+successful Cursor Test-author output, Codex contract-blocked Builder output,
+route plan, timing, and run metadata are retained under the owner-only
+`rolling-mvp-t072-cancelled-20260726T0115Z` checkpoint; no implementation PR
+exists, and the three retained disposable lanes were cleaned. A future
+replacement may allow only its focused fixture to seed the existing
+workspace-scoped `decision` category, without changing product schema,
+migration, or persistence behavior.
