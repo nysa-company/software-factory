@@ -3252,11 +3252,15 @@ latest=max(candidates, key=lambda value: (
 required={
     "contract_version":"1.7.0",
     "phase":"completed",
-    "accounting_state":"completed",
     "exit_status":"12",
     "role_exit":"role_exit_contract_blocked",
 }
-if any(latest.get(key) != value for key, value in required.items()):
+accounted = latest.get("accounting_state") == "completed" or (
+    latest.get("accounting_state") == "abandoned_conservative"
+    and latest.get("cost_basis") == "conservative_reservation"
+    and latest.get("effective_cost") == latest.get("reserved_usd")
+)
+if not accounted or any(latest.get(key) != value for key, value in required.items()):
     raise SystemExit("contract blocker manifest is invalid")
 PY
   lane_env "$root" "$root/kit/scripts/ticket-state.sh" \

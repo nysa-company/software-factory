@@ -1554,7 +1554,10 @@ BLOCKED_ROOT="$TMP/contract-blocked"
 mkdir -p "$BLOCKED_ROOT/product/factory/runs" "$BLOCKED_ROOT/worktrees/T-1"
 printf '%s\n' \
   'run_id=blocked-run' 'ticket=T-1' 'role=builder' \
-  'contract_version=1.7.0' 'phase=completed' 'accounting_state=completed' \
+  'contract_version=1.7.0' 'phase=completed' \
+  'accounting_state=abandoned_conservative' \
+  'reserved_usd=10.00' 'effective_cost=10.00' \
+  'cost_basis=conservative_reservation' \
   'exit_status=12' 'role_exit=role_exit_contract_blocked' \
   'started_at=2026-07-23T00:00:00Z' \
   >"$BLOCKED_ROOT/product/factory/runs/blocked.meta"
