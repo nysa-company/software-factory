@@ -203,7 +203,9 @@ if (
 states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
 spec_failed = (
     states == ["Planning"]
-    and re.search(r"^SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$", text, re.I | re.M)
+    and re.search(
+        r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$", text, re.I | re.M
+    )
 )
 contract_blocked = False
 if role:

@@ -351,4 +351,17 @@ grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"
 git --git-dir="$REMOTE" show refs/heads/ticket/T-700:factory/tickets/T-700.md |
   grep -q '^State: Backlog$'
 
+# Indented Markdown log markers are the normal role output and carry the same
+# authenticated semantic failure evidence.
+sed -E 's/^State: .*/State: Planning/' \
+  "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
+printf '\n  SPEC-LINT: FAIL — missing acceptance case\n' >> "$TMP/ticket"
+mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "indented spec failure fixture"
+TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+  --action qualification-backlog >/dev/null
+grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"
+
 echo "PASS: ticket-state binds pushes, qualification returns, CAS tracking, and evidence-sensitive transitions"
