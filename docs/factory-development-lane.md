@@ -131,6 +131,16 @@ temporary directory, and credential copy, so an unrelated legacy scratch
 bridge neither disables Cursor nor blocks product planning. Legacy serialized
 Cursor lanes retain their existing fail-closed bridge claim.
 
+A newly rolled product lane waits up to two minutes for an already-active
+subscription call to drain before consuming its one-use approval. This bounded
+start retry does not submit, reserve, or reinterpret a failed role; a call
+still active at the deadline leaves the approval unused and fails closed.
+
+Contract 1.7 Reviewer reconciliation stores the adapter-normalized signed
+review as quoted ticket evidence before its canonical verdict and repair
+owner. Repair roles must address that latest block exactly, and round 2 must
+verify every listed item rather than reconstructing the earlier request.
+
 Product lanes activate `cursor-balanced-v2`: authenticated Cursor routes are
 first for every role, with direct Codex and Claude routes used only when the
 matching Cursor route is unavailable. Planning rejects any resolved route set

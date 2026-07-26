@@ -425,6 +425,16 @@ for row in rows:
 PY
 }
 
+subscription_provider_wait() {
+  local remaining="${1:-120}"
+  [[ "$remaining" =~ ^[0-9]+$ ]] || return 1
+  while ! subscription_provider_idle; do
+    [[ "$remaining" -gt 0 ]] || return 1
+    sleep 1
+    remaining=$((remaining - 1))
+  done
+}
+
 cleanup_empty_cursor_bridge() {
   python3 - "$1" <<'PY'
 import os, pathlib, stat, sys
@@ -3553,7 +3563,8 @@ run_product_internal() {
   product_cursor_enabled "$root" && cursor_enabled=1
   [[ "$readiness_proven" == 1 ]] ||
     subscription_ready "$root" "$cursor_enabled"
-  subscription_provider_idle || die "another subscription provider call is active"
+  subscription_provider_wait 120 ||
+    die "another subscription provider call remained active for two minutes"
   mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
   batch_started="$(date +%s)"
   mkdir -p "$root/runtime/product-scheduler"

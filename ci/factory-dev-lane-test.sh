@@ -1357,6 +1357,27 @@ assert prepare < launch
 assert "failed_stages[$i]=state-transition" in text[prepare:launch]
 PY
   fail "development role-state refusal is not pre-provider"
+provider_wait_source="$(sed -n '/^subscription_provider_wait()/,/^}/p' "$LANE")"
+(
+  eval "$provider_wait_source"
+  provider_checks=0
+  subscription_provider_idle() {
+    provider_checks=$((provider_checks + 1))
+    [[ "$provider_checks" -ge 3 ]]
+  }
+  sleep() { :; }
+  subscription_provider_wait 2
+  [[ "$provider_checks" -eq 3 ]]
+) || fail "subscription provider wait did not retry until idle"
+(
+  eval "$provider_wait_source"
+  subscription_provider_idle() { return 1; }
+  sleep() { :; }
+  expect_failure "bounded subscription provider wait" subscription_provider_wait 1
+) || fail "subscription provider wait did not stop at its bound"
+product_scheduler_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()/p' "$LANE")"
+grep -Fq 'subscription_provider_wait 120' <<<"$product_scheduler_source" ||
+  fail "product lifecycle does not wait two minutes for a busy subscription provider"
 printf '%s\n' "$product_role_source" |
   grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' ||
   fail "development product wait is not the bounded fifteen-minute policy"
