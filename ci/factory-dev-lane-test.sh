@@ -605,6 +605,9 @@ sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
   grep -Fq 'GLOBAL_DAILY_CAP_USD=%s' ||
   fail "fresh product planning does not derive the machine cap from its isolated envelope"
+sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
+  grep -Fq 'profile=cursor-balanced-v2' ||
+  fail "product planning does not use the approved Cursor-first profile"
 eval "$(sed -n '/^ensure_product_budget_day()/,/^}/p' "$LANE")"
 BUDGET_DAY_ROOT="$TMP/product-budget-day"
 mkdir -p "$BUDGET_DAY_ROOT/runtime"

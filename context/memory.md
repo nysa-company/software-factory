@@ -160,6 +160,16 @@ availability failure may preserve its handoff and use the role-appropriate
 direct CLI for the second and final attempt. Spec-lint failure returns the
 ticket to Backlog for operator repair without stopping eligible siblings.
 
+## 2026-07-26 — Decision 58: Development product lanes are Cursor-first
+
+Category: Decision
+
+Isolated product lanes activate `cursor-balanced-v2`; authenticated Cursor
+routes own production and checking roles, while direct Codex and Claude are
+fallbacks. The first qualification generation exposed and invalidated the
+development controller's contradictory native-first override before any
+product merge.
+
 ## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
 
 Category: Decision

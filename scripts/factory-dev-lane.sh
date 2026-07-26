@@ -2675,7 +2675,7 @@ CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
 EOF
   chmod 600 "$root/home/.factory/global.env"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
-    profile=balanced-v2
+    profile=cursor-balanced-v2
     profile_hash="$(python3 - "$root/kit/scripts/model-routing/profiles-v1.json" "$profile" <<'PY'
 import hashlib, json, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -2700,14 +2700,15 @@ for ticket in tickets:
     selections=plan["resolution"]["selections"]
     if any(selections[r]["provider_family"]==selections[c]["provider_family"] for r in production for c in checking):
         raise SystemExit("role-family separation failed")
-    if any(selections[r]["adapter"] != "codex" for r in production):
-        raise SystemExit("native production route drifted")
-    if any(selections[r]["adapter"] not in {"claude-code","cursor-anthropic"} for r in checking):
-        raise SystemExit("checking route drifted outside approved Anthropic adapters")
-    if cursor_enabled == "0" and any(
-        value["adapter"].startswith("cursor-") for value in selections.values()
-    ):
-        raise SystemExit("native-only route unexpectedly selected Cursor")
+    expected = (
+        ({"cursor-openai"}, {"cursor-anthropic"})
+        if cursor_enabled == "1"
+        else ({"codex"}, {"claude-code"})
+    )
+    if any(selections[r]["adapter"] not in expected[0] for r in production):
+        raise SystemExit("production route drifted outside the approved priority")
+    if any(selections[r]["adapter"] not in expected[1] for r in checking):
+        raise SystemExit("checking route drifted outside the approved priority")
 PY
     die "product route-family or circuit-breaker validation failed"
   python3 - "$root/runtime/provider-policy.json" \

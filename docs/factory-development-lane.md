@@ -131,6 +131,11 @@ temporary directory, and credential copy, so an unrelated legacy scratch
 bridge neither disables Cursor nor blocks product planning. Legacy serialized
 Cursor lanes retain their existing fail-closed bridge claim.
 
+Product lanes activate `cursor-balanced-v2`: authenticated Cursor routes are
+first for every role, with direct Codex and Claude routes used only when the
+matching Cursor route is unavailable. Planning rejects any resolved route set
+that violates that priority.
+
 Concurrent CLI adapters request GNU timeout foreground mode so timeout and the
 provider remain in the Factory-owned process group. The sandbox process
 inspector reports the same kernel-derived start identity as host `ps`;
