@@ -201,6 +201,23 @@ and current-lane evidence.
 Validation: a completed passport exports without replay; a missing role still
 refuses unless a successful current-lane manifest supplies it.
 
+## FI-20260727-013 — Patch export ignored the passport Reviewer head
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, T-080 successor publication
+Impact: a complete terminal passport passed role validation but could not bind
+its approved application patch without replaying Reviewer.
+Evidence:
+- T-080 publication lane reports `TICKET_STATUS=T-080:AWAIT-OPERATOR`
+- export reports `successful reviewer run evidence is missing`
+Root cause: patch export searched only the current lane ledger and manifests.
+Smallest change: when no current Reviewer exists, bind the parent of the last
+authenticated imported Reviewer reconciliation commit.
+Validation: the imported reviewed head exports; checkpoint-digest,
+reconciliation-path, and post-review drift checks still refuse.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

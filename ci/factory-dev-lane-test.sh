@@ -739,13 +739,17 @@ git -C "$EXPORT_WORK" add app/tests/acceptance.test
 git -C "$EXPORT_WORK" commit -qm 'T-1: repair acceptance tests'
 printf '\000\001\002' >"$EXPORT_WORK/app/binary.dat"
 printf '%s\n' reviewed >"$EXPORT_WORK/docs/contract.md"
-printf '%s\n' 'State: Review' 'reviewer round 1: APPROVE' \
+printf '%s\n' 'State: Review' \
   >"$EXPORT_WORK/factory/tickets/T-1.md"
 printf '%s\n' changed >"$EXPORT_WORK/factory/tickets/T-2.md"
 printf '%s\n' '{}' >"$EXPORT_WORK/factory/route-plans/T-1.json"
 git -C "$EXPORT_WORK" add .
 git -C "$EXPORT_WORK" commit -qm 'T-1: repair implementation'
 EXPORT_REVIEWED="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+printf '%s\n' 'State: Review' 'reviewer round 1: APPROVE' \
+  >"$EXPORT_WORK/factory/tickets/T-1.md"
+git -C "$EXPORT_WORK" add "factory/tickets/T-1.md"
+git -C "$EXPORT_WORK" commit -qm 'T-1: reviewer reconcile ticket state'
 printf '%s\n' evidence >"$EXPORT_WORK/factory/tickets/T-1-bundle.md"
 git -C "$EXPORT_WORK" add .
 git -C "$EXPORT_WORK" commit -qm narrator
@@ -774,6 +778,31 @@ EXPORT_PATCH="$EXPORT_ROOT/T-1.patch"
 [[ "$(product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
   "$EXPORT_HEAD" "$EXPORT_PATCH")" == "$EXPORT_REVIEWED" ]] ||
   fail "approved product patch did not bind the Reviewer head"
+mkdir -p "$EXPORT_ROOT/runtime"
+EXPORT_CHECKPOINT="$EXPORT_ROOT/runtime/product-checkpoint-source.json"
+printf '%s\n' \
+  "{\"tickets\":[{\"ticket\":\"T-1\",\"roles\":[{\"role\":\"reviewer\"},{\"role\":\"narrator\"}]}]}" \
+  >"$EXPORT_CHECKPOINT"
+EXPORT_CHECKPOINT_SHA="$(shasum -a 256 "$EXPORT_CHECKPOINT" | awk '{print $1}')"
+printf '%s\n' \
+  "{\"checkpoint_sha256\":\"$EXPORT_CHECKPOINT_SHA\",\"tickets\":[{\"ticket\":\"T-1\",\"import_head\":\"$EXPORT_HEAD\",\"roles\":[\"reviewer\",\"narrator\"],\"expected_next_stage\":\"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step\"}]}" \
+  >"$EXPORT_ROOT/runtime/product-checkpoint-import.json"
+printf '%s\n' "{\"base_sha\":\"$EXPORT_BASE\"}" \
+  >"$EXPORT_ROOT/runtime/product-source.json"
+mv "$EXPORT_ROOT/product/factory/runs/export-review.meta" \
+  "$EXPORT_ROOT/product/factory/runs/export-review.meta.saved"
+printf '%s\n' \
+  'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' \
+  >"$EXPORT_ROOT/product/factory/runtime-ledger.csv"
+[[ "$(product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+  "$EXPORT_HEAD" "$EXPORT_ROOT/T-1-checkpoint.patch")" == "$EXPORT_REVIEWED" ]] ||
+  fail "approved product patch did not bind the checkpoint Reviewer head"
+mv "$EXPORT_ROOT/product/factory/runs/export-review.meta.saved" \
+  "$EXPORT_ROOT/product/factory/runs/export-review.meta"
+cat >"$EXPORT_ROOT/product/factory/runtime-ledger.csv" <<'EOF'
+date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version
+2026-01-01,00:00:00,T-1,reviewer,mock,3,1,0.00,0,export-review,test,test,pinned_route_plan,estimated_tokens,test
+EOF
 EXPORT_APPLY="$TMP/product-export-apply"
 git clone -q "$EXPORT_WORK" "$EXPORT_APPLY"
 git -C "$EXPORT_APPLY" checkout -q "$EXPORT_BASE"

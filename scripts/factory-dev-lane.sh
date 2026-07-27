@@ -4207,11 +4207,58 @@ product_export_patch() {
   local root="$1" ticket="$2" base="$3" head="$4" output="$5"
   local reviewed temporary
   reviewed="$(FACTORY_LEDGER="$root/product/factory/runtime-ledger.csv" \
-    python3 - "$root/kit/scripts/ticket-pr.py" "$root/product" "$ticket" <<'PY'
-import importlib.util, pathlib, sys
+    python3 - "$root/kit/scripts/ticket-pr.py" "$root/product" "$ticket" \
+      "$root/runtime/product-checkpoint-source.json" \
+      "$root/runtime/product-checkpoint-import.json" \
+      "$root/runtime/product-source.json" "$root/worktrees/$ticket" <<'PY'
+import hashlib, importlib.util, json, pathlib, subprocess, sys
 spec=importlib.util.spec_from_file_location("ticket_pr", sys.argv[1])
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-print(module.latest_reviewer_head(pathlib.Path(sys.argv[2]), sys.argv[3]))
+try:
+    print(module.latest_reviewer_head(pathlib.Path(sys.argv[2]), sys.argv[3]))
+except module.Refusal as current_error:
+    source, imported=map(pathlib.Path,sys.argv[4:6])
+    if not source.is_file() or not imported.is_file(): raise current_error
+    raw=source.read_bytes(); checkpoint=json.loads(raw)
+    binding=json.loads(imported.read_bytes())
+    if hashlib.sha256(raw).hexdigest() != binding.get("checkpoint_sha256"):
+        raise current_error
+    records=[item for item in checkpoint["tickets"] if item["ticket"] == sys.argv[3]]
+    imported_records=[
+        item for item in binding["tickets"] if item["ticket"] == sys.argv[3]]
+    if len(records) != 1 or len(imported_records) != 1:
+        raise current_error
+    roles=records[0]["roles"]
+    if imported_records[0]["roles"] != [item["role"] for item in roles]:
+        raise current_error
+    imported_record=imported_records[0]
+    if ([item["role"] for item in roles][-2:] != ["reviewer","narrator"] or
+        not imported_record["expected_next_stage"].startswith("AWAIT-OPERATOR")):
+        raise current_error
+    product_source=json.loads(pathlib.Path(sys.argv[6]).read_bytes())
+    work=pathlib.Path(sys.argv[7]); imported_head=imported_record["import_head"]
+    commits=subprocess.check_output([
+        "git","-C",str(work),"rev-list","--reverse",
+        product_source["base_sha"]+".."+imported_head],text=True).splitlines()
+    reconciles=[]
+    for commit in commits:
+        subject=subprocess.check_output([
+            "git","-C",str(work),"show","-s","--format=%s",commit],
+            text=True).strip()
+        if subject == sys.argv[3]+": reviewer reconcile ticket state":
+            reconciles.append(commit)
+    if not reconciles: raise current_error
+    reconcile=reconciles[-1]
+    parents=subprocess.check_output([
+        "git","-C",str(work),"rev-list","--parents","-n","1",reconcile],
+        text=True).split()
+    paths=subprocess.check_output([
+        "git","-C",str(work),"diff-tree","--no-commit-id","--name-only",
+        "-r",reconcile],text=True).splitlines()
+    if (len(parents) != 2 or
+        paths != ["factory/tickets/"+sys.argv[3]+".md"]):
+        raise current_error
+    print(parents[1])
 PY
   )" || return 1
   python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" <<'PY' ||
