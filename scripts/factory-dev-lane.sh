@@ -952,6 +952,14 @@ PY
       prepare_product_seed_accounting "$root" "$PRODUCT_SEED_ACCOUNTING" \
         "$PRODUCT_SEED_BUNDLE" "$PRODUCT_BASE" \
         "${lane_tickets[@]}"
+      python3 - "$PRODUCT_SEED_ACCOUNTING" \
+        "$root/runtime/product-seed-accounting-source.json" <<'PY'
+import os, pathlib, sys
+source, output=pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+fd=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(fd,"wb") as stream:
+    stream.write(source.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+PY
       accounting_hash="$(sha256_file "$PRODUCT_SEED_ACCOUNTING")"
       lineage_hash="$(sha256_file "$PRODUCT_SEED_LINEAGE")"
       if [[ -n "$PRODUCT_SEED_CHECKPOINT" ]]; then
@@ -1712,6 +1720,7 @@ if (accounting.get("schema") != "factory-dev-product-seed-accounting/v5" or
     accounting.get("checkpoint_sha256") !=
         hashlib.sha256(open(sys.argv[2],"rb").read()).hexdigest() or
     accounting.get("checkpoint_charges_micro_usd") != charges or
+    accounting.get("reserved_micro_usd") != charges or
     accounting.get("parent_manifest_sha256") !=
         checkpoint.get("prior_accounting_sha256")):
     raise SystemExit(1)
@@ -1924,8 +1933,8 @@ else:
     if expected is not None: raise SystemExit(1)
     previous={ticket:0 for ticket in current["reserved_micro_usd"]}
 if (set(previous) != set(current["reserved_micro_usd"]) or
-    any(current["reserved_micro_usd"][ticket] != previous[ticket]+charges[ticket]
-        for ticket in previous)):
+    current["reserved_micro_usd"] != charges or
+    any(charges[ticket] < previous[ticket] for ticket in previous)):
     raise SystemExit(1)
 PY
     die "checkpoint accounting is not the exact cumulative successor"
@@ -2063,6 +2072,8 @@ product_approval_hash() {
       sha256_file "$root/runtime/product-checkpoint-import.json"
     [[ ! -f "$root/runtime/product-checkpoint-source.json" ]] ||
       sha256_file "$root/runtime/product-checkpoint-source.json"
+    [[ ! -f "$root/runtime/product-seed-accounting-source.json" ]] ||
+      sha256_file "$root/runtime/product-seed-accounting-source.json"
     printf '%s\n' "$(python3 - "$root/runtime/docker" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
@@ -2621,7 +2632,8 @@ PY
       "$root/runtime/product-envelope/global.env" \
       "$root/runtime/product-envelope/budget-day" \
       "$root/runtime/product-checkpoint-import.json" \
-      "$root/runtime/product-checkpoint-source.json"; do
+      "$root/runtime/product-checkpoint-source.json" \
+      "$root/runtime/product-seed-accounting-source.json"; do
       [[ -f "$path" ]] || continue
       printf '%s=%s\n' "${path#$root/}" "$(sha256_file "$path")"
     done
@@ -4525,9 +4537,18 @@ for path in runs.glob("*.meta"):
                 path.read_text(encoding="utf-8").splitlines() if "=" in line)
     manifests[values.get("run_id")]=(path,values)
 rows=list(csv.DictReader(open(ledger,encoding="utf-8",newline="")))
-charges=(dict(checkpoint["lane_charges_micro_usd"]) if checkpoint else {
-    ticket:0 for ticket in source.get("resume_original_tickets",source["tickets"])
-})
+accounting_path=root/"runtime/product-seed-accounting-source.json"
+if accounting_path.is_file():
+    info=accounting_path.lstat(); raw=accounting_path.read_bytes()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+        stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid() or
+        hashlib.sha256(raw).hexdigest() != source.get("seed_accounting_sha256")):
+        raise SystemExit(1)
+    charges=dict(json.loads(raw)["reserved_micro_usd"])
+else:
+    charges=(dict(checkpoint["lane_charges_micro_usd"]) if checkpoint else {
+        ticket:0 for ticket in source.get("resume_original_tickets",source["tickets"])
+    })
 for _path,values in manifests.values():
     ticket=values.get("ticket")
     if ticket not in charges: continue

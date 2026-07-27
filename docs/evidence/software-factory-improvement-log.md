@@ -95,6 +95,22 @@ Smallest change: reconcile terminal attempts into generation evidence before
 each dispatch and merge decision.
 Validation: manifest-derived totals equal the generation record at every merge.
 
+## FI-20260727-007 — Portable checkpoints could double-count prior charges
+
+Status: Implemented; qualification pending
+Area: accounting
+Owner: Factory
+First seen: 2026-07-27, T-080/T-084 passport recovery
+Impact: completed role charges could consume the only hard delivery limit twice
+Evidence:
+- retained v5 accounting manifests and successor v2 passports
+Root cause: the checkpoint writer did not retain its seed accounting snapshot,
+while lineage validation treated cumulative checkpoint charges as incremental.
+Smallest change: retain the seed manifest, export cumulative charges from it,
+and require monotonic equality between checkpoint charges and reservations.
+Validation: a successor preserves prior totals exactly and rejects additive
+double-counting.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -2490,6 +2490,40 @@ cp "$SEED_ACCOUNTING_V5" "$SEED_V5_ROOT/accounting.json"
 SEED_ACCOUNTING_V5_ISOLATED="$SEED_V5_ROOT/accounting.json"
 SEED_LINEAGE_V5="$SEED_V5_ROOT/lineage.json"
 write_product_seed_lineage "$SEED_ACCOUNTING_V5_ISOLATED" "$SEED_LINEAGE_V5"
+python3 - "$SEED_ACCOUNTING_V5_ISOLATED" \
+  "$SEED_V5_ROOT/accounting-child.json" <<'PY'
+import hashlib, json, os, sys
+parent_path, child_path=sys.argv[1:]
+parent_raw=open(parent_path,"rb").read(); value=json.loads(parent_raw)
+value["parent_manifest_sha256"]=hashlib.sha256(parent_raw).hexdigest()
+value["authorization_nonce"]="f"*64
+value["checkpoint_sha256"]="e"*64
+value["checkpoint_charges_micro_usd"]["T-1"]+=5_000_000
+value["reserved_micro_usd"]=dict(value["checkpoint_charges_micro_usd"])
+open(child_path,"w",encoding="utf-8").write(
+    json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+)
+os.chmod(child_path,0o600)
+PY
+write_product_seed_lineage "$SEED_V5_ROOT/accounting-child.json" \
+  "$SEED_V5_ROOT/lineage-child.json" "$SEED_ACCOUNTING_V5_ISOLATED"
+cp "$SEED_V5_ROOT/accounting-child.json" \
+  "$SEED_V5_ROOT/accounting-double-charge.json"
+python3 - "$SEED_V5_ROOT/accounting-double-charge.json" <<'PY'
+import json, sys
+path=sys.argv[1]; value=json.load(open(path,encoding="utf-8"))
+value["reserved_micro_usd"]["T-1"]+=10_000_000
+open(path,"w",encoding="utf-8").write(
+    json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+)
+PY
+die() { exit 1; }
+if (write_product_seed_lineage "$SEED_V5_ROOT/accounting-double-charge.json" \
+    "$SEED_V5_ROOT/lineage-double-charge.json" \
+    "$SEED_ACCOUNTING_V5_ISOLATED" >"$OUT" 2>&1); then
+  fail "checkpoint cumulative charges counted twice unexpectedly succeeded"
+fi
+die() { return 1; }
 SEED_ACCOUNTING_V5_SHA="$(sha256_file "$SEED_ACCOUNTING_V5_ISOLATED")"
 consume_product_seed_authorization "$SEED_ACCOUNTING_V5_ISOLATED" \
   "$SEED_ACCOUNTING_V5_SHA" "$SEED_LINEAGE_V5"
