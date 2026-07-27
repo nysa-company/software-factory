@@ -4641,7 +4641,7 @@ for path in runs.glob("*.meta"):
     values=dict(line.split("=",1) for line in
                 path.read_text(encoding="utf-8").splitlines() if "=" in line)
     manifests[values.get("run_id")]=(path,values)
-rows=list(csv.DictReader(open(ledger,encoding="utf-8",newline="")))
+rows=list(csv.DictReader(open(ledger,encoding="utf-8",newline=""))) if ledger.is_file() else []
 accounting_path=root/"runtime/product-seed-accounting-source.json"
 if accounting_path.is_file():
     info=accounting_path.lstat(); raw=accounting_path.read_bytes()
