@@ -492,26 +492,51 @@ def reconcile_preprovider_branch(
     changed = set(
         git(product, "diff", "--name-only", f"{base}..{remote_head}").splitlines()
     )
-    if changed != {ticket_path, plan_path} or git(
-        product, "rev-list", "--merges", f"{base}..{remote_head}"
-    ).strip():
+    if changed != {ticket_path, plan_path}:
         raise DispatchError("pre-provider branch is not control-only")
     commits = [
         tuple(line.split("\0"))
         for line in git(
             product,
-            "log",
-            "--reverse",
-            "--format=%an%x00%ae%x00%s",
+            "log", "--first-parent",
+            "--reverse", "--format=%H%x00%P%x00%an%x00%ae%x00%s",
             f"{base}..{remote_head}",
         ).splitlines()
     ]
-    allowed = [
-        ("Software Factory", "factory@local", f"{ticket}: pin kit and model route plan"),
-        ("Software Factory", "factory@local", f"{ticket}: transition ticket state"),
-    ]
-    if commits not in (allowed[:1], allowed):
+    if not commits or any(
+        len(item) != 5
+        or item[2:4] != ("Software Factory", "factory@local")
+        for item in commits
+    ):
         raise DispatchError("pre-provider branch commits are not canonical")
+    pin = f"{ticket}: pin kit and model route plan"
+    transition = f"{ticket}: transition ticket state"
+    supersede = f"{ticket}: supersede pre-provider control state"
+    index = 0
+    while index < len(commits):
+        if commits[index][4] != pin:
+            raise DispatchError("pre-provider branch commits are not canonical")
+        index += 1
+        if index < len(commits) and commits[index][4] == transition:
+            index += 1
+        if index == len(commits):
+            break
+        if index + 1 >= len(commits):
+            raise DispatchError("pre-provider branch commits are not canonical")
+        merge, reset = commits[index:index + 2]
+        parents = merge[1].split()
+        if (
+            len(parents) != 2
+            or parents[0] != commits[index - 1][0]
+            or merge[4] != f"Merge commit '{parents[1]}' into {branch}"
+            or not git_succeeds(
+                product, "merge-base", "--is-ancestor", parents[1], main
+            )
+            or reset[1] != merge[0]
+            or reset[4] != supersede
+        ):
+            raise DispatchError("pre-provider branch commits are not canonical")
+        index += 2
     base_ticket = git(product, "show", f"{base}:{ticket_path}")
     main_ticket = git(product, "show", f"{main}:{ticket_path}")
     remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")

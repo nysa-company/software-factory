@@ -255,7 +255,10 @@ authorization may bind its exact head. Admission validates that no ticket
 contract or product path changed, non-force merges current protected main,
 removes only the obsolete pin/state control, and preserves the old commits in
 branch history before repinning. Every unlisted head or non-control change
-fails closed.
+fails closed. A later successor may repeat that recovery only when every
+first-parent commit follows the same canonical pin, transition, merge,
+supersede, and repin grammar and every merged base belongs to current protected
+main lineage.
 During a protected qualification, the development scheduler authenticates a
 durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
 against the exact qualification kit SHA before returning only that ticket to

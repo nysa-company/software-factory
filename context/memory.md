@@ -995,3 +995,12 @@ The sealed qualification launcher preserves its already-validated owner-only
 root as the isolated subscription execution environment. The generated marker
 authorizes per-attempt runtime homes under that root; tickets remain bound to
 their passport and branch, not to any disposable cell path.
+
+## 2026-07-27 — Decision 68: Canonical pre-provider recovery is repeatable
+
+Category: System change
+
+An exact authorized ticket branch may cross more than one protected-main or
+Factory successor before its first provider GO. Every first-parent commit must
+follow the Factory's pin, transition, recovery-merge, supersede, and repin
+grammar; every merged protected parent must remain in current main lineage.

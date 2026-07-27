@@ -623,6 +623,33 @@ existing isolated-runtime setup accept that marked root.
 Validation: the focused qualification-environment test, launcher/runner syntax
 checks, and exact Hermes contract suite pass; live four-ticket canary pending.
 
+## FI-20260727-031 — Pre-provider recovery was not repeatable
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 final four
+Impact: the corrected qualification environment stopped before claiming any
+ticket because all four exact authorized branches had already passed through
+one prior protected-main recovery.
+Evidence:
+- T-110 through T-113 each contain only the original canonical pin/Planning
+  commits, one Factory-authored recovery merge and supersede commit, and the
+  newer canonical pin/Planning pair
+- each current branch diff remains exactly its ticket control fields and route
+  plan, with no role manifest or provider-authored product change
+- admission reports `pre-provider branch is not control-only` for the exact
+  authorized head
+Root cause: FI-029 validated only a single pin/transition pair and prohibited
+all merge commits, including the canonical recovery merge it creates itself.
+Smallest change: validate the first-parent history as a repeatable canonical
+grammar and require every recovery merge's protected parent to remain an
+ancestor of current protected main.
+Validation: all 14 focused dispatch tests pass, including two consecutive
+protected-main recoveries that preserve lineage and restore the exact current
+main tree; the exact Hermes contract suite also passes. Live four-ticket
+canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

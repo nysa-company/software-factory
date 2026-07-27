@@ -186,7 +186,7 @@ class DispatchPlanTest(unittest.TestCase):
 
     def authorize_preprovider_reset(self, head):
         path = self.product / "factory/qualification/preprovider-branch-resets.json"
-        path.parent.mkdir()
+        path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps({
             "factory_sha": "a" * 40,
             "resets": [{
@@ -332,6 +332,52 @@ class DispatchPlanTest(unittest.TestCase):
 
         self.assertIn("control state is invalid", value["error"])
         self.assertEqual(list(self.worktrees.iterdir()), [])
+
+    def test_repeated_authorized_control_recovery_preserves_lineage(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.authorize_preprovider_reset(self.stale_preprovider_branch())
+        first = self.command("claim")
+        worktree = Path(first["worktree"])
+        ticket = worktree / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text() + f"\nKit-SHA: {'c' * 40}\n")
+        plan = worktree / "factory/route-plans/T-110.json"
+        plan.parent.mkdir(exist_ok=True)
+        plan.write_text(json.dumps({
+            "kit_sha": "c" * 40,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-110",
+        }) + "\n")
+        run("git", "add", str(ticket), str(plan), cwd=worktree)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: pin kit and model route plan", cwd=worktree,
+        )
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Planning"))
+        run("git", "add", str(ticket), cwd=worktree)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: transition ticket state", cwd=worktree,
+        )
+        repeated_head = run("git", "rev-parse", "HEAD", cwd=worktree).strip()
+        run("git", "push", "-q", "origin", "ticket/T-110", cwd=worktree)
+        (self.product / "factory/.dispatch-leases/T-110.json").unlink()
+        run("git", "worktree", "remove", str(worktree), cwd=self.product)
+        run("git", "branch", "-D", "ticket/T-110", cwd=self.product)
+        self.authorize_preprovider_reset(repeated_head)
+
+        value = self.command("claim")
+
+        recovered = Path(value["worktree"])
+        self.assertEqual(value["preprovider_reset_head"], repeated_head)
+        self.assertEqual(
+            run("git", "rev-parse", "HEAD^{tree}", cwd=recovered),
+            run("git", "rev-parse", "origin/main^{tree}", cwd=recovered),
+        )
 
     def test_qualification_ramps_filters_dependencies_and_completes(self):
         tickets = self.write_qualification({"T-109": ["T-100"]})
