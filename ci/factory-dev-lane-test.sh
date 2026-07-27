@@ -1696,7 +1696,15 @@ printf '%s\n' "$product_reconcile_source" | grep -Fq -- '--action reviewer-recon
 eval "$product_reconcile_source"
 RECONCILE_GUARD="$TMP/reviewer-reconcile-guard"
 mkdir -p "$RECONCILE_GUARD/product/factory/runs"
-lane_env() { printf '%s\n' called >>"$RECONCILE_GUARD/calls"; }
+lane_env() {
+  local argument
+  for argument in "$@"; do
+    if [[ "$argument" == FACTORY_DEV_PRODUCT_CHECKPOINT=* ]]; then
+      [[ -f "${argument#*=}" ]] || return 1
+    fi
+  done
+  printf '%s\n' called >>"$RECONCILE_GUARD/calls"
+}
 RECONCILE_LEASE="$(printf 'a%.0s' {1..64})"
 product_reconcile_reviewer "$RECONCILE_GUARD" T-1 "$RECONCILE_LEASE" ||
   fail "scheduler rejected a ticket before its first Reviewer output"
@@ -2912,7 +2920,7 @@ CANCELLED_ROLE_MANIFEST="$CANCELLED_ROLE_ROOT/product/factory/runs/cancelled.met
 printf '%s\n' \
   'run_id=cancelled' 'phase=cancelled_conservative' \
   'accounting_state=cancelled_conservative' 'reserved_usd=10.00' \
-  'effective_cost=10.00' 'exit_status=130' 'go_issued=1' \
+  'effective_cost=10.00' 'exit_status=143' 'go_issued=1' \
   'started_at=2026-07-27T04:00:00Z' 'ticket=T-73' 'role=builder' \
   'role_exit=cancelled' "role_head_before=$CANCELLED_ROLE_BASE" \
   "role_remote_before=$CANCELLED_ROLE_BASE" >"$CANCELLED_ROLE_MANIFEST"

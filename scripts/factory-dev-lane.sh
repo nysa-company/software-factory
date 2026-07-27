@@ -2446,7 +2446,8 @@ if (not re.fullmatch(r"[A-Za-z0-9._-]+",run_id) or
     values.get("phase") != "cancelled_conservative" or
     values.get("accounting_state") != "cancelled_conservative" or
     values.get("role_exit") != "cancelled" or
-    values.get("exit_status") != "130" or values.get("go_issued") != "1" or
+    values.get("exit_status") not in {"130","143"} or
+    values.get("go_issued") != "1" or
     values.get("role") not in {"planner","spec-linter","test-author","builder",
                                "reviewer","narrator"} or
     values.get("role_head_before") != remote or
@@ -3624,6 +3625,7 @@ product_transition_contract_blocked() {
 
 product_reconcile_reviewer() {
   local root="$1" ticket="$2" lease="${3:-}"
+  local -a checkpoint_env=()
   [[ "$lease" =~ ^[0-9a-f]{64}$ ]] || return 1
   python3 - "$root/product/factory/runs" "$ticket" <<'PY' || return 0
 import pathlib, sys
@@ -3638,8 +3640,12 @@ for path in runs.glob("*.meta"):
         raise SystemExit(0)
 raise SystemExit(1)
 PY
+  [[ ! -f "$root/runtime/product-checkpoint-import.json" ]] ||
+    checkpoint_env=(
+      FACTORY_DEV_PRODUCT_CHECKPOINT="$root/runtime/product-checkpoint-import.json"
+    )
   lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
-    FACTORY_DEV_PRODUCT_CHECKPOINT="$root/runtime/product-checkpoint-import.json" \
+    "${checkpoint_env[@]}" \
     "$SOURCE_ROOT/scripts/ticket-state.sh" \
     --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
     --action reviewer-reconcile >/dev/null
