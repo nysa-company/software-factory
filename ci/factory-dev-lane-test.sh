@@ -2819,16 +2819,18 @@ fi
 eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
 SOURCE_ROOT_TEST="$TMP/source-binding"
 mkdir -p "$SOURCE_ROOT_TEST/runtime"
-printf '%s\n' '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3"]}' \
-  >"$SOURCE_ROOT_TEST/runtime/product-source.json"
-load_product_tickets "$SOURCE_ROOT_TEST"
-[[ "${PRODUCT_TICKETS[*]}" == 'T-1 T-2 T-3' ]] ||
-  fail "partial product source binding was rejected"
+  printf '%s\n' \
+    '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3","T-4","T-5","T-6","T-7","T-8","T-9","T-10"]}' \
+    >"$SOURCE_ROOT_TEST/runtime/product-source.json"
+  load_product_tickets "$SOURCE_ROOT_TEST"
+  [[ "${PRODUCT_TICKETS[*]}" == \
+     'T-1 T-2 T-3 T-4 T-5 T-6 T-7 T-8 T-9 T-10' ]] ||
+    fail "ten-ticket generation source binding was rejected"
 for invalid_source in \
   '{"schema":"factory-dev-product-source/v1","tickets":[]}' \
   '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-1"]}' \
   '{"schema":"factory-dev-product-source/v1","tickets":["T-1","bad"]}' \
-  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3","T-4","T-5"]}'; do
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3","T-4","T-5","T-6","T-7","T-8","T-9","T-10","T-11"]}'; do
   printf '%s\n' "$invalid_source" >"$SOURCE_ROOT_TEST/runtime/product-source.json"
   if load_product_tickets "$SOURCE_ROOT_TEST"; then
     fail "malformed partial product source binding was accepted: $invalid_source"
