@@ -297,6 +297,24 @@ continue rejecting ambiguous or unsupported repair strings.
 Validation: `bash ci/factory-dev-lane-test.sh` passes at executable candidate
 `655020b610fffe73b005679cba86b91e3cc92469`.
 
+## FI-20260727-018 — Passport replay rejected normal indented Spec evidence
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, T-081 successor import
+Impact: an otherwise valid five-role passport stopped before Test-author repair
+with `development checkpoint binding is invalid`
+Evidence:
+- the passport carried canonical `SPEC-LINT: PASS`
+- the retained ticket carried the same marker with normal Markdown indentation
+Root cause: passport export normalized optional leading whitespace, while the
+sequencer's checkpoint-prefix validator required the marker at column zero.
+Smallest change: use the exporter's existing semantic match and strip only
+leading/trailing whitespace before exact prefix comparison.
+Validation: `bash ci/factory-dev-lane-test.sh` passes at executable candidate
+`5d611470182614f26fccc61eb751360dfc27c473` with an indented checkpoint fixture.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

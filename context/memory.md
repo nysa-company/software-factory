@@ -12,6 +12,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Explicit contract-repair stages for Planner, Spec-linter, Test-author, and
   Builder map only to their named role. Ambiguous or unsupported repair text
   remains non-runnable.
+- Portable Spec-lint evidence is compared semantically after normalizing only
+  Markdown indentation; export and replay use the same exact marker grammar.
 
 - Fresh Contract 1.7 product planning removes stale canonical Spec-lint,
   Reviewer, and repair-owner control lines while preserving historical prose
@@ -855,3 +857,12 @@ The development controller accepts only explicit `FIX planner`, `FIX
 spec-linter`, `FIX test-author`, or `FIX builder` stages emitted by the
 authenticated repair parser. It maps each stage directly to that role and
 continues to refuse ambiguous or unsupported repair ownership.
+
+## 2026-07-27 — Decision 39: Passport Spec evidence preserves Markdown indentation
+
+Category: System change
+
+Checkpoint export and replay both accept canonical Spec-lint markers with
+normal leading Markdown whitespace, strip that whitespace, and compare the
+ordered verdict prefix exactly. Altered verdict text and unmatched current-lane
+evidence still fail closed.
