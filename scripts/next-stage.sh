@@ -514,7 +514,11 @@ if (not isinstance(roles,list) or not roles or
         for role in roles)):
     raise SystemExit(1)
 text=pathlib.Path(ticket_file).read_text(encoding="utf-8")
-specs=re.findall(r"^SPEC-LINT: (?:PASS|FAIL(?: — .+)?)$",text,re.M)
+specs=[
+    line.strip() for line in re.findall(
+        r"^\s*SPEC-LINT: (?:PASS|FAIL(?: — .+)?)$", text, re.M
+    )
+]
 checkpoint_specs=record["spec_verdicts"]
 if (not isinstance(checkpoint_specs,list) or
     specs[:len(checkpoint_specs)] != checkpoint_specs):

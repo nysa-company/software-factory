@@ -2297,7 +2297,7 @@ for ticket in T-991 T-992; do
     >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/$ticket.md"
 done
 printf '%s\n' '# T-993 checkpoint fixture' '' 'State: Review' \
-  'SPEC-LINT: PASS' \
+  '  SPEC-LINT: PASS' \
   >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-993.md"
 git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets
 git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
