@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end regression for fallback preview and trusted handoff commit."""
 
+import base64
 import datetime as dt
 import importlib.util
 import json
@@ -252,6 +253,35 @@ class FallbackTest(unittest.TestCase):
         recovered = self.command("qualification-apply")
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
+
+    def test_qualification_apply_migrates_initial_v1_plan(self):
+        path = self.repo / "factory/route-plans/T-1.json"
+        journal = json.loads(path.read_text())
+        legacy = base64.b64decode(
+            journal["revisions"][0]["body"]["legacy_plan_b64"]
+        )
+        path.write_bytes(legacy)
+        git(self.repo, "add", str(path.relative_to(self.repo)))
+        git(self.repo, "commit", "-m", "restore initial route plan")
+        git(self.repo, "push", "origin", "ticket/T-1")
+        head = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", head)
+        manifest = self.product / "factory/runs/run-failed-1.meta"
+        manifest.write_text(
+            manifest.read_text()
+            .replace(f"role_head_before={self.head}", f"role_head_before={head}")
+            .replace(f"role_remote_before={self.head}", f"role_remote_before={head}")
+        )
+
+        applied = self.command("qualification-apply")
+        migrated = json.loads(
+            git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
+        )
+        self.assertEqual(
+            [item["body"]["kind"] for item in migrated["revisions"]],
+            ["migration", "fallback"],
+        )
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
 
     def test_qualification_apply_refuses_a_second_role_attempt(self):
         second = self.product / "factory/runs/run-failed-2.meta"

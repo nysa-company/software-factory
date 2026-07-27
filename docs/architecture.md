@@ -277,7 +277,9 @@ authorization loop.
 The first terminal failed Cursor attempt for a protected qualification keeps
 its claim and authenticated evidence while the controller appends the existing
 same-family direct-CLI fallback and resumes the same deterministic stage. The
-fallback is idempotent across controller restart. A second task-submitted
+fallback atomically converts an initial v1 route plan into a same-release v2
+journal before appending its revision, preserving the original plan bytes and
+provenance. It is idempotent across controller restart. A second task-submitted
 attempt for that ticket and role is refused as no progress instead of replayed.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 

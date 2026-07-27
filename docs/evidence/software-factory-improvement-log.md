@@ -747,6 +747,31 @@ Validation: the focused cancellation regression proves independent previews
 match and manifest/PID mutation still invalidates apply. Live cancellation
 canary pending.
 
+## FI-20260727-036 — Qualification fallback assumed a migrated route journal
+
+Status: Implemented; qualification pending
+Area: provider
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 successor final four
+Impact: T-116's first Test-author Cursor failure retained its $2 conservative
+charge but the automatic direct-CLI fallback blocked before preserving the
+handoff. T-114, T-115, and T-117 completed Test-author independently.
+Evidence:
+- run `1785193560-14897` terminalized `provider_failed` on the pinned Cursor
+  route with no successful Test-author evidence
+- the controller recorded `route journal cannot select its profile` and
+  failed closed
+- T-116 still had the v1 route plan created by normal ticket pinning
+Root cause: `fallback-auto` required a v2 journal even though a same-release
+ticket is not migrated before its first role.
+Smallest change: for qualification fallback only, atomically preserve the
+initial v1 plan as revision zero of a same-release v2 journal and append the
+fallback in the same handoff commit. Keep operator fallback restricted to an
+existing v2 journal.
+Validation: the focused fallback suite proves v1 migration, direct-CLI
+selection, one commit, and restart-safe recovery. Live four-ticket canary
+pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

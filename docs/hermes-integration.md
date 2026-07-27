@@ -212,7 +212,10 @@ without requesting another planning round. Siblings continue.
 `Merge-Policy: auto` must already exist on protected main; a ticket branch
 cannot grant itself automatic approval. A first terminal Cursor availability
 failure may use `fallback-auto` to preserve its handoff and select the approved
-direct Codex or Claude Code route for the second and final role attempt.
+direct Codex or Claude Code route for the second and final role attempt. When
+the ticket still has its initial v1 route plan, that same handoff commit first
+preserves it as revision zero of a same-release v2 journal; successful roles
+and the failed attempt are not replayed.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission

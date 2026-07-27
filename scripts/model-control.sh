@@ -436,18 +436,21 @@ PY
       fallback_exception_args=(--allow-reviewer-family "$allow_reviewer_family")
     validate_control_workdir "$ticket" "$workdir" 1
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
-      json_error "v2 ticket route journal is missing or unsafe"
-    profile_id="$(python3 - "$CONTROL_PLAN_FILE" <<'PY'
+      json_error "ticket route document is missing or unsafe"
+    profile_id="$(python3 - "$CONTROL_PLAN_FILE" "$command_name" <<'PY'
 import base64, json, sys
 value = json.load(open(sys.argv[1]))
-if value.get("schema") != "ticket-model-route-journal/v2":
-    raise SystemExit(2)
-body = value["revisions"][-1]["body"]
-if body["kind"] == "migration":
-    plan = json.loads(base64.b64decode(body["legacy_plan_b64"]))
-    resolution = plan["resolution"]
+if value.get("schema") == "ticket-model-route-plan/v1" and sys.argv[2] == "fallback-auto":
+    resolution = value["resolution"]
+elif value.get("schema") == "ticket-model-route-journal/v2":
+    body = value["revisions"][-1]["body"]
+    if body["kind"] == "migration":
+        plan = json.loads(base64.b64decode(body["legacy_plan_b64"]))
+        resolution = plan["resolution"]
+    else:
+        resolution = body.get("new_resolution", body["prior_resolution"])
 else:
-    resolution = body.get("new_resolution", body["prior_resolution"])
+    raise SystemExit(2)
 print(resolution["profile_id"])
 PY
 )" || json_error "route journal cannot select its profile"

@@ -15,9 +15,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   receipt after entering Planning. Later roles resume from authenticated
   evidence without repeating kickoff preflight.
 - During Contract 1.8 qualification, the first terminal failed Cursor attempt
-  appends the existing same-family direct-CLI fallback and retains the ticket
-  claim. The fallback recovers idempotently after controller restart; a second
-  task-submitted attempt for the same role is the no-progress stop.
+  retains the ticket claim, converts an initial v1 route plan into a
+  same-release v2 journal when needed, and appends the existing same-family
+  direct-CLI fallback. The fallback recovers idempotently after controller
+  restart; a second task-submitted attempt for the same role is the no-progress
+  stop.
 - Attempt-cancellation plan and apply calls derive one stable preview from the
   exact manifest, PID record, and reason. Snapshot drift still changes the hash
   and refuses cancellation.
@@ -1051,3 +1053,13 @@ Separate launcher plan and apply invocations derive the same cancellation
 preview from the exact run manifest, PID record, and reason. Any intervening
 attempt mutation changes the preview hash and preserves the existing CAS
 refusal.
+
+## 2026-07-27 — Decision 73: First qualification fallback creates its journal
+
+Category: System change
+
+When a protected qualification ticket still carries its initial v1 route
+plan, the first eligible Cursor failure preserves that exact plan as revision
+zero of a same-release v2 journal and appends the direct-CLI fallback in the
+same handoff commit. Generic operator fallback continues to require a
+pre-existing v2 journal.

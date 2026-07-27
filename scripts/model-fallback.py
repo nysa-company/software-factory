@@ -211,7 +211,7 @@ def load_policy_files(catalog_path, profiles_path):
     return ROUTER.load_policy(catalog_path, profiles_path)
 
 
-def calculate(args, nonce):
+def calculate(args, nonce, migrate_legacy=False):
     repo = Path(args.workdir).resolve()
     factory_root = Path(args.factory_root).resolve()
     plan_path = repo / f"factory/route-plans/{args.ticket}.json"
@@ -220,7 +220,28 @@ def calculate(args, nonce):
     catalog, routes, _profiles, profile_map = load_policy_files(
         args.catalog, args.profiles
     )
-    MANAGER.validate_journal(journal, catalog, routes, profile_map)
+    if (
+        migrate_legacy
+        and journal.get("schema") == "ticket-model-route-plan/v1"
+    ):
+        pin_commit = git(
+            repo, "log", "-1", "--format=%H", "--",
+            f"factory/route-plans/{args.ticket}.json",
+        ).decode().strip()
+        commit_epoch = int(
+            git(repo, "show", "-s", "--format=%ct", pin_commit).decode()
+        )
+        migrated_at = (
+            dt.datetime.fromtimestamp(commit_epoch, dt.timezone.utc)
+            .replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
+        journal = MANAGER.migrate_v1_plan(
+            raw_journal, pin_commit, journal["kit_sha"], migrated_at,
+            catalog, routes, profile_map,
+        )
+        raw_journal = (canonical(journal) + "\n").encode()
+    else:
+        MANAGER.validate_journal(journal, catalog, routes, profile_map)
     failed, failed_raw, ledger_raw, manifests = load_evidence(
         factory_root, args.ticket, args.failed_run
     )
@@ -489,7 +510,7 @@ def qualification_apply(args):
         recovered = recover_applied(args, approval)
         if recovered is not None:
             return recovered
-    result = calculate(args, secrets.token_hex(16))
+    result = calculate(args, secrets.token_hex(16), migrate_legacy=True)
     failed = result["failed"]
     if not failed.get("route_id", "").startswith("cursor-"):
         raise FallbackError("qualification fallback requires a failed Cursor route")
