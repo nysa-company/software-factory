@@ -530,6 +530,27 @@ Contract 1.8 occurrence: `ci-rerun` permits one exact-head failed-job rerun only
 for a single application-test failure with protected classes green, and
 persists the consumed rerun identity owner-locally.
 
+## FI-20260727-027 — A relocated Linear overlay duplicated live tickets
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 setup
+Impact: a clean successor qualification root recreated T-110 through T-113 as
+SF-64 through SF-67 while their original SF-60 through SF-63 issues remained
+active.
+Evidence:
+- the predecessor and successor `factory/linear-map.json` overlays bind the
+  same four ticket titles to distinct issue IDs
+- no provider call or ticket transition occurred before detection
+Root cause: issue creation trusted only the disposable local mapping and did
+not reconcile a missing entry against existing Factory-managed Linear issues.
+Smallest change: on a missing mapping, adopt one active exact-title issue with
+the Factory banner; ignore canceled issues and fail closed on ambiguity.
+Validation: the focused sync test adopts one issue without creating another,
+refuses two active matches, and the corrected live sync must recover
+SF-60 through SF-63 after SF-64 through SF-67 are recorded as obsolete.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

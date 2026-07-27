@@ -742,6 +742,33 @@ def fetch_issue(key, issue_id):
     return issue
 
 
+def factory_issue_index(key, team_id):
+    result = {}
+    after = None
+    while True:
+        page = gql(
+            key,
+            """query($id: String!, $after: String) { team(id: $id) {
+                 issues(first: 100, after: $after) {
+                   nodes { id identifier title description state { type } }
+                   pageInfo { hasNextPage endCursor }
+                 }
+               } }""",
+            {"id": team_id, "after": after},
+        )["team"]["issues"]
+        for issue in page["nodes"]:
+            if (
+                issue.get("state", {}).get("type") != "canceled"
+                and (issue.get("description") or "").startswith(BANNER)
+            ):
+                result.setdefault(issue["title"], []).append(issue)
+        if not page["pageInfo"]["hasNextPage"]:
+            return result
+        after = page["pageInfo"].get("endCursor")
+        if not after:
+            raise RuntimeError("Linear issue history is incomplete")
+
+
 def ingest_fallback_approval(actual, entry, dry):
     consumed = set(entry.get("consumed_model_fallback_comment_ids", []))
     observed_at = utc_now()
@@ -901,6 +928,7 @@ def post_comment(key, issue_id, body, dry):
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
     config = mapping["_config"]
     viewer_id = fetch_viewer_id(key)
+    existing_issues = factory_issue_index(key, config["team_id"])
     stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
@@ -948,7 +976,26 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
             project_id = project_ids.get(ticket["initiative"])
             desired_state_id = config["states"].get(ticket["state"])
         else:
-            actual = None
+            candidates = existing_issues.get(ticket["title"], [])
+            if len(candidates) > 1:
+                raise RuntimeError(
+                    f"{ticket['id']}: multiple active Factory issues require reconciliation"
+                )
+            actual = fetch_issue(key, candidates[0]["id"]) if candidates else None
+            if actual is not None:
+                entry.update({
+                    "issue_id": actual["id"],
+                    "identifier": actual["identifier"],
+                    "operator_fields_initialized": True,
+                    "source_ref": source_ref,
+                })
+                ingest_fallback_approval(actual, entry, dry)
+                ticket = ingest_operator_fields(ticket, actual, mapping, entry, dry)
+                project_id = project_ids.get(ticket["initiative"])
+                desired_state_id = config["states"].get(ticket["state"])
+                if not dry:
+                    save_map(map_path, mapping)
+                    log(f"{ticket['id']}: adopted existing issue {actual['identifier']}")
         if ticket["state"] == "awaiting approval" and ticket["merge_policy"] == "auto":
             if protected_merge_policy(factory_dir, ticket["id"]) == "auto":
                 desired_state_id = config["states"].get("approved")

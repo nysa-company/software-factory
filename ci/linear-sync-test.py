@@ -41,6 +41,25 @@ class FakeLinear:
             return {"viewer": {"id": self.viewer_id}}
         if "teams {" in query:
             return {"teams": {"nodes": [{"id": "team-1", "name": "Software Factory", "key": "SF"}]}}
+        if "issues(first:" in query:
+            return {"team": {"issues": {
+                "nodes": [
+                    {
+                        "description": issue["description"],
+                        "id": issue["id"],
+                        "identifier": issue["identifier"],
+                        "state": {
+                            "type": next(
+                                kind for _state, (name, kind) in LINEAR.STATES.items()
+                                if name == issue["state"]["name"]
+                            ),
+                        },
+                        "title": issue["title"],
+                    }
+                    for issue in self.issues.values()
+                ],
+                "pageInfo": {"endCursor": None, "hasNextPage": False},
+            }}}
         if "team(id:" in query:
             return {
                 "team": {
@@ -223,6 +242,24 @@ class LinearSyncTest(unittest.TestCase):
         )
         self.assertTrue(self.mapping["tickets"]["T-001"]["identifier"].startswith("SF-"))
         self.assertIsNone(self.mapping["_sync"]["last_error"])
+
+    def test_missing_mapping_adopts_one_existing_issue_and_refuses_duplicates(self):
+        self.reconcile()
+        issue = next(iter(self.fake.issues.values()))
+        issue["priority"] = LINEAR.PRIORITIES["high"]
+        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        self.mapping["tickets"].clear()
+        self.reconcile()
+        self.assertEqual(self.mapping["tickets"]["T-001"]["issue_id"], issue["id"])
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["priority"], "high")
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Ready")
+        duplicate = dict(issue)
+        duplicate["id"] = "issue-duplicate"
+        duplicate["identifier"] = "SF-duplicate"
+        self.fake.issues[duplicate["id"]] = duplicate
+        self.mapping["tickets"].clear()
+        with self.assertRaisesRegex(RuntimeError, "multiple active Factory issues"):
+            self.reconcile()
 
     def test_first_reconciliation_initializes_missing_runs_root(self):
         (self.factory / "runs").rmdir()
