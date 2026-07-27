@@ -2302,6 +2302,9 @@ done
 printf '%s\n' '# T-993 checkpoint fixture' '' 'State: Review' \
   '  SPEC-LINT: PASS' \
   >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-993.md"
+printf '%s\n' '# T-994 checkpoint fixture' '' 'State: Review' \
+  'SPEC-LINT: PASS' 'reviewer round 1: APPROVE' \
+  >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994.md"
 git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets
 git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
   commit -qm 'Add checkpoint sequencing fixtures'
@@ -2313,7 +2316,7 @@ printf '%s\n' '{"mode":"product"}' >"$CHECKPOINT_LANE/marker.json"
 chmod 600 "$CHECKPOINT_LANE/marker.json"
 CHECKPOINT_IMPORT="$CHECKPOINT_LANE/runtime/product-checkpoint-import.json"
 printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-checkpoint-import/v1\",\"checkpoint_sha256\":\"$SEED_NONCE\",\"tickets\":[{\"ticket\":\"T-991\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\"],\"spec_verdicts\":[],\"expected_next_stage\":\"RUN spec-linter\"},{\"ticket\":\"T-993\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"RUN reviewer\"}]}" \
+  "{\"schema\":\"factory-dev-product-checkpoint-import/v1\",\"checkpoint_sha256\":\"$SEED_NONCE\",\"tickets\":[{\"ticket\":\"T-991\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\"],\"spec_verdicts\":[],\"expected_next_stage\":\"RUN spec-linter\"},{\"ticket\":\"T-993\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"RUN reviewer\"},{\"ticket\":\"T-994\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\",\"reviewer\",\"narrator\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step\"}]}" \
   >"$CHECKPOINT_IMPORT"
 chmod 600 "$CHECKPOINT_IMPORT"
 CHECKPOINT_LEDGER="$CHECKPOINT_SEQ_REPO/conformance/factory/checkpoint-ledger.csv"
@@ -2344,6 +2347,36 @@ grep -qx 'State: Planning' \
   fail "Builder checkpoint did not resume at Reviewer"
 [[ "$(checkpoint_next_stage T-992)" == "RUN planner" ]] ||
   fail "ticket omitted from checkpoint did not remain at Planner"
+[[ "$(checkpoint_next_stage T-994)" == AWAIT-OPERATOR* ]] ||
+  fail "completed checkpoint did not remain at operator-await"
+
+printf '%s\n' \
+  'PUBLICATION FAILURE: https://github.com/nysa-company/nysa-app/actions/runs/1/job/2' \
+  'OPERATOR PUBLICATION REPAIR: test-author' \
+  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-994.md
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Authorize checkpoint publication repair'
+printf '%s\n' \
+  '2026-07-24,00:00:00,T-994,test-author,mock,test,1,0.10,0,repair-test,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+[[ "$(checkpoint_next_stage T-994)" == "RUN reviewer" ]] ||
+  fail "publication repair did not require fresh Reviewer evidence"
+printf '%s\n' \
+  '2026-07-24,00:01:00,T-994,reviewer,mock,test,1,0.10,0,repair-review,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+printf '%s\n' 'reviewer round 2: APPROVE' \
+  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-994.md
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Approve checkpoint publication repair'
+[[ "$(checkpoint_next_stage T-994)" == "RUN narrator" ]] ||
+  fail "publication repair did not require fresh Narrator evidence"
+printf '%s\n' \
+  '2026-07-24,00:02:00,T-994,narrator,mock,test,1,0.10,0,repair-narrate,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+[[ "$(checkpoint_next_stage T-994)" == AWAIT-OPERATOR* ]] ||
+  fail "publication repair did not return to operator-await"
 
 printf '%s\n' 'SPEC-LINT: FAIL — current-lane finding' \
   >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-991.md"
@@ -2842,6 +2875,39 @@ sed -i.bak 's/exit_status=12/exit_status=0/' \
 [[ "$(product_contract_repair_stage "$CONTRACT_REPAIR_ROOT" T-71)" == \
      INACTIVE ]] ||
   fail "consumed operator contract repair did not return to ordinary sequencing"
+
+PUBLICATION_REPAIR_ROOT="$TMP/publication-repair-stage"
+PUBLICATION_REPAIR_WORK="$PUBLICATION_REPAIR_ROOT/worktrees/T-81"
+mkdir -p "$PUBLICATION_REPAIR_ROOT/product/factory/runs" \
+  "$PUBLICATION_REPAIR_ROOT/runtime" "$PUBLICATION_REPAIR_WORK/factory/tickets"
+printf '%s\n' \
+  '{"tickets":[{"ticket":"T-81","expected_next_stage":"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"}]}' \
+  >"$PUBLICATION_REPAIR_ROOT/runtime/product-checkpoint-import.json"
+git init -q "$PUBLICATION_REPAIR_WORK"
+printf '%s\n' '# T-81' 'State: Review' \
+  >"$PUBLICATION_REPAIR_WORK/factory/tickets/T-81.md"
+git -C "$PUBLICATION_REPAIR_WORK" add factory/tickets/T-81.md
+git -C "$PUBLICATION_REPAIR_WORK" -c user.name=Factory \
+  -c user.email=factory@local commit -qm 'Create completed ticket'
+printf '%s\n' \
+  'PUBLICATION FAILURE: https://github.com/nysa-company/nysa-app/actions/runs/1/job/2' \
+  'OPERATOR PUBLICATION REPAIR: test-author' \
+  >>"$PUBLICATION_REPAIR_WORK/factory/tickets/T-81.md"
+git -C "$PUBLICATION_REPAIR_WORK" add factory/tickets/T-81.md
+git -C "$PUBLICATION_REPAIR_WORK" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Authorize publication repair'
+PUBLICATION_REPAIR_HEAD="$(git -C "$PUBLICATION_REPAIR_WORK" rev-parse HEAD)"
+[[ "$(product_contract_repair_stage "$PUBLICATION_REPAIR_ROOT" T-81)" == \
+     'FIX test-author' ]] ||
+  fail "publication repair did not route to its exact owning role"
+printf '%s\n' \
+  'run_id=test-author' 'started_at=2026-07-27T04:00:00Z' 'ticket=T-81' \
+  'role=test-author' 'phase=completed' 'role_exit=ok' 'exit_status=0' \
+  "role_head_before=$PUBLICATION_REPAIR_HEAD" \
+  >"$PUBLICATION_REPAIR_ROOT/product/factory/runs/test-author.meta"
+[[ "$(product_contract_repair_stage "$PUBLICATION_REPAIR_ROOT" T-81)" == \
+     INACTIVE ]] ||
+  fail "completed publication repair did not return to ordinary sequencing"
 
 FAILED_ROLE_ROOT="$TMP/failed-role-resume"
 FAILED_ROLE_WORK="$FAILED_ROLE_ROOT/worktrees/T-72"

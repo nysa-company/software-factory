@@ -2521,13 +2521,50 @@ PY
 
 product_contract_repair_stage() {
   python3 - "$1/product/factory/runs" \
-    "$1/worktrees/$2/factory/tickets/$2.md" "$2" <<'PY'
-import pathlib, re, sys
-runs, ticket_file, ticket=pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+    "$1/worktrees/$2/factory/tickets/$2.md" \
+    "$1/runtime/product-checkpoint-import.json" "$2" <<'PY'
+import json, pathlib, re, sys
+runs, ticket_file, checkpoint=map(pathlib.Path,sys.argv[1:4])
+ticket=sys.argv[4]
+text=ticket_file.read_text(encoding="utf-8")
 directives=re.findall(
     r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
-    ticket_file.read_text(encoding="utf-8"), re.M,
+    text, re.M,
 )
+publication=re.findall(
+    r"^OPERATOR PUBLICATION REPAIR: (test-author|builder)$", text, re.M,
+)
+if publication:
+    failures=re.findall(
+        r"^PUBLICATION FAILURE: https://github[.]com/[A-Za-z0-9_.-]+/"
+        r"[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+$", text, re.M,
+    )
+    if directives or len(publication) != 1 or len(failures) != 1:
+        raise SystemExit(1)
+    value=json.loads(checkpoint.read_text(encoding="utf-8"))
+    records=[
+        item for item in value.get("tickets",[])
+        if item.get("ticket") == ticket
+    ]
+    if (len(records) != 1 or
+        not records[0].get("expected_next_stage","").startswith("AWAIT-OPERATOR")):
+        raise SystemExit(1)
+    completed=False
+    for path in runs.glob("*.meta"):
+        values=dict(
+            line.split("=",1)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        if (values.get("ticket") != str(ticket) or
+            values.get("role") != publication[0] or
+            values.get("phase") != "completed" or
+            values.get("exit_status") != "0" or
+            values.get("role_exit") != "ok"):
+            continue
+        completed=True
+    print("INACTIVE" if completed else "FIX "+publication[0])
+    raise SystemExit(0)
 if len(directives) != 1: raise SystemExit(1)
 attempts=[]
 for path in runs.glob("*.meta"):
@@ -2556,7 +2593,7 @@ product_resume_stage() {
     claim --ticket "$ticket")" || return 1
   lease="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
     <<<"$lease_json")" || return 1
-  if grep -q '^OPERATOR RESUME:' \
+  if grep -Eq '^OPERATOR (RESUME|PUBLICATION REPAIR):' \
       "$root/worktrees/$ticket/factory/tickets/$ticket.md" 2>/dev/null; then
     repair="$(product_contract_repair_stage "$root" "$ticket")" || rc=$?
   fi

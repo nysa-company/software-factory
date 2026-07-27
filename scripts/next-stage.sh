@@ -465,6 +465,7 @@ LOCAL_B="$B"; LOCAL_R="$R"; LOCAL_N="$N"
 CHECKPOINT_P=0; CHECKPOINT_SL=0; CHECKPOINT_TA=0
 CHECKPOINT_B=0; CHECKPOINT_R=0; CHECKPOINT_N=0
 CHECKPOINT_NEXT_STAGE=""
+CHECKPOINT_AWAIT_REOPENED=0
 if [[ -n "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]]; then
   CHECKPOINT_COUNTS="$(python3 - "$FACTORY_DEV_PRODUCT_CHECKPOINT" \
     "${FACTORY_CLI_LANE_ROOT:-}" "$CONTENT_ROOT" "$TICKET" "$COMMITTED_HEAD" \
@@ -547,8 +548,14 @@ PY
     exit 0
   fi
   if [[ "$CHECKPOINT_NEXT_STAGE" == AWAIT-OPERATOR* ]]; then
-    echo "$CHECKPOINT_NEXT_STAGE"
-    exit 0
+    if [[ "$LOCAL_TA" -eq 0 && "$LOCAL_B" -eq 0 ]]; then
+      echo "$CHECKPOINT_NEXT_STAGE"
+      exit 0
+    fi
+    grep -qxE 'OPERATOR PUBLICATION REPAIR: (test-author|builder)' \
+      "$TICKET_FILE" ||
+      { echo "REFUSE operator-await checkpoint changed without a publication repair directive"; exit 1; }
+    CHECKPOINT_AWAIT_REOPENED=1
   fi
 fi
 
@@ -863,6 +870,10 @@ if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
   # A post-refresh rejection must use the ordinary fix/re-review path below;
   # an approval from the invalidated generation cannot short-circuit it.
 elif [[ "$A" -ge 1 ]]; then
+  if [[ "$CHECKPOINT_AWAIT_REOPENED" -eq 1 && "$LOCAL_N" -eq 0 ]]; then
+    echo "RUN narrator"
+    exit 0
+  fi
   if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
   # future bundle-attestation path. Contract 1.2 stops before that boundary.
