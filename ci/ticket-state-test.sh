@@ -259,6 +259,30 @@ PY
 
 printf '{"tickets":{"T-700":{}}}\n' > "$PRODUCT/factory/linear-map.json"
 
+# Reviewer reconciliation without a portable checkpoint must work under the
+# host Bash, including macOS Bash 3.2 with nounset enabled.
+printf 'factory/runs/\n' >> "$PRODUCT/.gitignore"
+git -C "$PRODUCT" add .gitignore
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "ignore run evidence fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
+ticket_state --ticket T-700 --workdir "$PRODUCT" \
+  --action transition --state Review >/dev/null
+REVIEW_HEAD="$(git -C "$PRODUCT" rev-parse HEAD)"
+mkdir -p "$PRODUCT/factory/runs"
+printf '%s\n' 'APPROVE' > "$PRODUCT/factory/runs/reviewer.out"
+REVIEW_DIGEST="$(shasum -a 256 "$PRODUCT/factory/runs/reviewer.out" | awk '{print $1}')"
+printf '%s\n' \
+  'run_id=reviewer' 'ticket=T-700' 'role=reviewer' 'adapter=codex' \
+  'contract_version=1.7.0' 'phase=completed' 'accounting_state=completed' \
+  'exit_status=0' 'role_exit=ok' "role_head_before=$REVIEW_HEAD" \
+  "role_remote_before=$REVIEW_HEAD" "output_sha256=$REVIEW_DIGEST" \
+  'started_at=2026-07-27T00:00:00Z' \
+  > "$PRODUCT/factory/runs/reviewer.meta"
+TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+  --action reviewer-reconcile >/dev/null
+grep -qx 'reviewer round 1: APPROVE' "$PRODUCT/factory/tickets/T-700.md"
+
 DECOY="$TMP/decoy.git"
 git init --bare -q "$DECOY"
 sed -E 's/^State: .*/State: Planning/' "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
@@ -318,7 +342,6 @@ git -C "$PRODUCT" config --unset-all remote.origin.pushurl
 git -C "$PRODUCT" config --add remote.origin.pushurl "$REMOTE"
 git -C "$PRODUCT" fetch -q "$REMOTE" \
   refs/heads/ticket/T-700:refs/remotes/origin/ticket/T-700
-printf 'factory/runs/\n' >> "$PRODUCT/.gitignore"
 cat > "$PRODUCT/factory/QUALIFICATION.json" <<'EOF'
 {"factory_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","final_capacity":4,"generation":1,"initial_capacity":3,"ramp_after_done":3,"schema":"nysa.software-factory.qualification/v1","target_done":10,"tickets":["T-700"]}
 EOF
