@@ -336,6 +336,30 @@ Validation: `bash ci/factory-dev-lane-test.sh` passes at executable candidate
 `c64a9247d566198803ff429f24535bfd057c2618` with an inert unused batch
 approval present during a selected-ticket export.
 
+## FI-20260727-020 — Retained contract blockers were authenticated against the wrong SHA
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, T-083 retained repair
+Impact: an authenticated Builder contract blocker could not return T-083 to
+Backlog after the qualification selected a newer successor candidate
+Evidence:
+- T-083 manifest `1785150963-94647.meta` records the lane-pinned
+  `5d611470182614f26fccc61eb751360dfc27c473`,
+  `role_exit_contract_blocked`, exit 12, and conservative accounting
+- the transition refused with
+  `qualification backlog return lacks authenticated failure evidence`
+Root cause: the transition compared the role manifest with the qualification
+manifest's mutable candidate field instead of the immutable Factory checkout
+that executed the role.
+Smallest change: bind the failure manifest to the controller checkout's exact
+Git SHA while retaining protected qualification membership and every existing
+role, state, exit, and accounting check.
+Validation: `bash ci/ticket-state-test.sh` passes at executable candidate
+`805de58e2d5c9a9730ee790a0d2d19cc4cb17671`, including stale-successor and
+unpinned-role cases.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

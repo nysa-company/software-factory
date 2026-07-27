@@ -878,3 +878,13 @@ A selected-ticket export may proceed while the compatibility batch approval
 remains unused and inert. Batch export retains the unused-approval refusal;
 ticket export keeps every existing terminal-role, drain, branch, reviewed-head,
 and patch-history gate.
+
+## 2026-07-27 — Decision 41: Retained failures bind to their executing Factory
+
+Category: System change
+
+Qualification membership remains protected-product state, but an authenticated
+contract-blocked role is validated against the immutable Factory checkout that
+executed the lane. A later successor-candidate selection cannot invalidate an
+older unaffected ticket's pinned failure evidence; a manifest from any other
+Factory SHA still fails closed.

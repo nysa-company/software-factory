@@ -8,12 +8,14 @@
   - `70ce454d1bd20a86c852dc816db75bdad1bde436`
   - `655020b610fffe73b005679cba86b91e3cc92469`
   - `5d611470182614f26fccc61eb751360dfc27c473`
-- Current successor: `c64a9247d566198803ff429f24535bfd057c2618`
+  - `c64a9247d566198803ff429f24535bfd057c2618`
+- Current successor: `805de58e2d5c9a9730ee790a0d2d19cc4cb17671`
 - Focused verification:
-  - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `70ce454`
-  - `bash ci/factory-dev-lane-test.sh` — PASS at the current successor
+  - `bash ci/ticket-state-test.sh` — PASS at the current successor
+  - `bash ci/factory-dev-lane-test.sh` — PASS at intermediate successor
+    `c64a924`
 
-The successor fixes six Factory-core defects found after the first roles of
+The successor fixes seven Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
@@ -27,7 +29,9 @@ the proposed final four had started:
 5. portable Spec-lint evidence accepts the same normal Markdown indentation at
    replay that checkpoint export already normalizes;
 6. a selected completed ticket may export after its ticket approval is
-   consumed even though the unused compatibility batch approval remains inert.
+   consumed even though the unused compatibility batch approval remains inert;
+7. a retained lane's authenticated contract blocker is bound to the immutable
+   Factory checkout that executed it, not a later qualification candidate.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.
