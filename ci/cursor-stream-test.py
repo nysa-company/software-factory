@@ -223,6 +223,23 @@ class CursorStreamTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "REQUEST CHANGES\ttest-author\n")
 
+    def test_reviewer_normalizes_named_shell_callback_pair(self) -> None:
+        review = (
+            "REQUEST CHANGES\n\n"
+            "FIX-OWNER: test-authorThat background shell (the first `npm test` "
+            "run) finished with code 0.\n\n"
+            "My round‑2 verdict stands: **REQUEST CHANGES**, "
+            "`FIX-OWNER: test-author` — the named repair remains."
+        )
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "REQUEST CHANGES\ttest-author\n")
+
     def test_reviewer_refuses_background_callback_owner_disagreement(self) -> None:
         review = (
             "FIX-OWNER: builderThe background `npm test` run finished with code 0.\n"

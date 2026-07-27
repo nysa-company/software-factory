@@ -8,7 +8,7 @@ import re
 
 CALLBACK_OWNER = re.compile(
     r"^(\s*)FIX-OWNER:\s*(builder|test-author|both)"
-    r"((?:The|That) background `[^`\r\n]+`[^\r\n]*)$",
+    r"((?:The|That) background [^\r\n]*)$",
     re.IGNORECASE | re.MULTILINE,
 )
 CALLBACK_APPROVE = re.compile(
@@ -22,7 +22,9 @@ CALLBACK_SUMMARY = re.compile(
     r"\*\*REQUEST CHANGES — FIX-OWNER: "
     r"(?P<bold>builder|test-author|both)\*\*[^\r\n]*|"
     r"\*\*REQUEST CHANGES\*\*\s+—\s+`FIX-OWNER:\s*"
-    r"(?P<inline>builder|test-author|both)`[^\r\n]*)$",
+    r"(?P<inline>builder|test-author|both)`[^\r\n]*|"
+    r"My round[^\r\n:]* verdict stands:\s+\*\*REQUEST CHANGES\*\*,\s+"
+    r"`FIX-OWNER:\s*(?P<stands>builder|test-author|both)`[^\r\n]*)$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -79,7 +81,12 @@ def normalize_cursor_callback(raw: str) -> str:
         )
     summaries = list(CALLBACK_SUMMARY.finditer(raw))
     summary_owners = [
-        (match.group("slash") or match.group("bold") or match.group("inline")).lower()
+        (
+            match.group("slash")
+            or match.group("bold")
+            or match.group("inline")
+            or match.group("stands")
+        ).lower()
         for match in summaries
     ]
     if corrupted:
