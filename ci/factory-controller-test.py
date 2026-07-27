@@ -39,11 +39,13 @@ class FactoryControllerTest(unittest.TestCase):
         self.launcher = self.root / "factory-launch"
         self.launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         self.launcher.chmod(0o700)
+        self.release = self.root / ("a" * 40)
+        self.release.mkdir()
         self.args = argparse.Namespace(
             launcher=self.launcher,
             product_root=self.product,
             project="relay",
-            release_path=ROOT,
+            release_path=self.release,
             state_dir=self.state,
         )
 
@@ -102,9 +104,13 @@ class FactoryControllerTest(unittest.TestCase):
         tickets = [f"T-{number}" for number in range(110, 114)]
         (self.product / "factory/QUALIFICATION.json").write_text(
             json.dumps({
+                "budget_usd": "100.000000",
                 "capacity": 4,
                 "contract_version": "1.8.0",
                 "factory_sha": "a" * 40,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
                 "schema": CONTROL.QUALIFICATION_SCHEMA,
                 "target_done": 4,
                 "tickets": tickets,

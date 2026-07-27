@@ -23,6 +23,7 @@ suite_registry() {
   "$callback" publication-repair "typed publication repair suite" python3 "$ROOT/ci/publication-repair-test.py"
   "$callback" ci-rerun "same-head transient CI rerun suite" python3 "$ROOT/ci/ci-rerun-test.py"
   "$callback" qualification-reducer "exact qualification evidence reducer suite" python3 "$ROOT/ci/qualification-reducer-test.py"
+  "$callback" qualification-environment "sealed live qualification environment suite" python3 "$ROOT/ci/qualification-environment-test.py"
   "$callback" budget-stage "budget-only delivery stop suite" python3 "$ROOT/ci/budget-stage-test.py"
   "$callback" ticket-pr "early ticket PR suite" python3 "$ROOT/ci/ticket-pr-test.py"
   "$callback" operator-console "operator console security suite" python3 "$ROOT/ci/operator-console-test.py"

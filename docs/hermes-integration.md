@@ -158,6 +158,13 @@ immutable green report only when all four passports, charges, restart and
 relocation events, protected checks, PR heads, merge commits, and protected
 main attestations match.
 
+Before promotion, `scripts/qualification-environment.py` may materialize the
+exact clean candidate as a read-only release under an owner-only
+`/private/tmp/nysa-sf-qualification.*` root. Its launcher derives that root
+from its sealed path, isolates controller and worktree state, and retains the
+account's real provider/profile boundary. It does not install or activate the
+candidate in the production kit registry.
+
 For Contracts 1.6 and 1.7, the `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
 wakeup claims at most one ticket and starts at most one ephemeral dispatcher
 child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque

@@ -125,12 +125,30 @@ class Controller:
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("schema") != QUALIFICATION_SCHEMA:
             return None
+        tickets = value.get("tickets")
         if (
-            value.get("contract_version") != "1.8.0"
+            set(value) != {
+                "budget_usd", "capacity", "contract_version", "factory_sha",
+                "generation", "per_run_budget_usd", "per_ticket_budget_usd",
+                "schema", "target_done", "tickets",
+            }
+            or value.get("contract_version") != "1.8.0"
             or value.get("capacity") != 4
             or value.get("target_done") != 4
-            or not isinstance(value.get("tickets"), list)
-            or len(value["tickets"]) != 4
+            or value.get("factory_sha") != self.release.name
+            or value.get("budget_usd") != "100.000000"
+            or value.get("per_ticket_budget_usd") != "25.000000"
+            or value.get("per_run_budget_usd") != "2.000000"
+            or not isinstance(value.get("generation"), int)
+            or isinstance(value.get("generation"), bool)
+            or value["generation"] < 1
+            or not isinstance(tickets, list)
+            or len(tickets) != 4
+            or len(tickets) != len(set(tickets))
+            or any(
+                not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
+                for ticket in tickets
+            )
         ):
             raise ControllerError("Contract 1.8 qualification manifest is invalid")
         return value

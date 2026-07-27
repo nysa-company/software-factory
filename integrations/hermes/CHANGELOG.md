@@ -17,6 +17,8 @@ helper output are not compatibility promises.
   allowing four ticket cells and four validating PRs.
 - Retains `dispatch-plan` for one release as a deterministic compatibility
   alias; it cannot spawn an agentic dispatcher.
+- Adds a sealed non-production release environment for live qualification of
+  an unmerged candidate through the real controller.
 
 ## 1.7.0 — 2026-07-22
 

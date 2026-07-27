@@ -65,6 +65,9 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
 - For Contract 1.8, instantiate
   `scripts/launchd/com.factory.controller.plist.template` with the exact
   project, home, and product paths and load it as a separate LaunchAgent.
+- Pre-promotion live qualification uses the owner-only sealed environment
+  prepared by `scripts/qualification-environment.py`; it does not replace the
+  installed launcher or production activation record.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry

@@ -764,6 +764,7 @@
     "scripts/provider-artifact-controller.py",
     "scripts/budget-stage.py",
     "scripts/qualification-reducer.py",
+    "scripts/qualification-environment.py",
     "scripts/provider-executor.py",
     "scripts/provider-isolated-run.py",
     "scripts/provider-recovery.py",

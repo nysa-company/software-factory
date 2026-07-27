@@ -58,6 +58,7 @@ PY
 )" || die "launcher self path cannot be resolved"
 INSTALLED_LAUNCHER_PATH="$ACCOUNT_HOME/.factory/bin/factory-launch"
 ISOLATED_TEST_LAUNCHER=0
+QUALIFICATION_LAUNCHER=0
 
 if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
   if [[ ${FACTORY_LAUNCH_TEST_MODE+x} == x ||
@@ -71,34 +72,54 @@ if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
   RAW_KITS_ROOT="$ACCOUNT_HOME/.factory/kits"
   RAW_PROFILE="$ACCOUNT_HOME/.hermes/profiles/factory"
 else
-  [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
-    die "launcher must execute from the installed trust-root path"
-  ISOLATED_TEST_LAUNCHER=1
-  if [[ -n "${FACTORY_LAUNCH_TEST_ACCOUNT_HOME:-}" ]]; then
-    case "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" in
+  QUALIFICATION_RELEASE="$(cd "$(dirname "$SELF_PATH")/../../.." 2>/dev/null && pwd -P)"
+  QUALIFICATION_SHA="$(basename "$QUALIFICATION_RELEASE")"
+  QUALIFICATION_ROOT="$(dirname "$(dirname "$QUALIFICATION_RELEASE")")"
+  if [[ "$SELF_PATH" == "$QUALIFICATION_RELEASE/integrations/hermes/bin/factory-launch" &&
+        "$QUALIFICATION_SHA" =~ ^[0-9a-f]{40}$ &&
+        "$QUALIFICATION_ROOT" =~ ^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9-]+$ ]]; then
+    "$BOOTSTRAP_PYTHON" -I -S - "$QUALIFICATION_ROOT" <<'PY' ||
+import os, stat, sys
+path = os.path.realpath(sys.argv[1])
+info = os.stat(path)
+if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit(1)
+PY
+      die "qualification release root is unsafe"
+    QUALIFICATION_LAUNCHER=1
+    HOME="$ACCOUNT_HOME"
+    RAW_KITS_ROOT="$QUALIFICATION_ROOT"
+    RAW_PROFILE="$ACCOUNT_HOME/.hermes/profiles/factory"
+  else
+    [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
+      die "launcher must execute from the installed or sealed qualification trust root"
+    ISOLATED_TEST_LAUNCHER=1
+    if [[ -n "${FACTORY_LAUNCH_TEST_ACCOUNT_HOME:-}" ]]; then
+      case "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" in
+        /*) ;;
+        *) die "test account home must be absolute" ;;
+      esac
+      [[ -d "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" ]] ||
+        die "test account home is missing"
+      TEST_ACCOUNT_HOME="$(cd "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" 2>/dev/null && pwd -P)" ||
+        die "test account home cannot be resolved"
+      [[ "$SELF_PATH" != "$TEST_ACCOUNT_HOME/.factory/bin/factory-launch" ]] ||
+        die "installed launcher path refuses repository test mode"
+    fi
+    [[ -n "${FACTORY_LAUNCH_TEST_HOME:-}" &&
+       -n "${FACTORY_KITS_ROOT:-}" &&
+       -n "${HERMES_FACTORY_PROFILE:-}" ]] ||
+      die "repository test mode requires explicit isolated roots"
+    case "$FACTORY_LAUNCH_TEST_HOME" in
       /*) ;;
-      *) die "test account home must be absolute" ;;
+      *) die "test HOME must be absolute" ;;
     esac
-    [[ -d "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" ]] ||
-      die "test account home is missing"
-    TEST_ACCOUNT_HOME="$(cd "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" 2>/dev/null && pwd -P)" ||
-      die "test account home cannot be resolved"
-    [[ "$SELF_PATH" != "$TEST_ACCOUNT_HOME/.factory/bin/factory-launch" ]] ||
-      die "installed launcher path refuses repository test mode"
+    [[ -d "$FACTORY_LAUNCH_TEST_HOME" ]] || die "test HOME is missing"
+    HOME="$(cd "$FACTORY_LAUNCH_TEST_HOME" 2>/dev/null && pwd -P)" ||
+      die "test HOME cannot be resolved"
+    RAW_KITS_ROOT="$FACTORY_KITS_ROOT"
+    RAW_PROFILE="$HERMES_FACTORY_PROFILE"
   fi
-  [[ -n "${FACTORY_LAUNCH_TEST_HOME:-}" &&
-     -n "${FACTORY_KITS_ROOT:-}" &&
-     -n "${HERMES_FACTORY_PROFILE:-}" ]] ||
-    die "repository test mode requires explicit isolated roots"
-  case "$FACTORY_LAUNCH_TEST_HOME" in
-    /*) ;;
-    *) die "test HOME must be absolute" ;;
-  esac
-  [[ -d "$FACTORY_LAUNCH_TEST_HOME" ]] || die "test HOME is missing"
-  HOME="$(cd "$FACTORY_LAUNCH_TEST_HOME" 2>/dev/null && pwd -P)" ||
-    die "test HOME cannot be resolved"
-  RAW_KITS_ROOT="$FACTORY_KITS_ROOT"
-  RAW_PROFILE="$HERMES_FACTORY_PROFILE"
 fi
 
 export HOME
@@ -1031,7 +1052,11 @@ PY
     DISPATCH_ARGS+=("$ACTION")
     DISPATCH_HELPER="$RELEASE_PATH/scripts/dispatch-plan.py"
     require_managed_file "$DISPATCH_HELPER" "active release dispatch planner"
-    WORKTREE_PARENT="$HOME/.factory/worktrees"
+    if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+      WORKTREE_PARENT="$KITS_ROOT/worktrees"
+    else
+      WORKTREE_PARENT="$HOME/.factory/worktrees"
+    fi
     WORKTREE_ROOT="$WORKTREE_PARENT/$PROJECT"
     if [[ "$ACTION" == "claim" ]]; then
       mkdir -p "$WORKTREE_ROOT" || die "cannot create trusted worktree root"

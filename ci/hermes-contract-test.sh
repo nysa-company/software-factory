@@ -2473,6 +2473,7 @@ assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_recei
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 for surface in [
     "scripts/factory-controller.py",
+    "scripts/qualification-environment.py",
     "scripts/state-machine.py",
     "scripts/ticket-passport.py",
     "scripts/publication-lease.py",
@@ -2511,6 +2512,14 @@ for surface in [
     "factory/route-plans/<T-NNN>.json",
 ]:
     assert surface in contract["compatibility_sensitive_surfaces"], surface
+
+launcher_text = open(
+    os.path.join(root, "integrations", "hermes", "bin", "factory-launch"),
+    encoding="utf-8",
+).read()
+assert "/private/tmp/nysa-sf-qualification" in launcher_text
+assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
+assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
 
 integration = os.path.join(root, "integrations", "hermes")
 required = [
