@@ -40,11 +40,15 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh subscription-plan [--adapter codex|claude]
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-seed-lineage --accounting <absolute-json> --output <absolute-json> [--parent-accounting <absolute-json>]
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-four-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json> --seed-checkpoint <absolute-json>]
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-ten-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json> --seed-checkpoint <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
+       factory-dev-lane.sh product-ticket-resume-plan --root <absolute-lane-root> --ticket <T-NNN>
+       factory-dev-lane.sh product-ticket-run --root <absolute-lane-root> --ticket <T-NNN> --approve-hash <sha256>
+       factory-dev-lane.sh product-ticket-pause --root <absolute-lane-root> --ticket <T-NNN>
        factory-dev-lane.sh product-export --root <absolute-lane-root> [--tickets <T-NNN,...>] [--output <absolute-new-lane-local-directory>]
        factory-dev-lane.sh product-checkpoint-export --root <absolute-lane-root> --tickets <T-NNN,...> --output <absolute-new-directory>
+       factory-dev-lane.sh product-ticket-passport-export --root <absolute-lane-root> --ticket <T-NNN> --output <absolute-new-directory>
        factory-dev-lane.sh clean --root <absolute-lane-root>
 EOF
   exit 2
@@ -896,8 +900,8 @@ PY
     git -C "$root/product" remote remove origin
     git -C "$root/product" branch -f main "$PRODUCT_BASE"
     lane_tickets=("${PRODUCT_TICKETS[@]}")
-    [[ "${#lane_tickets[@]}" -ge 1 && "${#lane_tickets[@]}" -le 4 ]] ||
-      die "product lane requires one to four tickets"
+    [[ "${#lane_tickets[@]}" -ge 1 && "${#lane_tickets[@]}" -le 10 ]] ||
+      die "product generation requires one to ten tickets"
     mkdir -p "$root/product/factory/route-plans" "$root/product/factory/runs"
     for ticket in "${lane_tickets[@]}"; do
       [[ "$ticket" =~ ^T-[0-9]+$ ]] || die "invalid product ticket"
@@ -1248,13 +1252,15 @@ validate_product_checkpoint() {
 import json, re, sys
 path, bundle, base, *tickets=sys.argv[1:]
 value=json.load(open(path, encoding="utf-8"))
+schema=value.get("schema")
 sha40=lambda item: isinstance(item,str) and re.fullmatch(r"[0-9a-f]{40}",item)
 sha256=lambda item: isinstance(item,str) and re.fullmatch(r"[0-9a-f]{64}",item)
 if (set(value) != {"schema","base_sha","base_tree","source_factory_sha",
                    "source_factory_tree","source_marker_sha256",
                    "source_product_sha256","prior_accounting_sha256",
                    "seed_bundle_sha256","lane_charges_micro_usd","tickets"} or
-    value.get("schema") != "factory-dev-product-checkpoint/v1" or
+    schema not in {"factory-dev-product-checkpoint/v1",
+                   "factory-dev-product-checkpoint/v2"} or
     value.get("base_sha") != base or not sha40(value.get("base_tree")) or
     not sha40(value.get("source_factory_sha")) or
     not sha40(value.get("source_factory_tree")) or
@@ -1274,7 +1280,7 @@ if (set(value) != {"schema","base_sha","base_tree","source_factory_sha",
     any(not isinstance(amount,int) or isinstance(amount,bool) or amount < 0
         for amount in value["lane_charges_micro_usd"].values())):
     raise SystemExit(1)
-allowed=("planner","spec-linter","test-author","builder")
+allowed=("planner","spec-linter","test-author","builder","reviewer","narrator")
 for item in value["tickets"]:
     if set(item) != {"ticket","head_sha","head_tree","ticket_blob",
                     "route_plan_sha256","next_stage","state","roles",
@@ -1282,42 +1288,53 @@ for item in value["tickets"]:
         raise SystemExit(1)
     if (not sha40(item["head_sha"]) or not sha40(item["head_tree"]) or
         not sha40(item["ticket_blob"]) or not sha256(item["route_plan_sha256"]) or
-        item["next_stage"] not in {"RUN planner","RUN spec-linter",
-                                   "RUN test-author","RUN builder","RUN reviewer"} or
-        item["state"] not in {"Ready","Planning","Building","Review"} or
+        item["next_stage"] not in {
+            "RUN planner","RUN spec-linter","RUN test-author","RUN builder",
+            "RUN reviewer","RUN narrator","FIX builder","FIX test-author",
+            "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step",
+        } or
+        item["state"] not in {
+            "Backlog","Ready","Planning","Building","Review","Blocked-Escalated"
+        } or
         not isinstance(item["roles"],list) or not item["roles"]):
         raise SystemExit(1)
     roles=[]
+    run_ids=set()
     for run in item["roles"]:
         if (set(run) != {"role","run_id","manifest_sha256","output_sha256",
                         "role_head_before"} or run["role"] not in allowed or
             not re.fullmatch(r"[A-Za-z0-9._-]+",run["run_id"]) or
+            run["run_id"] in run_ids or
             not sha256(run["manifest_sha256"]) or
             not sha256(run["output_sha256"]) or
             not sha40(run["role_head_before"])):
             raise SystemExit(1)
+        run_ids.add(run["run_id"])
         roles.append(run["role"])
-    if any(role in {"reviewer","narrator"} for role in roles):
-        raise SystemExit(1)
     specs=item["spec_verdicts"]
     if (not isinstance(specs,list) or any(not isinstance(line,str) or
         not re.fullmatch(r"SPEC-LINT: (?:PASS|FAIL(?: — .+)?)",line)
         for line in specs)):
         raise SystemExit(1)
-    failures=sum(line.startswith("SPEC-LINT: FAIL") for line in specs)
-    prefix=[]
-    for _ in range(failures): prefix += ["planner","spec-linter"]
-    if item["next_stage"] != "RUN planner": prefix += ["planner"]
-    if item["next_stage"] not in {"RUN planner","RUN spec-linter"}:
-        if len(specs) != failures+1 or specs[-1] != "SPEC-LINT: PASS":
-            raise SystemExit(1)
-        prefix += ["spec-linter"]
-    if item["next_stage"] in {"RUN builder","RUN reviewer"}:
-        prefix += ["test-author"]
-    if item["next_stage"] == "RUN reviewer":
-        prefix += ["builder"]
-    if roles != prefix:
+    if len(specs) != roles.count("spec-linter"):
         raise SystemExit(1)
+    if schema == "factory-dev-product-checkpoint/v1":
+        if any(role in {"reviewer","narrator"} for role in roles):
+            raise SystemExit(1)
+        failures=sum(line.startswith("SPEC-LINT: FAIL") for line in specs)
+        prefix=[]
+        for _ in range(failures): prefix += ["planner","spec-linter"]
+        if item["next_stage"] != "RUN planner": prefix += ["planner"]
+        if item["next_stage"] not in {"RUN planner","RUN spec-linter"}:
+            if len(specs) != failures+1 or specs[-1] != "SPEC-LINT: PASS":
+                raise SystemExit(1)
+            prefix += ["spec-linter"]
+        if item["next_stage"] in {"RUN builder","RUN reviewer"}:
+            prefix += ["test-author"]
+        if item["next_stage"] == "RUN reviewer":
+            prefix += ["builder"]
+        if roles != prefix:
+            raise SystemExit(1)
 PY
     die "product seed checkpoint is malformed or detached"
 }
@@ -1507,14 +1524,19 @@ from pathlib import Path
 import json, re, sys
 p=Path(sys.argv[1]); kit_sha=sys.argv[2]; checkpoint=sys.argv[3]
 ticket=sys.argv[4]; lines=[]; kit_written=False
-record=None
+record=None; portable=False
 if checkpoint:
-    record=next(item for item in json.load(open(checkpoint,encoding="utf-8"))["tickets"]
-                if item["ticket"] == ticket)
+    source=json.load(open(checkpoint,encoding="utf-8"))
+    portable=source.get("schema") == "factory-dev-product-checkpoint/v2"
+    record=next(item for item in source["tickets"] if item["ticket"] == ticket)
 for line in p.read_text(encoding="utf-8").splitlines():
-    if re.fullmatch(r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I):
+    if not portable and re.fullmatch(
+        r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I
+    ):
         continue
-    elif re.fullmatch(r"\s*reviewer round\s+\d+(?::.*|\s+FIX-OWNER:\s*.*)", line, re.I):
+    elif not portable and re.fullmatch(
+        r"\s*reviewer round\s+\d+(?::.*|\s+FIX-OWNER:\s*.*)", line, re.I
+    ):
         continue
     elif re.match(r"^Kit-SHA:\s*", line):
         if not kit_written:
@@ -1525,7 +1547,7 @@ for line in p.read_text(encoding="utf-8").splitlines():
                             "State: "+(record["state"] if record else "Ready"),line))
 if not kit_written:
     lines.append("Kit-SHA: " + kit_sha)
-if record:
+if record and not portable:
     lines.extend(record["spec_verdicts"])
 p.write_text("\n".join(lines)+"\n", encoding="utf-8")
 PY
@@ -1547,6 +1569,7 @@ import hashlib, json, os, pathlib, subprocess, sys
 checkpoint_path, output, retained, root, *_tickets=sys.argv[1:]
 raw=open(checkpoint_path,"rb").read()
 source=json.loads(raw)
+version="v2" if source.get("schema") == "factory-dev-product-checkpoint/v2" else "v1"
 records=[]
 for item in source["tickets"]:
     ticket=item["ticket"]
@@ -1562,7 +1585,7 @@ for item in source["tickets"]:
         "expected_next_stage":item["next_stage"],
     })
 value={
-    "schema":"factory-dev-product-checkpoint-import/v1",
+    "schema":"factory-dev-product-checkpoint-import/"+version,
     "checkpoint_sha256":hashlib.sha256(raw).hexdigest(),
     "tickets":records,
 }
@@ -2009,7 +2032,16 @@ claude_subscription_env() {
 }
 
 product_approval_hash() {
-  local root="$1" ticket tool real session_home="$1/session-home" cursor_home cursor_enabled=0
+  local root="$1" selected="${2:-}" ticket tool real
+  local session_home="$1/session-home" cursor_home cursor_enabled=0
+  local -a approval_tickets
+  if [[ -n "$selected" ]]; then
+    printf '%s\n' "${PRODUCT_TICKETS[@]}" | grep -Fxq "$selected" ||
+      die "product ticket approval is outside the generation"
+    approval_tickets=("$selected")
+  else
+    approval_tickets=("${PRODUCT_TICKETS[@]}")
+  fi
   cursor_home="$session_home"
   product_cursor_enabled "$root" && cursor_enabled=1
   {
@@ -2060,7 +2092,7 @@ PY
     sha256_file "$session_home/.claude/.credentials.json"
     [[ ! -f "$root/runtime/claude-token-source" ]] ||
       sha256_file "$root/runtime/claude-token-source"
-    for ticket in "${PRODUCT_TICKETS[@]}"; do
+    for ticket in "${approval_tickets[@]}"; do
       git -C "$root/worktrees/$ticket" rev-parse HEAD 'HEAD^{tree}'
       sha256_file "$root/worktrees/$ticket/factory/tickets/$ticket.md"
       sha256_file "$root/worktrees/$ticket/factory/route-plans/$ticket.json"
@@ -2069,6 +2101,87 @@ PY
         sha256_file "$root/runtime/product-envelope/$ticket.env"
     done
   } | sha256_text
+}
+
+write_product_ticket_approval() {
+  local root="$1" ticket="$2" approval_hash="$3"
+  python3 - "$root/runtime/product-ticket-approvals" \
+    "$ticket" "$approval_hash" <<'PY' || return 1
+import os, pathlib, re, sys
+directory=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; digest=sys.argv[3]
+if not re.fullmatch(r"T-[0-9]+",ticket) or not re.fullmatch(r"[0-9a-f]{64}",digest):
+    raise SystemExit(1)
+directory.mkdir(mode=0o700,exist_ok=True)
+if directory.is_symlink() or (directory.stat().st_mode & 0o777) != 0o700:
+    raise SystemExit(1)
+path=directory/ticket
+raw=f"approval_hash={digest}\nused=0\n"
+fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(fd,"w",encoding="utf-8") as stream:
+    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+PY
+}
+
+consume_product_ticket_approval() {
+  local root="$1" ticket="$2" supplied="$3"
+  python3 - "$root/runtime/product-ticket-approvals" \
+    "$ticket" "$supplied" <<'PY' || return 1
+import os, pathlib, re, stat, sys
+directory=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; supplied=sys.argv[3]
+path=directory/ticket
+info=path.lstat()
+if (not re.fullmatch(r"T-[0-9]+",ticket) or
+    not re.fullmatch(r"[0-9a-f]{64}",supplied) or
+    not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+    stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+    raise SystemExit(1)
+value=dict(line.split("=",1) for line in
+           path.read_text(encoding="utf-8").splitlines())
+if value != {"approval_hash":supplied,"used":"0"}:
+    raise SystemExit(1)
+used=directory/"used"
+used.mkdir(mode=0o700,exist_ok=True)
+if used.is_symlink() or (used.stat().st_mode & 0o777) != 0o700:
+    raise SystemExit(1)
+target=used/f"{ticket}-{supplied}"
+os.link(path,target)
+path.unlink()
+PY
+}
+
+write_product_ticket_pause() {
+  local root="$1" ticket="$2"
+  python3 - "$root/runtime/product-ticket-paused" "$ticket" <<'PY' || return 1
+import os, pathlib, re, sys
+directory=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]
+if not re.fullmatch(r"T-[0-9]+",ticket): raise SystemExit(1)
+directory.mkdir(mode=0o700,exist_ok=True)
+if directory.is_symlink() or (directory.stat().st_mode & 0o777) != 0o700:
+    raise SystemExit(1)
+path=directory/ticket
+raw=b"paused=1\n"
+try:
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+except FileExistsError:
+    if path.is_symlink() or path.read_bytes() != raw: raise SystemExit(1)
+else:
+    with os.fdopen(fd,"wb") as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+PY
+}
+
+product_ticket_pause_requested() {
+  local path="$1/runtime/product-ticket-paused/$2"
+  [[ -e "$path" || -L "$path" ]] || return 1
+  [[ -f "$path" && ! -L "$path" &&
+     "$(stat -f '%Su:%Lp:%l' "$path")" == "$(id -un):600:1" &&
+     "$(cat "$path")" == "paused=1" ]]
+}
+
+clear_product_ticket_pause() {
+  local path="$1/runtime/product-ticket-paused/$2"
+  product_ticket_pause_requested "$1" "$2" || return 1
+  rm -f "$path"
 }
 
 provision_product_databases() {
@@ -2118,7 +2231,7 @@ if binding not in {"current","retained"}: raise SystemExit(1)
 tickets=(value.get("resume_original_tickets", value.get("tickets", []))
          if binding == "retained" else value.get("tickets", []))
 if (value.get("schema") != "factory-dev-product-source/v1" or
-    not 1 <= len(tickets) <= 4 or len(set(tickets)) != len(tickets) or
+    not 1 <= len(tickets) <= 10 or len(set(tickets)) != len(tickets) or
     any(not isinstance(ticket, str) or
         not re.fullmatch(r"T-[0-9]+", ticket) for ticket in tickets)):
     raise SystemExit(1)
@@ -2129,7 +2242,7 @@ PY
   while IFS= read -r line; do
     [[ -n "$line" ]] && PRODUCT_TICKETS+=("$line")
   done <<<"$serialized"
-  [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 4 ]] ||
+  [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 10 ]] ||
     die "product source binding is incomplete"
 }
 
@@ -2140,7 +2253,7 @@ load_product_resume_original_tickets() {
 import json, re, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
 tickets=value.get("resume_original_tickets", value.get("tickets", []))
-if (not 1 <= len(tickets) <= 4 or len(set(tickets)) != len(tickets) or
+if (not 1 <= len(tickets) <= 10 or len(set(tickets)) != len(tickets) or
     any(not isinstance(ticket, str) or
         not re.fullmatch(r"T-[0-9]+", ticket) for ticket in tickets)):
     raise SystemExit(1)
@@ -2616,6 +2729,44 @@ PY
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
 }
 
+product_ticket_resume_plan() {
+  local root="$1" ticket="$2" stage role approval_hash approval_path stored
+  require_lane_mode "$root" product
+  load_product_tickets "$root"
+  validate_runtime_paths "$root"
+  printf '%s\n' "${PRODUCT_TICKETS[@]}" | grep -Fxq "$ticket" ||
+    die "product ticket is outside the generation"
+  product_dependencies_satisfied "$root" "$ticket" ||
+    die "product ticket dependencies are not protected Done: $ticket"
+  product_selected_drained "$root" "$ticket" ||
+    die "product ticket resume requires only that ticket to be drained"
+  if [[ -e "$root/runtime/product-ticket-paused/$ticket" ||
+        -L "$root/runtime/product-ticket-paused/$ticket" ]]; then
+    clear_product_ticket_pause "$root" "$ticket" ||
+      die "product ticket pause record is unsafe: $ticket"
+  fi
+  recover_product_failed_role_commit "$root" "$ticket" ||
+    die "product ticket resume could not retain failed role output: $ticket"
+  stage="$(product_resume_stage "$root" "$ticket")" ||
+    die "product ticket resume could not resolve the current stage: $ticket"
+  role="$(product_role_for_stage "$stage")" ||
+    die "product ticket is not runnable: $ticket"
+  product_retry_has_progress "$root" "$ticket" "$role" ||
+    die "product ticket has two identical no-progress failures: $ticket $role"
+  approval_hash="$(product_approval_hash "$root" "$ticket")"
+  approval_path="$root/runtime/product-ticket-approvals/$ticket"
+  if [[ -f "$approval_path" && ! -L "$approval_path" ]]; then
+    stored="$(sed -n 's/^approval_hash=//p' "$approval_path")"
+    [[ "$stored" == "$approval_hash" ]] ||
+      die "pending product ticket approval drifted: $ticket"
+  else
+    write_product_ticket_approval "$root" "$ticket" "$approval_hash" ||
+      die "product ticket approval could not be created: $ticket"
+  fi
+  echo "TICKET_APPROVE_HASH=$ticket:$approval_hash"
+  echo "NEXT_STAGE=$ticket:$stage"
+}
+
 restore_product_resume_source() {
   local root="$1"
   python3 - "$root/runtime/product-source.json" <<'PY'
@@ -2790,6 +2941,12 @@ for item in value["tickets"]:
 PY
 )
   fi
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    approval_hash="$(product_approval_hash "$root" "$ticket")"
+    write_product_ticket_approval "$root" "$ticket" "$approval_hash" ||
+      die "product ticket approval already exists: $ticket"
+    echo "TICKET_APPROVE_HASH=$ticket:$approval_hash"
+  done
   approval_hash="$(product_approval_hash "$root")"
   printf 'approval_hash=%s\nused=0\n' "$approval_hash" >"$root/runtime/product-approval"
   chmod 600 "$root/runtime/product-approval"
@@ -3340,6 +3497,60 @@ product_role_for_stage() {
   esac
 }
 
+product_retry_has_progress() {
+  local root="$1" ticket="$2" role="$3" head
+  head="$(git -C "$root/worktrees/$ticket" rev-parse HEAD)" || return 1
+  python3 - "$root/product/factory/runs" "$ticket" "$role" "$head" <<'PY'
+import pathlib, sys
+runs=pathlib.Path(sys.argv[1]); ticket, role, head=sys.argv[2:]
+failed=[]
+for path in runs.glob("*.meta"):
+    values=dict(line.split("=",1) for line in
+                path.read_text(encoding="utf-8").splitlines() if "=" in line)
+    if (values.get("ticket") == ticket and values.get("role") == role and
+        values.get("role_head_before") == head and
+        values.get("accounting_state") != "reserved" and
+        values.get("exit_status") not in {None,"","0"}):
+        failed.append((
+            values.get("started_at",""),
+            values.get("role_exit",""),
+            values.get("output_sha256",""),
+        ))
+failed.sort()
+if len(failed) >= 2 and failed[-1][1:] == failed[-2][1:]:
+    raise SystemExit(1)
+PY
+}
+
+product_dependencies_satisfied() {
+  local root="$1" ticket="$2"
+  python3 - "$root/worktrees/$ticket/factory/tickets/$ticket.md" \
+    "$root/origin.git" <<'PY'
+import pathlib, re, subprocess, sys
+ticket_path=pathlib.Path(sys.argv[1]); origin=sys.argv[2]
+text=ticket_path.read_text(encoding="utf-8")
+values=re.findall(r"^Depends-On:\s*(.*?)\s*$",text,re.I|re.M)
+if len(values) > 1: raise SystemExit(1)
+raw=values[0] if values else "none"
+if raw.casefold() == "none": raise SystemExit(0)
+dependencies=[item.strip() for item in raw.split(",")]
+if (not dependencies or len(dependencies) != len(set(dependencies)) or
+    any(not re.fullmatch(r"T-[0-9]+",item) for item in dependencies)):
+    raise SystemExit(1)
+for dependency in dependencies:
+    try:
+        protected=subprocess.check_output(
+            ["git","-C",origin,"show",
+             f"refs/heads/main:factory/tickets/{dependency}.md"],
+            text=True,stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        raise SystemExit(1)
+    states=re.findall(r"^State:\s*(.*?)\s*$",protected,re.I|re.M)
+    if len(states) != 1 or states[0].casefold() != "done":
+        raise SystemExit(1)
+PY
+}
+
 product_prepare_role_state() {
   local root="$1" ticket="$2" role="$3" target current
   case "$role" in
@@ -3485,8 +3696,9 @@ PY
 
 product_write_timing_report() {
   local root="$1" started="$2" finished="$3"
+  local output="${4:-$1/runtime/product-timing.json}"
   python3 - "$root/kit/scripts/provider-coordinator.py" \
-    "$root/runtime/provider-state.sqlite3" "$root/runtime/product-timing.json" \
+    "$root/runtime/provider-state.sqlite3" "$output" \
     "$root/product/factory/runs" "$started" "$finished" <<'PY'
 import json, os, pathlib, subprocess, sys, tempfile
 coordinator, database, output_path, runs_path, started_value, finished_value=sys.argv[1:]
@@ -3557,31 +3769,56 @@ PY
 }
 
 run_product_internal() {
-  local root="$1" supplied="$2" readiness_proven="${3:-0}"
+  local root="$1" supplied="$2" readiness_proven="${3:-0}" selected="${4:-}"
   local stored day i ticket lease_json stage role account family now cursor_enabled=0
-  local done_count failed_count blocked_count progress pid rc prior
+  local done_count failed_count blocked_count paused_count progress pid rc prior
   local rollback_failed resume_csv blocked_csv
-  local batch_started batch_finished completed remaining
+  local batch_started batch_finished completed remaining approval_path timing_report
   local -a leases pids states renewals roles resume_reasons failed_stages
   require_lane_mode "$root" product
   load_product_tickets "$root"
   validate_runtime_paths "$root"
-  [[ -f "$root/runtime/product-approval" && ! -L "$root/runtime/product-approval" ]] ||
+  if [[ -n "$selected" ]]; then
+    printf '%s\n' "${PRODUCT_TICKETS[@]}" | grep -Fxq "$selected" ||
+      die "product ticket is outside the generation"
+    PRODUCT_TICKETS=("$selected")
+    approval_path="$root/runtime/product-ticket-approvals/$selected"
+    timing_report="$root/runtime/product-scheduler/$selected-timing.json"
+  else
+    [[ "${#PRODUCT_TICKETS[@]}" -le 4 ]] ||
+      die "generation runs wider than four must use product-ticket-run"
+    approval_path="$root/runtime/product-approval"
+    timing_report="$root/runtime/product-timing.json"
+  fi
+  [[ -f "$approval_path" && ! -L "$approval_path" ]] ||
     die "product approval is missing or already used"
-  stored="$(sed -n 's/^approval_hash=//p' "$root/runtime/product-approval")"
+  stored="$(sed -n 's/^approval_hash=//p' "$approval_path")"
   [[ "$stored" == "$supplied" && \
-     "$(sed -n 's/^used=//p' "$root/runtime/product-approval")" == 0 ]] ||
+     "$(sed -n 's/^used=//p' "$approval_path")" == 0 ]] ||
     die "product approval hash does not match or was already used"
-  [[ "$(product_approval_hash "$root")" == "$supplied" ]] ||
+  [[ "$(product_approval_hash "$root" "$selected")" == "$supplied" ]] ||
     die "product approval inputs drifted after planning"
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    product_dependencies_satisfied "$root" "$ticket" ||
+      die "product ticket dependencies are not protected Done: $ticket"
+    if [[ -e "$root/runtime/product-ticket-paused/$ticket" ||
+          -L "$root/runtime/product-ticket-paused/$ticket" ]]; then
+      product_ticket_pause_requested "$root" "$ticket" ||
+        die "product ticket pause record is unsafe: $ticket"
+      die "product ticket is paused: $ticket"
+    fi
+  done
   [[ "$readiness_proven" == 0 || "$readiness_proven" == 1 ]] ||
     die "product readiness proof is invalid"
   product_cursor_enabled "$root" && cursor_enabled=1
   [[ "$readiness_proven" == 1 ]] ||
     subscription_ready "$root" "$cursor_enabled"
-  subscription_provider_wait 120 ||
-    die "another subscription provider call remained active for two minutes"
-  mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
+  if [[ -n "$selected" ]]; then
+    consume_product_ticket_approval "$root" "$selected" "$supplied" ||
+      die "product ticket approval could not be consumed"
+  else
+    mv "$root/runtime/product-approval" "$root/runtime/product-approval.used"
+  fi
   batch_started="$(date +%s)"
   mkdir -p "$root/runtime/product-scheduler"
   chmod 700 "$root/runtime/product-scheduler"
@@ -3607,9 +3844,10 @@ run_product_internal() {
     roles[$i]=""; resume_reasons[$i]=control-boundary-failure
     failed_stages[$i]=control-boundary
   done
-  done_count=0; failed_count=0; blocked_count=0
+  done_count=0; failed_count=0; blocked_count=0; paused_count=0
   while [[ "$done_count" -lt "${#PRODUCT_TICKETS[@]}" &&
-           $((done_count + failed_count + blocked_count)) -lt "${#PRODUCT_TICKETS[@]}" ]]; do
+           $((done_count + failed_count + blocked_count + paused_count)) -lt \
+             "${#PRODUCT_TICKETS[@]}" ]]; do
     progress=0
     for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == running ]] || continue
@@ -3637,6 +3875,18 @@ run_product_internal() {
     for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == idle ]] || continue
       ticket="${PRODUCT_TICKETS[$i]}"; now="$(date +%s)"
+      if [[ -e "$root/runtime/product-ticket-paused/$ticket" ||
+            -L "$root/runtime/product-ticket-paused/$ticket" ]]; then
+        product_ticket_pause_requested "$root" "$ticket" || {
+          states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+        }
+        subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
+          --ticket "$ticket" --lease "${leases[$i]}" >/dev/null || {
+            states[$i]=failed; failed_count=$((failed_count + 1)); continue;
+          }
+        states[$i]=paused; paused_count=$((paused_count + 1)); progress=1
+        continue
+      fi
       if [[ $((now - renewals[$i])) -ge 120 ]]; then
         subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" renew \
           --ticket "$ticket" --lease "${leases[$i]}" >/dev/null || {
@@ -3706,10 +3956,12 @@ PY
     fi
   done
   batch_finished="$(date +%s)"
-  product_write_timing_report "$root" "$batch_started" "$batch_finished" ||
+  product_write_timing_report "$root" "$batch_started" "$batch_finished" \
+    "$timing_report" ||
     die "could not persist product timing evidence"
   if [[ "$done_count" -ne "${#PRODUCT_TICKETS[@]}" ||
-        "$failed_count" -ne 0 || "$blocked_count" -ne 0 ]]; then
+        "$failed_count" -ne 0 || "$blocked_count" -ne 0 ||
+        "$paused_count" -ne 0 ]]; then
     resume_csv=""
     for i in "${!PRODUCT_TICKETS[@]}"; do
       [[ "${states[$i]}" == failed ]] || continue
@@ -3730,9 +3982,15 @@ PY
     if [[ -n "$resume_csv" ]]; then
       printf 'STATUS=RESUME-REQUIRED\nRESUME_RECOMMENDED=1\nRESUME_TICKETS=%s\n' \
         "$resume_csv" >&2
-      printf 'RESUME_NEXT=product-resume-plan\n' >&2
-      printf "RESUME_COMMAND=bash '%s/scripts/factory-dev-lane.sh' product-resume-plan --root '%s' --tickets '%s'\n" \
-        "$SOURCE_ROOT" "$root" "$resume_csv" >&2
+      if [[ -n "$selected" ]]; then
+        printf 'RESUME_NEXT=product-ticket-resume-plan\n' >&2
+        printf "RESUME_COMMAND=bash '%s/scripts/factory-dev-lane.sh' product-ticket-resume-plan --root '%s' --ticket '%s'\n" \
+          "$SOURCE_ROOT" "$root" "$selected" >&2
+      else
+        printf 'RESUME_NEXT=product-resume-plan\n' >&2
+        printf "RESUME_COMMAND=bash '%s/scripts/factory-dev-lane.sh' product-resume-plan --root '%s' --tickets '%s'\n" \
+          "$SOURCE_ROOT" "$root" "$resume_csv" >&2
+      fi
     fi
     blocked_csv=""
     for i in "${!PRODUCT_TICKETS[@]}"; do
@@ -3756,13 +4014,20 @@ PY
       printf 'STATUS=RETURNED-TO-BACKLOG\nBACKLOG_TICKETS=%s\n' \
         "$backlog_csv" >&2
     fi
+    paused_csv=""
+    for i in "${!PRODUCT_TICKETS[@]}"; do
+      [[ "${states[$i]}" == paused ]] || continue
+      paused_csv="${paused_csv:+$paused_csv,}${PRODUCT_TICKETS[$i]}"
+    done
+    if [[ -n "$paused_csv" ]]; then
+      printf 'STATUS=PAUSED\nPAUSED_TICKETS=%s\n' "$paused_csv" >&2
+    fi
     printf 'RETAINED_ROOT=%s\n' "$root" >&2
     die "one or more product lifecycles stopped; successful siblings were retained"
   fi
-  subscription_provider_idle || die "product lifecycle left a provider process"
   echo "STATUS=AWAIT-OPERATOR"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
-  echo "TIMING_REPORT=$root/runtime/product-timing.json"
+  echo "TIMING_REPORT=$timing_report"
   echo "ELAPSED_SECONDS=$((batch_finished - batch_started))"
 }
 
@@ -3869,15 +4134,135 @@ PY
   PRODUCT_TICKETS=("${selected[@]}")
 }
 
+product_selected_drained() {
+  local root="$1"
+  shift
+  [[ "$#" -ge 1 ]] || return 1
+  python3 "$root/kit/scripts/provider-coordinator.py" \
+    --db "$root/runtime/provider-state.sqlite3" status |
+    python3 -c '
+import json, sys
+selected=set(sys.argv[1:])
+value=json.load(sys.stdin)
+assert not [
+    attempt for attempt in value.get("attempts",[])
+    if attempt.get("ticket_id") in selected and attempt.get("state") != "terminal"
+], value
+' "$@" || return 1
+  python3 - "$root/product/factory/.dispatch-leases" \
+    "$root/product/factory/.active-runs" "$root/product/factory/runs" \
+    "$@" <<'PY'
+import pathlib, re, stat, sys
+leases=pathlib.Path(sys.argv[1]); claims=pathlib.Path(sys.argv[2])
+runs=pathlib.Path(sys.argv[3]); selected=set(sys.argv[4:])
+if leases.exists():
+    for path in leases.iterdir():
+        info=path.lstat()
+        match=re.fullmatch(r"(T-[0-9]+)\.json",path.name)
+        if not match or not stat.S_ISREG(info.st_mode) or path.is_symlink():
+            raise SystemExit(1)
+        if match.group(1) in selected:
+            raise SystemExit(1)
+if claims.exists():
+    for path in claims.iterdir():
+        info=path.lstat()
+        match=re.fullmatch(
+            r"(T-[0-9]+)\.(planner|spec-linter|test-author|builder|reviewer|narrator)\.lock",
+            path.name)
+        if not match or not stat.S_ISDIR(info.st_mode) or path.is_symlink():
+            raise SystemExit(1)
+        if match.group(1) in selected:
+            raise SystemExit(1)
+if runs.exists():
+    for path in runs.glob("*.pid"):
+        info=path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+            raise SystemExit(1)
+        manifest=path.with_suffix(".meta")
+        if not manifest.is_file() or manifest.is_symlink():
+            raise SystemExit(1)
+        values=dict(
+            line.split("=",1) for line in
+            manifest.read_text(encoding="utf-8").splitlines() if "=" in line
+        )
+        if values.get("ticket") in selected:
+            raise SystemExit(1)
+PY
+}
+
+product_ticket_pause_internal() {
+  local root="$1" ticket="$2" run_id plan preview_hash i cleanup=1
+  require_lane_mode "$root" product
+  load_product_tickets "$root"
+  validate_runtime_paths "$root"
+  printf '%s\n' "${PRODUCT_TICKETS[@]}" | grep -Fxq "$ticket" ||
+    die "product ticket is outside the generation"
+  write_product_ticket_pause "$root" "$ticket" ||
+    die "product ticket pause could not be recorded"
+  run_id="$(python3 - "$root/product/factory/runs" "$ticket" <<'PY'
+import pathlib, sys
+runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; active=[]
+for path in runs.glob("*.meta"):
+    values=dict(line.split("=",1) for line in
+                path.read_text(encoding="utf-8").splitlines() if "=" in line)
+    if (values.get("ticket") == ticket and
+        values.get("accounting_state") == "reserved" and
+        path.with_suffix(".pid").is_file()):
+        active.append(values.get("run_id"))
+if len(active) > 1 or any(not item for item in active): raise SystemExit(1)
+print(active[0] if active else "")
+PY
+)" || die "product ticket active attempt is ambiguous"
+  if [[ -n "$run_id" ]]; then
+    plan="$(mktemp "$root/runtime/product-pause-$ticket.XXXXXX")"
+    trap '[[ "$cleanup" -eq 0 ]] || rm -f "$plan"' RETURN
+    python3 "$root/kit/scripts/attempt-cancel.py" preview \
+      --factory-root "$root/product" --ticket "$ticket" --run-id "$run_id" \
+      --reason operator_requested >"$plan" ||
+      die "product ticket cancellation preview failed"
+    preview_hash="$(python3 -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' \
+      "$plan")" || die "product ticket cancellation preview is malformed"
+    python3 "$root/kit/scripts/attempt-cancel.py" apply \
+      --factory-root "$root/product" --plan "$plan" \
+      --preview-hash "$preview_hash" --timeout 30 >/dev/null ||
+      die "product ticket cancellation did not converge"
+    rm -f "$plan"; cleanup=0; trap - RETURN
+  fi
+  for i in $(seq 1 60); do
+    if product_selected_drained "$root" "$ticket"; then
+      echo "STATUS=PAUSED"
+      echo "TICKET=$ticket"
+      return 0
+    fi
+    sleep 1
+  done
+  die "product ticket paused but its selected evidence did not drain"
+}
+
+write_product_stage_map() {
+  local root="$1" output="$2"
+  shift 2
+  local ticket stage
+  : >"$output"
+  chmod 600 "$output"
+  for ticket in "$@"; do
+    stage="$(product_resume_stage "$root" "$ticket")" ||
+      die "product passport could not resolve the exact next stage: $ticket"
+    printf '%s\t%s\n' "$ticket" "$stage" >>"$output"
+  done
+}
+
 export_product_checkpoint_internal() {
   local root="$1" selected_csv="$2" output="$3" ticket branch head base cleanup=1
+  local stage_map
   local -a refs=()
   require_lane_mode "$root" product
   load_product_tickets "$root"
   select_product_export_tickets "$selected_csv"
   validate_runtime_paths "$root"
-  product_resume_drained "$root" 0 0 ||
-    die "product checkpoint requires a fully drained lane"
+  product_selected_drained "$root" "${PRODUCT_TICKETS[@]}" ||
+    die "selected product checkpoint tickets have not drained"
   [[ "$output" == /* && ! -e "$output" ]] ||
     die "product checkpoint output must be a new absolute directory"
   refuse_production_path "$output"
@@ -3885,12 +4270,10 @@ export_product_checkpoint_internal() {
     die "product checkpoint parent must be owner-only"
   mkdir -m 700 "$output"
   trap '[[ "$cleanup" -eq 0 ]] || rm -rf "$output"' RETURN
-  subscription_env "$root" python3 "$root/kit/scripts/ledger-view.py" refresh \
-    --factory-root "$root/product" \
-    --durable-ledger "$root/product/factory/ledger.csv" \
-    --runtime-ledger "$root/product/factory/runtime-ledger.csv" \
-    --runs-dir "$root/product/factory/runs" >/dev/null ||
-    die "product checkpoint accounting could not be reduced"
+  stage_map="$output/.stages"
+  write_product_stage_map "$root" "$stage_map" "${PRODUCT_TICKETS[@]}"
+  product_selected_drained "$root" "${PRODUCT_TICKETS[@]}" ||
+    die "selected product checkpoint stage inspection did not drain"
   base="$(python3 - "$root/runtime/product-source.json" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1],encoding="utf-8"))["lane_control_sha"])
@@ -3911,8 +4294,9 @@ PY
     die "product checkpoint bundle could not be created"
   chmod 600 "$output/seed.bundle"
   write_product_checkpoint "$root" "$output/seed.bundle" \
-    "$output/checkpoint.json" "${PRODUCT_TICKETS[@]}" ||
+    "$output/checkpoint.json" "$stage_map" "${PRODUCT_TICKETS[@]}" ||
     die "product checkpoint evidence is incomplete or ambiguous"
+  rm "$stage_map"
   cleanup=0
   trap - RETURN
   echo "CHECKPOINT=$output/checkpoint.json"
@@ -3921,13 +4305,20 @@ PY
 }
 
 write_product_checkpoint() {
-  local root="$1" bundle="$2" output="$3"; shift 3
+  local root="$1" bundle="$2" output="$3" stages="$4"; shift 4
   python3 - "$root" "$bundle" \
-    "$output" "$@" <<'PY'
+    "$output" "$stages" "$@" <<'PY'
 import csv, hashlib, json, os, pathlib, re, stat, subprocess, sys
 from decimal import Decimal
 root=pathlib.Path(sys.argv[1]); bundle=pathlib.Path(sys.argv[2])
-output=pathlib.Path(sys.argv[3]); tickets=sys.argv[4:]
+output=pathlib.Path(sys.argv[3]); stages_path=pathlib.Path(sys.argv[4])
+tickets=sys.argv[5:]
+stages={}
+for line in stages_path.read_text(encoding="utf-8").splitlines():
+    ticket, separator, stage=line.partition("\t")
+    if not separator or ticket in stages: raise SystemExit(1)
+    stages[ticket]=stage
+if set(stages) != set(tickets): raise SystemExit(1)
 source_path=root/"runtime/product-source.json"
 source=json.load(open(source_path,encoding="utf-8"))
 marker_path=root/"marker.json"; marker=json.load(open(marker_path,encoding="utf-8"))
@@ -3948,10 +4339,14 @@ if import_path.exists() or retained_path.exists():
     retained_raw=retained_path.read_bytes()
     retained_sha=hashlib.sha256(retained_raw).hexdigest()
     checkpoint=json.loads(retained_raw)
-    if (imported.get("schema") != "factory-dev-product-checkpoint-import/v1" or
+    if (imported.get("schema") not in {
+            "factory-dev-product-checkpoint-import/v1",
+            "factory-dev-product-checkpoint-import/v2"} or
         imported.get("checkpoint_sha256") != retained_sha or
         source.get("seed_checkpoint_sha256") != retained_sha or
-        checkpoint.get("schema") != "factory-dev-product-checkpoint/v1"):
+        checkpoint.get("schema") not in {
+            "factory-dev-product-checkpoint/v1",
+            "factory-dev-product-checkpoint/v2"}):
         raise SystemExit(1)
     checkpoint_records={item["ticket"]:item for item in checkpoint["tickets"]}
     if (len(checkpoint_records) != len(checkpoint["tickets"]) or
@@ -3975,9 +4370,9 @@ for path in runs.glob("*.meta"):
                 path.read_text(encoding="utf-8").splitlines() if "=" in line)
     manifests[values.get("run_id")]=(path,values)
 rows=list(csv.DictReader(open(ledger,encoding="utf-8",newline="")))
-history=(list(checkpoint["lane_charges_micro_usd"]) if checkpoint else
-         source.get("resume_original_tickets",source["tickets"]))
-charges={ticket:0 for ticket in history}
+charges=(dict(checkpoint["lane_charges_micro_usd"]) if checkpoint else {
+    ticket:0 for ticket in source.get("resume_original_tickets",source["tickets"])
+})
 for _path,values in manifests.values():
     ticket=values.get("ticket")
     if ticket not in charges: continue
@@ -4005,9 +4400,8 @@ for ticket in tickets:
     for row in rows:
         if row.get("ticket") != ticket or row.get("exit_status") != "0": continue
         role=row.get("role"); run_id=row.get("run_id")
-        if role in {"reviewer","narrator"}: continue
         if role not in {
-            "planner","spec-linter","test-author","builder"
+            "planner","spec-linter","test-author","builder","reviewer","narrator"
         }: raise SystemExit(1)
         path,values=manifests.get(run_id,(None,{}))
         out=path.with_suffix(".out") if path else None
@@ -4032,7 +4426,9 @@ for ticket in tickets:
     text=subprocess.check_output(
         ["git","-C",str(work),"show",ref+":factory/tickets/"+ticket+".md"],
         text=True)
-    state=re.findall(r"^State:\s*(Ready|Planning|Building|Review)\s*$",text,re.I|re.M)
+    state=re.findall(
+        r"^State:\s*(Backlog|Ready|Planning|Building|Review|Blocked-Escalated)\s*$",
+        text,re.I|re.M)
     if len(state) != 1: raise SystemExit(1)
     all_specs=[line.strip() for line in re.findall(
         r"^\s*SPEC-LINT: (?:PASS|FAIL(?: — .+)?)\s*$",text,re.M)]
@@ -4040,29 +4436,13 @@ for ticket in tickets:
     sl=role_names.count("spec-linter")
     if len(all_specs) < sl: raise SystemExit(1)
     specs=all_specs[:sl]
-    failures=sum(line.startswith("SPEC-LINT: FAIL") for line in specs)
-    prefix=[]
-    for _ in range(failures): prefix += ["planner","spec-linter"]
-    if role_names == prefix:
-        stage="RUN planner"
-    else:
-        prefix += ["planner"]
-        if role_names == prefix:
-            stage="RUN spec-linter"
-        else:
-            if len(specs) != failures+1 or specs[-1] != "SPEC-LINT: PASS":
-                raise SystemExit(1)
-            prefix += ["spec-linter"]
-            if role_names == prefix:
-                stage="RUN test-author"
-            else:
-                prefix += ["test-author"]
-                if role_names == prefix:
-                    stage="RUN builder"
-                else:
-                    prefix += ["builder"]
-                    if role_names != prefix: raise SystemExit(1)
-                    stage="RUN reviewer"
+    stage=stages[ticket]
+    if stage not in {
+        "RUN planner","RUN spec-linter","RUN test-author","RUN builder",
+        "RUN reviewer","RUN narrator","FIX builder","FIX test-author",
+        "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step",
+    }:
+        raise SystemExit(1)
     route=subprocess.check_output(
         ["git","-C",str(work),"show",ref+":factory/route-plans/"+ticket+".json"])
     records.append({
@@ -4074,7 +4454,7 @@ for ticket in tickets:
         "roles":successful,"spec_verdicts":specs,
     })
 value={
-    "schema":"factory-dev-product-checkpoint/v1",
+    "schema":"factory-dev-product-checkpoint/v2",
     "base_sha":source["base_sha"],"base_tree":source["base_tree"],
     "source_factory_sha":marker["kit_sha"],"source_factory_tree":marker["kit_tree"],
     "source_marker_sha256":hashlib.sha256(marker_path.read_bytes()).hexdigest(),
@@ -4123,43 +4503,8 @@ export_product_internal() {
   select_product_export_tickets "$selected_csv"
   validate_runtime_paths "$root"
   [[ ! -e "$root/runtime/product-approval" ]] || die "product run approval is still unused"
-  python3 "$root/kit/scripts/provider-coordinator.py" \
-    --db "$root/runtime/provider-state.sqlite3" status |
-    python3 -c '
-import json, sys
-selected=set(sys.argv[1:])
-value=json.load(sys.stdin)
-assert not [
-    attempt for attempt in value.get("attempts",[])
-    if attempt.get("ticket_id") in selected and attempt.get("state") != "terminal"
-], value
-' "${PRODUCT_TICKETS[@]}" ||
-    die "selected product provider attempts have not drained"
-  python3 - "$root/product/factory/.dispatch-leases" \
-    "$root/product/factory/.active-runs" "${PRODUCT_TICKETS[@]}" <<'PY' ||
-import pathlib, re, stat, sys
-leases=pathlib.Path(sys.argv[1]); claims=pathlib.Path(sys.argv[2])
-selected=set(sys.argv[3:])
-if leases.exists():
-    for path in leases.iterdir():
-        info=path.lstat()
-        match=re.fullmatch(r"(T-[0-9]+)\.json",path.name)
-        if not match or not stat.S_ISREG(info.st_mode) or path.is_symlink():
-            raise SystemExit(1)
-        if match.group(1) in selected:
-            raise SystemExit(1)
-if claims.exists():
-    for path in claims.iterdir():
-        info=path.lstat()
-        match=re.fullmatch(
-            r"(T-[0-9]+)\.(planner|spec-linter|test-author|builder|reviewer|narrator)\.lock",
-            path.name)
-        if not match or not stat.S_ISDIR(info.st_mode) or path.is_symlink():
-            raise SystemExit(1)
-        if match.group(1) in selected:
-            raise SystemExit(1)
-PY
-    die "selected product lease or active-run claim has not drained"
+  product_selected_drained "$root" "${PRODUCT_TICKETS[@]}" ||
+    die "selected product attempts, leases, claims, or processes have not drained"
   base="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base_sha"])' \
     "$root/runtime/product-source.json")"
   export_dir="${requested_output:-$root/export}"
@@ -4515,7 +4860,7 @@ case "$command" in
     refuse_production_path "$source_repo"
     PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"; PRODUCT_SEED_BUNDLE="$seed_bundle"
     IFS=, read -r -a PRODUCT_TICKETS <<<"$ticket_csv"
-    [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 4 ]] || usage
+    [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 10 ]] || usage
     python3 - "${PRODUCT_TICKETS[@]}" <<'PY' || usage
 import re, sys
 tickets=sys.argv[1:]
@@ -4572,6 +4917,51 @@ PY
     [[ -n "$root" && -n "$ticket_csv" ]] || usage
     root="$(validate_lane "$root")"
     product_resume_plan "$root" "$ticket_csv"
+    ;;
+  product-ticket-resume-plan)
+    assert_macos
+    root=""; ticket=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --ticket) ticket="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && "$ticket" =~ ^T-[0-9]+$ ]] || usage
+    root="$(validate_lane "$root")"
+    product_ticket_resume_plan "$root" "$ticket"
+    ;;
+  product-ticket-run)
+    assert_macos
+    root=""; ticket=""; approve=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --ticket) ticket="${2:-}"; shift 2 ;;
+        --approve-hash) approve="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && "$ticket" =~ ^T-[0-9]+$ &&
+       "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
+    root="$(validate_lane "$root")"
+    run_in_sandbox "$root" subscription __product-ticket-run \
+      --root "$root" --ticket "$ticket" --approve-hash "$approve"
+    ;;
+  product-ticket-pause)
+    assert_macos
+    root=""; ticket=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --ticket) ticket="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && "$ticket" =~ ^T-[0-9]+$ ]] || usage
+    root="$(validate_lane "$root")"
+    product_ticket_pause_internal "$root" "$ticket"
     ;;
   product-run)
     assert_macos
@@ -4645,6 +5035,20 @@ PY
     root="$(validate_lane "$root")"
     export_product_checkpoint_internal "$root" "$ticket_csv" "$output"
     ;;
+  product-ticket-passport-export)
+    root=""; ticket=""; output=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) root="${2:-}"; shift 2 ;;
+        --ticket) ticket="${2:-}"; shift 2 ;;
+        --output) output="${2:-}"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n "$root" && "$ticket" =~ ^T-[0-9]+$ && -n "$output" ]] || usage
+    root="$(validate_lane "$root")"
+    export_product_checkpoint_internal "$root" "$ticket" "$output"
+    ;;
   clean)
     root=""; [[ "${1:-}" == --root ]] && { root="${2:-}"; shift 2; } || usage
     [[ $# -eq 0 && -n "$root" ]] || usage
@@ -4689,6 +5093,13 @@ PY
     root="$(validate_lane "${2:-}")"; approve="${4:-}"
     [[ "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     run_product_internal "$root" "$approve"
+    ;;
+  __product-ticket-run)
+    [[ "${1:-}" == --root && "${3:-}" == --ticket &&
+       "${5:-}" == --approve-hash ]] || usage
+    root="$(validate_lane "${2:-}")"; ticket="${4:-}"; approve="${6:-}"
+    [[ "$ticket" =~ ^T-[0-9]+$ && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
+    run_product_internal "$root" "$approve" 1 "$ticket"
     ;;
   __product-export)
     [[ "${1:-}" == --root ]] || usage

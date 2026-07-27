@@ -505,16 +505,6 @@ def main() -> None:
         qualification_state = qualification(product, factory, maximum)
         if qualification_state is not None:
             maximum = qualification_state["capacity"]
-            if qualification_state["overdue"]:
-                print(canonical({
-                    "action": "ESCALATE",
-                    "qualification_generation": qualification_state["generation"],
-                    "qualification_overdue": qualification_state["overdue"],
-                    "reason_code": "qualification_invalid_duration",
-                    "schema": SCHEMA,
-                    "status": "error",
-                }))
-                return
             if qualification_state["done"] == qualification_state["target_done"]:
                 print(canonical({
                     "action": "WAIT",

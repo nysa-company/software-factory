@@ -77,21 +77,27 @@ the Factory never waits on a login prompt or starts an unauthenticated task.
 Retained-product resumes run that probe before hashing the plan and again
 before validating it for execution; the internal run reuses the second result
 instead of immediately probing the same session a third time.
-Every failed role attempt is terminal and charged conservatively. The scheduler
-does not retry automatically, including for a pre-submission authentication or
-model-availability miss. After the lane drains it reports the failed ticket set
-and an exact `product-resume-plan` command as the next control step, together
-with the failed stage, completed roles, remaining ticket budget, and retained
-root. That explicit same-lane resume revalidates readiness, evidence, clean
-heads, routes, effective envelopes, budget day, and the mechanical next stage
-before issuing a new one-use approval. A targeted resume resolves a stage and
-claims a lease only for its selected tickets. Excluded original siblings may remain
-unfinished or blocked; their clean heads, local origins, trees, ticket files,
-route plans, and runtime evidence remain hash-bound, so they cannot drift and a
-later resume can select a different subset from the original ticket set. An
-effective envelope is the owner-only regular ticket override when present or
-the lane's global envelope otherwise; unsafe overrides refuse planning. Every
-batch also writes an owner-only timing report with
+Every failed role attempt is terminal and charged conservatively. Planning
+issues an independent one-use approval for every ticket. The deterministic
+controller starts or resumes one ticket with `product-ticket-run` and
+`product-ticket-resume-plan`; a sibling may remain active because approval,
+stage recovery, lease ownership, and timing evidence are ticket-scoped.
+`product-ticket-pause` records a ticket-only stop boundary and, when a role is
+active, uses the existing identity-bound cancellation protocol. It returns
+only after that ticket's reservation, process record, run claim, and lease
+have drained; resume removes the pause record after the same selected-ticket
+proof.
+
+An exact failed role may be retried once for a transient boundary. A third
+submission at the same role and Git head is refused when the two preceding
+failures have the same terminal reason and output digest; this is a
+no-progress guard, not an attempt ceiling.
+
+The older batch `product-run` and `product-resume-plan` commands remain
+compatibility paths for cohorts of at most four, but are not the rolling-work
+control path. An effective envelope is the owner-only regular ticket override
+when present or the generation's global envelope otherwise; unsafe overrides
+refuse planning. Every ticket run writes an owner-only timing report with
 coordinator admission/GO/submission/terminal timestamps, elapsed time,
 successful-role replay count, and maximum provider overlap.
 
@@ -117,13 +123,11 @@ and role process drain. A selected-ticket `product-export` checks only that
 ticket's provider attempts, lease, claim, head, evidence, and worktree, so an
 approved sibling can be exported while another ticket continues.
 
-The product scheduler launches every eligible ticket without interpreting
-provider capacity. The coordinator owns atomic admission and may wait up to
-fifteen minutes only for transient concurrency capacity in this marker-bound
-development lane. The runner keeps the ticket lease heartbeat active and
-releases the product launch lock while waiting, then reacquires it and
-revalidates controls before proceeding. Budget, policy, identity, and rate
-denials remain immediate. Development activation permits four calls for one
+The Git-authored dispatcher determines eligibility, including hard
+`Depends-On` gates. The deterministic controller launches at most four
+eligible ticket workers and refills a released slot. The existing coordinator
+owns atomic provider admission; budget, policy, identity, and rate denials
+remain immediate. Development activation permits four calls for one
 Codex, native Claude, or Cursor account after the real-provider canary
 validated that ceiling. Each concurrent Cursor
 attempt receives an owner-only home, configuration directory, data directory,
@@ -131,10 +135,9 @@ temporary directory, and credential copy, so an unrelated legacy scratch
 bridge neither disables Cursor nor blocks product planning. Legacy serialized
 Cursor lanes retain their existing fail-closed bridge claim.
 
-A newly rolled product lane waits up to two minutes for an already-active
-subscription call to drain before consuming its one-use approval. This bounded
-start retry does not submit, reserve, or reinterpret a failed role; a call
-still active at the deadline leaves the approval unused and fails closed.
+A new ticket run does not wait for unrelated provider processes to become
+globally idle. The coordinator and dispatch leases enforce the four-call
+ceiling, and a ticket approval remains unused when its own launch is refused.
 
 Contract 1.7 Reviewer reconciliation stores the adapter-normalized signed
 review as quoted ticket evidence before its canonical verdict and repair
@@ -167,7 +170,14 @@ accounting override. Neither path reads or changes the host production cap.
 
 ## Isolated product proof and resume
 
-`product-plan` accepts one to four tickets after the dedicated four-call mock and subscription proofs establish the capacity ceiling. A seeded retry may select one to four unfinished tickets, so completed siblings are not rerun. The source must be a clean isolated worktree; the canonical Nysa checkout is refused. The lane clones it into a private product, replaces its remote with a local bare origin, and has no GitHub or Linear route.
+`product-plan` may register one to ten tickets for a generation after the
+dedicated four-call mock and subscription proofs establish the active capacity
+ceiling. Registration is not durable ticket ownership: at most four
+ticket-scoped workers may run, and a portable ticket passport may move one
+ticket to a successor sandbox. The source must be a clean isolated worktree;
+the canonical Nysa checkout is refused. The lane clones it into a private
+product, replaces its remote with a local bare origin, and has no GitHub or
+Linear route.
 Fresh planning resets each selected ticket to `Ready` and removes prior
 canonical Spec-lint verdict, Reviewer verdict, and repair-owner control lines
 before the new role sequence begins. Historical prose and quoted signed-review
@@ -185,16 +195,18 @@ and Narrator see Review. Any mismatch stops that ticket before provider GO.
 
 Seeded retries require an owner-only, single-link accounting manifest bound to the exact seed-bundle digest and approved base SHA. They also require an owner-only lineage record in one shared artifact directory; it binds the manifest digest, a lineage ID derived from the base and complete historical ticket set, and the previous manifest digest. Create it only with `product-seed-lineage --accounting <manifest> --output <new-record>`; add `--parent-accounting <previous-manifest>` for a successor. The helper requires all artifacts to share one owner-only directory and will not overwrite a record. Caller-selected IDs are rejected. An atomic lineage-head advance permits exactly one child of a cumulative accounting snapshot, so separately authorized sibling lanes cannot both spend from stale totals. A busy, reused, detached, or stale lineage stops before lane creation. Its full historical ticket map is retained even when only a subset resumes. A seed resets role sequencing to `Ready` and discards prior role verdict lines because runtime role evidence is lane-bound and cannot be inferred safely from Git history alone. V2 keeps the default $100 ticket and $500 aggregate ceilings; an explicit operator-authored v3 record permits only the bounded $200 ticket and $700 aggregate development-proof ceilings. V4 permits an operator-authored per-ticket cap map up to $350 per ticket with an exact $1,000 or $1,500 aggregate ceiling. V3 and V4 also bind one authorization nonce and UTC budget day; planning consumes that nonce through the same lineage transaction, and day drift stops before reservation. Prior reservations reduce both limits, and the resulting per-ticket envelope remains the coordinator's atomic admission cap. Missing history, reuse, an exhausted selected ticket, aggregate exhaustion, unauthorized limits, bundle/base/lineage drift, duplicate tickets, seeded symlinks or submodules, and unsafe ticket files fail before provider execution.
 
-When a corrected development kit must replace the kit pinned by a drained
-failed lane, `product-checkpoint-export` may retain only the exact successful
-Contract 1.7 prefix before Reviewer. The owner-only checkpoint binds the old
-kit, base, trusted local branch heads, route evidence, successful manifests and
-outputs, and the aggregate seed bundle. Wrapper-failed attempts are charged but
-never carried as successful. A v5 accounting successor binds the checkpoint,
+When a corrected development kit must replace the pinned kit,
+`product-ticket-passport-export` (the single-ticket form of
+`product-checkpoint-export`) retains every exact successful Contract 1.7 role
+and the mechanically resolved next stage. Only the selected ticket must be
+drained; unrelated tickets may continue. The owner-only v2 passport binds the
+old kit, base, trusted local branch head, route evidence, successful manifests
+and outputs, and the seed bundle. Wrapper-failed attempts are charged but never
+carried as successful. A v5 accounting successor binds the passport,
 its full historical-ticket charges, its exact parent accounting digest, and a
 fresh authorization nonce; the lineage transaction consumes both the nonce and
 checkpoint digest once. Because checkpoint export cannot reserve or spend, a
-fully drained lane may export after its original UTC budget day ends; the v5
+drained ticket may export after its original UTC budget day ends; the v5
 successor still requires a fresh current-day authorization. A later product
 plan may import checkpoint records for
 only a subset of its tickets, leaving omitted tickets at the clean source
@@ -204,9 +216,9 @@ stage before issuing an approval. An authenticated checkpoint from the older
 development scheduler may advance from Ready only through the legal shared
 Planning and Building transitions before its next role. Imported Spec-linter verdicts remain an exact
 prefix of the ticket log; later current-lane verdicts are accepted only with
-matching successful current-lane ledger evidence. Reviewer and Narrator are
-never checkpointed and must run under the new kit before `product-export`
-succeeds.
+matching successful current-lane ledger evidence. Imported Reviewer, repair,
+and Narrator evidence likewise remains immutable, and execution resumes only
+at the passport's exact next role.
 
 Checkpoint evidence and its seed bundle both resolve ticket heads from the
 lane-local bare origin. Worktree remote-tracking refs are caches and never
@@ -215,8 +227,8 @@ checkpoint authority.
 Import also retains an owner-only exact copy of the source checkpoint. A later
 checkpoint export verifies that copy against the imported digest and
 product-source binding, then prepends its exact role records to the current
-lane's successful records. This permits another corrected kit to continue the
-same pre-Reviewer sequence without losing prior output hashes or replaying
+lane's successful records. This permits another corrected kit to continue from
+the exact recorded next stage without losing prior output hashes or replaying
 successful roles; copy drift, import drift, or a detached imported head refuses
 export.
 

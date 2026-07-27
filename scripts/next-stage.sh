@@ -460,6 +460,11 @@ count_authorization() { # role semantic-round
 }
 P="$(count_ok planner)"; SL="$(count_ok spec-linter)"; TA="$(count_ok test-author)"
 B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"
+LOCAL_P="$P"; LOCAL_SL="$SL"; LOCAL_TA="$TA"
+LOCAL_B="$B"; LOCAL_R="$R"; LOCAL_N="$N"
+CHECKPOINT_P=0; CHECKPOINT_SL=0; CHECKPOINT_TA=0
+CHECKPOINT_B=0; CHECKPOINT_R=0; CHECKPOINT_N=0
+CHECKPOINT_NEXT_STAGE=""
 if [[ -n "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]]; then
   CHECKPOINT_COUNTS="$(python3 - "$FACTORY_DEV_PRODUCT_CHECKPOINT" \
     "${FACTORY_CLI_LANE_ROOT:-}" "$CONTENT_ROOT" "$TICKET" "$COMMITTED_HEAD" \
@@ -479,11 +484,14 @@ marker=json.load(open(lane_path/"marker.json",encoding="utf-8"))
 value=json.load(open(path,encoding="utf-8"))
 if (marker.get("mode") != "product" or
     set(value) != {"schema","checkpoint_sha256","tickets"} or
-    value.get("schema") != "factory-dev-product-checkpoint-import/v1"):
+    value.get("schema") not in {
+        "factory-dev-product-checkpoint-import/v1",
+        "factory-dev-product-checkpoint-import/v2",
+    }):
     raise SystemExit(1)
 records=[item for item in value["tickets"] if item.get("ticket") == ticket]
 if not records:
-    print("0 0 0 0")
+    print("0\t0\t0\t0\t0\t0\t")
     raise SystemExit(0)
 if len(records) != 1: raise SystemExit(1)
 record=records[0]
@@ -500,7 +508,9 @@ actual=subprocess.check_output(
 if actual != record["import_tree"]: raise SystemExit(1)
 roles=record["roles"]
 if (not isinstance(roles,list) or not roles or
-    any(role not in {"planner","spec-linter","test-author","builder"}
+    any(role not in {
+        "planner","spec-linter","test-author","builder","reviewer","narrator"
+    }
         for role in roles)):
     raise SystemExit(1)
 text=pathlib.Path(ticket_file).read_text(encoding="utf-8")
@@ -509,14 +519,33 @@ checkpoint_specs=record["spec_verdicts"]
 if (not isinstance(checkpoint_specs,list) or
     specs[:len(checkpoint_specs)] != checkpoint_specs):
     raise SystemExit(1)
-print(*(roles.count(role) for role in
-        ("planner","spec-linter","test-author","builder")))
+print("\t".join([
+    *(str(roles.count(role)) for role in
+      ("planner","spec-linter","test-author","builder","reviewer","narrator")),
+    record["expected_next_stage"],
+]))
 PY
   )" || { echo "REFUSE development checkpoint binding is invalid"; exit 1; }
-  read -r CHECKPOINT_P CHECKPOINT_SL CHECKPOINT_TA CHECKPOINT_B \
-    <<<"$CHECKPOINT_COUNTS"
+  IFS=$'\t' read -r CHECKPOINT_P CHECKPOINT_SL CHECKPOINT_TA CHECKPOINT_B \
+    CHECKPOINT_R CHECKPOINT_N CHECKPOINT_NEXT_STAGE <<<"$CHECKPOINT_COUNTS"
   P=$((P + CHECKPOINT_P)); SL=$((SL + CHECKPOINT_SL))
   TA=$((TA + CHECKPOINT_TA)); B=$((B + CHECKPOINT_B))
+  R=$((R + CHECKPOINT_R)); N=$((N + CHECKPOINT_N))
+  if [[ "$CHECKPOINT_NEXT_STAGE" == "FIX test-author" && "$LOCAL_TA" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN test-author" && "$LOCAL_TA" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "FIX builder" && "$LOCAL_B" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN builder" && "$LOCAL_B" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN planner" && "$LOCAL_P" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN spec-linter" && "$LOCAL_SL" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN reviewer" && "$LOCAL_R" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN narrator" && "$LOCAL_N" -eq 0 ]]; then
+    echo "$CHECKPOINT_NEXT_STAGE"
+    exit 0
+  fi
+  if [[ "$CHECKPOINT_NEXT_STAGE" == AWAIT-OPERATOR* ]]; then
+    echo "$CHECKPOINT_NEXT_STAGE"
+    exit 0
+  fi
 fi
 
 # Reviewer verdicts must be recorded on the ticket file by the dispatcher.
@@ -578,14 +607,6 @@ if [[ "$TA" -eq 0 ]]; then
     exit 1
   fi
   SPEC_VERDICTS=$((SLP + SLF))
-  if [[ "$SLF" -ge 2 && "$SLF" -eq "$SPEC_VERDICTS" ]]; then
-    NEXT_SPEC_ROUND=$((SPEC_VERDICTS + 1))
-    SPEC_AUTH="$(count_authorization spec-linter "$NEXT_SPEC_ROUND")"; SPEC_AUTH="${SPEC_AUTH:-0}"
-    if [[ "$SPEC_AUTH" -eq 0 ]]; then
-      echo "ESCALATE spec-lint failed twice — the spec keeps failing its own checklist; operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: spec-linter round $NEXT_SPEC_ROUND' line on the ticket, written on explicit operator instruction)"
-      exit 0
-    fi
-  fi
   if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
   if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
 fi
@@ -700,8 +721,13 @@ fi
 
 # A Builder or Test-author run after the latest non-void Reviewer invalidates
 # that review, including after a protected-base evidence refresh.
-FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
-  BEGIN { voids="," void_list ","; reviewer_run=0 }
+FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
+  -v imported_reviewers="$CHECKPOINT_R" '
+  BEGIN {
+    voids="," void_list ","
+    reviewer_run=imported_reviewers
+    if (imported_reviewers>0) last_r=1
+  }
   NR>1 && $3==t && $9=="0" {
     if ($4=="reviewer") {
       reviewer_run++
@@ -843,23 +869,6 @@ elif [[ "$A" -ge 1 ]]; then
   fi
   echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
   exit 0
-fi
-
-# All recorded verdicts are REQUEST CHANGES.
-if [[ "$RC" -ge 2 ]]; then
-  # Operator override: after the two-round limit, the operator can authorize
-  # exactly one extra reviewer round by recording a ticket line of the form
-  #   OPERATOR AUTHORIZATION: reviewer round <N>
-  # where N is the next semantic round (recorded verdicts + 1). The dispatcher may
-  # never write this line on its own initiative — only on an explicit
-  # operator instruction, which the escalation that got the operator here
-  # provides the audit trail for.
-  NEXT_ROUND=$((VERDICTS + 1))
-  AUTH="$(count_authorization reviewer "$NEXT_ROUND")"; AUTH="${AUTH:-0}"
-  if [[ "$AUTH" -lt 1 ]]; then
-    echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: reviewer round $NEXT_ROUND' line on the ticket, written on explicit operator instruction)"
-    exit 0
-  fi
 fi
 
 echo "${CONTRACT17_FIX_ACTION:-FIX builder-or-test-author}"

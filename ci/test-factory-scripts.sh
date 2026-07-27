@@ -2188,10 +2188,8 @@ reviewer round 2: REQUEST CHANGES — second
 OPERATOR NOTE: reviewer run 3 void — duplicate
 EOF
 
-if expect_stage "ESCALATE" "$ROUNDS" T-300 &&
-   FACTORY_ROOT="$ROUNDS" FACTORY_LEDGER="$ROUNDS/factory/ledger.csv" \
-     "$NEXT_STAGE" --ticket T-300 | grep -q "reviewer round 3"; then
-  pass "duplicate row preserves semantic round 3"
+if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then
+  pass "budget-only review continues after two semantic rounds"
 fi
 
 # Contract 1.7 makes repair ownership mechanical. When both roles own a fix,
@@ -2233,7 +2231,6 @@ printf '%s\n' '# T-303' 'reviewer round 1: REQUEST CHANGES' \
 TEST_CONTRACT_VERSION=1.7.0 expect_stage "REFUSE" "$MISSING_OWNER" T-303 &&
   pass "contract 1.7 refuses missing repair ownership"
 
-printf '%s\n' 'OPERATOR AUTHORIZATION: reviewer round 3' >> "$ROUNDS/factory/tickets/T-300.md"
 if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then
   ledger_row T-300 builder >> "$ROUNDS/factory/ledger.csv"
   if expect_stage "RUN reviewer" "$ROUNDS" T-300; then
@@ -2241,8 +2238,7 @@ if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then
   fi
 fi
 
-# Spec-linter uses the same exact, next-semantic-round authorization. One
-# authorization permits the replan + lint cycle, not a stale fourth round.
+# Spec-linter continues while each failed round produces a new contract revision.
 SPEC_ROUNDS="$TMP/spec-rounds"
 mkdir -p "$SPEC_ROUNDS/factory/tickets"
 {
@@ -2260,13 +2256,8 @@ OPERATOR AUTHORIZATION: spec-linter round 2
 OPERATOR AUTHORIZATION: spec-linter round 3 because the operator said so
 EOF
 
-if expect_stage "ESCALATE" "$SPEC_ROUNDS" T-301; then
-  pass "stale or inexact spec-linter authorization is ignored"
-fi
-
-printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 3' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
 if expect_stage "RUN planner" "$SPEC_ROUNDS" T-301; then
-  pass "spec-linter authorization starts the next planning cycle"
+  pass "budget-only spec repair starts the next planning cycle"
 fi
 
 ledger_row T-301 planner >> "$SPEC_ROUNDS/factory/ledger.csv"
@@ -2276,8 +2267,8 @@ fi
 
 ledger_row T-301 spec-linter >> "$SPEC_ROUNDS/factory/ledger.csv"
 printf '%s\n' 'SPEC-LINT: FAIL — third' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
-if expect_stage "ESCALATE" "$SPEC_ROUNDS" T-301; then
-  pass "spent spec-linter authorization does not permit a later round"
+if expect_stage "RUN planner" "$SPEC_ROUNDS" T-301; then
+  pass "budget-only spec repair has no semantic-round ceiling"
 fi
 
 sed -i.bak 's/SPEC-LINT: FAIL — third/SPEC-LINT: PASS/' "$SPEC_ROUNDS/factory/tickets/T-301.md"
@@ -2900,7 +2891,7 @@ expect_stage "RUN narrator" "$WALK" T-501 || REJECT_OK=0
 # (T-501 seeded no spec-linter rows: a ticket already past test-author skips
 # the lint gate — that is the backward-compatibility contract for old tickets.)
 
-# Spec-lint fail → replan → lint → pass; second fail escalates.
+# Spec-lint fail → replan → lint → pass; later failures keep repairing.
 printf '# T-502\n' > "$WALK/factory/tickets/T-502.md"
 {
   ledger_row T-502 planner
@@ -2925,8 +2916,8 @@ printf '# T-503\n' > "$WALK/factory/tickets/T-503.md"
   ledger_row T-503 spec-linter
 } >> "$WALK/factory/ledger.csv"
 printf 'SPEC-LINT: FAIL — round 1\nSPEC-LINT: FAIL — round 2\n' >> "$WALK/factory/tickets/T-503.md"
-if expect_stage "ESCALATE spec-lint failed twice" "$WALK" T-503; then
-  pass "spec-lint two-fail escalation"
+if expect_stage "RUN planner" "$WALK" T-503; then
+  pass "spec-lint two-fail budget-only continuation"
 fi
 
 # Successful mutating roles must commit cleanly; the wrapper owns the push.

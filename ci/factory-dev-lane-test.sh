@@ -38,6 +38,32 @@ expect_failure() {
   fi
 }
 
+eval "$(sed -n \
+  '/^write_product_ticket_approval()/,/^provision_product_databases()/p' \
+  "$LANE" | sed '$d')"
+APPROVALS="$TMP/runtime/product-ticket-approvals"
+mkdir -p "$TMP/runtime"
+APPROVAL_A="$(printf approval-a | shasum -a 256 | awk '{print $1}')"
+APPROVAL_B="$(printf approval-b | shasum -a 256 | awk '{print $1}')"
+write_product_ticket_approval "$TMP" T-1 "$APPROVAL_A" ||
+  fail "first ticket approval was not created"
+write_product_ticket_approval "$TMP" T-2 "$APPROVAL_B" ||
+  fail "sibling ticket approval was not created"
+consume_product_ticket_approval "$TMP" T-1 "$APPROVAL_A" ||
+  fail "ticket approval was not consumed"
+[[ ! -e "$APPROVALS/T-1" && -f "$APPROVALS/T-2" &&
+   -f "$APPROVALS/used/T-1-$APPROVAL_A" ]] ||
+  fail "ticket approval consumption affected its sibling"
+expect_failure "consumed ticket approval replay" \
+  consume_product_ticket_approval "$TMP" T-1 "$APPROVAL_A"
+write_product_ticket_pause "$TMP" T-2 ||
+  fail "ticket pause was not recorded"
+product_ticket_pause_requested "$TMP" T-2 ||
+  fail "ticket pause record was not recognized"
+clear_product_ticket_pause "$TMP" T-2 ||
+  fail "ticket pause record was not cleared"
+expect_failure "cleared ticket pause" product_ticket_pause_requested "$TMP" T-2
+
 test_env() {
   FACTORY_DEV_LANE_TEST_MODE=1 \
   FACTORY_TRUSTED_TEST_HARNESS=1 \
@@ -100,6 +126,56 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$FAKE_CURSOR"
+
+eval "$(sed -n \
+  '/^product_retry_has_progress()/,/^product_dependencies_satisfied()/p' \
+  "$LANE" | sed '$d')"
+RETRY_GATE="$TMP/retry-gate"
+mkdir -p "$RETRY_GATE/worktrees/T-9" "$RETRY_GATE/product/factory/runs"
+git -C "$RETRY_GATE/worktrees/T-9" init -q
+printf '%s\n' retry >"$RETRY_GATE/worktrees/T-9/input"
+git -C "$RETRY_GATE/worktrees/T-9" add input
+git -C "$RETRY_GATE/worktrees/T-9" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Retry basis'
+RETRY_HEAD="$(git -C "$RETRY_GATE/worktrees/T-9" rev-parse HEAD)"
+for retry_number in 1 2; do
+  printf '%s\n' "ticket=T-9" 'role=builder' \
+    "role_head_before=$RETRY_HEAD" 'accounting_state=abandoned_conservative' \
+    'exit_status=11' 'role_exit=provider_failed' 'output_sha256=same' \
+    "started_at=2026-07-27T00:00:0${retry_number}Z" \
+    >"$RETRY_GATE/product/factory/runs/retry-$retry_number.meta"
+done
+expect_failure "two identical no-progress retries" \
+  product_retry_has_progress "$RETRY_GATE" T-9 builder
+sed -i '' 's/output_sha256=same/output_sha256=changed/' \
+  "$RETRY_GATE/product/factory/runs/retry-2.meta"
+product_retry_has_progress "$RETRY_GATE" T-9 builder ||
+  fail "changed retry evidence was treated as identical"
+
+eval "$(sed -n \
+  '/^product_dependencies_satisfied()/,/^product_prepare_role_state()/p' \
+  "$LANE" | sed '$d')"
+DEPENDENCY_GATE="$TMP/dependency-gate"
+mkdir -p "$DEPENDENCY_GATE/worktrees/T-2/factory/tickets" \
+  "$DEPENDENCY_GATE/origin.git/factory/tickets"
+printf '%s\n' 'Depends-On: T-1' \
+  >"$DEPENDENCY_GATE/worktrees/T-2/factory/tickets/T-2.md"
+printf '%s\n' 'State: Done' \
+  >"$DEPENDENCY_GATE/origin.git/factory/tickets/T-1.md"
+git -C "$DEPENDENCY_GATE/origin.git" init -q
+git -C "$DEPENDENCY_GATE/origin.git" add factory
+git -C "$DEPENDENCY_GATE/origin.git" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Protected dependency'
+git -C "$DEPENDENCY_GATE/origin.git" branch -M main
+product_dependencies_satisfied "$DEPENDENCY_GATE" T-2 ||
+  fail "protected Done dependency was rejected"
+printf '%s\n' 'State: Review' \
+  >"$DEPENDENCY_GATE/origin.git/factory/tickets/T-1.md"
+git -C "$DEPENDENCY_GATE/origin.git" add factory
+git -C "$DEPENDENCY_GATE/origin.git" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Dependency is no longer terminal'
+expect_failure "nonterminal protected dependency" \
+  product_dependencies_satisfied "$DEPENDENCY_GATE" T-2
 
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
 LANE_PATH_REPO="$TMP/lane-path-repo"
@@ -1376,8 +1452,9 @@ provider_wait_source="$(sed -n '/^subscription_provider_wait()/,/^}/p' "$LANE")"
   expect_failure "bounded subscription provider wait" subscription_provider_wait 1
 ) || fail "subscription provider wait did not stop at its bound"
 product_scheduler_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()/p' "$LANE")"
-grep -Fq 'subscription_provider_wait 120' <<<"$product_scheduler_source" ||
-  fail "product lifecycle does not wait two minutes for a busy subscription provider"
+if grep -Fq 'subscription_provider_wait 120' <<<"$product_scheduler_source"; then
+  fail "product lifecycle still waits for unrelated subscription providers"
+fi
 printf '%s\n' "$product_role_source" |
   grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' ||
   fail "development product wait is not the bounded fifteen-minute policy"
@@ -1444,7 +1521,10 @@ grep -Fq '["lane_control_sha"]' <<<"$checkpoint_export_source" ||
   load_product_tickets() { PRODUCT_TICKETS=(T-997); }
   select_product_export_tickets() { PRODUCT_TICKETS=(T-997); }
   validate_runtime_paths() { :; }
-  product_resume_drained() { :; }
+  product_selected_drained() { :; }
+  write_product_stage_map() {
+    printf '%s\t%s\n' T-997 'RUN reviewer' >"$2"
+  }
   refuse_production_path() { :; }
   subscription_env() { :; }
   write_product_checkpoint() {
@@ -2289,8 +2369,11 @@ printf '%s\n' \
   "{\"kit_sha\":\"$CHAIN_T46_HEAD\",\"kit_tree\":\"$CHAIN_T46_TREE\"}" \
   >"$CHAIN_ROOT/marker.json"
 printf '%s\n' 'new chained bundle' >"$CHAIN_ROOT/seed.bundle"
+printf '%s\t%s\n' T-046 'RUN planner' T-048 'RUN reviewer' \
+  >"$CHAIN_ROOT/stages"
+chmod 600 "$CHAIN_ROOT/stages"
 write_product_checkpoint "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" \
-  "$CHAIN_ROOT/chained.json" T-046 T-048 ||
+  "$CHAIN_ROOT/chained.json" "$CHAIN_ROOT/stages" T-046 T-048 ||
   fail "checkpoint chaining rejected valid prior roles"
 python3 - "$CHAIN_ROOT/chained.json" "$CHAIN_SOURCE" "$CHAIN_NONCE" \
   "$CHAIN_T46_CURRENT_HEAD" <<'PY' ||
@@ -2306,7 +2389,7 @@ if (new["T-046"]["next_stage"] != "RUN planner" or
     new["T-048"]["next_stage"] != "RUN reviewer" or
     new["T-048"]["roles"] != old["T-048"]["roles"] or
     chained["lane_charges_micro_usd"] !=
-        {"T-045":0,"T-046":7000000,"T-047":0,"T-048":0} or
+        {"T-045":0,"T-046":18000000,"T-047":0,"T-048":13000000} or
     chained["prior_accounting_sha256"] != sys.argv[3]):
     raise SystemExit(1)
 PY
@@ -2335,14 +2418,15 @@ printf '%s\n' 'ticket,role,run_id,exit_status' \
 printf '%s\n' 'second chained bundle' >"$CHAIN_ROOT/seed-2.bundle"
 chmod 600 "$CHAIN_ROOT/seed-2.bundle"
 write_product_checkpoint "$CHAIN_ROOT" "$CHAIN_ROOT/seed-2.bundle" \
-  "$CHAIN_ROOT/chained-2.json" T-046 T-048 ||
+  "$CHAIN_ROOT/chained-2.json" "$CHAIN_ROOT/stages" T-046 T-048 ||
   fail "second targeted checkpoint chain lost its full accounting universe"
 python3 - "$CHAIN_ROOT/chained-2.json" <<'PY' ||
 import json, sys
 value=json.load(open(sys.argv[1],encoding="utf-8"))
 if (set(value["lane_charges_micro_usd"]) !=
         {"T-045","T-046","T-047","T-048"} or
-    any(value["lane_charges_micro_usd"].values())):
+    value["lane_charges_micro_usd"] !=
+        {"T-045":0,"T-046":18000000,"T-047":0,"T-048":13000000}):
     raise SystemExit(1)
 PY
   fail "second targeted checkpoint did not retain four-ticket charge keys"
@@ -2353,7 +2437,7 @@ CHAIN_SECOND_SHA="$(sha256_file "$CHAIN_ROOT/chained-2.json")"
 CHAIN_SECOND_BUNDLE_SHA="$(sha256_file "$CHAIN_ROOT/seed-2.bundle")"
 CHAIN_V5="$CHAIN_ROOT/accounting-v5.json"
 printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-seed-accounting/v5\",\"seed_bundle_sha256\":\"$CHAIN_SECOND_BUNDLE_SHA\",\"checkpoint_sha256\":\"$CHAIN_SECOND_SHA\",\"parent_manifest_sha256\":\"$CHAIN_NONCE\",\"checkpoint_charges_micro_usd\":{\"T-045\":0,\"T-046\":0,\"T-047\":0,\"T-048\":0},\"base_sha\":\"$CHAIN_T46_HEAD\",\"ticket_caps_micro_usd\":{\"T-045\":350000000,\"T-046\":350000000,\"T-047\":350000000,\"T-048\":350000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$CHAIN_NONCE\",\"budget_day\":\"$(date -u +%F)\",\"reserved_micro_usd\":{\"T-045\":0,\"T-046\":0,\"T-047\":0,\"T-048\":0}}" \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v5\",\"seed_bundle_sha256\":\"$CHAIN_SECOND_BUNDLE_SHA\",\"checkpoint_sha256\":\"$CHAIN_SECOND_SHA\",\"parent_manifest_sha256\":\"$CHAIN_NONCE\",\"checkpoint_charges_micro_usd\":{\"T-045\":0,\"T-046\":18000000,\"T-047\":0,\"T-048\":13000000},\"base_sha\":\"$CHAIN_T46_HEAD\",\"ticket_caps_micro_usd\":{\"T-045\":350000000,\"T-046\":350000000,\"T-047\":350000000,\"T-048\":350000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$CHAIN_NONCE\",\"budget_day\":\"$(date -u +%F)\",\"reserved_micro_usd\":{\"T-045\":0,\"T-046\":18000000,\"T-047\":0,\"T-048\":13000000}}" \
   >"$CHAIN_V5"
 chmod 600 "$CHAIN_V5"
 validate_product_seed_accounting "$CHAIN_V5" "$CHAIN_ROOT/seed-2.bundle" \
@@ -2376,13 +2460,15 @@ CHAIN_ROGUE_HEAD="$(printf 'detached checkpoint head\n' | \
 sed "s/\"import_head\":\"$CHAIN_IMPORTED_T46_HEAD\"/\"import_head\":\"$CHAIN_ROGUE_HEAD\"/" \
   "$CHAIN_IMPORT.good" >"$CHAIN_IMPORT"
 expect_failure "detached imported checkpoint head" write_product_checkpoint \
-  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/detached.json" T-046 T-048
+  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/detached.json" \
+  "$CHAIN_ROOT/stages" T-046 T-048
 mv "$CHAIN_IMPORT.good" "$CHAIN_IMPORT"
 cp "$CHAIN_ROOT/runtime/product-checkpoint-source.json" \
   "$CHAIN_ROOT/runtime/product-checkpoint-source.good"
 printf '\n' >>"$CHAIN_ROOT/runtime/product-checkpoint-source.json"
 expect_failure "altered retained checkpoint source" write_product_checkpoint \
-  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/altered.json" T-046 T-048
+  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/altered.json" \
+  "$CHAIN_ROOT/stages" T-046 T-048
 mv "$CHAIN_ROOT/runtime/product-checkpoint-source.good" \
   "$CHAIN_ROOT/runtime/product-checkpoint-source.json"
 

@@ -65,18 +65,30 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   lanes retain their cumulative accounting override and host production caps
   remain untouched.
 - Retained-product resumes stabilize lane-local subscription readiness before planning and before execution validation. The internal run reuses that execution proof, while each pinned role still verifies its exact route before reservation or task submission.
-- The development product scheduler never retries a failed role automatically. A drained failure reports the exact ticket set and hands control to `product-resume-plan`, which revalidates the retained lane and issues a fresh one-use approval before the same mechanical stage may run again. Targeted resume resolves stages and takes leases only for selected tickets while hash-binding every original sibling's clean Git and evidence state, including its owner-only ticket envelope or the effective global fallback; later resumes may choose another original subset.
+- Development planning issues one approval per ticket. The deterministic
+  controller uses `product-ticket-run` and `product-ticket-resume-plan`, so a
+  failed ticket resolves and resumes its exact mechanical stage without
+  requiring sibling drain or hash-binding sibling worktrees. The older batch
+  run/resume path remains compatibility-only.
 - A failed mutating development role may leave clean commits ahead of the trusted isolated origin. Explicit resume archives only an exact latest `provider_failed` linear history under a diagnostic ref and owner-only receipt, restores the unchanged trusted tip, and reruns that failed role; its terminal charge and failed manifest remain immutable.
 - Development product roles use the shared trusted ticket-state transition path before provider GO: Planner/Spec-linter run in Planning, Test-author/Builder in Building, and Reviewer/Narrator in Review. Authenticated legacy checkpoints may advance from Ready only through those legal forward states; mismatch refuses only that ticket.
 - The disposable lane also has a four-ticket mock-concurrency mode. It reuses the transactional coordinator and CLI runtime with one activated mock account, proves four-way provider overlap and reservation drain, then completes four synthetic role lifecycles; every runtime input must resolve beneath the validated owner-only lane root.
-- Fresh isolated product proofs still require four tickets; a seeded retry may select one to four unfinished tickets from an owner-only bundle. Its accounting manifest binds the exact bundle and base, carries the full historical reservation map, and reduces both selected-ticket and aggregate lane budgets. The trusted helper derives a stable lineage identity from that base and full ticket set; its owner-only record atomically advances one shared cumulative manifest head, preventing two fresh lanes from choosing different IDs or spending from the same parent snapshot. V2 retains $100/$500 defaults; operator-authored v3 permits only the explicitly approved $200/$700 development ceilings and consumes one nonce on one fixed UTC day before lane creation. Canonical product sources, duplicates, seeded symlinks/submodules, stale accounting siblings, and partial lease-claim residue fail closed.
+- A development generation may register one to ten tickets while the existing
+  dispatch leases and provider coordinator cap active work at four. Its
+  accounting manifest binds the exact bundle and base, carries the full
+  historical reservation map, and reduces both selected-ticket and aggregate
+  budgets. Ticket registration is not durable lane ownership.
 - Seed accounting CAS is consumed only after lane construction and planning succeed, while approval output is still withheld. A construction failure retains an unconsumed diagnostic lane; a CAS loser is cleaned without exposing a runnable root.
-- A drained Contract 1.7 development lane may export a one-use pre-Reviewer checkpoint to a newer development kit. Only exact successful Planner-through-Builder prefixes are carried; failed attempts remain charged but are rerun, omitted tickets restart at the source boundary, Reviewer and Narrator always rerun, and v5 seed accounting atomically binds the checkpoint plus the full historical ticket spend. Import recognizes the trusted model pin's atomic route-plan plus ticket `Kit-SHA` commit, discards that stale control evidence, writes the current development kit binding, and retains an exact owner-only checkpoint copy so another corrected-kit export can prepend the prior role records after verifying its digest, import binding, and head ancestry.
+- A drained ticket may export a one-use v2 passport while unrelated tickets
+  remain active. It carries every exact successful role, including Reviewer or
+  Narrator, plus the exact next stage; failed attempts remain charged and are
+  never promoted. V5 seed accounting binds the passport and full historical
+  spend, allowing the ticket to resume under a successor kit without replay.
 - Imported checkpoint Spec-linter verdicts are an immutable prefix, not the complete future ticket history. Current-lane verdicts may extend that prefix only when the ordinary current-lane ledger count authenticates each addition.
 - Development product export projects only the latest successful Reviewer's non-`factory/` tree changes and rejects later product drift. Exact bundles retain detailed role/retry/audit history but are never applied to canonical product branches; the canonical mailbox deterministically emits one pure final-test commit before one pure implementation commit with the same reviewed application tree. Unsafe or empty strata fail closed, preventing lane controls, route pins, sibling tickets, and unreviewed Narrator metadata from escaping.
 - Development product export keeps `root/export` as its default and accepts a distinct new owner-only lane-local output for a later sibling. Every output is an atomic claim outside sensitive lane subtrees; existing, symlinked, outside, or failed targets cannot accumulate or overwrite artifacts.
-- Contract 1.7 adds owner-activated subscription-CLI concurrency through the existing transactional coordinator. Activation v2 binds the exact allowed CLI route tuple and canonical provider-policy digest, permits Codex and native Claude account capacity through four, and keeps Cursor capped at two. Every concurrent native-Claude attempt receives an owner-only lane-local home, config, temporary directory, and credential copy removed only after process-group drain. Contract 1.6 accepts only API activation v1, and missing or invalid activation remains serialized. The marker-bound development lane may use coordinator-owned bounded pre-GO waiting for transient concurrency denial for up to fifteen minutes while its lease heartbeat runs and the product launch lock is released; budget and permanent denials remain immediate. Role instructions use worktree-relative database-environment paths, and a shared fail-closed sentinel rejects newly added absolute `nysa-sf-dev.*` paths before trusted-host push and at both checkpoint boundaries. Seed import authenticates the old linear lane-control boundary before excluding its Factory-owned path rewrite from that scan; every later route and role commit remains scanned, and replay preserves the new lane's configuration.
-- A newly rolled Contract 1.7 product lane waits up to two minutes for an active subscription call before consuming approval. Reviewer reconciliation persists the normalized signed review as quoted ticket evidence; repair roles and round 2 are explicitly bound to that latest detail instead of reconstructing or substituting another concern.
+- Contract 1.7 adds owner-activated subscription-CLI concurrency through the existing transactional coordinator. Activation v2 binds the exact allowed CLI route tuple and canonical provider-policy digest and permits capacity four for Cursor, Codex, and native Claude. Every concurrent attempt receives an owner-only lane-local home, config, temporary directory, and credential copy removed only after process-group drain. Contract 1.6 accepts only API activation v1, and missing or invalid activation remains serialized. Budget and permanent denials remain immediate. Role instructions use worktree-relative database-environment paths, and a shared fail-closed sentinel rejects newly added absolute `nysa-sf-dev.*` paths before trusted-host push and at both passport boundaries.
+- A product ticket consumes only its own approval and never waits for unrelated global provider idleness. Reviewer reconciliation persists the normalized signed review as quoted ticket evidence; every named repair and rereview is bound to that latest detail instead of reconstructing or substituting another concern.
 - The PR-less development Narrator accepts backend-only N/A evidence and
   retains visual tickets with exact `Deferred — publication visual gate`
   markers in Preview and Screenshots. Deferred criteria are not passes; the
@@ -792,3 +804,17 @@ calls under the existing global ceiling. Development product lanes and
 activation validation use that same four-call limit; per-attempt homes,
 configuration, data, temporary files, credentials, process groups, and trusted
 terminalization remain mandatory.
+
+## 2026-07-27 — Decision 35: Tickets are portable controller-owned work
+
+Category: System change
+
+Sandbox tickets are not durable children of an execution lane. Git-authored
+state and a v2 ticket passport own lifecycle continuity; a lane is a
+replaceable execution cell. The deterministic controller issues ticket-scoped
+approvals, hard-gates protected dependencies, runs at most four workers, and
+refills released capacity without waiting for sibling drain. Per-ticket and
+aggregate budgets remain the delivery limits. Ticket wall-clock, attempt, Spec,
+and Reviewer round caps are removed; provider-call timeout and exact
+no-progress retry refusal remain safety controls. Systemic failures are tracked
+in `docs/evidence/software-factory-improvement-log.md`.
