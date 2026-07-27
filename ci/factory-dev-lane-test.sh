@@ -930,6 +930,9 @@ grep -Fq 'exit "$status"'\'' EXIT' \
   eval "$(sed -n '/^validate_product_export_output()/,/^select_product_export_tickets()/p' \
     "$LANE" | sed '$d')"
   eval "$(sed -n '/^select_product_export_tickets()/,/^}/p' "$LANE")"
+  eval "$(sed -n \
+    '/^product_selected_drained()/,/^product_ticket_pause_internal()/p' \
+    "$LANE" | sed '$d')"
   eval "$export_internal_source"
 
   SEQUENTIAL_ROOT="$TMP/nysa-sf-dev.sequential-export"
