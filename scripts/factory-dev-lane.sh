@@ -3625,7 +3625,6 @@ product_transition_contract_blocked() {
 
 product_reconcile_reviewer() {
   local root="$1" ticket="$2" lease="${3:-}"
-  local -a checkpoint_env=()
   [[ "$lease" =~ ^[0-9a-f]{64}$ ]] || return 1
   python3 - "$root/product/factory/runs" "$ticket" <<'PY' || return 0
 import pathlib, sys
@@ -3640,15 +3639,18 @@ for path in runs.glob("*.meta"):
         raise SystemExit(0)
 raise SystemExit(1)
 PY
-  [[ ! -f "$root/runtime/product-checkpoint-import.json" ]] ||
-    checkpoint_env=(
-      FACTORY_DEV_PRODUCT_CHECKPOINT="$root/runtime/product-checkpoint-import.json"
-    )
-  lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
-    "${checkpoint_env[@]}" \
-    "$SOURCE_ROOT/scripts/ticket-state.sh" \
-    --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
-    --action reviewer-reconcile >/dev/null
+  if [[ -f "$root/runtime/product-checkpoint-import.json" ]]; then
+    lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+      FACTORY_DEV_PRODUCT_CHECKPOINT="$root/runtime/product-checkpoint-import.json" \
+      "$SOURCE_ROOT/scripts/ticket-state.sh" \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+      --action reviewer-reconcile >/dev/null
+  else
+    lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+      "$SOURCE_ROOT/scripts/ticket-state.sh" \
+      --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
+      --action reviewer-reconcile >/dev/null
+  fi
 }
 
 product_resume_reason() {
