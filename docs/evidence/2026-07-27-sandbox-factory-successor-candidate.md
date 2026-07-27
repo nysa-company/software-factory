@@ -9,13 +9,15 @@
   - `655020b610fffe73b005679cba86b91e3cc92469`
   - `5d611470182614f26fccc61eb751360dfc27c473`
   - `c64a9247d566198803ff429f24535bfd057c2618`
-- Current successor: `805de58e2d5c9a9730ee790a0d2d19cc4cb17671`
+  - `805de58cd6be311cbe2046da3a62a5d73be8ad85`
+- Current successor: `39240c4fcdd18e4cc274f878d70de6bb14189f51`
 - Focused verification:
-  - `bash ci/ticket-state-test.sh` — PASS at the current successor
+  - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `805de58`
+  - `python3 ci/cursor-stream-test.py` — PASS at the current successor
   - `bash ci/factory-dev-lane-test.sh` — PASS at intermediate successor
     `c64a924`
 
-The successor fixes seven Factory-core defects found after the first roles of
+The successor fixes eight Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
@@ -31,7 +33,10 @@ the proposed final four had started:
 6. a selected completed ticket may export after its ticket approval is
    consumed even though the unused compatibility batch approval remains inert;
 7. a retained lane's authenticated contract blocker is bound to the immutable
-   Factory checkout that executed it, not a later qualification candidate.
+   Factory checkout that executed it, not a later qualification candidate;
+8. Reviewer reconciliation normalizes the same named-shell callback form that
+   the trusted Cursor role wrapper accepted, preserving one canonical verdict
+   and repair owner.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.

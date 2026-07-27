@@ -888,3 +888,12 @@ contract-blocked role is validated against the immutable Factory checkout that
 executed the lane. A later successor-candidate selection cannot invalidate an
 older unaffected ticket's pinned failure evidence; a manifest from any other
 Factory SHA still fails closed.
+
+## 2026-07-27 — Decision 42: Reviewer callbacks have one canonical verdict
+
+Category: System change
+
+The trusted Reviewer parser normalizes Cursor's named background-shell callback
+only when a later summary repeats the same Request-changes verdict and repair
+owner. The role wrapper and reconciliation therefore consume the same
+authenticated result; contradictory or ownerless callbacks still fail closed.

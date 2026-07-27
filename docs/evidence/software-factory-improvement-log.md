@@ -357,8 +357,32 @@ Smallest change: bind the failure manifest to the controller checkout's exact
 Git SHA while retaining protected qualification membership and every existing
 role, state, exit, and accounting check.
 Validation: `bash ci/ticket-state-test.sh` passes at executable candidate
-`805de58e2d5c9a9730ee790a0d2d19cc4cb17671`, including stale-successor and
+`805de58cd6be311cbe2046da3a62a5d73be8ad85`, including stale-successor and
 unpinned-role cases.
+
+## FI-20260727-021 — Reviewer callback normalization diverged from reconciliation
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, T-083 Reviewer round 2
+Impact: the trusted role wrapper accepted one Request-changes verdict, but
+Reviewer reconciliation refused the same authenticated output and could not
+route the named Test-author repair
+Evidence:
+- manifest `1785152416-67411.meta` records a successful, accounted Reviewer
+- its Cursor stream repeats the final verdict only as a late background-shell
+  callback and consistent `FIX-OWNER: test-author` restatement
+- resume stopped with
+  `contract 1.7 request changes requires exactly one FIX-OWNER`
+Root cause: the shared verdict parser recognized backtick-first callback text
+but not Cursor's observed `background shell (the first ...)` wording and
+`My round-2 verdict stands` summary.
+Smallest change: extend the existing callback/summary normalization patterns;
+retain the later-summary and identical-owner checks.
+Validation: all 24 focused Cursor-stream tests pass at executable candidate
+`39240c4fcdd18e4cc274f878d70de6bb14189f51`, and the exact T-083 output now
+parses as one `REQUEST CHANGES` / `test-author` result.
 
 ## Maintenance rule
 
