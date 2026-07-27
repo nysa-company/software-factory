@@ -369,6 +369,12 @@ the complete bytes or hash of unrelated shared files, ban all references to a
 concept outside the owned module, or make a sibling merge invalidate correct
 behavior.
 
+When protected CI fails after a portable ticket reached operator-await, record
+the exact Actions job as `PUBLICATION FAILURE: <job-url>` and name only its
+owning `OPERATOR PUBLICATION REPAIR: test-author|builder`. Resume that ticket
+from its authenticated checkpoint. Preserve imported roles; require a fresh
+Reviewer and Narrator before exporting the replacement publication strata.
+
 ### Budget handling
 
 - Keep the product's $1,500 daily envelope visible.

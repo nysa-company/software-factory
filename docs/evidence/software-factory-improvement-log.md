@@ -407,6 +407,33 @@ Validation: all 25 focused Reviewer/Cursor tests pass at executable candidate
 `4e68e0b11d18c55c24c5a75d6f556727337d37f3`; the exact T-083 evidence
 reconciles to `FIX test-author`.
 
+## FI-20260727-023 — Protected CI could not reopen a completed checkpoint
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-27, T-081 protected publication
+Impact: T-081 reached operator-await and exported without replay, but a stale
+sibling-owned protected test failed after publication and the Factory had no
+authenticated route back to its owning Test-author.
+Evidence:
+- PR 222 failed only
+  `apps/web/tests/meetings-page.test.tsx` criterion 10 after T-081 replaced the
+  old detail placeholder with its approved Meeting detail page
+- the imported checkpoint's exact next stage remained `AWAIT-OPERATOR`
+- the existing `OPERATOR RESUME` trigger correctly required a prior
+  contract-blocked role and could not authenticate this publication failure
+Root cause: operator-await checkpoints were terminal to development sequencing
+even when protected GitHub CI supplied a new, exact role-owned repair.
+Smallest change: accept one exact GitHub Actions job URL plus one named
+`OPERATOR PUBLICATION REPAIR` directive on an authenticated operator-await
+checkpoint; run only Builder or Test-author, then require fresh Reviewer and
+Narrator evidence.
+Validation: shell syntax checks, the focused publication-repair parser
+fixture, and the focused checkpoint sequence
+`AWAIT → Test-author → Reviewer → Narrator → AWAIT` pass at executable
+candidate `48478c8f5a9d4181e83d6352c535d6839a34bef5`.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

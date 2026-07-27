@@ -11,14 +11,18 @@
   - `c64a9247d566198803ff429f24535bfd057c2618`
   - `805de58cd6be311cbe2046da3a62a5d73be8ad85`
   - `39240c4fcdd18e4cc274f878d70de6bb14189f51`
-- Current successor: `4e68e0b11d18c55c24c5a75d6f556727337d37f3`
+  - `4e68e0b11d18c55c24c5a75d6f556727337d37f3`
+- Current successor: `48478c8f5a9d4181e83d6352c535d6839a34bef5`
 - Focused verification:
   - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `805de58`
-  - `python3 ci/cursor-stream-test.py` — PASS at the current successor
+  - `python3 ci/cursor-stream-test.py` — PASS at intermediate successor
+    `4e68e0b`
   - `bash ci/factory-dev-lane-test.sh` — PASS at intermediate successor
     `c64a924`
+  - publication-repair parser and checkpoint sequencing fixtures — PASS at
+    the current successor
 
-The successor fixes nine Factory-core defects found after the first roles of
+The successor fixes ten Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
@@ -40,7 +44,11 @@ the proposed final four had started:
    and repair owner;
 9. unmatched Reviewer evidence remains valid across an ancestor chain confined
    to that ticket's operator-owned documentation, while any source, test, or
-   other-file change still fails closed.
+   other-file change still fails closed;
+10. a protected-CI failure can reopen an authenticated operator-await
+    checkpoint for exactly its named Builder or Test-author repair, then
+    requires fresh Reviewer and Narrator evidence before returning to
+    operator-await.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.

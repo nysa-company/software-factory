@@ -906,3 +906,13 @@ Unmatched Reviewer evidence may reconcile at a descendant head only when every
 change since the reviewed head is confined to that ticket's Markdown document.
 The reviewed local and remote heads must still match exactly. Product, test,
 configuration, or unrelated-document drift invalidates the evidence.
+
+## 2026-07-27 — Decision 44: Protected CI reopens only the owning repair
+
+Category: System change
+
+An authenticated operator-await checkpoint may resume after protected GitHub
+CI fails only when the ticket records one exact Actions job URL and names
+Builder or Test-author with `OPERATOR PUBLICATION REPAIR`. The checkpoint keeps
+all imported successful roles; the named repair runs once, then fresh Reviewer
+and Narrator evidence is required before operator-await can recur.
