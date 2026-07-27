@@ -772,6 +772,41 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# Contract 1.8 readiness is deterministic and runs before provider probing.
+READINESS="$TMP/readiness"
+mkdir -p "$READINESS/app/tests" "$READINESS/factory/tickets" \
+  "$READINESS/factory/initiatives"
+write_ready_ticket "$READINESS" "T-110"
+printf '%s\n' \
+  'Product-Decisions: frozen' \
+  'Fixture-Seams: app/tests/fixture.js' \
+  'Authentication-Seams: none' \
+  'Protected-Test-Conflicts: none' \
+  >> "$READINESS/factory/tickets/T-110.md"
+printf '%s\n' 'export const fixture = true;' > "$READINESS/app/tests/fixture.js"
+init_git_repo "$READINESS"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-pass.out" &&
+   grep -qx 'READINESS PASS' "$TMP/readiness-pass.out"; then
+  echo "PASS: contract 1.8 provider-free readiness passes executable seams"
+else
+  echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
+  FAILURES=$((FAILURES + 1))
+fi
+sed 's/Product-Decisions: frozen/Product-Decisions: unresolved/' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-blocked.out"; then
+  echo "FAIL: contract 1.8 readiness accepted unresolved product decisions"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'product decisions are not frozen' "$TMP/readiness-blocked.out"; then
+  echo "PASS: contract 1.8 readiness blocks unresolved product decisions"
+else
+  echo "FAIL: contract 1.8 readiness returned an unexpected refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+
 if [[ $FAILURES -eq 0 ]]; then
   echo "preflight-test: all cases passed"
   exit 0

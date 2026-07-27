@@ -88,6 +88,17 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 
+if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]]; then
+  if [[ -z "$WORKDIR" ]] ||
+     ! python3 -B "$KIT_DIR/scripts/ticket-readiness.py" \
+       --ticket "$TICKET" --workdir "$CONTENT_ROOT"; then
+    fail "provider-free ticket readiness contract is not executable"
+    echo "PREFLIGHT FAIL"
+    exit 1
+  fi
+  pass "provider-free ticket readiness contract passed"
+fi
+
 # Product and machine configuration are data-only trust boundaries. Validate
 # both before any backend probe can touch a credential-bearing CLI.
 [[ -f "$ENV_FILE" ]] || {

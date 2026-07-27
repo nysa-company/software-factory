@@ -241,19 +241,5 @@ class DispatchPlanTest(unittest.TestCase):
         with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
             DISPATCH.qualification(self.product, self.product / "factory", 4)
 
-    def test_qualification_marks_a_ticket_over_ninety_minutes_invalid(self):
-        self.write_qualification()
-        started = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=91)
-        (self.product / "factory/runtime-ledger.csv").write_text(
-            "date,time,ticket\n"
-            f"{started:%Y-%m-%d},{started:%H:%M:%S},T-100\n"
-        )
-        with mock.patch.object(
-            DISPATCH, "protected_terminal", side_effect=DISPATCH.ValidationError("not done")
-        ):
-            value = DISPATCH.qualification(self.product, self.product / "factory", 4)
-        self.assertEqual(value["overdue"], ["T-100"])
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import json
 import os
@@ -196,26 +195,6 @@ def qualification(
             continue
         terminal.add(ticket)
     done = len(set(tickets) & terminal)
-    overdue = []
-    ledger = factory / "runtime-ledger.csv"
-    if ledger.is_file() and not ledger.is_symlink():
-        with ledger.open(newline="", encoding="utf-8") as handle:
-            rows = list(csv.DictReader(handle))
-        now = dt.datetime.now(dt.timezone.utc)
-        for ticket in set(tickets) - terminal:
-            starts = []
-            for row in rows:
-                if row.get("ticket") != ticket:
-                    continue
-                try:
-                    started = dt.datetime.fromisoformat(
-                        f"{row['date']}T{row['time']}"
-                    ).replace(tzinfo=dt.timezone.utc)
-                except (KeyError, TypeError, ValueError):
-                    raise DispatchError("qualification runtime ledger timestamp is invalid")
-                starts.append(started)
-            if starts and (now - min(starts)).total_seconds() > 90 * 60:
-                overdue.append(ticket)
     return {
         **value,
         "capacity": (
@@ -225,7 +204,6 @@ def qualification(
         ),
         "dependencies": graph,
         "done": done,
-        "overdue": sorted(overdue),
         "terminal": terminal,
     }
 
