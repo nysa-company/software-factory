@@ -1021,13 +1021,14 @@ PY
     [[ $# -ge 2 && ( "$1" == "--shadow" || "$1" == "--claim" ) ]] || usage
     ACTION="${1#--}"
     shift
-    DISPATCH_EXCLUDES=()
+    DISPATCH_ARGS=()
     while [[ $# -gt 1 ]]; do
       [[ "$1" == "--exclude-ticket" && "$2" =~ ^T-[0-9]+$ ]] || usage
-      DISPATCH_EXCLUDES+=(--exclude-ticket "$2")
+      DISPATCH_ARGS+=(--exclude-ticket "$2")
       shift 2
     done
     require_exact "--json" "$@"
+    DISPATCH_ARGS+=("$ACTION")
     DISPATCH_HELPER="$RELEASE_PATH/scripts/dispatch-plan.py"
     require_managed_file "$DISPATCH_HELPER" "active release dispatch planner"
     WORKTREE_PARENT="$HOME/.factory/worktrees"
@@ -1045,8 +1046,7 @@ PY
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$DISPATCH_HELPER" \
       --factory-root "$PRODUCT_ROOT" \
       --worktree-root "$WORKTREE_ROOT" \
-      "${DISPATCH_EXCLUDES[@]}" \
-      "$ACTION"
+      "${DISPATCH_ARGS[@]}"
     ;;
   state-machine)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||

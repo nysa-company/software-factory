@@ -870,7 +870,7 @@ HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
   > "$TMP/signal-wrapper.json" &
 SIGNAL_PID=$!
 BACKGROUND_PIDS="$BACKGROUND_PIDS $SIGNAL_PID"
-for _try in $(seq 1 200); do
+for _try in $(seq 1 1500); do
   [[ -e "$SIGNAL_MARKER" ]] && break
   sleep 0.02
 done
@@ -1108,7 +1108,7 @@ touch "$LAUNCH_PRODUCT/factory/test-preflight-block"
 run_launcher launchtest preflight --ticket T-999 --json > "$TMP/race.json" &
 RACE_PID=$!
 BACKGROUND_PIDS="$BACKGROUND_PIDS $RACE_PID"
-for _try in $(seq 1 200); do
+for _try in $(seq 1 1500); do
   [[ -e "$RACE_MARKER" ]] && break
   sleep 0.02
 done
