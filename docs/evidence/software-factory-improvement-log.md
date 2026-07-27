@@ -485,6 +485,33 @@ still fails closed.
 Validation: shell syntax and one focused synthetic protected-base replay pass;
 the real T-083 canary remains the qualification gate.
 
+## FI-20260727-026 — A transient protected test failure reopened ticket work
+
+Status: Operating rule adopted; controller automation pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-27, T-079 protected publication
+Impact: PR 227's first protected `app-tests` execution failed one inherited
+T-077 timing assertion. The repair planner prepared a Test-author reopen even
+though the reviewed product head had not changed. No provider call occurred,
+but the unnecessary control transition delayed T-085 publication.
+Evidence:
+- workflow run 30276028647 first failed
+  `apps/web/tests/product-shell.test.tsx` criterion 13
+- policy and test-immutability were green
+- the unchanged PR head `bc77d6cc1762fc26dc1bd51da455e5f98a7b7785`
+  passed the failed-job rerun and auto-merged as
+  `ae91514863a41acffe83491d05dbc115c0b2e491`
+Root cause: the publication recovery rule treated the first protected test
+failure as durable before distinguishing an unchanged-head transient from a
+code defect.
+Smallest change: when policy and test-immutability are green and only a test
+job failed, rerun failed GitHub Actions jobs exactly once on the same PR head
+before reopening a role. A green rerun continues publication; a second failure
+routes the exact Builder or Test-author. Control-plane failures never rerun.
+Validation: the T-079 same-head rerun passed without a code change, role call,
+or successful-role replay, and protected auto-merge completed.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

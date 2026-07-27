@@ -359,10 +359,18 @@ GitHub runs the complete required protected checks. When GitHub reports a
 failure:
 
 1. inspect the exact failing job;
-2. identify the owning ticket or stale cross-ticket assertion;
-3. apply the smallest role-owned repair;
-4. run only its focused local check;
-5. push the exact reviewed head and let GitHub rerun the broad suite.
+2. when policy and test-immutability are green and only a test job failed,
+   rerun failed GitHub Actions jobs once on the unchanged PR head before
+   reopening any Factory role;
+3. if that exact-head rerun passes, continue publication without a repair;
+4. if it fails, identify the owning ticket or stale cross-ticket assertion;
+5. apply the smallest role-owned repair;
+6. run only its focused local check;
+7. push the exact reviewed head and let GitHub rerun the broad suite.
+
+The one-rerun allowance is per PR head. Policy, test-immutability, security,
+or other control-plane failures never use it, and a second test failure on the
+same head must route to its exact owning role.
 
 Acceptance tests must assert behavior and owned seams. They must not freeze
 the complete bytes or hash of unrelated shared files, ban all references to a
