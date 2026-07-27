@@ -3670,8 +3670,9 @@ product_resume_reason() {
 
 product_role_for_stage() {
   case "$1" in
-    "FIX builder") printf '%s\n' builder ;;
-    "FIX test-author") printf '%s\n' test-author ;;
+    "FIX planner"|"FIX spec-linter"|"FIX test-author"|"FIX builder")
+      printf '%s\n' "${1#FIX }"
+      ;;
     RUN\ *) printf '%s\n' "${1#RUN }" ;;
     *) return 1 ;;
   esac

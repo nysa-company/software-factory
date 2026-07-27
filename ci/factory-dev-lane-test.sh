@@ -1927,6 +1927,10 @@ if product_role_for_stage 'FIX builder-or-test-author' >/dev/null; then
 fi
 [[ "$(product_role_for_stage 'FIX test-author')" == test-author ]] ||
   fail "explicit review ownership did not select Test-author"
+[[ "$(product_role_for_stage 'FIX planner')" == planner ]] ||
+  fail "authorized contract repair did not select Planner"
+[[ "$(product_role_for_stage 'FIX spec-linter')" == spec-linter ]] ||
+  fail "authorized contract repair did not select Spec-linter"
 [[ "$(product_role_for_stage 'RUN reviewer')" == reviewer ]] ||
   fail "ordinary sequencer role mapping changed"
 if product_role_for_stage AWAIT-OPERATOR >/dev/null; then
