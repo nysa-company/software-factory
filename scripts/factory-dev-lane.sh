@@ -19,6 +19,8 @@ PRODUCT_SEED_BUNDLE=""
 PRODUCT_SEED_ACCOUNTING=""
 PRODUCT_SEED_LINEAGE=""
 PRODUCT_SEED_CHECKPOINT=""
+PRODUCT_SEED_BASE=""
+PRODUCT_PUBLICATION_CONFLICT_JSON=""
 PRODUCT_TICKETS=()
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
@@ -946,11 +948,16 @@ PY
       git -C "$root/worktrees/$ticket" push -q -u origin "ticket/$ticket"
     done
     if [[ -n "$PRODUCT_SEED_BUNDLE" ]]; then
-      seed_product_worktrees "$root" "$PRODUCT_SEED_BUNDLE" "$PRODUCT_BASE" \
+      if [[ -n "$PRODUCT_PUBLICATION_CONFLICT_JSON" ]]; then
+        printf '%s\n' "$PRODUCT_PUBLICATION_CONFLICT_JSON" \
+          >"$root/runtime/product-publication-conflict.json"
+        chmod 600 "$root/runtime/product-publication-conflict.json"
+      fi
+      seed_product_worktrees "$root" "$PRODUCT_SEED_BUNDLE" "$PRODUCT_SEED_BASE" \
         "${lane_tickets[@]}"
       seed_hash="$(sha256_file "$PRODUCT_SEED_BUNDLE")"
       prepare_product_seed_accounting "$root" "$PRODUCT_SEED_ACCOUNTING" \
-        "$PRODUCT_SEED_BUNDLE" "$PRODUCT_BASE" \
+        "$PRODUCT_SEED_BUNDLE" "$PRODUCT_SEED_BASE" \
         "${lane_tickets[@]}"
       python3 - "$PRODUCT_SEED_ACCOUNTING" \
         "$root/runtime/product-seed-accounting-source.json" <<'PY'
@@ -1347,10 +1354,321 @@ PY
     die "product seed checkpoint is malformed or detached"
 }
 
+product_checkpoint_base() {
+  local checkpoint="$1"
+  [[ "$checkpoint" == /* && -f "$checkpoint" && ! -L "$checkpoint" &&
+     "$(stat -f '%Su:%Lp:%l' "$checkpoint")" == "$(id -un):600:1" ]] ||
+    die "product seed checkpoint must be an owner-only regular file"
+  refuse_production_path "$checkpoint"
+  python3 - "$checkpoint" <<'PY' ||
+import json, re, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+base=value.get("base_sha")
+if not re.fullmatch(r"[0-9a-f]{40}",base or ""):
+    raise SystemExit(1)
+print(base)
+PY
+    die "product seed checkpoint base is malformed"
+}
+
+product_publication_pr_view() {
+  local repo="$1" pr="$2" fixture="${FACTORY_DEV_LANE_PR_VIEW_JSON:-}"
+  if [[ "$TEST_MODE" -eq 1 && -n "$fixture" ]]; then
+    [[ "$fixture" == /* && -f "$fixture" && ! -L "$fixture" &&
+       "$(stat -f '%Su:%Lp:%l' "$fixture")" == "$(id -un):600:1" ]] ||
+      die "publication PR fixture is unsafe"
+    cat "$fixture"
+  else
+    gh pr view "$pr" --repo "$repo" \
+      --json state,isDraft,mergeable,headRefOid,baseRefOid,baseRefName
+  fi
+}
+
+build_product_publication_conflict_receipt() {
+  local source="$1" lane_base="$2" checkpoint="$3" accounting="$4" bundle="$5"
+  shift 5
+  local old_base tmp binding repo pr remote live
+  [[ "$#" -eq 1 ]] ||
+    die "publication checkpoint advance requires one ticket per lane"
+  old_base="$(product_checkpoint_base "$checkpoint")"
+  tmp="$(mktemp -d "$(lane_tmp_parent)/nysa-sf-checkpoint-advance.XXXXXX")"
+  (
+    trap "rm -rf -- '$tmp'" EXIT
+    chmod 700 "$tmp"
+    git -C "$tmp" init -q --bare
+    git -C "$tmp" fetch -q "$bundle" \
+      "refs/heads/ticket/$1:refs/heads/ticket/$1" || exit 1
+    binding="$(python3 - "$checkpoint" "$tmp" "$source/factory/PROJECT.env" \
+      "$1" <<'PY'
+import json, re, subprocess, sys
+checkpoint, repo, project, ticket=sys.argv[1:]
+value=json.load(open(checkpoint,encoding="utf-8"))
+if value.get("schema") != "factory-dev-product-checkpoint/v2":
+    raise SystemExit(1)
+text=open(project,encoding="utf-8").read()
+match=re.search(r'(?m)^GH_REPO=(?:"([^"]+)"|([^#\s]+))\s*$',text)
+if not match:
+    raise SystemExit(1)
+gh_repo=next(item for item in match.groups() if item is not None)
+records={item.get("ticket"):item for item in value.get("tickets",[])}
+item=records.get(ticket)
+if not item or item.get("next_stage") not in {
+    "FIX builder",
+    "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step",
+}:
+    raise SystemExit(1)
+ref="refs/heads/ticket/"+ticket
+git=lambda *args: subprocess.check_output(
+    ["git","-C",repo,*args],text=True).strip()
+if (git("rev-parse",ref) != item.get("head_sha") or
+    git("rev-parse",ref+":factory/tickets/"+ticket+".md")
+        != item.get("ticket_blob")):
+    raise SystemExit(1)
+ticket_text=subprocess.check_output(
+    ["git","-C",repo,"show",ref+":factory/tickets/"+ticket+".md"],text=True)
+repairs=re.findall(
+    r"^OPERATOR PUBLICATION REPAIR: (test-author|builder)$",ticket_text,re.M)
+conflicts=re.findall(
+    rf"^PUBLICATION CONFLICT: https://github[.]com/{re.escape(gh_repo)}"
+    r"/pull/([0-9]+)$",ticket_text,re.M)
+if repairs != ["builder"] or len(conflicts) != 1:
+    raise SystemExit(1)
+print(gh_repo,conflicts[0],item["head_sha"])
+PY
+    )" || exit 1
+    read -r repo pr _ <<<"$binding"
+    live="$(product_publication_pr_view "$repo" "$pr")" ||
+      exit 1
+    remote="$(git -C "$source" remote get-url origin)" || exit 1
+    git -C "$tmp" fetch -q "$source" \
+      "$lane_base:refs/factory/publication-lane-base" || exit 1
+    git -C "$tmp" fetch -q "$remote" \
+      "refs/pull/$pr/head:refs/pull/$pr/head" || exit 1
+    python3 - "$checkpoint" "$accounting" "$bundle" "$tmp" "$source" \
+      "$lane_base" "$repo" "$pr" "$live" "$1" <<'PY'
+import hashlib, json, pathlib, subprocess, sys
+(checkpoint_path, accounting_path, bundle_path, repo_path, source_path,
+ lane_base, gh_repo, pr, live_raw, ticket)=sys.argv[1:]
+checkpoint=json.load(open(checkpoint_path,encoding="utf-8"))
+accounting=json.load(open(accounting_path,encoding="utf-8"))
+live=json.loads(live_raw)
+if (live != {
+    "baseRefName":"main",
+    "baseRefOid":live.get("baseRefOid"),
+    "headRefOid":live.get("headRefOid"),
+    "isDraft":False,
+    "mergeable":"CONFLICTING",
+    "state":"OPEN",
+}):
+    raise SystemExit(1)
+sha40=lambda value:isinstance(value,str) and len(value)==40 and all(
+    c in "0123456789abcdef" for c in value)
+if not sha40(live["baseRefOid"]) or not sha40(live["headRefOid"]):
+    raise SystemExit(1)
+git=lambda where,*args:subprocess.check_output(
+    ["git","-C",where,*args],text=True).strip()
+if (git(repo_path,"rev-parse","refs/pull/"+pr+"/head") != live["headRefOid"] or
+    git(source_path,"rev-parse","HEAD") != lane_base or
+    git(source_path,"rev-parse","refs/remotes/origin/main") !=
+        live["baseRefOid"]):
+    raise SystemExit(1)
+old_base=checkpoint["base_sha"]
+checkpoint_head=next(
+    item["head_sha"] for item in checkpoint["tickets"]
+    if item["ticket"]==ticket)
+old_protected=git(repo_path,"merge-base",live["headRefOid"],live["baseRefOid"])
+def ancestor(older,newer):
+    return subprocess.call(
+        ["git","-C",repo_path,"merge-base","--is-ancestor",older,newer],
+        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)==0
+if (not ancestor(old_protected,old_base) or
+    not ancestor(old_protected,live["baseRefOid"]) or
+    not ancestor(live["baseRefOid"],lane_base)):
+    raise SystemExit(1)
+for older,newer in ((old_protected,old_base),(live["baseRefOid"],lane_base)):
+    paths=subprocess.check_output(
+        ["git","-C",source_path,"diff","--name-only",older+".."+newer],
+        text=True).splitlines()
+    if any(path!="context/memory.md" and not path.startswith("factory/")
+           for path in paths):
+        raise SystemExit(1)
+filters=["--",".",":(exclude)factory/**",":(exclude)context/memory.md"]
+def patch(commit):
+    return subprocess.check_output(
+        ["git","-C",repo_path,"diff","--binary","--full-index",
+         old_base+".."+commit,*filters])
+sealed=hashlib.sha256(patch(checkpoint_head)).hexdigest()
+if hashlib.sha256(patch(live["headRefOid"])).hexdigest()!=sealed:
+    raise SystemExit(1)
+receipt={
+    "schema":"factory-dev-publication-conflict/v1",
+    "ticket":ticket,"repo":gh_repo,"pr":int(pr),"repair_owner":"builder",
+    "checkpoint_base_sha":old_base,"old_protected_base_sha":old_protected,
+    "new_protected_base_sha":live["baseRefOid"],"lane_base_sha":lane_base,
+    "pr_head_sha":live["headRefOid"],"sealed_product_patch_sha256":sealed,
+    "checkpoint_sha256":hashlib.sha256(
+        pathlib.Path(checkpoint_path).read_bytes()).hexdigest(),
+    "accounting_sha256":hashlib.sha256(
+        pathlib.Path(accounting_path).read_bytes()).hexdigest(),
+    "seed_bundle_sha256":hashlib.sha256(
+        pathlib.Path(bundle_path).read_bytes()).hexdigest(),
+    "authorization_nonce":accounting["authorization_nonce"],
+}
+print(json.dumps(receipt,sort_keys=True,separators=(",",":")))
+PY
+  ) || die "publication checkpoint advance is not authenticated"
+}
+
+validate_product_publication_conflict_current() {
+  local root="$1" receipt="$root/runtime/product-publication-conflict.json"
+  local binding live repo pr
+  [[ -e "$receipt" || -L "$receipt" ]] || return 0
+  [[ -f "$receipt" && ! -L "$receipt" &&
+     "$(stat -f '%Su:%Lp:%l' "$receipt")" == "$(id -un):600:1" ]] ||
+    die "publication conflict receipt is unsafe"
+  binding="$(python3 - "$receipt" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+print(value["repo"],value["pr"])
+PY
+  )" || die "publication conflict receipt is malformed"
+  read -r repo pr <<<"$binding"
+  live="$(product_publication_pr_view "$repo" "$pr")" ||
+    die "publication conflict could not be revalidated"
+  python3 - "$receipt" "$live" <<'PY' ||
+import json, sys
+receipt=json.load(open(sys.argv[1],encoding="utf-8"))
+live=json.loads(sys.argv[2])
+if (live.get("state")!="OPEN" or live.get("isDraft") is not False or
+    live.get("mergeable")!="CONFLICTING" or live.get("baseRefName")!="main" or
+    live.get("headRefOid")!=receipt.get("pr_head_sha") or
+    live.get("baseRefOid")!=receipt.get("new_protected_base_sha")):
+    raise SystemExit(1)
+PY
+    die "publication conflict or protected main drifted before provider GO"
+}
+
+resolve_product_publication_cherry_pick() {
+  local root="$1" work="$2" ticket="$3" commit="$4" log="$5"
+  local action path resolutions resolved=0
+  local -a paths=()
+  while IFS= read -r path; do [[ -z "$path" ]] || paths+=("$path"); done < <(
+    git -C "$work" diff --name-only --diff-filter=U
+  )
+  [[ "${#paths[@]}" -ge 1 ]] || return 1
+  resolutions="$(python3 - "$root/runtime/product-publication-conflict.json" \
+    "$work/factory/PROJECT.env" "$work" "$ticket" "${paths[@]}" <<'PY'
+import json, pathlib, re, shlex, subprocess, sys
+receipt_path, project_path, work, ticket, *paths=sys.argv[1:]
+receipt=json.load(open(receipt_path,encoding="utf-8"))
+if receipt.get("ticket") != ticket or receipt.get("repair_owner") != "builder":
+    raise SystemExit(1)
+project=open(project_path,encoding="utf-8").read()
+match=re.search(r'(?m)^TEST_PATHS=(.*)$',project)
+tests=shlex.split(match.group(1)) if match else []
+safe=re.compile(r"[A-Za-z0-9._/@+-]+")
+old=receipt["checkpoint_base_sha"]; sealed="refs/retry/"+ticket
+def tree(ref,path):
+    return subprocess.check_output(
+        ["git","-C",work,"ls-tree",ref,"--",path],text=True).strip()
+changed={}
+for line in subprocess.check_output(
+    ["git","-C",work,"diff","--name-status",old+".."+sealed],
+    text=True,
+).splitlines():
+    parts=line.split("\t")
+    if len(parts)>=2:
+        changed[parts[-1]]=parts[0]
+for path in paths:
+    if not safe.fullmatch(path):
+        raise SystemExit(1)
+    if path in {
+        f"factory/tickets/{ticket}.md",
+        f"factory/tickets/{ticket}-bundle.md",
+    }:
+        print("theirs",path,sep="\t")
+        continue
+    basename=pathlib.PurePosixPath(path).name
+    if (path.startswith(("factory/","context/",".github/","scripts/")) or
+        any(path==prefix or path.startswith(prefix.rstrip("/")+"/")
+            for prefix in tests) or
+        basename in {"package-lock.json","pnpm-lock.yaml","yarn.lock"} or
+        basename.startswith("tsconfig") or ".config." in basename or
+        changed.get(path,"") not in {"A","M","D"}):
+        raise SystemExit(1)
+    for ref in (
+        receipt["old_protected_base_sha"],
+        receipt["new_protected_base_sha"],
+        sealed,
+    ):
+        entry=tree(ref,path)
+        if entry and entry.split()[0] in {"120000","160000"}:
+            raise SystemExit(1)
+    print("ours",path,sep="\t")
+PY
+  )" || return 1
+  while IFS=$'\t' read -r action path; do
+    [[ "$action" == ours || "$action" == theirs ]] || return 1
+    if ! git -C "$work" checkout "--$action" -- "$path" 2>/dev/null; then
+      git -C "$work" rm -f --ignore-unmatch -- "$path" >/dev/null || return 1
+    else
+      git -C "$work" add -- "$path" || return 1
+    fi
+    if [[ "$action" == ours ]]; then
+      printf '%s\t%s\n' "$commit" "$path" >>"$log"
+      resolved=$((resolved + 1))
+    fi
+  done <<<"$resolutions"
+  [[ "$resolved" -ge 1 ]] ||
+    return 1
+  git -C "$work" -c user.name='Factory Dev Lane' \
+    -c user.email=factory-dev@local cherry-pick --continue >/dev/null
+}
+
+write_product_publication_replay() {
+  local root="$1" ticket="$2" log="$3" work
+  work="$root/worktrees/$ticket"
+  python3 - "$root/runtime/product-publication-conflict.json" "$log" \
+    "$root/runtime/product-publication-replay.json" "$work" "$ticket" <<'PY' ||
+import hashlib, json, os, pathlib, subprocess, sys
+auth_path, log_path, output, work, ticket=sys.argv[1:]
+auth_raw=pathlib.Path(auth_path).read_bytes()
+auth=json.loads(auth_raw)
+records=[]
+for line in pathlib.Path(log_path).read_text(encoding="utf-8").splitlines():
+    commit, separator, path=line.partition("\t")
+    if not separator: raise SystemExit(1)
+    def tree(ref):
+        return subprocess.check_output(
+            ["git","-C",work,"ls-tree",ref,"--",path],text=True).strip()
+    records.append({
+        "commit":commit,"path":path,
+        "old_protected_entry":tree(auth["old_protected_base_sha"]),
+        "new_protected_entry":tree(auth["new_protected_base_sha"]),
+        "sealed_ticket_entry":tree("refs/retry/"+ticket),
+    })
+if not records or len({item["path"] for item in records}) != len(records):
+    raise SystemExit(1)
+head=subprocess.check_output(["git","-C",work,"rev-parse","HEAD"],text=True).strip()
+value={
+    "schema":"factory-dev-publication-replay/v1","ticket":ticket,
+    "authorization_sha256":hashlib.sha256(auth_raw).hexdigest(),
+    "replayed_head_sha":head,"conflicts":records,
+}
+raw=json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+fd=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(fd,"w",encoding="utf-8") as stream:
+    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+PY
+    die "publication conflict replay evidence is incomplete"
+}
+
 seed_product_worktrees() {
   local root="$1" bundle="$2" base="$3" ticket commit subject index previous route_count
+  local publication=0 conflict_log
   local -a commits parents
   shift 3
+  [[ ! -f "$root/runtime/product-publication-conflict.json" ]] || publication=1
   [[ "$bundle" == /* && -f "$bundle" && ! -L "$bundle" ]] ||
     die "product seed bundle must be an absolute regular file"
   refuse_production_path "$bundle"
@@ -1359,6 +1677,8 @@ seed_product_worktrees() {
   git -C "$root/product" bundle verify "$bundle" >/dev/null 2>&1 ||
     die "product seed bundle is invalid"
   for ticket in "$@"; do
+    conflict_log="$root/runtime/.product-publication-conflicts-$ticket"
+    [[ "$publication" -eq 0 ]] || { : >"$conflict_log"; chmod 600 "$conflict_log"; }
     if [[ -n "$PRODUCT_SEED_CHECKPOINT" ]] &&
        ! python3 - "$PRODUCT_SEED_CHECKPOINT" "$ticket" <<'PY'
 import json, sys
@@ -1516,9 +1836,18 @@ PY
       then
         die "product seed commit crosses a control boundary: $ticket"
       fi
-      git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
-        -c user.email=factory-dev@local cherry-pick -X theirs "$commit" >/dev/null ||
-        die "product seed commit did not apply cleanly: $ticket"
+      if [[ "$publication" -eq 0 ]]; then
+        git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
+          -c user.email=factory-dev@local cherry-pick -X theirs "$commit" >/dev/null ||
+          die "product seed commit did not apply cleanly: $ticket"
+      elif git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
+        -c user.email=factory-dev@local cherry-pick "$commit" >/dev/null 2>&1; then
+        :
+      else
+        resolve_product_publication_cherry_pick "$root" \
+          "$root/worktrees/$ticket" "$ticket" "$commit" "$conflict_log" ||
+          die "publication seed conflict is not safely Builder-owned: $ticket"
+      fi
       index=$((index + 1))
     done
     [[ "$route_count" -eq 1 ]] ||
@@ -1573,6 +1902,10 @@ PY
     if ! git -C "$root/worktrees/$ticket" diff --cached --quiet; then
       git -C "$root/worktrees/$ticket" -c user.name='Factory Dev Lane' \
         -c user.email=factory-dev@local commit -qm "$ticket: prepare retained retry evidence"
+    fi
+    if [[ "$publication" -eq 1 ]]; then
+      write_product_publication_replay "$root" "$ticket" "$conflict_log"
+      rm "$conflict_log"
     fi
     git -C "$root/worktrees/$ticket" push -q origin "HEAD:refs/heads/ticket/$ticket"
   done
@@ -2084,6 +2417,10 @@ product_approval_hash() {
       sha256_file "$root/runtime/product-checkpoint-source.json"
     [[ ! -f "$root/runtime/product-seed-accounting-source.json" ]] ||
       sha256_file "$root/runtime/product-seed-accounting-source.json"
+    [[ ! -f "$root/runtime/product-publication-conflict.json" ]] ||
+      sha256_file "$root/runtime/product-publication-conflict.json"
+    [[ ! -f "$root/runtime/product-publication-replay.json" ]] ||
+      sha256_file "$root/runtime/product-publication-replay.json"
     printf '%s\n' "$(python3 - "$root/runtime/docker" <<'PY'
 import os, sys
 print(os.path.realpath(sys.argv[1]))
@@ -2523,23 +2860,31 @@ product_contract_repair_stage() {
   python3 - "$1/product/factory/runs" \
     "$1/worktrees/$2/factory/tickets/$2.md" \
     "$1/runtime/product-checkpoint-import.json" "$2" <<'PY'
-import json, pathlib, re, sys
+import json, pathlib, re, subprocess, sys
 runs, ticket_file, checkpoint=map(pathlib.Path,sys.argv[1:4])
 ticket=sys.argv[4]
 text=ticket_file.read_text(encoding="utf-8")
-directives=re.findall(
+directives=list(re.finditer(
     r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
     text, re.M,
-)
-publication=re.findall(
+))
+publication=list(re.finditer(
     r"^OPERATOR PUBLICATION REPAIR: (test-author|builder)$", text, re.M,
-)
+))
 if publication:
     failures=re.findall(
         r"^PUBLICATION FAILURE: https://github[.]com/[A-Za-z0-9_.-]+/"
         r"[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+$", text, re.M,
     )
-    if directives or len(publication) != 1 or len(failures) != 1:
+    conflicts=re.findall(
+        r"^PUBLICATION CONFLICT: https://github[.]com/[A-Za-z0-9_.-]+/"
+        r"[A-Za-z0-9_.-]+/pull/[0-9]+$", text, re.M,
+    )
+    owner=publication[0].group(1)
+    if (len(publication) != 1 or
+        directives and directives[-1].start() > publication[0].start() or
+        len(failures)+len(conflicts) != 1 or
+        conflicts and owner != "builder"):
         raise SystemExit(1)
     value=json.loads(checkpoint.read_text(encoding="utf-8"))
     records=[
@@ -2547,9 +2892,39 @@ if publication:
         if item.get("ticket") == ticket
     ]
     expected=records[0].get("expected_next_stage","") if len(records) == 1 else ""
-    if (expected != "FIX "+publication[0] and
-        not expected.startswith("AWAIT-OPERATOR")):
+    work=ticket_file.parents[2]
+    directive="OPERATOR PUBLICATION REPAIR: "+owner
+    directive_head=subprocess.check_output(
+        ["git","-C",str(work),"log","-n","1","--format=%H","-S",directive,
+         "--",str(ticket_file.relative_to(work))],
+        text=True,
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}",directive_head):
         raise SystemExit(1)
+    if expected != "FIX "+owner and not expected.startswith("AWAIT-OPERATOR"):
+        advanced=False
+        for path in runs.glob("*.meta"):
+            values=dict(
+                line.split("=",1)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if "=" in line
+            )
+            before=values.get("role_head_before","")
+            if (values.get("ticket") != str(ticket) or
+                values.get("role") != "narrator" or
+                values.get("phase") != "completed" or
+                values.get("exit_status") != "0" or
+                values.get("role_exit") != "ok" or
+                not re.fullmatch(r"[0-9a-f]{40}",before)):
+                continue
+            if subprocess.call(
+                ["git","-C",str(work),"merge-base","--is-ancestor",
+                 before,directive_head],
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            ) == 0:
+                advanced=True
+        if not advanced:
+            raise SystemExit(1)
     completed=False
     for path in runs.glob("*.meta"):
         values=dict(
@@ -2558,13 +2933,21 @@ if publication:
             if "=" in line
         )
         if (values.get("ticket") != str(ticket) or
-            values.get("role") != publication[0] or
+            values.get("role") != owner or
             values.get("phase") != "completed" or
             values.get("exit_status") != "0" or
             values.get("role_exit") != "ok"):
             continue
+        before=values.get("role_head_before","")
+        if (not re.fullmatch(r"[0-9a-f]{40}",before) or
+            subprocess.call(
+                ["git","-C",str(work),"merge-base","--is-ancestor",
+                 directive_head,before],
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            ) != 0):
+            continue
         completed=True
-    print("INACTIVE" if completed else "FIX "+publication[0])
+    print("INACTIVE" if completed else "FIX "+owner)
     raise SystemExit(0)
 if len(directives) != 1: raise SystemExit(1)
 attempts=[]
@@ -2584,7 +2967,7 @@ if (values.get("role_exit") != "role_exit_contract_blocked" or
     values.get("exit_status") != "12"):
     print("INACTIVE")
     raise SystemExit(0)
-print("FIX "+directives[0])
+print("FIX "+directives[0].group(1))
 PY
 }
 
@@ -2682,7 +3065,9 @@ PY
       "$root/runtime/product-envelope/budget-day" \
       "$root/runtime/product-checkpoint-import.json" \
       "$root/runtime/product-checkpoint-source.json" \
-      "$root/runtime/product-seed-accounting-source.json"; do
+      "$root/runtime/product-seed-accounting-source.json" \
+      "$root/runtime/product-publication-conflict.json" \
+      "$root/runtime/product-publication-replay.json"; do
       [[ -f "$path" ]] || continue
       printf '%s=%s\n' "${path#$root/}" "$(sha256_file "$path")"
     done
@@ -3577,7 +3962,7 @@ PY
 }
 
 product_role_run() {
-  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint="" latest_review="" rc=0
+  local root="$1" ticket="$2" lease="$3" role="$4" instruction envelope evidence checkpoint="" latest_review="" conflict_paths="" rc=0
   instruction="Execute the authorized $role stage for $ticket. Work only in this ticket worktree. Follow the frozen ticket contract and repository instructions. Mutating roles must commit their scoped durable result locally. Never push or access another worktree, remote service, credential, or Factory control path."
   instruction="$instruction Node 22 is on PATH. For database-backed checks, load only the disposable lane variables from the ticket worktree with: set -a; source \"\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env\"; set +a. Never print those variables."
   latest_review="$(grep -Ei '^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*(APPROVE|REQUEST CHANGES)[[:space:]]*$' \
@@ -3592,6 +3977,16 @@ product_role_run() {
     instruction="$instruction Efficiency boundary: run only the focused tests you add or change, once to prove the missing behavior. Do not run the full suite, repo-check, or secret-scan; trusted publication owns broad deterministic gates."
   elif [[ builder == "$role" ]]; then
     instruction="$instruction Efficiency boundary: run the build and focused tests for this ticket only. Do not run the full suite, repo-check, or secret-scan; trusted publication owns broad deterministic gates."
+    if grep -Eq '^PUBLICATION CONFLICT: https://github[.]com/.+/pull/[0-9]+$' \
+      "$root/worktrees/$ticket/factory/tickets/$ticket.md"; then
+      conflict_paths="$(python3 - "$root/runtime/product-publication-replay.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+print(", ".join(item["path"] for item in value["conflicts"]))
+PY
+      )" || return 1
+      instruction="$instruction Publication repair: the controller replayed the sealed ticket onto current protected main and preserved protected-main content at these conflicts: $conflict_paths. Reconcile only those paths, comparing the sealed ticket at refs/retry/$ticket; preserve both protected-main behavior and the frozen ticket outcome."
+    fi
   elif [[ "$role" == reviewer ]]; then
     instruction="$instruction Efficiency boundary: use existing CI and role evidence, and run only a focused read-only check needed to resolve a concrete uncertainty. Do not rerun the full suite, repo-check, or secret-scan; trusted publication owns broad deterministic gates."
     instruction="$instruction Remain read-only. End with a standalone line containing exactly APPROVE or REQUEST CHANGES. If requesting changes, add exactly one standalone FIX-OWNER: builder, FIX-OWNER: test-author, or FIX-OWNER: both line; approvals must not include FIX-OWNER."
@@ -5149,15 +5544,25 @@ tickets=sys.argv[1:]
 if len(set(tickets)) != len(tickets) or any(not re.fullmatch(r"T-[0-9]+", t) for t in tickets):
     raise SystemExit(1)
 PY
+    seed_base="$base_sha"
     if [[ -n "$seed_bundle" || -n "$seed_accounting" || -n "$seed_lineage" ||
           -n "$seed_checkpoint" ]]; then
       [[ -n "$seed_bundle" && -n "$seed_accounting" && -n "$seed_lineage" ]] || usage
-      validate_product_seed_accounting "$seed_accounting" "$seed_bundle" "$base_sha" \
+      [[ -z "$seed_checkpoint" ]] ||
+        seed_base="$(product_checkpoint_base "$seed_checkpoint")"
+      validate_product_seed_accounting "$seed_accounting" "$seed_bundle" "$seed_base" \
         "${PRODUCT_TICKETS[@]}"
       if [[ -n "$seed_checkpoint" ]]; then
-        validate_product_checkpoint "$seed_checkpoint" "$seed_bundle" "$base_sha" \
+        validate_product_checkpoint "$seed_checkpoint" "$seed_bundle" "$seed_base" \
           "${PRODUCT_TICKETS[@]}"
         validate_checkpoint_accounting "$seed_accounting" "$seed_checkpoint"
+        if [[ "$seed_base" != "$base_sha" ]]; then
+          PRODUCT_PUBLICATION_CONFLICT_JSON="$(
+            build_product_publication_conflict_receipt "$source_repo" "$base_sha" \
+              "$seed_checkpoint" "$seed_accounting" "$seed_bundle" \
+              "${PRODUCT_TICKETS[@]}"
+          )"
+        fi
       else
         python3 - "$seed_accounting" <<'PY' ||
 import json, sys
@@ -5167,7 +5572,7 @@ PY
       fi
     fi
     PRODUCT_SEED_ACCOUNTING="$seed_accounting"; PRODUCT_SEED_LINEAGE="$seed_lineage"
-    PRODUCT_SEED_CHECKPOINT="$seed_checkpoint"
+    PRODUCT_SEED_CHECKPOINT="$seed_checkpoint"; PRODUCT_SEED_BASE="$seed_base"
     root="$(create_lane product)"
     product_profile=subscription
     plan_output=""
@@ -5228,6 +5633,7 @@ PY
     [[ -n "$root" && "$ticket" =~ ^T-[0-9]+$ &&
        "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
+    validate_product_publication_conflict_current "$root"
     run_in_sandbox "$root" subscription __product-ticket-run \
       --root "$root" --ticket "$ticket" --approve-hash "$approve"
     ;;
@@ -5257,6 +5663,7 @@ PY
     done
     [[ -n "$root" && "$approve" =~ ^[0-9a-f]{64}$ ]] || usage
     root="$(validate_lane "$root")"
+    validate_product_publication_conflict_current "$root"
     product_profile=subscription
     if python3 - "$root/runtime/product-source.json" <<'PY'
 import json, sys

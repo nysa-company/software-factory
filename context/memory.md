@@ -98,6 +98,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   Narrator, plus the exact next stage; failed attempts remain charged and are
   never promoted. V5 seed accounting binds the passport and full historical
   spend, allowing the ticket to resume under a successor kit without replay.
+- A portable operator-await checkpoint may cross an advanced protected product
+  base only through one exact live conflicting PR whose product patch matches
+  the sealed checkpoint. Replay preserves current protected content only for
+  Builder-owned conflicts, records their exact blobs, and then runs Builder,
+  fresh Reviewer, and Narrator; test, configuration, control, lock, symlink,
+  submodule, rename, or unowned conflicts fail closed.
 - Imported checkpoint Spec-linter verdicts are an immutable prefix, not the complete future ticket history. Current-lane verdicts may extend that prefix only when the ordinary current-lane ledger count authenticates each addition.
 - Development product export projects only the latest successful Reviewer's non-`factory/` tree changes and rejects later product drift. Exact bundles retain detailed role/retry/audit history but are never applied to canonical product branches; the canonical mailbox deterministically emits one pure final-test commit before one pure implementation commit with the same reviewed application tree. Unsafe or empty strata fail closed, preventing lane controls, route pins, sibling tickets, and unreviewed Narrator metadata from escaping.
 - Development product export keeps `root/export` as its default and accepts a distinct new owner-only lane-local output for a later sibling. Every output is an atomic claim outside sensitive lane subtrees; existing, symlinked, outside, or failed targets cannot accumulate or overwrite artifacts.
@@ -925,3 +931,13 @@ A failed pre-submission product plan may consume authenticated seed accounting
 without creating a runtime ledger. Checkpoint re-export treats that absent
 ledger as zero local attempts, preserving the consumed lineage and every
 imported role; an existing ledger retains its exact validation.
+
+## 2026-07-27 — Decision 63: Ticket checkpoints outlive product bases
+
+Category: System change
+
+A portable operator-await checkpoint may cross a newer protected product base
+only when a live conflicting PR proves the exact sealed product patch and both
+qualification bases add control paths only. Replay preserves protected-main
+content at safe Builder-owned conflicts and records exact blobs before Builder,
+fresh Reviewer, and Narrator continue; every other conflict fails closed.

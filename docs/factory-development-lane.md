@@ -224,6 +224,18 @@ matching successful current-lane ledger evidence. Imported Reviewer, repair,
 and Narrator evidence likewise remains immutable, and execution resumes only
 at the passport's exact next role.
 
+If protected `main` advances after a sealed operator-await passport, an exact
+conflicting product PR may authorize a portable Builder repair without tying
+the ticket to its old lane. The ticket must name that live PR and Builder as
+the publication repair owner. The controller proves the PR contains the
+sealed product patch, permits only qualification-control differences around
+the old and current protected bases, preserves current protected content at
+Builder-owned conflicts, and records the exact conflicting blobs. Test,
+configuration, lock, Factory-control, symlink, submodule, rename, and
+non-Builder-owned conflicts fail closed. The PR is revalidated immediately
+before provider execution, and only Builder, fresh Reviewer, and Narrator may
+run.
+
 Checkpoint evidence and its seed bundle both resolve ticket heads from the
 lane-local bare origin. Worktree remote-tracking refs are caches and never
 checkpoint authority.

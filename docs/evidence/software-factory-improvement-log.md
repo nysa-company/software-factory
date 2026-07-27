@@ -458,6 +458,33 @@ Validation: shell syntax passes and the exact retained T-081 failed-plan lane
 exports its authenticated `FIX test-author` checkpoint successfully at
 executable candidate `31c56c0ed4204703093ad6dd734b202f792746d9`.
 
+## FI-20260727-025 — Portable checkpoints stopped at a newer protected product base
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, T-083 publication
+Impact: T-083 completed its retained roles and exported, but protected `main`
+advanced through T-081 before T-083 could publish. Its exact approved product
+patch then conflicted in `apps/api/src/app.ts`; replaying successful roles or
+resolving the canonical product branch by hand would violate qualification.
+Evidence:
+- PR 224 is the exact sealed T-083 product patch and reports `CONFLICTING`
+  against protected `main`
+- the conflict is Builder-owned while the checkpoint remains authenticated at
+  operator-await
+- the old and current qualification bases differ from their protected bases
+  only in qualification control paths
+Root cause: portable role evidence was independent of the physical lane but
+seed replay still required one unchanged product base.
+Smallest change: bind one live conflicting PR to the sealed product patch,
+preserve current protected content only at safe Builder-owned conflicts, record
+the exact replay, then run Builder, fresh Reviewer, and Narrator. Every test,
+configuration, lock, control, symlink, submodule, rename, or unowned conflict
+still fails closed.
+Validation: shell syntax and one focused synthetic protected-base replay pass;
+the real T-083 canary remains the qualification gate.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

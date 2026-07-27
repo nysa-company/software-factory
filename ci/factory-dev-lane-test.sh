@@ -2829,6 +2829,148 @@ fi
 grep -Fxq "WORKTREES_DIR=\"$SEED_HISTORY_ROOT/worktrees\"" \
   "$SEED_HISTORY_ROOT/worktrees/T-1/factory/PROJECT.env" ||
   fail "retained seed replaced the new lane configuration"
+
+CHECKPOINT_ADVANCE_SOURCE="$TMP/checkpoint-advance-source"
+mkdir -p "$CHECKPOINT_ADVANCE_SOURCE/factory/tickets" \
+  "$CHECKPOINT_ADVANCE_SOURCE/app" "$CHECKPOINT_ADVANCE_SOURCE/context"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" init -q
+printf '%s\n' 'GH_REPO=nysa-company/nysa-app' \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/PROJECT.env"
+printf '%s\n' '# T-83' 'State: Review' \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/tickets/T-83.md"
+printf '%s\n' old >"$CHECKPOINT_ADVANCE_SOURCE/app/shared"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add .
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Base \
+  -c user.email=base@local commit -qm 'Create old protected base'
+CHECKPOINT_ADVANCE_OLD_PROTECTED="$(
+  git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD
+)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" branch -m main
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c qualification-old
+printf '%s\n' old-qualification >"$CHECKPOINT_ADVANCE_SOURCE/context/memory.md"
+printf '%s\n' '{}' >"$CHECKPOINT_ADVANCE_SOURCE/factory/QUALIFICATION.json"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add context factory/QUALIFICATION.json
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Create old qualification base'
+CHECKPOINT_ADVANCE_OLD="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c ticket/T-83
+printf '%s\n' ticket >"$CHECKPOINT_ADVANCE_SOURCE/app/shared"
+printf '%s\n' '# T-83' 'State: Review' \
+  'PUBLICATION CONFLICT: https://github.com/nysa-company/nysa-app/pull/224' \
+  'OPERATOR PUBLICATION REPAIR: builder' \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/tickets/T-83.md"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add app/shared factory/tickets/T-83.md
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Authorize publication repair'
+CHECKPOINT_ADVANCE_HEAD="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD)"
+CHECKPOINT_ADVANCE_BLOB="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" \
+  rev-parse HEAD:factory/tickets/T-83.md)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" bundle create \
+  "$TMP/checkpoint-advance.bundle" ticket/T-83
+chmod 600 "$TMP/checkpoint-advance.bundle"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c publication-224 \
+  "$CHECKPOINT_ADVANCE_OLD"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" checkout ticket/T-83 -- app/shared
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add app/shared
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Factory \
+  -c user.email=factory@local commit -qm 'Publish sealed T-83 product patch'
+CHECKPOINT_ADVANCE_PR_HEAD="$(
+  git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD
+)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" update-ref refs/pull/224/head \
+  "$CHECKPOINT_ADVANCE_PR_HEAD"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q main
+printf '%s\n' current >"$CHECKPOINT_ADVANCE_SOURCE/app/shared"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add app/shared
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Main \
+  -c user.email=main@local commit -qm 'Advance protected main'
+CHECKPOINT_ADVANCE_NEW_PROTECTED="$(
+  git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD
+)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c qualification-new
+printf '%s\n' new-qualification \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/QUALIFICATION.json"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add factory/QUALIFICATION.json
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Advance qualification base'
+CHECKPOINT_ADVANCE_NEW="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" remote add origin \
+  "$CHECKPOINT_ADVANCE_SOURCE"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" update-ref refs/remotes/origin/main \
+  "$CHECKPOINT_ADVANCE_NEW_PROTECTED"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint/v2\",\"base_sha\":\"$CHECKPOINT_ADVANCE_OLD\",\"tickets\":[{\"ticket\":\"T-83\",\"head_sha\":\"$CHECKPOINT_ADVANCE_HEAD\",\"ticket_blob\":\"$CHECKPOINT_ADVANCE_BLOB\",\"next_stage\":\"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step\"}]}" \
+  >"$TMP/checkpoint-advance.json"
+chmod 600 "$TMP/checkpoint-advance.json"
+printf '%s\n' \
+  '{"authorization_nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+  >"$TMP/checkpoint-advance-accounting.json"
+chmod 600 "$TMP/checkpoint-advance-accounting.json"
+printf '%s\n' \
+  "{\"baseRefName\":\"main\",\"baseRefOid\":\"$CHECKPOINT_ADVANCE_NEW_PROTECTED\",\"headRefOid\":\"$CHECKPOINT_ADVANCE_PR_HEAD\",\"isDraft\":false,\"mergeable\":\"CONFLICTING\",\"state\":\"OPEN\"}" \
+  >"$TMP/checkpoint-advance-pr.json"
+chmod 600 "$TMP/checkpoint-advance-pr.json"
+(
+  eval "$(sed -n \
+    '/^product_checkpoint_base()/,/^seed_product_worktrees()/p' \
+    "$LANE" | sed '$d')"
+  lane_tmp_parent() { printf '%s\n' "$TMP"; }
+  refuse_production_path() { :; }
+  die() { echo "factory-dev-lane: $*" >&2; exit 1; }
+  TEST_MODE=1
+  FACTORY_DEV_LANE_PR_VIEW_JSON="$TMP/checkpoint-advance-pr.json"
+  receipt="$(
+    build_product_publication_conflict_receipt "$CHECKPOINT_ADVANCE_SOURCE" \
+      "$CHECKPOINT_ADVANCE_NEW" "$TMP/checkpoint-advance.json" \
+      "$TMP/checkpoint-advance-accounting.json" \
+      "$TMP/checkpoint-advance.bundle" T-83
+  )"
+  python3 - "$receipt" "$CHECKPOINT_ADVANCE_OLD_PROTECTED" \
+    "$CHECKPOINT_ADVANCE_NEW_PROTECTED" <<'PY'
+import json, sys
+value=json.loads(sys.argv[1])
+assert value["schema"]=="factory-dev-publication-conflict/v1"
+assert value["old_protected_base_sha"]==sys.argv[2]
+assert value["new_protected_base_sha"]==sys.argv[3]
+assert value["repair_owner"]=="builder"
+PY
+  CHECKPOINT_REPLAY_ROOT="$TMP/checkpoint-replay-root"
+  CHECKPOINT_REPLAY_WORK="$CHECKPOINT_REPLAY_ROOT/worktrees/T-83"
+  mkdir -p "$CHECKPOINT_REPLAY_ROOT/runtime" \
+    "$CHECKPOINT_REPLAY_ROOT/worktrees"
+  printf '%s\n' "$receipt" \
+    >"$CHECKPOINT_REPLAY_ROOT/runtime/product-publication-conflict.json"
+  chmod 600 \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/product-publication-conflict.json"
+  git clone -q "$CHECKPOINT_ADVANCE_SOURCE" "$CHECKPOINT_REPLAY_WORK"
+  git -C "$CHECKPOINT_REPLAY_WORK" checkout -q -b ticket/T-83-replay \
+    "$CHECKPOINT_ADVANCE_NEW_PROTECTED"
+  git -C "$CHECKPOINT_REPLAY_WORK" fetch -q \
+    "$TMP/checkpoint-advance.bundle" \
+    refs/heads/ticket/T-83:refs/retry/T-83
+  : >"$CHECKPOINT_REPLAY_ROOT/runtime/conflicts"
+  chmod 600 "$CHECKPOINT_REPLAY_ROOT/runtime/conflicts"
+  if git -C "$CHECKPOINT_REPLAY_WORK" cherry-pick \
+    "$CHECKPOINT_ADVANCE_HEAD" >/dev/null 2>&1; then
+    fail "publication replay fixture did not produce its source conflict"
+  fi
+  resolve_product_publication_cherry_pick "$CHECKPOINT_REPLAY_ROOT" \
+    "$CHECKPOINT_REPLAY_WORK" T-83 "$CHECKPOINT_ADVANCE_HEAD" \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/conflicts" ||
+    fail "Builder-owned publication conflict was not preserved safely"
+  grep -qx current "$CHECKPOINT_REPLAY_WORK/app/shared" ||
+    fail "publication replay overwrote protected-main content"
+  write_product_publication_replay "$CHECKPOINT_REPLAY_ROOT" T-83 \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/conflicts"
+  python3 - \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/product-publication-replay.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+assert value["schema"]=="factory-dev-publication-replay/v1"
+assert [item["path"] for item in value["conflicts"]]==["app/shared"]
+PY
+) || fail "authorized publication checkpoint could not bind protected conflict"
+
 git -C "$SEED_HISTORY" checkout -q ticket/T-1
 printf '%s\n' \
   "source '/private/tmp/nysa-sf-dev.untrusted/runtime/product-db/T-1.env'" \
