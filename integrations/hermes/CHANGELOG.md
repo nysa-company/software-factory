@@ -5,6 +5,19 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.8.0 — 2026-07-27
+
+- Replaces agent-selected routing with deterministic reconciliation and
+  one-use, head- and passport-bound transition receipts.
+- Reinterprets ticket worktrees as disposable execution cells; ticket identity
+  is product, ticket, branch, and authenticated portable passport.
+- Adds provider-free Contract 1.8 readiness checks before Planner and removes
+  wall-clock qualification expiry as a delivery stop.
+- Retains the generation-wide provider coordinator and budget ledger while
+  allowing four ticket cells and four validating PRs.
+- Retains `dispatch-plan` for one release as a deterministic compatibility
+  alias; it cannot spawn an agentic dispatcher.
+
 ## 1.7.0 — 2026-07-22
 
 - Adds protected qualification manifests for an exact ten-ticket generation,

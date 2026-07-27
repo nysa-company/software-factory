@@ -67,7 +67,7 @@ class ActivationTest(unittest.TestCase):
                 "--config", str(self.config),
                 "--contract-version", contract,
         ]
-        if contract == "1.7.0":
+        if contract in {"1.7.0", "1.8.0"}:
             arguments += ["--policy", str(self.policy_path)]
         return subprocess.run(
             [*arguments, *selection],
@@ -118,6 +118,7 @@ class ActivationTest(unittest.TestCase):
         self.assertEqual(
             json.loads(status.stdout)["execution_mode"], "cli-concurrent-v1"
         )
+        self.assertEqual(self.command(contract="1.8.0").returncode, 0)
 
     def test_contract_1_6_rejects_cli_activation(self):
         self.value = {

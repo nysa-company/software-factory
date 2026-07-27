@@ -247,7 +247,8 @@ case "$command_name" in
     [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]] ||
       json_error "route migration requires contract 1.4.0 or newer"
     if [[ "$command_name" == "migrate" ]]; then
       [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
@@ -414,10 +415,12 @@ PY
     [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]] ||
       json_error "mid-ticket fallback requires contract 1.4.0 or newer"
     if [[ "$command_name" == "fallback-auto" &&
-          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.7.0" ]]; then
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.7.0" &&
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.8.0" ]]; then
       json_error "automatic qualification fallback requires contract 1.7.0"
     fi
     [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||

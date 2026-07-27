@@ -22,12 +22,12 @@ done
 [[ -z "$ROLE" || "$ACTION" == "qualification-backlog" ]] ||
   { echo "--role is valid only for qualification backlog return" >&2; exit 2; }
 [[ "$ACTION" != "reviewer-reconcile" ||
-   "$CONTRACT_VERSION" == "1.7.0" ]] || {
+   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] || {
   echo "reviewer reconciliation requires contract 1.7.0" >&2
   exit 1
 }
 [[ "$ACTION" != "qualification-backlog" ||
-   "$CONTRACT_VERSION" == "1.7.0" ]] || {
+   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] || {
   echo "qualification backlog return requires contract 1.7.0" >&2
   exit 1
 }
@@ -140,7 +140,7 @@ text = re.sub(
     r"^State:\s*.*$", f"State: {states[target_key]}", text,
     count=1, flags=re.MULTILINE | re.IGNORECASE,
 )
-if target_key == "blocked-escalated" and contract == "1.7.0":
+if target_key == "blocked-escalated" and contract in {"1.7.0", "1.8.0"}:
     resume = f"Resume-State: {states[current]}"
     resume_fields = re.findall(
         r"^Resume-State:\s*.*$", text, re.MULTILINE | re.IGNORECASE,
@@ -197,16 +197,17 @@ elif [[ "$ACTION" == "qualification-backlog" ]]; then
     "refs/remotes/origin/main:factory/QUALIFICATION.json" > "$OPERATOR_VERSION_FILE" ||
     { echo "protected qualification manifest is unavailable" >&2; exit 1; }
   python3 - "$TMP" "$OPERATOR_VERSION_FILE" "$TICKET" \
-    "$PRODUCT_ROOT/factory/runs" "$ROLE" "$PINNED_KIT_SHA" <<'PY'
+    "$PRODUCT_ROOT/factory/runs" "$ROLE" "$PINNED_KIT_SHA" \
+    "$CONTRACT_VERSION" <<'PY'
 import json
 import re
 import stat
 import sys
 from pathlib import Path
 
-ticket_path, qualification_path, ticket, runs_path, role, pinned_kit_sha = (
+ticket_path, qualification_path, ticket, runs_path, role, pinned_kit_sha, contract_version = (
     Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]),
-    sys.argv[5], sys.argv[6]
+    sys.argv[5], sys.argv[6], sys.argv[7]
 )
 text = ticket_path.read_text()
 qualification = json.loads(qualification_path.read_text())
@@ -251,7 +252,7 @@ if role:
             and latest.get("effective_cost") == latest.get("reserved_usd")
         )
         contract_blocked = accounted and all((
-            latest.get("contract_version") == "1.7.0",
+            latest.get("contract_version") == contract_version,
             latest.get("phase") == "completed",
             latest.get("exit_status") == "12",
             latest.get("role_exit") == "role_exit_contract_blocked",

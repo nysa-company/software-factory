@@ -126,6 +126,30 @@ class DispatchPlanTest(unittest.TestCase):
         )
         return tickets
 
+    def write_contract_18_qualification(self):
+        tickets = [f"T-{number}" for number in range(110, 114)]
+        for ticket in tickets:
+            self.ticket(ticket, "normal", "Ready")
+        (self.product / "factory/PROJECT.env").write_text(
+            "TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS=4\n"
+        )
+        manifest = {
+            "budget_usd": "100.000000",
+            "capacity": 4,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "target_done": 4,
+            "tickets": tickets,
+        }
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        return tickets
+
     def command(self, action, expected=0):
         result = subprocess.run(
             [
@@ -155,6 +179,7 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(first["ticket"], "T-200")
         self.assertRegex(first["lease_id"], r"^[0-9a-f]{64}$")
         worktree = Path(first["worktree"])
+        self.assertEqual(worktree.name, "cell-1")
         self.assertEqual(
             run("git", "symbolic-ref", "--short", "HEAD", cwd=worktree).strip(),
             "ticket/T-200",
@@ -169,6 +194,17 @@ class DispatchPlanTest(unittest.TestCase):
             results = list(executor.map(lambda _: self.command("claim"), range(2)))
         self.assertEqual({item["ticket"] for item in results}, {"T-100", "T-200"})
         self.assertEqual(len({item["lease_id"] for item in results}), 2)
+
+    def test_ticket_identity_survives_cell_relocation(self):
+        first = self.command("claim")
+        old_cell = Path(first["worktree"])
+        new_cell = self.worktrees / "cell-4"
+        (self.product / "factory/.dispatch-leases/T-200.json").unlink()
+        run("git", "worktree", "move", str(old_cell), str(new_cell), cwd=self.product)
+
+        resumed = self.command("claim")
+        self.assertEqual(resumed["ticket"], "T-200")
+        self.assertEqual(Path(resumed["worktree"]), new_cell)
 
     def test_stale_reconciliation_maintenance_and_dirty_root_refuse(self):
         self.write_mapping(age=601)
@@ -186,7 +222,7 @@ class DispatchPlanTest(unittest.TestCase):
         value = self.command("claim")
         self.assertEqual(value["action"], "WAIT")
         self.assertEqual(value["reason_code"], "capacity_full")
-        self.assertFalse((self.worktrees / "T-400").exists())
+        self.assertFalse((self.worktrees / "cell-3").exists())
 
     def test_failed_lease_write_removes_new_worktree_and_branch(self):
         lease_dir = self.product / "factory/.dispatch-leases"
@@ -195,7 +231,7 @@ class DispatchPlanTest(unittest.TestCase):
             self.command("claim", expected=2)
         finally:
             lease_dir.chmod(0o700)
-        self.assertFalse((self.worktrees / "T-200").exists())
+        self.assertFalse((self.worktrees / "cell-1").exists())
         branches = run("git", "branch", "--format=%(refname:short)", cwd=self.product)
         self.assertNotIn("ticket/T-200", branches.splitlines())
 
@@ -240,6 +276,19 @@ class DispatchPlanTest(unittest.TestCase):
         self.write_qualification({"T-100": ["T-101"], "T-101": ["T-100"]})
         with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
             DISPATCH.qualification(self.product, self.product / "factory", 4)
+
+    def test_contract_18_qualification_requires_four_independent_canaries(self):
+        tickets = self.write_contract_18_qualification()
+        with mock.patch.object(
+            DISPATCH, "protected_terminal", side_effect=DISPATCH.ValidationError("not done")
+        ):
+            value = DISPATCH.qualification(
+                self.product, self.product / "factory", 4
+            )
+        self.assertEqual(value["tickets"], tickets)
+        self.assertEqual(value["capacity"], 4)
+        self.assertEqual(value["dependencies"], {ticket: () for ticket in tickets})
+        self.assertEqual(value["done"], 0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,10 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.7.0",
+  "contract_version": "1.8.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
+  "state_machine_schema": "nysa.software-factory.state-machine/v1",
   "supported_hermes": [
     {
       "agent_version": "0.18.2",
@@ -22,8 +23,8 @@
       "KIT_DIR"
     ],
     "soul": "SOUL.md",
-    "dispatcher_skill": "skills/factory-dispatch/SKILL.md",
-    "supervisor_skill": "skills/factory-supervisor/SKILL.md"
+    "dispatcher_skill": "skills/factory-dispatch/SKILL.md (deprecated compatibility only)",
+    "supervisor_skill": "skills/factory-supervisor/SKILL.md (deprecated compatibility only)"
   },
   "launcher": {
     "path": "~/.factory/bin/factory-launch",
@@ -79,25 +80,109 @@
         ],
         "output_schema": "nysa.software-factory.hermes-doctor/v1"
       },
+      "reconcile": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/factory-controller.py",
+        "arguments": [
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.controller/v1",
+        "authority": "non-overlapping non-agent reconciliation claims up to four disposable cells, executes only receipt-authorized actions, persists restart-safe claims, and immediately resolves each terminal event"
+      },
+      "qualification": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/qualification-reducer.py",
+        "arguments": [
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.qualification-report/v1",
+        "authority": "immutable exact reduction of authenticated passports, run charges, controller concurrency history, protected checks, and GitHub merge truth"
+      },
       "dispatch-plan": {
         "minimum_contract_version": "1.6.0",
         "helper": "scripts/dispatch-plan.py",
         "grammars": [
           "--shadow --json",
-          "--claim --json"
+          "--claim --json",
+          "--claim [--exclude-ticket <T-NNN> ...] --json"
         ],
         "output_schema": "nysa.software-factory.dispatch-plan/v1",
-        "authority": "fresh Linear reconciliation selects Ready or explicit resume; the helper atomically validates capacity, prepares the exact worktree, and creates an opaque lease"
+        "authority": "deprecated Contract 1.8 compatibility alias for one deterministic reconciliation; it may not spawn an agentic dispatcher"
+      },
+      "state-machine": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/state-machine.py",
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "[--lease <opaque-lease-id>]",
+          "--workdir",
+          "<absolute-product-worktree>",
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.state-machine/v1",
+        "authority": "sole transition resolver; materializes legal ticket state, calls next-stage once, and issues an owner-only one-use receipt bound to the exact head, tree, evidence, route, passport, Factory release, and certified product origin"
+      },
+      "passport": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/ticket-passport.py",
+        "grammars": [
+          "export --ticket <T-NNN> --receipt <lowercase-sha256> --publication-state <none|validating|ready|merge-pending|merged|repair> --workdir <exact-ticket-worktree> --json",
+          "migrate --ticket <T-NNN> --publication-state <preserve|none|validating|ready|merge-pending|merged|repair> --workdir <exact-clean-ticket-worktree> --json",
+          "validate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json"
+        ],
+        "output_schema": "nysa.software-factory.ticket-passport/v1",
+        "authority": "authenticated owner-only lane-neutral role, charge, release, base, transition, and publication continuity"
+      },
+      "publication": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/publication-lease.py",
+        "grammars": [
+          "ready --ticket <T-NNN> --head <full-sha> --priority <urgent|high|normal|low|none> --json",
+          "acquire --ticket <T-NNN> --head <full-sha> --priority <urgent|high|normal|low|none> --json",
+          "release --ticket <T-NNN> --lease <opaque-lease-id> --json"
+        ],
+        "output_schema": "nysa.software-factory.publication-lease/v1",
+        "authority": "exactly one short-lived merge authority ordered by priority, publication_ready_at, then ticket ID; open PR validation remains concurrent"
+      },
+      "publication-repair": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/publication-repair.py",
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--lease",
+          "<opaque-lease-id>",
+          "--receipt",
+          "<transition-receipt-sha256>",
+          "--pr",
+          "<number>",
+          "--workdir",
+          "<absolute-product-worktree>",
+          "--json"
+        ],
+        "output_schema": "nysa.software-factory.publication-repair/v1",
+        "authority": "after one consumed same-head transient rerun, disables auto-merge, reopens only the classified Builder or Test-author role, and requires fresh Reviewer and Narrator evidence"
+      },
+      "ci-rerun": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/ci-rerun.py",
+        "arguments": [
+          "--ticket <T-NNN> --lease <opaque-lease-id> --receipt <lowercase-sha256> --pr <positive-number> --workdir <exact-ticket-worktree> --json"
+        ],
+        "output_schema": "nysa.software-factory.ci-rerun/v1",
+        "authority": "one rerun per exact head only for one completed application-test failure while all policy, security, configuration, control-plane, and immutability checks are green"
       },
       "ticket-pr": {
         "minimum_contract_version": "1.6.0",
         "helper": "scripts/ticket-pr.py",
         "grammars": [
           "--ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
-          "--ticket <T-NNN> --lease <opaque-lease-id> --workdir <exact-ticket-worktree> --json"
+          "--ticket <T-NNN> --lease <opaque-lease-id> --workdir <exact-ticket-worktree> --json",
+          "--ticket <T-NNN> [--lease <opaque-lease-id>] --receipt <lowercase-sha256> --workdir <exact-ticket-worktree> --json (Contract 1.8)"
         ],
         "output_schema": "nysa.software-factory.ticket-pr/v1",
-        "authority": "create or reuse one exact open ticket PR at the Reviewer boundary, or recover it at Narrator only after reviewed-head lineage validation, and require exact-head GitHub checks before Reviewer and Narrator; never approve or merge"
+        "authority": "create or reuse one exact open ticket PR at the Reviewer boundary, validate it at Narrator and Contract 1.8 publication boundaries against the unchanged transition receipt and reviewed lineage, and require exact-head GitHub checks; never approve or merge"
       },
       "models": {
         "minimum_contract_version": "1.2.0",
@@ -281,6 +366,8 @@
           "--role",
           "<next-stage-role>",
           "[--lease <opaque-lease-id>]",
+          "--receipt",
+          "<lowercase-sha256>",
           "--workdir",
           "<absolute-product-worktree>",
           "--json"
@@ -329,6 +416,7 @@
           "--ticket",
           "<T-NNN>",
           "[--lease <opaque-lease-id>]",
+          "[--receipt <lowercase-sha256> (required for Contract 1.8 non-done actions)]",
           "--workdir",
           "<absolute-worktree>",
           "--action",
@@ -399,6 +487,8 @@
           "--ticket",
           "<T-NNN>",
           "[--lease <opaque-lease-id>]",
+          "--receipt",
+          "<lowercase-sha256>",
           "--prompt-file",
           "$FACTORY_RELEASE_PATH/roles/<role>.md",
           "--workdir",
@@ -409,6 +499,7 @@
         "output": "process exit plus release-bound run manifest",
         "validation": [
           "exact argument grammar; adapter overrides forbidden",
+          "Contract 1.8 consumes exactly one matching transition receipt before execution and run-agent verifies that receipt without recomputing the stage",
           "canonical non-symlink release role prompt",
           "absolute physical non-symlink distinct linked Git worktree root",
           "same Git common directory as registered PRODUCT_ROOT",
@@ -433,6 +524,8 @@
       "FACTORY_PROJECT": "validated launcher project slug",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
       "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
+      "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
+      "FACTORY_TRANSITION_STATE_DIR": "Contract 1.8 owner-only controller state directory",
       "FACTORY_PROVIDER_DB": "fixed Contract 1.6+ owner-local transactional database",
       "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6+ owner-local admission policy",
       "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
@@ -440,7 +533,7 @@
       "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
       "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6+ owner-local attempt directory",
       "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6+ owner-local apply-lock directory",
-      "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7 API v1 or subscription-CLI v2",
+      "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
       "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
       "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor"
     },
@@ -457,6 +550,8 @@
       "FACTORY_PROJECT",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
       "FACTORY_DISPATCH_LEASE_ID",
+      "FACTORY_TRANSITION_RECEIPT_SHA256",
+      "FACTORY_TRANSITION_STATE_DIR",
       "FACTORY_PROVIDER_DB",
       "FACTORY_PROVIDER_POLICY",
       "FACTORY_PROVIDER_BROKER_DB",
@@ -502,17 +597,16 @@
     "descriptor": "PRODUCT_ROOT/factory/PROJECT.env",
     "key": "MAX_CONCURRENT_TICKETS",
     "default": 4,
-    "maximum": 6,
+    "maximum": 4,
     "enabled_value": 4,
     "enabled_values": [
       2,
       3,
-      4,
-      5,
-      6
+      4
     ],
-    "capacity_scope": "coupled ticket-worktree and provider-call capacity",
-    "parallel_execution_gate": "the retained product-wide provider lock serializes every non-activated route; an exact owner-activated Contract 1.6 API route or Contract 1.7 API/subscription-CLI route may use transactional parallel admission",
+    "capacity_scope": "generation-wide admission and provider budget with up to four disposable per-ticket execution cells",
+    "ticket_identity": "product, ticket ID, branch, and authenticated passport; never a lane, cell, or filesystem path",
+    "parallel_execution_gate": "the retained product-wide provider lock serializes every non-activated route; an exact owner-activated Contract 1.6 API route or Contract 1.7/1.8 API/subscription-CLI route may use transactional parallel admission",
     "lease_required_when_greater_than": 1,
     "state": "PRODUCT_ROOT/factory/.dispatch-leases/<T-NNN>.json",
     "lease_ttl_seconds": 900,
@@ -521,9 +615,10 @@
   "provider_execution": {
     "contract_1_6_mode": "isolated-v1",
     "contract_1_7_mode": "cli-concurrent-v1",
+    "contract_1_8_mode": "cli-concurrent-v1",
     "activation_schemas": {
       "nysa.software-factory.provider-activation/v1": "Contract 1.6 or 1.7 API route bound to broker protocol and path",
-      "nysa.software-factory.provider-activation/v2": "Contract 1.7 subscription CLI route bound to exact adapter, model, provider family, account route, and provider-policy SHA-256"
+      "nysa.software-factory.provider-activation/v2": "Contract 1.7 or 1.8 subscription CLI route bound to exact adapter, model, provider family, account route, and provider-policy SHA-256"
     },
     "activation_gate": "disabled unless the owner-only canonical activation matches the active contract, selected route identity, and exact provider-policy digest; invalid or absent activation retains serialized execution",
     "legacy_contracts": "contracts 1.0.0 through 1.5.0 retain interval-wide serialized provider execution",
@@ -588,6 +683,8 @@
       "network": "none; provider egress occurs only in the trusted host runtime through the configured credential broker"
     },
     "controller": {
+      "reconciliation_authority": "non-agent one-shot controller invokes state-machine receipts; Cursor roles execute assigned work and never choose the next state",
+      "schedule": "launchd non-overlapping reconciliation every 15 seconds plus immediate terminal-event wakeup",
       "artifact_authority": "scripts/provider-artifact-controller.py",
       "artifact_schema": "nysa.software-factory.provider-patch-artifact/v1",
       "artifact_policy": "~/.factory/provider-artifact-policy.json",
@@ -644,18 +741,29 @@
     "templates/profile/SOUL.md",
     "templates/profile/skills/factory-dispatch/SKILL.md",
     "templates/profile/skills/factory-supervisor/SKILL.md",
+    "scripts/launchd/com.factory.controller.plist.template",
     "templates/launchd/com.nysa.hermes-factory-gateway.plist",
     "templates/launchd/com.nysa.hermes-dashboard.plist",
     "scripts/factory-doctor.sh",
     "roles/dispatcher.md",
     "scripts/preflight.sh",
     "scripts/next-stage.sh",
+    "scripts/state-machine.py",
+    "scripts/factory-controller.py",
+    "scripts/ticket-readiness.py",
+    "scripts/ticket-passport.py",
+    "scripts/publication-lease.py",
+    "scripts/publication-repair.py",
+    "scripts/publication-conflict-policy.py",
+    "scripts/ci-rerun.py",
     "scripts/run-agent.sh",
     "scripts/provider-coordinator.py",
     "scripts/provider-cli-runtime.py",
     "scripts/provider-credential-broker.py",
     "scripts/provider-activation.py",
     "scripts/provider-artifact-controller.py",
+    "scripts/budget-stage.py",
+    "scripts/qualification-reducer.py",
     "scripts/provider-executor.py",
     "scripts/provider-isolated-run.py",
     "scripts/provider-recovery.py",
@@ -708,6 +816,11 @@
     "factory/route-plans/<T-NNN>.json"
   ],
   "launch_agents": {
+    "controller": {
+      "label": "com.factory.controller.<project>",
+      "schedule_seconds": 15,
+      "scope": "one registered product; non-overlapping one-shot reconciliation"
+    },
     "gateway": {
       "label": "com.nysa.hermes-factory-gateway",
       "scope": "factory profile only"

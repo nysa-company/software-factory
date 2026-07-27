@@ -192,7 +192,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.7.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -232,6 +232,18 @@ Its trusted ticket-state reconciliation binds a successful Reviewer's
 read-only head and durable output digest, records the canonical verdict and
 explicit repair owner, and commits a rejection's Review-to-Building transition
 in the same host-owned change.
+Contract `1.8.0` replaces the agentic dispatcher and supervisor with a
+non-overlapping one-shot controller. `launchd` invokes it every 15 seconds and
+watches terminal run evidence for an immediate wakeup. `state-machine` calls
+`next-stage` exactly once and issues a one-use receipt bound to the ticket
+head/tree, evidence, route, passport, Factory release, and certified origin.
+Roles consume that receipt unchanged and never select their next state.
+Authenticated passports preserve completed roles, charges, Factory/base
+lineage, and publication state across disposable-cell relocation, controller
+restart, and Factory migration. Four PRs may validate concurrently; one
+renewable per-product publication lease serializes merge requests. The
+four-ticket qualification reducer reconciles passports, manifests, controller
+events, protected checks, PR heads, merge commits, and protected main.
 During a protected qualification, the development scheduler authenticates a
 durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
 against the exact qualification kit SHA before returning only that ticket to
@@ -376,8 +388,9 @@ and full family-history resolution. Activation does not migrate pins or
 journals automatically.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` for
-Contracts 1.1 through 1.5 and `4` for Contract 1.6. The older contracts accept
-integers through `4`; Contract 1.6 accepts `1` through `6`. At any value above `1`, every sequencing and role launch
+Contracts 1.1 through 1.5 and `4` for Contracts 1.6 through 1.8. The older
+contracts accept integers through `4`; Contracts 1.6 and 1.7 accept `1`
+through `6`, while Contract 1.8 accepts `1` through `4`. At any value above `1`, every sequencing and role launch
 requires the matching opaque record under
 `factory/.dispatch-leases/`. Claims are atomic and deterministically refuse once
 the configured capacity is full. Stale records continue to consume capacity and
@@ -410,7 +423,7 @@ Renewal serializes only on the dispatcher lease lock, not the provider launch
 lock; matching ownership and pre/post mutation control checks keep maintenance
 and kill fail-closed while unrelated provider entry cannot starve a heartbeat.
 
-The Contract 1.6 Hermes supervisor is deliberately one-shot: one invocation
+The Contract 1.6/1.7 Hermes supervisor is deliberately one-shot: one invocation
 asks the stable launcher for one deterministic claim, starts at most one
 ephemeral dispatcher child on `START`, and exits on `WAIT` or `ESCALATE`.
 Autonomous claiming requires configured capacity above one so the lease can be
@@ -421,6 +434,9 @@ checks are pending, supplies completed failures to Reviewer, and revalidates
 successful exact-head checks and Reviewer lineage before Narrator. A later
 Builder or Test-author run forces fresh review. The helper has no approval or
 merge authority.
+Under Contract 1.8, compatibility `dispatch-plan` performs deterministic
+admission only and cannot spawn a dispatcher. The release-owned controller is
+the sole caller that advances work through state-machine receipts.
 
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,

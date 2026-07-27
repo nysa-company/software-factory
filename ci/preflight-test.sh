@@ -205,7 +205,8 @@ run_sealed_preflight() {
     FACTORY_RELEASE_PATH="$release" \
     FACTORY_RELEASE_CONTRACT_VERSION="$KIT_CONTRACT_VERSION" \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
-    bash "$release/scripts/preflight.sh" --ticket "$ticket" 2>&1
+    bash "$release/scripts/preflight.sh" --ticket "$ticket" \
+      --workdir "$factory_root" 2>&1
 }
 
 assert_preflight() {
@@ -429,6 +430,12 @@ SEALED_PRODUCT="$TMP/sealed-product"
 mkdir -p "$SEALED_PRODUCT"
 write_envelope "$SEALED_PRODUCT"
 write_ready_ticket "$SEALED_PRODUCT" "T-090"
+printf '%s\n' \
+  'Product-Decisions: frozen' \
+  'Fixture-Seams: none' \
+  'Authentication-Seams: none' \
+  'Protected-Test-Conflicts: none' \
+  >> "$SEALED_PRODUCT/factory/tickets/T-090.md"
 init_git_repo "$SEALED_PRODUCT"
 SEALED_STATUS=0
 SEALED_OUT="$(run_sealed_preflight "$SEALED_PRODUCT" T-090 "$SEALED_RELEASE" "$SEALED_TREE")" ||

@@ -7,7 +7,7 @@ creating a duplicate entry.
 
 ## FI-20260726-001 — Product decisions reached provider roles too late
 
-Status: Validating
+Status: Implemented; qualification pending
 Area: readiness
 Owner: Product
 First seen: 2026-07-26, Generation 9, T-079/T-081
@@ -18,10 +18,12 @@ Root cause: admission checked ticket shape but not whether product identity and
 navigation decisions were settled.
 Smallest change: resolve stable keys and navigation outcomes before Ready.
 Validation: T-079 and T-081 reach Spec-linter without a product-decision return.
+Contract 1.8 occurrence: provider-free readiness now rejects unresolved product
+decisions before Planner and emits no run or charge record.
 
 ## FI-20260726-002 — Spec PASS did not prove fixture executability
 
-Status: Validating
+Status: Implemented; qualification pending
 Area: lifecycle
 Owner: Factory
 First seen: 2026-07-26, Generation 9, T-080/T-084
@@ -33,10 +35,12 @@ Root cause: Spec-lint validated semantics but not that named fixtures could
 execute inside the isolated role boundary.
 Smallest change: require executable fixture and authentication seams before PASS.
 Validation: focused fixtures execute unchanged in Test-author and Builder.
+Contract 1.8 occurrence: readiness validates tracked fixture and authentication
+seams before the first provider call.
 
 ## FI-20260726-003 — Cross-role repair ownership caused semantic churn
 
-Status: Validating
+Status: Implemented; qualification pending
 Area: lifecycle
 Owner: Factory
 First seen: 2026-07-26, Generation 9, T-080/T-082
@@ -62,6 +66,9 @@ Root cause: checkpoint and resume gates required global lane drain.
 Smallest change: ticket-scoped approvals, selected-ticket drain, and portable
 v2 passport export.
 Validation: export one terminal ticket while a sibling provider attempt is active.
+Contract 1.8 occurrence: tickets use authenticated passports and disposable
+cells; controller restart and one live relocation are immutable qualification
+events.
 
 ## FI-20260726-005 — Cancellation surfaces did not converge
 
@@ -82,7 +89,7 @@ claims, PID files, or reserved manifests.
 
 ## FI-20260726-006 — Qualification totals lagged terminal attempts
 
-Status: Open
+Status: Implemented; qualification pending
 Area: accounting
 Owner: Factory
 First seen: 2026-07-26, Generation 9
@@ -94,10 +101,13 @@ of reducing terminal manifests continuously.
 Smallest change: reconcile terminal attempts into generation evidence before
 each dispatch and merge decision.
 Validation: manifest-derived totals equal the generation record at every merge.
+Contract 1.8 occurrence: the qualification reducer authenticates each passport,
+deduplicates run IDs and manifest digests, and matches exact cumulative charges
+to the $2/$25/$100 envelope.
 
 ## FI-20260727-007 — Portable checkpoints could double-count prior charges
 
-Status: Implemented; qualification pending
+Status: Implemented in development; Contract 1.8 automation pending
 Area: accounting
 Owner: Factory
 First seen: 2026-07-27, T-080/T-084 passport recovery
@@ -436,6 +446,11 @@ candidate `592d57f2d2d6e656b6349fe83d5a8726c19b3d59`. The first zero-submission
 T-081 canary proved portable export records the authenticated reopen directly
 as `FIX test-author`; that exact checkpoint shape now passes the same focused
 sequence.
+Contract 1.8 occurrence: publication leases now release on a repeated
+same-head CI failure so unrelated green work can merge. The authenticated
+publication-repair record now routes only the typed Builder/Test-author repair,
+then fresh Reviewer and Narrator roles. Status: Implemented; qualification
+pending.
 
 ## FI-20260727-024 — Zero-attempt failed plans could not re-export lineage
 
@@ -487,7 +502,7 @@ the real T-083 canary remains the qualification gate.
 
 ## FI-20260727-026 — A transient protected test failure reopened ticket work
 
-Status: Operating rule adopted; controller automation pending
+Status: Implemented; qualification pending
 Area: publication
 Owner: Factory
 First seen: 2026-07-27, T-079 protected publication
@@ -511,6 +526,9 @@ before reopening a role. A green rerun continues publication; a second failure
 routes the exact Builder or Test-author. Control-plane failures never rerun.
 Validation: the T-079 same-head rerun passed without a code change, role call,
 or successful-role replay, and protected auto-merge completed.
+Contract 1.8 occurrence: `ci-rerun` permits one exact-head failed-job rerun only
+for a single application-test failure with protected classes green, and
+persists the consumed rerun identity owner-locally.
 
 ## Maintenance rule
 

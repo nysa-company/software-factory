@@ -4,6 +4,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
+  one-use state-machine receipts. Tickets are branch/passport identities, not
+  lane or worktree identities; four disposable cells and PR validations may
+  run concurrently behind one renewable per-product publication lease.
+- Contract 1.8 qualification is exactly four independent tickets at one frozen
+  Factory SHA with $100 total, $25 per ticket, and $2 per run. Its immutable
+  reducer requires authenticated passports, no duplicate successful role/head
+  or charge, controller restart and cell relocation events, concurrent PR
+  validation, protected checks, exact merged heads, and protected-main Done.
 - Fresh development lanes and trusted ticket-state reconciliation omit the
   Reviewer checkpoint argument when no authenticated import exists, including
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
@@ -941,3 +950,13 @@ only when a live conflicting PR proves the exact sealed product patch and both
 qualification bases add control paths only. Replay preserves protected-main
 content at safe Builder-owned conflicts and records exact blobs before Builder,
 fresh Reviewer, and Narrator continue; every other conflict fails closed.
+
+## 2026-07-27 — Decision 64: Contract 1.8 has one deterministic controller
+
+Category: System change
+
+The release-owned one-shot controller is the only ticket router. It claims up
+to four passport-owned tickets, obtains one-use state-machine receipts, records
+restart/relocation/publication events, and serializes only merge publication.
+The exact candidate remains unqualified until the four-ticket reducer matches
+authenticated role and charge evidence to protected GitHub merge truth.

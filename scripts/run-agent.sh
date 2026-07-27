@@ -233,6 +233,7 @@ SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
 ENVELOPE_CONTROL="$KIT_DIR/scripts/envelope-control.py"
 SEQUENCER_ERROR=""
+PROVIDER_CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-}}"
 
 load_effective_envelope() {
   local key value output
@@ -254,6 +255,37 @@ load_effective_envelope() {
 sequencer_allows_role() {
   local output rc=0
   SEQUENCER_ERROR=""
+  if [[ "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ]]; then
+    if [[ ! "${FACTORY_TRANSITION_RECEIPT_SHA256:-}" =~ ^[0-9a-f]{64}$ ||
+          -z "${FACTORY_TRANSITION_STATE_DIR:-}" ||
+          -z "${FACTORY_PROJECT:-}" ]]; then
+      SEQUENCER_ERROR="consumed transition receipt is unavailable"
+      return 1
+    fi
+    local -a receipt_args=(
+      verify
+      --factory-root "$REPO_ROOT"
+      --workdir "$WORKDIR"
+      --kit-dir "$KIT_DIR"
+      --state-dir "$FACTORY_TRANSITION_STATE_DIR"
+      --ticket "$TICKET"
+      --contract-version "$PROVIDER_CONTRACT_VERSION"
+      --factory-sha "$FACTORY_KIT_SHA"
+      --project "$FACTORY_PROJECT"
+      --receipt "$FACTORY_TRANSITION_RECEIPT_SHA256"
+      --role "$ROLE"
+      --require-used
+    )
+    [[ -z "$DISPATCH_LEASE_ID" ]] ||
+      receipt_args+=(--lease "$DISPATCH_LEASE_ID")
+    if ! FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+      python3 -B "$KIT_DIR/scripts/state-machine.py" "${receipt_args[@]}" \
+        >/dev/null 2>&1; then
+      SEQUENCER_ERROR="consumed transition receipt no longer authorizes the role"
+      return 1
+    fi
+    return 0
+  fi
   if [[ ! -f "$SEQUENCER" || -L "$SEQUENCER" ]]; then
     SEQUENCER_ERROR="selected release sequencer is missing or unsafe"
     return 1
@@ -630,6 +662,7 @@ write_manifest() {
     echo "role_branch_before=$(meta_value "${ROLE_BRANCH_BEFORE:-}")"
     echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
+    echo "transition_receipt_sha256=$(meta_value "${FACTORY_TRANSITION_RECEIPT_SHA256:-}")"
     echo "output_sha256=$(meta_value "$RUN_OUTPUT_SHA256")"
     echo "cancellation_reason=$(meta_value "$CANCELLATION_REASON")"
     echo "cancellation_preview_hash=$(meta_value "$CANCELLATION_PREVIEW_HASH")"
@@ -1340,9 +1373,9 @@ ISOLATED_BROKER_PATH=""
 ISOLATED_MODEL=""
 ISOLATED_PROVIDER_FAMILY=""
 ISOLATED_ACCOUNT_ROUTE=""
-PROVIDER_CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-}}"
 if [[ ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
-        "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ) &&
+        "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ||
+        "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   ACTIVATION_ARGS=(--config "$FACTORY_PROVIDER_ACTIVATION" \
@@ -1390,7 +1423,8 @@ for field in fields:
               "$ACTIVATED_ADAPTER" == - && "$ACTIVATED_POLICY_HASH" == - ]]; then
           [[ "$ROLE" == "reviewer" ]] || ISOLATED_RUN=1
         elif [[ "$EXECUTION_MODE" == "cli-concurrent-v1" &&
-                "$PROVIDER_CONTRACT_VERSION" == "1.7.0" &&
+                ( "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ||
+                  "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ) &&
                 "$ACTIVATED_ADAPTER" == "$ADAPTER" &&
                 "$ACTIVATED_POLICY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
           CURRENT_POLICY_HASH="$(python3 - "$FACTORY_PROVIDER_POLICY" <<'PY'
@@ -1676,7 +1710,8 @@ raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
 fi
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 &&
       ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
-        "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ) &&
+        "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ||
+        "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ) &&
       -n "${FACTORY_PROVIDER_DB:-}" && -f "$FACTORY_PROVIDER_DB" ]]; then
   LEGACY_INTERVAL_ID="legacy-$RUN_ID"
   LEGACY_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
@@ -2262,7 +2297,7 @@ candidates = [
 if not candidates:
     print("none")
 elif (
-    contract == "1.7.0"
+    contract in {"1.7.0", "1.8.0"}
     and role in {"planner", "test-author", "builder"}
     and candidates == ["ROLE-ESCALATE: CONTRACT-BLOCKED"]
 ):
@@ -2319,7 +2354,7 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       }
       END {
         if (candidates == 0) print "none"
-        else if (contract == "1.7.0" &&
+        else if ((contract == "1.7.0" || contract == "1.8.0") &&
                  (role == "planner" || role == "test-author" || role == "builder") &&
                  candidates == 1 && exact == 1) print "contract-blocked"
         else print "invalid"

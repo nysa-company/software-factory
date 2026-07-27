@@ -29,6 +29,7 @@ from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
 
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v1"
+QUALIFICATION_SCHEMA_V2 = "nysa.software-factory.qualification/v2"
 TICKET = re.compile(r"^T-([0-9]+)$")
 PRIORITY = {"urgent": 0, "high": 1, "normal": 2, "low": 3, "none": 4}
 
@@ -116,7 +117,7 @@ def capacity(factory: Path) -> int:
     if len(values) > 1:
         raise DispatchError("MAX_CONCURRENT_TICKETS is ambiguous")
     selected = values[0] if values else 4
-    if not 1 <= selected <= 6:
+    if not 1 <= selected <= 4:
         raise DispatchError("MAX_CONCURRENT_TICKETS is invalid")
     return selected
 
@@ -142,6 +143,56 @@ def qualification(
     if not path.exists():
         return None
     value = json.loads(safe_file(path, "qualification manifest", 100_000))
+    if value.get("schema") == QUALIFICATION_SCHEMA_V2:
+        keys = {
+            "budget_usd", "capacity", "contract_version", "factory_sha",
+            "generation", "per_run_budget_usd", "per_ticket_budget_usd",
+            "schema", "target_done", "tickets",
+        }
+        tickets = value.get("tickets")
+        pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
+        if (
+            set(value) != keys
+            or value.get("contract_version") != "1.8.0"
+            or value.get("factory_sha") != pin
+            or not isinstance(value.get("generation"), int)
+            or isinstance(value.get("generation"), bool)
+            or value["generation"] < 1
+            or not isinstance(tickets, list)
+            or len(tickets) != 4
+            or len(tickets) != len(set(tickets))
+            or any(
+                not isinstance(item, str) or not TICKET.fullmatch(item)
+                for item in tickets
+            )
+            or value.get("target_done") != 4
+            or value.get("capacity") != 4
+            or value.get("budget_usd") != "100.000000"
+            or value.get("per_ticket_budget_usd") != "25.000000"
+            or value.get("per_run_budget_usd") != "2.000000"
+            or configured_capacity != 4
+        ):
+            raise DispatchError("Contract 1.8 qualification manifest is invalid")
+        graph = {}
+        for ticket in tickets:
+            text = safe_file(factory / "tickets" / f"{ticket}.md", f"ticket {ticket}")
+            graph[ticket] = dependencies(text)
+            if graph[ticket]:
+                raise DispatchError("Contract 1.8 canaries must be independent")
+        terminal = set()
+        for ticket in tickets:
+            try:
+                protected_terminal(product, ticket)
+            except ValidationError:
+                continue
+            terminal.add(ticket)
+        return {
+            **value,
+            "capacity": 4,
+            "dependencies": graph,
+            "done": len(terminal),
+            "terminal": terminal,
+        }
     keys = {
         "factory_sha", "final_capacity", "generation", "initial_capacity",
         "ramp_after_done", "schema", "target_done", "tickets",
@@ -363,7 +414,6 @@ def prepare_worktree(
     product: Path, worktree_root: Path, ticket: str, prefix: str, remote: str
 ) -> tuple[Path, bool, bool]:
     branch = prefix + ticket
-    destination = worktree_root / ticket
     safe_directory(worktree_root, "worktree root", owner_only=True)
     records = worktree_records(product)
     git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
@@ -373,13 +423,16 @@ def prepare_worktree(
     ).split()
     if remote_branch and (len(remote_branch) != 2 or remote_branch[1] != f"refs/heads/{branch}"):
         raise DispatchError("ticket remote branch result is ambiguous")
-    if destination.exists() or destination.is_symlink():
+    matching = [item for item in records if item.get("branch") == f"refs/heads/{branch}"]
+    if len(matching) > 1:
+        raise DispatchError("ticket branch is checked out more than once")
+    if matching:
+        destination = Path(matching[0].get("worktree", "")).resolve(strict=True)
+        if destination.parent != worktree_root or not re.fullmatch(
+            r"cell-[1-6]", destination.name
+        ):
+            raise DispatchError("ticket branch is checked out outside a trusted cell")
         safe_directory(destination, "ticket worktree")
-        matching = [
-            item for item in records if Path(item.get("worktree", "")).resolve() == destination
-        ]
-        if len(matching) != 1 or matching[0].get("branch") != f"refs/heads/{branch}":
-            raise DispatchError("ticket worktree path collides with another worktree")
         if git(destination, "status", "--porcelain=v1", "-z"):
             raise DispatchError("ticket worktree is dirty")
         local = git(destination, "rev-parse", "HEAD").strip()
@@ -387,8 +440,23 @@ def prepare_worktree(
         if local != expected:
             raise DispatchError("ticket worktree branch is divergent or unpushed")
         return destination, False, False
-    if any(item.get("branch") == f"refs/heads/{branch}" for item in records):
-        raise DispatchError("ticket branch is checked out at an unexpected path")
+    occupied = {
+        Path(item.get("worktree", "")).resolve()
+        for item in records
+        if item.get("worktree")
+    }
+    destination = next(
+        (
+            worktree_root / f"cell-{number}"
+            for number in range(1, 7)
+            if worktree_root / f"cell-{number}" not in occupied
+            and not (worktree_root / f"cell-{number}").exists()
+            and not (worktree_root / f"cell-{number}").is_symlink()
+        ),
+        None,
+    )
+    if destination is None:
+        raise DispatchError("no disposable execution cell is available")
     if git(product, "show-ref", "--verify", f"refs/heads/{branch}", check=False):
         branch_sha = git(product, "rev-parse", branch).strip()
         if not remote_branch or remote_branch[0] != branch_sha:
@@ -457,6 +525,7 @@ def main() -> None:
     parser.add_argument("--worktree-root", required=True, type=Path)
     parser.add_argument("--max-linear-age", type=int, default=600)
     parser.add_argument("--lease-ttl", type=int, default=900)
+    parser.add_argument("--exclude-ticket", action="append", default=[])
     parser.add_argument("action", choices=("shadow", "claim"))
     args = parser.parse_args()
     launch_lock = args.factory_root / "factory" / ".launch.lock"
@@ -467,6 +536,8 @@ def main() -> None:
     lease_created = False
     try:
         product = args.factory_root.resolve(strict=True)
+        if any(not TICKET.fullmatch(item) for item in args.exclude_ticket):
+            raise DispatchError("excluded ticket is invalid")
         if product != args.factory_root:
             raise DispatchError("factory root must be physical")
         safe_directory(product, "factory root")
@@ -516,7 +587,7 @@ def main() -> None:
         selected = candidates(
             factory,
             mapping,
-            leased | active_tickets(factory),
+            leased | active_tickets(factory) | set(args.exclude_ticket),
             qualification_state,
         )
         if not selected:

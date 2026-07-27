@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.factory.controller.__PROJECT_SLUG__</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.factory/bin/factory-launch</string>
+    <string>__PROJECT_SLUG__</string>
+    <string>reconcile</string>
+    <string>--json</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>15</integer>
+  <key>WatchPaths</key>
+  <array>
+    <string>__PRODUCT_ROOT__/factory/runs</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.factory/logs/__PROJECT_SLUG__-controller.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.factory/logs/__PROJECT_SLUG__-controller.error.log</string>
+</dict>
+</plist>

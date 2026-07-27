@@ -137,7 +137,7 @@ fi
 TERMINAL_BASIS=""
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
-      "$CONTRACT_VERSION" == "1.7.0" ]]; then
+      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
   TERMINAL_BASIS="$(python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
     --terminal-basis 2>/dev/null || true)"
@@ -393,7 +393,7 @@ if [[ -n "$TERMINAL_BASIS" ]]; then
 fi
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
-      "$CONTRACT_VERSION" == "1.7.0" ]]; then
+      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
   if [[ "$COMMITTED_STATE" == "done" ]]; then
@@ -450,6 +450,39 @@ if [[ -z "${FACTORY_LEDGER:-}" ]] &&
      --runtime-ledger "$LEDGER" >/dev/null; then
   echo "REFUSE effective ledger could not be reduced"
   exit 1
+fi
+if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+  BUDGET_STAGE="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
+    "$REPO_ROOT" "$TICKET")" || {
+      echo "REFUSE ticket budget could not be reduced"
+      exit 1
+    }
+  if [[ "$BUDGET_STAGE" == AWAIT_BUDGET* ]]; then
+    echo "$BUDGET_STAGE"
+    exit 0
+  fi
+  [[ "$BUDGET_STAGE" == "AVAILABLE" ]] || {
+    echo "REFUSE ticket budget reducer returned an invalid stage"
+    exit 1
+  }
+  if [[ -n "${FACTORY_TRANSITION_STATE_DIR:-}" ]]; then
+    REPAIR_STAGE="$(python3 -B "$KIT_DIR/scripts/publication-repair.py" stage \
+      --factory-root "$REPO_ROOT" --workdir "$CONTENT_ROOT" \
+      --state-dir "$FACTORY_TRANSITION_STATE_DIR" --kit-dir "$KIT_DIR" \
+      --ticket "$TICKET" --factory-sha "$FACTORY_RELEASE_SHA" \
+      --ledger "$LEDGER")" || {
+        echo "REFUSE publication repair stage could not be reduced"
+        exit 1
+      }
+    if [[ "$REPAIR_STAGE" != "INACTIVE" ]]; then
+      echo "$REPAIR_STAGE"
+      exit 0
+    fi
+    if grep -q '^FACTORY PUBLICATION REPAIR:' "$TICKET_FILE"; then
+      echo "REFUSE publication repair directive lacks authenticated controller state"
+      exit 1
+    fi
+  fi
 fi
 
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
@@ -765,7 +798,8 @@ IFS='|' read -r FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST <<<"$FIX_AFTE
 LATEST_VERDICT=""
 LATEST_FIX_OWNER=""
 CONTRACT17_FIX_ACTION=""
-if [[ "$CONTRACT_VERSION" == "1.7.0" && "$VERDICTS" -gt 0 ]]; then
+if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
+      "$VERDICTS" -gt 0 ]]; then
   OWNER_DATA="$(python3 - "$TICKET_FILE" <<'PY'
 import re
 import sys
@@ -810,7 +844,8 @@ PY
   IFS='|' read -r LATEST_VERDICT LATEST_FIX_OWNER <<<"$OWNER_DATA"
 fi
 
-if [[ "$CONTRACT_VERSION" == "1.7.0" && "$LATEST_VERDICT" == "REQUEST CHANGES" ]]; then
+if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
+      "$LATEST_VERDICT" == "REQUEST CHANGES" ]]; then
   case "$LATEST_FIX_OWNER" in
     builder)
       if [[ "$FIX_BUILDER" -eq 0 ]]; then

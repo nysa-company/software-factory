@@ -1556,56 +1556,10 @@ resolve_product_publication_cherry_pick() {
     git -C "$work" diff --name-only --diff-filter=U
   )
   [[ "${#paths[@]}" -ge 1 ]] || return 1
-  resolutions="$(python3 - "$root/runtime/product-publication-conflict.json" \
-    "$work/factory/PROJECT.env" "$work" "$ticket" "${paths[@]}" <<'PY'
-import json, pathlib, re, shlex, subprocess, sys
-receipt_path, project_path, work, ticket, *paths=sys.argv[1:]
-receipt=json.load(open(receipt_path,encoding="utf-8"))
-if receipt.get("ticket") != ticket or receipt.get("repair_owner") != "builder":
-    raise SystemExit(1)
-project=open(project_path,encoding="utf-8").read()
-match=re.search(r'(?m)^TEST_PATHS=(.*)$',project)
-tests=shlex.split(match.group(1)) if match else []
-safe=re.compile(r"[A-Za-z0-9._/@+-]+")
-old=receipt["checkpoint_base_sha"]; sealed="refs/retry/"+ticket
-def tree(ref,path):
-    return subprocess.check_output(
-        ["git","-C",work,"ls-tree",ref,"--",path],text=True).strip()
-changed={}
-for line in subprocess.check_output(
-    ["git","-C",work,"diff","--name-status",old+".."+sealed],
-    text=True,
-).splitlines():
-    parts=line.split("\t")
-    if len(parts)>=2:
-        changed[parts[-1]]=parts[0]
-for path in paths:
-    if not safe.fullmatch(path):
-        raise SystemExit(1)
-    if path in {
-        f"factory/tickets/{ticket}.md",
-        f"factory/tickets/{ticket}-bundle.md",
-    }:
-        print("theirs",path,sep="\t")
-        continue
-    basename=pathlib.PurePosixPath(path).name
-    if (path.startswith(("factory/","context/",".github/","scripts/")) or
-        any(path==prefix or path.startswith(prefix.rstrip("/")+"/")
-            for prefix in tests) or
-        basename in {"package-lock.json","pnpm-lock.yaml","yarn.lock"} or
-        basename.startswith("tsconfig") or ".config." in basename or
-        changed.get(path,"") not in {"A","M","D"}):
-        raise SystemExit(1)
-    for ref in (
-        receipt["old_protected_base_sha"],
-        receipt["new_protected_base_sha"],
-        sealed,
-    ):
-        entry=tree(ref,path)
-        if entry and entry.split()[0] in {"120000","160000"}:
-            raise SystemExit(1)
-    print("ours",path,sep="\t")
-PY
+  resolutions="$(python3 "$SOURCE_ROOT/scripts/publication-conflict-policy.py" \
+    --receipt "$root/runtime/product-publication-conflict.json" \
+    --project "$work/factory/PROJECT.env" --workdir "$work" \
+    --ticket "$ticket" "${paths[@]}"
   )" || return 1
   while IFS=$'\t' read -r action path; do
     [[ "$action" == ours || "$action" == theirs ]] || return 1
@@ -1646,8 +1600,11 @@ for line in pathlib.Path(log_path).read_text(encoding="utf-8").splitlines():
         "old_protected_entry":tree(auth["old_protected_base_sha"]),
         "new_protected_entry":tree(auth["new_protected_base_sha"]),
         "sealed_ticket_entry":tree("refs/retry/"+ticket),
+        "replayed_entry":tree("HEAD"),
     })
 if not records or len({item["path"] for item in records}) != len(records):
+    raise SystemExit(1)
+if any(item["replayed_entry"] != item["new_protected_entry"] for item in records):
     raise SystemExit(1)
 head=subprocess.check_output(["git","-C",work,"rev-parse","HEAD"],text=True).strip()
 value={
@@ -2971,25 +2928,28 @@ print("FIX "+directives[0].group(1))
 PY
 }
 
+product_resolve_stage() {
+  local root="$1" ticket="$2" lease="$3" repair=INACTIVE
+  if grep -Eq '^OPERATOR (RESUME|PUBLICATION REPAIR):' \
+      "$root/worktrees/$ticket/factory/tickets/$ticket.md" 2>/dev/null; then
+    repair="$(product_contract_repair_stage "$root" "$ticket")" || return 1
+  fi
+  if [[ "$repair" != INACTIVE ]]; then
+    printf '%s\n' "$repair"
+    return
+  fi
+  TICKET="$ticket"
+  product_reconcile_reviewer "$root" "$ticket" "$lease" &&
+    next_stage "$root" "$lease"
+}
+
 product_resume_stage() {
-  local root="$1" ticket="$2" lease_json lease stage repair=INACTIVE rc=0
+  local root="$1" ticket="$2" lease_json lease stage rc=0
   lease_json="$(subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" \
     claim --ticket "$ticket")" || return 1
   lease="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
     <<<"$lease_json")" || return 1
-  if grep -Eq '^OPERATOR (RESUME|PUBLICATION REPAIR):' \
-      "$root/worktrees/$ticket/factory/tickets/$ticket.md" 2>/dev/null; then
-    repair="$(product_contract_repair_stage "$root" "$ticket")" || rc=$?
-  fi
-  if [[ "$rc" -eq 0 && "$repair" != INACTIVE ]]; then
-    stage="$repair"
-  elif [[ "$rc" -eq 0 ]]; then
-    stage="$(
-      TICKET="$ticket"
-      product_reconcile_reviewer "$root" "$ticket" "$lease" &&
-        next_stage "$root" "$lease"
-    )" || rc=$?
-  fi
+  stage="$(product_resolve_stage "$root" "$ticket" "$lease")" || rc=$?
   subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
     --ticket "$ticket" --lease "$lease" >/dev/null || return 1
   [[ "$rc" -eq 0 ]] || return "$rc"
@@ -4508,12 +4468,7 @@ run_product_internal() {
           }
         renewals[$i]="$now"
       fi
-      (TICKET="$ticket"; product_reconcile_reviewer \
-        "$root" "$ticket" "${leases[$i]}") || {
-        failed_stages[$i]=reviewer-reconcile
-        states[$i]=failed; failed_count=$((failed_count + 1)); continue;
-      }
-      stage="$(TICKET="$ticket"; next_stage "$root" "${leases[$i]}")" || {
+      stage="$(product_resolve_stage "$root" "$ticket" "${leases[$i]}")" || {
         failed_stages[$i]=sequencing
         states[$i]=failed; failed_count=$((failed_count + 1)); continue;
       }

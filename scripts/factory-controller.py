@@ -1,0 +1,885 @@
+#!/usr/bin/env python3
+"""Contract 1.8 non-agent ticket reconciliation controller."""
+
+from __future__ import annotations
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import tempfile
+import time
+from typing import Any
+
+
+SCHEMA = "nysa.software-factory.controller/v1"
+CLAIM_SCHEMA = "nysa.software-factory.controller-claim/v1"
+EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
+QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
+TICKET = re.compile(r"^T-[0-9]+$")
+DIGEST = re.compile(r"^[0-9a-f]{64}$")
+TERMINAL_ACCOUNTING = {
+    "completed", "abandoned_conservative", "cancelled", "cancelled_conservative",
+}
+
+
+class ControllerError(ValueError):
+    pass
+
+
+def canonical(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def safe_directory(path: Path, create: bool = False) -> Path:
+    if create:
+        path.mkdir(mode=0o700, parents=False, exist_ok=True)
+    info = path.lstat()
+    if (
+        not path.is_absolute()
+        or path.resolve(strict=True) != path
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise ControllerError("controller directory is unsafe")
+    return path
+
+
+def read(path: Path) -> dict[str, Any]:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 1_000_000
+        ):
+            raise ControllerError("controller claim is unsafe")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            value = json.load(stream)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(value, dict):
+        raise ControllerError("controller claim is malformed")
+    return value
+
+
+def write(path: Path, value: dict[str, Any]) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(canonical(value) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        Path(temporary).unlink(missing_ok=True)
+
+
+def fields(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name in values:
+            raise ControllerError("run manifest is malformed")
+        values[name] = value
+    return values
+
+
+class Controller:
+    def __init__(self, args: argparse.Namespace):
+        self.launcher = args.launcher.resolve(strict=True)
+        self.project = args.project
+        self.product = args.product_root.resolve(strict=True)
+        self.release = args.release_path.resolve(strict=True)
+        self.state = safe_directory(args.state_dir)
+        self.claims = self.state / "claims"
+        safe_directory(self.claims, create=True)
+        self.logs = self.state / "logs"
+        safe_directory(self.logs, create=True)
+        self.events = self.state / "events"
+        safe_directory(self.events, create=True)
+        self.capacity = self.read_capacity()
+        self.qualification = self.read_qualification()
+
+    def read_qualification(self) -> dict[str, Any] | None:
+        path = self.product / "factory/QUALIFICATION.json"
+        if not path.exists():
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("schema") != QUALIFICATION_SCHEMA:
+            return None
+        if (
+            value.get("contract_version") != "1.8.0"
+            or value.get("capacity") != 4
+            or value.get("target_done") != 4
+            or not isinstance(value.get("tickets"), list)
+            or len(value["tickets"]) != 4
+        ):
+            raise ControllerError("Contract 1.8 qualification manifest is invalid")
+        return value
+
+    def event(self, name: str, ticket: str = "", **details: Any) -> None:
+        value = {
+            "event": name,
+            "factory_sha": (
+                self.qualification["factory_sha"] if self.qualification else None
+            ),
+            "observed_at_epoch_ns": time.time_ns(),
+            "schema": EVENT_SCHEMA,
+            "ticket": ticket or None,
+            **details,
+        }
+        raw = canonical(value).encode()
+        value["event_sha256"] = hashlib.sha256(raw).hexdigest()
+        path = self.events / (
+            f"{value['observed_at_epoch_ns']}-{secrets.token_hex(8)}.json"
+        )
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(canonical(value) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def marker(self, name: str, value: dict[str, Any] | None = None) -> bool:
+        path = self.state / f"{name}.json"
+        if value is None:
+            return path.exists()
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+        except FileExistsError:
+            return False
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(canonical(value) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        return True
+
+    def read_capacity(self) -> int:
+        values = re.findall(
+            r"^(?:export\s+)?MAX_CONCURRENT_TICKETS\s*=\s*['\"]?([0-9]+)['\"]?\s*$",
+            (self.product / "factory/PROJECT.env").read_text(encoding="utf-8"),
+            re.M,
+        )
+        if len(values) > 1:
+            raise ControllerError("MAX_CONCURRENT_TICKETS is ambiguous")
+        capacity = int(values[0]) if values else 4
+        if not 1 <= capacity <= 4:
+            raise ControllerError("Contract 1.8 controller capacity must be 1 through 4")
+        return capacity
+
+    def call(self, *arguments: str, timeout: int | None = 300) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(self.launcher), self.project, *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+
+    def json_call(self, *arguments: str, allow: tuple[int, ...] = (0,)) -> dict[str, Any]:
+        result = self.call(*arguments)
+        if result.returncode not in allow:
+            raise ControllerError(
+                result.stderr.strip() or result.stdout.strip() or "launcher command failed"
+            )
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ControllerError("launcher returned malformed JSON") from error
+        if not isinstance(value, dict):
+            raise ControllerError("launcher returned malformed JSON")
+        return value
+
+    def claim_path(self, ticket: str) -> Path:
+        return self.claims / f"{ticket}.json"
+
+    def envelope_digest(self) -> str:
+        return hashlib.sha256(
+            (self.product / "factory/ENVELOPE.env").read_bytes()
+        ).hexdigest()
+
+    @staticmethod
+    def runnable(claim: dict[str, Any]) -> bool:
+        return claim["status"] not in {"blocked", "budget"}
+
+    def save_claim(self, claim: dict[str, Any]) -> None:
+        write(self.claim_path(claim["ticket"]), claim)
+
+    def load_claims(self) -> list[dict[str, Any]]:
+        result = []
+        for path in sorted(self.claims.glob("T-*.json")):
+            value = read(path)
+            if (
+                value.get("schema") != CLAIM_SCHEMA
+                or path.name != f"{value.get('ticket')}.json"
+                or not TICKET.fullmatch(value.get("ticket", ""))
+                or not DIGEST.fullmatch(value.get("lease", ""))
+                or not Path(value.get("worktree", "")).is_absolute()
+                or value.get("status") not in {
+                    "claimed", "running", "waiting", "blocked", "budget",
+                }
+            ):
+                raise ControllerError("controller claim is malformed")
+            if value["status"] == "budget":
+                if not DIGEST.fullmatch(value.get("budget_sha256", "")):
+                    raise ControllerError("budget wait claim is malformed")
+                if value["budget_sha256"] != self.envelope_digest():
+                    path.unlink()
+                    self.event("budget_reopened", value["ticket"])
+                    continue
+            worktree = Path(value["worktree"])
+            if not worktree.exists():
+                matches = []
+                current: dict[str, str] = {}
+                output = subprocess.run(
+                    ["git", "-C", str(self.product), "worktree", "list", "--porcelain"],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout
+                for line in output.splitlines() + [""]:
+                    if line:
+                        name, _, item = line.partition(" ")
+                        current[name] = item
+                        continue
+                    if current.get("branch") == f"refs/heads/{value['branch']}":
+                        matches.append(current.get("worktree", ""))
+                    current = {}
+                if len(matches) != 1 or not Path(matches[0]).is_absolute():
+                    raise ControllerError("controller claim worktree is unavailable")
+                value["worktree"] = matches[0]
+                self.save_claim(value)
+                self.event("worktree_recovered", value["ticket"], worktree=matches[0])
+            result.append(value)
+        return result
+
+    def claim_new(self, existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        claims = list(existing)
+        excluded = sorted(
+            item["ticket"]
+            for item in claims if item["status"] in {"blocked", "budget"}
+        )
+        while len([item for item in claims if self.runnable(item)]) < self.capacity:
+            arguments = ["dispatch-plan", "--claim"]
+            for ticket in excluded:
+                arguments.extend(["--exclude-ticket", ticket])
+            value = self.json_call(*arguments, "--json")
+            if value.get("action") == "WAIT":
+                break
+            if (
+                value.get("action") != "START"
+                or not TICKET.fullmatch(value.get("ticket", ""))
+                or not DIGEST.fullmatch(value.get("lease_id", ""))
+            ):
+                raise ControllerError("dispatch claim is malformed")
+            claim = {
+                "branch": value["branch"],
+                "lease": value["lease_id"],
+                "priority": value.get("priority", "none"),
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": value["ticket"],
+                "worktree": value["worktree"],
+            }
+            self.save_claim(claim)
+            self.event(
+                "ticket_claimed", claim["ticket"], branch=claim["branch"],
+                worktree=claim["worktree"],
+            )
+            claims.append(claim)
+        return claims
+
+    def renew(self, claim: dict[str, Any]) -> None:
+        self.json_call(
+            "renew", "--ticket", claim["ticket"], "--lease", claim["lease"],
+        )
+
+    def release(self, claim: dict[str, Any]) -> None:
+        if claim.get("publication_lease"):
+            self.release_publication(claim)
+        self.json_call(
+            "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
+        )
+        self.claim_path(claim["ticket"]).unlink(missing_ok=True)
+        self.event("ticket_released", claim["ticket"])
+
+    def release_publication(self, claim: dict[str, Any]) -> None:
+        self.json_call(
+            "publication", "release", "--ticket", claim["ticket"],
+            "--lease", claim["publication_lease"], "--json",
+        )
+        claim["publication_lease"] = ""
+        self.save_claim(claim)
+        self.event("publication_released", claim["ticket"])
+
+    def block(self, claim: dict[str, Any], reason: str) -> None:
+        if claim.get("publication_lease"):
+            self.release_publication(claim)
+        self.json_call(
+            "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
+        )
+        claim["status"] = "blocked"
+        self.save_claim(claim)
+        self.event("ticket_blocked", claim["ticket"], reason=reason)
+
+    def active_run(self, ticket: str) -> bool:
+        active = self.product / "factory/.active-runs"
+        return active.is_dir() and any(active.glob(f"{ticket}.*"))
+
+    def terminal_for_receipt(self, ticket: str, receipt: str) -> dict[str, str] | None:
+        matches = []
+        for path in (self.product / "factory/runs").glob("*.meta"):
+            value = fields(path)
+            if (
+                value.get("ticket") == ticket
+                and value.get("transition_receipt_sha256") == receipt
+                and value.get("accounting_state") in TERMINAL_ACCOUNTING
+            ):
+                matches.append(value)
+        if len(matches) > 1:
+            raise ControllerError("receipt has ambiguous terminal run evidence")
+        return matches[0] if matches else None
+
+    def passport(self, claim: dict[str, Any], publication: str) -> None:
+        self.json_call(
+            "passport", "export", "--ticket", claim["ticket"],
+            "--receipt", claim["receipt"], "--publication-state", publication,
+            "--workdir", claim["worktree"], "--json",
+        )
+
+    def migrate_passport(self, claim: dict[str, Any], publication: str) -> None:
+        path = self.state / "passports" / f"{claim['ticket']}.json"
+        if not path.exists():
+            return
+        self.json_call(
+            "passport", "migrate", "--ticket", claim["ticket"],
+            "--publication-state", publication,
+            "--workdir", claim["worktree"], "--json",
+        )
+
+    def relocate_qualification_cell(self, claim: dict[str, Any]) -> None:
+        if (
+            not self.qualification
+            or claim["ticket"] != self.qualification["tickets"][0]
+            or self.marker("qualification-relocation")
+        ):
+            return
+        source = Path(claim["worktree"])
+        if subprocess.run(
+            ["git", "-C", str(source), "status", "--porcelain=v1", "-z"],
+            capture_output=True, check=True, timeout=120,
+        ).stdout:
+            raise ControllerError("qualification relocation requires a clean cell")
+        destination = next(
+            (
+                source.parent / f"cell-{number}"
+                for number in (5, 6)
+                if not (source.parent / f"cell-{number}").exists()
+            ),
+            None,
+        )
+        if destination is None:
+            raise ControllerError("qualification relocation has no clean destination")
+        subprocess.run(
+            ["git", "-C", str(self.product), "worktree", "move", str(source), str(destination)],
+            check=True, timeout=120,
+        )
+        claim["worktree"] = str(destination)
+        self.save_claim(claim)
+        try:
+            self.json_call(
+                "passport", "validate", "--ticket", claim["ticket"],
+                "--workdir", claim["worktree"], "--json",
+            )
+        except Exception:
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "worktree", "move",
+                    str(destination), str(source),
+                ],
+                check=True, timeout=120,
+            )
+            claim["worktree"] = str(source)
+            self.save_claim(claim)
+            raise
+        self.marker("qualification-relocation", {
+            "from": str(source),
+            "schema": EVENT_SCHEMA,
+            "ticket": claim["ticket"],
+            "to": str(destination),
+        })
+        self.event(
+            "cell_relocated", claim["ticket"], from_worktree=str(source),
+            to_worktree=str(destination),
+        )
+
+    def remove_cell(self, claim: dict[str, Any]) -> None:
+        worktree = Path(claim["worktree"])
+        if not worktree.exists():
+            return
+        subprocess.run(
+            ["git", "-C", str(self.product), "worktree", "remove", str(worktree)],
+            check=True, timeout=120,
+        )
+        self.event("cell_removed", claim["ticket"], worktree=str(worktree))
+
+    def finish_pending_run(self, claim: dict[str, Any]) -> bool:
+        if not claim.get("receipt"):
+            return True
+        if self.active_run(claim["ticket"]):
+            return False
+        terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
+        if terminal is None:
+            claim.update(receipt="", role="", status="claimed")
+            self.save_claim(claim)
+            return True
+        publication = (
+            "validating"
+            if claim["role"] in {"reviewer", "narrator"}
+            else "none"
+        )
+        self.passport(claim, publication)
+        if (
+            terminal.get("accounting_state") in {"cancelled", "cancelled_conservative"}
+            or terminal.get("role_exit") == "cancelled"
+        ):
+            claim["status"] = "cancelled"
+            self.release(claim)
+            self.remove_cell(claim)
+            self.event("attempt_cancelled", claim["ticket"])
+            return False
+        if terminal.get("exit_status") != "0" or terminal.get("role_exit") != "ok":
+            claim["status"] = "blocked"
+            self.save_claim(claim)
+            self.json_call(
+                "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
+            )
+            self.event("role_blocked", claim["ticket"], role=claim["role"])
+            return False
+        self.relocate_qualification_cell(claim)
+        if claim["role"] == "reviewer":
+            self.json_call(
+                "ticket-state", "--ticket", claim["ticket"],
+                "--workdir", claim["worktree"],
+                "--action", "reviewer-reconcile", "--json",
+            )
+            self.migrate_passport(claim, "validating")
+        claim.update(receipt="", role="", status="claimed")
+        self.save_claim(claim)
+        return True
+
+    def ticket_pr(self, claim: dict[str, Any], receipt: str) -> dict[str, Any]:
+        return self.json_call(
+            "ticket-pr", "--ticket", claim["ticket"], "--lease", claim["lease"],
+            "--receipt", receipt, "--workdir", claim["worktree"], "--json",
+        )
+
+    def retry_ci(
+        self, claim: dict[str, Any], receipt: str, pr: dict[str, Any]
+    ) -> bool:
+        value = self.json_call(
+            "ci-rerun", "--ticket", claim["ticket"], "--lease", claim["lease"],
+            "--receipt", receipt, "--pr", str(pr["pr_number"]),
+            "--workdir", claim["worktree"], "--json",
+        )
+        return value.get("status") == "rerun"
+
+    def publication_repair(
+        self, claim: dict[str, Any], receipt: str, pr: dict[str, Any]
+    ) -> None:
+        value = self.json_call(
+            "publication-repair", "--ticket", claim["ticket"],
+            "--lease", claim["lease"], "--receipt", receipt,
+            "--pr", str(pr["pr_number"]), "--workdir", claim["worktree"],
+            "--json",
+        )
+        if value.get("status") != "repair":
+            raise ControllerError("publication repair was not materialized")
+        if claim.get("publication_lease"):
+            self.release_publication(claim)
+        self.migrate_passport(claim, "repair")
+        self.event(
+            "publication_repair", claim["ticket"], owner=value.get("owner"),
+        )
+
+    def publication_ready(self, claim: dict[str, Any], head: str) -> bool:
+        prior = claim.get("publication_lease", "")
+        self.json_call(
+            "publication", "ready", "--ticket", claim["ticket"],
+            "--head", head, "--priority", claim["priority"], "--json",
+        )
+        lease = self.json_call(
+            "publication", "acquire", "--ticket", claim["ticket"],
+            "--head", head, "--priority", claim["priority"], "--json",
+        )
+        if lease.get("status") != "acquired":
+            return False
+        claim["publication_lease"] = lease["lease"]
+        self.save_claim(claim)
+        self.event(
+            "publication_renewed" if prior == lease["lease"] else "publication_acquired",
+            claim["ticket"], head_sha=head,
+        )
+        return True
+
+    def ticket_merged(self, claim: dict[str, Any]) -> bool:
+        repo_values = re.findall(
+            r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
+            (self.product / "factory/PROJECT.env").read_text(encoding="utf-8"),
+            re.M,
+        )
+        if len(repo_values) != 1:
+            raise ControllerError("GH_REPO is missing or ambiguous")
+        result = subprocess.run(
+            [
+                "gh", "pr", "list", "--repo", repo_values[0], "--state", "merged",
+                "--head", claim["branch"], "--json", "headRefName,mergedAt,state",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        if result.returncode:
+            raise ControllerError(result.stderr.strip() or "GitHub merge query failed")
+        values = json.loads(result.stdout)
+        return (
+            isinstance(values, list)
+            and len(values) == 1
+            and values[0].get("state") == "MERGED"
+            and bool(values[0].get("mergedAt"))
+        )
+
+    def closeout(self, claim: dict[str, Any]) -> bool:
+        ticket = claim["ticket"]
+        branch = f"chore/{ticket.lower().replace('-', '')}-closeout"
+        root = Path(claim["worktree"]).parent
+        worktree = root / f"closeout-{ticket}"
+        subprocess.run(
+            ["git", "-C", str(self.product), "fetch", "--quiet", "origin", "main"],
+            check=True, timeout=120,
+        )
+        if not worktree.exists():
+            exists = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "show-ref", "--verify",
+                    "--quiet", f"refs/heads/{branch}",
+                ],
+                check=False, timeout=120,
+            ).returncode == 0
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "worktree", "add", "--quiet",
+                    *(["-b", branch, str(worktree), "origin/main"] if not exists
+                      else [str(worktree), branch]),
+                ],
+                check=True, timeout=120,
+            )
+        value = self.json_call(
+            "ticket-attest", "--ticket", ticket, "--lease", claim["lease"],
+            "--workdir", str(worktree), "--action", "done", "--json",
+        )
+        return value.get("closeout_pr_state") == "MERGED"
+
+    def run_role(
+        self, claim: dict[str, Any], role: str, receipt: str, failed_checks: list[str]
+    ) -> None:
+        preflight = self.json_call(
+            "preflight", "--ticket", claim["ticket"], "--role", role,
+            "--lease", claim["lease"], "--receipt", receipt,
+            "--workdir", claim["worktree"], "--json",
+            allow=(0, 1),
+        )
+        if preflight.get("status") != "ok" or preflight.get("exit_code") != 0:
+            self.block(claim, "preflight")
+            return
+        claim.update(receipt=receipt, role=role, status="running")
+        self.save_claim(claim)
+        task = f"Execute {role} for {claim['ticket']} from its frozen contract and repository state."
+        if failed_checks:
+            task += " Required GitHub checks failed: " + ", ".join(failed_checks)
+        command = [
+            str(self.launcher), self.project, "run",
+            "--role", role, "--ticket", claim["ticket"],
+            "--lease", claim["lease"], "--receipt", receipt,
+            "--prompt-file", str(self.release / f"roles/{role}.md"),
+            "--workdir", claim["worktree"], "--", task,
+        ]
+        log_path = self.logs / f"{claim['ticket']}-{role}.log"
+        with log_path.open("a", encoding="utf-8") as log:
+            subprocess.run(command, stdout=log, stderr=log, check=False)
+        self.finish_pending_run(claim)
+
+    def reconcile_ticket(self, claim: dict[str, Any]) -> dict[str, str]:
+        try:
+            if (self.product / "factory/MAINTENANCE").exists():
+                return {"status": "maintenance", "ticket": claim["ticket"]}
+            self.renew(claim)
+            if not self.finish_pending_run(claim):
+                return {
+                    "status": (
+                        claim["status"]
+                        if claim["status"] in {"blocked", "cancelled"}
+                        else "active"
+                    ),
+                    "ticket": claim["ticket"],
+                }
+            route = Path(claim["worktree"]) / f"factory/route-plans/{claim['ticket']}.json"
+            if not route.exists():
+                self.json_call(
+                    "models", "pin", "--ticket", claim["ticket"],
+                    "--workdir", claim["worktree"], "--json",
+                )
+            transition = self.json_call(
+                "state-machine", "--ticket", claim["ticket"],
+                "--lease", claim["lease"], "--workdir", claim["worktree"],
+                "--json",
+            )
+            stage = transition.get("stage", "")
+            receipt = transition.get("receipt", "")
+            role = transition.get("role")
+            if role:
+                failed_checks: list[str] = []
+                if role in {"reviewer", "narrator"}:
+                    pr = self.ticket_pr(claim, receipt)
+                    if pr.get("status") == "wait":
+                        return {"status": "waiting", "ticket": claim["ticket"]}
+                    if pr.get("status") == "failed" and self.retry_ci(
+                        claim, receipt, pr
+                    ):
+                        return {"status": "waiting", "ticket": claim["ticket"]}
+                    if role == "narrator" and pr.get("status") != "ready":
+                        self.block(claim, "narrator-pr-gate")
+                        return {"status": "blocked", "ticket": claim["ticket"]}
+                    if role == "reviewer" and pr.get("status") not in {
+                        "prepared", "failed",
+                    }:
+                        raise ControllerError("Reviewer PR gate returned an invalid status")
+                    if pr.get("status") == "failed":
+                        failed_checks = list(pr.get("checks", []))
+                self.run_role(claim, role, receipt, failed_checks)
+                return {
+                    "status": (
+                        claim["status"]
+                        if claim["status"] in {"blocked", "cancelled"}
+                        else "progressed"
+                    ),
+                    "ticket": claim["ticket"],
+                }
+            if stage.startswith("AWAIT-OPERATOR bundle posted"):
+                pr = self.ticket_pr(claim, receipt)
+                if pr.get("status") == "failed" and self.retry_ci(
+                    claim, receipt, pr
+                ):
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if pr.get("status") == "wait":
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if pr.get("status") != "ready":
+                    self.block(claim, "bundle-pr-gate")
+                    return {"status": "blocked", "ticket": claim["ticket"]}
+                self.json_call(
+                    "ticket-attest", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--receipt", receipt,
+                    "--workdir", claim["worktree"], "--action", "bundle", "--json",
+                )
+                self.migrate_passport(claim, "validating")
+                return {"status": "progressed", "ticket": claim["ticket"]}
+            if stage.startswith("AWAIT-OPERATOR Linear approval observed"):
+                pr = self.ticket_pr(claim, receipt)
+                if pr.get("status") == "failed" and self.retry_ci(
+                    claim, receipt, pr
+                ):
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if pr.get("status") != "ready":
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if not self.publication_ready(claim, pr["head"]):
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                self.json_call(
+                    "ticket-attest", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--receipt", receipt,
+                    "--workdir", claim["worktree"], "--action", "approval", "--json",
+                )
+                self.migrate_passport(claim, "merge-pending")
+                return {"status": "progressed", "ticket": claim["ticket"]}
+            if stage.startswith("AWAIT-OPERATOR"):
+                claim["status"] = "waiting"
+                self.save_claim(claim)
+                return {"status": "waiting", "ticket": claim["ticket"]}
+            if stage.startswith("AWAIT_BUDGET"):
+                if claim.get("publication_lease"):
+                    self.release_publication(claim)
+                self.json_call(
+                    "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
+                )
+                claim.update(
+                    budget_sha256=self.envelope_digest(), receipt="",
+                    role="", status="budget",
+                )
+                self.save_claim(claim)
+                self.event("budget_wait", claim["ticket"])
+                return {"status": "budget", "ticket": claim["ticket"]}
+            if stage.startswith("AWAIT-MERGE protected auto-merge requested"):
+                if self.ticket_merged(claim):
+                    if claim.get("publication_lease"):
+                        self.release_publication(claim)
+                    self.migrate_passport(claim, "merged")
+                    self.closeout(claim)
+                    return {"status": "progressed", "ticket": claim["ticket"]}
+                pr = self.ticket_pr(claim, receipt)
+                if pr.get("status") == "failed" and self.retry_ci(
+                    claim, receipt, pr
+                ):
+                    self.publication_ready(claim, pr["head"])
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if pr.get("status") == "failed":
+                    self.publication_repair(claim, receipt, pr)
+                    return {"status": "progressed", "ticket": claim["ticket"]}
+                if pr.get("status") in {"wait", "ready"}:
+                    self.publication_ready(claim, pr["head"])
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                raise ControllerError("publication PR gate returned an invalid status")
+            if stage.startswith("AWAIT-MERGE closeout auto-merge pending"):
+                self.closeout(claim)
+                return {"status": "waiting", "ticket": claim["ticket"]}
+            if stage.startswith("COMPLETE"):
+                self.event("ticket_complete", claim["ticket"])
+                self.release(claim)
+                return {"status": "complete", "ticket": claim["ticket"]}
+            if stage.startswith("REFUSE"):
+                self.block(claim, "state-machine-refusal")
+                return {"status": "blocked", "ticket": claim["ticket"]}
+            raise ControllerError(f"unsupported deterministic stage: {stage}")
+        except (ControllerError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+            claim["status"] = "blocked"
+            self.save_claim(claim)
+            if claim.get("publication_lease"):
+                self.release_publication(claim)
+            if not self.active_run(claim["ticket"]):
+                self.json_call(
+                    "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
+                )
+            self.event("controller_error", claim["ticket"], error=str(error))
+            return {"status": "error", "ticket": claim["ticket"], "error": str(error)}
+
+    def reconcile(self) -> dict[str, Any]:
+        existing = self.load_claims()
+        self.event(
+            "controller_started", recovered_tickets=sorted(
+                item["ticket"] for item in existing if self.runnable(item)
+            ),
+        )
+        claims = self.claim_new(existing)
+        if self.qualification and not self.marker("qualification-restart-boundary"):
+            active = sorted(
+                item["ticket"] for item in claims if self.runnable(item)
+            )
+            if len(active) == 4:
+                self.marker("qualification-restart-boundary", {
+                    "factory_sha": self.qualification["factory_sha"],
+                    "schema": EVENT_SCHEMA,
+                    "tickets": active,
+                })
+                self.event("restart_boundary", tickets=active)
+                return {
+                    "active": 4,
+                    "results": [],
+                    "schema": SCHEMA,
+                    "status": "restart_required",
+                }
+            return {
+                "active": len(active),
+                "results": [],
+                "schema": SCHEMA,
+                "status": "waiting_for_four",
+            }
+        if (
+            self.qualification
+            and not self.marker("qualification-recovered")
+            and self.marker("qualification-restart-boundary")
+        ):
+            recovered = sorted(
+                item["ticket"] for item in existing if self.runnable(item)
+            )
+            if recovered != sorted(self.qualification["tickets"]):
+                raise ControllerError("qualification restart did not recover all four tickets")
+            self.marker("qualification-recovered", {
+                "factory_sha": self.qualification["factory_sha"],
+                "schema": EVENT_SCHEMA,
+                "tickets": recovered,
+            })
+            self.event("controller_recovered", tickets=recovered)
+        runnable = [item for item in claims if self.runnable(item)]
+        with ThreadPoolExecutor(max_workers=min(4, len(runnable) or 1)) as executor:
+            results = list(executor.map(self.reconcile_ticket, runnable))
+        return {
+            "active": len(runnable),
+            "results": results,
+            "schema": SCHEMA,
+            "status": "ok" if all(item["status"] != "error" for item in results) else "error",
+        }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--launcher", required=True, type=Path)
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--product-root", required=True, type=Path)
+    parser.add_argument("--release-path", required=True, type=Path)
+    parser.add_argument("--state-dir", required=True, type=Path)
+    args = parser.parse_args()
+    lock_descriptor = -1
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.project):
+            raise ControllerError("invalid project")
+        state = safe_directory(args.state_dir)
+        lock_descriptor = os.open(
+            state / "reconcile.lock",
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(canonical({"schema": SCHEMA, "status": "busy"}))
+            return
+        result = Controller(args).reconcile()
+        print(canonical(result))
+        if result["status"] == "error":
+            raise SystemExit(1)
+    except (
+        FileNotFoundError, json.JSONDecodeError, OSError, ControllerError,
+        subprocess.SubprocessError,
+    ) as error:
+        print(canonical({"error": str(error), "schema": SCHEMA, "status": "error"}))
+        raise SystemExit(1)
+    finally:
+        if lock_descriptor >= 0:
+            os.close(lock_descriptor)
+
+
+if __name__ == "__main__":
+    main()

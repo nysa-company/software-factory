@@ -68,13 +68,15 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.7.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.8.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
+~/.factory/bin/factory-launch <project> reconcile --json
+~/.factory/bin/factory-launch <project> qualification --json
 ~/.factory/bin/factory-launch <project> dispatch-plan --shadow --json
 ~/.factory/bin/factory-launch <project> dispatch-plan --claim --json
 ~/.factory/bin/factory-launch <project> ticket-pr --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --json
@@ -88,6 +90,9 @@ Contract versions `1.0.0` through `1.7.0` certify Hermes Agent `0.18.2`, build
 Under Contracts 1.5 through 1.7, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the
 one reserved by `run`.
+Under Contract 1.8, callers do not invoke `next-stage` directly. The
+non-agent controller obtains a one-use `state-machine` receipt and supplies it
+unchanged to preflight, execution, and ticket attestations.
 
 Model policy is task-free and sealed:
 
@@ -144,7 +149,16 @@ SHA-256. Missing, malformed, or mismatched activation never enables parallel
 provider work. The initial policy caps Cursor at one concurrent process because
 its scratch root is account-global; limits are not duplicated in activation.
 
-The `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
+Contract 1.8 caps controller capacity at four. Tickets are identified by
+product, ticket, branch, and authenticated passport; numbered cells are
+disposable worktrees. A 15-second non-overlapping LaunchAgent and terminal-run
+watch call `reconcile`. Four PRs may validate concurrently while one renewable
+publication lease serializes merge requests. `qualification --json` writes an
+immutable green report only when all four passports, charges, restart and
+relocation events, protected checks, PR heads, merge commits, and protected
+main attestations match.
+
+For Contracts 1.6 and 1.7, the `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
 wakeup claims at most one ticket and starts at most one ephemeral dispatcher
 child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque
 lease can remain in memory and accompany the child. `WAIT` and `ESCALATE` never
@@ -159,6 +173,9 @@ same call may create it at the Narrator boundary only after that reviewed-head
 lineage passes unchanged. A completed, role-valid Cursor run remains eligible
 when its billing state conservatively reserves the full run budget. It cannot
 approve or merge.
+For Contract 1.8, both profile skills are compatibility documentation only.
+They invoke `reconcile` and cannot choose stages or spawn an agentic
+dispatcher or supervisor.
 
 Narrator recovery treats only the current ticket document and its exact route
 journal as post-review factory metadata. A changed journal must pass the sealed

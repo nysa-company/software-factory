@@ -22,6 +22,10 @@
   "live_kit_path": "~/Projects/nysa-company/software-factory",
   "services": [
     {
+      "kind": "controller",
+      "launch_agent": "per-product"
+    },
+    {
       "kind": "gateway",
       "launch_agent": "separate"
     },

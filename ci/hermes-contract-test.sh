@@ -162,7 +162,8 @@ PY
 )"
   if [[ "$contract" == "1.2.0" || "$contract" == "1.3.0" ||
         "$contract" == "1.4.0" || "$contract" == "1.5.0" ||
-        "$contract" == "1.6.0" || "$contract" == "1.7.0" ]]; then
+        "$contract" == "1.6.0" || "$contract" == "1.7.0" ||
+        "$contract" == "1.8.0" ]]; then
     origin="$(git -C "$product" remote get-url --push origin)"
     product_tree="$(git -C "$product" rev-parse 'HEAD^{tree}')"
     receipt_id="$(printf '%s' "$sha|$tree|$product|$origin" | shasum -a 256 | awk '{print $1}')"
@@ -263,7 +264,7 @@ PY
 import pathlib, sys
 path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
 text = path.read_text()
-old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.7.0}"'
+old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.8.0}"'
 new = f'CONTRACT_VERSION="${{FACTORY_RELEASE_CONTRACT_VERSION:-{contract}}}"'
 if text.count(old) != 1:
     raise SystemExit("factory-doctor contract fixture is ambiguous")
@@ -526,7 +527,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.7.0"
+assert data["contract_version"] == "1.8.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -1543,6 +1544,13 @@ SHA_C="cccccccccccccccccccccccccccccccccccccccc"
 RELEASE_C="$KITS_ROOT/releases/$SHA_C"
 mkdir -p "$RELEASE_C/integrations/hermes" "$RELEASE_C/scripts/model-routing"
 cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
+python3 - "$RELEASE_C/integrations/hermes/contract.json" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1])
+value=json.loads(path.read_text())
+value["contract_version"]="1.7.0"
+path.write_text(json.dumps(value,indent=2)+"\n")
+PY
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
@@ -2160,10 +2168,11 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.7.0"
+assert contract["contract_version"] == "1.8.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
+assert contract["state_machine_schema"] == "nysa.software-factory.state-machine/v1"
 assert contract["status_categories"] == ["ok", "warning", "error", "unknown"]
 assert contract["exit_codes"] == {
     "0": "no error-category checks",
@@ -2178,9 +2187,27 @@ assert contract["supported_hermes"] == [{
 assert contract["launcher"]["path"] == "~/.factory/bin/factory-launch"
 assert contract["launcher"]["source"] == "integrations/hermes/bin/factory-launch"
 commands = contract["launcher"]["commands"]
+assert commands["reconcile"]["output_schema"] == \
+    "nysa.software-factory.controller/v1"
+assert commands["qualification"]["output_schema"] == \
+    "nysa.software-factory.qualification-report/v1"
+assert commands["state-machine"]["output_schema"] == \
+    "nysa.software-factory.state-machine/v1"
+assert commands["passport"]["output_schema"] == \
+    "nysa.software-factory.ticket-passport/v1"
+assert commands["publication"]["output_schema"] == \
+    "nysa.software-factory.publication-lease/v1"
+assert commands["publication-repair"]["output_schema"] == \
+    "nysa.software-factory.publication-repair/v1"
+assert commands["ci-rerun"]["output_schema"] == \
+    "nysa.software-factory.ci-rerun/v1"
 dispatch = commands["dispatch-plan"]
 assert dispatch["minimum_contract_version"] == "1.6.0"
-assert dispatch["grammars"] == ["--shadow --json", "--claim --json"]
+assert dispatch["grammars"] == [
+    "--shadow --json",
+    "--claim --json",
+    "--claim [--exclude-ticket <T-NNN> ...] --json",
+]
 assert dispatch["output_schema"] == "nysa.software-factory.dispatch-plan/v1"
 ticket_pr = commands["ticket-pr"]
 assert ticket_pr["minimum_contract_version"] == "1.6.0"
@@ -2237,7 +2264,7 @@ assert commands["models"]["maintenance"] == {
 }
 assert commands["preflight"]["arguments"] == [
     "--ticket", "<T-NNN>", "--role", "<next-stage-role>",
-    "[--lease <opaque-lease-id>]", "--workdir",
+    "[--lease <opaque-lease-id>]", "--receipt", "<lowercase-sha256>", "--workdir",
     "<absolute-product-worktree>", "--json",
 ]
 assert commands["next-stage"]["arguments"] == [
@@ -2257,6 +2284,7 @@ assert commands["ticket-state"]["transition_states"] == [
 ]
 assert commands["ticket-attest"]["arguments"] == [
     "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]",
+    "[--receipt <lowercase-sha256> (required for Contract 1.8 non-done actions)]",
     "--workdir", "<absolute-worktree>",
     "--action", "<bundle|approval|refresh|done>", "--json"
 ]
@@ -2273,16 +2301,17 @@ assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert contract["concurrency"]["default"] == 4
-assert contract["concurrency"]["maximum"] == 6
+assert contract["concurrency"]["maximum"] == 4
 assert contract["concurrency"]["enabled_value"] == 4
-assert contract["concurrency"]["enabled_values"] == [2, 3, 4, 5, 6]
-assert contract["concurrency"]["capacity_scope"] == \
-    "coupled ticket-worktree and provider-call capacity"
+assert contract["concurrency"]["enabled_values"] == [2, 3, 4]
+assert "disposable per-ticket execution cells" in \
+    contract["concurrency"]["capacity_scope"]
 assert "provider lock" in contract["concurrency"]["parallel_execution_gate"]
 assert contract["concurrency"]["lease_required_when_greater_than"] == 1
 provider_execution = contract["provider_execution"]
 assert provider_execution["contract_1_6_mode"] == "isolated-v1"
 assert provider_execution["contract_1_7_mode"] == "cli-concurrent-v1"
+assert provider_execution["contract_1_8_mode"] == "cli-concurrent-v1"
 assert set(provider_execution["activation_schemas"]) == {
     "nysa.software-factory.provider-activation/v1",
     "nysa.software-factory.provider-activation/v2",
@@ -2376,6 +2405,8 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROJECT": "validated launcher project slug",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
+    "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
+    "FACTORY_TRANSITION_STATE_DIR": "Contract 1.8 owner-only controller state directory",
     "FACTORY_PROVIDER_DB": "fixed Contract 1.6+ owner-local transactional database",
     "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6+ owner-local admission policy",
     "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
@@ -2383,7 +2414,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
     "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6+ owner-local attempt directory",
     "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6+ owner-local apply-lock directory",
-    "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7 API v1 or subscription-CLI v2",
+    "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
     "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
     "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor",
 }
@@ -2400,6 +2431,8 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_PROJECT",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
+    "FACTORY_TRANSITION_RECEIPT_SHA256",
+    "FACTORY_TRANSITION_STATE_DIR",
     "FACTORY_PROVIDER_DB",
     "FACTORY_PROVIDER_POLICY",
     "FACTORY_PROVIDER_BROKER_DB",
@@ -2439,6 +2472,14 @@ assert contract["launcher"]["active_record"]["contract_1_2_required_fields"] == 
 assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 for surface in [
+    "scripts/factory-controller.py",
+    "scripts/state-machine.py",
+    "scripts/ticket-passport.py",
+    "scripts/publication-lease.py",
+    "scripts/publication-conflict-policy.py",
+    "scripts/ci-rerun.py",
+    "scripts/ticket-readiness.py",
+    "scripts/launchd/com.factory.controller.plist.template",
     "scripts/provider-coordinator.py",
     "scripts/provider-cli-runtime.py",
     "scripts/provider-credential-broker.py",
@@ -2489,7 +2530,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.7.0" in changelog and "## 1.6.0" in changelog and "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
+assert "## 1.8.0" in changelog and "## 1.7.0" in changelog and "## 1.6.0" in changelog and "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [
@@ -2516,44 +2557,27 @@ skill = open(
     os.path.join(integration, "templates/profile/skills/factory-dispatch/SKILL.md"),
     encoding="utf-8",
 ).read()
-assert "factory-launch <project> reorder-test-fixes" in skill
-assert "version: 1.7.0" in skill
-assert "Contracts `1.2.0` through `1.5.0` retain `1.1.0` lease behavior unchanged" in skill
-assert re.search(
-    r"Contracts `1\.6\.0` and `1\.7\.0` accept a capacity from `1`\s+through `6`", skill
-)
-assert "preflight --ticket <T-NNN> --role <next-stage-role>" in skill
-assert "factory-launch <project> ticket-state" in skill
-assert "factory-launch <project> ticket-attest" in skill
-assert "factory-launch <project> project-ledger" in skill
-assert "factory-launch <project> ticket-pr" in skill
-assert "copy, reconstruct, reorder, or hand-edit ledger rows" in skill
-assert "--ticket <T-NNN>" in skill
-assert "--workdir <absolute-product-worktree>" in skill
+assert "version: 1.8.0" in skill
+assert "reconcile --json" in skill
+assert "cannot spawn an agentic dispatcher" in skill
+assert "four disposable execution cells" in skill
 
 supervisor = open(
     os.path.join(integration, "templates/profile/skills/factory-supervisor/SKILL.md"),
     encoding="utf-8",
 ).read()
-assert "version: 1.7.0" in supervisor
+assert "version: 1.8.0" in supervisor
 assert "dispatch-plan --claim --json" in supervisor
-assert "starts at most one child" in supervisor
-assert re.search(r"Never\s+put the lease", supervisor)
+assert "no agentic supervisor" in supervisor
+assert "reconcile --json" in supervisor
 
 soul = open(
     os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
 ).read()
-assert re.search(
-    r"Contracts `1\.2\.0` through `1\.5\.0` retain contract `1\.1\.0` lease behavior\s+unchanged",
-    soul,
-)
-assert "Contracts `1.6.0` and `1.7.0` accept up to six" in soul
-assert "preflight --ticket <T-NNN> --role <next-stage-role>" in soul
-assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
-assert "factory-launch <project> ticket-state" in soul
-assert "factory-launch <project> ticket-attest" in soul
-assert "factory-launch <project> project-ledger" in soul
-assert "never hand-edit ticket state or" in soul
+assert "no agentic dispatcher or supervisor" in soul
+assert "reconcile --json" in soul
+assert "every 15 seconds" in soul
+assert "exactly one product publication lease" in soul
 
 fixture = json.load(open(os.path.join(integration, "fixtures/factory-profile.json"), encoding="utf-8"))
 assert fixture["redacted"] is True
@@ -2561,6 +2585,7 @@ assert fixture["secret_values_included"] is False
 assert fixture["profile"]["environment_key_presence"] == {"GH_TOKEN": True}
 assert "skills/factory-supervisor/SKILL.md" in fixture["profile"]["files"]
 assert fixture["services"] == [
+    {"kind": "controller", "launch_agent": "per-product"},
     {"kind": "gateway", "launch_agent": "separate"},
     {"kind": "dashboard", "launch_agent": "separate"},
 ]
