@@ -33,7 +33,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
     def setUp(self) -> None:
         self.workspace = Path(tempfile.mkdtemp(prefix="qualification-test."))
         self.root = Path(tempfile.mkdtemp(
-            prefix="nysa-sf-qualification.test-", dir="/private/tmp",
+            prefix="nysa-sf-qualification.q-", dir="/private/tmp",
         )).resolve()
         os.chmod(self.root, 0o700)
         self.factory = self.workspace / "factory"
@@ -137,6 +137,24 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT.EnvironmentError, "already exists",
         ):
             ENVIRONMENT.prepare(args)
+
+    def test_rejects_root_too_long_for_cursor_scratch(self) -> None:
+        root = Path(tempfile.mkdtemp(
+            prefix="nysa-sf-qualification.too-long-", dir="/private/tmp",
+        )).resolve()
+        os.chmod(root, 0o700)
+        try:
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "too long for isolated Cursor",
+            ):
+                ENVIRONMENT.prepare(argparse.Namespace(
+                    factory_root=self.factory,
+                    product_root=self.product,
+                    project="relay",
+                    root=root,
+                ))
+        finally:
+            shutil.rmtree(root)
 
 
 if __name__ == "__main__":

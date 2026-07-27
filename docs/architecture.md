@@ -248,7 +248,8 @@ The sealed qualification launcher binds its owner-only qualification root as
 the release environment for isolated subscription runtimes. That root carries
 the same trusted marker used by disposable development environments; provider
 attempts therefore retain per-attempt homes without depending on a ticket's
-cell path.
+cell path. Environment preparation also rejects a root whose worst-case Cursor
+attempt data path would exceed the adapter's isolated-scratch limit.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket

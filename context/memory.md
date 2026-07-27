@@ -1004,3 +1004,12 @@ An exact authorized ticket branch may cross more than one protected-main or
 Factory successor before its first provider GO. Every first-parent commit must
 follow the Factory's pin, transition, recovery-merge, supersede, and repin
 grammar; every merged protected parent must remain in current main lineage.
+
+## 2026-07-27 — Decision 69: Qualification rejects unusable provider scratch roots
+
+Category: System change
+
+Sealed qualification preparation calculates a conservative Cursor attempt data
+path before creating release state. A root that exceeds the adapter's existing
+isolated-scratch limit fails before ticket admission, reservation, or role
+execution.

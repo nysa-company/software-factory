@@ -650,6 +650,30 @@ protected-main recoveries that preserve lineage and restore the exact current
 main tree; the exact Hermes contract suite also passes. Live four-ticket
 canary pending.
 
+## FI-20260727-032 — Qualification accepted an unusable Cursor scratch path
+
+Status: Implemented; qualification pending
+Area: preflight
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 final four
+Impact: all four Planner preflights passed, but each provider attempt became a
+zero-charge launch void before GO because the qualification root made Cursor's
+isolated data path longer than its supported scratch limit.
+Evidence:
+- T-110 through T-113 each record `failed_pre_go`, `go_issued=0`,
+  `task_submitted=0`, and `effective_cost=0`
+- every role log reports
+  `Cursor attempt data path is too long for isolated scratch`
+- the provider coordinator has zero active attempts and four terminal
+  zero-charge records
+Root cause: qualification-environment validation accepted any safe root name,
+while the role runner enforced the Cursor data-path limit only after ticket
+admission and provider reservation.
+Smallest change: reject a qualification root during environment preparation
+when a conservative attempt-ID path would exceed the existing Cursor limit.
+Validation: focused short-root success and long-root rejection tests pass;
+the exact Hermes contract suite also passes. Live four-ticket canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

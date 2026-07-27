@@ -23,6 +23,8 @@ POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ROOT = re.compile(r"^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9._-]+$")
+CURSOR_DATA_PATH_LIMIT = 75
+CURSOR_ATTEMPT_PLACEHOLDER = "0000000000-0000000-cli"
 
 
 class EnvironmentError(ValueError):
@@ -191,6 +193,10 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(os.path.realpath(args.root))
     if not ROOT.fullmatch(str(root)):
         raise EnvironmentError("qualification root must be under /private/tmp")
+    if len(str(root / "c" / CURSOR_ATTEMPT_PLACEHOLDER / "data")) > CURSOR_DATA_PATH_LIMIT:
+        raise EnvironmentError(
+            "qualification root is too long for isolated Cursor scratch"
+        )
     factory = args.factory_root.resolve(strict=True)
     product = args.product_root.resolve(strict=True)
     if command("git", "-C", str(factory), "status", "--porcelain", "--untracked-files=all"):

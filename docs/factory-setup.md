@@ -69,7 +69,9 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   prepared by `scripts/qualification-environment.py`; it does not replace the
   installed launcher or production activation record. Its generated marker
   and launcher-supplied root binding are required for isolated subscription
-  provider attempts; never construct that environment by hand.
+  provider attempts; never construct that environment by hand. The preparer
+  also fails before admission when the chosen root is too long for Cursor's
+  isolated attempt scratch.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry
