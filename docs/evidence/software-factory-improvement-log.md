@@ -134,6 +134,21 @@ count its authenticated reviewer prefix during reconciliation.
 Validation: T-080 resumes at Test-author, and T-082 records round 3 without
 replaying either role.
 
+## FI-20260727-009 — Evidence validation rejected Markdown emphasis
+
+Status: Implemented; qualification pending
+Area: evidence
+Owner: Factory
+First seen: 2026-07-27, T-084 Narrator
+Impact: a successful Narrator stopped after writing both required visual-gate
+markers because it emphasized them with ordinary Markdown bold syntax.
+Evidence:
+- T-084 Narrator manifest succeeds while bundle validation reports
+  `development evidence bundle lacks backend-only screenshot evidence`
+Root cause: the semantic marker check accepted only unformatted text.
+Smallest change: accept the same exact marker with optional Markdown emphasis.
+Validation: emphasized markers pass; missing or mismatched markers still fail.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -1256,6 +1256,10 @@ Capture the frozen viewports and compare them with the product references.
 }' "$TMP/pending-http-backend-bundle.md" >"$TMP/deferred-visual-bundle.md"
 validate_product_dev_bundle "$TMP/deferred-visual-bundle.md" ||
   fail "development validator rejected an explicit visual publication deferral"
+sed 's/^Deferred — publication visual gate$/**Deferred — publication visual gate.**/' \
+  "$TMP/deferred-visual-bundle.md" >"$TMP/bold-deferred-visual-bundle.md"
+validate_product_dev_bundle "$TMP/bold-deferred-visual-bundle.md" ||
+  fail "development validator rejected emphasized visual publication markers"
 sed '/^Deferred — publication visual gate$/{
   x
   /removed/{

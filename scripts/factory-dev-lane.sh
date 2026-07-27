@@ -3505,8 +3505,8 @@ def section(name):
     return ""
 preview=section("Preview")
 screenshots=section("Screenshots")
-backend_na=r"(?m)^Not applicable — backend-only contract(?:[.]|$)"
-visual_deferred=r"(?m)^Deferred — publication visual gate(?:[.]|$)"
+backend_na=r"(?m)^\*{0,2}Not applicable — backend-only contract(?:[.]\*{0,2}|$)"
+visual_deferred=r"(?m)^\*{0,2}Deferred — publication visual gate(?:[.]\*{0,2}|$)"
 preview_deferred=(
     re.search(r"\b(?:unavailable|pending)\b",preview,re.I)
     and re.search(r"\b(?:PR|deploy|publication)\b",preview,re.I)
