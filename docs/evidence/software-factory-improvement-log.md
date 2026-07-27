@@ -167,6 +167,22 @@ required repair owner.
 Validation: a concatenated approval callback parses, is removed from durable
 detail, and cannot carry its lane path into a successor.
 
+## FI-20260727-011 — Passport import rejected required Narrator evidence
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, T-084 canonical passport
+Impact: a clean completed-role passport could not create its successor lane.
+Evidence:
+- T-084 import reports `product seed commit crosses a control boundary`
+Root cause: retained ticket commits allowed the exact ticket contract but not
+its exact required `T-NNN-bundle.md`.
+Smallest change: allow only the selected ticket contract and selected ticket
+bundle under `factory/tickets/`.
+Validation: the required bundle survives import; sibling ticket and other
+Factory control paths remain rejected.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

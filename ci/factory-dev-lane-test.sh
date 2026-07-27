@@ -2689,10 +2689,13 @@ git -C "$SEED_HISTORY" add factory/route-plans/T-1.json \
 git -C "$SEED_HISTORY" -c user.name='Software Factory' \
   -c user.email=factory@local commit -qm 'T-1: pin kit and model route plan'
 printf '%s\n' after >"$SEED_HISTORY/app/after"
+printf '%s\n' '# T-1 evidence bundle' \
+  >"$SEED_HISTORY/factory/tickets/T-1-bundle.md"
 printf '%s\n' 'State: Review' 'SPEC-LINT: PASS' \
   'reviewer round 1: REQUEST CHANGES' \
   >"$SEED_HISTORY/factory/tickets/T-1.md"
-git -C "$SEED_HISTORY" add app/after factory/tickets/T-1.md
+git -C "$SEED_HISTORY" add app/after factory/tickets/T-1.md \
+  factory/tickets/T-1-bundle.md
 git -C "$SEED_HISTORY" -c user.name='Software Factory' \
   -c user.email=factory@local commit -qm 'T-1: retain later lifecycle output'
 git -C "$SEED_HISTORY" branch ticket/T-1
@@ -2723,7 +2726,8 @@ die() { exit 1; }
 seed_product_worktrees "$SEED_HISTORY_ROOT" "$TMP/seed-history.bundle" \
   "$SEED_HISTORY_BASE" T-1
 [[ -f "$SEED_HISTORY_ROOT/worktrees/T-1/app/before" &&
-   -f "$SEED_HISTORY_ROOT/worktrees/T-1/app/after" ]] ||
+   -f "$SEED_HISTORY_ROOT/worktrees/T-1/app/after" &&
+   -f "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1-bundle.md" ]] ||
   fail "late route pin caused retained lifecycle output to be skipped"
 [[ ! -e "$SEED_HISTORY_ROOT/worktrees/T-1/factory/route-plans/T-1.json" ]] ||
   fail "stale retained route plan was replayed"

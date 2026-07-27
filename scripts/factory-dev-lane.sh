@@ -1502,11 +1502,15 @@ if any(line.split("\t",1)[0].split()[1] in {"120000","160000"} for line in raw):
 paths=subprocess.check_output(
     ["git","-C",worktree,"diff-tree","--no-commit-id","--name-only","-r",commit],
     text=True).splitlines()
+ticket_paths={
+    f"factory/tickets/{ticket}.md",
+    f"factory/tickets/{ticket}-bundle.md",
+}
 for path in paths:
     if (path in {"factory/KIT_PIN","factory/PROJECT.env","factory/ledger.csv"} or
         path.startswith("factory/route-plans/") or
         path.startswith("factory/runs/") or
-        (path.startswith("factory/tickets/") and path != f"factory/tickets/{ticket}.md")):
+        (path.startswith("factory/tickets/") and path not in ticket_paths)):
         raise SystemExit(1)
 PY
       then
