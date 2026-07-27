@@ -12,15 +12,16 @@
   - `805de58cd6be311cbe2046da3a62a5d73be8ad85`
   - `39240c4fcdd18e4cc274f878d70de6bb14189f51`
   - `4e68e0b11d18c55c24c5a75d6f556727337d37f3`
-- Current successor: `48478c8f5a9d4181e83d6352c535d6839a34bef5`
+  - `48478c8f5a9d4181e83d6352c535d6839a34bef5`
+- Current successor: `592d57f2d2d6e656b6349fe83d5a8726c19b3d59`
 - Focused verification:
   - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `805de58`
   - `python3 ci/cursor-stream-test.py` — PASS at intermediate successor
     `4e68e0b`
   - `bash ci/factory-dev-lane-test.sh` — PASS at intermediate successor
     `c64a924`
-  - publication-repair parser and checkpoint sequencing fixtures — PASS at
-    the current successor
+  - publication-repair parser and portable `FIX test-author` checkpoint
+    sequencing fixtures — PASS at the current successor
 
 The successor fixes ten Factory-core defects found after the first roles of
 the proposed final four had started:

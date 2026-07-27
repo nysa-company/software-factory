@@ -432,7 +432,10 @@ Narrator evidence.
 Validation: shell syntax checks, the focused publication-repair parser
 fixture, and the focused checkpoint sequence
 `AWAIT → Test-author → Reviewer → Narrator → AWAIT` pass at executable
-candidate `48478c8f5a9d4181e83d6352c535d6839a34bef5`.
+candidate `592d57f2d2d6e656b6349fe83d5a8726c19b3d59`. The first zero-submission
+T-081 canary proved portable export records the authenticated reopen directly
+as `FIX test-author`; that exact checkpoint shape now passes the same focused
+sequence.
 
 ## Maintenance rule
 
