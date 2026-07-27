@@ -216,6 +216,20 @@ The development-lane entry point exports `LANG`, `LC_ALL`, and `LC_CTYPE` as
 `C.UTF-8` locale from flooding macOS Git/Perl evidence while retaining
 deterministic byte-oriented controller behavior.
 
+## 2026-07-26 — Decision 62: Rolling-ten recovery uses a final-four stability gate
+
+Category: Decision
+
+Sofia approved the recovery plan in
+`docs/evidence/2026-07-26-sandbox-factory-rolling-ten-recovery-handoff.md`:
+Generation 9 may use up to four concurrent Cursor sessions, broad CI and
+Hermes verification run only in GitHub, pixel-perfect comparison is advisory,
+and operator finish edits are documentation-only. T-077 is already merged and
+must be reconciled rather than rerun; stability requires the final four
+accepted tickets to complete under one unchanged executable Factory SHA with
+no operator non-documentation edits or successful-role replay. This records an
+operating decision only and makes no Factory runtime or production change.
+
 ## 2026-07-21 — Decision 54: Cursor-first routing preserves balanced-v2 quality
 
 Category: Decision
