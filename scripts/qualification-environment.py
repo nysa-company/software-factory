@@ -20,7 +20,7 @@ from typing import Any
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-ROOT = re.compile(r"^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9-]+$")
+ROOT = re.compile(r"^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9._-]+$")
 
 
 class EnvironmentError(ValueError):
@@ -161,11 +161,17 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     releases = root / "releases"
     projects = root / "projects"
     receipts = root / "receipts"
-    for path in (releases, projects, receipts):
+    profile = root / "profile"
+    profile_projects = profile / "projects"
+    for path in (releases, projects, receipts, profile):
         if path.exists():
             safe_directory(path)
         else:
             path.mkdir(mode=0o700)
+    if profile_projects.exists():
+        safe_directory(profile_projects)
+    else:
+        profile_projects.mkdir(mode=0o700)
     project = projects / args.project
     if project.exists():
         safe_directory(project)
@@ -203,6 +209,16 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "receipt_id": receipt_id,
         "release_path": str(release),
     })
+    registry = profile_projects / f"{args.project}.env"
+    descriptor = os.open(
+        registry,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(f"PRODUCT_ROOT={product}\n")
+        stream.flush()
+        os.fsync(stream.fileno())
     result = {
         "factory_sha": sha,
         "factory_tree": tree,

@@ -59,6 +59,7 @@ PY
 INSTALLED_LAUNCHER_PATH="$ACCOUNT_HOME/.factory/bin/factory-launch"
 ISOLATED_TEST_LAUNCHER=0
 QUALIFICATION_LAUNCHER=0
+QUALIFICATION_PROFILE_ENV=""
 
 if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
   if [[ ${FACTORY_LAUNCH_TEST_MODE+x} == x ||
@@ -77,7 +78,7 @@ else
   QUALIFICATION_ROOT="$(dirname "$(dirname "$QUALIFICATION_RELEASE")")"
   if [[ "$SELF_PATH" == "$QUALIFICATION_RELEASE/integrations/hermes/bin/factory-launch" &&
         "$QUALIFICATION_SHA" =~ ^[0-9a-f]{40}$ &&
-        "$QUALIFICATION_ROOT" =~ ^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9-]+$ ]]; then
+        "$QUALIFICATION_ROOT" =~ ^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9._-]+$ ]]; then
     "$BOOTSTRAP_PYTHON" -I -S - "$QUALIFICATION_ROOT" <<'PY' ||
 import os, stat, sys
 path = os.path.realpath(sys.argv[1])
@@ -89,7 +90,8 @@ PY
     QUALIFICATION_LAUNCHER=1
     HOME="$ACCOUNT_HOME"
     RAW_KITS_ROOT="$QUALIFICATION_ROOT"
-    RAW_PROFILE="$ACCOUNT_HOME/.hermes/profiles/factory"
+    RAW_PROFILE="$QUALIFICATION_ROOT/profile"
+    QUALIFICATION_PROFILE_ENV="$ACCOUNT_HOME/.hermes/profiles/factory/.env"
   else
     [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
       die "launcher must execute from the installed or sealed qualification trust root"
@@ -206,7 +208,7 @@ PROFILE_DIR="$(cd "$PROFILE_DIR" 2>/dev/null && pwd -P)" ||
   die "Hermes factory profile cannot be resolved"
 
 PROFILE_GH_TOKEN=""
-PROFILE_ENV_FILE="$PROFILE_DIR/.env"
+PROFILE_ENV_FILE="${QUALIFICATION_PROFILE_ENV:-$PROFILE_DIR/.env}"
 if [[ -e "$PROFILE_ENV_FILE" || -L "$PROFILE_ENV_FILE" ]]; then
   reject_symlink_components "$PROFILE_ENV_FILE" "Hermes profile environment"
   PROFILE_GH_TOKEN=$("$PYTHON_BIN" -I -S - "$PROFILE_ENV_FILE" 2>/dev/null <<'PY'

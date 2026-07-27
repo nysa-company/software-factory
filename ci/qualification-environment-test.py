@@ -83,6 +83,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(value["factory_sha"], self.sha)
         self.assertEqual(ENVIRONMENT.git_tree(release), value["factory_tree"])
         self.assertFalse(release.stat().st_mode & 0o222)
+        self.assertEqual(
+            (self.root / "profile/projects/relay.env").read_text(),
+            f"PRODUCT_ROOT={self.product.resolve()}\n",
+        )
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError, "already exists",
         ):
