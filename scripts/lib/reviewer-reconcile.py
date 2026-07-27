@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import re
 import stat
@@ -53,6 +54,7 @@ def main() -> None:
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--contract-version", required=True)
+    parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -89,6 +91,25 @@ def main() -> None:
     if set(owners) - {number for number, _ in verdicts}:
         raise SystemExit("reviewer repair ownership has no verdict")
 
+    imported = 0
+    if args.checkpoint is not None:
+        if not regular(args.checkpoint):
+            raise SystemExit("reviewer checkpoint is unsafe")
+        checkpoint = json.loads(args.checkpoint.read_text(encoding="utf-8"))
+        records = [
+            item for item in checkpoint.get("tickets", [])
+            if item.get("ticket") == args.ticket
+        ]
+        if (
+            checkpoint.get("schema") != "factory-dev-product-checkpoint-import/v2"
+            or len(records) != 1
+            or not isinstance(records[0].get("roles"), list)
+        ):
+            raise SystemExit("reviewer checkpoint is malformed")
+        imported = records[0]["roles"].count("reviewer")
+        if imported > len(verdicts):
+            raise SystemExit("reviewer checkpoint exceeds canonical verdict history")
+
     successful = []
     for manifest in args.runs_dir.glob("*.meta"):
         if not regular(manifest):
@@ -116,10 +137,10 @@ def main() -> None:
         successful.append((value.get("started_at", ""), manifest.name, value, output))
     successful.sort(key=lambda item: (item[0], item[1]))
 
-    if len(successful) == len(verdicts):
+    if imported + len(successful) == len(verdicts):
         args.output.write_text(text, encoding="utf-8")
         return
-    if len(successful) != len(verdicts) + 1:
+    if imported + len(successful) != len(verdicts) + 1:
         raise SystemExit("reviewer runs and canonical verdicts are ambiguous")
     if state[0].lower() != "review":
         raise SystemExit("unmatched reviewer evidence requires Review state")

@@ -111,6 +111,29 @@ and require monotonic equality between checkpoint charges and reservations.
 Validation: a successor preserves prior totals exactly and rejects additive
 double-counting.
 
+## FI-20260727-008 — Contract-repair passports retained an exception state
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, T-080 successor resume
+Impact: an authenticated `FIX test-author` checkpoint stopped before dispatch
+because its prior contract blocker had returned the ticket to Backlog; T-082
+later completed Reviewer round 3 but could not reconcile its two imported
+reviewer verdicts.
+Evidence:
+- T-080 successor timing report contains no attempt and reports
+  `FAILED_STAGE=T-080:state-transition`
+- T-082 Reviewer manifest is successful while its controller reports
+  `FAILED_STAGE=T-082:reviewer`
+Root cause: portable import restored the exception state even though the
+checkpoint's authenticated next stage already identified the repair phase,
+and reviewer reconciliation counted only current-lane manifests.
+Smallest change: materialize the phase from v2 `next_stage` during import and
+count its authenticated reviewer prefix during reconciliation.
+Validation: T-080 resumes at Test-author, and T-082 records round 3 without
+replaying either role.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

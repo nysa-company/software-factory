@@ -168,11 +168,15 @@ elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
     echo "ticket head cannot be resolved" >&2
     exit 1
   }
+  CHECKPOINT_ARGS=()
+  [[ -z "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]] ||
+    CHECKPOINT_ARGS=(--checkpoint "$FACTORY_DEV_PRODUCT_CHECKPOINT")
   python3 "$KIT_DIR/scripts/lib/reviewer-reconcile.py" \
     --runs-dir "$PRODUCT_ROOT/factory/runs" \
     --ticket-file "$TICKET_FILE" --ticket "$TICKET" \
     --head "$HEAD_BEFORE" \
     --contract-version "$CONTRACT_VERSION" \
+    "${CHECKPOINT_ARGS[@]}" \
     --output "$TMP"
 elif [[ "$ACTION" == "qualification-backlog" ]]; then
   cmp -s "$TMP" "$TICKET_FILE" || {

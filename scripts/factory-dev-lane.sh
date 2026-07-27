@@ -1537,6 +1537,13 @@ if checkpoint:
     source=json.load(open(checkpoint,encoding="utf-8"))
     portable=source.get("schema") == "factory-dev-product-checkpoint/v2"
     record=next(item for item in source["tickets"] if item["ticket"] == ticket)
+state=record["state"] if record else "Ready"
+if portable:
+    stage=record["next_stage"]
+    state=("Planning" if stage in {"RUN planner","RUN spec-linter"} else
+           "Building" if stage in {
+               "RUN test-author","RUN builder","FIX test-author","FIX builder"
+           } else "Review")
 for line in p.read_text(encoding="utf-8").splitlines():
     if not portable and re.fullmatch(
         r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*", line, re.I
@@ -1551,8 +1558,7 @@ for line in p.read_text(encoding="utf-8").splitlines():
             lines.append("Kit-SHA: " + kit_sha)
             kit_written=True
     else:
-        lines.append(re.sub(r"^State:\s*.*$",
-                            "State: "+(record["state"] if record else "Ready"),line))
+        lines.append(re.sub(r"^State:\s*.*$", "State: "+state, line))
 if not kit_written:
     lines.append("Kit-SHA: " + kit_sha)
 if record and not portable:
@@ -3629,6 +3635,7 @@ for path in runs.glob("*.meta"):
 raise SystemExit(1)
 PY
   lane_env "$root" FACTORY_DISPATCH_LEASE_ID="$lease" \
+    FACTORY_DEV_PRODUCT_CHECKPOINT="$root/runtime/product-checkpoint-import.json" \
     "$SOURCE_ROOT/scripts/ticket-state.sh" \
     --ticket "$ticket" --workdir "$root/worktrees/$ticket" \
     --action reviewer-reconcile >/dev/null

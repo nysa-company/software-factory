@@ -1573,6 +1573,31 @@ cmp -s "$review_ticket" "$REC/reconciled" ||
   fail "replayed review reconciliation was not idempotent"
 [[ "$(grep -c '^reviewer round 1: APPROVE$' "$review_ticket")" -eq 1 ]] ||
   fail "review reconciliation did not append exactly once"
+review_ticket="$REC/worktrees/T-900003/factory/tickets/T-900003.md"
+mkdir -p "$(dirname "$review_ticket")"
+printf '%s\n' 'State: Review' 'reviewer round 1: REQUEST CHANGES' \
+  'reviewer round 1 FIX-OWNER: builder' >"$review_ticket"
+printf '%s\n' \
+  '{"schema":"factory-dev-product-checkpoint-import/v2","checkpoint_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tickets":[{"ticket":"T-900003","import_head":"1111111111111111111111111111111111111111","import_tree":"2222222222222222222222222222222222222222","roles":["planner","spec-linter","test-author","builder","reviewer"],"spec_verdicts":["SPEC-LINT: PASS"],"expected_next_stage":"FIX builder"}]}' \
+  >"$REC/checkpoint.json"
+chmod 600 "$REC/checkpoint.json"
+printf '%s\n' '{"type":"result","subtype":"success","result":"Repair verified.\n\nAPPROVE"}' \
+  >"$REC/product/factory/runs/review-checkpoint.out"
+review_digest="$(shasum -a 256 "$REC/product/factory/runs/review-checkpoint.out" | awk '{print $1}')"
+printf '%s\n' \
+  'ticket=T-900003' 'role=reviewer' 'adapter=cursor-anthropic' \
+  'contract_version=1.7.0' 'role_exit=ok' \
+  "role_head_before=$review_head" "role_remote_before=$review_head" \
+  "output_sha256=$review_digest" \
+  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-03T00:00:00Z' \
+  >"$REC/product/factory/runs/review-checkpoint.meta"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900003 --head "$review_head" --contract-version 1.7.0 \
+  --checkpoint "$REC/checkpoint.json" --output "$REC/reconciled" ||
+  fail "portable reviewer prefix was not counted during reconciliation"
+grep -qx 'reviewer round 2: APPROVE' "$REC/reconciled" ||
+  fail "portable reviewer prefix replayed or displaced the current verdict"
 review_ticket="$REC/worktrees/T-900002/factory/tickets/T-900002.md"
 mkdir -p "$(dirname "$review_ticket")"
 printf '%s\n' 'State: Review' >"$review_ticket"

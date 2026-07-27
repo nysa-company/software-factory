@@ -29,7 +29,9 @@ without any `FIX-OWNER` line.
 
 ## Rules
 
-- Maximum 2 rounds. If round 2 doesn't resolve it, move the ticket to Blocked-Escalated and write one plain-language paragraph for the operator: what the disagreement is, what the options are, what you recommend. The operator adjudicates outcomes, not code.
+- Review rounds have no semantic cap. Continue only through the controller's
+  budget admission and exact `FIX-OWNER` routing; stop on an unresolvable
+  contract disagreement instead of inventing a repair.
 - You cannot push commits. Suggestions go in comments.
 - A trivially-passing or contract-dodging test is a **reject on round 1** — that's the failure mode you exist to catch.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected verdict.
