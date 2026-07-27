@@ -4663,7 +4663,7 @@ product_export_roles_complete() {
     "$root/runtime/product-checkpoint-import.json" <<'PY'
 import json, pathlib, sys
 root=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; checkpoint=pathlib.Path(sys.argv[3])
-roles={}; current=set()
+roles={}
 if checkpoint.is_file():
     value=json.load(open(checkpoint,encoding="utf-8"))
     records=[item for item in value["tickets"] if item["ticket"] == ticket]
@@ -4675,9 +4675,9 @@ for path in root.glob("*.meta"):
     if (values.get("ticket") == ticket and
         values.get("accounting_state") in {"completed", "abandoned_conservative"} and
         values.get("exit_status") == "0"):
-        roles[values.get("role")]=path; current.add(values.get("role"))
+        roles[values.get("role")]=path
 expected={"planner","spec-linter","test-author","builder","reviewer","narrator"}
-if set(roles) != expected or not {"reviewer","narrator"} <= current:
+if set(roles) != expected:
     raise SystemExit(1)
 PY
 }

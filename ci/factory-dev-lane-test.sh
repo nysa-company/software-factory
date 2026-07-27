@@ -2336,14 +2336,28 @@ eval "$(sed -n '/^product_export_roles_complete()/,/^export_product_internal()/p
 EXPORT_GATE_ROOT="$TMP/checkpoint-export-gate"
 mkdir -p "$EXPORT_GATE_ROOT/product/factory/runs" "$EXPORT_GATE_ROOT/runtime"
 cp "$CHECKPOINT_IMPORT" "$EXPORT_GATE_ROOT/runtime/product-checkpoint-import.json"
-printf '%s\n' 'ticket=T-993' 'role=reviewer' 'accounting_state=completed' \
-  'exit_status=0' >"$EXPORT_GATE_ROOT/product/factory/runs/reviewer.meta"
+python3 - "$EXPORT_GATE_ROOT/runtime/product-checkpoint-import.json" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); value=json.loads(path.read_text())
+record=next(item for item in value["tickets"] if item["ticket"] == "T-993")
+record["roles"] += ["reviewer","narrator"]
+path.write_text(json.dumps(value,separators=(",",":"))+"\n")
+PY
+product_export_roles_complete "$EXPORT_GATE_ROOT" T-993 ||
+  fail "checkpoint export rejected authenticated completed roles"
+python3 - "$EXPORT_GATE_ROOT/runtime/product-checkpoint-import.json" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); value=json.loads(path.read_text())
+record=next(item for item in value["tickets"] if item["ticket"] == "T-993")
+record["roles"].remove("narrator")
+path.write_text(json.dumps(value,separators=(",",":"))+"\n")
+PY
 expect_failure "checkpoint export without current Narrator" \
   product_export_roles_complete "$EXPORT_GATE_ROOT" T-993
 printf '%s\n' 'ticket=T-993' 'role=narrator' 'accounting_state=completed' \
   'exit_status=0' >"$EXPORT_GATE_ROOT/product/factory/runs/narrator.meta"
 product_export_roles_complete "$EXPORT_GATE_ROOT" T-993 ||
-  fail "checkpoint export rejected current Reviewer and Narrator"
+  fail "checkpoint export rejected current Narrator"
 
 eval "$(sed -n '/^write_product_checkpoint_import()/,/^validate_product_seed_accounting()/p' \
   "$LANE" | sed '$d')"

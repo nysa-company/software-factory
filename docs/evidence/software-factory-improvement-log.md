@@ -183,6 +183,24 @@ bundle under `factory/tickets/`.
 Validation: the required bundle survives import; sibling ticket and other
 Factory control paths remain rejected.
 
+## FI-20260727-012 — Completed passports required role replay before export
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, T-080 successor export
+Impact: a terminal authenticated passport reached Awaiting Operator with zero
+provider calls but could not export until Reviewer and Narrator were replayed.
+Evidence:
+- T-080 successor reports `TICKET_STATUS=T-080:AWAIT-OPERATOR`
+- its export reports `product ticket role evidence is incomplete`
+Root cause: the export gate counted authenticated checkpoint roles but still
+required Reviewer and Narrator manifests from the current lane.
+Smallest change: accept the complete authenticated role set across checkpoint
+and current-lane evidence.
+Validation: a completed passport exports without replay; a missing role still
+refuses unless a successful current-lane manifest supplies it.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
