@@ -4,10 +4,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
-- Fresh development lanes omit the Reviewer checkpoint environment when no
-  authenticated import exists. Cancellation recovery accepts authenticated
-  shell status 130 and macOS SIGTERM status 143, retaining interrupted output
-  on a diagnostic ref before restoring the trusted ticket head.
+- Fresh development lanes and trusted ticket-state reconciliation omit the
+  Reviewer checkpoint argument when no authenticated import exists, including
+  on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
+  130 and macOS SIGTERM status 143, retaining interrupted output on a
+  diagnostic ref before restoring the trusted ticket head.
 
 - Fresh Contract 1.7 product planning removes stale canonical Spec-lint,
   Reviewer, and repair-owner control lines while preserving historical prose
@@ -833,3 +834,12 @@ exists. Authenticated cancelled-role recovery accepts shell status 130 and
 macOS SIGTERM status 143 while retaining every existing manifest, head,
 remote, GO, and accounting check; partial output is snapshotted before the
 trusted worktree is restored.
+
+## 2026-07-27 — Decision 37: Optional Reviewer checkpoints use explicit branches
+
+Category: System change
+
+The trusted ticket-state helper invokes Reviewer reconciliation with
+`--checkpoint` only when an authenticated checkpoint exists. It does not encode
+an absent optional argument as an empty array, preserving checkpoint-free
+recovery on the supported macOS Bash 3.2 host.

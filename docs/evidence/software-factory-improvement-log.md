@@ -260,6 +260,25 @@ retained T-083's partial Builder tree before restoring a clean trusted head;
 the lane has zero active provider attempts, claims, leases, PID files, or
 matching processes.
 
+## FI-20260727-016 — Checkpoint-free reconciliation still used a Bash 3-unsafe array
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, T-081 passport export
+Impact: the trusted Reviewer result could not resolve its Test-author repair
+stage on the supported macOS Bash 3.2 host
+Evidence:
+- `scripts/ticket-state.sh` failed at the empty `CHECKPOINT_ARGS` expansion
+- T-081 retained all successful roles and did not launch another provider call
+Root cause: the scheduler stopped passing a nonexistent checkpoint, but the
+shared ticket-state helper still represented that absent option as an empty
+array under `set -u`.
+Smallest change: invoke Reviewer reconciliation in two explicit branches,
+adding `--checkpoint` only when the authenticated path exists.
+Validation: `bash ci/ticket-state-test.sh` passes on the macOS host and
+exercises a successful checkpoint-free Reviewer reconciliation.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

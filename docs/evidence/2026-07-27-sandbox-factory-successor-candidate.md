@@ -3,16 +3,21 @@
 ## Executable candidate
 
 - Predecessor: `aeaf260a6e82fb7543ff0b3a87661637a05af8d3`
-- Successor: `d79819d83b0982c201575d3edb49342c08410960`
-- Focused verification: `bash ci/factory-dev-lane-test.sh` — PASS
+- Intermediate successor: `d79819d83b0982c201575d3edb49342c08410960`
+- Current successor: `70ce454d1bd20a86c852dc816db75bdad1bde436`
+- Focused verification:
+  - `bash ci/factory-dev-lane-test.sh` — PASS at the intermediate successor
+  - `bash ci/ticket-state-test.sh` — PASS at the current successor
 
-The successor fixes two Factory-core defects found after the first roles of
+The successor fixes three Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
    trusted Reviewer reconciliation;
 2. authenticated cancellation recovery accepts the observed macOS SIGTERM
-   status 143 as well as shell status 130.
+   status 143 as well as shell status 130;
+3. checkpoint-free trusted Reviewer reconciliation no longer expands an empty
+   optional-argument array under macOS Bash 3.2.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.
@@ -31,6 +36,7 @@ zero because Factory code changed after the proposed final four's first role
 starts. Their successful roles remain immutable and cannot be replayed or
 relabelled as successor-SHA evidence.
 
-The canonical handoff therefore requires operator authorization before adding
-four new approved tickets for a clean successor-SHA final four. Until that
-ruling, no ticket is admitted or published.
+The operator authorized the extended proof: finish the retained four without
+successful-role replay, then use T-086 through T-089 as the clean successor-SHA
+final four. No new successor role may start until the Generation 9 evidence
+binds the current executable SHA above.
