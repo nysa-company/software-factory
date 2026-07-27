@@ -589,6 +589,9 @@ if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE
     "FACTORY_PROVIDER_BROKER_CA=$HOME/.factory/provider-broker-ca.pem"
   )
 fi
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")
+fi
 if [[ -n "$PROFILE_GH_TOKEN" ]]; then
   HELPER_ENV+=("GH_TOKEN=$PROFILE_GH_TOKEN")
 fi

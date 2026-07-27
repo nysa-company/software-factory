@@ -986,3 +986,12 @@ whose history contains only Factory pin and Ready-to-Planning controls. The
 controller validates the unchanged ticket contract, non-force merges current
 protected main, records the old head, and removes only obsolete control state;
 unlisted heads and provider-authored drift remain blocked.
+
+## 2026-07-27 — Decision 67: Qualification roots are provider execution environments
+
+Category: System change
+
+The sealed qualification launcher preserves its already-validated owner-only
+root as the isolated subscription execution environment. The generated marker
+authorizes per-attempt runtime homes under that root; tickets remain bound to
+their passport and branch, not to any disposable cell path.

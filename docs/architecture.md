@@ -244,6 +244,11 @@ restart, and Factory migration. Four PRs may validate concurrently; one
 renewable per-product publication lease serializes merge requests. The
 four-ticket qualification reducer reconciles passports, manifests, controller
 events, protected checks, PR heads, merge commits, and protected main.
+The sealed qualification launcher binds its owner-only qualification root as
+the release environment for isolated subscription runtimes. That root carries
+the same trusted marker used by disposable development environments; provider
+attempts therefore retain per-attempt homes without depending on a ticket's
+cell path.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket

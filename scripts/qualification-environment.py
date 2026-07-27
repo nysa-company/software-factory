@@ -240,6 +240,10 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     active = project / "active.json"
     if release.exists() or active.exists():
         raise EnvironmentError("qualification environment already exists")
+    write(root / "marker.json", {
+        "mode": "qualification",
+        "schema": SCHEMA,
+    })
     materialize(factory, sha, release)
     if git_tree(release) != tree:
         raise EnvironmentError("sealed qualification tree does not match the candidate")

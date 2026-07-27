@@ -66,7 +66,8 @@ BUDGET_DAY=""
 PROVIDER_WAIT_SECONDS=0
 DEVELOPMENT_LANE_ROOT=""
 if [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
-      "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* &&
+      ( "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* ||
+        "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-qualification.* ) &&
       -f "$FACTORY_CLI_LANE_ROOT/marker.json" ]]; then
   case "$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" in
     "$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)/product" | \

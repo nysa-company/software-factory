@@ -106,6 +106,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
             (self.root / "profile/projects/relay.env").read_text(),
             f"PRODUCT_ROOT={self.product.resolve()}\n",
         )
+        self.assertEqual(
+            json.loads((self.root / "marker.json").read_text()),
+            {
+                "mode": "qualification",
+                "schema": "nysa.software-factory.qualification-environment/v1",
+            },
+        )
         status = json.loads(run(
             self.root,
             "/usr/bin/python3",
@@ -121,6 +128,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn(
             'PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"', launcher_text
+        )
+        self.assertIn(
+            'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")',
+            launcher_text,
         )
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError, "already exists",

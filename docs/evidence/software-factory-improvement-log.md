@@ -597,6 +597,32 @@ Validation: focused dispatch tests prove the authorized control-only recovery
 and reject a similarly authorized branch with ticket-contract drift; live
 canary pending.
 
+## FI-20260727-030 — Qualification stripped its isolated-runtime root
+
+Status: Implemented; qualification pending
+Area: provider
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 final four
+Impact: all four Planner calls were admitted by the deterministic controller
+but refused before provider GO, so no role could execute in the sealed
+qualification environment.
+Evidence:
+- T-110 through T-113 each recorded one `launch_void` Planner manifest with
+  `go_issued=0`, `task_submitted=0`, `effective_cost=0`, and
+  `failed_pre_go`
+- every role log reports
+  `subscription CLI isolation requires a valid development-lane attempt`
+- the qualification provider database contains four terminal, zero-charge
+  attempts and no active reservation
+Root cause: the qualification launcher intentionally sanitized its child
+environment but did not restore the sealed qualification-root binding, while
+the role runner accepted only marked `nysa-sf-dev.*` roots.
+Smallest change: generate a qualification marker, pass the already-validated
+qualification root through the trusted launcher environment, and let the
+existing isolated-runtime setup accept that marked root.
+Validation: the focused qualification-environment test, launcher/runner syntax
+checks, and exact Hermes contract suite pass; live four-ticket canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -2519,7 +2519,12 @@ launcher_text = open(
 ).read()
 assert "/private/tmp/nysa-sf-qualification" in launcher_text
 assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
+assert 'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
+runner_text = open(
+    os.path.join(root, "scripts", "run-agent.sh"), encoding="utf-8"
+).read()
+assert 'nysa-sf-qualification.*' in runner_text
 
 integration = os.path.join(root, "integrations", "hermes")
 required = [
