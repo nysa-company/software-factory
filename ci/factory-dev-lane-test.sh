@@ -2851,6 +2851,7 @@ require_lane_mode() { :; }
 load_product_tickets() { PRODUCT_TICKETS=(T-1 T-2 T-3); }
 validate_runtime_paths() { :; }
 product_approval_hash() { printf '%s\n' test-approval; }
+product_dependencies_satisfied() { :; }
 subscription_ready() { :; }
 subscription_provider_idle() { :; }
 subscription_provider_wait() { subscription_provider_idle; }
