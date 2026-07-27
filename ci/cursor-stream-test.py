@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STREAM = ROOT / "scripts/lib/cursor-stream.py"
 ADAPTER = ROOT / "scripts/adapters/cursor-anthropic.sh"
 VERDICT = ROOT / "scripts/lib/reviewer-verdict.py"
+RECONCILE = ROOT / "scripts/lib/reviewer-reconcile.py"
 
 
 class CursorStreamTest(unittest.TestCase):
@@ -239,6 +240,44 @@ class CursorStreamTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "REQUEST CHANGES\ttest-author\n")
+
+    def test_reviewer_allows_only_ticket_documentation_after_review(self) -> None:
+        spec = importlib.util.spec_from_file_location("reviewer_reconcile", RECONCILE)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            ticket = repo / "factory/tickets/T-1.md"
+            source = repo / "app.ts"
+            ticket.parent.mkdir(parents=True)
+            ticket.write_text("State: Review\n")
+            source.write_text("export const value = 1;\n")
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+            )
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+            reviewed = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+            ticket.write_text("State: Review\n\nOperator note.\n")
+            subprocess.run(["git", "commit", "-qam", "docs"], cwd=repo, check=True)
+            documented = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+            self.assertTrue(
+                module.review_head_matches(ticket, "T-1", reviewed, documented)
+            )
+            source.write_text("export const value = 2;\n")
+            subprocess.run(["git", "commit", "-qam", "product"], cwd=repo, check=True)
+            changed = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+            self.assertFalse(module.review_head_matches(ticket, "T-1", reviewed, changed))
 
     def test_reviewer_refuses_background_callback_owner_disagreement(self) -> None:
         review = (

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import stat
+import subprocess
 
 
 def regular(path: Path) -> bool:
@@ -45,6 +46,32 @@ def quote_review(review: str, round_number: int) -> str:
         raise ValueError("reviewer detail is empty or exceeds the safe bound")
     lines = "\n".join(f"> {line}" if line else ">" for line in review.splitlines())
     return f"Reviewer round {round_number} signed detail:\n\n{lines}\n\n"
+
+
+def review_head_matches(
+    ticket_file: Path, ticket: str, reviewed: str, current: str
+) -> bool:
+    if reviewed == current:
+        return True
+    if not re.fullmatch(r"[0-9a-f]{40}", reviewed):
+        return False
+    try:
+        worktree = ticket_file.parents[2]
+        ancestor = subprocess.run(
+            ["git", "-C", str(worktree), "merge-base", "--is-ancestor", reviewed, current],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if ancestor.returncode != 0:
+            return False
+        changed = subprocess.check_output(
+            ["git", "-C", str(worktree), "diff", "--name-only", "-z", reviewed, current],
+            stderr=subprocess.DEVNULL,
+        ).decode().rstrip("\0").split("\0")
+    except (IndexError, OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return False
+    return set(filter(None, changed)) <= {f"factory/tickets/{ticket}.md"}
 
 
 def canonicalize_reviews(
@@ -205,9 +232,10 @@ def main() -> None:
         args.contract_version,
     )
     _, _, value, output = successful[-1]
+    reviewed_head = value.get("role_head_before", "")
     if (
-        value.get("role_head_before") != args.head
-        or value.get("role_remote_before") != args.head
+        reviewed_head != value.get("role_remote_before")
+        or not review_head_matches(args.ticket_file, args.ticket, reviewed_head, args.head)
     ):
         raise SystemExit("unmatched reviewer evidence is not bound to the current ticket head")
     parse_verdict, review_text = load_parser(Path(__file__).with_name("reviewer-verdict.py"))
