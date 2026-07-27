@@ -554,6 +554,13 @@ export FACTORY_RELEASE_TREE="$KIT_TREE"
 export FACTORY_RELEASE_PATH="$RELEASE_PATH"
 export FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT"
 
+PROVIDER_STATE_ROOT="$HOME/.factory"
+PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/isolated-v1.enabled"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"
+  PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/provider-activation.json"
+fi
+
 HELPER_ENV=(
   /usr/bin/env -i
   "HOME=$HOME"
@@ -570,14 +577,14 @@ HELPER_ENV=(
 )
 if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE_CONTRACT" == "1.8.0" ]]; then
   HELPER_ENV+=(
-    "FACTORY_PROVIDER_DB=$HOME/.factory/accounting/state-v2.sqlite3"
-    "FACTORY_PROVIDER_POLICY=$HOME/.factory/provider-policy.json"
+    "FACTORY_PROVIDER_DB=$PROVIDER_STATE_ROOT/accounting/state-v2.sqlite3"
+    "FACTORY_PROVIDER_POLICY=$PROVIDER_STATE_ROOT/provider-policy.json"
     "FACTORY_PROVIDER_BROKER_DB=$HOME/.factory/accounting/credential-broker.sqlite3"
     "FACTORY_PROVIDER_CREDENTIALS=$HOME/.factory/provider-credentials.json"
     "FACTORY_PROVIDER_ARTIFACT_POLICY=$HOME/.factory/provider-artifact-policy.json"
-    "FACTORY_PROVIDER_ATTEMPT_ROOT=$HOME/.factory/provider-attempts"
-    "FACTORY_PROVIDER_APPLY_LOCK_ROOT=$HOME/.factory/provider-apply-locks"
-    "FACTORY_PROVIDER_ACTIVATION=$HOME/.factory/isolated-v1.enabled"
+    "FACTORY_PROVIDER_ATTEMPT_ROOT=$PROVIDER_STATE_ROOT/provider-attempts"
+    "FACTORY_PROVIDER_APPLY_LOCK_ROOT=$PROVIDER_STATE_ROOT/provider-apply-locks"
+    "FACTORY_PROVIDER_ACTIVATION=$PROVIDER_ACTIVATION_PATH"
     "FACTORY_PROVIDER_BROKER_URL=https://127.0.0.1:8765"
     "FACTORY_PROVIDER_BROKER_CA=$HOME/.factory/provider-broker-ca.pem"
   )

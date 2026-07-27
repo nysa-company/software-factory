@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,24 @@ class QualificationEnvironmentTest(unittest.TestCase):
         launcher = self.factory / "integrations/hermes/bin/factory-launch"
         launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         launcher.chmod(0o755)
+        (self.factory / "scripts/model-routing").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "scripts/provider-activation.py",
+            self.factory / "scripts/provider-activation.py",
+        )
+        (self.factory / "scripts/model-routing/catalog-v1.json").write_text(
+            json.dumps({
+                "routes": [{
+                    "account_route_id": "cursor",
+                    "adapter": "cursor-openai",
+                    "enabled": True,
+                    "provider_family": "openai",
+                    "route_id": "cursor-test",
+                    "selection_id": "test-model",
+                }],
+            }) + "\n",
+            encoding="utf-8",
+        )
         run(self.factory, "git", "init", "-q", "-b", "main")
         run(self.factory, "git", "config", "user.name", "Test")
         run(self.factory, "git", "config", "user.email", "test@example.invalid")
@@ -86,6 +105,22 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(
             (self.root / "profile/projects/relay.env").read_text(),
             f"PRODUCT_ROOT={self.product.resolve()}\n",
+        )
+        status = json.loads(run(
+            self.root,
+            "/usr/bin/python3",
+            str(release / "scripts/provider-activation.py"),
+            "--config", str(self.root / "provider/provider-activation.json"),
+            "--policy", str(self.root / "provider/provider-policy.json"),
+            "--contract-version", "1.8.0",
+            "--status",
+        ))
+        self.assertEqual(status["execution_mode"], "cli-concurrent-v1")
+        launcher_text = (
+            ROOT / "integrations/hermes/bin/factory-launch"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"', launcher_text
         )
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError, "already exists",

@@ -18,6 +18,8 @@ from typing import Any
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
+ACTIVATION_SCHEMA = "nysa.software-factory.provider-activation/v2"
+POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ROOT = re.compile(r"^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9._-]+$")
@@ -69,6 +71,63 @@ def write(path: Path, value: dict[str, Any]) -> None:
         stream.write(canonical(value))
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def prepare_provider(release: Path, root: Path) -> str:
+    catalog = json.loads(
+        (release / "scripts/model-routing/catalog-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    routes = {
+        route["route_id"]: {
+            "account_route": route["account_route_id"],
+            "adapter": route["adapter"],
+            "model": route["selection_id"],
+            "provider_family": route["provider_family"],
+        }
+        for route in catalog["routes"]
+        if route["enabled"]
+    }
+    if not routes:
+        raise EnvironmentError("qualification provider catalog has no enabled route")
+    limit = {"max_concurrent": 4, "max_starts": 24, "window_seconds": 60}
+    policy = {
+        "account_routes": {
+            route["account_route"]: limit for route in routes.values()
+        },
+        "coupled_max_concurrent": 4,
+        "global": limit,
+        "provider_families": {
+            route["provider_family"]: limit for route in routes.values()
+        },
+        "schema": POLICY_SCHEMA,
+    }
+    policy_raw = canonical(policy).rstrip(b"\n")
+    policy_hash = hashlib.sha256(policy_raw).hexdigest()
+    provider = root / "provider"
+    provider.mkdir(mode=0o700)
+    for name in ("accounting", "provider-attempts", "provider-apply-locks"):
+        (provider / name).mkdir(mode=0o700)
+    policy_path = provider / "provider-policy.json"
+    activation_path = provider / "provider-activation.json"
+    write(policy_path, policy)
+    write(activation_path, {
+        "enabled": True,
+        "mode": "cli-concurrent-v1",
+        "policy_sha256": policy_hash,
+        "routes": routes,
+        "schema": ACTIVATION_SCHEMA,
+    })
+    command(
+        "/usr/bin/python3",
+        str(release / "scripts/provider-activation.py"),
+        "--config", str(activation_path),
+        "--policy", str(policy_path),
+        "--contract-version", "1.8.0",
+        "--status",
+    )
+    return policy_hash
 
 
 def git_tree(path: Path) -> str:
@@ -184,6 +243,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     materialize(factory, sha, release)
     if git_tree(release) != tree:
         raise EnvironmentError("sealed qualification tree does not match the candidate")
+    provider_policy_sha256 = prepare_provider(release, root)
 
     receipt_value = {
         "contract_version": contract,
@@ -193,6 +253,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_path": str(product),
         "product_tree": product_tree,
         "project": args.project,
+        "provider_policy_sha256": provider_policy_sha256,
         "status": "pass",
     }
     receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
@@ -206,6 +267,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_path": str(product),
         "product_tree": product_tree,
         "project": args.project,
+        "provider_policy_sha256": provider_policy_sha256,
         "receipt_id": receipt_id,
         "release_path": str(release),
     })
@@ -225,6 +287,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "launcher": str(release / "integrations/hermes/bin/factory-launch"),
         "product_tree": product_tree,
         "project": args.project,
+        "provider_policy_sha256": provider_policy_sha256,
         "root": str(root),
         "schema": SCHEMA,
         "status": "prepared",
