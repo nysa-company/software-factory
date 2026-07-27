@@ -8,6 +8,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
   run concurrently behind one renewable per-product publication lease.
+- Contract 1.8 runs deterministic provider-free preflight once on the Planner
+  receipt after entering Planning. Later roles resume from authenticated
+  evidence without repeating kickoff preflight.
 - Contract 1.8 qualification is exactly four independent tickets at one frozen
   Factory SHA with $100 total, $25 per ticket, and $2 per run. Its immutable
   reducer requires authenticated passports, no duplicate successful role/head
@@ -960,3 +963,12 @@ to four passport-owned tickets, obtains one-use state-machine receipts, records
 restart/relocation/publication events, and serializes only merge publication.
 The exact candidate remains unqualified until the four-ticket reducer matches
 authenticated role and charge evidence to protected GitHub merge truth.
+
+## 2026-07-27 — Decision 65: Contract 1.8 preflight is a one-time kickoff gate
+
+Category: System change
+
+The deterministic controller runs preflight only on the first Planner receipt,
+where the state machine has already moved the ticket to Planning. Spec-linter,
+Test-author, Builder, Reviewer, and Narrator continue from authenticated role
+evidence without repeating route-wide kickoff probes.

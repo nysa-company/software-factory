@@ -657,15 +657,16 @@ class Controller:
     def run_role(
         self, claim: dict[str, Any], role: str, receipt: str, failed_checks: list[str]
     ) -> None:
-        preflight = self.json_call(
-            "preflight", "--ticket", claim["ticket"], "--role", role,
-            "--lease", claim["lease"], "--receipt", receipt,
-            "--workdir", claim["worktree"], "--json",
-            allow=(0, 1),
-        )
-        if preflight.get("status") != "ok" or preflight.get("exit_code") != 0:
-            self.block(claim, "preflight")
-            return
+        if role == "planner":
+            preflight = self.json_call(
+                "preflight", "--ticket", claim["ticket"], "--role", role,
+                "--lease", claim["lease"], "--receipt", receipt,
+                "--workdir", claim["worktree"], "--json",
+                allow=(0, 1),
+            )
+            if preflight.get("status") != "ok" or preflight.get("exit_code") != 0:
+                self.block(claim, "preflight")
+                return
         claim.update(receipt=receipt, role=role, status="running")
         self.save_claim(claim)
         task = f"Execute {role} for {claim['ticket']} from its frozen contract and repository state."

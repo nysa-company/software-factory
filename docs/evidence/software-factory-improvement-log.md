@@ -551,6 +551,26 @@ Validation: the focused sync test adopts one issue without creating another,
 refuses two active matches, and the corrected live sync must recover
 SF-60 through SF-63 after SF-64 through SF-67 are recorded as obsolete.
 
+## FI-20260727-028 — Kickoff preflight disagreed with deterministic Planning
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 final four
+Impact: T-110 through T-113 all stopped before their first provider call even
+though admission, route pinning, and state-machine transition succeeded.
+Evidence:
+- all four controller claims recorded `ticket_blocked` with reason `preflight`
+- every ticket was in `State: Planning`; no run manifest, reservation, charge,
+  or provider process existed
+Root cause: legacy preflight required `State: Ready` after Contract 1.8 had
+correctly consumed the transition receipt and entered Planning; the controller
+also repeated the kickoff check before every later role.
+Smallest change: require Planning for the Contract 1.8 Planner receipt and run
+preflight only before Planner. Later roles continue from authenticated evidence.
+Validation: focused preflight and controller regressions cover exact state
+agreement and prove Builder does not repeat preflight; live canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

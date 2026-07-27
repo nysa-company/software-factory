@@ -146,6 +146,31 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("restart_boundary", {item["event"] for item in events})
         self.assertIn("controller_recovered", {item["event"] for item in events})
 
+    def test_preflight_runs_once_before_planner_only(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        calls = []
+        controller.json_call = lambda *args, **kwargs: (
+            calls.append((args, kwargs)) or {"exit_code": 0, "status": "ok"}
+        )
+        controller.finish_pending_run = lambda _claim: True
+
+        controller.run_role(claim, "planner", "b" * 64, [])
+        controller.run_role(claim, "builder", "c" * 64, [])
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][0], "preflight")
+        self.assertIn("planner", calls[0][0])
+
     def test_blocked_ticket_is_excluded_without_holding_capacity(self) -> None:
         controller = CONTROL.Controller(self.args)
         blocked = {

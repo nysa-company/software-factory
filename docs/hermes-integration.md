@@ -92,7 +92,9 @@ the launcher rejects roleless preflight so its envelope cannot differ from the
 one reserved by `run`.
 Under Contract 1.8, callers do not invoke `next-stage` directly. The
 non-agent controller obtains a one-use `state-machine` receipt and supplies it
-unchanged to preflight, execution, and ticket attestations.
+unchanged to execution and ticket attestations. It runs provider-free
+preflight once on the Planner receipt after the state machine enters Planning;
+later roles retain their valid evidence and do not repeat kickoff preflight.
 
 Model policy is task-free and sealed:
 

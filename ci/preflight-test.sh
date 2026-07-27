@@ -195,6 +195,8 @@ run_preflight() {
 
 run_sealed_preflight() {
   local factory_root="$1" ticket="$2" release="$3" tree="$4"
+  local helper_args=(--ticket "$ticket" --workdir "$factory_root")
+  [[ -z "${5:-}" ]] || helper_args+=(--role "$5")
   env \
     PATH="$STUB_BIN:$PATH" \
     HOME="$TEST_HOME" \
@@ -205,8 +207,7 @@ run_sealed_preflight() {
     FACTORY_RELEASE_PATH="$release" \
     FACTORY_RELEASE_CONTRACT_VERSION="$KIT_CONTRACT_VERSION" \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
-    bash "$release/scripts/preflight.sh" --ticket "$ticket" \
-      --workdir "$factory_root" 2>&1
+    bash "$release/scripts/preflight.sh" "${helper_args[@]}" 2>&1
 }
 
 assert_preflight() {
@@ -781,8 +782,8 @@ fi
 
 # Contract 1.8 readiness is deterministic and runs before provider probing.
 READINESS="$TMP/readiness"
-mkdir -p "$READINESS/app/tests" "$READINESS/factory/tickets" \
-  "$READINESS/factory/initiatives"
+mkdir -p "$READINESS/app/tests"
+write_envelope "$READINESS"
 write_ready_ticket "$READINESS" "T-110"
 printf '%s\n' \
   'Product-Decisions: frozen' \
@@ -798,6 +799,31 @@ if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
   echo "PASS: contract 1.8 provider-free readiness passes executable seams"
 else
   echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
+  FAILURES=$((FAILURES + 1))
+fi
+sed 's/^State: Ready$/State: Planning/' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+git -C "$READINESS" add factory/tickets/T-110.md
+git -C "$READINESS" commit -qm "begin deterministic planning"
+git -C "$READINESS" push -q origin main
+READINESS_RELEASE="$TMP/readiness-release"
+build_sealed_release "$READINESS_RELEASE"
+READINESS_RELEASE="$(cd "$READINESS_RELEASE" && pwd -P)"
+READINESS_TREE="$(bash -c '
+  source "$1"
+  factory_directory_tree "$2"
+' _ "$KIT_DIR/scripts/lib/kit-pin.sh" "$READINESS_RELEASE")"
+READINESS_PREFLIGHT_STATUS=0
+READINESS_PREFLIGHT_OUT="$(run_sealed_preflight "$READINESS" T-110 \
+  "$READINESS_RELEASE" "$READINESS_TREE" planner)" ||
+  READINESS_PREFLIGHT_STATUS=$?
+if [[ "$READINESS_PREFLIGHT_STATUS" -eq 0 &&
+      "$READINESS_PREFLIGHT_OUT" == *"PASS: ticket T-110 is Planning"* ]]; then
+  echo "PASS: contract 1.8 planner preflight agrees with state machine"
+else
+  echo "FAIL: contract 1.8 planner preflight disagrees with state machine"
+  echo "$READINESS_PREFLIGHT_OUT"
   FAILURES=$((FAILURES + 1))
 fi
 sed 's/Product-Decisions: frozen/Product-Decisions: unresolved/' \

@@ -308,11 +308,16 @@ else
   fi
 fi
 
-# (e) ticket exists, is reconciled Ready, and belongs to a known initiative
+# (e) ticket is in the exact kickoff state and belongs to a known initiative
+EXPECTED_STATE="Ready"
+if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
+      "$ROLE" == "planner" ]]; then
+  EXPECTED_STATE="Planning"
+fi
 if [[ ! -f "$TICKET_FILE" ]]; then
   fail "ticket file missing: $TICKET_FILE"
-elif grep -qE '^State: Ready' "$TICKET_FILE"; then
-  pass "ticket $TICKET is Ready"
+elif grep -qE "^State: $EXPECTED_STATE$" "$TICKET_FILE"; then
+  pass "ticket $TICKET is $EXPECTED_STATE"
   INITIATIVE="$(sed -n 's/^Initiative:[[:space:]]*//p' "$TICKET_FILE" | head -n1)"
   if [[ -z "$INITIATIVE" ]]; then
     fail "ticket has no Initiative field"
@@ -323,7 +328,7 @@ elif grep -qE '^State: Ready' "$TICKET_FILE"; then
   fi
 else
   STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
-  fail "ticket not Ready ($STATE)"
+  fail "ticket not $EXPECTED_STATE ($STATE)"
 fi
 
 LINEAR_MAP="$FACTORY_DIR/linear-map.json"
