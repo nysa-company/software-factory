@@ -329,6 +329,7 @@ class Controller:
             self.save_claim(claim)
             self.event(
                 "ticket_claimed", claim["ticket"], branch=claim["branch"],
+                preprovider_reset_head=value.get("preprovider_reset_head"),
                 worktree=claim["worktree"],
             )
             claims.append(claim)

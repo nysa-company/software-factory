@@ -11,6 +11,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 runs deterministic provider-free preflight once on the Planner
   receipt after entering Planning. Later roles resume from authenticated
   evidence without repeating kickoff preflight.
+- Contract 1.8 may reconcile a retained zero-provider ticket branch only from
+  a protected-main exact-head authorization. The old branch must contain only
+  canonical pin/Planning controls and an unchanged ticket contract; recovery
+  preserves history through a non-force protected-main merge.
 - Contract 1.8 qualification is exactly four independent tickets at one frozen
   Factory SHA with $100 total, $25 per ticket, and $2 per run. Its immutable
   reducer requires authenticated passports, no duplicate successful role/head
@@ -972,3 +976,13 @@ The deterministic controller runs preflight only on the first Planner receipt,
 where the state machine has already moved the ticket to Planning. Spec-linter,
 Test-author, Builder, Reviewer, and Narrator continue from authenticated role
 evidence without repeating route-wide kickoff probes.
+
+## 2026-07-27 — Decision 66: Pre-provider branch reset is protected and non-force
+
+Category: System change
+
+A successor qualification may reconcile an exact authorized remote branch
+whose history contains only Factory pin and Ready-to-Planning controls. The
+controller validates the unchanged ticket contract, non-force merges current
+protected main, records the old head, and removes only obsolete control state;
+unlisted heads and provider-authored drift remain blocked.

@@ -150,6 +150,56 @@ class DispatchPlanTest(unittest.TestCase):
         )
         return tickets
 
+    def stale_preprovider_branch(self, change_spec=False):
+        ticket = "T-110"
+        branch = f"ticket/{ticket}"
+        run("git", "switch", "-qc", branch, cwd=self.product)
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.write_text(ticket_path.read_text() + f"\nKit-SHA: {'b' * 40}\n")
+        plan = self.product / f"factory/route-plans/{ticket}.json"
+        plan.parent.mkdir()
+        plan.write_text(json.dumps({
+            "kit_sha": "b" * 40,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }) + "\n")
+        run("git", "add", str(ticket_path), str(plan), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: pin kit and model route plan", cwd=self.product,
+        )
+        text = ticket_path.read_text().replace("State: Ready", "State: Planning")
+        if change_spec:
+            text += "\nProvider-authored specification drift.\n"
+        ticket_path.write_text(text)
+        run("git", "add", str(ticket_path), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: transition ticket state", cwd=self.product,
+        )
+        head = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run("git", "push", "-qu", "origin", branch, cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        return head
+
+    def authorize_preprovider_reset(self, head):
+        path = self.product / "factory/qualification/preprovider-branch-resets.json"
+        path.parent.mkdir()
+        path.write_text(json.dumps({
+            "factory_sha": "a" * 40,
+            "resets": [{
+                "branch": "ticket/T-110",
+                "head": head,
+                "ticket": "T-110",
+            }],
+            "schema": "nysa.software-factory.preprovider-branch-resets/v1",
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "authorize pre-provider reset", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
     def command(self, action, expected=0):
         result = subprocess.run(
             [
@@ -244,6 +294,44 @@ class DispatchPlanTest(unittest.TestCase):
         (self.product / "factory/.dispatch-leases/T-200.json").unlink()
         value = self.command("claim", expected=2)
         self.assertIn("divergent or unpushed", value["error"])
+
+    def test_authorized_control_only_remote_branch_rejoins_current_main(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim")
+
+        worktree = Path(value["worktree"])
+        self.assertEqual(value["preprovider_reset_head"], old_head)
+        self.assertEqual(
+            run("git", "rev-parse", "HEAD^{tree}", cwd=worktree),
+            run("git", "rev-parse", "origin/main^{tree}", cwd=worktree),
+        )
+        ticket = (worktree / "factory/tickets/T-110.md").read_text()
+        self.assertIn("State: Ready", ticket)
+        self.assertNotIn("Kit-SHA:", ticket)
+        self.assertFalse((worktree / "factory/route-plans/T-110.json").exists())
+        self.assertIn(
+            "supersede pre-provider control state",
+            run("git", "log", "-1", "--format=%s", cwd=worktree),
+        )
+
+    def test_authorized_reset_rejects_non_control_ticket_drift(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch(change_spec=True)
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("control state is invalid", value["error"])
+        self.assertEqual(list(self.worktrees.iterdir()), [])
 
     def test_qualification_ramps_filters_dependencies_and_completes(self):
         tickets = self.write_qualification({"T-109": ["T-100"]})

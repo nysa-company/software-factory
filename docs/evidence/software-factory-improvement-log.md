@@ -571,6 +571,32 @@ preflight only before Planner. Later roles continue from authenticated evidence.
 Validation: focused preflight and controller regressions cover exact state
 agreement and prove Builder does not repeat preflight; live canary pending.
 
+## FI-20260727-029 — Fresh cells rebuilt over retained remote ticket branches
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 successor root
+Impact: all four T-110 through T-113 route pins completed locally but their
+non-force pushes refused, so the restarted controller stopped before
+state-machine or provider execution.
+Evidence:
+- each controller error is exactly `could not push ticket pin commit`
+- remote ticket branches retain the prior candidate's canonical pin and
+  Ready-to-Planning commits, while each fresh local branch starts from newer
+  protected main
+- there is no role manifest, provider reservation, or charge in either attempt
+Root cause: admission queried the remote branch but, when a fresh clone lacked
+the local ref, created a new branch from protected main instead of reconciling
+the retained exact remote head.
+Smallest change: require a protected-main exact-head authorization, validate
+that the old branch contains only canonical pin/Planning control changes with
+an unchanged ticket contract, non-force merge current main, reset only those
+controls, and preserve the old commits in branch history before repinning.
+Validation: focused dispatch tests prove the authorized control-only recovery
+and reject a similarly authorized branch with ticket-contract drift; live
+canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

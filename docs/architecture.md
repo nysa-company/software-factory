@@ -244,6 +244,13 @@ restart, and Factory migration. Four PRs may validate concurrently; one
 renewable per-product publication lease serializes merge requests. The
 four-ticket qualification reducer reconciles passports, manifests, controller
 events, protected checks, PR heads, merge commits, and protected main.
+When a zero-provider qualification attempt leaves only canonical pin and state
+commits on a now-divergent remote ticket branch, a protected-main reset
+authorization may bind its exact head. Admission validates that no ticket
+contract or product path changed, non-force merges current protected main,
+removes only the obsolete pin/state control, and preserves the old commits in
+branch history before repinning. Every unlisted head or non-control change
+fails closed.
 During a protected qualification, the development scheduler authenticates a
 durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
 against the exact qualification kit SHA before returning only that ticket to

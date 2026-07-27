@@ -168,6 +168,14 @@ account's real credential boundary while registering only the qualification
 product clone. It does not install or activate the candidate in the production
 kit registry.
 
+A repeated pre-provider qualification may retain remote ticket branches from
+the prior candidate. `factory/qualification/preprovider-branch-resets.json`
+may authorize their exact heads from protected main. `dispatch-plan` accepts
+only canonical Factory pin/Planning commits with unchanged ticket contracts,
+non-force merges current protected main, records the superseded head, and
+removes the obsolete pin before normal repinning. It refuses provider-authored,
+unlisted, ambiguous, or rewritten history.
+
 For Contracts 1.6 and 1.7, the `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
 wakeup claims at most one ticket and starts at most one ephemeral dispatcher
 child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque
