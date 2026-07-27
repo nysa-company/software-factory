@@ -547,6 +547,13 @@ PY
     echo "$CHECKPOINT_NEXT_STAGE"
     exit 0
   fi
+  if { [[ "$CHECKPOINT_NEXT_STAGE" == "FIX test-author" && "$LOCAL_TA" -gt 0 ]] ||
+       [[ "$CHECKPOINT_NEXT_STAGE" == "FIX builder" && "$LOCAL_B" -gt 0 ]]; }; then
+    grep -qxE 'OPERATOR PUBLICATION REPAIR: (test-author|builder)' \
+      "$TICKET_FILE" ||
+      { echo "REFUSE repaired checkpoint lacks a publication repair directive"; exit 1; }
+    CHECKPOINT_AWAIT_REOPENED=1
+  fi
   if [[ "$CHECKPOINT_NEXT_STAGE" == AWAIT-OPERATOR* ]]; then
     if [[ "$LOCAL_TA" -eq 0 && "$LOCAL_B" -eq 0 ]]; then
       echo "$CHECKPOINT_NEXT_STAGE"

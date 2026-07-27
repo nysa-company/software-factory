@@ -2304,6 +2304,8 @@ printf '%s\n' '# T-993 checkpoint fixture' '' 'State: Review' \
   >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-993.md"
 printf '%s\n' '# T-994 checkpoint fixture' '' 'State: Review' \
   'SPEC-LINT: PASS' 'reviewer round 1: APPROVE' \
+  'PUBLICATION FAILURE: https://github.com/nysa-company/nysa-app/actions/runs/1/job/2' \
+  'OPERATOR PUBLICATION REPAIR: test-author' \
   >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994.md"
 git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets
 git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
@@ -2316,7 +2318,7 @@ printf '%s\n' '{"mode":"product"}' >"$CHECKPOINT_LANE/marker.json"
 chmod 600 "$CHECKPOINT_LANE/marker.json"
 CHECKPOINT_IMPORT="$CHECKPOINT_LANE/runtime/product-checkpoint-import.json"
 printf '%s\n' \
-  "{\"schema\":\"factory-dev-product-checkpoint-import/v1\",\"checkpoint_sha256\":\"$SEED_NONCE\",\"tickets\":[{\"ticket\":\"T-991\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\"],\"spec_verdicts\":[],\"expected_next_stage\":\"RUN spec-linter\"},{\"ticket\":\"T-993\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"RUN reviewer\"},{\"ticket\":\"T-994\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\",\"reviewer\",\"narrator\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step\"}]}" \
+  "{\"schema\":\"factory-dev-product-checkpoint-import/v1\",\"checkpoint_sha256\":\"$SEED_NONCE\",\"tickets\":[{\"ticket\":\"T-991\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\"],\"spec_verdicts\":[],\"expected_next_stage\":\"RUN spec-linter\"},{\"ticket\":\"T-993\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"RUN reviewer\"},{\"ticket\":\"T-994\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\",\"reviewer\",\"narrator\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"FIX test-author\"}]}" \
   >"$CHECKPOINT_IMPORT"
 chmod 600 "$CHECKPOINT_IMPORT"
 CHECKPOINT_LEDGER="$CHECKPOINT_SEQ_REPO/conformance/factory/checkpoint-ledger.csv"
@@ -2347,16 +2349,8 @@ grep -qx 'State: Planning' \
   fail "Builder checkpoint did not resume at Reviewer"
 [[ "$(checkpoint_next_stage T-992)" == "RUN planner" ]] ||
   fail "ticket omitted from checkpoint did not remain at Planner"
-[[ "$(checkpoint_next_stage T-994)" == AWAIT-OPERATOR* ]] ||
-  fail "completed checkpoint did not remain at operator-await"
-
-printf '%s\n' \
-  'PUBLICATION FAILURE: https://github.com/nysa-company/nysa-app/actions/runs/1/job/2' \
-  'OPERATOR PUBLICATION REPAIR: test-author' \
-  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994.md"
-git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-994.md
-git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
-  commit -qm 'Authorize checkpoint publication repair'
+[[ "$(checkpoint_next_stage T-994)" == "FIX test-author" ]] ||
+  fail "publication checkpoint did not preserve its exact repair stage"
 printf '%s\n' \
   '2026-07-24,00:00:00,T-994,test-author,mock,test,1,0.10,0,repair-test,mock,,,test_fixture,test' \
   >>"$CHECKPOINT_LEDGER"
@@ -2881,7 +2875,7 @@ PUBLICATION_REPAIR_WORK="$PUBLICATION_REPAIR_ROOT/worktrees/T-81"
 mkdir -p "$PUBLICATION_REPAIR_ROOT/product/factory/runs" \
   "$PUBLICATION_REPAIR_ROOT/runtime" "$PUBLICATION_REPAIR_WORK/factory/tickets"
 printf '%s\n' \
-  '{"tickets":[{"ticket":"T-81","expected_next_stage":"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"}]}' \
+  '{"tickets":[{"ticket":"T-81","expected_next_stage":"FIX test-author"}]}' \
   >"$PUBLICATION_REPAIR_ROOT/runtime/product-checkpoint-import.json"
 git init -q "$PUBLICATION_REPAIR_WORK"
 printf '%s\n' '# T-81' 'State: Review' \

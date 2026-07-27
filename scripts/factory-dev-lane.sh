@@ -2546,8 +2546,9 @@ if publication:
         item for item in value.get("tickets",[])
         if item.get("ticket") == ticket
     ]
-    if (len(records) != 1 or
-        not records[0].get("expected_next_stage","").startswith("AWAIT-OPERATOR")):
+    expected=records[0].get("expected_next_stage","") if len(records) == 1 else ""
+    if (expected != "FIX "+publication[0] and
+        not expected.startswith("AWAIT-OPERATOR")):
         raise SystemExit(1)
     completed=False
     for path in runs.glob("*.meta"):
