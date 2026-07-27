@@ -1524,6 +1524,7 @@ grep -Fq '["lane_control_sha"]' <<<"$checkpoint_export_source" ||
   load_product_tickets() { PRODUCT_TICKETS=(T-997); }
   select_product_export_tickets() { PRODUCT_TICKETS=(T-997); }
   validate_runtime_paths() { :; }
+  recover_product_cancelled_role_output() { :; }
   product_selected_drained() { :; }
   write_product_stage_map() {
     printf '%s\t%s\n' T-997 'RUN reviewer' >"$2"
@@ -2677,6 +2678,7 @@ grep -Fq 'lane-local absolute path detected in role output' "$OUT" ||
 die() { return 1; }
 
 eval "$(sed -n '/^recover_product_failed_role_commit()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^recover_product_cancelled_role_output()/,/^}/p' "$LANE")"
 FAILED_ROLE_ROOT="$TMP/failed-role-resume"
 FAILED_ROLE_WORK="$FAILED_ROLE_ROOT/worktrees/T-72"
 mkdir -p "$FAILED_ROLE_ROOT/product/factory/runs" \
@@ -2738,6 +2740,63 @@ PY
   fail "failed role recovery receipt was incomplete"
 recover_product_failed_role_commit "$FAILED_ROLE_ROOT" T-72 ||
   fail "failed role recovery was not idempotent"
+
+CANCELLED_ROLE_ROOT="$TMP/cancelled-role-resume"
+CANCELLED_ROLE_WORK="$CANCELLED_ROLE_ROOT/worktrees/T-73"
+mkdir -p "$CANCELLED_ROLE_ROOT/product/factory/runs" \
+  "$CANCELLED_ROLE_ROOT/runtime" "$CANCELLED_ROLE_ROOT/worktrees"
+chmod 700 "$CANCELLED_ROLE_ROOT/runtime"
+git init -q --bare "$CANCELLED_ROLE_ROOT/origin.git"
+git init -q "$CANCELLED_ROLE_WORK"
+printf '%s\n' base >"$CANCELLED_ROLE_WORK/base"
+git -C "$CANCELLED_ROLE_WORK" add base
+git -C "$CANCELLED_ROLE_WORK" -c user.name=Base -c user.email=base@local \
+  commit -qm 'Create trusted cancelled-role base'
+git -C "$CANCELLED_ROLE_WORK" branch -m ticket/T-73
+git -C "$CANCELLED_ROLE_WORK" remote add origin \
+  "$CANCELLED_ROLE_ROOT/origin.git"
+git -C "$CANCELLED_ROLE_WORK" push -qu origin ticket/T-73
+CANCELLED_ROLE_BASE="$(git -C "$CANCELLED_ROLE_WORK" rev-parse HEAD)"
+printf '%s\n' interrupted >"$CANCELLED_ROLE_WORK/base"
+printf '%s\n' untracked >"$CANCELLED_ROLE_WORK/new"
+CANCELLED_ROLE_MANIFEST="$CANCELLED_ROLE_ROOT/product/factory/runs/cancelled.meta"
+printf '%s\n' \
+  'run_id=cancelled' 'phase=cancelled_conservative' \
+  'accounting_state=cancelled_conservative' 'reserved_usd=10.00' \
+  'effective_cost=10.00' 'exit_status=130' 'go_issued=1' \
+  'started_at=2026-07-27T04:00:00Z' 'ticket=T-73' 'role=builder' \
+  'role_exit=cancelled' "role_head_before=$CANCELLED_ROLE_BASE" \
+  "role_remote_before=$CANCELLED_ROLE_BASE" >"$CANCELLED_ROLE_MANIFEST"
+chmod 600 "$CANCELLED_ROLE_MANIFEST"
+CANCELLED_ROLE_MANIFEST_BEFORE="$(sha256_file "$CANCELLED_ROLE_MANIFEST")"
+recover_product_cancelled_role_output "$CANCELLED_ROLE_ROOT" T-73 ||
+  fail "cancelled role output could not be retained and rolled back"
+CANCELLED_SNAPSHOT="$(git -C "$CANCELLED_ROLE_WORK" \
+  rev-parse refs/factory-dev/discarded/T-73/cancelled)"
+[[ "$(git -C "$CANCELLED_ROLE_WORK" rev-parse HEAD)" == \
+     "$CANCELLED_ROLE_BASE" &&
+   -z "$(git -C "$CANCELLED_ROLE_WORK" status --porcelain --untracked-files=all)" &&
+   "$(git -C "$CANCELLED_ROLE_WORK" show "$CANCELLED_SNAPSHOT:base")" == \
+     interrupted &&
+   "$(git -C "$CANCELLED_ROLE_WORK" show "$CANCELLED_SNAPSHOT:new")" == \
+     untracked &&
+   "$(sha256_file "$CANCELLED_ROLE_MANIFEST")" == \
+     "$CANCELLED_ROLE_MANIFEST_BEFORE" ]] ||
+  fail "cancelled role recovery lost output or rewrote accounting"
+python3 - \
+  "$CANCELLED_ROLE_ROOT/runtime/product-discarded/T-73-cancelled.json" \
+  "$CANCELLED_SNAPSHOT" "$CANCELLED_ROLE_MANIFEST_BEFORE" <<'PY' ||
+import json, sys
+path, snapshot, manifest=sys.argv[1:]
+value=json.load(open(path,encoding="utf-8"))
+assert value["schema"]=="factory-dev-discarded-cancelled-role/v1"
+assert value["snapshot_sha"]==snapshot
+assert value["manifest_sha256"]==manifest
+assert value["role"]=="builder"
+PY
+  fail "cancelled role recovery receipt was incomplete"
+recover_product_cancelled_role_output "$CANCELLED_ROLE_ROOT" T-73 ||
+  fail "cancelled role recovery was not idempotent"
 
 RESUME_ROOT="$TMP/resume-drained"
 mkdir -p "$RESUME_ROOT/kit/scripts" "$RESUME_ROOT/runtime/product-envelope" \

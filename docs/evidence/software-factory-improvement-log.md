@@ -64,7 +64,7 @@ Validation: export one terminal ticket while a sibling provider attempt is activ
 
 ## FI-20260726-005 — Cancellation surfaces did not converge
 
-Status: Open
+Status: Implemented; qualification pending
 Area: recovery
 Owner: Factory
 First seen: 2026-07-26, Generation 9, T-084
@@ -74,7 +74,8 @@ Evidence:
 Root cause: wrapper termination could bypass final manifest, ledger, PID, and
 claim cleanup after coordinator terminalization.
 Smallest change: one ticket pause/cancel path must prove process-group drain and
-all terminal evidence before releasing capacity.
+all terminal evidence before releasing capacity; interrupted worktree output is
+retained on a diagnostic ref before rollback.
 Validation: a post-GO cancellation leaves zero selected reservations, leases,
 claims, PID files, or reserved manifests.
 

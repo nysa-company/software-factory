@@ -286,6 +286,51 @@ class AttemptCancellationTest(unittest.TestCase):
         with self.assertRaisesRegex(CANCEL.CancelError, "another cancellation request"):
             CANCEL.apply_plan(self.root, plan, 0.1)
 
+    def test_stale_process_converges_without_signalling_or_replay(self):
+        process, started = self.spawn()
+        self.manifest(process, started, go="1")
+        process.terminate()
+        process.wait(timeout=5)
+        claim = self.root / "factory/.active-runs/T-1.builder.lock"
+        claim.mkdir(parents=True)
+        (claim / "owner").write_text(
+            f"pid={process.pid}\nprocess_start={started}\ntoken={'a' * 32}\n"
+        )
+        leases = self.root / "factory/.dispatch-leases"
+        leases.mkdir()
+        (leases / "T-1.json").write_bytes(CANCEL.canonical({
+            "claimed_epoch": 1,
+            "expires_epoch": 2,
+            "lease_id": "b" * 64,
+            "schema_version": 1,
+            "ticket": "T-1",
+        }))
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "e" * 32,
+        )
+        receipt = CANCEL.apply_plan(self.root, plan, 1)
+        manifest = IDENTITY.parse_fields(
+            (self.runs / "run-1.meta").read_bytes(), "run manifest",
+        )
+        self.assertEqual(
+            (receipt["accounting_state"], receipt["charged_usd"]),
+            ("cancelled_conservative", "2.00"),
+        )
+        self.assertEqual(
+            (manifest["phase"], manifest["role_exit"]),
+            ("cancelled_conservative", "cancelled"),
+        )
+        self.assertFalse((self.runs / "run-1.pid").exists())
+        self.assertFalse(claim.exists())
+        self.assertFalse((leases / "T-1.json").exists())
+        self.assertEqual(
+            CANCEL.ledger_row(
+                self.root / "factory/runtime-ledger.csv", "run-1",
+            )["exit_status"],
+            "130",
+        )
+        self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+
 
 if __name__ == "__main__":
     unittest.main()

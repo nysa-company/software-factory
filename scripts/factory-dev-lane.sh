@@ -2391,6 +2391,112 @@ PY
     "$ticket" "$role" "$head" >&2
 }
 
+recover_product_cancelled_role_output() {
+  local root="$1" ticket="$2" work branch head remote record
+  local run_id role manifest manifest_sha tree snapshot ref receipt index_dir
+  work="$root/worktrees/$ticket"
+  [[ -n "$(git -C "$work" status --porcelain --untracked-files=all)" ]] ||
+    return 0
+  head="$(git -C "$work" rev-parse HEAD)" || return 1
+  remote="$(git -C "$root/origin.git" rev-parse "refs/heads/ticket/$ticket")" ||
+    return 1
+  branch="$(git -C "$work" symbolic-ref --quiet --short HEAD)" || return 1
+  [[ "$branch" == "ticket/$ticket" && "$head" == "$remote" ]] || return 1
+  record="$(python3 - "$root/product/factory/runs" "$ticket" "$remote" <<'PY'
+import hashlib, os, pathlib, re, stat, sys
+runs=pathlib.Path(sys.argv[1]); ticket=sys.argv[2]; remote=sys.argv[3]
+candidates=[]
+for path in runs.glob("*.meta"):
+    info=path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+        stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+        raise SystemExit(1)
+    values={}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value=line.partition("=")
+        if not separator or key in values: raise SystemExit(1)
+        values[key]=value
+    if values.get("ticket") == ticket:
+        candidates.append((values.get("started_at",""),values.get("run_id",""),
+                           path,values))
+if not candidates: raise SystemExit(1)
+_, run_id, path, values=max(candidates)
+if (not re.fullmatch(r"[A-Za-z0-9._-]+",run_id) or
+    values.get("phase") != "cancelled_conservative" or
+    values.get("accounting_state") != "cancelled_conservative" or
+    values.get("role_exit") != "cancelled" or
+    values.get("exit_status") != "130" or values.get("go_issued") != "1" or
+    values.get("role") not in {"planner","spec-linter","test-author","builder",
+                               "reviewer","narrator"} or
+    values.get("role_head_before") != remote or
+    values.get("role_remote_before") != remote):
+    raise SystemExit(1)
+print("\t".join((run_id,values["role"],str(path),
+                hashlib.sha256(path.read_bytes()).hexdigest())))
+PY
+  )" || return 1
+  IFS=$'\t' read -r run_id role manifest manifest_sha <<<"$record"
+  [[ -n "$run_id" && -n "$role" && -n "$manifest" &&
+     "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+  python3 - "$root/runtime/product-discarded" <<'PY' || return 1
+import os, pathlib, stat, sys
+path=pathlib.Path(sys.argv[1])
+if not os.path.lexists(path): os.mkdir(path,0o700)
+info=path.lstat()
+if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+    stat.S_IMODE(info.st_mode) != 0o700):
+    raise SystemExit(1)
+PY
+  index_dir="$(mktemp -d "$root/runtime/product-discarded/index.XXXXXX")" ||
+    return 1
+  GIT_INDEX_FILE="$index_dir/index" git -C "$work" read-tree "$head" ||
+    { rm -rf -- "$index_dir"; return 1; }
+  GIT_INDEX_FILE="$index_dir/index" git -C "$work" add -A -- . ||
+    { rm -rf -- "$index_dir"; return 1; }
+  tree="$(GIT_INDEX_FILE="$index_dir/index" git -C "$work" write-tree)" ||
+    { rm -rf -- "$index_dir"; return 1; }
+  rm -rf -- "$index_dir"
+  ref="refs/factory-dev/discarded/$ticket/$run_id"
+  if git -C "$work" show-ref --verify --quiet "$ref"; then
+    snapshot="$(git -C "$work" rev-parse "$ref")" || return 1
+    [[ "$(git -C "$work" rev-parse "$snapshot^{tree}")" == "$tree" &&
+       "$(git -C "$work" rev-parse "$snapshot^")" == "$head" ]] || return 1
+  else
+    snapshot="$(printf 'Preserve cancelled %s %s output\n' "$ticket" "$role" |
+      git -C "$work" -c user.name='Software Factory' \
+        -c user.email=factory@local commit-tree "$tree" -p "$head")" || return 1
+    git -C "$work" update-ref "$ref" "$snapshot" "" || return 1
+  fi
+  receipt="$root/runtime/product-discarded/$ticket-$run_id.json"
+  python3 - "$receipt" "$ticket" "$role" "$run_id" "$snapshot" "$tree" \
+    "$head" "$ref" "$manifest_sha" <<'PY' || return 1
+import json, os, pathlib, stat, sys
+path=pathlib.Path(sys.argv[1])
+keys=("ticket","role","run_id","snapshot_sha","snapshot_tree","trusted_base_sha",
+      "diagnostic_ref","manifest_sha256")
+value={"schema":"factory-dev-discarded-cancelled-role/v1",
+       **dict(zip(keys,sys.argv[2:]))}
+raw=json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+if path.exists():
+    info=path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+        info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600 or
+        path.read_text(encoding="utf-8") != raw):
+        raise SystemExit(1)
+else:
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,"w",encoding="utf-8") as stream:
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+PY
+  git -C "$work" reset --hard "$remote" >/dev/null || return 1
+  git -C "$work" clean -fd >/dev/null || return 1
+  [[ "$(git -C "$work" rev-parse HEAD)" == "$remote" &&
+     -z "$(git -C "$work" status --porcelain --untracked-files=all)" ]] ||
+    return 1
+  printf 'RECOVERED_CANCELLED_ROLE_OUTPUT=%s:%s:%s\n' \
+    "$ticket" "$role" "$snapshot" >&2
+}
+
 product_resume_stage() {
   local root="$1" ticket="$2" lease_json lease stage rc=0
   lease_json="$(subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" \
@@ -2683,6 +2789,8 @@ PY
   product_cursor_enabled "$root" && cursor_enabled=1
   subscription_ready "$root" "$cursor_enabled"
   for ticket in "${selected[@]}"; do
+    recover_product_cancelled_role_output "$root" "$ticket" ||
+      die "product resume could not safely retain cancelled role output: $ticket"
     recover_product_failed_role_commit "$root" "$ticket" ||
       die "product resume could not safely retain failed role output: $ticket"
     stage="$(product_resume_stage "$root" "$ticket")" ||
@@ -2745,6 +2853,8 @@ product_ticket_resume_plan() {
     clear_product_ticket_pause "$root" "$ticket" ||
       die "product ticket pause record is unsafe: $ticket"
   fi
+  recover_product_cancelled_role_output "$root" "$ticket" ||
+    die "product ticket resume could not retain cancelled role output: $ticket"
   recover_product_failed_role_commit "$root" "$ticket" ||
     die "product ticket resume could not retain failed role output: $ticket"
   stage="$(product_resume_stage "$root" "$ticket")" ||
@@ -4231,6 +4341,8 @@ PY
   fi
   for i in $(seq 1 60); do
     if product_selected_drained "$root" "$ticket"; then
+      recover_product_cancelled_role_output "$root" "$ticket" ||
+        die "product ticket pause could not retain cancelled role output: $ticket"
       echo "STATUS=PAUSED"
       echo "TICKET=$ticket"
       return 0
@@ -4261,6 +4373,10 @@ export_product_checkpoint_internal() {
   load_product_tickets "$root"
   select_product_export_tickets "$selected_csv"
   validate_runtime_paths "$root"
+  for ticket in "${PRODUCT_TICKETS[@]}"; do
+    recover_product_cancelled_role_output "$root" "$ticket" ||
+      die "product checkpoint could not retain cancelled role output: $ticket"
+  done
   product_selected_drained "$root" "${PRODUCT_TICKETS[@]}" ||
     die "selected product checkpoint tickets have not drained"
   [[ "$output" == /* && ! -e "$output" ]] ||
