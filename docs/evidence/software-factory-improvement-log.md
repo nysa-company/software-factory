@@ -384,6 +384,29 @@ Validation: all 24 focused Cursor-stream tests pass at executable candidate
 `39240c4fcdd18e4cc274f878d70de6bb14189f51`, and the exact T-083 output now
 parses as one `REQUEST CHANGES` / `test-author` result.
 
+## FI-20260727-022 — Documentation-only operator notes invalidated Reviewer evidence
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, T-083 bounded repair authorization
+Impact: canonical Reviewer evidence could not reconcile after the operator
+recorded its permitted ticket-only budget ruling
+Evidence:
+- Reviewer attempt `1785152416-67411` is bound to product head `2776910`
+- current head `cc33870` is its descendant and changes only
+  `factory/tickets/T-083.md`
+- reconciliation stopped with
+  `unmatched reviewer evidence is not bound to the current ticket head`
+Root cause: the trust check required SHA equality even though the qualification
+handoff explicitly permits operator ticket/contract/evidence corrections.
+Smallest change: accept only an ancestor chain whose complete changed-path set
+is the selected ticket document; preserve exact Reviewer before/remote equality
+and reject every other path.
+Validation: all 25 focused Reviewer/Cursor tests pass at executable candidate
+`4e68e0b11d18c55c24c5a75d6f556727337d37f3`; the exact T-083 evidence
+reconciles to `FIX test-author`.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

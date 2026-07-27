@@ -10,14 +10,15 @@
   - `5d611470182614f26fccc61eb751360dfc27c473`
   - `c64a9247d566198803ff429f24535bfd057c2618`
   - `805de58cd6be311cbe2046da3a62a5d73be8ad85`
-- Current successor: `39240c4fcdd18e4cc274f878d70de6bb14189f51`
+  - `39240c4fcdd18e4cc274f878d70de6bb14189f51`
+- Current successor: `4e68e0b11d18c55c24c5a75d6f556727337d37f3`
 - Focused verification:
   - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `805de58`
   - `python3 ci/cursor-stream-test.py` — PASS at the current successor
   - `bash ci/factory-dev-lane-test.sh` — PASS at intermediate successor
     `c64a924`
 
-The successor fixes eight Factory-core defects found after the first roles of
+The successor fixes nine Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
@@ -36,7 +37,10 @@ the proposed final four had started:
    Factory checkout that executed it, not a later qualification candidate;
 8. Reviewer reconciliation normalizes the same named-shell callback form that
    the trusted Cursor role wrapper accepted, preserving one canonical verdict
-   and repair owner.
+   and repair owner;
+9. unmatched Reviewer evidence remains valid across an ancestor chain confined
+   to that ticket's operator-owned documentation, while any source, test, or
+   other-file change still fails closed.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.

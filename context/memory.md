@@ -897,3 +897,12 @@ The trusted Reviewer parser normalizes Cursor's named background-shell callback
 only when a later summary repeats the same Request-changes verdict and repair
 owner. The role wrapper and reconciliation therefore consume the same
 authenticated result; contradictory or ownerless callbacks still fail closed.
+
+## 2026-07-27 — Decision 43: Ticket-only operator notes preserve review
+
+Category: System change
+
+Unmatched Reviewer evidence may reconcile at a descendant head only when every
+change since the reviewed head is confined to that ticket's Markdown document.
+The reviewed local and remote heads must still match exactly. Product, test,
+configuration, or unrelated-document drift invalidates the evidence.
