@@ -279,6 +279,24 @@ adding `--checkpoint` only when the authenticated path exists.
 Validation: `bash ci/ticket-state-test.sh` passes on the macOS host and
 exercises a successful checkpoint-free Reviewer reconciliation.
 
+## FI-20260727-017 — Authorized Planner repairs were not runnable
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, T-079 retained resume
+Impact: the authenticated contract-repair stage resolved to `FIX planner`, but
+the controller stopped before submission instead of running Planner
+Evidence:
+- `product_contract_repair_stage` emitted `FIX planner`
+- `product_role_for_stage` rejected the same explicit stage
+Root cause: the repair parser supported Planner and Spec-linter, while the
+shared stage-to-role map supported only Test-author and Builder repairs.
+Smallest change: map the four already-authorized repair roles explicitly and
+continue rejecting ambiguous or unsupported repair strings.
+Validation: `bash ci/factory-dev-lane-test.sh` passes at executable candidate
+`655020b610fffe73b005679cba86b91e3cc92469`.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

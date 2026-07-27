@@ -9,6 +9,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
   130 and macOS SIGTERM status 143, retaining interrupted output on a
   diagnostic ref before restoring the trusted ticket head.
+- Explicit contract-repair stages for Planner, Spec-linter, Test-author, and
+  Builder map only to their named role. Ambiguous or unsupported repair text
+  remains non-runnable.
 
 - Fresh Contract 1.7 product planning removes stale canonical Spec-lint,
   Reviewer, and repair-owner control lines while preserving historical prose
@@ -843,3 +846,12 @@ The trusted ticket-state helper invokes Reviewer reconciliation with
 `--checkpoint` only when an authenticated checkpoint exists. It does not encode
 an absent optional argument as an empty array, preserving checkpoint-free
 recovery on the supported macOS Bash 3.2 host.
+
+## 2026-07-27 — Decision 38: Contract repair stages map to the named role
+
+Category: System change
+
+The development controller accepts only explicit `FIX planner`, `FIX
+spec-linter`, `FIX test-author`, or `FIX builder` stages emitted by the
+authenticated repair parser. It maps each stage directly to that role and
+continues to refuse ambiguous or unsupported repair ownership.

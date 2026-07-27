@@ -3,13 +3,15 @@
 ## Executable candidate
 
 - Predecessor: `aeaf260a6e82fb7543ff0b3a87661637a05af8d3`
-- Intermediate successor: `d79819d83b0982c201575d3edb49342c08410960`
-- Current successor: `70ce454d1bd20a86c852dc816db75bdad1bde436`
+- Intermediate successors:
+  - `d79819d83b0982c201575d3edb49342c08410960`
+  - `70ce454d1bd20a86c852dc816db75bdad1bde436`
+- Current successor: `655020b610fffe73b005679cba86b91e3cc92469`
 - Focused verification:
-  - `bash ci/factory-dev-lane-test.sh` — PASS at the intermediate successor
-  - `bash ci/ticket-state-test.sh` — PASS at the current successor
+  - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `70ce454`
+  - `bash ci/factory-dev-lane-test.sh` — PASS at the current successor
 
-The successor fixes three Factory-core defects found after the first roles of
+The successor fixes four Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
@@ -17,7 +19,9 @@ the proposed final four had started:
 2. authenticated cancellation recovery accepts the observed macOS SIGTERM
    status 143 as well as shell status 130;
 3. checkpoint-free trusted Reviewer reconciliation no longer expands an empty
-   optional-argument array under macOS Bash 3.2.
+   optional-argument array under macOS Bash 3.2;
+4. authenticated `FIX planner` and `FIX spec-linter` contract repairs map to
+   their already-authorized roles instead of stopping before submission.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.
