@@ -263,6 +263,30 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(calls, ["release", "passport", "event"])
 
+    def test_stale_publication_refreshes_before_acquiring_merge_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "b" * 64,
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        calls = []
+        controller.protected_base_current = lambda *_args: False
+        controller.release_publication = lambda item: (
+            calls.append("release"), item.update(publication_lease="")
+        )
+        controller.json_call = lambda *_args, **_kwargs: {
+            "action": "refresh", "head": "d" * 40,
+        }
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda *_args, **_kwargs: calls.append("event")
+        self.assertFalse(
+            controller.publication_ready(claim, "c" * 64, "d" * 40)
+        )
+        self.assertEqual(calls, ["release", "passport", "event"])
+
 
 if __name__ == "__main__":
     unittest.main()

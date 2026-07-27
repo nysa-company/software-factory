@@ -547,7 +547,38 @@ class Controller:
             "publication_repair", claim["ticket"], owner=value.get("owner"),
         )
 
-    def publication_ready(self, claim: dict[str, Any], head: str) -> bool:
+    def protected_base_current(self, claim: dict[str, Any], head: str) -> bool:
+        subprocess.run(
+            ["git", "-C", claim["worktree"], "fetch", "--quiet", "origin", "main"],
+            check=True, timeout=120,
+        )
+        return subprocess.run(
+            [
+                "git", "-C", claim["worktree"], "merge-base", "--is-ancestor",
+                "origin/main", head,
+            ],
+            check=False, timeout=120,
+        ).returncode == 0
+
+    def publication_ready(
+        self, claim: dict[str, Any], receipt: str, head: str
+    ) -> bool:
+        if not self.protected_base_current(claim, head):
+            if claim.get("publication_lease"):
+                self.release_publication(claim)
+            value = self.json_call(
+                "ticket-attest", "--ticket", claim["ticket"],
+                "--lease", claim["lease"], "--receipt", receipt,
+                "--workdir", claim["worktree"], "--action", "refresh", "--json",
+            )
+            if value.get("action") != "refresh":
+                raise ControllerError("protected-base refresh was not materialized")
+            self.migrate_passport(claim, "validating")
+            self.event(
+                "protected_base_refreshed", claim["ticket"],
+                head_sha=value.get("head"),
+            )
+            return False
         prior = claim.get("publication_lease", "")
         self.json_call(
             "publication", "ready", "--ticket", claim["ticket"],
@@ -734,7 +765,7 @@ class Controller:
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 if pr.get("status") != "ready":
                     return {"status": "waiting", "ticket": claim["ticket"]}
-                if not self.publication_ready(claim, pr["head"]):
+                if not self.publication_ready(claim, receipt, pr["head"]):
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 self.json_call(
                     "ticket-attest", "--ticket", claim["ticket"],
@@ -771,13 +802,13 @@ class Controller:
                 if pr.get("status") == "failed" and self.retry_ci(
                     claim, receipt, pr
                 ):
-                    self.publication_ready(claim, pr["head"])
+                    self.publication_ready(claim, receipt, pr["head"])
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 if pr.get("status") == "failed":
                     self.publication_repair(claim, receipt, pr)
                     return {"status": "progressed", "ticket": claim["ticket"]}
                 if pr.get("status") in {"wait", "ready"}:
-                    self.publication_ready(claim, pr["head"])
+                    self.publication_ready(claim, receipt, pr["head"])
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 raise ControllerError("publication PR gate returned an invalid status")
             if stage.startswith("AWAIT-MERGE closeout auto-merge pending"):
