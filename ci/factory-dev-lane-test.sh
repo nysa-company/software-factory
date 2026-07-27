@@ -1007,6 +1007,9 @@ PY
 import json, sys
 json.dump({"base_sha":"0"*40,"base_tree":"1"*40},open(sys.argv[1],"w"))
 PY
+  printf '%s\n' "approval_hash=$(printf '0%.0s' {1..64})" 'used=0' \
+    >"$SEQUENTIAL_ROOT/runtime/product-approval"
+  chmod 600 "$SEQUENTIAL_ROOT/runtime/product-approval"
   mkdir -p "$SEQUENTIAL_ROOT/product/factory/.dispatch-leases" \
     "$SEQUENTIAL_ROOT/product/factory/.active-runs/T-2.builder.lock"
   : >"$SEQUENTIAL_ROOT/product/factory/.dispatch-leases/T-2.json"

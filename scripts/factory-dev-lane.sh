@@ -4745,7 +4745,8 @@ export_product_internal() {
   load_product_tickets "$root" "${selected_csv:+retained}"
   select_product_export_tickets "$selected_csv"
   validate_runtime_paths "$root"
-  [[ ! -e "$root/runtime/product-approval" ]] || die "product run approval is still unused"
+  [[ -n "$selected_csv" || ! -e "$root/runtime/product-approval" ]] ||
+    die "product run approval is still unused"
   product_selected_drained "$root" "${PRODUCT_TICKETS[@]}" ||
     die "selected product attempts, leases, claims, or processes have not drained"
   base="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base_sha"])' \
