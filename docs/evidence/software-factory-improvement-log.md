@@ -315,6 +315,27 @@ leading/trailing whitespace before exact prefix comparison.
 Validation: `bash ci/factory-dev-lane-test.sh` passes at executable candidate
 `5d611470182614f26fccc61eb751360dfc27c473` with an indented checkpoint fixture.
 
+## FI-20260727-019 — Ticket-scoped completion could not export
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-27, T-081 publication
+Impact: a drained `AWAIT-OPERATOR` ticket with its ticket approval consumed
+could not produce publication artifacts
+Evidence:
+- T-081 completed its exact successor repair, Reviewer, and Narrator roles
+- `product-export` stopped only because the unused batch approval still existed
+Root cause: ticket planning intentionally creates independent ticket approvals
+alongside a compatibility batch approval, but export applied the batch-only
+unused-approval gate even when an exact ticket selection was supplied.
+Smallest change: retain the unused-approval refusal for batch export and let
+ticket-scoped export rely on its consumed ticket approval plus existing
+terminal role, drain, head, and review checks.
+Validation: `bash ci/factory-dev-lane-test.sh` passes at executable candidate
+`c64a9247d566198803ff429f24535bfd057c2618` with an inert unused batch
+approval present during a selected-ticket export.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -7,12 +7,13 @@
   - `d79819d83b0982c201575d3edb49342c08410960`
   - `70ce454d1bd20a86c852dc816db75bdad1bde436`
   - `655020b610fffe73b005679cba86b91e3cc92469`
-- Current successor: `5d611470182614f26fccc61eb751360dfc27c473`
+  - `5d611470182614f26fccc61eb751360dfc27c473`
+- Current successor: `c64a9247d566198803ff429f24535bfd057c2618`
 - Focused verification:
   - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `70ce454`
   - `bash ci/factory-dev-lane-test.sh` — PASS at the current successor
 
-The successor fixes five Factory-core defects found after the first roles of
+The successor fixes six Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
@@ -24,7 +25,9 @@ the proposed final four had started:
 4. authenticated `FIX planner` and `FIX spec-linter` contract repairs map to
    their already-authorized roles instead of stopping before submission;
 5. portable Spec-lint evidence accepts the same normal Markdown indentation at
-   replay that checkpoint export already normalizes.
+   replay that checkpoint export already normalizes;
+6. a selected completed ticket may export after its ticket approval is
+   consumed even though the unused compatibility batch approval remains inert.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.

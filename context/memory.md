@@ -14,6 +14,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   remains non-runnable.
 - Portable Spec-lint evidence is compared semantically after normalizing only
   Markdown indentation; export and replay use the same exact marker grammar.
+- Selected-ticket publication does not require consuming the compatibility
+  batch approval. It still requires terminal role evidence, exact drain,
+  reviewed head, clean branch, and the consumed ticket-scoped approval.
 
 - Fresh Contract 1.7 product planning removes stale canonical Spec-lint,
   Reviewer, and repair-owner control lines while preserving historical prose
@@ -866,3 +869,12 @@ Checkpoint export and replay both accept canonical Spec-lint markers with
 normal leading Markdown whitespace, strip that whitespace, and compare the
 ordered verdict prefix exactly. Altered verdict text and unmatched current-lane
 evidence still fail closed.
+
+## 2026-07-27 — Decision 40: Ticket publication follows ticket approval
+
+Category: System change
+
+A selected-ticket export may proceed while the compatibility batch approval
+remains unused and inert. Batch export retains the unused-approval refusal;
+ticket export keeps every existing terminal-role, drain, branch, reviewed-head,
+and patch-history gate.
