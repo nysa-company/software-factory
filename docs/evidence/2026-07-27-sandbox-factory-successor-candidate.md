@@ -13,7 +13,8 @@
   - `39240c4fcdd18e4cc274f878d70de6bb14189f51`
   - `4e68e0b11d18c55c24c5a75d6f556727337d37f3`
   - `48478c8f5a9d4181e83d6352c535d6839a34bef5`
-- Current successor: `592d57f2d2d6e656b6349fe83d5a8726c19b3d59`
+  - `592d57f2d2d6e656b6349fe83d5a8726c19b3d59`
+- Current successor: `31c56c0ed4204703093ad6dd734b202f792746d9`
 - Focused verification:
   - `bash ci/ticket-state-test.sh` — PASS at intermediate successor `805de58`
   - `python3 ci/cursor-stream-test.py` — PASS at intermediate successor
@@ -21,9 +22,11 @@
   - `bash ci/factory-dev-lane-test.sh` — PASS at intermediate successor
     `c64a924`
   - publication-repair parser and portable `FIX test-author` checkpoint
-    sequencing fixtures — PASS at the current successor
+    sequencing fixtures — PASS at intermediate successor `592d57f`
+  - exact T-081 zero-attempt failed-plan checkpoint re-export — PASS at the
+    current successor
 
-The successor fixes ten Factory-core defects found after the first roles of
+The successor fixes eleven Factory-core defects found after the first roles of
 the proposed final four had started:
 
 1. fresh one-ticket lanes no longer pass a nonexistent checkpoint path into
@@ -49,7 +52,9 @@ the proposed final four had started:
 10. a protected-CI failure can reopen an authenticated operator-await
     checkpoint for exactly its named Builder or Test-author repair, then
     requires fresh Reviewer and Narrator evidence before returning to
-    operator-await.
+    operator-await;
+11. a failed plan with zero provider attempts can re-export its consumed
+    accounting lineage even though no runtime ledger was created.
 
 No broad local Factory CI, product CI, Hermes suite, pixel-perfect gate,
 Factory promotion, or manual deployment was run.

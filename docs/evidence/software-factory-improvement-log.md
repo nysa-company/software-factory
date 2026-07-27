@@ -437,6 +437,27 @@ T-081 canary proved portable export records the authenticated reopen directly
 as `FIX test-author`; that exact checkpoint shape now passes the same focused
 sequence.
 
+## FI-20260727-024 — Zero-attempt failed plans could not re-export lineage
+
+Status: Implemented; qualification pending
+Area: checkpoint
+Owner: Factory
+First seen: 2026-07-27, T-081 portable publication repair
+Impact: the first T-081 successor consumed its authenticated accounting
+lineage, then stopped before provider submission; recovery could not issue the
+next successor checkpoint.
+Evidence:
+- the provider coordinator reports zero attempts and zero active reserve
+- planning stopped before creating `product/factory/runtime-ledger.csv`
+- checkpoint export failed only while opening that absent zero-row ledger
+Root cause: checkpoint export treated the runtime ledger as mandatory even
+though failed pre-submission plans legitimately have no runtime rows or file.
+Smallest change: reduce an absent runtime ledger to the same empty attempt list
+as an existing header-only ledger.
+Validation: shell syntax passes and the exact retained T-081 failed-plan lane
+exports its authenticated `FIX test-author` checkpoint successfully at
+executable candidate `31c56c0ed4204703093ad6dd734b202f792746d9`.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

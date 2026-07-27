@@ -916,3 +916,12 @@ CI fails only when the ticket records one exact Actions job URL and names
 Builder or Test-author with `OPERATOR PUBLICATION REPAIR`. The checkpoint keeps
 all imported successful roles; the named repair runs once, then fresh Reviewer
 and Narrator evidence is required before operator-await can recur.
+
+## 2026-07-27 — Decision 45: Zero attempts reduce to an empty ledger
+
+Category: System change
+
+A failed pre-submission product plan may consume authenticated seed accounting
+without creating a runtime ledger. Checkpoint re-export treats that absent
+ledger as zero local attempts, preserving the consumed lineage and every
+imported role; an existing ledger retains its exact validation.
