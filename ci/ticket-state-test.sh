@@ -358,6 +358,7 @@ git -C "$PRODUCT" add factory/tickets/T-700.md
 git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "contract blocker fixture"
 mkdir -p "$PRODUCT/factory/runs"
+PINNED_KIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 printf '%s\n' \
   'run_id=blocked-run' 'ticket=T-700' 'role=builder' \
   'contract_version=1.7.0' 'phase=completed' \
@@ -365,9 +366,17 @@ printf '%s\n' \
   'reserved_usd=10.00' 'effective_cost=10.00' \
   'cost_basis=conservative_reservation' \
   'exit_status=12' 'role_exit=role_exit_contract_blocked' \
-  'kit_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  'kit_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
   'started_at=2026-07-25T00:00:00Z' \
   > "$PRODUCT/factory/runs/blocked.meta"
+if TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+    --action qualification-backlog --role builder >/dev/null 2>&1; then
+  echo "FAIL: qualification accepted a role from an unpinned Factory SHA" >&2
+  exit 1
+fi
+sed -i.bak "s/^kit_sha=.*/kit_sha=$PINNED_KIT_SHA/" \
+  "$PRODUCT/factory/runs/blocked.meta"
+rm "$PRODUCT/factory/runs/blocked.meta.bak"
 TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action qualification-backlog --role builder >/dev/null
 grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"

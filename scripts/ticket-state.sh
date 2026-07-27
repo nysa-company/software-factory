@@ -189,19 +189,24 @@ elif [[ "$ACTION" == "qualification-backlog" ]]; then
     echo "pending operator fields require materialization before backlog return" >&2
     exit 1
   }
+  PINNED_KIT_SHA="$(git -C "$KIT_DIR" rev-parse --verify HEAD 2>/dev/null)" || {
+    echo "pinned Factory SHA is unavailable" >&2
+    exit 1
+  }
   git -C "$WORKDIR" show \
     "refs/remotes/origin/main:factory/QUALIFICATION.json" > "$OPERATOR_VERSION_FILE" ||
     { echo "protected qualification manifest is unavailable" >&2; exit 1; }
   python3 - "$TMP" "$OPERATOR_VERSION_FILE" "$TICKET" \
-    "$PRODUCT_ROOT/factory/runs" "$ROLE" <<'PY'
+    "$PRODUCT_ROOT/factory/runs" "$ROLE" "$PINNED_KIT_SHA" <<'PY'
 import json
 import re
 import stat
 import sys
 from pathlib import Path
 
-ticket_path, qualification_path, ticket, runs_path, role = (
-    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), sys.argv[5]
+ticket_path, qualification_path, ticket, runs_path, role, pinned_kit_sha = (
+    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]),
+    sys.argv[5], sys.argv[6]
 )
 text = ticket_path.read_text()
 qualification = json.loads(qualification_path.read_text())
@@ -250,7 +255,7 @@ if role:
             latest.get("phase") == "completed",
             latest.get("exit_status") == "12",
             latest.get("role_exit") == "role_exit_contract_blocked",
-            latest.get("kit_sha") == qualification.get("factory_sha"),
+            latest.get("kit_sha") == pinned_kit_sha,
         ))
 if not spec_failed and not contract_blocked:
     raise SystemExit("qualification backlog return lacks authenticated failure evidence")
