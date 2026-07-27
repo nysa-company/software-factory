@@ -149,6 +149,24 @@ Root cause: the semantic marker check accepted only unformatted text.
 Smallest change: accept the same exact marker with optional Markdown emphasis.
 Validation: emphasized markers pass; missing or mismatched markers still fail.
 
+## FI-20260727-010 — Late provider callbacks polluted portable review detail
+
+Status: Implemented; qualification pending
+Area: evidence
+Owner: Factory
+First seen: 2026-07-27, T-084 checkpoint export
+Impact: an otherwise complete ticket could not export because a late provider
+callback appended its disposable lane path after the Reviewer approval.
+Evidence:
+- T-084 signed Reviewer detail contains a background-process callback naming
+  its old `/private/tmp/nysa-sf-dev.*` lane
+Root cause: verdict parsing validated the terminal assistant message but
+persisted callback chatter after its canonical verdict.
+Smallest change: preserve review text only through the terminal verdict and
+required repair owner.
+Validation: a concatenated approval callback parses, is removed from durable
+detail, and cannot carry its lane path into a successor.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

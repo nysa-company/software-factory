@@ -1568,13 +1568,32 @@ python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
   --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
   --output "$REC/reconciled"
 mv "$REC/reconciled" "$review_ticket"
+python3 - "$review_ticket" <<'PY'
+import pathlib, sys
+path=pathlib.Path(sys.argv[1]); text=path.read_text(encoding="utf-8")
+text=text.replace(
+    "\nreviewer round 1: APPROVE\n",
+    "\n> That background `/private/tmp/stale-lane/home/node` finished.\n\n"
+    "reviewer round 1: APPROVE\n",
+)
+path.write_text(text,encoding="utf-8")
+PY
 python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
   --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
   --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
   --output "$REC/reconciled" ||
   fail "successful unpaired review was not reconciled"
+if grep -Fq '/private/tmp/stale-lane' "$REC/reconciled"; then
+  fail "review reconciliation retained late lane-local callback detail"
+fi
+mv "$REC/reconciled" "$review_ticket"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled" ||
+  fail "canonical review reconciliation was not replay-safe"
 cmp -s "$review_ticket" "$REC/reconciled" ||
-  fail "replayed review reconciliation was not idempotent"
+  fail "canonical review reconciliation was not idempotent"
 [[ "$(grep -c '^reviewer round 1: APPROVE$' "$review_ticket")" -eq 1 ]] ||
   fail "review reconciliation did not append exactly once"
 review_ticket="$REC/worktrees/T-900003/factory/tickets/T-900003.md"

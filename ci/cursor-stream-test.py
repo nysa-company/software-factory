@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import subprocess
 import tempfile
@@ -185,6 +186,26 @@ class CursorStreamTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "REQUEST CHANGES\tboth\n")
+
+    def test_reviewer_detail_drops_approval_background_callback(self) -> None:
+        review = (
+            "Review complete.\n\n"
+            "APPROVEThat background `find /private/tmp/lane/home/node` "
+            "finished with no further output."
+        )
+        stream = "\n".join(
+            json.dumps(event) for event in [
+                {"type": "assistant", "message": {"content": review}},
+                {"type": "result", "subtype": "success", "result": review},
+            ]
+        )
+        spec = importlib.util.spec_from_file_location("reviewer_verdict", VERDICT)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        detail = module.review_text(stream, "cursor-anthropic", "1.7.0")
+        self.assertEqual(detail, "Review complete.\n\nAPPROVE")
 
     def test_reviewer_normalizes_bold_background_callback_pair(self) -> None:
         review = (

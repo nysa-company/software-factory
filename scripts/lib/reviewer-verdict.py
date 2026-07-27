@@ -11,6 +11,10 @@ CALLBACK_OWNER = re.compile(
     r"((?:The|That) background `[^`\r\n]+`[^\r\n]*)$",
     re.IGNORECASE | re.MULTILINE,
 )
+CALLBACK_APPROVE = re.compile(
+    r"^(\s*)APPROVE((?:The|That) background `[^`\r\n]+`[^\r\n]*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 CALLBACK_SUMMARY = re.compile(
     r"^(?:No follow-up action needed — my review above already stands as "
     r"\*\*REQUEST CHANGES / FIX-OWNER: "
@@ -60,6 +64,10 @@ def parse_review(raw: str, contract_version: str) -> tuple[str, str]:
 
 
 def normalize_cursor_callback(raw: str) -> str:
+    raw = CALLBACK_APPROVE.sub(
+        lambda match: f"{match.group(1)}APPROVE\n{match.group(1)}{match.group(2)}",
+        raw,
+    )
     corrupted = list(CALLBACK_OWNER.finditer(raw))
     if corrupted:
         raw = CALLBACK_OWNER.sub(
@@ -106,6 +114,27 @@ def normalize_cursor_callback(raw: str) -> str:
                 "reviewer background callback contradicts its primary verdict"
             )
     return CALLBACK_SUMMARY.sub("REQUEST CHANGES", raw)
+
+
+def canonical_review_detail(raw: str, verdict: str, owner: str) -> str:
+    lines = raw.rstrip().splitlines()
+    verdict_rows = [
+        index for index, line in enumerate(lines)
+        if re.fullmatch(rf"\s*{re.escape(verdict)}\s*", line, re.I)
+    ]
+    if not verdict_rows:
+        return raw
+    end = verdict_rows[-1]
+    if owner:
+        owner_rows = [
+            index for index, line in enumerate(lines)
+            if index > end and re.fullmatch(
+                rf"\s*FIX-OWNER:\s*{re.escape(owner)}\s*", line, re.I
+            )
+        ]
+        if owner_rows:
+            end = owner_rows[-1]
+    return "\n".join(lines[: end + 1]).strip()
 
 
 def assistant_text(event: dict):
@@ -172,7 +201,7 @@ def cursor_review(raw: str, contract_version: str) -> str:
     }
     if terminal_owners != ({owner} if owner else set()):
         raise ValueError("reviewer assistant owner contradicts the successful result")
-    return normalized_assistant
+    return canonical_review_detail(normalized_assistant, verdict, owner)
 
 
 def claude_review(raw: str) -> str:

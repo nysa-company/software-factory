@@ -47,6 +47,46 @@ def quote_review(review: str, round_number: int) -> str:
     return f"Reviewer round {round_number} signed detail:\n\n{lines}\n\n"
 
 
+def canonicalize_reviews(
+    text: str,
+    successful: list[tuple[str, str, dict[str, str], Path]],
+    imported: int,
+    verdicts: list[tuple[int, str]],
+    owners: dict[int, str],
+    parser_path: Path,
+    contract_version: str,
+) -> str:
+    parse_verdict, review_text = load_parser(parser_path)
+    for offset, (_, _, value, output) in enumerate(successful, start=1):
+        round_number = imported + offset
+        raw = output.read_text(encoding="utf-8", errors="replace")
+        try:
+            verdict, owner = parse_verdict(
+                raw, value.get("adapter", ""), contract_version
+            )
+            detail = quote_review(
+                review_text(raw, value.get("adapter", ""), contract_version),
+                round_number,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        if (
+            round_number > len(verdicts)
+            or verdicts[round_number - 1] != (round_number, verdict)
+            or owners.get(round_number, "") != owner
+        ):
+            raise SystemExit("reviewer detail contradicts canonical verdict history")
+        pattern = re.compile(
+            rf"^Reviewer round {round_number} signed detail:\n\n.*?"
+            rf"(?=^reviewer round {round_number}:)",
+            re.M | re.S,
+        )
+        text, count = pattern.subn(detail, text, count=1)
+        if count != 1:
+            raise SystemExit("reviewer signed detail is missing or ambiguous")
+    return text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs-dir", required=True, type=Path)
@@ -137,7 +177,17 @@ def main() -> None:
         successful.append((value.get("started_at", ""), manifest.name, value, output))
     successful.sort(key=lambda item: (item[0], item[1]))
 
+    matched = len(verdicts) - imported
     if imported + len(successful) == len(verdicts):
+        text = canonicalize_reviews(
+            text,
+            successful,
+            imported,
+            verdicts,
+            owners,
+            Path(__file__).with_name("reviewer-verdict.py"),
+            args.contract_version,
+        )
         args.output.write_text(text, encoding="utf-8")
         return
     if imported + len(successful) != len(verdicts) + 1:
@@ -145,6 +195,15 @@ def main() -> None:
     if state[0].lower() != "review":
         raise SystemExit("unmatched reviewer evidence requires Review state")
 
+    text = canonicalize_reviews(
+        text,
+        successful[:matched],
+        imported,
+        verdicts,
+        owners,
+        Path(__file__).with_name("reviewer-verdict.py"),
+        args.contract_version,
+    )
     _, _, value, output = successful[-1]
     if (
         value.get("role_head_before") != args.head
