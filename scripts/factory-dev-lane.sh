@@ -2754,7 +2754,7 @@ def limit(concurrent, starts):
 policy={"schema":"factory-provider-concurrency-policy/v1","coupled_max_concurrent":4,
         "global":limit(4,24),
         "provider_families":{"openai":limit(4,24),"anthropic":limit(4,24)},
-        "account_routes":{"cursor":limit(2,15),"codex-native":limit(4,18),
+        "account_routes":{"cursor":limit(4,15),"codex-native":limit(4,18),
                           "claude-native":limit(4,18)}}
 raw=json.dumps(policy, sort_keys=True, separators=(",",":"))
 routes={}
@@ -2795,7 +2795,7 @@ PY
   chmod 600 "$root/runtime/product-approval"
   echo "APPROVE_HASH=$approval_hash"
   echo "TICKETS=${PRODUCT_TICKETS[*]}"
-  echo "PROVIDER_LIMITS=global:4,cursor:$((2 * cursor_enabled)),codex:4,claude:4"
+  echo "PROVIDER_LIMITS=global:4,cursor:$((4 * cursor_enabled)),codex:4,claude:4"
 }
 
 next_stage() {

@@ -124,8 +124,8 @@ development lane. The runner keeps the ticket lease heartbeat active and
 releases the product launch lock while waiting, then reacquires it and
 revalidates controls before proceeding. Budget, policy, identity, and rate
 denials remain immediate. Development activation permits four calls for one
-Codex account or one native Claude account. Cursor remains capped at two
-until a real-provider canary validates a higher limit. Each concurrent Cursor
+Codex, native Claude, or Cursor account after the real-provider canary
+validated that ceiling. Each concurrent Cursor
 attempt receives an owner-only home, configuration directory, data directory,
 temporary directory, and credential copy, so an unrelated legacy scratch
 bridge neither disables Cursor nor blocks product planning. Legacy serialized

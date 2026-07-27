@@ -782,3 +782,13 @@ exists, and the three retained disposable lanes were cleaned. A future
 replacement may allow only its focused fixture to seed the existing
 workspace-scoped `decision` category, without changing product schema,
 migration, or persistence behavior.
+
+## 2026-07-27 — Decision 34: Cursor qualification capacity is four
+
+Category: System change
+
+The real-provider concurrency proof permits four isolated Cursor subscription
+calls under the existing global ceiling. Development product lanes and
+activation validation use that same four-call limit; per-attempt homes,
+configuration, data, temporary files, credentials, process groups, and trusted
+terminalization remain mandatory.

@@ -223,9 +223,9 @@ Contract `1.7.0` reuses the same transactional coordinator for exact
 owner-activated subscription CLI routes. Activation binds the selected CLI
 adapter/model/family/account tuple and canonical provider-policy digest; all
 limits remain policy-owned. Activation permits account capacity through four
-for Codex and native Claude when each Claude attempt has an isolated
+for Codex, native Claude, and Cursor when each attempt has an isolated
 owner-only home, configuration directory, temporary directory, and credential
-copy. Cursor remains capped at two. Contract 1.6
+copy. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
 Its trusted ticket-state reconciliation binds a successful Reviewer's
