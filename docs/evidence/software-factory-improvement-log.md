@@ -700,6 +700,53 @@ verification function after provider sanitation, proves the project receipt
 binding survives, and proves `FACTORY_PROJECT` is absent from the child
 environment. Live four-ticket canary pending.
 
+## FI-20260727-034 — A terminal provider failure stranded its ticket claim
+
+Status: Implemented; qualification pending
+Area: provider
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 final four
+Impact: T-112 stopped after its first Planner provider failure while T-110,
+T-111, and T-113 continued independently.
+Evidence:
+- run `1785190722-90871` expected `GPT-5.6 Sol 272K High`, observed
+  `GPT-5.6 Sol 1M High`, and terminalized `provider_failed`
+- the run charged its conservative $2 reservation and recorded no successful
+  Planner evidence
+- the controller released provider capacity but marked T-112 blocked instead
+  of selecting its approved same-family direct CLI
+Root cause: the controller treated every nonzero terminal role as blocked and
+never invoked the existing automatic qualification fallback; that helper also
+accepted only the obsolete qualification v1 manifest.
+Smallest change: accept qualification v2 and invoke the existing fallback only
+for the first terminal Cursor failure, retaining the claim and same state. Make
+the applied fallback recoverable across controller restart.
+Validation: focused fallback and controller regressions cover v2 authorization,
+direct-CLI selection, claim retention, idempotent recovery, and refusal after a
+second task-submitted attempt. Live four-ticket canary pending.
+
+## FI-20260727-035 — Cancellation plan and apply could never share a hash
+
+Status: Implemented; qualification pending
+Area: cancellation
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 final four drain
+Impact: targeted cancellation of the three active Spec-linter attempts was
+refused before any request was published; all three calls drained normally.
+Evidence:
+- each apply returned `attempt cancellation preview changed`
+- no cancellation request or receipt was created
+- the launcher independently generated the plan once for operator preview and
+  again for apply
+Root cause: each preview generated a new random nonce and wall-clock timestamp,
+so identical run state could not reproduce its approved hash.
+Smallest change: derive the nonce and timestamp from the exact authenticated
+manifest/PID snapshot and reason. Preserve the existing snapshot CAS so any
+real drift still refuses.
+Validation: the focused cancellation regression proves independent previews
+match and manifest/PID mutation still invalidates apply. Live cancellation
+canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

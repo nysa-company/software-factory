@@ -14,6 +14,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 runs deterministic provider-free preflight once on the Planner
   receipt after entering Planning. Later roles resume from authenticated
   evidence without repeating kickoff preflight.
+- During Contract 1.8 qualification, the first terminal failed Cursor attempt
+  appends the existing same-family direct-CLI fallback and retains the ticket
+  claim. The fallback recovers idempotently after controller restart; a second
+  task-submitted attempt for the same role is the no-progress stop.
+- Attempt-cancellation plan and apply calls derive one stable preview from the
+  exact manifest, PID record, and reason. Snapshot drift still changes the hash
+  and refuses cancellation.
 - Contract 1.8 may reconcile a retained zero-provider ticket branch only from
   a protected-main exact-head authorization. The old branch must contain only
   canonical pin/Planning controls and an unchanged ticket contract; recovery
@@ -1025,3 +1032,22 @@ The role runner captures the launcher-validated project as a non-exported host
 binding before clearing provider-facing model controls. Initial, locked, and
 pre-GO receipt checks use that binding; provider processes still inherit
 neither `FACTORY_PROJECT` nor `FACTORY_MODEL_STATE_ROOT`.
+
+## 2026-07-27 — Decision 71: Qualification provider failures route once
+
+Category: System change
+
+The deterministic controller retains a qualification ticket after its first
+terminal Cursor provider failure and invokes the existing same-family
+direct-CLI fallback for the same stage. The fallback commit is restart-safe;
+a second task-submitted attempt for that role remains the duplicate/no-progress
+stop.
+
+## 2026-07-27 — Decision 72: Cancellation previews bind stable snapshots
+
+Category: System change
+
+Separate launcher plan and apply invocations derive the same cancellation
+preview from the exact run manifest, PID record, and reason. Any intervening
+attempt mutation changes the preview hash and preserves the existing CAS
+refusal.

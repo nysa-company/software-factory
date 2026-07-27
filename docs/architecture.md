@@ -41,6 +41,9 @@ boundary, and later controls follow normal post-submission drain semantics.
 When that boundary stops a launch, integrity checks still run and exempt only
 the exact kill, maintenance, or targeted-cancellation record that caused it;
 any concurrent manifest, claim, lock, ledger, or checkout mutation still fails.
+Cancellation previews are deterministic over the exact manifest, PID record,
+and reason so separate plan and apply launcher invocations agree; any mutation
+to that snapshot changes the preview hash and refuses the apply.
 
 Before creating a manifest, every run acquires a product-level control lock and
 holds it through provider exit and integrity verification. This temporarily
@@ -271,6 +274,11 @@ against the exact qualification kit SHA before returning only that ticket to
 lifecycles continue. A qualification Spec-linter `FAIL` also returns the
 ticket directly to Backlog instead of entering the ordinary replan/round-three
 authorization loop.
+The first terminal failed Cursor attempt for a protected qualification keeps
+its claim and authenticated evidence while the controller appends the existing
+same-family direct-CLI fallback and resumes the same deterministic stage. The
+fallback is idempotent across controller restart. A second task-submitted
+attempt for that ticket and role is refused as no progress instead of replayed.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

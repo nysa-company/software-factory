@@ -200,6 +200,69 @@ class FactoryControllerTest(unittest.TestCase):
             )],
         )
 
+    def test_qualification_cursor_failure_routes_to_direct_cli(self) -> None:
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 4,
+                "tickets": ["T-110", "T-111", "T-112", "T-113"],
+            }),
+            encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "b" * 64,
+            "role": "planner",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-112",
+            "worktree": str(self.root / "cell-3"),
+        }
+        (self.product / "factory/runs/failed.meta").write_text(
+            "run_id=failed\n"
+            "ticket=T-112\n"
+            "role=planner\n"
+            "route_id=cursor-gpt\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=9\n"
+            "role_exit=provider_failed\n"
+            f"transition_receipt_sha256={'b' * 64}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("passport")
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args) or {"failed_run_id": "failed"}
+        )
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.event = lambda *_args, **_kwargs: calls.append("event")
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertIn(
+            (
+                "models", "fallback-auto", "--ticket", "T-112",
+                "--failed-run", "failed", "--workdir", claim["worktree"],
+                "--reason", "provider_unavailable", "--json",
+            ),
+            calls,
+        )
+        self.assertFalse(
+            any(
+                isinstance(call, tuple) and call and call[0] == "release"
+                for call in calls
+            )
+        )
+
     def test_cancelled_run_releases_every_controller_resource(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {

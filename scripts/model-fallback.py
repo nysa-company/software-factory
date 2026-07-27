@@ -475,6 +475,20 @@ def apply(args):
 
 
 def qualification_apply(args):
+    try:
+        journal = json.loads(
+            git(
+                Path(args.workdir), "show",
+                f"HEAD:factory/route-plans/{args.ticket}.json",
+            )
+        )
+        approval = journal["revisions"][-1]["body"]["approval_receipt"]
+    except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
+        approval = None
+    if isinstance(approval, dict):
+        recovered = recover_applied(args, approval)
+        if recovered is not None:
+            return recovered
     result = calculate(args, secrets.token_hex(16))
     failed = result["failed"]
     if not failed.get("route_id", "").startswith("cursor-"):
@@ -505,7 +519,10 @@ def qualification_apply(args):
     except json.JSONDecodeError as error:
         raise FallbackError("protected qualification manifest is malformed") from error
     if (
-        qualification.get("schema") != "nysa.software-factory.qualification/v1"
+        qualification.get("schema") not in {
+            "nysa.software-factory.qualification/v1",
+            "nysa.software-factory.qualification/v2",
+        }
         or qualification.get("factory_sha") != result["journal"]["kit_sha"]
         or args.ticket not in qualification.get("tickets", [])
         or not isinstance(qualification.get("generation"), int)

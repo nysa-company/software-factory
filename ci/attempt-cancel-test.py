@@ -265,6 +265,14 @@ class AttemptCancellationTest(unittest.TestCase):
     def test_preview_hash_and_manifest_cas_refuse_drift(self):
         process, started = self.spawn()
         values = self.manifest(process, started)
+        self.assertEqual(
+            CANCEL.calculate(
+                self.root, "T-1", "run-1", "budget_exhausted", None,
+            ),
+            CANCEL.calculate(
+                self.root, "T-1", "run-1", "budget_exhausted", None,
+            ),
+        )
         plan = CANCEL.calculate(self.root, "T-1", "run-1", "budget_exhausted", "c" * 32)
         with self.assertRaisesRegex(CANCEL.CancelError, "preview hash"):
             CANCEL.validate_plan(plan, "0" * 64)

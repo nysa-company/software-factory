@@ -90,7 +90,7 @@ class FallbackTest(unittest.TestCase):
         (self.repo / "factory/QUALIFICATION.json").write_text(json.dumps({
             "factory_sha": "a" * 40,
             "generation": 1,
-            "schema": "nysa.software-factory.qualification/v1",
+            "schema": "nysa.software-factory.qualification/v2",
             "tickets": ["T-1"],
         }))
         (self.repo / "factory/tickets/T-1.md").write_text(
@@ -249,6 +249,9 @@ class FallbackTest(unittest.TestCase):
         selection = journal["revisions"][-1]["body"]["new_resolution"]["selections"]["builder"]
         self.assertEqual(selection["adapter"], "codex")
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+        recovered = self.command("qualification-apply")
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
 
     def test_qualification_apply_refuses_a_second_role_attempt(self):
         second = self.product / "factory/runs/run-failed-2.meta"

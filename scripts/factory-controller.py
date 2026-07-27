@@ -495,6 +495,28 @@ class Controller:
             self.event("attempt_cancelled", claim["ticket"])
             return False
         if terminal.get("exit_status") != "0" or terminal.get("role_exit") != "ok":
+            if (
+                self.qualification
+                and terminal.get("role_exit") == "provider_failed"
+                and terminal.get("route_id", "").startswith("cursor-")
+            ):
+                result = self.json_call(
+                    "models", "fallback-auto", "--ticket", claim["ticket"],
+                    "--failed-run", terminal["run_id"],
+                    "--workdir", claim["worktree"],
+                    "--reason", "provider_unavailable", "--json",
+                )
+                if result.get("failed_run_id") != terminal["run_id"]:
+                    raise ControllerError("provider fallback did not bind the failed run")
+                self.migrate_passport(claim, publication)
+                claim.update(receipt="", role="", status="claimed")
+                self.save_claim(claim)
+                self.event(
+                    "provider_fallback", claim["ticket"],
+                    failed_run_id=terminal["run_id"],
+                    route_id=terminal["route_id"],
+                )
+                return True
             claim["status"] = "blocked"
             self.save_claim(claim)
             self.json_call(

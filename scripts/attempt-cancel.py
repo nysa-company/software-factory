@@ -158,7 +158,9 @@ def load_active_or_stale_identity(
     )
 
 
-def calculate(factory_root: Path, ticket: str, run_id: str, reason: str, nonce: str) -> dict:
+def calculate(
+    factory_root: Path, ticket: str, run_id: str, reason: str, nonce: str | None,
+) -> dict:
     if reason not in REASONS:
         raise CancelError("cancellation reason is not eligible")
     attempt = paths(factory_root, run_id)
@@ -166,6 +168,9 @@ def calculate(factory_root: Path, ticket: str, run_id: str, reason: str, nonce: 
     manifest_raw = IDENTITY.record_bytes(attempt["manifest"])
     manifest = IDENTITY.parse_fields(manifest_raw, "run manifest")
     pid_raw = IDENTITY.record_bytes(attempt["pid"])
+    nonce = nonce or digest(
+        manifest_raw + b"\0" + pid_raw + b"\0" + reason.encode()
+    )[:32]
     if (
         manifest.get("accounting_schema") != "1"
         or manifest.get("accounting_state") != "reserved"
@@ -173,7 +178,7 @@ def calculate(factory_root: Path, ticket: str, run_id: str, reason: str, nonce: 
     ):
         raise CancelError("attempt is not an active accounting reservation")
     plan = {
-        "created_at": timestamp(),
+        "created_at": manifest.get("updated_at") or manifest["started_at"],
         "go_issued": manifest["go_issued"],
         "manifest_sha256": digest(manifest_raw),
         "nonce": nonce,
@@ -565,7 +570,7 @@ def main() -> None:
     if args.action == "preview":
         result = calculate(
             args.factory_root.resolve(), args.ticket, args.run_id,
-            args.reason, secrets.token_hex(16),
+            args.reason, None,
         )
     elif args.action == "apply":
         plan, _ = secure_json(args.plan)
