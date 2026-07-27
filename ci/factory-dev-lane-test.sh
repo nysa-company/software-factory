@@ -2679,6 +2679,26 @@ die() { return 1; }
 
 eval "$(sed -n '/^recover_product_failed_role_commit()/,/^}/p' "$LANE")"
 eval "$(sed -n '/^recover_product_cancelled_role_output()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^product_contract_repair_stage()/,/^}/p' "$LANE")"
+CONTRACT_REPAIR_ROOT="$TMP/contract-repair-stage"
+mkdir -p "$CONTRACT_REPAIR_ROOT/product/factory/runs" \
+  "$CONTRACT_REPAIR_ROOT/worktrees/T-71/factory/tickets"
+printf '%s\n' 'State: Backlog' 'OPERATOR RESUME: test-author' \
+  >"$CONTRACT_REPAIR_ROOT/worktrees/T-71/factory/tickets/T-71.md"
+printf '%s\n' \
+  'run_id=blocked' 'started_at=2026-07-27T03:00:00Z' 'ticket=T-71' \
+  'role=builder' 'role_exit=role_exit_contract_blocked' \
+  'accounting_state=abandoned_conservative' 'exit_status=12' \
+  >"$CONTRACT_REPAIR_ROOT/product/factory/runs/blocked.meta"
+[[ "$(product_contract_repair_stage "$CONTRACT_REPAIR_ROOT" T-71)" == \
+     'FIX test-author' ]] ||
+  fail "operator contract repair did not route to the exact named role"
+sed -i.bak 's/exit_status=12/exit_status=0/' \
+  "$CONTRACT_REPAIR_ROOT/product/factory/runs/blocked.meta"
+[[ "$(product_contract_repair_stage "$CONTRACT_REPAIR_ROOT" T-71)" == \
+     INACTIVE ]] ||
+  fail "consumed operator contract repair did not return to ordinary sequencing"
+
 FAILED_ROLE_ROOT="$TMP/failed-role-resume"
 FAILED_ROLE_WORK="$FAILED_ROLE_ROOT/worktrees/T-72"
 mkdir -p "$FAILED_ROLE_ROOT/product/factory/runs" \

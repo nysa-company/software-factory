@@ -39,13 +39,14 @@ Validation: focused fixtures execute unchanged in Test-author and Builder.
 Status: Validating
 Area: lifecycle
 Owner: Factory
-First seen: 2026-07-26, Generation 9, T-082
-Impact: Reviewer round two found a Test-author helper race after the production repair
+First seen: 2026-07-26, Generation 9, T-080/T-082
+Impact: repair ownership was known in prose but the controller selected the
+ordinary next role
 Evidence:
-- Generation 9 T-082 Reviewer and repair manifests
-Root cause: repair instructions did not keep test-helper and production
-findings separated by their named owner.
-Smallest change: preserve the signed Reviewer block and run only its named owner.
+- Generation 9 T-080 contract blocker and T-082 Reviewer manifests
+Root cause: repair instructions did not expose one machine-readable named owner.
+Smallest change: preserve signed role detail and honor one committed
+`OPERATOR RESUME` target only after the latest contract-blocked attempt.
 Validation: the next repair returns directly to Reviewer with no successful-role replay.
 
 ## FI-20260726-004 — Batch drain blocked independent ticket recovery

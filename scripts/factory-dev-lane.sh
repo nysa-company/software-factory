@@ -2497,17 +2497,56 @@ PY
     "$ticket" "$role" "$snapshot" >&2
 }
 
+product_contract_repair_stage() {
+  python3 - "$1/product/factory/runs" \
+    "$1/worktrees/$2/factory/tickets/$2.md" "$2" <<'PY'
+import pathlib, re, sys
+runs, ticket_file, ticket=pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+directives=re.findall(
+    r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
+    ticket_file.read_text(encoding="utf-8"), re.M,
+)
+if len(directives) != 1: raise SystemExit(1)
+attempts=[]
+for path in runs.glob("*.meta"):
+    values=dict(
+        line.split("=",1) for line in path.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    if values.get("ticket") == ticket:
+        attempts.append((values.get("started_at",""),values.get("run_id",""),values))
+if not attempts:
+    print("INACTIVE")
+    raise SystemExit(0)
+values=max(attempts)[2]
+if (values.get("role_exit") != "role_exit_contract_blocked" or
+    values.get("accounting_state") not in {"completed","abandoned_conservative"} or
+    values.get("exit_status") != "12"):
+    print("INACTIVE")
+    raise SystemExit(0)
+print("FIX "+directives[0])
+PY
+}
+
 product_resume_stage() {
-  local root="$1" ticket="$2" lease_json lease stage rc=0
+  local root="$1" ticket="$2" lease_json lease stage repair=INACTIVE rc=0
   lease_json="$(subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" \
     claim --ticket "$ticket")" || return 1
   lease="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])' \
     <<<"$lease_json")" || return 1
-  stage="$(
-    TICKET="$ticket"
-    product_reconcile_reviewer "$root" "$ticket" "$lease" &&
-      next_stage "$root" "$lease"
-  )" || rc=$?
+  if grep -q '^OPERATOR RESUME:' \
+      "$root/worktrees/$ticket/factory/tickets/$ticket.md" 2>/dev/null; then
+    repair="$(product_contract_repair_stage "$root" "$ticket")" || rc=$?
+  fi
+  if [[ "$rc" -eq 0 && "$repair" != INACTIVE ]]; then
+    stage="$repair"
+  elif [[ "$rc" -eq 0 ]]; then
+    stage="$(
+      TICKET="$ticket"
+      product_reconcile_reviewer "$root" "$ticket" "$lease" &&
+        next_stage "$root" "$lease"
+    )" || rc=$?
+  fi
   subscription_env "$root" "$root/kit/scripts/dispatch-lease.sh" release \
     --ticket "$ticket" --lease "$lease" >/dev/null || return 1
   [[ "$rc" -eq 0 ]] || return "$rc"
