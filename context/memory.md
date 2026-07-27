@@ -4,6 +4,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Fresh development lanes omit the Reviewer checkpoint environment when no
+  authenticated import exists. Cancellation recovery accepts authenticated
+  shell status 130 and macOS SIGTERM status 143, retaining interrupted output
+  on a diagnostic ref before restoring the trusted ticket head.
+
 - Fresh Contract 1.7 product planning removes stale canonical Spec-lint,
   Reviewer, and repair-owner control lines while preserving historical prose
   and quoted signed-review detail. Source tickets may retain prior lifecycle
@@ -818,3 +823,13 @@ aggregate budgets remain the delivery limits. Ticket wall-clock, attempt, Spec,
 and Reviewer round caps are removed; provider-call timeout and exact
 no-progress retry refusal remain safety controls. Systemic failures are tracked
 in `docs/evidence/software-factory-improvement-log.md`.
+
+## 2026-07-27 — Decision 36: Fresh review and cancellation recovery are explicit
+
+Category: System change
+
+Reviewer reconciliation passes checkpoint evidence only when a real import
+exists. Authenticated cancelled-role recovery accepts shell status 130 and
+macOS SIGTERM status 143 while retaining every existing manifest, head,
+remote, GO, and accounting check; partial output is snapshotted before the
+trusted worktree is restored.

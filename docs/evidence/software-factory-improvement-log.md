@@ -218,6 +218,48 @@ authenticated imported Reviewer reconciliation commit.
 Validation: the imported reviewed head exports; checkpoint-digest,
 reconciliation-path, and post-review drift checks still refuse.
 
+## FI-20260727-014 — Fresh lanes passed a nonexistent Reviewer checkpoint
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, T-081 final-four attempt
+Impact: a successful Reviewer could not reconcile its named Test-author repair,
+so the retained ticket could not produce a safe resume approval
+Evidence:
+- T-081 lane `/private/tmp/nysa-sf-dev.KTvrot` reported
+  `reviewer checkpoint is unsafe`
+- successful Reviewer manifest `1785145135-51774.meta`
+Root cause: Reviewer reconciliation always exported
+`FACTORY_DEV_PRODUCT_CHECKPOINT`, even when a fresh lane had no checkpoint
+import.
+Smallest change: pass the checkpoint environment only when its regular import
+file exists.
+Validation: `bash ci/factory-dev-lane-test.sh` passes at executable candidate
+`d79819d83b0982c201575d3edb49342c08410960`; a successor real-ticket repair
+must still prove the no-import path.
+
+## FI-20260727-015 — macOS SIGTERM cancellation could not recover its worktree
+
+Status: Implemented; qualification pending
+Area: recovery
+Owner: Factory
+First seen: 2026-07-27, T-083 final-four attempt
+Impact: cancellation terminalized its process and accounting but initially
+left the Builder worktree dirty and made pause report failure
+Evidence:
+- T-083 manifest `1785145126-50967.meta` recorded authenticated
+  `cancelled_conservative`, `role_exit=cancelled`, and `exit_status=143`
+- diagnostic snapshot `00d2c50e396c664b26e0650ecc8a09f0008e21fc`
+Root cause: interrupted-output recovery accepted shell cancellation status 130
+but not the observed post-SIGTERM status 143.
+Smallest change: accept either 130 or 143 only when every existing
+ticket/role/head/remote/GO/accounting binding is valid.
+Validation: the focused lane regression passes and the corrected controller
+retained T-083's partial Builder tree before restoring a clean trusted head;
+the lane has zero active provider attempts, claims, leases, PID files, or
+matching processes.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
