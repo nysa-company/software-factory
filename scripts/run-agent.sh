@@ -235,6 +235,8 @@ MONEY="$KIT_DIR/scripts/lib/money.py"
 ENVELOPE_CONTROL="$KIT_DIR/scripts/envelope-control.py"
 SEQUENCER_ERROR=""
 PROVIDER_CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-}}"
+unset TRANSITION_PROJECT
+readonly TRANSITION_PROJECT="${FACTORY_PROJECT:-}"
 
 load_effective_envelope() {
   local key value output
@@ -259,7 +261,7 @@ sequencer_allows_role() {
   if [[ "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ]]; then
     if [[ ! "${FACTORY_TRANSITION_RECEIPT_SHA256:-}" =~ ^[0-9a-f]{64}$ ||
           -z "${FACTORY_TRANSITION_STATE_DIR:-}" ||
-          -z "${FACTORY_PROJECT:-}" ]]; then
+          -z "$TRANSITION_PROJECT" ]]; then
       SEQUENCER_ERROR="consumed transition receipt is unavailable"
       return 1
     fi
@@ -272,7 +274,7 @@ sequencer_allows_role() {
       --ticket "$TICKET"
       --contract-version "$PROVIDER_CONTRACT_VERSION"
       --factory-sha "$FACTORY_KIT_SHA"
-      --project "$FACTORY_PROJECT"
+      --project "$TRANSITION_PROJECT"
       --receipt "$FACTORY_TRANSITION_RECEIPT_SHA256"
       --role "$ROLE"
       --require-used

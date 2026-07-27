@@ -238,6 +238,9 @@ watches terminal run evidence for an immediate wakeup. `state-machine` calls
 `next-stage` exactly once and issues a one-use receipt bound to the ticket
 head/tree, evidence, route, passport, Factory release, and certified origin.
 Roles consume that receipt unchanged and never select their next state.
+The role runner retains the validated project only in a non-exported host
+binding for its receipt rechecks; provider processes never inherit the
+project's model-state controls.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one

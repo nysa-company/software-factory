@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -106,6 +107,54 @@ class StateMachineTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(STATE.StateError, "unsupported transition"):
             STATE.stage_role("FIX builder-or-test-author")
+
+    def test_runner_keeps_host_project_for_pre_go_receipt_check(self) -> None:
+        source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
+        start = source.index("sequencer_allows_role() {")
+        function = source[start : source.index("\n}\n", start) + 3]
+        capture = next(
+            line for line in source.splitlines()
+            if line.startswith('readonly TRANSITION_PROJECT=')
+        )
+        kit = self.root / "kit"
+        (kit / "scripts").mkdir(parents=True)
+        trace = self.root / "trace.json"
+        (kit / "scripts/state-machine.py").write_text(
+            "import json, os, sys\n"
+            "json.dump({'argv': sys.argv[1:], "
+            "'factory_project': os.environ.get('FACTORY_PROJECT')}, "
+            "open(os.environ['TRACE'], 'w'))\n",
+            encoding="utf-8",
+        )
+        script = f"""
+set -euo pipefail
+{function}
+FACTORY_PROJECT=relay
+{capture}
+unset FACTORY_PROJECT
+PROVIDER_CONTRACT_VERSION=1.8.0
+FACTORY_TRANSITION_RECEIPT_SHA256={'a' * 64}
+FACTORY_TRANSITION_STATE_DIR=/state
+REPO_ROOT=/product
+WORKDIR=/cell
+KIT_DIR={kit}
+TICKET=T-110
+FACTORY_KIT_SHA={'b' * 40}
+ROLE=planner
+DISPATCH_LEASE_ID=
+FACTORY_TRUSTED_PRODUCT_ORIGIN=test-origin
+SEQUENCER_ERROR=
+sequencer_allows_role
+"""
+        environment = os.environ.copy()
+        environment.pop("FACTORY_PROJECT", None)
+        environment.pop("TRANSITION_PROJECT", None)
+        environment["TRACE"] = str(trace)
+        subprocess.run(["bash", "-c", script], check=True, env=environment)
+        result = json.loads(trace.read_text(encoding="utf-8"))
+        project = result["argv"].index("--project")
+        self.assertEqual(result["argv"][project + 1], "relay")
+        self.assertIsNone(result["factory_project"])
 
 
 if __name__ == "__main__":

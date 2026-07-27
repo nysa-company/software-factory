@@ -674,6 +674,32 @@ when a conservative attempt-ID path would exceed the existing Cursor limit.
 Validation: focused short-root success and long-root rejection tests pass;
 the exact Hermes contract suite also passes. Live four-ticket canary pending.
 
+## FI-20260727-033 — Provider sanitation invalidated the host receipt recheck
+
+Status: Implemented; qualification pending
+Area: lifecycle
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 final four
+Impact: all four valid Planner receipts stopped before GO after successful
+preflight and provider admission.
+Evidence:
+- T-110 through T-113 each recorded one terminal `launch_void` Planner
+  manifest with `go_issued=0`, `task_submitted=0`, and zero effective cost
+- the provider coordinator records all four attempts as `failed_pre_go` with
+  zero active reservations
+- every role log reports
+  `consumed transition receipt is unavailable before GO`
+Root cause: the runner cleared `FACTORY_PROJECT` before spawning the provider
+wrapper, then its own pre-GO receipt verifier tried to reuse that cleared
+variable.
+Smallest change: capture the validated project once in a non-exported host
+variable and use it for every receipt verification while continuing to remove
+project model controls from the provider environment.
+Validation: the focused state-machine regression executes the real runner
+verification function after provider sanitation, proves the project receipt
+binding survives, and proves `FACTORY_PROJECT` is absent from the child
+environment. Live four-ticket canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

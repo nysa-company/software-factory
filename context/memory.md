@@ -8,6 +8,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
   run concurrently behind one renewable per-product publication lease.
+- Contract 1.8 role execution retains the validated project in a non-exported
+  host binding for every receipt recheck while keeping project model-state
+  controls out of provider environments.
 - Contract 1.8 runs deterministic provider-free preflight once on the Planner
   receipt after entering Planning. Later roles resume from authenticated
   evidence without repeating kickoff preflight.
@@ -1013,3 +1016,12 @@ Sealed qualification preparation calculates a conservative Cursor attempt data
 path before creating release state. A root that exceeds the adapter's existing
 isolated-scratch limit fails before ticket admission, reservation, or role
 execution.
+
+## 2026-07-27 — Decision 70: Receipt identity stays host-only through GO
+
+Category: System change
+
+The role runner captures the launcher-validated project as a non-exported host
+binding before clearing provider-facing model controls. Initial, locked, and
+pre-GO receipt checks use that binding; provider processes still inherit
+neither `FACTORY_PROJECT` nor `FACTORY_MODEL_STATE_ROOT`.
