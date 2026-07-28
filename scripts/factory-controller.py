@@ -108,7 +108,7 @@ class Controller:
         self.launcher = args.launcher.resolve(strict=True)
         self.project = args.project
         self.product = args.product_root.resolve(strict=True)
-        self.release = args.release_path.resolve(strict=True)
+        self.release_path = args.release_path.resolve(strict=True)
         self.state = safe_directory(args.state_dir)
         self.claims = self.state / "claims"
         safe_directory(self.claims, create=True)
@@ -139,7 +139,7 @@ class Controller:
             or value.get("contract_version") != "1.8.0"
             or value.get("capacity") != 4
             or value.get("target_done") != 4
-            or value.get("factory_sha") != self.release.name
+            or value.get("factory_sha") != self.release_path.name
             or value.get("budget_usd") != "100.000000"
             or value.get("per_ticket_budget_usd") != "25.000000"
             or value.get("per_run_budget_usd") != "2.000000"
@@ -762,7 +762,7 @@ class Controller:
             str(self.launcher), self.project, "run",
             "--role", role, "--ticket", claim["ticket"],
             "--lease", claim["lease"], "--receipt", receipt,
-            "--prompt-file", str(self.release / f"roles/{role}.md"),
+            "--prompt-file", str(self.release_path / f"roles/{role}.md"),
             "--workdir", claim["worktree"], "--", task,
         ]
         log_path = self.logs / f"{claim['ticket']}-{role}.log"

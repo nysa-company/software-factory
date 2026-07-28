@@ -470,6 +470,43 @@ class FactoryControllerTest(unittest.TestCase):
             ["passport", "leases-and-claim", "cell", "attempt_cancelled"],
         )
 
+    def test_complete_releases_claim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        controller.finish_pending_run = lambda _claim: True
+
+        def json_call(*args, **_kwargs):
+            if args[0] == "state-machine":
+                return {
+                    "receipt": "b" * 64,
+                    "role": None,
+                    "stage": "COMPLETE attested Done is on protected main",
+                }
+            return {}
+
+        controller.json_call = json_call
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "complete", "ticket": "T-110"},
+        )
+        self.assertFalse(controller.claim_path("T-110").exists())
+
     def test_budget_wait_reopens_only_after_envelope_change(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

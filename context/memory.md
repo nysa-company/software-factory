@@ -1181,3 +1181,11 @@ protected-base refresh and closeout fetches because disposable cells share one
 Git common directory. Exact certified remote-tip, ancestry, and open-PR
 identity prove refresh eligibility; GitHub `mergeStateStatus` may lag and is
 not authority.
+
+## 2026-07-28 — Decision 86: Release identity cannot shadow lifecycle actions
+
+Category: System change
+
+The controller stores its immutable release directory as `release_path`.
+Ticket completion and cancellation retain the distinct `release` lifecycle
+action, and focused coverage must prove a completed claim is actually removed.

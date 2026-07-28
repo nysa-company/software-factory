@@ -1084,6 +1084,24 @@ to use the same guard; focused attestation coverage accepts `UNKNOWN` only
 after exact remote-tip and ancestry proof. Protected GitHub CI retains the
 complete regression. Passport-only live recovery is pending.
 
+## FI-20260728-049 — Completion path shadowed claim release
+
+Status: Implemented; qualification pending
+Area: controller lifecycle
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 15
+Impact: T-167's application and closeout PRs merged successfully, but the
+controller crashed instead of releasing its completed claim.
+Evidence: the authenticated `COMPLETE` transition raised `TypeError:
+'PosixPath' object is not callable` at `self.release(claim)`.
+Root cause: the controller stored the immutable release directory in an
+instance attribute named `release`, shadowing its claim-release method.
+Smallest change: rename only the release-directory attribute to
+`release_path`.
+Validation: focused controller coverage drives a claimed ticket through
+`COMPLETE` and requires its claim file to be removed. Protected GitHub CI
+retains the complete regression. Live recovery is pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
