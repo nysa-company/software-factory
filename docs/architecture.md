@@ -264,6 +264,10 @@ Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one
 renewable per-product publication lease serializes merge requests. The
+controller serializes only protected-base Git mutations because disposable
+cells share one Git common directory. Refresh proves staleness from the exact
+certified remote tip, ancestry, and exact open PR identity; GitHub's lagging
+`mergeStateStatus` is not evidence. The
 four-ticket qualification reducer reconciles passports, manifests, controller
 events, protected checks, PR heads, merge commits, and protected main.
 The sealed qualification launcher binds its owner-only qualification root as

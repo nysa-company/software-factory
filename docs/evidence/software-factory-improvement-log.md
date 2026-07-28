@@ -1053,6 +1053,37 @@ invalid and requires Builder fallback to direct Codex without changing the
 Reviewer selection. Protected GitHub CI retains the complete regression.
 Fresh live qualification pending.
 
+## FI-20260728-048 — Concurrent publication refresh blocked independent PRs
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 15
+Impact: T-167 merged through protected auto-merge, then T-166, T-168, and
+T-169 were permanently excluded from the next controller cycle instead of
+refreshing against the new protected main.
+Evidence:
+- Relay PR #59 merged automatically at
+  `e3859ecb21a220201fedb2bbde163206dc3ba7ec`
+- the concurrent closeout/refresh cycle recorded `cannot lock ref
+  'refs/remotes/origin/main'` for T-168
+- T-166 and T-169 failed the exact-PR refresh gate while GitHub had not yet
+  projected their stale heads as `BEHIND`
+- the following automatic cycle admitted only T-167; the three siblings
+  remained fail-closed
+Root cause: four controller threads mutated one shared Git common directory
+during protected-base refresh and closeout. The refresh gate also duplicated
+the exact remote-tip and ancestry proof with GitHub's eventually consistent
+`mergeStateStatus`.
+Smallest change: serialize only protected-base Git mutations inside the
+already non-overlapping controller. Keep PR validation concurrent, and bind
+refresh to the exact certified remote tip, ancestry, and open PR identity
+without trusting `mergeStateStatus`.
+Validation: focused controller coverage requires refresh and closeout fetches
+to use the same guard; focused attestation coverage accepts `UNKNOWN` only
+after exact remote-tip and ancestry proof. Protected GitHub CI retains the
+complete regression. Passport-only live recovery is pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

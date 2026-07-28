@@ -1171,3 +1171,13 @@ Automatic qualification fallback resolves only the exact failed role.
 Unstarted roles retain their pinned selections and are checked when they reach
 provider admission, so an unrelated future route outage cannot block a valid
 same-stage recovery.
+
+## 2026-07-28 — Decision 85: Protected-base Git mutation is serialized
+
+Category: System change
+
+Contract 1.8 keeps protected PR validation concurrent but serializes
+protected-base refresh and closeout fetches because disposable cells share one
+Git common directory. Exact certified remote-tip, ancestry, and open-PR
+identity prove refresh eligibility; GitHub `mergeStateStatus` may lag and is
+not authority.

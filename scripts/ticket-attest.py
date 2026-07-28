@@ -1331,7 +1331,6 @@ def refresh(args, product, workdir, repo, prefix, remote):
         or view.get("baseRefName") != "main"
         or view.get("headRefOid") != old_head
         or view.get("state") != "OPEN"
-        or view.get("mergeStateStatus") not in {"BEHIND", "BLOCKED", "DIRTY"}
     ):
         raise Refusal("GitHub did not confirm the exact open PR before refresh")
     if view.get("autoMergeRequest"):

@@ -258,6 +258,7 @@ Merge-Policy: manual
         value = {
             "duplicate": False, "wrong_head": False, "merge_fail": False,
             "auto_merge": True, "draft": True, "merged": False, "merge_sha": "b" * 40,
+            "merge_state": "BLOCKED",
             "merge_on_second_open": False, "open_list_count": 0,
             "pr_head": None, "checks": {"ci": True, "deploy-production": True},
             "check_runs": {},
@@ -344,7 +345,7 @@ elif a[:2] == ["pr", "view"]:
     else:
         print(json.dumps({"number": 7, "headRefName": "ticket/T-700",
                           "baseRefName": "main", "headRefOid": head, "state": "OPEN",
-                          "mergeStateStatus": "BLOCKED",
+                          "mergeStateStatus": s["merge_state"],
                           "isDraft": s["draft"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
 elif a[:1] == ["api"]:
@@ -717,6 +718,7 @@ else:
         )
         command("git", "push", "-q", "origin", "main", cwd=updater)
         base_head = self.head_at(updater)
+        self.update_state(merge_state="UNKNOWN")
 
         result = self.attest("refresh")
         self.assertEqual(result.returncode, 0, result.stderr)

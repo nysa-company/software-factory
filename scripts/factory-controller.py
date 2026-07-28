@@ -119,6 +119,8 @@ class Controller:
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
         self.fallback_lock = Lock()
+        # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
+        self.git_lock = Lock()
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -645,22 +647,23 @@ class Controller:
     def publication_ready(
         self, claim: dict[str, Any], receipt: str, head: str
     ) -> bool:
-        if not self.protected_base_current(claim, head):
-            if claim.get("publication_lease"):
-                self.release_publication(claim)
-            value = self.json_call(
-                "ticket-attest", "--ticket", claim["ticket"],
-                "--lease", claim["lease"], "--receipt", receipt,
-                "--workdir", claim["worktree"], "--action", "refresh", "--json",
-            )
-            if value.get("action") != "refresh":
-                raise ControllerError("protected-base refresh was not materialized")
-            self.migrate_passport(claim, "validating")
-            self.event(
-                "protected_base_refreshed", claim["ticket"],
-                head_sha=value.get("head"),
-            )
-            return False
+        with self.git_lock:
+            if not self.protected_base_current(claim, head):
+                if claim.get("publication_lease"):
+                    self.release_publication(claim)
+                value = self.json_call(
+                    "ticket-attest", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--receipt", receipt,
+                    "--workdir", claim["worktree"], "--action", "refresh", "--json",
+                )
+                if value.get("action") != "refresh":
+                    raise ControllerError("protected-base refresh was not materialized")
+                self.migrate_passport(claim, "validating")
+                self.event(
+                    "protected_base_refreshed", claim["ticket"],
+                    head_sha=value.get("head"),
+                )
+                return False
         prior = claim.get("publication_lease", "")
         self.json_call(
             "publication", "ready", "--ticket", claim["ticket"],
@@ -710,10 +713,11 @@ class Controller:
         branch = f"chore/{ticket.lower().replace('-', '')}-closeout"
         root = Path(claim["worktree"]).parent
         worktree = root / f"closeout-{ticket}"
-        subprocess.run(
-            ["git", "-C", str(self.product), "fetch", "--quiet", "origin", "main"],
-            check=True, timeout=120,
-        )
+        with self.git_lock:
+            subprocess.run(
+                ["git", "-C", str(self.product), "fetch", "--quiet", "origin", "main"],
+                check=True, timeout=120,
+            )
         if not worktree.exists():
             exists = subprocess.run(
                 [

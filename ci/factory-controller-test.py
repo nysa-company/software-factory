@@ -11,6 +11,7 @@ from pathlib import Path
 import plistlib
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -531,19 +532,68 @@ class FactoryControllerTest(unittest.TestCase):
             "worktree": str(self.root / "cell-1"),
         }
         calls = []
-        controller.protected_base_current = lambda *_args: False
+        class RecordingLock:
+            def __enter__(self):
+                calls.append("git-lock")
+
+            def __exit__(self, *_args):
+                calls.append("git-unlock")
+
+        controller.git_lock = RecordingLock()
+        controller.protected_base_current = lambda *_args: (
+            calls.append("base") or False
+        )
         controller.release_publication = lambda item: (
             calls.append("release"), item.update(publication_lease="")
         )
-        controller.json_call = lambda *_args, **_kwargs: {
-            "action": "refresh", "head": "d" * 40,
-        }
+        controller.json_call = lambda *_args, **_kwargs: (
+            calls.append("refresh") or {
+                "action": "refresh", "head": "d" * 40,
+            }
+        )
         controller.migrate_passport = lambda *_args: calls.append("passport")
         controller.event = lambda *_args, **_kwargs: calls.append("event")
         self.assertFalse(
             controller.publication_ready(claim, "c" * 64, "d" * 40)
         )
-        self.assertEqual(calls, ["release", "passport", "event"])
+        self.assertEqual(
+            calls,
+            [
+                "git-lock", "base", "release", "refresh", "passport", "event",
+                "git-unlock",
+            ],
+        )
+
+    def test_closeout_fetch_uses_shared_git_lock(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        (cell.parent / "closeout-T-110").mkdir()
+        calls = []
+
+        class RecordingLock:
+            def __enter__(self):
+                calls.append("git-lock")
+
+            def __exit__(self, *_args):
+                calls.append("git-unlock")
+
+        controller.git_lock = RecordingLock()
+        controller.json_call = lambda *_args, **_kwargs: (
+            calls.append("done") or {"closeout_pr_state": "OPEN"}
+        )
+
+        def run(command, **_kwargs):
+            calls.append("fetch")
+            return CONTROL.subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(CONTROL.subprocess, "run", side_effect=run):
+            self.assertFalse(controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            }))
+        self.assertEqual(calls, ["git-lock", "fetch", "git-unlock", "done"])
 
 
 if __name__ == "__main__":
