@@ -11,6 +11,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 role execution retains the validated project in a non-exported
   host binding for every receipt recheck while keeping project model-state
   controls out of provider environments.
+- Contract 1.8 retries one failed exact-head remote observation before
+  classifying branch drift. A second transport failure or a different head
+  remains fail-closed, and only the trusted wrapper pushes role commits.
 - Contract 1.8 treats GitHub's exact empty no-required-checks-yet response as
   publication wait. Every other malformed or non-JSON check response remains
   a fail-closed controller error.
@@ -1075,3 +1078,11 @@ Immediately after an exact ticket PR is created, GitHub may report that no
 required checks exist before Actions publishes their runs. The ticket PR gate
 treats only that exact empty CLI response as wait; malformed or unrelated
 GitHub responses still fail closed.
+
+## 2026-07-27 — Decision 75: Remote observation gets one transport retry
+
+Category: System change
+
+A successful mutating role retains its clean local commit while the trusted
+wrapper retries one failed exact-head remote observation. A second transport
+failure or any observed head drift still fails closed before push.

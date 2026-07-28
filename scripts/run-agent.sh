@@ -860,8 +860,15 @@ verify_control_interval_integrity() {
 }
 
 role_remote_head() {
-  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
-    "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}'
+  local attempt output
+  for attempt in 1 2; do
+    if output="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- \
+        "$PRODUCT_REMOTE" "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null)"; then
+      printf '%s\n' "$output" | awk 'NR==1 {print $1; exit}'
+      return 0
+    fi
+  done
+  return 1
 }
 
 ticket_evidence_snapshot() {

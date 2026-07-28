@@ -623,24 +623,62 @@ SEALED_TREE="$(bash -c '
 SEALED_PRODUCT="$TMP/sealed-product"
 write_envelope "$SEALED_PRODUCT"
 write_ticket "$SEALED_PRODUCT" T-190
+printf '\nKit-SHA: %s\n' "$KIT_SHA" >> "$SEALED_PRODUCT/factory/tickets/T-190.md"
+git -C "$SEALED_PRODUCT" add .gitignore factory/tickets/T-190.md
+git -C "$SEALED_PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "sealed ticket fixture"
+SEALED_ORIGIN="$TMP/sealed-product.git"
+git init --bare -q "$SEALED_ORIGIN"
+git -C "$SEALED_PRODUCT" remote add origin "$SEALED_ORIGIN"
+git -C "$SEALED_PRODUCT" branch -M main
+git -C "$SEALED_PRODUCT" push -q -u origin main
+git -C "$SEALED_PRODUCT" switch -q -c ticket/T-190
+git -C "$SEALED_PRODUCT" push -q -u origin ticket/T-190
 mkdir -p "$SEALED_PRODUCT/factory/runs"
+SEALED_STATE="$TMP/sealed-state"
+mkdir -m 700 "$SEALED_STATE"
 SEALED_STAGE="$(env \
   FACTORY_ROOT="$SEALED_PRODUCT" \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
+SEALED_TRANSITION="$(env \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  FACTORY_RELEASE_SHA="$KIT_SHA" \
+  FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --project sealed)"
+SEALED_RECEIPT="$(python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["receipt"])' \
+  <<<"$SEALED_TRANSITION")"
+env \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --project sealed --receipt "$SEALED_RECEIPT" --role planner >/dev/null
 SEALED_RUN_STATUS=0
 env \
   FACTORY_ROOT="$SEALED_PRODUCT" \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  FACTORY_PROJECT=sealed \
+  FACTORY_TRANSITION_RECEIPT_SHA256="$SEALED_RECEIPT" \
+  FACTORY_TRANSITION_STATE_DIR="$SEALED_STATE" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -649,7 +687,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -660,14 +698,15 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.7.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.8.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
+   grep -q "^transition_receipt_sha256=$SEALED_RECEIPT$" "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
   pass "sealed release runs real sequencer and mock agent"
 else
   fail "sealed release runs real sequencer and mock agent" \
-    "before=$SEALED_STAGE run=$SEALED_RUN_STATUS after=$SEALED_AFTER"
+    "before=$SEALED_STAGE transition=$SEALED_TRANSITION run=$SEALED_RUN_STATUS after=$SEALED_AFTER"
 fi
 
 FORGED_STAGE_STATUS=0
@@ -1103,7 +1142,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.7.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.8.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
@@ -3012,6 +3051,43 @@ if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
 else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
+fi
+
+setup_role_exit_fixture T-650
+ROLE_REAL_GIT="$(type -P git)"
+ROLE_GIT_COUNT="$TMP/role-git-count"
+ROLE_GIT_WRAPPER="$TMP/git"
+cat > "$ROLE_GIT_WRAPPER" <<'STUB'
+#!/usr/bin/env bash
+if [[ " $* " == *" ls-remote "* ]]; then
+  count=0
+  [[ ! -f "$FACTORY_TEST_GIT_COUNT" ]] ||
+    count="$(cat "$FACTORY_TEST_GIT_COUNT")"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$FACTORY_TEST_GIT_COUNT"
+  [[ "$count" != 3 ]] || exit 128
+fi
+exec "$FACTORY_TEST_GIT_REAL" "$@"
+STUB
+chmod +x "$ROLE_GIT_WRAPPER"
+ROLE_REMOTE_RETRY=0
+PATH="$TMP:$PATH" FACTORY_TEST_GIT_REAL="$ROLE_REAL_GIT" \
+  FACTORY_TEST_GIT_COUNT="$ROLE_GIT_COUNT" \
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-650 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "transient remote read" > "$TMP/role-remote-retry.out" 2>&1 ||
+  ROLE_REMOTE_RETRY=$?
+if [[ "$ROLE_REMOTE_RETRY" -eq 0 &&
+      "$(cat "$ROLE_GIT_COUNT")" == "5" &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+        "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-650)" ]]; then
+  pass "role exit retries one failed remote observation without replay"
+else
+  fail "role exit retries one failed remote observation without replay" \
+    "status=$ROLE_REMOTE_RETRY reads=$(cat "$ROLE_GIT_COUNT" 2>/dev/null || true)"
 fi
 
 ROLE_LANE_ROOT="$TMP/nysa-sf-dev.role-output"

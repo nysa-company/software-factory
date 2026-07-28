@@ -243,7 +243,9 @@ head/tree, evidence, route, passport, Factory release, and certified origin.
 Roles consume that receipt unchanged and never select their next state.
 The role runner retains the validated project only in a non-exported host
 binding for its receipt rechecks; provider processes never inherit the
-project's model-state controls.
+project's model-state controls. Its trusted exact-head remote observation
+retries one failed transport call before classifying branch drift; a second
+failure or any different head still fails closed without pushing.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one

@@ -798,6 +798,32 @@ Validation: the focused PR helper regression covers the unreported-to-pending
 to-pass lifecycle while retaining malformed-response refusal. Live concurrent
 PR canary pending.
 
+## FI-20260727-038 — One failed remote read discarded a valid role
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 successor final four
+Impact: T-120's direct-CLI Builder completed the frozen implementation, passed
+all 38 application tests and immutability, and committed a clean one-file
+change, but the wrapper terminalized it as a failed role instead of publishing
+the commit.
+Evidence:
+- run `1785196489-35130` recorded one successful provider turn, $0.5166, local
+  commit `4aac81c`, and `role_exit_remote_mismatch`
+- its authenticated pre-role remote head was `b43f148`, and the remote branch
+  remained exactly `b43f148` after terminalization
+- the provider log contains no fetch, remote-configuration, or push command
+Root cause: the shared remote-head observation suppressed transport failure
+into an empty head, making one unavailable read indistinguishable from branch
+drift before the trusted host push.
+Smallest change: retry the exact read once in the shared remote observation
+function. Preserve the existing exact-head comparison and fail closed on a
+second transport failure or any different head.
+Validation: the focused role-exit regression fails the first post-provider
+remote read, then proves the same successful role commit is pushed without
+replay. Live four-ticket canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
