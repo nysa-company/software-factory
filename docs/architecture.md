@@ -391,6 +391,9 @@ route plan or a v2 route journal whose ticket and Kit-SHA match the
 authorization and whose complete history passes the candidate's migration
 validator. The normal maintenance, zero-active-run, and zero-dispatcher-lease
 barriers still apply.
+Qualification upgrades bind liveness to the non-overlapping controller lock
+and active-run markers. A terminal orphaned `running` claim remains portable
+state for the successor controller rather than an upgrade deadlock.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior

@@ -1168,6 +1168,22 @@ Validation: one focused unit drives a failed then successful exact
 `ls-remote` and requires two calls. Protected GitHub CI retains the complete
 regression. Live recovery is pending.
 
+## FI-20260728-053 — Terminal orphan claim blocked trusted upgrade
+
+Status: Implemented; qualification pending
+Area: release migration
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 retained recovery
+Impact: the controller lock was free and no active-run marker or provider
+manifest was live, but T-168 retained `status=running` after its authenticated
+terminal Reviewer boundary and the trusted upgrade refused the cutover.
+Root cause: the upgrade gate treated a claim's bookkeeping status as runtime
+liveness even after the owning controller and provider action had ended.
+Smallest change: keep the controller lock and active-run markers authoritative;
+preserve the orphaned claim for authenticated successor recovery.
+Validation: focused qualification coverage upgrades with a retained running
+claim and no live action. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -171,7 +171,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         key = controller / "passport.key"
         key.write_bytes(b"p" * 32)
         key.chmod(0o600)
-        ENVIRONMENT.write(claims / "T-110.json", {"status": "waiting"})
+        ENVIRONMENT.write(claims / "T-110.json", {"status": "running"})
 
         (self.factory / "successor.txt").write_text("successor\n", encoding="utf-8")
         run(self.factory, "git", "add", "successor.txt")

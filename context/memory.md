@@ -1217,3 +1217,11 @@ Category: System change
 Protected attestation retries a failed read-only `git ls-remote` once with
 identical arguments. A second transport failure, every Git mutation failure,
 and every semantic or identity mismatch still fail closed.
+
+## 2026-07-28 — Decision 90: Upgrade liveness uses runtime authority
+
+Category: System change
+
+Qualification upgrade liveness is proven by the non-overlapping controller
+lock and active-run markers, not a stale claim status. Terminal orphan claims
+remain authenticated successor-recovery input instead of blocking cutover.

@@ -405,11 +405,6 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise EnvironmentError("qualification controller is active") from error
-        claims = controller / "claims"
-        if claims.exists():
-            safe_directory(claims)
-            if any(read(path).get("status") == "running" for path in claims.glob("T-*.json")):
-                raise EnvironmentError("qualification has a live ticket action")
         if any((product / "factory/.active-runs").glob("*")) or any(
             (product / "factory/runs").glob("*.pid")
         ):
