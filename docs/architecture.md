@@ -400,6 +400,10 @@ barriers still apply.
 Qualification upgrades bind liveness to the non-overlapping controller lock
 and active-run markers. A terminal orphaned `running` claim remains portable
 state for the successor controller rather than an upgrade deadlock.
+If an operator-authorized repair deliberately removes invalid Git ancestry, a
+cross-release passport migration may use that protected authorization only
+when its source/target kits, ticket, branch, new head, and state match exactly,
+the cell is clean, and the authenticated route digest is unchanged.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -46,11 +47,15 @@ class TicketPassportTest(unittest.TestCase):
         (self.product / "factory/tickets").mkdir(parents=True)
         (self.product / "factory/route-plans").mkdir()
         (self.product / "factory/runs").mkdir()
+        (self.product / "factory/PROJECT.env").write_text(
+            "GH_REPO=nysa-company/relay-factory\n", encoding="utf-8"
+        )
         (self.product / "factory/tickets/T-110.md").write_text(
             "# T-110\n\nState: Planning\n", encoding="utf-8"
         )
         (self.product / "factory/route-plans/T-110.json").write_text(
-            '{"ticket":"T-110"}\n', encoding="utf-8"
+            f'{{"kit_sha":"{"a" * 40}","ticket":"T-110"}}\n',
+            encoding="utf-8",
         )
         (self.product / ".gitignore").write_text(
             "factory/runs/\n", encoding="utf-8"
@@ -157,6 +162,59 @@ class TicketPassportTest(unittest.TestCase):
             [item["factory_sha"] for item in upgraded["factory_release_history"]],
             ["a" * 40, "b" * 40],
         )
+
+    def test_protected_inflight_authorization_allows_exact_rewrite(self) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        receipt = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = receipt["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal("run-1", "planner", receipt["receipt_sha256"], "a" * 40)
+        self.passport_args.receipt = receipt["receipt_sha256"]
+        previous = PASSPORT.export(self.passport_args, secret)
+
+        rewritten = run(
+            "git", "commit-tree", "HEAD^{tree}", "-m", "authorized rewrite",
+            cwd=self.product,
+        )
+        run("git", "reset", "--hard", rewritten, cwd=self.product)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.migrate(self.passport_args, secret)
+        self.passport_args.factory_sha = "b" * 40
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.migrate(self.passport_args, secret)
+
+        protected = self.root / "protected"
+        run("git", "clone", "-q", str(self.remote), str(protected), cwd=self.root)
+        run("git", "config", "user.name", "Test", cwd=protected)
+        run("git", "config", "user.email", "test@example.invalid", cwd=protected)
+        authorization = protected / (
+            "factory/migrations/inflight-release/" + "b" * 40 + ".json"
+        )
+        authorization.parent.mkdir(parents=True)
+        authorization.write_text(
+            json.dumps({
+                "repository": "nysa-company/relay-factory",
+                "schema": PASSPORT.INFLIGHT_SCHEMA,
+                "source_kit_sha": "a" * 40,
+                "target_kit_sha": "b" * 40,
+                "tickets": [{
+                    "branch": "ticket/T-110",
+                    "head": rewritten,
+                    "state": "Planning",
+                    "ticket": "T-110",
+                }],
+            }, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=protected)
+        run("git", "commit", "-qm", "authorize rewrite", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+
+        migrated = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(migrated["head_sha"], rewritten)
+        self.assertEqual(migrated["parent_digest"], previous["passport_sha256"])
+        self.assertEqual(migrated["factory_sha"], "b" * 40)
 
 
 if __name__ == "__main__":

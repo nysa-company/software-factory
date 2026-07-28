@@ -1319,6 +1319,30 @@ Validation: all 19 focused controller tests pass, including exact recovery and
 refusal when `task_submitted=1`. Protected GitHub CI retains the complete
 regression.
 
+## FI-20260728-060 — Authorized history repair could not migrate its passport
+
+Status: Implemented; qualification pending
+Area: passport migration
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 generation 19 recovery
+Impact: T-169's tested rewrite removed the stale test-after-implementation
+ancestry and was published under exact operator authorization, but its signed
+passport still named the pre-rewrite head. Ordinary ancestry validation
+correctly refused the move; reconnecting that head would reintroduce the
+protected immutability failure.
+Evidence: the passport head is `db5e08f`, the exact clean remote/cell head is
+`ff595b6`, protected main `9054d62` authorizes that head for the `edee50e` to
+`8b556b5` cutover, and both heads bind the same authenticated route digest.
+Smallest change: during cross-release migration only, accept a non-ancestral
+head when the protected in-flight authorization exactly binds repository,
+source/target kits, ticket, branch, new head, and state, the cell is clean, and
+the signed prior route digest is unchanged. Same-release, dirty, unlisted,
+route-changing, malformed, or unknown rewrites remain blocked.
+Validation: both focused passport continuity tests pass, including refusal
+without authorization, and a copied live T-169 passport migrates to the exact
+authorized head without mutating production state. Protected GitHub CI retains
+the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

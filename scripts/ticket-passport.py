@@ -26,6 +26,10 @@ DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TERMINAL_ACCOUNTING = {
     "completed", "abandoned_conservative", "cancelled", "cancelled_conservative",
 }
+INFLIGHT_SCHEMA = "nysa.software-factory.inflight-release-authorization/v1"
+INFLIGHT_STATES = {
+    "Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved",
+}
 
 
 class PassportError(ValueError):
@@ -37,6 +41,15 @@ def canonical(value: Any) -> bytes:
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         + "\n"
     ).encode()
+
+
+def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value = {}
+    for name, item in pairs:
+        if name in value:
+            raise ValueError("duplicate key")
+        value[name] = item
+    return value
 
 
 def git(root: Path, *arguments: str, check: bool = True) -> str:
@@ -231,6 +244,78 @@ def ticket_state(workdir: Path, ticket: str) -> str:
     return values[0]
 
 
+def authorized_inflight_rewrite(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    current_state: str,
+    protected: str,
+) -> bool:
+    source = previous.get("factory_sha", "")
+    target = args.factory_sha
+    if (
+        not SHA.fullmatch(source)
+        or not SHA.fullmatch(target)
+        or source == target
+        or git(args.workdir, "status", "--porcelain=v1", "-z")
+    ):
+        return False
+    relative = f"factory/migrations/inflight-release/{target}.json"
+    raw = git(args.factory_root, "show", f"{protected}:{relative}", check=False)
+    project = git(
+        args.factory_root, "show", f"{protected}:factory/PROJECT.env", check=False
+    )
+    if not raw or len(raw.encode()) > 1_000_000 or not project:
+        return False
+    try:
+        authorization = json.loads(raw, object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    repositories = re.findall(
+        r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
+        project,
+        re.M,
+    )
+    if (
+        not isinstance(authorization, dict)
+        or set(authorization) != {
+            "repository", "schema", "source_kit_sha", "target_kit_sha", "tickets",
+        }
+        or authorization.get("schema") != INFLIGHT_SCHEMA
+        or repositories != [authorization.get("repository")]
+        or authorization.get("source_kit_sha") != source
+        or authorization.get("target_kit_sha") != target
+        or not isinstance(authorization.get("tickets"), list)
+        or not authorization["tickets"]
+        or not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
+        or previous["route_plan_sha256"] != route_digest(args.workdir, args.ticket)
+    ):
+        return False
+    tickets, selected = [], None
+    for item in authorization["tickets"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"branch", "head", "state", "ticket"}
+            or not TICKET.fullmatch(item.get("ticket", ""))
+            or item.get("branch") != f"ticket/{item.get('ticket')}"
+            or not SHA.fullmatch(item.get("head", ""))
+            or item.get("state") not in INFLIGHT_STATES
+        ):
+            return False
+        tickets.append(item["ticket"])
+        if item["ticket"] == args.ticket:
+            selected = item
+    return (
+        tickets == sorted(set(tickets))
+        and selected == {
+            "branch": current["branch"],
+            "head": current["head_sha"],
+            "state": current_state,
+            "ticket": args.ticket,
+        }
+    )
+
+
 def route_digest(workdir: Path, ticket: str) -> str | None:
     path = workdir / "factory" / "route-plans" / f"{ticket}.json"
     return hashlib.sha256(read_regular(path)).hexdigest() if path.exists() else None
@@ -392,25 +477,36 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     )
     current_ticket_state = ticket_state(args.workdir, args.ticket)
     current_route = route_digest(args.workdir, args.ticket)
+    head_continuous = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+            previous.get("head_sha", ""), current["head_sha"],
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+    base_continuous = subprocess.run(
+        [
+            "git", "-C", str(args.factory_root), "merge-base", "--is-ancestor",
+            previous.get("protected_base_sha", ""), protected,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
     if (
         previous.get("ticket") != args.ticket
         or previous.get("project") != args.project
         or previous.get("branch") != current["branch"]
         or previous.get("product_origin_sha256") != current["product_origin_sha256"]
-        or subprocess.run(
-            ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
-             previous.get("head_sha", ""), current["head_sha"]],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode != 0
-        or subprocess.run(
-            ["git", "-C", str(args.factory_root), "merge-base", "--is-ancestor",
-             previous.get("protected_base_sha", ""), protected],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode != 0
+        or not base_continuous
+        or (
+            not head_continuous
+            and not authorized_inflight_rewrite(
+                args, previous, current, current_ticket_state, protected
+            )
+        )
     ):
         raise PassportError("passport migration is outside authenticated lineage")
     if (

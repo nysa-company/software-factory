@@ -1277,3 +1277,13 @@ terminal manifest proves exit 143 before provider submission with no role
 output, and its signed passport, clean cell, branch, and remote head still
 agree exactly. The controller clears only that interrupted receipt; submitted
 or differently terminated actions remain blocked.
+
+## 2026-07-28 — Decision 96: Protected authorization can bind a passport rewrite
+
+Category: System change
+
+A cross-release passport migration may cross non-ancestral ticket heads only
+when protected main exactly authorizes the repository, source/target kits,
+ticket, branch, new head, and state, the cell is clean, and the authenticated
+route digest is unchanged. Same-release and every partially matching rewrite
+remain blocked; invalid ancestry is never reattached merely to satisfy Git.
