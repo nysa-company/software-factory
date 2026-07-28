@@ -14,6 +14,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 retries one failed exact-head remote observation before
   classifying branch drift. A second transport failure or a different head
   remains fail-closed, and only the trusted wrapper pushes role commits.
+- Reviewer terminalization normalizes exact verdict-only Markdown headings,
+  exact wrapped repair-owner lines, and known Cursor background-callback
+  concatenation only when every verdict and owner signal agrees. Ambiguous,
+  contradictory, and ownerless output remains invalid.
 - Contract 1.8 treats GitHub's exact empty no-required-checks-yet response as
   publication wait. Every other malformed or non-JSON check response remains
   a fail-closed controller error.
@@ -1225,3 +1229,13 @@ Category: System change
 Qualification upgrade liveness is proven by the non-overlapping controller
 lock and active-run markers, not a stale claim status. Terminal orphan claims
 remain authenticated successor-recovery input instead of blocking cutover.
+
+## 2026-07-28 — Decision 91: Reviewer formatting preserves explicit semantics
+
+Category: System change
+
+Exact verdict-only Markdown headings, exact Markdown-wrapped repair owners, and
+known Cursor background-callback concatenation are normalized only when every
+verdict and owner signal agrees. This supersedes Decision 42's requirement for
+one particular later-summary sentence; ambiguity, contradiction, or a missing
+owner still fails closed.

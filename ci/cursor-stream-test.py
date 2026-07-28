@@ -256,6 +256,33 @@ class CursorStreamTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "REQUEST CHANGES\ttest-author\n")
 
+    def test_reviewer_normalizes_observed_markdown_callback_shapes(self) -> None:
+        reviews = [
+            (
+                "## REQUEST CHANGES\n\n"
+                "FIX-OWNER: test-authorBoth background commands completed.\n"
+                "The verdict stands: **REQUEST CHANGES**, "
+                "`FIX-OWNER: test-author`."
+            ),
+            (
+                "### REQUEST CHANGES\n\n"
+                "`FIX-OWNER: test-author`That background task completed."
+            ),
+            "## REQUEST CHANGES\n\n**FIX-OWNER: test-author**",
+        ]
+        for review in reviews:
+            with self.subTest(review=review):
+                result = self.run_verdict(
+                    [
+                        {"type": "assistant", "message": {"content": review}},
+                        {"type": "result", "subtype": "success", "result": review},
+                    ]
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout, "REQUEST CHANGES\ttest-author\n"
+                )
+
     def test_reviewer_allows_only_ticket_documentation_after_review(self) -> None:
         spec = importlib.util.spec_from_file_location("reviewer_reconcile", RECONCILE)
         self.assertIsNotNone(spec)

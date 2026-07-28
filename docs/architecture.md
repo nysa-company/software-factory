@@ -248,10 +248,13 @@ retries one failed transport call before classifying branch drift; a second
 failure or any different head still fails closed without pushing.
 Protected-base attestation applies the same one-retry boundary only to its
 exact read-only `ls-remote`; mutations and semantic refusals never retry.
-Reviewer terminalization accepts the role contract's standalone verdict and
-the exact Markdown `Verdict:` heading form. Other malformed output is charged
-but not recorded as completed-role evidence; the controller reruns only
-Reviewer under the remaining ticket budget.
+Reviewer terminalization accepts the role contract's standalone verdict,
+exact verdict-only or `Verdict:` Markdown headings, and exact Markdown-wrapped
+repair-owner lines. Cursor background-completion text concatenated to the owner
+is split only when every verdict and owner signal remains identical. Ambiguous,
+contradictory, or ownerless output is charged but not recorded as completed-role
+evidence; the controller reruns only Reviewer under the remaining ticket
+budget.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.

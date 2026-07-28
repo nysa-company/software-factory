@@ -7,8 +7,14 @@ import pathlib
 import re
 
 CALLBACK_OWNER = re.compile(
-    r"^(\s*)FIX-OWNER:\s*(builder|test-author|both)"
-    r"((?:The|That) background [^\r\n]*)$",
+    r"^(?P<indent>\s*)(?P<wrapper>`|\*\*|)FIX-OWNER:\s*"
+    r"(?P<owner>builder|test-author|both)(?P=wrapper)"
+    r"(?P<callback>(?:The|That|Both(?: of those)?) background[^\r\n]*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+MARKDOWN_OWNER = re.compile(
+    r"^(?P<indent>\s*)(?P<wrapper>`|\*\*)FIX-OWNER:\s*"
+    r"(?P<owner>builder|test-author|both)(?P=wrapper)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 CALLBACK_APPROVE = re.compile(
@@ -34,7 +40,9 @@ def verdict_signals(raw: str) -> list[str]:
     for line in raw.splitlines():
         stripped = line.strip()
         heading = re.fullmatch(
-            r"#{1,6}\s+Verdict:\s*(APPROVE|REQUEST CHANGES)", stripped, re.I
+            r"#{1,6}\s+(?:Verdict:\s*)?(APPROVE|REQUEST CHANGES)",
+            stripped,
+            re.I,
         )
         if heading:
             signals.append(heading.group(1).upper())
@@ -71,6 +79,12 @@ def parse_review(raw: str, contract_version: str) -> tuple[str, str]:
 
 
 def normalize_cursor_callback(raw: str) -> str:
+    raw = MARKDOWN_OWNER.sub(
+        lambda match: (
+            f"{match.group('indent')}FIX-OWNER: {match.group('owner').lower()}"
+        ),
+        raw,
+    )
     raw = CALLBACK_APPROVE.sub(
         lambda match: f"{match.group(1)}APPROVE\n{match.group(1)}{match.group(2)}",
         raw,
@@ -79,8 +93,9 @@ def normalize_cursor_callback(raw: str) -> str:
     if corrupted:
         raw = CALLBACK_OWNER.sub(
             lambda match: (
-                f"{match.group(1)}FIX-OWNER: {match.group(2).lower()}\n"
-                f"{match.group(1)}{match.group(3)}"
+                f"{match.group('indent')}FIX-OWNER: "
+                f"{match.group('owner').lower()}\n"
+                f"{match.group('indent')}{match.group('callback')}"
             ),
             raw,
         )
@@ -95,12 +110,16 @@ def normalize_cursor_callback(raw: str) -> str:
         for match in summaries
     ]
     if corrupted:
-        if len(corrupted) != len(summaries) or any(
-            owner.start() >= summary.start()
-            for owner, summary in zip(corrupted, summaries)
+        owners = {match.group("owner").lower() for match in corrupted}
+        mentioned = {
+            owner.lower()
+            for owner in re.findall(
+                r"FIX-OWNER:\s*(builder|test-author|both)", raw, re.I
+            )
+        }
+        if len(owners) != 1 or mentioned != owners or (
+            summary_owners and set(summary_owners) != owners
         ):
-            raise ValueError("reviewer background callback lacks a later summary")
-        if {match.group(2).lower() for match in corrupted} != set(summary_owners):
             raise ValueError(
                 "reviewer background callback owner contradicts its summary"
             )
@@ -133,6 +152,11 @@ def canonical_review_detail(raw: str, verdict: str, owner: str) -> str:
     verdict_rows = [
         index for index, line in enumerate(lines)
         if re.fullmatch(rf"\s*{re.escape(verdict)}\s*", line, re.I)
+        or re.fullmatch(
+            rf"\s*#{{1,6}}\s+(?:Verdict:\s*)?{re.escape(verdict)}\s*",
+            line,
+            re.I,
+        )
     ]
     if not verdict_rows:
         return raw

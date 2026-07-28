@@ -1184,6 +1184,57 @@ preserve the orphaned claim for authenticated successor recovery.
 Validation: focused qualification coverage upgrades with a retained running
 claim and no live action. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-054 — Reviewer formatting consumed valid repair verdicts
+
+Status: Implemented; qualification pending
+Area: Reviewer terminalization
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 15 recovery
+Impact: T-166 recorded three rejected Reviewer outputs and T-168 recorded six,
+consuming $18 of conservative qualification budget without advancing either
+ticket.
+Evidence:
+- all nine immutable outputs contain `REQUEST CHANGES` and the explicit
+  `test-author` repair owner
+- eight concatenate Cursor background-completion text directly to the owner
+  line; one uses an exact verdict-only heading plus a bold owner line
+- the old parser classified six as missing owner, two as callback-summary
+  failures, and one as lacking an unambiguous verdict
+Root cause: normalization recognized only a smaller set of semantically
+identical Markdown and callback serialization shapes.
+Smallest change: normalize exact verdict-only headings, exact wrapped owner
+lines, and the observed callback boundary, then require every verdict and owner
+signal to agree. Never infer a missing owner.
+Validation: all 27 focused Cursor/parser tests pass, and the new parser reduces
+all nine immutable rejected outputs to `REQUEST CHANGES / test-author`.
+Protected GitHub CI retains the complete regression.
+
+## FI-20260728-055 — Base refresh validity is bound to commit identity
+
+Status: Confirmed design gap; defer until after qualification
+Area: publication evidence
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 15 audit
+Impact: a future refresh caused only by non-semantic Factory-control movement
+would replay Reviewer and Narrator even when their semantic inputs are
+unchanged.
+Evidence:
+- the three recorded T-166/T-168/T-169 refreshes all included T-167 changes to
+  `app/server.js` and `app/tests/job-detail.test.js`, so their invalidations
+  were correct
+- protected main later advanced from `e37587b` to `e919138` through only
+  `factory/KIT_PIN`, `factory/QUALIFICATION.json`, and two exact
+  `factory/migrations/inflight-release/<sha>.json` records
+- the current refresh receipt invalidates review solely because protected main
+  advanced; it has no semantic-input digest
+Smallest change: bind Reviewer and Narrator validity to authenticated semantic
+input plus role-contract digests. Exclude only the three exact control-path
+forms above; application code, tests, contracts, CI, configuration, and every
+unknown path remain invalidating.
+Validation: add focused preservation/refusal cases and one live control-only
+base advance after the current qualification. Do not retrofit the current
+receipts or change the frozen candidate for this deferred optimization.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
