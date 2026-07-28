@@ -2767,6 +2767,16 @@ ledger_row_run T-510 narrator refresh-narrator-after >> \
   "$REFRESH_ROOT/factory/ledger.csv"
 write_run_manifest "$REFRESH_ROOT" T-510 narrator refresh-narrator-after \
   "$REFRESH_REVIEW_HEAD"
+cat > "$REFRESH_ROOT/factory/tickets/T-510-bundle.md" <<'BUNDLE'
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
 expect_stage "AWAIT-OPERATOR" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
 [[ "$REFRESH_OK" -eq 1 ]] && pass "refresh requires fresh review then fresh narration"
 
