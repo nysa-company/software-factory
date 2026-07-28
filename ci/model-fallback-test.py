@@ -243,12 +243,29 @@ class FallbackTest(unittest.TestCase):
         )
 
     def test_qualification_apply_uses_direct_cli_once(self):
+        initial = json.loads(
+            (self.repo / "factory/route-plans/T-1.json").read_text()
+        )
+        reviewer_route = MANAGER.active_resolution(initial)["selections"]["reviewer"][
+            "route_id"
+        ]
+        readiness = json.loads(self.readiness.read_text())
+        readiness[reviewer_route].update({
+            "reason": "model_unavailable",
+            "state": "INVALID",
+        })
+        self.readiness.write_text(ROUTER.canonical_json(readiness) + "\n")
+
         applied = self.command("qualification-apply")
         journal = json.loads(
             git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
         )
-        selection = journal["revisions"][-1]["body"]["new_resolution"]["selections"]["builder"]
-        self.assertEqual(selection["adapter"], "codex")
+        resolution = journal["revisions"][-1]["body"]["new_resolution"]
+        self.assertEqual(resolution["future_roles"], ["builder"])
+        self.assertEqual(resolution["selections"]["builder"]["adapter"], "codex")
+        self.assertEqual(
+            resolution["selections"]["reviewer"]["route_id"], reviewer_route
+        )
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
         recovered = self.command("qualification-apply")
         self.assertTrue(recovered["recovered"])

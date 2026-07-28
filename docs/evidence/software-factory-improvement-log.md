@@ -1027,6 +1027,32 @@ Validation: focused controller coverage requires the automatic fallback path
 to enter the shared guard. Protected GitHub CI retains the complete
 concurrency regression. Fresh live qualification pending.
 
+## FI-20260728-047 — Failed-role fallback gated on an unrelated future route
+
+Status: Implemented; qualification pending
+Area: recovery
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 13
+Impact: T-161's charged Cursor Planner failure could not use the authorized
+direct-CLI fallback because the future Reviewer Cursor model was unavailable.
+Evidence:
+- T-161 recorded one terminal `provider_failed` Planner manifest with
+  conservative $2 accounting
+- its controller error was `reviewer route
+  cursor-claude-sonnet-5-thinking-high is INVALID: model_unavailable`
+- no Reviewer work had started and the Planner fallback did not need to change
+  the pinned Reviewer selection
+Root cause: qualification fallback inherited operator fallback's complete
+future-role resolution and re-gated every unstarted role on current machine
+readiness.
+Smallest change: automatic qualification fallback resolves only the exact
+failed role and preserves every future pinned selection. Each future role
+keeps its existing selected-route probe at provider admission.
+Validation: the focused fallback regression makes the unrelated Reviewer route
+invalid and requires Builder fallback to direct Codex without changing the
+Reviewer selection. Protected GitHub CI retains the complete regression.
+Fresh live qualification pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

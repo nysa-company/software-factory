@@ -1162,3 +1162,12 @@ route-journal mutation inside one reconciliation. Provider-bearing roles and
 protected PR validation remain four-way; independent fallback tickets resume
 in deterministic controller order without competing for the product launch
 lock.
+
+## 2026-07-28 — Decision 84: Qualification fallback changes one role
+
+Category: System change
+
+Automatic qualification fallback resolves only the exact failed role.
+Unstarted roles retain their pinned selections and are checked when they reach
+provider admission, so an unrelated future route outage cannot block a valid
+same-stage recovery.

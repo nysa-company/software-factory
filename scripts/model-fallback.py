@@ -211,7 +211,7 @@ def load_policy_files(catalog_path, profiles_path):
     return ROUTER.load_policy(catalog_path, profiles_path)
 
 
-def calculate(args, nonce, migrate_legacy=False):
+def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
     repo = Path(args.workdir).resolve()
     factory_root = Path(args.factory_root).resolve()
     plan_path = repo / f"factory/route-plans/{args.ticket}.json"
@@ -280,7 +280,10 @@ def calculate(args, nonce, migrate_legacy=False):
     )
     readiness = json.loads(Path(args.readiness).read_text())
     contributors = contributors_from(journal, manifests)
-    future_roles = list(ROLE_ORDER[ROLE_ORDER.index(role):])
+    future_roles = (
+        [role] if failed_role_only
+        else list(ROLE_ORDER[ROLE_ORDER.index(role):])
+    )
     prior = MANAGER.active_resolution(journal)
     if prior["profile_id"] == "project-policy":
         profile = ROUTER.model_policy_profile(prior["model_policy"], routes)
@@ -510,7 +513,11 @@ def qualification_apply(args):
         recovered = recover_applied(args, approval)
         if recovered is not None:
             return recovered
-    result = calculate(args, secrets.token_hex(16), migrate_legacy=True)
+    result = calculate(
+        args, secrets.token_hex(16),
+        migrate_legacy=True,
+        failed_role_only=True,
+    )
     failed = result["failed"]
     if not failed.get("route_id", "").startswith("cursor-"):
         raise FallbackError("qualification fallback requires a failed Cursor route")
