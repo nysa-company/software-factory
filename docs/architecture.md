@@ -288,7 +288,10 @@ reconciling.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one
-renewable per-product publication lease serializes merge requests. The
+renewable per-product publication lease serializes merge requests. A ticket
+withdraws its queue record whenever deterministic reconciliation no longer
+classifies it as merge-ready; an active lease still requires its exact
+capability-bound release. The
 controller serializes only protected-base Git mutations because disposable
 cells share one Git common directory. Refresh proves staleness from the exact
 certified remote tip, ancestry, and exact open PR identity; GitHub's lagging

@@ -140,6 +140,7 @@
         "grammars": [
           "ready --ticket <T-NNN> --head <full-sha> --priority <urgent|high|normal|low|none> --json",
           "acquire --ticket <T-NNN> --head <full-sha> --priority <urgent|high|normal|low|none> --json",
+          "withdraw --ticket <T-NNN> --json",
           "release --ticket <T-NNN> --lease <opaque-lease-id> --json"
         ],
         "output_schema": "nysa.software-factory.publication-lease/v1",

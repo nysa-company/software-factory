@@ -111,7 +111,7 @@ def queue(publication: Path) -> list[dict[str, Any]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("ready", "acquire", "release"))
+    parser.add_argument("action", choices=("ready", "acquire", "withdraw", "release"))
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--head", default="")
@@ -122,7 +122,10 @@ def main() -> None:
     try:
         if (
             not TICKET.fullmatch(args.ticket)
-            or (args.action != "release" and not SHA.fullmatch(args.head))
+            or (
+                args.action in {"ready", "acquire"}
+                and not SHA.fullmatch(args.head)
+            )
             or (args.action == "release" and not DIGEST.fullmatch(args.lease))
             or not 30 <= args.ttl <= 900
         ):
@@ -198,6 +201,15 @@ def main() -> None:
                             "lease": active["lease"],
                             "status": "acquired",
                         }
+            elif args.action == "withdraw":
+                active = read(lease_path) if lease_path.exists() else None
+                if active and active.get("ticket") == args.ticket:
+                    raise LeaseError(
+                        "active publication lease requires capability-bound release"
+                    )
+                existed = queue_path.exists()
+                queue_path.unlink(missing_ok=True)
+                result = {"status": "withdrawn" if existed else "absent"}
             else:
                 active = read(lease_path) if lease_path.exists() else None
                 if (

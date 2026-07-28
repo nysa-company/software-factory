@@ -1194,6 +1194,10 @@ PY
       PUBLICATION_ARGS=(
         release --ticket "$TICKET" --lease "$PUBLICATION_LEASE"
       )
+    elif [[ "$PUBLICATION_ACTION" == "withdraw" && $# -eq 4 &&
+            "$2" == "--ticket" && "$4" == "--json" ]]; then
+      TICKET="$3"
+      PUBLICATION_ARGS=(withdraw --ticket "$TICKET")
     else
       usage
     fi

@@ -55,6 +55,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   later Narrator must also belong to the receipt-bound old head; earlier
   discarded-lineage rows remain auditable but do not disqualify a later valid
   pair. Unknown and semantic changes still invalidate review.
+- Contract 1.8 publication queue membership follows the current deterministic
+  transition rather than historical readiness. A ticket that is no longer
+  merge-ready withdraws its stale queue record, while an active publication
+  lease remains removable only through its capability-bound release.
 - Fresh development lanes and trusted ticket-state reconciliation omit the
   Reviewer checkpoint argument when no authenticated import exists, including
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
@@ -1440,3 +1444,13 @@ force-pushed lineage remain immutable accounting evidence but do not disqualify
 a later valid pair. An orphaned Reviewer reruns Reviewer and downstream
 Narrator; an invalid Narrator reruns only Narrator. Sequencing and bundle
 attestation enforce the same rule.
+
+## 2026-07-28 — Decision 110: Publication readiness is current state
+
+Category: System change
+
+Contract 1.8 removes a ticket's lease-free publication queue record whenever
+deterministic reconciliation no longer classifies it as merge-ready. This
+prevents an older failed or approval-revoked ticket from blocking a later
+independent green PR while preserving capability-bound release for an active
+lease and deterministic priority ordering among tickets that remain ready.

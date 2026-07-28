@@ -1696,6 +1696,33 @@ control-only refresh. The sequencer regression covers the same discarded-head
 topology, and the exact live T-168 resolver must return `RUN reviewer`.
 Protected GitHub CI retains the complete regression.
 
+## FI-20260728-074 — Stale publication readiness blocked an independent green PR
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-28, Relay generation 30
+Impact: T-169 was approved, exact-head green, and clean against protected main,
+but could not acquire the free publication lease because T-168 retained an
+older lease-free queue position after it stopped being merge-ready.
+Evidence: the controller was drained with no active publication lease.
+T-168's queue record bound obsolete head `a7b5d514…` at ready time
+`1785242337`; T-169's record bound current head `b7555549…` at
+`1785279935`. Deterministic acquisition therefore selected T-168 first even
+though its current transition awaited operator approval and held no lease.
+Root cause: queue creation and capability-bound lease release were implemented,
+but deterministic transitions away from publication readiness did not remove
+the lease-free queue record.
+Smallest change: add an authenticated `publication withdraw` action that
+removes only the named ticket's queue record and refuses any active lease for
+that ticket. The controller invokes it whenever the sole state machine no
+longer classifies the ticket as merge-ready; active leases continue through
+their existing capability-bound release.
+Validation: focused publication coverage proves withdrawing stale T-168 lets
+independent T-169 acquire the lease, and focused controller coverage proves a
+non-publication transition withdraws its record. Protected GitHub CI retains
+the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

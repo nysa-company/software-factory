@@ -492,8 +492,7 @@ class Controller:
         return []
 
     def release(self, claim: dict[str, Any]) -> None:
-        if claim.get("publication_lease"):
-            self.release_publication(claim)
+        self.withdraw_publication(claim)
         self.json_call(
             "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
         )
@@ -509,9 +508,20 @@ class Controller:
         self.save_claim(claim)
         self.event("publication_released", claim["ticket"])
 
-    def block(self, claim: dict[str, Any], reason: str) -> None:
+    def withdraw_publication(self, claim: dict[str, Any]) -> None:
         if claim.get("publication_lease"):
             self.release_publication(claim)
+            return
+        value = self.json_call(
+            "publication", "withdraw", "--ticket", claim["ticket"], "--json",
+        )
+        if value.get("status") not in {"absent", "withdrawn"}:
+            raise ControllerError("publication withdrawal returned invalid evidence")
+        if value["status"] == "withdrawn":
+            self.event("publication_withdrawn", claim["ticket"])
+
+    def block(self, claim: dict[str, Any], reason: str) -> None:
+        self.withdraw_publication(claim)
         self.json_call(
             "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
         )
@@ -935,8 +945,7 @@ class Controller:
         )
         if value.get("status") != "repair":
             raise ControllerError("publication repair was not materialized")
-        if claim.get("publication_lease"):
-            self.release_publication(claim)
+        self.withdraw_publication(claim)
         self.migrate_passport(claim, "repair")
         self.event(
             "publication_repair", claim["ticket"], owner=value.get("owner"),
@@ -960,8 +969,7 @@ class Controller:
     ) -> bool:
         with self.git_lock:
             if not self.protected_base_current(claim, head):
-                if claim.get("publication_lease"):
-                    self.release_publication(claim)
+                self.withdraw_publication(claim)
                 value = self.json_call(
                     "ticket-attest", "--ticket", claim["ticket"],
                     "--lease", claim["lease"], "--receipt", receipt,
@@ -1105,6 +1113,11 @@ class Controller:
             stage = transition.get("stage", "")
             receipt = transition.get("receipt", "")
             role = transition.get("role")
+            if not (
+                stage.startswith("AWAIT-OPERATOR Linear approval observed")
+                or stage.startswith("AWAIT-MERGE protected auto-merge requested")
+            ):
+                self.withdraw_publication(claim)
             if role:
                 failed_checks: list[str] = []
                 if role in {"reviewer", "narrator"}:
@@ -1240,8 +1253,7 @@ class Controller:
         except (ControllerError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
             claim["status"] = "blocked"
             self.save_claim(claim)
-            if claim.get("publication_lease"):
-                self.release_publication(claim)
+            self.withdraw_publication(claim)
             if not self.active_run(claim["ticket"]):
                 self.json_call(
                     "release", "--ticket", claim["ticket"], "--lease", claim["lease"],

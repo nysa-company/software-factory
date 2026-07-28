@@ -603,6 +603,8 @@ class FactoryControllerTest(unittest.TestCase):
                     "role": None,
                     "stage": "COMPLETE attested Done is on protected main",
                 }
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
             return {}
 
         controller.json_call = json_call
@@ -835,6 +837,8 @@ class FactoryControllerTest(unittest.TestCase):
                     "role": None,
                     "stage": stage,
                 }
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
             if args[0] == "ticket-attest":
                 return {"action": "refresh", "head": "c" * 40}
             raise AssertionError(args)
@@ -859,6 +863,10 @@ class FactoryControllerTest(unittest.TestCase):
                         (
                             "state-machine", "--ticket", "T-110", "--lease",
                             "a" * 64, "--workdir", str(cell), "--json",
+                        ),
+                        (
+                            "publication", "withdraw", "--ticket", "T-110",
+                            "--json",
                         ),
                         (
                             "ticket-attest", "--ticket", "T-110", "--lease",
@@ -1019,6 +1027,47 @@ class FactoryControllerTest(unittest.TestCase):
             claim, "c" * 64, {"pr_number": 24},
         )
         self.assertEqual(calls, ["release", "passport", "event"])
+
+    def test_nonpublication_stage_withdraws_stale_queue_entry(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        (cell / "factory/route-plans").mkdir(parents=True)
+        (cell / "factory/route-plans/T-110.json").write_text("{}\n")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        calls = []
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+
+        def json_call(*arguments, **_kwargs):
+            calls.append(arguments[:2])
+            if arguments[0] == "state-machine":
+                return {
+                    "receipt": "b" * 64,
+                    "role": None,
+                    "stage": "AWAIT-OPERATOR product decision required",
+                }
+            if arguments[:2] == ("publication", "withdraw"):
+                return {"status": "withdrawn"}
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        result = controller.reconcile_ticket(claim)
+
+        self.assertEqual(result, {"status": "waiting", "ticket": "T-110"})
+        self.assertIn(("publication", "withdraw"), calls)
+        self.assertIn(("publication_withdrawn",), calls)
 
     def test_stale_publication_refreshes_before_acquiring_merge_lease(self) -> None:
         controller = CONTROL.Controller(self.args)

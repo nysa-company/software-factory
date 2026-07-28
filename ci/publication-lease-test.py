@@ -30,9 +30,9 @@ class PublicationLeaseTest(unittest.TestCase):
             "python3", str(HELPER), action, "--state-dir", str(self.state),
             "--ticket", ticket,
         ]
-        if action != "release":
+        if action in {"ready", "acquire"}:
             command.extend(["--head", head, "--priority", priority])
-        else:
+        elif action == "release":
             command.extend(["--lease", lease])
         result = subprocess.run(command, text=True, capture_output=True, check=True)
         return json.loads(result.stdout)
@@ -50,12 +50,23 @@ class PublicationLeaseTest(unittest.TestCase):
         renewed = self.call("acquire", "T-112", "c" * 40)
         self.assertEqual(renewed["lease"], first["lease"])
         self.assertGreaterEqual(renewed["expires_epoch"], first["expires_epoch"])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.call("withdraw", "T-112")
         self.assertEqual(
             self.call("acquire", "T-111", "b" * 40)["status"], "queued"
         )
         self.call("release", "T-112", lease=first["lease"])
         second = self.call("acquire", "T-111", "b" * 40)
         self.assertEqual(second["status"], "acquired")
+
+    def test_withdrawn_stale_ticket_cannot_block_an_independent_ready_ticket(self) -> None:
+        self.call("ready", "T-110", "a" * 40, "normal")
+        self.call("ready", "T-111", "b" * 40, "normal")
+        self.assertEqual(self.call("withdraw", "T-110")["status"], "withdrawn")
+        self.assertEqual(self.call("withdraw", "T-110")["status"], "absent")
+        self.assertEqual(
+            self.call("acquire", "T-111", "b" * 40)["status"], "acquired"
+        )
 
 
 if __name__ == "__main__":
