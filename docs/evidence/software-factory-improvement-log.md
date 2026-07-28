@@ -1366,6 +1366,51 @@ Validation: all 19 focused controller tests pass, including hold-before-route
 migration and recovery-after-route migration. Protected GitHub CI retains the
 complete regression.
 
+## FI-20260728-062 — Budget stage ignored authenticated ticket-cap overrides
+
+Status: Implemented; qualification pending
+Area: budget reconciliation
+Owner: Factory
+First seen: 2026-07-28, Relay T-168 recovery
+Impact: T-168 had spent $26 under an operator-authorized $35 ticket cap, but
+the state machine stopped at `AWAIT_BUDGET 26000000/25000000` before a provider
+call because the budget reducer read only the immutable $25 base envelope.
+Root cause: role launch and the ticket-budget stage used different effective
+envelope reductions, and budget-wait claims watched only the base envelope
+digest.
+Smallest change: reuse the authenticated override loader for ticket-scoped
+caps and bind budget-wait wakeups to the envelope plus immutable override
+records. Invalid, conflicting, expired, or non-ticket overrides remain
+fail-closed and cannot raise the cap.
+Validation: the focused budget test proves exact exhaustion, then availability
+under an authenticated ticket override; the retained T-168 and T-169 evidence
+both reduce to `AVAILABLE`. All 19 focused controller tests prove an override
+record or base-envelope change reopens reconciliation. Protected GitHub CI
+retains the complete regression.
+
+## FI-20260728-063 — Authorized rewrite exposed an unhandled stale refresh topology
+
+Status: Implemented; qualification pending
+Area: protected-base recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 recovery
+Impact: the exact operator-authorized T-169 test-history repair correctly
+removed obsolete ancestry, but its retained generation-two refresh receipt
+named the removed merge. The state machine failed closed before a provider
+call with `REFUSE stale refresh receipt does not bind this branch history`;
+only the sibling direct-after-merge topology refusal had a recovery route.
+Root cause: the controller and `Building` refresh admission enumerated one of
+the two exact receipt-topology failures even though the existing authenticated
+refresh action safely replaces either with a new protected-base merge and
+receipt.
+Smallest change: route both exact topology refusals through that existing
+receipt-bound refresh action. Do not accept or rewrite the stale receipt, and
+do not admit any other `Building` refresh.
+Validation: all 19 focused controller tests prove both exact strings invoke
+only authenticated refresh, and the focused attestation test proves the stale
+history refusal admits the sealed reset while an unreceipted `Building`
+refresh remains refused. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

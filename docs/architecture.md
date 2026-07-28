@@ -255,6 +255,11 @@ is split only when every verdict and owner signal remains identical. Ambiguous,
 contradictory, or ownerless output is charged but not recorded as completed-role
 evidence; the controller reruns only Reviewer under the remaining ticket
 budget.
+The ticket-budget stage reduces immutable charges against the authenticated
+base envelope plus any active ticket-scoped cap override. Budget-wait claims
+bind both the envelope and immutable override-record bytes, so adding an
+authorized cap reopens only deterministic reconciliation; expired,
+conflicting, malformed, or unrelated records never raise the effective cap.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.
@@ -272,7 +277,12 @@ renewable per-product publication lease serializes merge requests. The
 controller serializes only protected-base Git mutations because disposable
 cells share one Git common directory. Refresh proves staleness from the exact
 certified remote tip, ancestry, and exact open PR identity; GitHub's lagging
-`mergeStateStatus` is not evidence. The
+`mergeStateStatus` is not evidence. The two exact receipt-topology
+refusals—an old merge no longer in branch history, or a receipt commit no
+longer directly after its merge—route through the same receipt-bound
+protected-base refresh. `Building` is admitted only when the trusted launcher
+supplies one of those exact stages; the refresh performs the ordinary sealed
+reset and never treats stale evidence as valid. The
 four-ticket qualification reducer reconciles passports, manifests, controller
 events, protected checks, PR heads, merge commits, and protected main.
 The sealed qualification launcher binds its owner-only qualification root as

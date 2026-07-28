@@ -844,7 +844,7 @@ else:
 
         self.assertIn("requires ticket State", self.attest("refresh").stderr)
         self.env["FACTORY_TRANSITION_STAGE"] = (
-            "REFUSE refresh receipt was not committed directly after its merge"
+            "REFUSE stale refresh receipt does not bind this branch history"
         )
         result = self.attest("refresh")
         self.assertEqual(result.returncode, 0, result.stderr)

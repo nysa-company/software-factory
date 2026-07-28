@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -45,6 +48,31 @@ class BudgetStageTest(unittest.TestCase):
             self.assertTrue(
                 BUDGET.resolve(ROOT, product, "T-110").startswith("AWAIT_BUDGET")
             )
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            override = {
+                "base_env_sha256": hashlib.sha256(
+                    (product / "factory/ENVELOPE.env").read_bytes()
+                ).hexdigest(),
+                "changes": {"PER_TICKET_BUDGET_USD": "3.00"},
+                "day": None,
+                "expires_at": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "issued_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "operator_id": "operator",
+                "reason": "budget_exhausted",
+                "role": None,
+                "schema": "factory-envelope-override/v1",
+                "scope": "ticket",
+                "ticket": "T-110",
+            }
+            raw = json.dumps(
+                override, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            ).encode()
+            override_dir = product / "factory/envelope-overrides"
+            override_dir.mkdir()
+            (override_dir / f"{hashlib.sha256(raw).hexdigest()}.json").write_bytes(
+                raw + b"\n"
+            )
+            self.assertEqual(BUDGET.resolve(ROOT, product, "T-110"), "AVAILABLE")
 
 
 if __name__ == "__main__":

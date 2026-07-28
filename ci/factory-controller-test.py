@@ -703,6 +703,7 @@ class FactoryControllerTest(unittest.TestCase):
         calls = []
         controller.renew = lambda *_args: calls.append("renew")
         controller.finish_pending_run = lambda *_args: True
+        stage = ""
 
         def json_call(*args, **_kwargs):
             calls.append(args)
@@ -710,10 +711,7 @@ class FactoryControllerTest(unittest.TestCase):
                 return {
                     "receipt": receipt,
                     "role": None,
-                    "stage": (
-                        "REFUSE refresh receipt was not committed directly "
-                        "after its merge"
-                    ),
+                    "stage": stage,
                 }
             if args[0] == "ticket-attest":
                 return {"action": "refresh", "head": "c" * 40}
@@ -722,29 +720,35 @@ class FactoryControllerTest(unittest.TestCase):
         controller.json_call = json_call
         controller.migrate_passport = lambda *_args: calls.append("passport")
         controller.event = lambda name, *_args, **_kwargs: calls.append(name)
-        self.assertEqual(
-            controller.reconcile_ticket(claim),
-            {"status": "progressed", "ticket": "T-110"},
-        )
-        self.assertEqual(
-            calls,
-            [
-                "renew",
-                (
-                    "state-machine", "--ticket", "T-110", "--lease",
-                    "a" * 64, "--workdir", str(cell), "--json",
-                ),
-                (
-                    "ticket-attest", "--ticket", "T-110", "--lease",
-                    "a" * 64, "--receipt", receipt, "--workdir", str(cell),
-                    "--action", "refresh", "--json",
-                ),
-                "passport",
-                "refresh_topology_repaired",
-            ],
-        )
+        for stage in (
+            "REFUSE refresh receipt was not committed directly after its merge",
+            "REFUSE stale refresh receipt does not bind this branch history",
+        ):
+            with self.subTest(stage=stage):
+                calls.clear()
+                self.assertEqual(
+                    controller.reconcile_ticket(claim),
+                    {"status": "progressed", "ticket": "T-110"},
+                )
+                self.assertEqual(
+                    calls,
+                    [
+                        "renew",
+                        (
+                            "state-machine", "--ticket", "T-110", "--lease",
+                            "a" * 64, "--workdir", str(cell), "--json",
+                        ),
+                        (
+                            "ticket-attest", "--ticket", "T-110", "--lease",
+                            "a" * 64, "--receipt", receipt, "--workdir", str(cell),
+                            "--action", "refresh", "--json",
+                        ),
+                        "passport",
+                        "refresh_topology_repaired",
+                    ],
+                )
 
-    def test_budget_wait_reopens_only_after_envelope_change(self) -> None:
+    def test_budget_wait_reopens_after_envelope_or_override_change(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"
         cell.mkdir()
@@ -763,6 +767,14 @@ class FactoryControllerTest(unittest.TestCase):
         }
         controller.save_claim(claim)
         self.assertEqual(len(controller.load_claims()), 1)
+        overrides = self.product / "factory/envelope-overrides"
+        overrides.mkdir()
+        (overrides / "a.json").write_text("{}\n", encoding="utf-8")
+        self.assertEqual(controller.load_claims(), [])
+        self.assertFalse(controller.claim_path("T-110").exists())
+
+        claim["budget_sha256"] = controller.envelope_digest()
+        controller.save_claim(claim)
         (self.product / "factory/ENVELOPE.env").write_text(
             "PER_TICKET_BUDGET_USD=30.000000\n", encoding="utf-8"
         )

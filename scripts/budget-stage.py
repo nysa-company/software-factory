@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 import importlib.util
 from pathlib import Path
@@ -27,7 +28,16 @@ def resolve(kit: Path, product: Path, ticket: str) -> str:
     values = envelope.parse_env_bytes(
         envelope.secure_read(product / "factory/ENVELOPE.env")
     )
-    cap = int(Decimal(values["PER_TICKET_BUDGET_USD"]) * 1_000_000)
+    _, changes = envelope.load_override_records(
+        envelope.secure_directory(product / "factory"),
+        ticket,
+        "planner",
+        datetime.now(timezone.utc).date().isoformat(),
+        {"ticket"},
+    )
+    cap = int(Decimal(
+        changes.get("PER_TICKET_BUDGET_USD", values["PER_TICKET_BUDGET_USD"])
+    ) * 1_000_000)
     _, charges = passport.run_evidence(product / "factory", ticket)
     spent = sum(item["charge_micro_usd"] for item in charges)
     return (

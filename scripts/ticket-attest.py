@@ -1309,9 +1309,10 @@ def refresh(args, product, workdir, repo, prefix, remote):
     state = field(text, "State").lower()
     repaired_building = (
         state == "building"
-        and os.environ.get("FACTORY_TRANSITION_STAGE") == (
-            "REFUSE refresh receipt was not committed directly after its merge"
-        )
+        and os.environ.get("FACTORY_TRANSITION_STAGE") in {
+            "REFUSE refresh receipt was not committed directly after its merge",
+            "REFUSE stale refresh receipt does not bind this branch history",
+        }
     )
     if (
         state not in {"review", "awaiting approval", "approved"}

@@ -246,9 +246,16 @@ class Controller:
         return self.claims / f"{ticket}.json"
 
     def envelope_digest(self) -> str:
-        return hashlib.sha256(
+        digest = hashlib.sha256(
             (self.product / "factory/ENVELOPE.env").read_bytes()
-        ).hexdigest()
+        )
+        overrides = self.product / "factory/envelope-overrides"
+        if overrides.is_dir():
+            for path in sorted(overrides.glob("*.json")):
+                digest.update(path.name.encode())
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+        return digest.hexdigest()
 
     @staticmethod
     def runnable(claim: dict[str, Any]) -> bool:
@@ -1051,9 +1058,10 @@ class Controller:
                 self.event("ticket_complete", claim["ticket"])
                 self.release(claim)
                 return {"status": "complete", "ticket": claim["ticket"]}
-            if stage == (
-                "REFUSE refresh receipt was not committed directly after its merge"
-            ):
+            if stage in {
+                "REFUSE refresh receipt was not committed directly after its merge",
+                "REFUSE stale refresh receipt does not bind this branch history",
+            }:
                 with self.git_lock:
                     value = self.json_call(
                         "ticket-attest", "--ticket", claim["ticket"],

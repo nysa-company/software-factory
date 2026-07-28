@@ -1296,3 +1296,23 @@ Cross-release recovery must retain the blocked claim and prior passport until
 the ticket and route journal both name the successor Factory SHA. A typed
 migration-required event is the only intermediate action; the existing
 authenticated passport migration and exact-claim recovery run afterward.
+
+## 2026-07-28 — Decision 98: Budget authority includes ticket-cap overrides
+
+Category: System change
+
+Contract 1.8 ticket budget stops use the authenticated base envelope plus the
+active ticket-scoped cap override, matching role admission. A budget-wait
+claim binds the envelope and immutable override records so an authorized cap
+change re-enters deterministic reconciliation without manual state edits.
+Malformed, conflicting, expired, and unrelated overrides remain fail-closed.
+
+## 2026-07-28 — Decision 99: Both exact refresh-topology refusals self-repair
+
+Category: System change
+
+An exact stale-ancestry receipt and an exact receipt-not-directly-after-merge
+refusal both authorize only the existing receipt-bound protected-base refresh.
+The stale receipt is never accepted as evidence. `Building` refresh remains
+forbidden unless the trusted transition stage equals one of those two typed
+topology refusals.
