@@ -108,6 +108,26 @@ class StateMachineTest(unittest.TestCase):
         with self.assertRaisesRegex(STATE.StateError, "unsupported transition"):
             STATE.stage_role("FIX builder-or-test-author")
 
+    def test_exact_refusal_is_bound_to_a_transition_receipt(self) -> None:
+        kit = self.root / "kit"
+        (kit / "scripts").mkdir(parents=True)
+        (kit / "scripts/next-stage.sh").write_text(
+            "#!/bin/bash\n"
+            "echo 'REFUSE refresh receipt was not committed directly after its merge'\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        self.args.kit_dir = kit
+        result = STATE.next_transition(self.args)
+        self.assertEqual(
+            result["stage"],
+            "REFUSE refresh receipt was not committed directly after its merge",
+        )
+        self.assertEqual(
+            STATE.safe_receipt(self.state_dir / "T-110.json")["receipt_sha256"],
+            result["receipt"],
+        )
+
     def test_runner_keeps_host_project_for_pre_go_receipt_check(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
         start = source.index("sequencer_allows_role() {")

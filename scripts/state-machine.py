@@ -279,7 +279,10 @@ def verify(args: argparse.Namespace, *, consume: bool) -> dict[str, Any]:
             os.close(descriptor)
 
 
-def run_helper(args: argparse.Namespace, script: str, *arguments: str) -> str:
+def run_helper(
+    args: argparse.Namespace, script: str, *arguments: str,
+    allow_refusal: bool = False,
+) -> str:
     result = subprocess.run(
         ["/bin/bash", str(args.kit_dir / "scripts" / script), *arguments],
         cwd=args.workdir,
@@ -294,7 +297,15 @@ def run_helper(args: argparse.Namespace, script: str, *arguments: str) -> str:
         check=False,
         timeout=300,
     )
-    if result.returncode:
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    accepted_refusal = (
+        allow_refusal
+        and result.returncode == 1
+        and not result.stderr.strip()
+        and len(lines) == 1
+        and lines[0].startswith("REFUSE ")
+    )
+    if result.returncode and not accepted_refusal:
         raise StateError(result.stderr.strip() or result.stdout.strip())
     return result.stdout.strip()
 
@@ -304,7 +315,7 @@ def resolve(args: argparse.Namespace) -> str:
     if args.lease:
         command.extend(["--lease", args.lease])
     command.extend(["--workdir", str(args.workdir)])
-    output = run_helper(args, "next-stage.sh", *command)
+    output = run_helper(args, "next-stage.sh", *command, allow_refusal=True)
     return next((line.strip() for line in output.splitlines() if line.strip()), "")
 
 

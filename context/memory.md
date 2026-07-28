@@ -1249,3 +1249,12 @@ signed passport validates the clean cell and the passport head exactly equals
 the remote ticket tip. The controller rebinds that ticket's lease and clears
 only the failed receipt; every successful role and every other blocked failure
 remain unchanged.
+
+## 2026-07-28 — Decision 93: Exact refresh-topology refusal is repairable
+
+Category: System change
+
+The deterministic resolver may receipt one exact single-line `REFUSE` emitted
+with exit 1 and empty stderr. Only the named direct-after-merge refresh-topology
+refusal routes to authenticated protected-base refresh; malformed, forged,
+baseline-mismatched, unknown, or multi-line refusals remain blocked.

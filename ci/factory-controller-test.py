@@ -623,6 +623,69 @@ class FactoryControllerTest(unittest.TestCase):
             ["passport", "renew", "claim", "push_failure_recovered"],
         )
 
+    def test_exact_refresh_topology_refusal_runs_attested_refresh(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        receipt = "b" * 64
+        calls = []
+        controller.renew = lambda *_args: calls.append("renew")
+        controller.finish_pending_run = lambda *_args: True
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "state-machine":
+                return {
+                    "receipt": receipt,
+                    "role": None,
+                    "stage": (
+                        "REFUSE refresh receipt was not committed directly "
+                        "after its merge"
+                    ),
+                }
+            if args[0] == "ticket-attest":
+                return {"action": "refresh", "head": "c" * 40}
+            raise AssertionError(args)
+
+        controller.json_call = json_call
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "progressed", "ticket": "T-110"},
+        )
+        self.assertEqual(
+            calls,
+            [
+                "renew",
+                (
+                    "state-machine", "--ticket", "T-110", "--lease",
+                    "a" * 64, "--workdir", str(cell), "--json",
+                ),
+                (
+                    "ticket-attest", "--ticket", "T-110", "--lease",
+                    "a" * 64, "--receipt", receipt, "--workdir", str(cell),
+                    "--action", "refresh", "--json",
+                ),
+                "passport",
+                "refresh_topology_repaired",
+            ],
+        )
+
     def test_budget_wait_reopens_only_after_envelope_change(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

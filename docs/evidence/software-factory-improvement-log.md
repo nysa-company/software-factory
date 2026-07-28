@@ -1255,6 +1255,27 @@ Validation: focused controller coverage requires the authenticated passport,
 exact remote head, typed terminal failure, and new ticket lease. Protected
 GitHub CI retains the complete regression.
 
+## FI-20260728-057 — Deterministic refresh refusal had no recovery receipt
+
+Status: Implemented; qualification pending
+Area: state-machine recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 recovery
+Impact: the state machine correctly detected that T-169's rewritten refresh
+receipt no longer directly followed its recorded merge, but discarded the
+deterministic refusal before issuing the one-use receipt required by the
+authenticated refresh action.
+Root cause: `ticket-attest refresh` accepted `REFUSE` receipts while the sole
+state resolver treated every nonzero `next-stage` result as an execution error;
+the controller therefore could not route the documented repair.
+Smallest change: receipt an exact single-line `REFUSE` result only when
+`next-stage` exits 1 with empty stderr. Route only the named direct-after-merge
+topology refusal through authenticated protected-base refresh. Every other
+refusal remains blocked.
+Validation: focused state-machine coverage proves the refusal is receipt-bound;
+focused controller coverage proves only the exact topology refusal invokes
+refresh with that receipt. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

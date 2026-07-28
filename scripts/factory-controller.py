@@ -1002,6 +1002,26 @@ class Controller:
                 self.event("ticket_complete", claim["ticket"])
                 self.release(claim)
                 return {"status": "complete", "ticket": claim["ticket"]}
+            if stage == (
+                "REFUSE refresh receipt was not committed directly after its merge"
+            ):
+                with self.git_lock:
+                    value = self.json_call(
+                        "ticket-attest", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"], "--receipt", receipt,
+                        "--workdir", claim["worktree"],
+                        "--action", "refresh", "--json",
+                    )
+                    if value.get("action") != "refresh":
+                        raise ControllerError(
+                            "refresh topology repair was not materialized"
+                        )
+                    self.migrate_passport(claim, "validating")
+                    self.event(
+                        "refresh_topology_repaired", claim["ticket"],
+                        head_sha=value.get("head"),
+                    )
+                return {"status": "progressed", "ticket": claim["ticket"]}
             if stage.startswith("REFUSE"):
                 self.block(claim, "state-machine-refusal")
                 return {"status": "blocked", "ticket": claim["ticket"]}
