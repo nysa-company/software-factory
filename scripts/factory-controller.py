@@ -494,6 +494,16 @@ class Controller:
             self.remove_cell(claim)
             self.event("attempt_cancelled", claim["ticket"])
             return False
+        if terminal.get("role_exit") == "role_exit_invalid_output":
+            self.migrate_passport(claim, publication)
+            rejected_role = claim["role"]
+            claim.update(receipt="", role="", status="claimed")
+            self.save_claim(claim)
+            self.event(
+                "role_output_rejected", claim["ticket"], role=rejected_role,
+                run_id=terminal.get("run_id"),
+            )
+            return True
         if terminal.get("exit_status") != "0" or terminal.get("role_exit") != "ok":
             if (
                 self.qualification

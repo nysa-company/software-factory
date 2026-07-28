@@ -263,6 +263,40 @@ class FactoryControllerTest(unittest.TestCase):
             )
         )
 
+    def test_invalid_reviewer_output_retries_only_reviewer(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "b" * 64,
+            "role": "reviewer",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        (self.product / "factory/runs/invalid.meta").write_text(
+            "run_id=invalid\n"
+            "ticket=T-110\n"
+            "role=reviewer\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=11\n"
+            "role_exit=role_exit_invalid_output\n"
+            f"transition_receipt_sha256={'b' * 64}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("passport")
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(
+            calls, ["passport", "migrate", "role_output_rejected"]
+        )
+
     def test_cancelled_run_releases_every_controller_resource(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {

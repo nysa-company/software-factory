@@ -2394,6 +2394,11 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     elif [[ -n "$ROLE_DIRTY" ]]; then
       ROLE_EXIT_STATUS="role_exit_dirty"
+    elif [[ "$ROLE" == "reviewer" ]] &&
+         ! python3 "$KIT_DIR/scripts/lib/reviewer-verdict.py" \
+           --adapter "$ADAPTER" --input "$RUNS_DIR/$RUN_ID.out" \
+           --contract-version "$PROVIDER_CONTRACT_VERSION" >/dev/null 2>&1; then
+      ROLE_EXIT_STATUS="role_exit_invalid_output"
     elif [[ "$ROLE" == "reviewer" ]]; then
       ROLE_EXIT_STATUS="ok"
     elif [[ "$ROLE_HEAD_AFTER" == "$ROLE_HEAD_BEFORE" ]]; then

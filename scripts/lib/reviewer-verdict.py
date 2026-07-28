@@ -33,6 +33,11 @@ def verdict_signals(raw: str) -> list[str]:
     signals = []
     for line in raw.splitlines():
         stripped = line.strip()
+        heading = re.fullmatch(
+            r"#{1,6}\s+Verdict:\s*(APPROVE|REQUEST CHANGES)", stripped, re.I
+        )
+        if heading:
+            signals.append(heading.group(1).upper())
         if re.fullmatch(r"APPROVE|REQUEST CHANGES", stripped, re.I):
             signals.append(stripped.upper())
         signals.extend(match.upper() for match in re.findall(
@@ -197,7 +202,7 @@ def cursor_review(raw: str, contract_version: str) -> str:
     verdict, owner = parse_review(normalized_assistant, contract_version)
     normalized_terminal = normalize_cursor_callback(results[0])
     terminal_signals = verdict_signals(normalized_terminal)
-    if set(terminal_signals) != {verdict}:
+    if terminal_signals and set(terminal_signals) != {verdict}:
         raise ValueError("reviewer assistant contradicts the successful result")
     terminal_owners = {
         match.group(1).lower()

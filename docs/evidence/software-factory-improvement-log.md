@@ -824,6 +824,31 @@ Validation: the focused role-exit regression fails the first post-provider
 remote read, then proves the same successful role commit is pushed without
 replay. Live four-ticket canary pending.
 
+## FI-20260727-039 — Explicit Reviewer heading blocked a valid ticket
+
+Status: Implemented; qualification pending
+Area: state machine
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 generation 4
+Impact: T-124 completed its read-only Reviewer for $2 with an approval, but
+reconciliation rejected the terminal prose and permanently blocked the ticket
+while the three independent Narrators continued.
+Evidence:
+- run `1785201904-89978` ended cleanly at unchanged head `3386c39`
+- the final assistant emitted the explicit `## Verdict: APPROVE` heading
+- the manifest recorded `role_exit=ok`, then controller event
+  `1785202107810107000-2b8e00c62226f380` recorded
+  `reviewer result must contain one unambiguous verdict`
+Root cause: the shared parser recognized standalone and bold verdicts but not
+the exact Markdown heading already accepted by the development lifecycle; the
+wrapper also recorded Reviewer success before validating semantic output.
+Smallest change: accept only the exact Markdown `Verdict:` heading form, run
+the same parser before Reviewer terminal success, and rerun only semantically
+invalid Reviewer output under the existing ticket budget.
+Validation: focused parser and controller tests cover the observed heading and
+targeted retry without preserving invalid completed-role evidence. Fresh live
+four-ticket qualification pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

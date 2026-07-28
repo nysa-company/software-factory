@@ -1086,3 +1086,13 @@ Category: System change
 A successful mutating role retains its clean local commit while the trusted
 wrapper retries one failed exact-head remote observation. A second transport
 failure or any observed head drift still fails closed before push.
+
+## 2026-07-27 — Decision 76: Invalid review prose does not complete Reviewer
+
+Category: System change
+
+The shared Reviewer parser accepts the role contract's standalone verdict and
+exact Markdown `Verdict:` heading. The role wrapper validates the durable
+terminal output before recording success; malformed output retains its charge
+but not completed-role evidence, and the controller reruns only Reviewer under
+the remaining ticket budget.

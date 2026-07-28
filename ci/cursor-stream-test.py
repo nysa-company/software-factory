@@ -110,6 +110,21 @@ class CursorStreamTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "REQUEST CHANGES\tbuilder\n")
 
+    def test_reviewer_accepts_explicit_markdown_verdict_heading(self) -> None:
+        review = "Checks complete.\n\n## Verdict: APPROVE\n\nNo findings."
+        result = self.run_verdict(
+            [
+                {"type": "assistant", "message": {"content": review}},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": f"Checks finished.{review}",
+                },
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "APPROVE\t\n")
+
     def test_reviewer_refuses_multiple_verdict_assistants(self) -> None:
         review = "REQUEST CHANGES\nFIX-OWNER: builder"
         result = self.run_verdict(
