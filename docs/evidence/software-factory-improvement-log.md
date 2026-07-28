@@ -1629,6 +1629,41 @@ historical role/charge evidence, an authenticated `$30` cap, and refusal at
 `$25`; focused controller coverage proves an excluded fourth claim remains
 untouched. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-072 — Ticket PR discarded an authenticated semantic refresh
+
+Status: Implemented; qualification pending
+Area: publication and review evidence
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 generation 28
+Impact: T-169 retained an approved Reviewer result through an authenticated
+control-only protected-base refresh and route migration, but the ticket-PR
+boundary rejected publication because its branch head differed from the
+Reviewer's execution head. No provider call started; the controller blocked
+the ticket before PR mutation.
+Evidence: latest successful Reviewer head `931a4cb9…` and exact ticket head
+`1838a4d1…` differ only in the ticket/bundle/route metadata already accepted
+by the boundary plus modified `factory/KIT_PIN`,
+`factory/QUALIFICATION.json`, added authenticated in-flight release metadata,
+and the committed `factory/attestations/T-169/refresh.json`. The existing
+shared classifier returns preserve and every retained control blob equals the
+receipt-bound protected base.
+Root cause: `next-stage` and bundle attestation used the shared semantic
+refresh contract, while `ticket-pr.py` independently allowed only ticket,
+bundle, attestation, and route paths. It therefore invalidated review from the
+base commit SHA rather than the already-authenticated semantic input.
+Smallest change: at the ticket-PR boundary, reuse the existing shared
+classifier only for Contract 1.8 receipt-authorized stages and require the
+current refresh receipt to be regular, exact-schema, committed directly after
+its bound two-parent merge, descended from the reviewed head, and ancestral to
+the current head. Permit only refresh control blobs that still equal that
+receipt's protected base. Unknown, application, test, CI, contract,
+configuration, rename, deletion, type-change, and malformed-refresh inputs
+remain fail-closed; route journals retain independent append-only validation.
+Validation: all focused ticket-PR tests pass, including one control-only
+refresh acceptance followed by an unknown-path refusal. The exact live T-169
+range classifies the four expected refresh/control paths and zero unexpected
+paths. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

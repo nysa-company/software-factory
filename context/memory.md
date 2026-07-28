@@ -48,6 +48,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   controller first blocks the claim, then owns authenticated cross-release
   passport migration and the durable pre-route pending marker on its next
   one-shot.
+- Contract 1.8 ticket-PR validation preserves Reviewer/Narrator evidence across
+  a control-only refresh only when the receipt-authorized stage, committed
+  direct-after-merge refresh topology, shared semantic classifier, and exact
+  retained protected-base blobs all agree. Unknown and semantic changes still
+  invalidate review.
 - Fresh development lanes and trusted ticket-state reconciliation omit the
   Reviewer checkpoint argument when no authenticated import exists, including
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
@@ -1409,3 +1414,15 @@ controller leaves excluded claims untouched. The reducer accepts historical
 roles, charges, and merges only through each signed passport's Factory history,
 uses the sealed active ticket-cap override chain, retains the `$100` cohort
 ceiling, and refuses any Factory change after the final candidate starts.
+
+## 2026-07-28 — Decision 108: Publication honors authenticated semantic refresh
+
+Category: System change
+
+Contract 1.8 ticket-PR validation may carry successful Reviewer and Narrator
+evidence past a changed branch SHA only when the trusted transition receipt,
+direct-after-merge refresh topology, shared non-semantic base classifier, and
+exact retained protected-base control blobs all validate. Route migration
+remains independently append-only; application, test, contract, CI,
+configuration, unknown, renamed, deleted, typed, malformed, and stale inputs
+still fail closed.

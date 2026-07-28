@@ -387,6 +387,12 @@ protected base and reuses the still-valid Reviewer/Narrator evidence. Every
 application, test, contract, CI, configuration, rename, type, deletion, and
 unknown-path change invalidates review. A malformed or stale refresh receipt
 refuses sequencing.
+The early ticket-PR boundary applies that same decision instead of comparing
+only commit SHAs. It accepts retained control paths only under Contract 1.8,
+an exact receipt-authorized stage, a committed direct-after-merge refresh
+receipt, unambiguous merge ancestry, the shared non-semantic classifier, and
+control blobs that still equal the receipt's protected base. Route-journal
+changes retain their independent append-only migration validation.
 When concurrency is greater than one, every attestation action also requires the matching
 unexpired opaque dispatcher lease through the trusted launcher environment;
 the lease is validated with the existing lease helper and never enters an
