@@ -977,6 +977,31 @@ Validation: the focused controller test parses the canonical plist and binds
 its process type. Protected GitHub CI retains the full regression. Fresh live
 four-ticket qualification pending.
 
+## FI-20260728-045 — Provider-free preflight repeated every route probe
+
+Status: Implemented; qualification pending
+Area: preflight
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 11
+Impact: T-150 through T-153 pinned their six-role plans successfully, then all
+four stopped before Planner with zero provider attempts or charges.
+Evidence:
+- one authenticated `model_pin_batch` event covered all four tickets
+- all four pinned route plans were committed and pushed
+- four concurrent Planner preflights each exceeded the unchanged 300-second
+  controller command bound
+- each preflight loop re-ran credential-bearing readiness for all six roles
+  after the controller had resolved the shared machine plan
+Root cause: legacy preflight treated a pinned route as a request to re-probe
+each role, contradicting the Contract 1.8 provider-free kickoff boundary.
+Smallest change: preflight structurally validates all six pinned selections
+without probing; the role runner retains its existing exact selected-route
+readiness check immediately before provider admission.
+Validation: the focused preflight regression runs a real pinned Contract 1.8
+plan, requires Planning agreement, and proves no adapter probe occurs.
+Protected GitHub CI retains the full regression. Fresh live qualification
+pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

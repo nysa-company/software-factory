@@ -12,6 +12,7 @@ KIT_CONTRACT_VERSION="$(python3 -c \
   'import json,sys; print(json.load(open(sys.argv[1]))["contract_version"])' \
   "$KIT_DIR/integrations/hermes/contract.json")"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/preflight-test.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 STUB_BIN="$TMP/bin"
 TEST_HOME="$TMP/home"
 FAILURES=0
@@ -207,6 +208,7 @@ run_sealed_preflight() {
     FACTORY_RELEASE_PATH="$release" \
     FACTORY_RELEASE_CONTRACT_VERSION="$KIT_CONTRACT_VERSION" \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
+    FACTORY_TEST_PROBE_TRACE="${6:-}" \
     bash "$release/scripts/preflight.sh" "${helper_args[@]}" 2>&1
 }
 
@@ -814,15 +816,60 @@ READINESS_TREE="$(bash -c '
   source "$1"
   factory_directory_tree "$2"
 ' _ "$KIT_DIR/scripts/lib/kit-pin.sh" "$READINESS_RELEASE")"
+READINESS_ROUTE_DIR="$READINESS/factory/route-plans"
+READINESS_MODEL_STATE="$TMP/readiness-model-state"
+mkdir -p "$READINESS_ROUTE_DIR" "$READINESS_MODEL_STATE/relay"
+python3 "$KIT_DIR/scripts/model-router.py" probe-list cursor-balanced-v2 \
+  --catalog "$KIT_DIR/scripts/model-routing/catalog-v1.json" \
+  --profiles "$KIT_DIR/scripts/model-routing/profiles-v1.json" \
+  > "$TMP/readiness-probes.json"
+python3 - "$TMP/readiness-probes.json" "$TMP/readiness-routes.json" <<'PY'
+import json
+import sys
+
+probes = json.load(open(sys.argv[1], encoding="utf-8"))
+result = {
+    probe["route_id"]: {
+        "adapter_version": "test",
+        "reason": "local_contract_ready",
+        "reported_identity": probe["expected_reported_identity"],
+        "state": "READY",
+    }
+    for probe in probes
+}
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(result, handle, sort_keys=True, separators=(",", ":"))
+    handle.write("\n")
+PY
+python3 "$KIT_DIR/scripts/model-router.py" resolve cursor-balanced-v2 \
+  "$TMP/readiness-routes.json" \
+  --catalog "$KIT_DIR/scripts/model-routing/catalog-v1.json" \
+  --profiles "$KIT_DIR/scripts/model-routing/profiles-v1.json" \
+  > "$TMP/readiness-resolution.json"
+chmod 600 "$TMP/readiness-resolution.json"
+python3 "$KIT_DIR/scripts/model-manager.py" pin \
+  --state-root "$READINESS_MODEL_STATE" --project relay \
+  --catalog "$KIT_DIR/scripts/model-routing/catalog-v1.json" \
+  --profiles-file "$KIT_DIR/scripts/model-routing/profiles-v1.json" \
+  --ticket T-110 --kit-sha "$KIT_HEAD_NOW" \
+  --resolution-file "$TMP/readiness-resolution.json" \
+  --output "$READINESS_ROUTE_DIR/T-110.json" >/dev/null
+git -C "$READINESS" add factory/route-plans/T-110.json
+git -C "$READINESS" commit -qm "pin deterministic route contract"
+git -C "$READINESS" push -q origin main
+READINESS_PROBE_TRACE="$TMP/readiness-preflight-probes"
+: > "$READINESS_PROBE_TRACE"
 READINESS_PREFLIGHT_STATUS=0
 READINESS_PREFLIGHT_OUT="$(run_sealed_preflight "$READINESS" T-110 \
-  "$READINESS_RELEASE" "$READINESS_TREE" planner)" ||
+  "$READINESS_RELEASE" "$READINESS_TREE" planner "$READINESS_PROBE_TRACE")" ||
   READINESS_PREFLIGHT_STATUS=$?
 if [[ "$READINESS_PREFLIGHT_STATUS" -eq 0 &&
-      "$READINESS_PREFLIGHT_OUT" == *"PASS: ticket T-110 is Planning"* ]]; then
-  echo "PASS: contract 1.8 planner preflight agrees with state machine"
+      "$READINESS_PREFLIGHT_OUT" == *"PASS: ticket T-110 is Planning"* &&
+      "$READINESS_PREFLIGHT_OUT" == *"planner pinned route contract passed"* &&
+      ! -s "$READINESS_PROBE_TRACE" ]]; then
+  echo "PASS: contract 1.8 planner preflight is provider-free"
 else
-  echo "FAIL: contract 1.8 planner preflight disagrees with state machine"
+  echo "FAIL: contract 1.8 planner preflight repeated provider readiness"
   echo "$READINESS_PREFLIGHT_OUT"
   FAILURES=$((FAILURES + 1))
 fi

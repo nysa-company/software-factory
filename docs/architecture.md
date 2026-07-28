@@ -253,6 +253,9 @@ Reviewer under the remaining ticket budget.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.
+Planner preflight validates the complete pinned route contract without
+repeating machine probes; the role runner re-verifies only its selected route
+immediately before provider admission.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one

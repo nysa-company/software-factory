@@ -165,9 +165,9 @@ if [[ -n "$ROLE" ]]; then
   done <<<"$EFFECTIVE_ENVELOPE"
   pass "$ROLE attempt envelope: budget \$$PER_RUN_BUDGET_USD, max turns $PER_RUN_MAX_TURNS, timeout ${PER_RUN_TIMEOUT_MIN}m"
 fi
-# (a) backend routes — resolve without submitting any task. The authenticated
-# isolated harness fixes the mock adapter before this script starts, so it must
-# not probe credential-bearing production CLIs.
+# (a) backend routes — validate the pinned contract without repeating the
+# controller's machine-readiness probes. The role runner re-probes its one
+# selected route immediately before provider admission.
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
 ROUTE_PLAN="$CONTENT_ROOT/factory/route-plans/$TICKET.json"
@@ -190,14 +190,7 @@ elif [[ -f "$ROUTE_PLAN" ]]; then
       fail "$ROLE_SAMPLE pinned route is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
       continue
     fi
-    PINNED_ROUTE="$FACTORY_SELECTED_ROUTE_ID"
-    PINNED_ADAPTER="$FACTORY_SELECTED_ADAPTER"
-    PINNED_MODEL="$FACTORY_SELECTED_MODEL"
-    if factory_verify_selected_pinned_route_ready; then
-      pass "$ROLE_SAMPLE pinned route ready ($PINNED_ROUTE: $PINNED_ADAPTER/$PINNED_MODEL)"
-    else
-      fail "$ROLE_SAMPLE pinned route unavailable or drifted ($PINNED_ROUTE): ${FACTORY_RESOLVE_ERROR:-unknown}"
-    fi
+    pass "$ROLE_SAMPLE pinned route contract passed ($FACTORY_SELECTED_ROUTE_ID)"
   done
 else
   warn "legacy routing is unpinned for $TICKET"

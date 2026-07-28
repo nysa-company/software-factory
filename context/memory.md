@@ -1143,3 +1143,12 @@ The Contract 1.8 controller LaunchAgent uses `ProcessType=Interactive`.
 macOS background QoS can exhaust otherwise healthy bounded local CLI
 readiness probes; their timeout, validation, and fail-closed behavior remain
 unchanged.
+
+## 2026-07-28 — Decision 82: Planner preflight is provider-free
+
+Category: System change
+
+After the controller authenticates and pins the shared model plan, Planner
+preflight validates all six route selections structurally and does not repeat
+credential-bearing readiness. The role runner still re-probes its one selected
+route immediately before provider admission and fails closed on drift.
