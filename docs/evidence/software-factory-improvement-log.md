@@ -1538,6 +1538,37 @@ Validation: all 22 focused controller tests pass, including the two migration
 boundaries, retained blocked state, restart marker, fresh lease, and exact
 claim reopen. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-069 — Active budget overrides could not be raised immutably
+
+Status: Implemented; qualification pending
+Area: budget control
+Owner: Factory
+First seen: 2026-07-28, Relay T-168 qualification recovery
+Impact: the operator authorized raising T-168 from $35 to $40 after $32 of
+authenticated charges, but publishing a second ticket-cap record would make
+every role and budget-stage reduction fail closed on an active override
+conflict. Waiting for expiry would stall the qualification; deleting or editing
+the $35 record would destroy authenticated evidence.
+Evidence: active immutable record
+`0a516916741c6f740daa45a17b121a650701bb863005b20eae96705bca1a1e47`
+sets T-168's `PER_TICKET_BUDGET_USD=35.00`, and the Contract 1.8 envelope
+surface exposes only creation and next-attempt consumption.
+Root cause: immutable override creation had no authenticated replacement
+lineage for a still-active persistent override.
+Smallest change: when a persistent override preview finds exactly one active
+record with the same scope, target, base-envelope identity, and setting-key
+set, emit a v2 record that names that exact record in `supersedes`. The
+replacement must be issued later and expire no earlier. Both records remain
+immutable; reduction excludes the predecessor only while the authenticated
+replacement is active. Missing targets, different keys, ambiguous
+replacements, shortened lifetimes, collisions, malformed records, and ordinary
+overlapping overrides remain fail-closed. One-use next-attempt records are
+unchanged.
+Validation: all six focused envelope tests pass, including byte preservation,
+effective replacement, and refusal after removing the named predecessor. The
+focused budget-stage and all 22 controller tests pass. Protected GitHub CI
+retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

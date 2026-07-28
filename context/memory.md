@@ -1372,3 +1372,14 @@ limited to modified regular `factory/KIT_PIN` and
 in-flight-release records. The ticket head must retain those exact protected
 blobs. Application code, tests, contracts, CI, configuration, renames, type
 changes, deletions, and every unknown path continue to invalidate review.
+
+## 2026-07-28 — Decision 105: Budget increases supersede evidence; they do not erase it
+
+Category: System change
+
+A preview-bound persistent envelope override may replace exactly one active
+record only when it names that record, retains the same scope, target,
+base-envelope identity, and setting keys, is issued later, and expires no
+earlier. The predecessor remains immutable and authenticated. Missing,
+ambiguous, shortened, differently scoped, or differently keyed replacements
+fail closed; one-use next-attempt records retain consumption semantics.

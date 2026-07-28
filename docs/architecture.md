@@ -260,7 +260,11 @@ base envelope plus any active ticket-scoped cap override. Budget-wait claims
 bind both the envelope and immutable override-record bytes, so adding an
 authorized cap reacquires the exact ticket lease and reopens the retained
 passport/cell directly; expired, conflicting, malformed, or unrelated records
-never raise the effective cap.
+never raise the effective cap. An authenticated persistent replacement keeps
+its predecessor immutable and names that exact record in its preview-bound
+hash. It is effective only for the same scope, target, base-envelope identity,
+and setting-key set, with a later issue time and no shorter lifetime; missing,
+ambiguous, or malformed supersession lineage refuses reduction.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.

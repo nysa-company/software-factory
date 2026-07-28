@@ -178,6 +178,58 @@ class EnvelopeControlTest(unittest.TestCase):
         self.assertEqual(effective["PER_RUN_BUDGET_USD"], "1.00")
         self.assertEqual(effective["FACTORY_ENVELOPE_NEXT_OVERRIDE_IDS"], "")
 
+    def test_ticket_override_can_authenticate_an_immutable_replacement(self):
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        first = (
+            "--scope", "ticket", "--ticket", "T-901",
+            "--issued-at", (now - dt.timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--expires-at", (now + dt.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--operator-id", "operator-1", "--reason", "budget_exhausted",
+            "--set", "PER_TICKET_BUDGET_USD=12.00",
+        )
+        preview = self.json_command(
+            "override-plan", "--factory-root", str(self.root), *first,
+        )
+        applied = self.json_command(
+            "override-apply", "--factory-root", str(self.root),
+            "--approve-hash", preview["preview_hash"], *first,
+        )
+        old_path = self.factory / "envelope-overrides" / f"{applied['record_id']}.json"
+        old_bytes = old_path.read_bytes()
+
+        replacement = (
+            "--scope", "ticket", "--ticket", "T-901",
+            "--issued-at", now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--expires-at", (now + dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--operator-id", "operator-1", "--reason", "budget_exhausted",
+            "--set", "PER_TICKET_BUDGET_USD=15.00",
+        )
+        preview = self.json_command(
+            "override-plan", "--factory-root", str(self.root), *replacement,
+        )
+        self.assertEqual(preview["record"]["schema"], "factory-envelope-override/v2")
+        self.assertEqual(preview["record"]["supersedes"], [applied["record_id"]])
+        replaced = self.json_command(
+            "override-apply", "--factory-root", str(self.root),
+            "--approve-hash", preview["preview_hash"], *replacement,
+        )
+        self.assertEqual(old_path.read_bytes(), old_bytes)
+        effective = self.json_command(
+            "effective", "--factory-root", str(self.root),
+            "--ticket", "T-901", "--role", "reviewer",
+            "--day", now.date().isoformat(),
+        )["effective"]
+        self.assertEqual(effective["PER_TICKET_BUDGET_USD"], "15.00")
+        self.assertEqual(effective["FACTORY_ENVELOPE_OVERRIDE_IDS"], replaced["record_id"])
+
+        old_path.unlink()
+        refused = self.command(
+            "effective", "--factory-root", str(self.root),
+            "--ticket", "T-901", "--role", "reviewer",
+            "--day", now.date().isoformat(), check=False,
+        )
+        self.assertIn("supersession target is missing", refused.stdout)
+
     def test_global_day_record_is_shared_beside_machine_config(self):
         now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
         day = now.date().isoformat()
