@@ -1502,7 +1502,7 @@ charge. Control-only allowlisted base changes must not trigger it.
 
 ## FI-20260728-068 — Same-release non-fast-forward role output lacks a portable repair boundary
 
-Status: Observed; defer until after qualification
+Status: Implemented; qualification pending
 Area: passport and push recovery
 Owner: Factory
 First seen: 2026-07-28, Relay T-168 generation 24
@@ -1513,11 +1513,17 @@ before the existing exact-remote push recovery could become usable.
 Evidence: terminal run `1785266450-63639` is receipt-bound
 `role_exit_push_failed`, records both prior local and remote head `7d91acc`,
 and left one clean local head `05b40fc`; no force push occurred.
-Smallest follow-up: add a protected, exact per-ticket reset authorization that
-binds prior remote head, replacement head/tree, receipt, terminal manifest,
-branch, and passport parent. Export that one failed boundary without marking
-the role successful, then reopen only after the remote equals the authorized
-replacement. Never authorize arbitrary or automatic force pushes.
+Root cause: the exact protected rewrite authorization binds the unchanged
+pre-route digest, but upgrade recovery waited until the route migration had
+changed that digest before attempting passport authentication.
+Smallest change: migrate the signed passport to the successor first while
+keeping the claim blocked, persist a restart-safe pending marker, apply the
+existing preview-approved route migration, then migrate the passport again
+through ordinary descendant ancestry before reopening. Never authorize or
+perform an automatic force push.
+Validation: all 22 focused controller tests pass, including the two migration
+boundaries, retained blocked state, restart marker, fresh lease, and exact
+claim reopen. Protected GitHub CI retains the complete regression.
 
 ## Maintenance rule
 

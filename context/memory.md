@@ -1348,3 +1348,15 @@ embedded v1 plan and may retain its Kit-SHA. Only a later
 `release-migration` revision asserts a release change. Ticket attestation still
 requires the exact legacy bytes, digest, policy, selections, pin commit, Kit
 identities, and complete parent-hashed journal chain.
+
+## 2026-07-28 — Decision 103: Rewrite authentication precedes route migration
+
+Category: System change
+
+For a blocked cross-release claim, the controller may migrate the signed
+passport to the successor while the old route digest is still exact, but it
+keeps the claim blocked and records a durable pending marker. The
+preview-approved route migration runs next; a second descendant passport
+migration binds its new route digest before the claim reopens. This supersedes
+Decision 97 only for passport authentication order, not for execution: no
+ticket runs against a mismatched route or Kit-SHA.

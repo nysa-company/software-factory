@@ -421,10 +421,13 @@ barriers still apply.
 Qualification upgrades bind liveness to the non-overlapping controller lock
 and active-run markers. A terminal orphaned `running` claim remains portable
 state for the successor controller rather than an upgrade deadlock.
-Upgrade recovery keeps a blocked claim and its prior passport unchanged until
-the preview-bound route migration has committed the successor Kit-SHA to both
-the ticket and route journal; only then may it migrate the passport and reopen
-the claim.
+Upgrade recovery keeps the claim blocked while it first authenticates the
+current clean head into the successor passport. This pre-route boundary lets an
+exact protected rewrite authorization bind the unchanged old route digest.
+After the preview-bound route migration commits the successor Kit-SHA to both
+the ticket and route journal, a second ordinary descendant migration updates
+the passport route digest and only then reopens the claim. A durable
+controller marker makes the between-migrations restart boundary idempotent.
 If an operator-authorized repair deliberately removes invalid Git ancestry, a
 cross-release passport migration may use that protected authorization only
 when its source/target kits, ticket, branch, new head, and state match exactly,

@@ -566,7 +566,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertFalse(controller.claim_path("T-110").exists())
 
-    def test_factory_upgrade_reclaims_only_its_blocked_claim(self) -> None:
+    def test_factory_upgrade_authenticates_passport_before_route_migration(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"
         (cell / "factory/route-plans").mkdir(parents=True)
@@ -600,9 +600,19 @@ class FactoryControllerTest(unittest.TestCase):
             {"factory_sha": "b" * 40},
         )
         calls = []
+        failures = 1
 
         def json_call(*args, **_kwargs):
+            nonlocal failures
             calls.append(args)
+            if args[0] == "passport":
+                if failures:
+                    failures -= 1
+                    raise CONTROL.ControllerError("interrupted passport migration")
+                CONTROL.write(
+                    self.state / "passports/T-110.json",
+                    {"factory_sha": "a" * 40},
+                )
             if args[0] == "renew":
                 raise CONTROL.ControllerError("old lease was released")
             if args[0] == "claim":
@@ -614,9 +624,16 @@ class FactoryControllerTest(unittest.TestCase):
             return {}
 
         controller.json_call = json_call
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "interrupted passport migration"
+        ):
+            controller.recover_upgraded_claims([claim])
+        self.assertTrue(controller.marker(
+            "passport-route-migration-pending-T-110-" + "a" * 40
+        ))
         controller.recover_upgraded_claims([claim])
         self.assertEqual(claim["status"], "blocked")
-        self.assertEqual(calls, [])
+        self.assertEqual([call[0] for call in calls], ["passport", "passport"])
         route.write_text(
             json.dumps({"kit_sha": "a" * 40, "ticket": "T-110"}) + "\n",
             encoding="utf-8",
@@ -630,7 +647,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["lease"], "c" * 64)
         self.assertEqual(
             [call[0] for call in calls],
-            ["renew", "claim", "passport"],
+            ["passport", "passport", "renew", "claim", "passport"],
         )
 
     def test_repaired_failure_reclaims_only_exact_remote_passport(self) -> None:

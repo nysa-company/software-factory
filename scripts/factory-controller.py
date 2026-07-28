@@ -618,9 +618,25 @@ class Controller:
             prior = read(path).get("factory_sha", "")
             if not SHA.fullmatch(prior):
                 raise ControllerError("blocked ticket passport has an invalid release")
-            if prior == self.release_path.name:
+            pending = (
+                f"passport-route-migration-pending-{claim['ticket']}-"
+                f"{self.release_path.name}"
+            )
+            if prior == self.release_path.name and not self.marker(pending):
                 continue
             if not self.ticket_release_current(claim):
+                if prior != self.release_path.name:
+                    created = self.marker(pending, {
+                        "factory_sha": self.release_path.name,
+                        "schema": EVENT_SCHEMA,
+                        "ticket": claim["ticket"],
+                    })
+                    self.migrate_passport(claim, "preserve")
+                    if created:
+                        self.event(
+                            "passport_migrated_awaiting_route", claim["ticket"],
+                            from_factory_sha=prior,
+                        )
                 marker = (
                     f"route-migration-required-{claim['ticket']}-"
                     f"{self.release_path.name}"
