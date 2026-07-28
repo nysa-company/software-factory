@@ -1265,6 +1265,9 @@ class Controller:
         existing = self.load_claims()
         if self.qualification:
             tickets = set(self.qualification["tickets"])
+            for claim in existing:
+                if claim["ticket"] not in tickets:
+                    self.withdraw_publication(claim)
             existing = [claim for claim in existing if claim["ticket"] in tickets]
         self.recover_missing_passport_claims(existing)
         self.recover_upgraded_claims(existing)

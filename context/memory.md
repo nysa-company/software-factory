@@ -13,7 +13,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   controls out of provider environments.
 - Contract 1.8 retries one failed exact-head remote observation before
   classifying branch drift. A second transport failure or a different head
-  remains fail-closed, and only the trusted wrapper pushes role commits.
+  remains fail-closed, and only the trusted wrapper pushes role commits. The
+  ticket-PR boundary applies the same bounded retry to its read-only exact
+  branch-head observation.
 - Reviewer terminalization normalizes exact verdict-only Markdown headings,
   exact wrapped repair-owner lines, and known Cursor background-callback
   concatenation only when every verdict and owner signal agrees. Ambiguous,
@@ -59,6 +61,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   transition rather than historical readiness. A ticket that is no longer
   merge-ready withdraws its stale queue record, while an active publication
   lease remains removable only through its capability-bound release.
+  Qualification startup also withdraws queue state for excluded parked claims
+  without resuming their ticket lifecycle.
 - Fresh development lanes and trusted ticket-state reconciliation omit the
   Reviewer checkpoint argument when no authenticated import exists, including
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
@@ -1454,3 +1458,21 @@ deterministic reconciliation no longer classifies it as merge-ready. This
 prevents an older failed or approval-revoked ticket from blocking a later
 independent green PR while preserving capability-bound release for an active
 lease and deterministic priority ordering among tickets that remain ready.
+
+## 2026-07-28 — Decision 111: Publication retries one exact remote observation
+
+Category: System change
+
+The Contract 1.8 ticket-PR boundary retries its exact read-only branch-head
+observation once after a transport failure, matching the existing role-runner
+and attestation boundary. A second transport failure, different head, semantic
+refusal, or any mutating operation still fails closed.
+
+## 2026-07-28 — Decision 112: Excluded claims cannot remain publication-ready
+
+Category: System change
+
+Contract 1.8 qualification leaves excluded claims, passports, roles, and
+charges parked, but withdraws their lease-free publication queue records before
+filtering the active cohort. An excluded ticket therefore cannot hold
+checkpoint head-of-line priority over selected independent work.

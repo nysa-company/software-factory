@@ -195,10 +195,15 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_upgraded_claims = lambda _claims: None
         controller.recover_repaired_failures = lambda _claims: None
         controller.claim_new = lambda claims: claims
+        withdrawn = []
+        controller.withdraw_publication = lambda claim: withdrawn.append(
+            claim["ticket"]
+        )
         result = controller.reconcile()
         self.assertEqual(result["status"], "restart_required")
         self.assertEqual(result["active"], 3)
         self.assertEqual(seen, tickets)
+        self.assertEqual(withdrawn, ["T-113"])
         self.assertTrue(controller.claim_path("T-113").exists())
 
     def test_preflight_runs_once_before_planner_only(self) -> None:

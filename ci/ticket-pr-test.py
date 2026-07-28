@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "ticket-pr.py"
@@ -18,6 +19,9 @@ ROUTER_PATH = ROOT / "scripts" / "model-router.py"
 ROUTER_SPEC = importlib.util.spec_from_file_location("ticket_pr_model_router", ROUTER_PATH)
 ROUTER = importlib.util.module_from_spec(ROUTER_SPEC)
 ROUTER_SPEC.loader.exec_module(ROUTER)
+HELPER_SPEC = importlib.util.spec_from_file_location("ticket_pr_helper", HELPER)
+TICKET_PR = importlib.util.module_from_spec(HELPER_SPEC)
+HELPER_SPEC.loader.exec_module(TICKET_PR)
 MANAGER_SPEC = importlib.util.spec_from_file_location("ticket_pr_model_manager", MANAGER_PATH)
 MANAGER = importlib.util.module_from_spec(MANAGER_SPEC)
 MANAGER_SPEC.loader.exec_module(MANAGER)
@@ -130,6 +134,24 @@ else:
                 f"run-{index},mock,model,selected,actual,v1"
             )
         self.ledger.write_text("\n".join(rows) + "\n")
+
+    def test_exact_remote_head_retries_once(self):
+        failed = subprocess.CompletedProcess(
+            ["git"], 128, stdout="", stderr="transport unavailable"
+        )
+        passed = subprocess.CompletedProcess(
+            ["git"], 0, stdout="a" * 40 + "\trefs/heads/ticket/T-100\n", stderr=""
+        )
+        with patch.object(TICKET_PR.subprocess, "run", side_effect=[failed, passed]) as run:
+            self.assertEqual(
+                TICKET_PR.git(self.product, "ls-remote", "origin"),
+                "a" * 40 + "\trefs/heads/ticket/T-100",
+            )
+            self.assertEqual(run.call_count, 2)
+        with patch.object(TICKET_PR.subprocess, "run", side_effect=[failed, failed]) as run:
+            with self.assertRaises(TICKET_PR.Refusal):
+                TICKET_PR.git(self.product, "ls-remote", "origin")
+            self.assertEqual(run.call_count, 2)
 
     def command(
         self, expected=0, bucket="pass", lease_id=LEASE_ID,

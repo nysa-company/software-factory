@@ -246,6 +246,9 @@ binding for its receipt rechecks; provider processes never inherit the
 project's model-state controls. Its trusted exact-head remote observation
 retries one failed transport call before classifying branch drift; a second
 failure or any different head still fails closed without pushing.
+The ticket-PR boundary applies the same one-retry rule only to its exact
+read-only branch-head observation; every semantic mismatch and second
+transport failure still refuses publication.
 Protected-base attestation applies the same one-retry boundary only to its
 exact read-only `ls-remote`; mutations and semantic refusals never retry.
 Reviewer terminalization accepts the role contract's standalone verdict,
@@ -304,11 +307,13 @@ reset and never treats stale evidence as valid. The
 qualification reducer reconciles passports, manifests, controller events,
 protected checks, PR heads, merge commits, and protected main. Its closeout
 target is three or four tickets at capacity four. An excluded claim remains
-parked and untouched; the reducer still requires the authenticated four-ticket
-restart and relocation proof. Historical role, charge, publication, and merge
-evidence keeps its original Factory SHA inside each passport's authenticated
-release history. Ticket totals use only currently authenticated ticket-cap
-overrides, while the cohort remains within the fixed qualification budget.
+parked and untouched except that startup withdraws any lease-free publication
+queue record that could block selected tickets; the reducer still requires the
+authenticated four-ticket restart and relocation proof. Historical role,
+charge, publication, and merge evidence keeps its original Factory SHA inside
+each passport's authenticated release history. Ticket totals use only
+currently authenticated ticket-cap overrides, while the cohort remains within
+the fixed qualification budget.
 The sealed qualification launcher binds its owner-only qualification root as
 the release environment for isolated subscription runtimes. That root carries
 the same trusted marker used by disposable development environments; provider

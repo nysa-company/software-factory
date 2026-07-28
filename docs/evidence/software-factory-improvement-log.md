@@ -1723,6 +1723,55 @@ independent T-169 acquire the lease, and focused controller coverage proves a
 non-publication transition withdraws its record. Protected GitHub CI retains
 the complete regression.
 
+## FI-20260728-075 — One publication transport failure stranded a valid passport
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-28, Relay generation 31
+Impact: T-169 reached the authenticated approval stage at exact head
+`9c0c9817…` with both required checks green and unchanged `$28` accounting,
+but one SSH connection closure during ticket-PR verification made the
+controller fail closed and park its otherwise valid claim. T-168 continued
+independently.
+Evidence: the terminal controller result records a `ticket-pr/v1` error from
+the exact branch-head read, followed by a blocked T-169 claim. No provider run,
+role replay, branch mutation, publication lease, or new charge occurred.
+Root cause: the role runner and protected attestor retried one failed exact
+`ls-remote`, while the ticket-PR helper's shared Git boundary made only one
+attempt.
+Smallest change: retry only the exact read-only ticket-PR `ls-remote` once.
+Every other Git failure remains single-attempt, and a second transport failure
+still refuses publication and leaves the passport intact.
+Validation: all 11 focused ticket-PR tests pass; the added regression requires
+one failed read followed by an exact success and separately requires two
+failures to refuse. Protected GitHub CI retains the complete regression.
+
+## FI-20260728-076 — An excluded ticket retained publication head-of-line priority
+
+Status: Implemented; qualification pending
+Area: publication and qualification
+Owner: Factory
+First seen: 2026-07-28, Relay generation 31
+Impact: after FI-074 correctly removed stale queue state for selected tickets,
+T-168 and T-169 still could not acquire the free merge lease. Excluded T-166
+retained the oldest queue position even though its claim was deliberately
+parked outside the three-ticket target.
+Evidence: publication had no active lease, but its queue contained blocked
+T-166 at head `7687c2aa…` and ready time `1785242337`, ahead of green T-168
+and T-169. T-166's authenticated passport already declared publication state
+`none`; qualification filtering prevented the controller from reconciling the
+claim and invoking FI-074 withdrawal.
+Root cause: the controller filtered excluded claims before reconciling their
+publication control state.
+Smallest change: during qualification startup, withdraw publication state for
+claims outside the selected cohort, then retain the existing filter. Their
+claim files, passports, roles, worktrees, charges, and ticket states remain
+parked.
+Validation: all 24 focused controller tests pass; the three-ticket regression
+requires the excluded fourth claim to remain present while its publication
+state is withdrawn. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

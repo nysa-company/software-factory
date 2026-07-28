@@ -42,7 +42,13 @@ def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedP
 
 
 def git(root: Path, *arguments: str) -> str:
-    return run(["git", "-C", str(root), *arguments]).stdout.strip()
+    command = ["git", "-C", str(root), *arguments]
+    try:
+        return run(command).stdout.strip()
+    except Refusal:
+        if arguments[0] != "ls-remote":
+            raise
+        return run(command).stdout.strip()
 
 
 def project_repo(factory: Path) -> str:
