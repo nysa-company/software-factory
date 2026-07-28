@@ -2527,6 +2527,16 @@ ledger_row T-500 reviewer >> "$WALK/factory/ledger.csv"
 printf 'reviewer round 2: APPROVE\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "RUN narrator" "$WALK" T-500 || WALK_OK=0
 ledger_row T-500 narrator >> "$WALK/factory/ledger.csv"
+cat > "$WALK/factory/tickets/T-500-bundle.md" <<'BUNDLE'
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
 printf '%s\n' \
   '{"tickets":{"T-500":{"operator":{"state":"Approved","approval":"Linear","state_base":"awaiting approval"}}}}' \
@@ -2548,6 +2558,43 @@ printf 'State: Approved\n' >> "$WALK/factory/tickets/T-500.md"
 expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
   "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
+
+# One structurally invalid, unattested bundle gets one Narrator retry.
+INVALID_BUNDLE_ROOT="$TMP/invalid-bundle-retry"
+mkdir -p "$INVALID_BUNDLE_ROOT/factory/tickets"
+cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502.md" <<'TICKET'
+# T-502
+State: Review
+reviewer round 1: APPROVE
+TICKET
+{
+  ledger_header
+  ledger_row T-502 planner
+  ledger_row T-502 test-author
+  ledger_row T-502 builder
+  ledger_row T-502 reviewer
+  ledger_row T-502 narrator
+} > "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
+printf 'Preview broken: not approvable.\n' > \
+  "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md"
+INVALID_BUNDLE_OK=1
+expect_stage "RUN narrator" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
+ledger_row T-502 narrator >> "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
+expect_stage "ESCALATE evidence bundle remained invalid after one Narrator retry" \
+  "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
+cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md" <<'BUNDLE'
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
+expect_stage "AWAIT-OPERATOR" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
+[[ "$INVALID_BUNDLE_OK" -eq 1 ]] &&
+  pass "sequencer permits one invalid evidence-bundle retry"
 
 # A sealed base refresh invalidates the old reviewer approval and narrator.
 REFRESH_ROOT="$TMP/refresh-sequence"
