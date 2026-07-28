@@ -187,6 +187,15 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
     )
     if result.returncode not in (0, 1, 8):
         raise Refusal(result.stderr.strip() or "GitHub required-check query failed")
+    if (
+        result.returncode == 1
+        and not result.stdout.strip()
+        and re.fullmatch(
+            r"no (?:required )?checks reported on the '[^'\r\n]+' branch",
+            result.stderr.strip(),
+        )
+    ):
+        return "wait", ["required checks not reported"]
     try:
         checks = json.loads(result.stdout)
     except json.JSONDecodeError as error:

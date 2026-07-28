@@ -459,8 +459,9 @@ Autonomous claiming requires configured capacity above one so the lease can be
 transferred in memory to that child. At the first sequencer-authorized Reviewer
 boundary, the trusted ticket-PR helper creates or reuses exactly one open PR for
 the clean pushed ticket head. It waits without launching a role while required
-checks are pending, supplies completed failures to Reviewer, and revalidates
-successful exact-head checks and Reviewer lineage before Narrator. A later
+checks are not yet reported or pending, supplies completed failures to
+Reviewer, and revalidates successful exact-head checks and Reviewer lineage
+before Narrator. A later
 Builder or Test-author run forces fresh review. The helper has no approval or
 merge authority.
 Under Contract 1.8, compatibility `dispatch-plan` performs deterministic

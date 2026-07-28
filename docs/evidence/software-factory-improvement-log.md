@@ -772,6 +772,32 @@ Validation: the focused fallback suite proves v1 migration, direct-CLI
 selection, one commit, and restart-safe recovery. Live four-ticket canary
 pending.
 
+## FI-20260727-037 — Newly created PR checks were parsed before publication
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 successor final four
+Impact: T-118 and T-119 created concurrent protected PRs #40 and #39, then
+released their ticket leases before Reviewer because GitHub had not yet
+reported the required check runs.
+Evidence:
+- both exact ticket-head PRs were created successfully and their required
+  `ci` and `test-immutability` checks later passed
+- the controller recorded `GitHub returned invalid required-check evidence`
+  for both tickets immediately after PR creation
+- GitHub CLI emits an empty nonzero result with the exact
+  `no required checks reported` message during this publication gap
+Root cause: the required-check parser handled JSON `pending` and an empty JSON
+array as wait, but tried to parse the CLI's exact no-checks-yet response as
+JSON.
+Smallest change: classify only the exact GitHub CLI no-checks-reported response
+with empty stdout as `wait`; retain fail-closed handling for every other
+non-JSON or nonzero response.
+Validation: the focused PR helper regression covers the unreported-to-pending
+to-pass lifecycle while retaining malformed-response refusal. Live concurrent
+PR canary pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -11,6 +11,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 role execution retains the validated project in a non-exported
   host binding for every receipt recheck while keeping project model-state
   controls out of provider environments.
+- Contract 1.8 treats GitHub's exact empty no-required-checks-yet response as
+  publication wait. Every other malformed or non-JSON check response remains
+  a fail-closed controller error.
 - Contract 1.8 runs deterministic provider-free preflight once on the Planner
   receipt after entering Planning. Later roles resume from authenticated
   evidence without repeating kickoff preflight.
@@ -1063,3 +1066,12 @@ plan, the first eligible Cursor failure preserves that exact plan as revision
 zero of a same-release v2 journal and appends the direct-CLI fallback in the
 same handoff commit. Generic operator fallback continues to require a
 pre-existing v2 journal.
+
+## 2026-07-27 — Decision 74: Unreported required checks are pending
+
+Category: System change
+
+Immediately after an exact ticket PR is created, GitHub may report that no
+required checks exist before Actions publishes their runs. The ticket PR gate
+treats only that exact empty CLI response as wait; malformed or unrelated
+GitHub responses still fail closed.

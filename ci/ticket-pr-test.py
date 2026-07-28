@@ -107,6 +107,9 @@ elif args[:2] == ['pr', 'create']:
     state.write_text(json.dumps(prs))
 elif args[:2] == ['pr', 'checks']:
     bucket = os.environ.get('FAKE_CHECK_BUCKET', 'pass')
+    if bucket == 'unreported':
+        print("no required checks reported on the 'ticket/T-100' branch", file=sys.stderr)
+        raise SystemExit(1)
     print(json.dumps([{'name': 'ci', 'state': bucket, 'bucket': bucket}]))
     raise SystemExit(8 if bucket == 'pending' else 1 if bucket != 'pass' else 0)
 else:
@@ -247,6 +250,9 @@ else:
         self.assertIn("reviewer or narrator stage", refused["error"])
 
     def test_required_checks_gate_reviewer_and_narrator(self):
+        unreported = self.command(bucket="unreported")
+        self.assertEqual(unreported["status"], "wait")
+        self.assertEqual(unreported["checks"], ["required checks not reported"])
         pending = self.command(bucket="pending")
         self.assertEqual(pending["status"], "wait")
         failed = self.command(bucket="fail")
