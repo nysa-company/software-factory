@@ -433,8 +433,12 @@ After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior
 revision and the active resolution. Both paths update the ticket Kit-SHA before
-work is reclaimed. This authorization never changes ticket state, migrates a
-branch, renews a lease, or permits an unprotected-main record.
+work is reclaimed. The initial v1-to-v2 schema-migration revision may preserve
+the same Kit-SHA; only a later `release-migration` revision claims a release
+change. In both cases the embedded legacy bytes, digest, policy, selections,
+pin commit, and revision hash chain must match exactly. This authorization
+never changes ticket state, migrates a branch, renews a lease, or permits an
+unprotected-main record.
 
 A one-time Contract 1.2 migration may instead use the separate
 `factory/migrations/contract-1.3/` legacy-closeout format. It does not create or

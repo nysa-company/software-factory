@@ -1457,6 +1457,68 @@ wakeup with fresh leases, exact missing-claim recovery, and continued
 reconciliation when admission refuses. Protected GitHub CI retains the
 complete regression.
 
+## FI-20260728-066 — Attestation rejected a valid same-release schema migration
+
+Status: Implemented; qualification pending
+Area: route-journal attestation
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 generation 24
+Impact: T-169 completed Reviewer and Narrator successfully, but bundle
+attestation blocked before publication with `ticket route migration provenance
+does not match`. No sibling provider role was replayed.
+Evidence: the immutable 13-revision T-169 journal embeds the exact legacy v1
+plan and begins with the generator's valid schema migration from `fab7c04` to
+the same `fab7c04`; all later release migrations form a valid hash chain to
+`2951ae1`. The validator alone required revision zero to change Kit-SHA.
+Root cause: `model-manager` correctly distinguishes schema migration from
+release migration, while `ticket-attest` applied the release-change invariant
+to both.
+Smallest change: permit equality only for revision-zero `migration`; keep the
+exact legacy bytes, digest, policy, selections, pin commit, Kit identities, and
+revision hash checks. Later `release-migration` revisions still must change
+Kit-SHA.
+Validation: all 46 focused ticket-attestation tests pass with a same-Kit
+revision-zero fixture, and the patched reducer validates the exact live T-169
+journal and all 12 successful run manifests. Protected GitHub CI retains the
+complete regression.
+
+## FI-20260728-067 — Protected-base advance introduced a fixture conflict after preflight
+
+Status: Observed; defer until after qualification
+Area: deterministic preflight
+Owner: Factory
+First seen: 2026-07-28, Relay T-166 after T-167 merged
+Impact: T-166 passed its original preflight and Review on a base without
+T-167. After protected main advanced, both ticket suites owned port `4761`;
+the refreshed full application test became deterministically untestable and a
+Test-author call was spent discovering a planner-owned contract conflict.
+Evidence: T-166's frozen contract and `event-detail.test.js` both require
+`4761`; protected T-167's `job-detail.test.js` also binds `4761`; either suite
+passes alone and the concurrent full application suite fails.
+Smallest follow-up: after a semantic protected-base change, rerun the existing
+deterministic dependency/fixture preflight before the first invalidated
+provider role. A typed missing-decision result should wait without a provider
+charge. Control-only allowlisted base changes must not trigger it.
+
+## FI-20260728-068 — Same-release non-fast-forward role output lacks a portable repair boundary
+
+Status: Observed; defer until after qualification
+Area: passport and push recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-168 generation 24
+Impact: T-168 Test-author produced exact clean head `05b40fc` to repair
+test-before-implementation ordering, but the non-force push correctly failed
+against remote `7d91acc`. Passport export then rejected the non-ancestral head
+before the existing exact-remote push recovery could become usable.
+Evidence: terminal run `1785266450-63639` is receipt-bound
+`role_exit_push_failed`, records both prior local and remote head `7d91acc`,
+and left one clean local head `05b40fc`; no force push occurred.
+Smallest follow-up: add a protected, exact per-ticket reset authorization that
+binds prior remote head, replacement head/tree, receipt, terminal manifest,
+branch, and passport parent. Export that one failed boundary without marking
+the role successful, then reopen only after the remote equals the authorized
+replacement. Never authorize arbitrary or automatic force pushes.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

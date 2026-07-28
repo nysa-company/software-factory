@@ -272,8 +272,8 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
                     or legacy.get("resolution", {}).get("selections")
                     != body.get("historical_selections")
                     or not valid_oid(body.get("pin_commit", ""))
+                    or not valid_oid(body.get("old_kit_sha", ""))
                     or not valid_oid(body.get("new_kit_sha", ""))
-                    or body.get("new_kit_sha") == body.get("old_kit_sha")
                 ):
                     raise Refusal("ticket route migration provenance does not match")
                 timestamp(body.get("migrated_at"), "route migration")

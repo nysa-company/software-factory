@@ -1338,3 +1338,13 @@ of an older controller may be reconstructed only from one signed nonterminal
 passport, its exact cell/branch, current ticket and route Kit-SHAs, and a new
 lease. Any new-admission refusal pauses admission while already authenticated
 claims continue through the state machine.
+
+## 2026-07-28 — Decision 102: Route schema migration need not change releases
+
+Category: System change
+
+The first v2 route-journal revision authenticates conversion of the exact
+embedded v1 plan and may retain its Kit-SHA. Only a later
+`release-migration` revision asserts a release change. Ticket attestation still
+requires the exact legacy bytes, digest, policy, selections, pin commit, Kit
+identities, and complete parent-hashed journal chain.

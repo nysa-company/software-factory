@@ -460,7 +460,7 @@ else:
         legacy = json.loads(
             (self.product / "factory/route-plans/T-700.json").read_text()
         )
-        legacy["kit_sha"] = "e" * 40
+        legacy["kit_sha"] = "b" * 40
         legacy_raw = (json.dumps(legacy, indent=2, sort_keys=True) + "\n").encode()
         resolution = legacy["resolution"]
         migration = {
@@ -470,7 +470,7 @@ else:
             "legacy_plan_sha256": hashlib.sha256(legacy_raw).hexdigest(),
             "migrated_at": "2026-07-17T11:10:00Z",
             "new_kit_sha": "b" * 40,
-            "old_kit_sha": "e" * 40,
+            "old_kit_sha": "b" * 40,
             "pin_commit": "1" * 40,
             "policy_hash": resolution["policy_hash"],
         }
