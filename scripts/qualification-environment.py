@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import io
 import json
@@ -75,7 +76,50 @@ def write(path: Path, value: dict[str, Any]) -> None:
         os.fsync(stream.fileno())
 
 
-def prepare_provider(release: Path, root: Path) -> str:
+def replace(path: Path, value: dict[str, Any]) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(canonical(value))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        Path(temporary).unlink(missing_ok=True)
+
+
+def read(path: Path) -> dict[str, Any]:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > 131_072
+        ):
+            raise EnvironmentError("qualification state file is unsafe")
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            descriptor = -1
+            value = json.load(stream)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(value, dict):
+        raise EnvironmentError("qualification state file is malformed")
+    return value
+
+
+def provider_configuration(release: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
     catalog = json.loads(
         (release / "scripts/model-routing/catalog-v1.json").read_text(
             encoding="utf-8"
@@ -107,6 +151,18 @@ def prepare_provider(release: Path, root: Path) -> str:
     }
     policy_raw = canonical(policy).rstrip(b"\n")
     policy_hash = hashlib.sha256(policy_raw).hexdigest()
+    activation = {
+        "enabled": True,
+        "mode": "cli-concurrent-v1",
+        "policy_sha256": policy_hash,
+        "routes": routes,
+        "schema": ACTIVATION_SCHEMA,
+    }
+    return policy, activation, policy_hash
+
+
+def prepare_provider(release: Path, root: Path) -> str:
+    policy, activation, policy_hash = provider_configuration(release)
     provider = root / "provider"
     provider.mkdir(mode=0o700)
     for name in ("accounting", "provider-attempts", "provider-apply-locks"):
@@ -114,13 +170,7 @@ def prepare_provider(release: Path, root: Path) -> str:
     policy_path = provider / "provider-policy.json"
     activation_path = provider / "provider-activation.json"
     write(policy_path, policy)
-    write(activation_path, {
-        "enabled": True,
-        "mode": "cli-concurrent-v1",
-        "policy_sha256": policy_hash,
-        "routes": routes,
-        "schema": ACTIVATION_SCHEMA,
-    })
+    write(activation_path, activation)
     command(
         "/usr/bin/python3",
         str(release / "scripts/provider-activation.py"),
@@ -306,17 +356,150 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def upgrade(args: argparse.Namespace) -> dict[str, Any]:
+    root = Path(os.path.realpath(args.root))
+    if not ROOT.fullmatch(str(root)):
+        raise EnvironmentError("qualification root must be under /private/tmp")
+    safe_directory(root)
+    factory = args.factory_root.resolve(strict=True)
+    product = args.product_root.resolve(strict=True)
+    if command("git", "-C", str(factory), "status", "--porcelain", "--untracked-files=all"):
+        raise EnvironmentError("Factory candidate must be clean")
+    if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
+        raise EnvironmentError("qualification product must be clean")
+    sha = command("git", "-C", str(factory), "rev-parse", "HEAD")
+    tree = command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
+    if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
+        raise EnvironmentError("Factory candidate identity is invalid")
+    if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
+        raise EnvironmentError("qualification product is not pinned to the candidate")
+    contract = json.loads(
+        (factory / "integrations/hermes/contract.json").read_text(encoding="utf-8")
+    ).get("contract_version")
+    if contract != "1.8.0":
+        raise EnvironmentError("qualification requires Contract 1.8.0")
+
+    marker = read(root / "marker.json")
+    active_path = root / f"projects/{args.project}/active.json"
+    active = read(active_path)
+    if (
+        marker != {"mode": "qualification", "schema": SCHEMA}
+        or active.get("project") != args.project
+        or active.get("product_path") != str(product)
+        or active.get("contract_version") != contract
+        or not SHA.fullmatch(active.get("kit_sha", ""))
+        or not isinstance(active.get("generation"), int)
+        or isinstance(active.get("generation"), bool)
+        or active["generation"] < 1
+    ):
+        raise EnvironmentError("existing qualification activation is invalid")
+
+    controller = safe_directory(root / f"projects/{args.project}/controller")
+    lock = os.open(
+        controller / "reconcile.lock",
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise EnvironmentError("qualification controller is active") from error
+        claims = controller / "claims"
+        if claims.exists():
+            safe_directory(claims)
+            if any(read(path).get("status") == "running" for path in claims.glob("T-*.json")):
+                raise EnvironmentError("qualification has a live ticket action")
+        if any((product / "factory/.active-runs").glob("*")) or any(
+            (product / "factory/runs").glob("*.pid")
+        ):
+            raise EnvironmentError("qualification has an active provider run")
+
+        releases = safe_directory(root / "releases")
+        release = releases / sha
+        if release.exists():
+            if git_tree(release) != tree:
+                raise EnvironmentError("existing successor release tree is invalid")
+        else:
+            materialize(factory, sha, release)
+        if git_tree(release) != tree:
+            raise EnvironmentError("sealed qualification tree does not match the candidate")
+        policy, activation, policy_hash = provider_configuration(release)
+        if (
+            read(root / "provider/provider-policy.json") != policy
+            or read(root / "provider/provider-activation.json") != activation
+        ):
+            raise EnvironmentError("successor changes the active provider policy")
+
+        product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
+        origins = command(
+            "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
+        ).splitlines()
+        if len(origins) != 1 or not origins[0]:
+            raise EnvironmentError("qualification product origin is ambiguous")
+        receipt_value = {
+            "contract_version": contract,
+            "kit_sha": sha,
+            "kit_tree": tree,
+            "previous_receipt_id": active.get("receipt_id"),
+            "product_origin": origins[0],
+            "product_path": str(product),
+            "product_tree": product_tree,
+            "project": args.project,
+            "provider_policy_sha256": policy_hash,
+            "status": "pass",
+        }
+        receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
+        receipt_value["receipt_id"] = receipt_id
+        receipt = root / f"receipts/{receipt_id}.json"
+        if receipt.exists():
+            if read(receipt) != receipt_value:
+                raise EnvironmentError("successor receipt conflicts")
+        else:
+            write(receipt, receipt_value)
+        generation = active["generation"] + (active["kit_sha"] != sha)
+        next_active = {
+            "contract_version": contract,
+            "generation": generation,
+            "kit_sha": sha,
+            "kit_tree": tree,
+            "product_path": str(product),
+            "product_tree": product_tree,
+            "project": args.project,
+            "provider_policy_sha256": policy_hash,
+            "receipt_id": receipt_id,
+            "release_path": str(release),
+        }
+        replace(active_path, next_active)
+        result = {
+            "factory_sha": sha,
+            "factory_tree": tree,
+            "launcher": str(release / "integrations/hermes/bin/factory-launch"),
+            "product_tree": product_tree,
+            "project": args.project,
+            "provider_policy_sha256": policy_hash,
+            "root": str(root),
+            "schema": SCHEMA,
+            "status": "upgraded",
+        }
+        replace(root / "environment.json", result)
+        return result
+    finally:
+        os.close(lock)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--factory-root", required=True, type=Path)
     parser.add_argument("--product-root", required=True, type=Path)
     parser.add_argument("--project", required=True)
     parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--upgrade", action="store_true")
     args = parser.parse_args()
     try:
         if not PROJECT.fullmatch(args.project):
             raise EnvironmentError("invalid qualification project")
-        print(json.dumps(prepare(args), sort_keys=True))
+        print(json.dumps(upgrade(args) if args.upgrade else prepare(args), sort_keys=True))
     except (
         FileNotFoundError, json.JSONDecodeError, OSError, EnvironmentError,
         subprocess.SubprocessError, tarfile.TarError,

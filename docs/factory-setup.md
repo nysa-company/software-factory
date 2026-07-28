@@ -73,7 +73,9 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   and launcher-supplied root binding are required for isolated subscription
   provider attempts; never construct that environment by hand. The preparer
   also fails before admission when the chosen root is too long for Cursor's
-  isolated attempt scratch.
+  isolated attempt scratch. After a proven candidate defect, use its
+  `--upgrade` mode only after the product pin advances and all provider actions
+  drain; it preserves the authenticated controller/passport state in place.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry

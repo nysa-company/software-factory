@@ -1102,6 +1102,28 @@ Validation: focused controller coverage drives a claimed ticket through
 `COMPLETE` and requires its claim file to be removed. Protected GitHub CI
 retains the complete regression. Live recovery is pending.
 
+## FI-20260728-050 — Qualification release had no trusted upgrade path
+
+Status: Implemented; qualification pending
+Area: release migration
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 15 recovery
+Impact: the retained four-ticket cohort could not use its authenticated
+passports with a proven successor without either copying secrets into a fresh
+root or hand-editing the active release record.
+Evidence: the sealed qualification preparer refused every existing root and
+offered only generation-one creation, while passport authentication and the
+cumulative provider ledger are rooted in the existing controller directory.
+Root cause: qualification release preparation implemented creation but not
+the Contract 1.8 cross-release recovery boundary.
+Smallest change: add one drained, lock-protected `--upgrade` path that seals
+the exact clean successor, requires the product pin and provider policy to
+match it, atomically advances the active record, and leaves controller state
+untouched.
+Validation: focused qualification-environment coverage advances generation
+one to two and proves the old release and passport key remain byte-identical.
+Protected GitHub CI retains the complete regression. Live recovery is pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

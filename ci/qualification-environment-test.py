@@ -156,6 +156,45 @@ class QualificationEnvironmentTest(unittest.TestCase):
         finally:
             shutil.rmtree(root)
 
+    def test_upgrades_release_without_replacing_controller_state(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            product_root=self.product,
+            project="relay",
+            root=self.root,
+        )
+        first = ENVIRONMENT.prepare(args)
+        controller = self.root / "projects/relay/controller"
+        claims = controller / "claims"
+        controller.mkdir(mode=0o700)
+        claims.mkdir(mode=0o700)
+        key = controller / "passport.key"
+        key.write_bytes(b"p" * 32)
+        key.chmod(0o600)
+        ENVIRONMENT.write(claims / "T-110.json", {"status": "waiting"})
+
+        (self.factory / "successor.txt").write_text("successor\n", encoding="utf-8")
+        run(self.factory, "git", "add", "successor.txt")
+        run(self.factory, "git", "commit", "-qm", "successor")
+        successor = run(self.factory, "git", "rev-parse", "HEAD")
+        (self.product / "factory/KIT_PIN").write_text(
+            successor + "\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", "factory/KIT_PIN")
+        run(self.product, "git", "commit", "-qm", "pin successor")
+
+        second = ENVIRONMENT.upgrade(args)
+        active = json.loads(
+            (self.root / "projects/relay/active.json").read_text()
+        )
+        self.assertEqual(first["status"], "prepared")
+        self.assertEqual(second["status"], "upgraded")
+        self.assertEqual(active["kit_sha"], successor)
+        self.assertEqual(active["generation"], 2)
+        self.assertEqual(key.read_bytes(), b"p" * 32)
+        self.assertTrue((self.root / f"releases/{self.sha}").is_dir())
+        self.assertTrue((self.root / f"releases/{successor}").is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -276,6 +276,11 @@ the same trusted marker used by disposable development environments; provider
 attempts therefore retain per-attempt homes without depending on a ticket's
 cell path. Environment preparation also rejects a root whose worst-case Cursor
 attempt data path would exceed the adapter's isolated-scratch limit.
+If a proven Factory defect requires a successor during qualification, the
+same preparer upgrades that root only while reconciliation and provider work
+are drained. It seals the successor, verifies unchanged provider policy,
+atomically advances the activation record, and preserves the controller
+directory, passport key, passports, claims, and cumulative provider ledger.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket

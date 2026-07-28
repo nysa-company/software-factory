@@ -1189,3 +1189,13 @@ Category: System change
 The controller stores its immutable release directory as `release_path`.
 Ticket completion and cancellation retain the distinct `release` lifecycle
 action, and focused coverage must prove a completed claim is actually removed.
+
+## 2026-07-28 — Decision 87: Qualification upgrades preserve one controller root
+
+Category: System change
+
+A proven mid-qualification Factory defect advances the sealed release only
+through the qualification preparer's drained, lock-protected upgrade action.
+The controller directory, passport authentication key, passports, claims, and
+provider ledger remain in place; fresh-root secret copying and active-record
+edits are forbidden.
