@@ -493,6 +493,22 @@ run_mock_internal() {
     case "$role" in
       spec-linter) append_commit_push "$root" 'SPEC-LINT: PASS' "$TICKET: record synthetic spec lint" ;;
       reviewer) append_commit_push "$root" 'reviewer round 1: APPROVE' "$TICKET: record synthetic review" ;;
+      narrator)
+        cat > "$root/worktrees/$TICKET/factory/tickets/$TICKET-bundle.md" <<'BUNDLE'
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
+        git -C "$root/worktrees/$TICKET" add "factory/tickets/$TICKET-bundle.md"
+        git -C "$root/worktrees/$TICKET" -c user.name='Factory Dev Lane' \
+          -c user.email=factory-dev@local commit -qm "$TICKET: record synthetic bundle"
+        git -C "$root/worktrees/$TICKET" push -q origin "HEAD:refs/heads/ticket/$TICKET"
+        ;;
     esac
   done
   set_review_state "$root"
