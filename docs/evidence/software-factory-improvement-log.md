@@ -1235,6 +1235,26 @@ Validation: add focused preservation/refusal cases and one live control-only
 base advance after the current qualification. Do not retrofit the current
 receipts or change the frozen candidate for this deferred optimization.
 
+## FI-20260728-056 — Authenticated push repair could not re-enter the state machine
+
+Status: Implemented; qualification pending
+Area: controller recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 recovery
+Impact: T-169's Test-author output passed focused checks but its trusted
+non-force push failed after rewriting the test commit. The exact tested head
+was operator-authorized, published, and reconnected to its signed passport
+lineage, yet its same-release blocked claim could not resume.
+Root cause: the controller recovered blocked claims only across Factory
+releases; it had no typed recovery for a repaired `role_exit_push_failed`.
+Smallest change: re-admit only that exact terminal failure after the signed
+passport validates the clean cell and its exact head equals the remote branch
+tip. Rebind the ticket lease, clear only the failed receipt, and let the state
+machine rerun the invalidated role. Every other blocked claim remains blocked.
+Validation: focused controller coverage requires the authenticated passport,
+exact remote head, typed terminal failure, and new ticket lease. Protected
+GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

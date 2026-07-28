@@ -1239,3 +1239,13 @@ known Cursor background-callback concatenation are normalized only when every
 verdict and owner signal agrees. This supersedes Decision 42's requirement for
 one particular later-summary sentence; ambiguity, contradiction, or a missing
 owner still fails closed.
+
+## 2026-07-28 — Decision 92: Push repair reopens only the failed role
+
+Category: System change
+
+A blocked `role_exit_push_failed` may re-enter the state machine only after its
+signed passport validates the clean cell and the passport head exactly equals
+the remote ticket tip. The controller rebinds that ticket's lease and clears
+only the failed receipt; every successful role and every other blocked failure
+remain unchanged.

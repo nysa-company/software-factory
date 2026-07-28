@@ -493,6 +493,67 @@ class Controller:
                 from_factory_sha=prior,
             )
 
+    def recover_repaired_push_failures(self, claims: list[dict[str, Any]]) -> None:
+        for claim in claims:
+            if (
+                claim["status"] != "blocked"
+                or not claim.get("receipt")
+                or self.active_run(claim["ticket"])
+            ):
+                continue
+            terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
+            if terminal is None or terminal.get("role_exit") != "role_exit_push_failed":
+                continue
+            passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+            if not passport_path.exists():
+                continue
+            try:
+                validation = self.json_call(
+                    "passport", "validate", "--ticket", claim["ticket"],
+                    "--workdir", claim["worktree"], "--json",
+                )
+            except ControllerError:
+                continue
+            passport = read(passport_path)
+            head = passport.get("head_sha", "")
+            branch = passport.get("branch", "")
+            if (
+                validation.get("status") != "ok"
+                or validation.get("passport") != passport.get("passport_sha256")
+                or not SHA.fullmatch(head)
+                or branch != claim["branch"]
+            ):
+                continue
+            remote = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
+                    "origin", f"refs/heads/{branch}",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            if remote.returncode != 0 or remote.stdout != (
+                f"{head}\trefs/heads/{branch}\n"
+            ):
+                continue
+            try:
+                self.renew(claim)
+            except ControllerError:
+                lease = self.json_call("claim", "--ticket", claim["ticket"])
+                if (
+                    lease.get("schema_version") != 1
+                    or lease.get("ticket") != claim["ticket"]
+                    or not DIGEST.fullmatch(lease.get("lease_id", ""))
+                ):
+                    raise ControllerError("repaired push lease is invalid")
+                claim["lease"] = lease["lease_id"]
+            failed_run = terminal.get("run_id", "")
+            claim.update(receipt="", role="", status="claimed")
+            self.save_claim(claim)
+            self.event(
+                "push_failure_recovered", claim["ticket"],
+                failed_run_id=failed_run,
+            )
+
     def relocate_qualification_cell(self, claim: dict[str, Any]) -> None:
         if (
             not self.qualification
@@ -960,6 +1021,7 @@ class Controller:
     def reconcile(self) -> dict[str, Any]:
         existing = self.load_claims()
         self.recover_upgraded_claims(existing)
+        self.recover_repaired_push_failures(existing)
         self.event(
             "controller_started", recovered_tickets=sorted(
                 item["ticket"] for item in existing if self.runnable(item)
