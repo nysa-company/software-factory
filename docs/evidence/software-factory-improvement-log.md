@@ -1433,6 +1433,30 @@ never calls export, and clears the claim. The retained T-166 state resolves
 `True` only for run `1785262040-61879` with `role_exit=ok`. Protected GitHub CI
 retains the complete regression.
 
+## FI-20260728-065 — Budget reopen fell back through fresh admission
+
+Status: Implemented; qualification pending
+Area: admission and controller recovery
+Owner: Factory
+First seen: 2026-07-28, Relay generation 23 recovery
+Impact: the corrected budget digest removed T-168's budget-wait claim. Fresh
+admission then treated its mid-ticket branch as a pre-provider branch divergent
+from protected main, hit `ticket remote branch does not match reset
+authorization`, and aborted the controller cycle before T-166 or T-169 could
+reconcile. No provider call started.
+Root cause: budget wakeup deleted portable controller identity instead of
+reacquiring its lease, and fresh-admission errors were still a top-level
+head-of-line blocker.
+Smallest change: retain and rebind a budget claim directly. For state left by
+the older deletion behavior, reconstruct only from one signed nonterminal
+passport, its exact checked-out branch/cell, current ticket and route Kit-SHAs,
+and a fresh ticket lease. Treat any new-admission error as an admission stop,
+not a stop for existing authenticated claims.
+Validation: all 22 focused controller tests pass, covering override/base
+wakeup with fresh leases, exact missing-claim recovery, and continued
+reconciliation when admission refuses. Protected GitHub CI retains the
+complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

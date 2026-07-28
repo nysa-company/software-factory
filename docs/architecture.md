@@ -258,8 +258,9 @@ budget.
 The ticket-budget stage reduces immutable charges against the authenticated
 base envelope plus any active ticket-scoped cap override. Budget-wait claims
 bind both the envelope and immutable override-record bytes, so adding an
-authorized cap reopens only deterministic reconciliation; expired,
-conflicting, malformed, or unrelated records never raise the effective cap.
+authorized cap reacquires the exact ticket lease and reopens the retained
+passport/cell directly; expired, conflicting, malformed, or unrelated records
+never raise the effective cap.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.
@@ -275,6 +276,11 @@ was cleared, restart identifies the exact run, role, and transition receipt in
 both passport charge and completed-role evidence. It authenticates and
 migrates that passport instead of exporting or executing the role again; every
 partial or mismatched checkpoint remains fail-closed.
+If a prior controller version removed a claim, qualification restart may
+reconstruct it only from one signed nonterminal passport, one exact checked-out
+branch, current ticket/route Kit-SHAs, and a newly claimed lease. New-admission
+refusals stop admission but never prevent already authenticated claims from
+reconciling.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one

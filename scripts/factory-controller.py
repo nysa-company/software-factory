@@ -283,9 +283,20 @@ class Controller:
                 if not DIGEST.fullmatch(value.get("budget_sha256", "")):
                     raise ControllerError("budget wait claim is malformed")
                 if value["budget_sha256"] != self.envelope_digest():
-                    path.unlink()
+                    lease = self.json_call("claim", "--ticket", value["ticket"])
+                    if (
+                        lease.get("schema_version") != 1
+                        or lease.get("ticket") != value["ticket"]
+                        or not DIGEST.fullmatch(lease.get("lease_id", ""))
+                    ):
+                        raise ControllerError("reopened budget lease is invalid")
+                    value.pop("budget_sha256")
+                    value.update(
+                        lease=lease["lease_id"], receipt="", role="",
+                        status="claimed",
+                    )
+                    self.save_claim(value)
                     self.event("budget_reopened", value["ticket"])
-                    continue
             worktree = Path(value["worktree"])
             if not worktree.exists():
                 matches = []
@@ -349,6 +360,87 @@ class Controller:
             )
             claims.append(claim)
         return claims
+
+    def recover_missing_passport_claims(
+        self, claims: list[dict[str, Any]]
+    ) -> None:
+        if not self.qualification:
+            return
+        passports = self.state / "passports"
+        if not passports.is_dir():
+            return
+        claimed = {item["ticket"] for item in claims}
+        records: dict[str, list[str]] = {}
+        current: dict[str, str] = {}
+        output = subprocess.run(
+            ["git", "-C", str(self.product), "worktree", "list", "--porcelain"],
+            text=True, capture_output=True, check=True, timeout=120,
+        ).stdout
+        for line in output.splitlines() + [""]:
+            if line:
+                name, _, item = line.partition(" ")
+                current[name] = item
+                continue
+            branch = current.get("branch", "")
+            if branch and current.get("worktree"):
+                records.setdefault(branch, []).append(current["worktree"])
+            current = {}
+        for ticket in self.qualification["tickets"]:
+            path = passports / f"{ticket}.json"
+            if ticket in claimed or not path.exists() or self.active_run(ticket):
+                continue
+            passport = read(path)
+            branch = f"ticket/{ticket}"
+            worktrees = records.get(f"refs/heads/{branch}", [])
+            if (
+                passport.get("ticket") != ticket
+                or passport.get("branch") != branch
+                or passport.get("current_state") not in {
+                    "Ready", "Planning", "Building", "Review",
+                    "Awaiting Approval", "Approved",
+                }
+                or len(worktrees) != 1
+                or not Path(worktrees[0]).is_absolute()
+            ):
+                continue
+            claim = {
+                "branch": branch,
+                "lease": "",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": worktrees[0],
+            }
+            if not self.ticket_release_current(claim):
+                continue
+            try:
+                lease = self.json_call("claim", "--ticket", ticket)
+                if (
+                    lease.get("schema_version") != 1
+                    or lease.get("ticket") != ticket
+                    or not DIGEST.fullmatch(lease.get("lease_id", ""))
+                ):
+                    raise ControllerError("recovered ticket lease is invalid")
+                claim["lease"] = lease["lease_id"]
+                self.migrate_passport(claim, "preserve")
+            except ControllerError as error:
+                if claim["lease"]:
+                    self.json_call(
+                        "release", "--ticket", ticket,
+                        "--lease", claim["lease"],
+                    )
+                self.event(
+                    "missing_claim_blocked", ticket, error=str(error),
+                )
+                continue
+            self.save_claim(claim)
+            claims.append(claim)
+            claimed.add(ticket)
+            self.event("missing_claim_recovered", ticket)
 
     def renew(self, claim: dict[str, Any]) -> None:
         self.json_call(
@@ -1142,6 +1234,7 @@ class Controller:
 
     def reconcile(self) -> dict[str, Any]:
         existing = self.load_claims()
+        self.recover_missing_passport_claims(existing)
         self.recover_upgraded_claims(existing)
         self.recover_repaired_failures(existing)
         self.event(
@@ -1149,7 +1242,11 @@ class Controller:
                 item["ticket"] for item in existing if self.runnable(item)
             ),
         )
-        claims = self.claim_new(existing)
+        try:
+            claims = self.claim_new(existing)
+        except ControllerError as error:
+            self.event("admission_blocked", error=str(error))
+            claims = existing
         if self.qualification and not self.marker("qualification-restart-boundary"):
             active = sorted(
                 item["ticket"] for item in claims if self.runnable(item)

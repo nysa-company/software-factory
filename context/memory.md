@@ -1327,3 +1327,14 @@ passport charge evidence and, for success, completed-role evidence. It
 authenticates and migrates that passport, then finishes reconciliation without
 re-exporting or replaying the role. Any partial or mismatched checkpoint stays
 blocked.
+
+## 2026-07-28 — Decision 101: Admission cannot block retained checkpoints
+
+Category: System change
+
+Budget reopening reacquires the exact ticket lease on the retained claim rather
+than deleting it and returning through fresh admission. A claim missing because
+of an older controller may be reconstructed only from one signed nonterminal
+passport, its exact cell/branch, current ticket and route Kit-SHAs, and a new
+lease. Any new-admission refusal pauses admission while already authenticated
+claims continue through the state machine.
