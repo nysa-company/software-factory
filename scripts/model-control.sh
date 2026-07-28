@@ -631,7 +631,57 @@ print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
     rm -f "$apply_file" "$approval_file"
     ;;
+  pin-batch)
+    tickets=()
+    workdirs=()
+    while [[ $# -gt 0 ]]; do
+      [[ $# -ge 4 && "$1" == "--ticket" && "$3" == "--workdir" ]] ||
+        json_error "pin-batch requires ticket/workdir pairs"
+      [[ "$2" =~ ^T-[0-9]+$ ]] || json_error "ticket must match T-NNN"
+      [[ "$4" == /* ]] || json_error "workdir must be absolute"
+      for existing in "${tickets[@]-}"; do
+        [[ "$existing" != "$2" ]] || json_error "pin-batch tickets must be unique"
+      done
+      tickets+=("$2")
+      workdirs+=("$4")
+      shift 4
+    done
+    [[ "${#tickets[@]}" -ge 1 && "${#tickets[@]}" -le 4 ]] ||
+      json_error "pin-batch requires one to four tickets"
+    for index in "${!tickets[@]}"; do
+      validate_control_workdir "${tickets[$index]}" "${workdirs[$index]}"
+    done
+    load_machine_config
+    factory_load_model_probe_context ||
+      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-batch.XXXXXX")" ||
+      json_error "could not allocate batch pin resolution"
+    TEMPORARY_FILE="$resolution"
+    factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+      "$FACTORY_DISABLED_ROUTE_IDS" ||
+      json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    pin_results=()
+    for index in "${!tickets[@]}"; do
+      pin_result="$(FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+        FACTORY_INTERNAL_BATCH_RESOLUTION="$resolution" \
+        /bin/bash "$KIT_DIR/scripts/model-control.sh" pin \
+        --ticket "${tickets[$index]}" --workdir "${workdirs[$index]}")" ||
+        json_error "batch ticket pin failed for ${tickets[$index]}"
+      pin_results+=("$pin_result")
+    done
+    python3 - "${pin_results[@]}" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "pins": [json.loads(value) for value in sys.argv[1:]],
+    "schema": "model-pin-batch/v1",
+    "status": "ok",
+}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+PY
+    ;;
   pin)
+    internal_resolution="${FACTORY_INTERNAL_BATCH_RESOLUTION:-}"
+    unset FACTORY_INTERNAL_BATCH_RESOLUTION
     ticket=""
     workdir=""
     while [[ $# -gt 0 ]]; do
@@ -779,15 +829,41 @@ PY
       factory_record_ticket_kit_sha "$ticket_file" "$FACTORY_KIT_SHA" ||
         json_error "$FACTORY_TICKET_KIT_ERROR"
     fi
-    load_machine_config
-    factory_load_model_probe_context ||
-      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
-    resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-pin.XXXXXX")" ||
-      json_error "could not allocate pin resolution"
-    TEMPORARY_FILE="$resolution"
-    factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
-      "$FACTORY_DISABLED_ROUTE_IDS" ||
-      json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    if [[ -n "$internal_resolution" ]]; then
+      resolution_parent="$(cd "$(dirname "$internal_resolution")" 2>/dev/null && pwd -P)" ||
+        json_error "batch pin resolution is unavailable"
+      resolution="$resolution_parent/$(basename "$internal_resolution")"
+      [[ "$resolution" == "$internal_resolution" &&
+         "$resolution_parent" == "$(cd "$FACTORY_MODEL_STATE_ROOT" && pwd -P)" &&
+         "$(basename "$resolution")" == .model-control-batch.* ]] ||
+        json_error "batch pin resolution is outside model state"
+      python3 - "$resolution" <<'PY' ||
+import os
+import pathlib
+import stat
+import sys
+
+value = pathlib.Path(sys.argv[1]).lstat()
+if (
+    not stat.S_ISREG(value.st_mode)
+    or value.st_uid != os.geteuid()
+    or value.st_nlink != 1
+    or stat.S_IMODE(value.st_mode) != 0o600
+):
+    raise SystemExit(1)
+PY
+        json_error "batch pin resolution is unsafe"
+    else
+      load_machine_config
+      factory_load_model_probe_context ||
+        json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-pin.XXXXXX")" ||
+        json_error "could not allocate pin resolution"
+      TEMPORARY_FILE="$resolution"
+      factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+        "$FACTORY_DISABLED_ROUTE_IDS" ||
+        json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    fi
     pin_json="$(manager pin --ticket "$ticket" --kit-sha "$FACTORY_KIT_SHA" \
       --resolution-file "$resolution" --output "$output")" ||
       json_error "ticket route pin is invalid or conflicts with an existing pin"

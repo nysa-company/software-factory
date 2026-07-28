@@ -1124,3 +1124,13 @@ A model plan containing only ready and temporarily unavailable route evidence
 is a shared controller wait, not a ticket failure. One serialized probe pauses
 the four-ticket cohort without releasing claims; invalid or unknown route
 evidence remains a fail-closed configuration error.
+
+## 2026-07-28 — Decision 80: Readiness resolves before concurrent ticket work
+
+Category: System change
+
+The Contract 1.8 controller resolves one task-free model plan before opening
+the concurrent ticket worker pool and pins every route-less clean branch from
+that in-process batch resolution. Release validation and per-adapter timeouts
+remain unchanged; only task-bearing roles and protected PR validation fan out
+four ways.

@@ -15,7 +15,6 @@ import secrets
 import stat
 import subprocess
 import tempfile
-import threading
 import time
 from typing import Any
 
@@ -118,8 +117,6 @@ class Controller:
         safe_directory(self.events, create=True)
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
-        self.model_pin_lock = threading.Lock()
-        self.model_pin_unavailable = False
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -345,6 +342,49 @@ class Controller:
         self.json_call(
             "renew", "--ticket", claim["ticket"], "--lease", claim["lease"],
         )
+
+    @staticmethod
+    def route_path(claim: dict[str, Any]) -> Path:
+        return Path(claim["worktree"]) / f"factory/route-plans/{claim['ticket']}.json"
+
+    def pin_routes(self, claims: list[dict[str, Any]]) -> list[dict[str, str]]:
+        missing = [claim for claim in claims if not self.route_path(claim).exists()]
+        if not missing:
+            return []
+        arguments = ["models", "pin-batch"]
+        for claim in missing:
+            arguments.extend([
+                "--ticket", claim["ticket"], "--workdir", claim["worktree"],
+            ])
+        pin = self.json_call(*arguments, "--json", allow=(0, 2), timeout=None)
+        if pin.get("status") == "error":
+            error = pin.get("error", "")
+            if error != (
+                "model pin resolution failed: profile_temporarily_unavailable"
+            ):
+                raise ControllerError(
+                    error or "batch model pin returned an invalid error"
+                )
+            results = []
+            for index, claim in enumerate(missing):
+                claim["status"] = "waiting"
+                self.save_claim(claim)
+                self.event(
+                    "model_pin_wait", claim["ticket"], shared=index != 0,
+                )
+                results.append({"status": "waiting", "ticket": claim["ticket"]})
+            return results
+        pins = pin.get("pins")
+        if (
+            pin.get("schema") != "model-pin-batch/v1"
+            or pin.get("status") != "ok"
+            or not isinstance(pins, list)
+            or len(pins) != len(missing)
+            or any(not self.route_path(claim).exists() for claim in missing)
+        ):
+            raise ControllerError("batch model pin returned malformed evidence")
+        self.event("model_pin_batch", tickets=[claim["ticket"] for claim in missing])
+        return []
 
     def release(self, claim: dict[str, Any]) -> None:
         if claim.get("publication_lease"):
@@ -737,39 +777,8 @@ class Controller:
                     ),
                     "ticket": claim["ticket"],
                 }
-            route = Path(claim["worktree"]) / f"factory/route-plans/{claim['ticket']}.json"
-            if not route.exists():
-                with self.model_pin_lock:
-                    if self.model_pin_unavailable:
-                        claim["status"] = "waiting"
-                        self.save_claim(claim)
-                        self.event("model_pin_wait", claim["ticket"], shared=True)
-                        return {"status": "waiting", "ticket": claim["ticket"]}
-                    self.renew(claim)
-                    pin = self.json_call(
-                        "models", "pin", "--ticket", claim["ticket"],
-                        "--workdir", claim["worktree"], "--json",
-                        allow=(0, 2),
-                        timeout=None,
-                    )
-                    if pin.get("status") == "error":
-                        error = pin.get("error", "")
-                        if error == (
-                            "model pin resolution failed: "
-                            "profile_temporarily_unavailable"
-                        ):
-                            self.model_pin_unavailable = True
-                            claim["status"] = "waiting"
-                            self.save_claim(claim)
-                            self.event(
-                                "model_pin_wait", claim["ticket"], shared=False,
-                            )
-                            return {
-                                "status": "waiting", "ticket": claim["ticket"],
-                            }
-                        raise ControllerError(
-                            error or "model pin returned an invalid error"
-                        )
+            if not self.route_path(claim).exists():
+                raise ControllerError("ticket route was not batch pinned")
             transition = self.json_call(
                 "state-machine", "--ticket", claim["ticket"],
                 "--lease", claim["lease"], "--workdir", claim["worktree"],
@@ -949,8 +958,11 @@ class Controller:
             })
             self.event("controller_recovered", tickets=recovered)
         runnable = [item for item in claims if self.runnable(item)]
-        with ThreadPoolExecutor(max_workers=min(4, len(runnable) or 1)) as executor:
-            results = list(executor.map(self.reconcile_ticket, runnable))
+        results = self.pin_routes(runnable)
+        waiting = {item["ticket"] for item in results}
+        ready = [item for item in runnable if item["ticket"] not in waiting]
+        with ThreadPoolExecutor(max_workers=min(4, len(ready) or 1)) as executor:
+            results.extend(executor.map(self.reconcile_ticket, ready))
         return {
             "active": len(runnable),
             "results": results,

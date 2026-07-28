@@ -9,8 +9,6 @@ import json
 import os
 from pathlib import Path
 import tempfile
-import threading
-import time
 import unittest
 
 
@@ -136,6 +134,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(first.reconcile()["status"], "restart_required")
 
         second = CONTROL.Controller(self.args)
+        second.pin_routes = lambda _claims: []
         second.reconcile_ticket = lambda claim: {
             "status": "active", "ticket": claim["ticket"],
         }
@@ -193,23 +192,24 @@ class FactoryControllerTest(unittest.TestCase):
 
         def json_call(*args, **kwargs):
             calls.append((args, kwargs))
-            if args[0] == "state-machine":
-                return {"stage": "AWAIT-OPERATOR test", "receipt": "b" * 64}
-            return {}
+            route = cell / "factory/route-plans/T-110.json"
+            route.parent.mkdir(parents=True)
+            route.write_text("{}\n", encoding="utf-8")
+            return {
+                "pins": [{}], "schema": "model-pin-batch/v1", "status": "ok",
+            }
 
         controller.json_call = json_call
-        controller.renew = lambda _claim: None
-        controller.finish_pending_run = lambda _claim: True
-        self.assertEqual(
-            controller.reconcile_ticket(claim)["status"], "waiting"
-        )
+        self.assertEqual(controller.pin_routes([claim]), [])
         model_calls = [
-            (args, kwargs) for args, kwargs in calls if args[:2] == ("models", "pin")
+            (args, kwargs)
+            for args, kwargs in calls
+            if args[:2] == ("models", "pin-batch")
         ]
         self.assertEqual(len(model_calls), 1)
         self.assertIsNone(model_calls[0][1]["timeout"])
 
-    def test_concurrent_tickets_serialize_model_readiness_probes(self) -> None:
+    def test_concurrent_tickets_share_one_batch_readiness_probe(self) -> None:
         controller = CONTROL.Controller(self.args)
         claims = []
         for number in range(4):
@@ -227,30 +227,28 @@ class FactoryControllerTest(unittest.TestCase):
                 "ticket": f"T-{110 + number}",
                 "worktree": str(cell),
             })
-        guard = threading.Lock()
-        active = 0
-        maximum = 0
+        calls = []
 
         def json_call(*args, **_kwargs):
-            nonlocal active, maximum
-            if args[:2] == ("models", "pin"):
-                with guard:
-                    active += 1
-                    maximum = max(maximum, active)
-                time.sleep(0.02)
-                with guard:
-                    active -= 1
-                return {}
-            return {"stage": "AWAIT-OPERATOR test", "receipt": "b" * 64}
+            calls.append(args)
+            for claim in claims:
+                route = controller.route_path(claim)
+                route.parent.mkdir(parents=True, exist_ok=True)
+                route.write_text("{}\n", encoding="utf-8")
+            return {
+                "pins": [{} for _ in claims],
+                "schema": "model-pin-batch/v1",
+                "status": "ok",
+            }
 
         controller.json_call = json_call
-        controller.renew = lambda _claim: None
-        controller.finish_pending_run = lambda _claim: True
-        with CONTROL.ThreadPoolExecutor(max_workers=4) as executor:
-            results = list(executor.map(controller.reconcile_ticket, claims))
-
-        self.assertEqual(maximum, 1)
-        self.assertEqual({item["status"] for item in results}, {"waiting"})
+        self.assertEqual(controller.pin_routes(claims), [])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ("models", "pin-batch"))
+        self.assertEqual(
+            [calls[0][index] for index in range(3, len(calls[0]), 4)],
+            [claim["ticket"] for claim in claims],
+        )
 
     def test_temporary_model_outage_waits_four_tickets_after_one_probe(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -274,7 +272,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         def json_call(*args, **_kwargs):
             nonlocal model_calls
-            if args[:2] == ("models", "pin"):
+            if args[:2] == ("models", "pin-batch"):
                 model_calls += 1
                 return {
                     "error": (
@@ -286,10 +284,7 @@ class FactoryControllerTest(unittest.TestCase):
             raise AssertionError("state machine must wait for model readiness")
 
         controller.json_call = json_call
-        controller.renew = lambda _claim: None
-        controller.finish_pending_run = lambda _claim: True
-        with CONTROL.ThreadPoolExecutor(max_workers=4) as executor:
-            results = list(executor.map(controller.reconcile_ticket, claims))
+        results = controller.pin_routes(claims)
 
         self.assertEqual(model_calls, 1)
         self.assertEqual({item["status"] for item in results}, {"waiting"})

@@ -927,6 +927,33 @@ four tickets waiting without reaching the state machine. A focused backend
 policy assertion covers the typed classification. Fresh live qualification
 pending.
 
+## FI-20260728-043 — Lease prechecks starved the serialized readiness probe
+
+Status: Implemented; qualification pending
+Area: state machine
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 9
+Impact: T-142 through T-145 retained their claims through seven shared waits,
+but never reached Planner despite zero provider attempts or charges.
+Evidence:
+- generation 9 recorded 28 authenticated `model_pin_wait` events
+- each controller cycle ran four release-integrity-backed lease renewals before
+  the sole model pin
+- under the controller, Cursor `agent --version` spent its complete 30-second
+  bound in local I/O
+- with the controller drained, the exact seven-route diagnostic completed in
+  86 seconds with Codex and every required Cursor route ready
+Root cause: serializing `models pin` did not serialize the four launcher
+prechecks that immediately preceded it. Their redundant release-tree scans
+created enough local I/O contention to starve the bounded readiness command.
+Smallest change: resolve one task-free model plan before the ticket worker pool,
+then pin all route-less ticket branches from that in-process batch resolution.
+Do not weaken release validation or any adapter timeout.
+Validation: focused controller coverage requires one batch readiness call for
+four tickets and one shared wait on transient failure. The protected full
+regression covers launcher grammar and exact batch commits. Fresh live
+four-ticket qualification pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

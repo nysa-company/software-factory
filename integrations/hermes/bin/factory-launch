@@ -1502,6 +1502,27 @@ PY
           MODEL_MUTATION=1
         fi
         ;;
+      pin-batch)
+        [[ "$CONTRACT_VERSION" == "1.8.0" ]] ||
+          die "batch model pinning requires contract 1.8.0"
+        [[ "${!#}" == "--json" ]] || usage
+        set -- "${@:1:$(($# - 1))}"
+        shift
+        MODEL_ARGS=("$MODEL_ACTION")
+        MODEL_BATCH_COUNT=0
+        while [[ $# -gt 0 ]]; do
+          [[ $# -ge 4 && "$1" == "--ticket" && "$3" == "--workdir" ]] || usage
+          [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+          resolve_product_workdir "$4"
+          validate_ticket_worktree "$2"
+          MODEL_ARGS+=(--ticket "$2" --workdir "$RESOLVED_WORKDIR")
+          MODEL_BATCH_COUNT=$((MODEL_BATCH_COUNT + 1))
+          shift 4
+        done
+        [[ "$MODEL_BATCH_COUNT" -ge 1 && "$MODEL_BATCH_COUNT" -le 4 ]] || usage
+        add_certified_origin_env
+        MODEL_MUTATION=1
+        ;;
       pin)
         [[ $# -eq 6 && "$2" == "--ticket" && "$4" == "--workdir" &&
            "$6" == "--json" ]] || usage

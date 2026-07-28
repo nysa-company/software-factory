@@ -423,13 +423,14 @@ route and never silently retries a task-bearing process. Contract 1.4 may
 migrate the v1 plan and append a fallback revision only after an eligible
 terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
-journals automatically. Contract 1.8 serializes only the machine-readiness
-portion of concurrent ticket pinning so four identical CLI probe sets cannot
-starve one another; role execution and protected PR validation remain
-four-ticket concurrent. A readiness plan containing only ready and temporarily
-unavailable routes yields one shared controller wait for the cohort; it does
-not release claims or block tickets. Invalid or unknown route evidence still
-fails closed.
+journals automatically. Contract 1.8 resolves machine readiness once before
+concurrent ticket execution, then pins one to four clean ticket branches from
+that in-process batch resolution. This prevents both duplicate probes and
+concurrent release-integrity fan-out from starving bounded CLI startup; role
+execution and protected PR validation remain four-ticket concurrent. A
+readiness plan containing only ready and temporarily unavailable routes yields
+one shared controller wait for the cohort; it does not release claims or block
+tickets. Invalid or unknown route evidence still fails closed.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` for
 Contracts 1.1 through 1.5 and `4` for Contracts 1.6 through 1.8. The older

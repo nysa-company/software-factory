@@ -1220,15 +1220,19 @@ assert_model_call disable disable --scope-type route --scope-id codex-gpt-5.6-so
 assert_model_call enable enable --scope-type route --scope-id codex-gpt-5.6-sol --json
 
 PIN_HEAD_BEFORE="$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)"
-if ! run_launcher launchtest models pin --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
+if ! run_launcher launchtest models pin-batch \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
   --json > "$TMP/models-pin.json"; then
   cat "$TMP/models-pin.json" >&2
-  fail "valid model pin invocation failed"
+  fail "valid batch model pin invocation failed"
 fi
 python3 - "$TMP/models-pin.json" "$RUN_WORKTREE_PHYS" "$SHA_MODELS" <<'PY'
 import json, pathlib, subprocess, sys
 path, workdir, kit_sha = sys.argv[1:]
-value = json.load(open(path, encoding="utf-8"))
+batch = json.load(open(path, encoding="utf-8"))
+assert batch["schema"] == "model-pin-batch/v1", batch
+assert batch["status"] == "ok" and len(batch["pins"]) == 1, batch
+value = batch["pins"][0]
 assert value["schema"] == "ticket-model-route-plan/v1", value
 assert value["commit_created"] is True, value
 assert len(value["commit_sha"]) == 40 and len(value["pin_hash"]) == 64, value
@@ -1262,7 +1266,8 @@ if ! run_launcher launchtest models pin --ticket T-123 --workdir "$RUN_WORKTREE_
 fi
 python3 - "$TMP/models-pin.json" "$TMP/models-pin-again.json" <<'PY'
 import json, sys
-first, second = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:])
+first = json.load(open(sys.argv[1], encoding="utf-8"))["pins"][0]
+second = json.load(open(sys.argv[2], encoding="utf-8"))
 assert second["commit_created"] is False, second
 assert second["commit_sha"] == first["commit_sha"], (first, second)
 assert second["pin_hash"] == first["pin_hash"], (first, second)
@@ -1295,6 +1300,9 @@ expect_bad_model large-ttl disable --scope-type route --scope-id codex-gpt-5.6-s
 expect_bad_model pin-main pin --ticket T-123 --workdir "$LAUNCH_PRODUCT_PHYS" --json
 expect_bad_model pin-wrong-ticket pin --ticket T-123 \
   --workdir "$WRONG_TICKET_WORKTREE_PHYS" --json
+expect_bad_model pin-batch-duplicate pin-batch \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
 
 mv "$KITS_ROOT/projects/launchtest/routing" \
   "$KITS_ROOT/projects/launchtest/routing-real"
@@ -1319,6 +1327,8 @@ expect_bad_model maintenance-enable enable --scope-type route \
   --scope-id codex-gpt-5.6-sol --json
 expect_bad_model maintenance-pin pin --ticket T-123 \
   --workdir "$RUN_WORKTREE_PHYS" --json
+expect_bad_model maintenance-pin-batch pin-batch \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
 rm -f "$LAUNCH_PRODUCT/factory/MAINTENANCE"
 # Keep later launcher/run accounting fixtures independent from the model-state
 # mutation coverage above.
