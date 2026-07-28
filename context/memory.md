@@ -42,6 +42,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   reducer requires authenticated passports, no duplicate successful role/head
   or charge, controller restart and cell relocation events, concurrent PR
   validation, protected checks, exact merged heads, and protected-main Done.
+- A deterministic `REFUSE` receipt never migrates the ticket passport. The
+  controller first blocks the claim, then owns authenticated cross-release
+  passport migration and the durable pre-route pending marker on its next
+  one-shot.
 - Fresh development lanes and trusted ticket-state reconciliation omit the
   Reviewer checkpoint argument when no authenticated import exists, including
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
@@ -1383,3 +1387,12 @@ base-envelope identity, and setting keys, is issued later, and expires no
 earlier. The predecessor remains immutable and authenticated. Missing,
 ambiguous, shortened, differently scoped, or differently keyed replacements
 fail closed; one-use next-attempt records retain consumption semantics.
+
+## 2026-07-28 — Decision 106: Refusal cannot cross the passport boundary
+
+Category: System change
+
+A deterministic `REFUSE` transition binds its exact receipt but leaves the
+passport unchanged. The controller blocks the claim first and alone performs
+authenticated cross-release migration plus the restart-safe pending marker;
+non-refusal transitions retain ordinary passport migration.

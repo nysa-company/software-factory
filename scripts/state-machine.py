@@ -380,7 +380,8 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
             current = current_state(args.workdir, args.ticket)
         if resolve(args) != stage:
             raise StateError("transition changed the resolved stage")
-    migrate_passport(args)
+    if not stage.startswith("REFUSE "):
+        migrate_passport(args)
     receipt = issue(args, stage)
     return {
         "action": stage.partition(" ")[0],

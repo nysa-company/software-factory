@@ -1569,6 +1569,33 @@ effective replacement, and refusal after removing the named predecessor. The
 focused budget-stage and all 22 controller tests pass. Protected GitHub CI
 retains the complete regression.
 
+## FI-20260728-070 — Refusal migrated a passport outside controller recovery
+
+Status: Implemented; qualification pending
+Area: state-machine recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 generation 26
+Impact: the first successor reconciliation resolved T-169 to the expected
+old-route refusal, but the state machine migrated its passport to `f31a019`
+before the controller blocked the claim. No provider call started, yet the
+blocked claim had neither a prior-release passport nor the durable pre-route
+pending marker, so ordinary post-route recovery could never reopen it.
+Evidence: authenticated T-169 passport `916a0132…` names `f31a019` and parent
+`55f8c839…`; its ticket and route journal still named `42614d9` at refusal.
+The controller emitted `ticket_blocked` but no
+`passport_migrated_awaiting_route` or `route_migration_required` event, and no
+T-169 successor pending marker existed.
+Root cause: `state-machine.py` migrated the passport unconditionally after
+every resolved stage, including `REFUSE`, bypassing the controller's
+restart-safe upgrade boundary.
+Smallest change: issue and bind the exact refusal receipt without migrating the
+passport. The controller then blocks the claim, and its next one-shot performs
+the existing authenticated pre-route migration and marker protocol. Every
+non-refusal transition retains the existing migration behavior.
+Validation: the focused refusal test asserts that no passport migration occurs;
+the focused state-machine and controller suites cover the refusal receipt and
+two-phase recovery. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

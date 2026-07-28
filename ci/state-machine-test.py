@@ -118,7 +118,9 @@ class StateMachineTest(unittest.TestCase):
             encoding="utf-8",
         )
         self.args.kit_dir = kit
-        result = STATE.next_transition(self.args)
+        with mock.patch.object(STATE, "migrate_passport") as migrate:
+            result = STATE.next_transition(self.args)
+        migrate.assert_not_called()
         self.assertEqual(
             result["stage"],
             "REFUSE refresh receipt was not committed directly after its merge",
