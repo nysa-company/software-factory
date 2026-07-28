@@ -1343,6 +1343,29 @@ without authorization, and a copied live T-169 passport migrates to the exact
 authorized head without mutating production state. Protected GitHub CI retains
 the complete regression.
 
+## FI-20260728-061 — Upgrade recovery preceded route migration
+
+Status: Implemented; qualification pending
+Area: controller recovery
+Owner: Factory
+First seen: 2026-07-28, Relay generation 20 recovery
+Impact: T-166, T-168, and T-169 migrated their signed passports and reopened
+their claims before their preview-bound route migrations ran. The state
+machine correctly refused all three because their ticket and journal Kit-SHAs
+still named `edee50e`; no provider call started.
+Evidence: all three owner-only transition receipts record the exact
+`REFUSE ticket Kit-SHA lease does not match the selected kit SHA` stage under
+`c13b59f`, while their claims are blocked with empty role/run receipts.
+Root cause: cross-release claim recovery checked the passport release but not
+the ticket and route-journal release affinity before reopening the claim.
+Smallest change: keep the blocked claim and old passport unchanged until both
+the exact ticket Kit-SHA and route journal name the successor release. Emit one
+typed migration-required event, then use the existing authenticated migration
+and claim recovery after the preview-bound route change commits.
+Validation: all 19 focused controller tests pass, including hold-before-route
+migration and recovery-after-route migration. Protected GitHub CI retains the
+complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

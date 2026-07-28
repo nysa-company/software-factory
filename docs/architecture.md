@@ -400,6 +400,10 @@ barriers still apply.
 Qualification upgrades bind liveness to the non-overlapping controller lock
 and active-run markers. A terminal orphaned `running` claim remains portable
 state for the successor controller rather than an upgrade deadlock.
+Upgrade recovery keeps a blocked claim and its prior passport unchanged until
+the preview-bound route migration has committed the successor Kit-SHA to both
+the ticket and route journal; only then may it migrate the passport and reopen
+the claim.
 If an operator-authorized repair deliberately removes invalid Git ancestry, a
 cross-release passport migration may use that protected authorization only
 when its source/target kits, ticket, branch, new head, and state match exactly,

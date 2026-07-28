@@ -510,7 +510,18 @@ class FactoryControllerTest(unittest.TestCase):
     def test_factory_upgrade_reclaims_only_its_blocked_claim(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"
-        cell.mkdir()
+        (cell / "factory/route-plans").mkdir(parents=True)
+        (cell / "factory/tickets").mkdir()
+        route = cell / "factory/route-plans/T-110.json"
+        ticket = cell / "factory/tickets/T-110.md"
+        route.write_text(
+            json.dumps({"kit_sha": "b" * 40, "ticket": "T-110"}) + "\n",
+            encoding="utf-8",
+        )
+        ticket.write_text(
+            f"# T-110\n\nState: Review\nKit-SHA: {'b' * 40}\n",
+            encoding="utf-8",
+        )
         claim = {
             "branch": "ticket/T-110",
             "lease": "a" * 64,
@@ -544,6 +555,17 @@ class FactoryControllerTest(unittest.TestCase):
             return {}
 
         controller.json_call = json_call
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(calls, [])
+        route.write_text(
+            json.dumps({"kit_sha": "a" * 40, "ticket": "T-110"}) + "\n",
+            encoding="utf-8",
+        )
+        ticket.write_text(
+            f"# T-110\n\nState: Review\nKit-SHA: {'a' * 40}\n",
+            encoding="utf-8",
+        )
         controller.recover_upgraded_claims([claim])
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["lease"], "c" * 64)

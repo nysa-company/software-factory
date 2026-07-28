@@ -454,6 +454,23 @@ class Controller:
             "--workdir", claim["worktree"], "--json",
         )
 
+    def ticket_release_current(self, claim: dict[str, Any]) -> bool:
+        try:
+            route = json.loads(self.route_path(claim).read_text(encoding="utf-8"))
+            ticket = (
+                Path(claim["worktree"])
+                / "factory" / "tickets" / f"{claim['ticket']}.md"
+            ).read_text(encoding="utf-8")
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return False
+        leases = re.findall(r"^Kit-SHA:\s*(.*?)\s*$", ticket, re.M)
+        return (
+            isinstance(route, dict)
+            and route.get("ticket") == claim["ticket"]
+            and route.get("kit_sha") == self.release_path.name
+            and leases == [self.release_path.name]
+        )
+
     def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             if claim["status"] != "blocked":
@@ -465,6 +482,21 @@ class Controller:
             if not SHA.fullmatch(prior):
                 raise ControllerError("blocked ticket passport has an invalid release")
             if prior == self.release_path.name:
+                continue
+            if not self.ticket_release_current(claim):
+                marker = (
+                    f"route-migration-required-{claim['ticket']}-"
+                    f"{self.release_path.name}"
+                )
+                if self.marker(marker, {
+                    "factory_sha": self.release_path.name,
+                    "schema": EVENT_SCHEMA,
+                    "ticket": claim["ticket"],
+                }):
+                    self.event(
+                        "route_migration_required", claim["ticket"],
+                        from_factory_sha=prior,
+                    )
                 continue
             try:
                 self.renew(claim)

@@ -1287,3 +1287,12 @@ when protected main exactly authorizes the repository, source/target kits,
 ticket, branch, new head, and state, the cell is clean, and the authenticated
 route digest is unchanged. Same-release and every partially matching rewrite
 remain blocked; invalid ancestry is never reattached merely to satisfy Git.
+
+## 2026-07-28 — Decision 97: Route migration precedes passport recovery
+
+Category: System change
+
+Cross-release recovery must retain the blocked claim and prior passport until
+the ticket and route journal both name the successor Factory SHA. A typed
+migration-required event is the only intermediate action; the existing
+authenticated passport migration and exact-claim recovery run afterward.
