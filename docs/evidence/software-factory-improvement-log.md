@@ -1211,29 +1211,42 @@ Protected GitHub CI retains the complete regression.
 
 ## FI-20260728-055 — Base refresh validity is bound to commit identity
 
-Status: Confirmed design gap; defer until after qualification
+Status: Implemented; qualification pending
 Area: publication evidence
 Owner: Factory
 First seen: 2026-07-28, Relay Contract 1.8 generation 15 audit
-Impact: a future refresh caused only by non-semantic Factory-control movement
-would replay Reviewer and Narrator even when their semantic inputs are
-unchanged.
+Impact: T-169's protected-base refresh reset successful Reviewer and Narrator
+evidence and selected another Reviewer call even though protected main changed
+only Factory-control metadata.
 Evidence:
 - the three recorded T-166/T-168/T-169 refreshes all included T-167 changes to
   `app/server.js` and `app/tests/job-detail.test.js`, so their invalidations
   were correct
-- protected main later advanced from `e37587b` to `e919138` through only
-  `factory/KIT_PIN`, `factory/QUALIFICATION.json`, and two exact
-  `factory/migrations/inflight-release/<sha>.json` records
-- the current refresh receipt invalidates review solely because protected main
-  advanced; it has no semantic-input digest
-Smallest change: bind Reviewer and Narrator validity to authenticated semantic
-input plus role-contract digests. Exclude only the three exact control-path
-forms above; application code, tests, contracts, CI, configuration, and every
-unknown path remain invalidating.
-Validation: add focused preservation/refusal cases and one live control-only
-base advance after the current qualification. Do not retrofit the current
-receipts or change the frozen candidate for this deferred optimization.
+- T-169's generation-one receipt binds old head `8f01645`, protected base
+  `9186fa6`, and an exact base delta of modified `factory/KIT_PIN`, modified
+  `factory/QUALIFICATION.json`, and added
+  `factory/migrations/inflight-release/42614d9….json`
+- its retained Reviewer `1785265731-36177` and Narrator
+  `1785266011-49012` remain on the merged branch lineage, with no later Builder
+  or Test-author run
+- the old resolver nevertheless returned `RUN reviewer`
+Root cause: refresh validity was bound to protected-base commit identity, not
+the immutable base delta that formed the role's semantic input.
+Smallest change: one shared classifier derives the previous protected base from
+the receipt's immutable heads. It preserves review only for ordinary regular
+blob modifications to exact `factory/KIT_PIN` and
+`factory/QUALIFICATION.json`, plus ordinary additions matching exact
+`factory/migrations/inflight-release/<40-hex>.json`. The attestor additionally
+requires every retained control blob at ticket HEAD to equal the receipt's
+protected base. Every other status or path—including application code, tests,
+contracts, CI, configuration, renames, type changes, and unknown `factory/**`
+paths—keeps the existing invalidation behavior.
+Validation: four focused attestation refresh tests pass, including exact
+control preservation and unknown-Factory-path refusal. The patched resolver
+returns the bundle-attestation boundary for the exact live T-169 receipt
+without a provider call, and read-only attestation reduction retains its exact
+Reviewer/Narrator manifests with no unexpected post-review path. Protected
+GitHub CI retains the complete regression.
 
 ## FI-20260728-056 — Authenticated push repair could not re-enter the state machine
 

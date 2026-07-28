@@ -164,11 +164,13 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 
-# A sealed base refresh invalidates all review/narration evidence at or before
-# the recorded baselines. The receipt is committed by ticket-attest; fail
-# closed if it is edited, malformed, or no longer belongs to this history.
+# A sealed base refresh invalidates review/narration evidence unless the exact
+# protected-base delta contains only authenticated, non-semantic control files.
+# The receipt is committed by ticket-attest; fail closed if it is edited,
+# malformed, or no longer belongs to this history.
 REFRESH_RECEIPT="$CONTENT_ROOT/factory/attestations/$TICKET/refresh.json"
 REFRESH_ACTIVE=0
+REFRESH_PRESERVE_REVIEW=0
 if [[ -e "$REFRESH_RECEIPT" ]]; then
   [[ -f "$REFRESH_RECEIPT" && ! -L "$REFRESH_RECEIPT" ]] || {
     echo "REFUSE refresh receipt is not a regular file"
@@ -256,6 +258,22 @@ PY
     echo "REFUSE refresh receipt was not committed directly after its merge"
     exit 1
   fi
+  if ! REFRESH_CLASSIFICATION="$(python3 \
+    "$KIT_DIR/scripts/lib/refresh_semantics.py" \
+    --repo "$TICKET_WORKTREE_ROOT" \
+    --old-head "$REFRESH_OLD_HEAD" \
+    --base-head "$REFRESH_BASE_HEAD")"; then
+    echo "REFUSE protected-base semantic classification failed"
+    exit 1
+  fi
+  case "$REFRESH_CLASSIFICATION" in
+    PRESERVE) REFRESH_PRESERVE_REVIEW=1 ;;
+    INVALIDATE) ;;
+    *)
+      echo "REFUSE protected-base semantic classification was invalid"
+      exit 1
+      ;;
+  esac
   REFRESH_PATHS="$(git -C "$TICKET_WORKTREE_ROOT" diff-tree --no-commit-id \
     --name-status -r "$REFRESH_COMMIT" 2>/dev/null || true)"
   REFRESH_TICKET_CHANGED="$(REFRESH_PATHS_INPUT="$REFRESH_PATHS" python3 - "$TICKET" <<'PY'
@@ -750,7 +768,7 @@ for index, run_id in selected:
 PY
 }
 
-if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
+if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   if ! FRESH_REVIEW_ROWS="$(refresh_manifest_rows reviewer \
     "$REFRESH_RAW_REVIEWERS" "$VOID_RUNS")" ||
      ! FRESH_NARRATOR_ROWS="$(refresh_manifest_rows narrator \
@@ -879,7 +897,7 @@ elif [[ "$FIX_BUILDER" -eq 1 || "$FIX_TEST_AUTHOR" -eq 1 ]]; then
   exit 0
 fi
 
-if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
+if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   FRESH_REVIEWERS=$((REVIEWER_RUNS - REFRESH_REVIEWERS))
   FRESH_APPROVES=$((A - REFRESH_APPROVES))
   FRESH_REQUESTS=$((RC - REFRESH_REQUESTS))

@@ -1360,3 +1360,15 @@ preview-approved route migration runs next; a second descendant passport
 migration binds its new route digest before the claim reopens. This supersedes
 Decision 97 only for passport authentication order, not for execution: no
 ticket runs against a mismatched route or Kit-SHA.
+
+## 2026-07-28 — Decision 104: Review validity follows the exact semantic base delta
+
+Category: System change
+
+A protected-base refresh preserves successful Reviewer and Narrator evidence
+only when one shared fail-closed classifier proves the immutable base delta is
+limited to modified regular `factory/KIT_PIN` and
+`factory/QUALIFICATION.json` blobs plus added regular authenticated
+in-flight-release records. The ticket head must retain those exact protected
+blobs. Application code, tests, contracts, CI, configuration, renames, type
+changes, deletions, and every unknown path continue to invalidate review.

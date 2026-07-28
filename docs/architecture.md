@@ -368,8 +368,14 @@ If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a
 receipt binding the two-parent merge and prior role/verdict baselines. The
-sequencer then requires a new Reviewer verdict and a later Narrator run before
-another bundle and Linear approval. A malformed or stale refresh receipt
+sequencer requires a new Reviewer verdict and later Narrator run unless the
+receipt's immutable base delta contains only modified regular blobs at exact
+`factory/KIT_PIN` and `factory/QUALIFICATION.json`, plus added regular blobs at
+exact `factory/migrations/inflight-release/<40-hex>.json` paths. In that narrow
+case the attestor also requires the retained ticket-head blobs to equal the
+protected base and reuses the still-valid Reviewer/Narrator evidence. Every
+application, test, contract, CI, configuration, rename, type, deletion, and
+unknown-path change invalidates review. A malformed or stale refresh receipt
 refuses sequencing.
 When concurrency is greater than one, every attestation action also requires the matching
 unexpired opaque dispatcher lease through the trusted launcher environment;

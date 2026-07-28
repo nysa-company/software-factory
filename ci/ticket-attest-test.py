@@ -63,6 +63,7 @@ class TicketAttestTests(unittest.TestCase):
         (self.product / "factory/KIT_PIN").write_text(
             command("git", "-C", str(ROOT), "rev-parse", "HEAD").stdout.strip() + "\n"
         )
+        (self.product / "factory/QUALIFICATION.json").write_text("{}\n")
         selection = {
             "account_route_id": "test-account",
             "adapter": "mock",
@@ -802,6 +803,45 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.bundle()
         self.assertIn("already based", self.attest("refresh").stderr)
+
+    def test_control_only_refresh_preserves_review_and_narrator(self):
+        self.bundle()
+        updater = self.temp / "control-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        (updater / "factory/QUALIFICATION.json").write_text('{"generation": 2}\n')
+        migration = updater / f"factory/migrations/inflight-release/{KIT_SHA}.json"
+        migration.parent.mkdir(parents=True)
+        migration.write_text("{}\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected control metadata", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.attest("bundle")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        attestation = json.loads(
+            (self.product / "factory/attestations/T-700/bundle.json").read_text()
+        )
+        self.assertEqual(attestation["reviewer_run_id"], "reviewer-1")
+        self.assertEqual(attestation["narrator_run_id"], "narrator-1")
+
+        (updater / "factory/unknown-control.json").write_text("{}\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance unknown factory metadata", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
 
     def test_refresh_refuses_symlink_attestation_path(self):
         attestation = self.product / "factory/attestations/T-700"

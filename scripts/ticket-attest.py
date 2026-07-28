@@ -16,6 +16,13 @@ import sys
 import tempfile
 from urllib.parse import quote
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from refresh_semantics import (  # noqa: E402
+    ClassificationError,
+    preserved_control_paths,
+    retained_control_paths,
+)
+
 
 class Refusal(ValueError):
     pass
@@ -588,7 +595,7 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         ).stdout.strip()
         if historical:
             raise Refusal("committed refresh receipt is missing from the ticket head")
-        return
+        return None
     if not safe_optional_attestation(path):
         raise Refusal("refresh receipt is unsafe")
 
@@ -668,6 +675,14 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         or current_voids[:len(old_voids)] != old_voids
     ):
         raise Refusal("refresh historical review evidence changed")
+    try:
+        preserved = preserved_control_paths(
+            workdir, receipt["old_head"], receipt["base_head"],
+        )
+    except ClassificationError as error:
+        raise Refusal(f"refresh semantic classification failed: {error}")
+    if preserved is not None:
+        return receipt["base_head"]
     old_raw_reviewers = len(old_verdicts) + len(old_voids)
     if (
         len(current_verdicts) <= len(old_verdicts)
@@ -694,6 +709,7 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
             check=False,
         ).returncode:
             raise Refusal(f"post-refresh {role} evidence is required")
+    return None
 
 
 def exact_pr(repo, branch, state):
@@ -1526,7 +1542,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     manifests = successful_runs(product, args.ticket)
     route_plan = route_plan_evidence(workdir, product, args.ticket, kit_sha, manifests)
     reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
-    validate_refresh_review_evidence(
+    preserved_base = validate_refresh_review_evidence(
         workdir, args.ticket, text, manifests, reviewer, narrator,
     )
     allowed = {
@@ -1535,6 +1551,9 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         f"factory/tickets/{args.ticket}-bundle.md",
     }
     changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").stdout.splitlines())
+    if preserved_base:
+        allowed.add(f"factory/attestations/{args.ticket}/refresh.json")
+        allowed.update(retained_control_paths(workdir, head, preserved_base, changed))
     if not changed or changed - allowed:
         raise Refusal("product or code changed after the reviewed SHA")
     pr = exact_pr(repo, branch, "open")
