@@ -1258,3 +1258,12 @@ The deterministic resolver may receipt one exact single-line `REFUSE` emitted
 with exit 1 and empty stderr. Only the named direct-after-merge refresh-topology
 refusal routes to authenticated protected-base refresh; malformed, forged,
 baseline-mismatched, unknown, or multi-line refusals remain blocked.
+
+## 2026-07-28 — Decision 94: Failed-role refresh uses the refusal receipt
+
+Category: System change
+
+Protected-base refresh may reset a `Building` ticket to `Review` only when the
+trusted launcher supplies the exact consumed receipt stage for the named
+direct-after-merge topology refusal. State alone, an unverified environment
+value, and every other receipt remain insufficient.

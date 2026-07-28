@@ -1306,7 +1306,17 @@ def refresh(args, product, workdir, repo, prefix, remote):
     old_head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     text = ticket_path.read_text()
-    if field(text, "State").lower() not in {"review", "awaiting approval", "approved"}:
+    state = field(text, "State").lower()
+    repaired_building = (
+        state == "building"
+        and os.environ.get("FACTORY_TRANSITION_STAGE") == (
+            "REFUSE refresh receipt was not committed directly after its merge"
+        )
+    )
+    if (
+        state not in {"review", "awaiting approval", "approved"}
+        and not repaired_building
+    ):
         raise Refusal("refresh requires ticket State Review, Awaiting Approval, or Approved")
     pr = exact_pr(repo, branch, "open")
     if pr.get("headRefOid") != old_head:

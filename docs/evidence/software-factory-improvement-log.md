@@ -1276,6 +1276,25 @@ Validation: focused state-machine coverage proves the refusal is receipt-bound;
 focused controller coverage proves only the exact topology refusal invokes
 refresh with that receipt. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-058 — Receipt-bound refresh rejected the failed role state
+
+Status: Implemented; qualification pending
+Area: protected-base recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 recovery
+Impact: T-169 obtained and consumed the new exact topology-refusal receipt, but
+authenticated refresh stopped because the failed Test-author boundary correctly
+left the ticket in `Building`.
+Root cause: refresh admitted only publication states even when the sole
+state-machine receipt explicitly authorized repair of this topology refusal.
+Smallest change: allow `Building` only when the trusted launcher supplies the
+exact receipt-verified topology-refusal stage. The refresh commit performs the
+existing sealed reset to `Review`; every unreceipted or differently receipted
+`Building` refresh remains refused.
+Validation: all 46 focused attestation tests pass, including refusal without
+the exact stage and successful reset with it. Protected GitHub CI retains the
+complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

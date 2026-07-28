@@ -824,6 +824,32 @@ else:
         self.assertIn("attestation path is unsafe", self.attest("refresh").stderr)
         self.assertEqual(external.read_text(), "unchanged\n")
 
+    def test_refresh_allows_building_only_for_exact_topology_receipt(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(
+            ticket.read_text().replace("State: Review", "State: Building")
+        )
+        self.commit("record failed repair state")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        updater = self.temp / "building-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.write_state()
+
+        self.assertIn("requires ticket State", self.attest("refresh").stderr)
+        self.env["FACTORY_TRANSITION_STAGE"] = (
+            "REFUSE refresh receipt was not committed directly after its merge"
+        )
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("State: Review", ticket.read_text())
+
     def test_refresh_detects_pr_merge_race_after_push(self):
         updater = self.temp / "race-main-update"
         command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
