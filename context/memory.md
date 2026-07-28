@@ -1316,3 +1316,14 @@ refusal both authorize only the existing receipt-bound protected-base refresh.
 The stale receipt is never accepted as evidence. `Building` refresh remains
 forbidden unless the trusted transition stage equals one of those two typed
 topology refusals.
+
+## 2026-07-28 — Decision 100: Exported terminal checkpoints are idempotent
+
+Category: System change
+
+When a controller stops after passport export but before clearing the running
+claim, restart requires the exact terminal run, role, and receipt in the
+passport charge evidence and, for success, completed-role evidence. It
+authenticates and migrates that passport, then finishes reconciliation without
+re-exporting or replaying the role. Any partial or mismatched checkpoint stays
+blocked.

@@ -444,6 +444,44 @@ class Controller:
             raise ControllerError("receipt has ambiguous terminal run evidence")
         return matches[0] if matches else None
 
+    def terminal_already_exported(
+        self, claim: dict[str, Any], terminal: dict[str, str]
+    ) -> bool:
+        path = self.state / "passports" / f"{claim['ticket']}.json"
+        if not path.exists():
+            return False
+        value = read(path)
+        expected = (
+            terminal.get("run_id"),
+            claim.get("role"),
+            claim.get("receipt"),
+        )
+        charges = [
+            (
+                item.get("run_id"),
+                item.get("role"),
+                item.get("transition_receipt_sha256"),
+            )
+            for item in value.get("charge_records", [])
+        ]
+        completed = [
+            (
+                item.get("run_id"),
+                item.get("role"),
+                item.get("transition_receipt_sha256"),
+            )
+            for item in value.get("completed_role_evidence", [])
+        ]
+        successful = (
+            terminal.get("exit_status") == "0"
+            and terminal.get("role_exit") == "ok"
+        )
+        return (
+            value.get("transition_receipt_sha256") == claim.get("receipt")
+            and charges.count(expected) == 1
+            and (not successful or completed.count(expected) == 1)
+        )
+
     def passport(self, claim: dict[str, Any], publication: str) -> None:
         self.json_call(
             "passport", "export", "--ticket", claim["ticket"],
@@ -691,7 +729,14 @@ class Controller:
             if claim["role"] in {"reviewer", "narrator"}
             else "none"
         )
-        self.passport(claim, publication)
+        if self.terminal_already_exported(claim, terminal):
+            self.migrate_passport(claim, publication)
+            self.event(
+                "terminal_export_recovered", claim["ticket"],
+                run_id=terminal.get("run_id"),
+            )
+        else:
+            self.passport(claim, publication)
         if (
             terminal.get("accounting_state") in {"cancelled", "cancelled_conservative"}
             or terminal.get("role_exit") == "cancelled"

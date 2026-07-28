@@ -270,6 +270,11 @@ Automatic qualification fallback serializes and reroutes only the failed
 role. Future pinned roles keep their selections and are re-probed only when
 they reach provider admission; later task-bearing roles retain four-way
 execution.
+If interruption occurs after a terminal role was exported but before its claim
+was cleared, restart identifies the exact run, role, and transition receipt in
+both passport charge and completed-role evidence. It authenticates and
+migrates that passport instead of exporting or executing the role again; every
+partial or mismatched checkpoint remains fail-closed.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one

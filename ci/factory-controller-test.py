@@ -434,6 +434,65 @@ class FactoryControllerTest(unittest.TestCase):
             calls, ["passport", "migrate", "role_output_rejected"]
         )
 
+    def test_exported_terminal_migrates_without_reexport(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        receipt = "b" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "reviewer",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        (self.product / "factory/runs/exported.meta").write_text(
+            "run_id=exported\n"
+            "ticket=T-110\n"
+            "role=reviewer\n"
+            "accounting_state=completed\n"
+            "exit_status=0\n"
+            "role_exit=ok\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        (self.state / "passports").mkdir(mode=0o700)
+        record = {
+            "role": "reviewer",
+            "run_id": "exported",
+            "transition_receipt_sha256": receipt,
+        }
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "charge_records": [record],
+                "completed_role_evidence": [record],
+                "transition_receipt_sha256": receipt,
+            },
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("export")
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.relocate_qualification_cell = lambda *_args: None
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args[0]) or {}
+        )
+
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(
+            calls,
+            [
+                "migrate", "terminal_export_recovered",
+                "ticket-state", "migrate",
+            ],
+        )
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("export", calls)
+
     def test_cancelled_run_releases_every_controller_resource(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {

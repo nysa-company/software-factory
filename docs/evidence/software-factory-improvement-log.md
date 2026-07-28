@@ -1411,6 +1411,28 @@ only authenticated refresh, and the focused attestation test proves the stale
 history refusal admits the sealed reset while an unreceipted `Building`
 refresh remains refused. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-064 — Exported terminal checkpoint was not restart-idempotent
+
+Status: Implemented; qualification pending
+Area: controller recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-166 generation 21 recovery
+Impact: T-166's successful Reviewer run and $2 charge were already recorded in
+its authenticated passport, and Reviewer reconciliation had pushed, but the
+controller stopped before clearing the `running` claim. Restart would attempt
+to export the consumed receipt again instead of completing the checkpoint.
+Root cause: terminal recovery distinguished only active versus terminal runs;
+it did not recognize the exact post-export/pre-claim-clear boundary.
+Smallest change: when the passport contains exactly one matching charge record
+and, for success, exactly one completed-role record for the claim's run, role,
+and receipt, authenticate and migrate that passport instead of re-exporting.
+All partial, duplicate, mismatched, or unsigned checkpoints still fail closed.
+Validation: all 20 focused controller tests pass, including proof that the
+exact checkpoint migrates twice through the existing idempotent boundary,
+never calls export, and clears the claim. The retained T-166 state resolves
+`True` only for run `1785262040-61879` with `role_exit=ok`. Protected GitHub CI
+retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
