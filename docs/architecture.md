@@ -315,6 +315,9 @@ fallback atomically converts an initial v1 route plan into a same-release v2
 journal before appending its revision, preserving the original plan bytes and
 provenance. It is idempotent across controller restart. A second task-submitted
 attempt for that ticket and role is refused as no progress instead of replayed.
+An exit 143 before task submission reopens only that interrupted role, and only
+after the current signed passport, clean cell, branch, and remote head agree
+exactly; every submitted or differently terminated interruption stays blocked.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

@@ -552,7 +552,7 @@ class FactoryControllerTest(unittest.TestCase):
             ["renew", "claim", "passport"],
         )
 
-    def test_repaired_push_failure_reclaims_only_exact_remote_passport(self) -> None:
+    def test_repaired_failure_reclaims_only_exact_remote_passport(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"
         cell.mkdir()
@@ -613,7 +613,7 @@ class FactoryControllerTest(unittest.TestCase):
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
         with patch.object(CONTROL.subprocess, "run", return_value=remote):
-            controller.recover_repaired_push_failures([claim])
+            controller.recover_repaired_failures([claim])
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["receipt"], "")
         self.assertEqual(claim["role"], "")
@@ -622,6 +622,42 @@ class FactoryControllerTest(unittest.TestCase):
             [call[0] for call in calls],
             ["passport", "renew", "claim", "push_failure_recovered"],
         )
+
+        receipt = "f" * 64
+        claim.update(receipt=receipt, role="reviewer", status="blocked")
+        (self.product / "factory/runs/interrupted.meta").write_text(
+            "run_id=interrupted\n"
+            "phase=abandoned\n"
+            "ticket=T-110\n"
+            "role=reviewer\n"
+            "accounting_state=abandoned_conservative\n"
+            "task_submitted=0\n"
+            "exit_status=143\n"
+            "role_exit=\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls.clear()
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["passport", "renew", "claim", "interrupted_role_recovered"],
+        )
+        claim.update(receipt=receipt, role="reviewer", status="blocked")
+        calls.clear()
+        (self.product / "factory/runs/interrupted.meta").write_text(
+            (self.product / "factory/runs/interrupted.meta")
+            .read_text(encoding="utf-8")
+            .replace("task_submitted=0", "task_submitted=1"),
+            encoding="utf-8",
+        )
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(calls, [])
 
     def test_exact_refresh_topology_refusal_runs_attested_refresh(self) -> None:
         controller = CONTROL.Controller(self.args)

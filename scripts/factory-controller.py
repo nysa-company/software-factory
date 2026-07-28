@@ -493,7 +493,7 @@ class Controller:
                 from_factory_sha=prior,
             )
 
-    def recover_repaired_push_failures(self, claims: list[dict[str, Any]]) -> None:
+    def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             if (
                 claim["status"] != "blocked"
@@ -502,7 +502,19 @@ class Controller:
             ):
                 continue
             terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
-            if terminal is None or terminal.get("role_exit") != "role_exit_push_failed":
+            push_failure = (
+                terminal is not None
+                and terminal.get("role_exit") == "role_exit_push_failed"
+            )
+            interrupted_before_submission = (
+                terminal is not None
+                and terminal.get("phase") == "abandoned"
+                and terminal.get("accounting_state") == "abandoned_conservative"
+                and terminal.get("task_submitted") == "0"
+                and terminal.get("exit_status") == "143"
+                and not terminal.get("role_exit")
+            )
+            if not push_failure and not interrupted_before_submission:
                 continue
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if not passport_path.exists():
@@ -550,7 +562,12 @@ class Controller:
             claim.update(receipt="", role="", status="claimed")
             self.save_claim(claim)
             self.event(
-                "push_failure_recovered", claim["ticket"],
+                (
+                    "push_failure_recovered"
+                    if push_failure
+                    else "interrupted_role_recovered"
+                ),
+                claim["ticket"],
                 failed_run_id=failed_run,
             )
 
@@ -1041,7 +1058,7 @@ class Controller:
     def reconcile(self) -> dict[str, Any]:
         existing = self.load_claims()
         self.recover_upgraded_claims(existing)
-        self.recover_repaired_push_failures(existing)
+        self.recover_repaired_failures(existing)
         self.event(
             "controller_started", recovered_tickets=sorted(
                 item["ticket"] for item in existing if self.runnable(item)

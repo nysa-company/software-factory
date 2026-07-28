@@ -1267,3 +1267,13 @@ Protected-base refresh may reset a `Building` ticket to `Review` only when the
 trusted launcher supplies the exact consumed receipt stage for the named
 direct-after-merge topology refusal. State alone, an unverified environment
 value, and every other receipt remain insufficient.
+
+## 2026-07-28 — Decision 95: Pre-submission interruption reopens only its role
+
+Category: System change
+
+An abandoned action may re-enter the state machine only when its immutable
+terminal manifest proves exit 143 before provider submission with no role
+output, and its signed passport, clean cell, branch, and remote head still
+agree exactly. The controller clears only that interrupted receipt; submitted
+or differently terminated actions remain blocked.

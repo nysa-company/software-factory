@@ -1295,6 +1295,30 @@ Validation: all 46 focused attestation tests pass, including refusal without
 the exact stage and successful reset with it. Protected GitHub CI retains the
 complete regression.
 
+## FI-20260728-059 — Pre-submission controller interruption stranded exact roles
+
+Status: Implemented; qualification pending
+Area: controller recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-166/T-168 recovery
+Impact: controller replacement terminated two admitted Reviewer actions before
+provider submission, conservatively charged $2 each, and left both tickets
+blocked even though neither produced role output.
+Evidence: both immutable manifests have `phase=abandoned`,
+`accounting_state=abandoned_conservative`, `task_submitted=0`,
+`exit_status=143`, an empty `role_exit`, and no output digest. Their signed
+passports, clean cells, and remote ticket tips still agree exactly.
+Root cause: authenticated recovery admitted repaired push failures but not the
+equally bounded pre-submission interruption shape required by controller
+restart recovery.
+Smallest change: re-admit only that exact terminal shape after the existing
+passport and remote-head checks, clear only the interrupted receipt, and let
+the state machine rerun the same role. Submitted, differently terminated,
+untyped, or identity-mismatched actions remain blocked.
+Validation: all 19 focused controller tests pass, including exact recovery and
+refusal when `task_submitted=1`. Protected GitHub CI retains the complete
+regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
