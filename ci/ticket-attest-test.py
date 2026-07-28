@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +109,7 @@ class TicketAttestTests(unittest.TestCase):
         (self.product / "app.txt").write_text("reviewed code\n")
         self.commit("implementation")
         self.reviewed = self.head()
+
         (self.product / "factory/tickets/T-700.md").write_text(
             self.ticket("Review") + "\nreviewer round 1: APPROVE\n"
         )
@@ -137,6 +139,16 @@ class TicketAttestTests(unittest.TestCase):
             "FAKE_WORKDIR": str(self.product),
         })
         self.workdir = self.product
+
+    def test_ls_remote_retries_one_transport_failure(self):
+        failed = subprocess.CompletedProcess(["git"], 128, "", "transport failed")
+        passed = subprocess.CompletedProcess(["git"], 0, "head\trefs/heads/main\n", "")
+        with patch.object(TICKET_ATTEST, "run", side_effect=[failed, passed]) as call:
+            result = TICKET_ATTEST.git(
+                self.product, "ls-remote", "--heads", "origin", "refs/heads/main",
+            )
+        self.assertEqual(result.stdout, passed.stdout)
+        self.assertEqual(call.call_count, 2)
 
     def tearDown(self):
         shutil.rmtree(self.temp)

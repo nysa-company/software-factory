@@ -1209,3 +1209,11 @@ passport migration proves it belongs to a prior Factory release and current
 ticket lineage. The controller saves the new exact-ticket lease before
 migration and returns the claim to `claimed` only after migration succeeds;
 same-release blockers never reopen automatically.
+
+## 2026-07-28 — Decision 89: Protected remote reads get one exact retry
+
+Category: System change
+
+Protected attestation retries a failed read-only `git ls-remote` once with
+identical arguments. A second transport failure, every Git mutation failure,
+and every semantic or identity mismatch still fail closed.

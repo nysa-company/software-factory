@@ -35,7 +35,10 @@ def run(argv, *, cwd=None, input_text=None, check=True):
 
 
 def git(root, *args, check=True):
-    result = run(["git", "-C", str(root), *args], check=False)
+    command = ["git", "-C", str(root), *args]
+    result = run(command, check=False)
+    if result.returncode and args[0] == "ls-remote":
+        result = run(command, check=False)
     if check and result.returncode:
         raise Refusal(f"Git operation failed: {args[0]}")
     return result

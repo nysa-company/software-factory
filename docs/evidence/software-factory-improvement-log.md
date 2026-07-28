@@ -1146,6 +1146,28 @@ replaced, passport migration runs, and only then does the claim become
 runnable. Protected GitHub CI retains the complete regression. Live recovery
 is pending.
 
+## FI-20260728-052 — One protected remote read blocked recovered work
+
+Status: Implemented; qualification pending
+Area: publication
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 retained recovery
+Impact: T-166's authenticated claim and passport recovered under the final
+candidate, but its protected-base refresh terminalized before mutation and
+blocked the ticket on one failed `git ls-remote`.
+Evidence: the automatic controller returned `ticket-attest: Git operation
+failed: ls-remote`; the ticket branch, PR head, role evidence, and passport
+were unchanged, and no provider run existed.
+Root cause: the role wrapper already retried one exact read-only remote
+observation, but protected attestation treated the first transport failure as
+durable.
+Smallest change: retry only a failed `ls-remote` once inside the shared
+attestation Git helper. A second failure, any mutation failure, or any
+semantic mismatch still fails closed.
+Validation: one focused unit drives a failed then successful exact
+`ls-remote` and requires two calls. Protected GitHub CI retains the complete
+regression. Live recovery is pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
