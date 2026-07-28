@@ -250,6 +250,9 @@ Reviewer terminalization accepts the role contract's standalone verdict and
 the exact Markdown `Verdict:` heading form. Other malformed output is charged
 but not recorded as completed-role evidence; the controller reruns only
 Reviewer under the remaining ticket budget.
+Six-role model-plan pinning relies on its individually bounded readiness
+probes and has no aggregate controller timeout; slow successful probes cannot
+become a wall-clock delivery stop before the first provider call.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one

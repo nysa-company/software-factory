@@ -220,8 +220,11 @@ class Controller:
             timeout=timeout,
         )
 
-    def json_call(self, *arguments: str, allow: tuple[int, ...] = (0,)) -> dict[str, Any]:
-        result = self.call(*arguments)
+    def json_call(
+        self, *arguments: str, allow: tuple[int, ...] = (0,),
+        timeout: int | None = 300,
+    ) -> dict[str, Any]:
+        result = self.call(*arguments, timeout=timeout)
         if result.returncode not in allow:
             raise ControllerError(
                 result.stderr.strip() or result.stdout.strip() or "launcher command failed"
@@ -736,6 +739,7 @@ class Controller:
                 self.json_call(
                     "models", "pin", "--ticket", claim["ticket"],
                     "--workdir", claim["worktree"], "--json",
+                    timeout=None,
                 )
             transition = self.json_call(
                 "state-machine", "--ticket", claim["ticket"],

@@ -1096,3 +1096,13 @@ exact Markdown `Verdict:` heading. The role wrapper validates the durable
 terminal output before recording success; malformed output retains its charge
 but not completed-role evidence, and the controller reruns only Reviewer under
 the remaining ticket budget.
+
+## 2026-07-27 — Decision 77: Model pinning has no aggregate delivery timeout
+
+Category: System change
+
+Each model readiness probe remains individually bounded and fail-closed.
+The controller does not add a second aggregate timeout around the six-role
+pinning transaction, so slow successful probes cannot block tickets before
+provider submission merely because their combined duration exceeds five
+minutes.

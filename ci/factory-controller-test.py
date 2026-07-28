@@ -171,6 +171,42 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls[0][0][0], "preflight")
         self.assertIn("planner", calls[0][0])
 
+    def test_model_pin_relies_on_its_bounded_probes_not_an_outer_timeout(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        calls = []
+
+        def json_call(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args[0] == "state-machine":
+                return {"stage": "AWAIT-OPERATOR test", "receipt": "b" * 64}
+            return {}
+
+        controller.json_call = json_call
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        self.assertEqual(
+            controller.reconcile_ticket(claim)["status"], "waiting"
+        )
+        model_calls = [
+            (args, kwargs) for args, kwargs in calls if args[:2] == ("models", "pin")
+        ]
+        self.assertEqual(len(model_calls), 1)
+        self.assertIsNone(model_calls[0][1]["timeout"])
+
     def test_blocked_ticket_is_excluded_without_holding_capacity(self) -> None:
         controller = CONTROL.Controller(self.args)
         blocked = {

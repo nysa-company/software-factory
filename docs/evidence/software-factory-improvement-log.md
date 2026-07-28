@@ -849,6 +849,30 @@ Validation: focused parser and controller tests cover the observed heading and
 targeted retry without preserving invalid completed-role evidence. Fresh live
 four-ticket qualification pending.
 
+## FI-20260727-040 — Aggregate model-pin timeout blocked every ticket
+
+Status: Implemented; qualification pending
+Area: state machine
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 generation 5
+Impact: T-126 through T-129 were recovered in four cells, then all four claims
+were blocked before Planner and before any provider charge.
+Evidence:
+- the provider ledger remained empty
+- all four controller errors recorded `models pin` timing out after exactly
+  300 seconds
+- each six-role model transaction was still running its own bounded readiness
+  probes when the controller killed the aggregate command
+Root cause: the controller's generic subprocess timeout duplicated the
+model-control probe timeouts and turned their combined wall time into a
+delivery stop.
+Smallest change: retain the existing bounded readiness probes but remove only
+the redundant aggregate timeout from `models pin`; other controller commands
+keep their safety timeouts.
+Validation: the focused controller test binds model pinning to `timeout=None`
+while preserving the default timeout for other launcher calls. Fresh live
+four-ticket qualification pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
