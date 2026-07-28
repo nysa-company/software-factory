@@ -15,6 +15,7 @@ import secrets
 import stat
 import subprocess
 import tempfile
+from threading import Lock
 import time
 from typing import Any
 
@@ -117,6 +118,7 @@ class Controller:
         safe_directory(self.events, create=True)
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
+        self.fallback_lock = Lock()
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -556,12 +558,13 @@ class Controller:
                 and terminal.get("role_exit") == "provider_failed"
                 and terminal.get("route_id", "").startswith("cursor-")
             ):
-                result = self.json_call(
-                    "models", "fallback-auto", "--ticket", claim["ticket"],
-                    "--failed-run", terminal["run_id"],
-                    "--workdir", claim["worktree"],
-                    "--reason", "provider_unavailable", "--json",
-                )
+                with self.fallback_lock:
+                    result = self.json_call(
+                        "models", "fallback-auto", "--ticket", claim["ticket"],
+                        "--failed-run", terminal["run_id"],
+                        "--workdir", claim["worktree"],
+                        "--reason", "provider_unavailable", "--json",
+                    )
                 if result.get("failed_run_id") != terminal["run_id"]:
                     raise ControllerError("provider fallback did not bind the failed run")
                 self.migrate_passport(claim, publication)

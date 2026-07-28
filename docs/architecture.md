@@ -256,6 +256,8 @@ become a wall-clock delivery stop before the first provider call.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.
+Automatic qualification fallback serializes only the task-free readiness and
+route-journal transition; later task-bearing roles retain four-way execution.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one

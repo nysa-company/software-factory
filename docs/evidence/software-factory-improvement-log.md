@@ -1002,6 +1002,31 @@ plan, requires Planning agreement, and proves no adapter probe occurs.
 Protected GitHub CI retains the full regression. Fresh live qualification
 pending.
 
+## FI-20260728-046 — Concurrent fallback probes competed for one launch lock
+
+Status: Implemented; qualification pending
+Area: recovery
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 12
+Impact: three charged Cursor Planner failures reached the authorized automatic
+fallback boundary, then all three tickets blocked before any replay.
+Evidence:
+- T-154, T-156, and T-157 each recorded one terminal `provider_failed`
+  manifest with conservative $2 accounting
+- all three controller workers invoked `fallback-auto` concurrently
+- every fallback performs task-free machine readiness before acquiring the
+  same product `.launch.lock`
+- the controller terminalized with `launch lock stuck`; no fallback event,
+  fallback commit, or second role manifest exists
+Root cause: initial model pinning was batch-aware, but exception recovery still
+fanned out three independent readiness transactions before a shared mutation.
+Smallest change: serialize only `fallback-auto` within the already
+non-overlapping controller. Preserve four-way provider roles and protected PR
+validation.
+Validation: focused controller coverage requires the automatic fallback path
+to enter the shared guard. Protected GitHub CI retains the complete
+concurrency regression. Fresh live qualification pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

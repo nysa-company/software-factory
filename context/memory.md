@@ -1152,3 +1152,13 @@ After the controller authenticates and pins the shared model plan, Planner
 preflight validates all six route selections structurally and does not repeat
 credential-bearing readiness. The role runner still re-probes its one selected
 route immediately before provider admission and fails closed on drift.
+
+## 2026-07-28 — Decision 83: Automatic fallback is a serialized transition
+
+Category: System change
+
+Contract 1.8 serializes only the task-free `fallback-auto` readiness and
+route-journal mutation inside one reconciliation. Provider-bearing roles and
+protected PR validation remain four-way; independent fallback tickets resume
+in deterministic controller order without competing for the product launch
+lock.

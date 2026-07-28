@@ -365,6 +365,15 @@ class FactoryControllerTest(unittest.TestCase):
             encoding="utf-8",
         )
         calls = []
+
+        class FallbackGuard:
+            def __enter__(self):
+                calls.append("fallback-lock")
+
+            def __exit__(self, *_args):
+                return False
+
+        controller.fallback_lock = FallbackGuard()
         controller.passport = lambda *_args: calls.append("passport")
         controller.json_call = lambda *args, **_kwargs: (
             calls.append(args) or {"failed_run_id": "failed"}
@@ -382,6 +391,7 @@ class FactoryControllerTest(unittest.TestCase):
             ),
             calls,
         )
+        self.assertIn("fallback-lock", calls)
         self.assertFalse(
             any(
                 isinstance(call, tuple) and call and call[0] == "release"
