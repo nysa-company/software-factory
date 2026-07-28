@@ -1199,3 +1199,13 @@ through the qualification preparer's drained, lock-protected upgrade action.
 The controller directory, passport authentication key, passports, claims, and
 provider ledger remain in place; fresh-root secret copying and active-record
 edits are forbidden.
+
+## 2026-07-28 — Decision 88: Cross-release recovery rebinds exact blocked claims
+
+Category: System change
+
+A blocked claim may reacquire a dispatcher lease only when authenticated
+passport migration proves it belongs to a prior Factory release and current
+ticket lineage. The controller saves the new exact-ticket lease before
+migration and returns the claim to `claimed` only after migration succeeds;
+same-release blockers never reopen automatically.

@@ -507,6 +507,51 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertFalse(controller.claim_path("T-110").exists())
 
+    def test_factory_upgrade_reclaims_only_its_blocked_claim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {"factory_sha": "b" * 40},
+        )
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("old lease was released")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "c" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "c" * 64)
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["renew", "claim", "passport"],
+        )
+
     def test_budget_wait_reopens_only_after_envelope_change(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

@@ -1124,6 +1124,28 @@ Validation: focused qualification-environment coverage advances generation
 one to two and proves the old release and passport key remain byte-identical.
 Protected GitHub CI retains the complete regression. Live recovery is pending.
 
+## FI-20260728-051 — Migrated blocked claims could not reacquire leases
+
+Status: Implemented; qualification pending
+Area: controller recovery
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 15 recovery
+Impact: T-166, T-168, and T-169 preserved authenticated passports and
+successfully migrated their route journals, but remained excluded from every
+controller cycle because their old failure paths had released their dispatcher
+leases and left their claims blocked.
+Evidence: all three owner-only claims were `blocked`, their exact lease files
+were absent, and `runnable` excludes blocked claims before reconciliation.
+Root cause: cross-release passport migration did not include the claim/lease
+rebind needed after an old controller error.
+Smallest change: only when a blocked claim's passport names an older release,
+claim its exact ticket lease, authenticate and migrate the passport, then
+return it to `claimed`. Same-release blockers remain unchanged.
+Validation: focused controller coverage proves the old missing lease is
+replaced, passport migration runs, and only then does the claim become
+runnable. Protected GitHub CI retains the complete regression. Live recovery
+is pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

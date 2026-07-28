@@ -281,6 +281,10 @@ same preparer upgrades that root only while reconciliation and provider work
 are drained. It seals the successor, verifies unchanged provider policy,
 atomically advances the activation record, and preserves the controller
 directory, passport key, passports, claims, and cumulative provider ledger.
+After the ticket route migrates, a blocked claim may recover only when its
+authenticated passport names the prior release. The controller binds a fresh
+exact-ticket lease, migrates that passport in place, and returns the claim to
+deterministic reconciliation; same-release blockers remain blocked.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket

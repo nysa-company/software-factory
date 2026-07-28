@@ -25,6 +25,7 @@ CLAIM_SCHEMA = "nysa.software-factory.controller-claim/v1"
 EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
 TICKET = re.compile(r"^T-[0-9]+$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TERMINAL_ACCOUNTING = {
     "completed", "abandoned_conservative", "cancelled", "cancelled_conservative",
@@ -452,6 +453,45 @@ class Controller:
             "--publication-state", publication,
             "--workdir", claim["worktree"], "--json",
         )
+
+    def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
+        for claim in claims:
+            if claim["status"] != "blocked":
+                continue
+            path = self.state / "passports" / f"{claim['ticket']}.json"
+            if not path.exists():
+                continue
+            prior = read(path).get("factory_sha", "")
+            if not SHA.fullmatch(prior):
+                raise ControllerError("blocked ticket passport has an invalid release")
+            if prior == self.release_path.name:
+                continue
+            try:
+                self.renew(claim)
+            except ControllerError:
+                lease = self.json_call("claim", "--ticket", claim["ticket"])
+                if (
+                    lease.get("schema_version") != 1
+                    or lease.get("ticket") != claim["ticket"]
+                    or not DIGEST.fullmatch(lease.get("lease_id", ""))
+                ):
+                    raise ControllerError("upgraded ticket lease is invalid")
+                claim["lease"] = lease["lease_id"]
+                self.save_claim(claim)
+            try:
+                self.migrate_passport(claim, "preserve")
+            except ControllerError:
+                self.json_call(
+                    "release", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"],
+                )
+                raise
+            claim.update(receipt="", role="", status="claimed")
+            self.save_claim(claim)
+            self.event(
+                "upgraded_claim_recovered", claim["ticket"],
+                from_factory_sha=prior,
+            )
 
     def relocate_qualification_cell(self, claim: dict[str, Any]) -> None:
         if (
@@ -919,6 +959,7 @@ class Controller:
 
     def reconcile(self) -> dict[str, Any]:
         existing = self.load_claims()
+        self.recover_upgraded_claims(existing)
         self.event(
             "controller_started", recovered_tickets=sorted(
                 item["ticket"] for item in existing if self.runnable(item)
