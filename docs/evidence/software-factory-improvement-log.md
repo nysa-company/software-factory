@@ -899,6 +899,34 @@ Validation: the focused controller test starts four ticket workers and proves
 that at most one model pin is active while every ticket still progresses.
 Fresh live four-ticket qualification pending.
 
+## FI-20260727-042 — Readiness outage permanently blocked clean tickets
+
+Status: Implemented; qualification pending
+Area: state machine
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 generation 8
+Impact: T-139 was permanently blocked before Planner and before any provider
+charge when host contention made every bounded CLI readiness probe temporarily
+unavailable. The qualification had to stop before a sibling submitted work.
+Evidence:
+- generation 8 had zero provider-attempt and accounting files
+- the host load average was approximately 30 while version probes ran
+- the single serialized pin returned no route plan and T-139 became blocked
+- the same exact six-role route contract had passed immediately before the
+  generation under lower contention
+Root cause: model resolution collapsed a plan containing only `READY` and
+`UNAVAILABLE` evidence into the same terminal `profile_resolution_failed`
+classification used for invalid or unknown route evidence. The controller
+therefore released the lease instead of waiting for external readiness.
+Smallest change: classify only ready-plus-unavailable resolution failures as
+`profile_temporarily_unavailable`; one serialized probe broadcasts `waiting`
+to all four claims. Invalid and unknown evidence keeps the terminal fail-closed
+path.
+Validation: focused controller coverage proves one transient probe leaves all
+four tickets waiting without reaching the state machine. A focused backend
+policy assertion covers the typed classification. Fresh live qualification
+pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

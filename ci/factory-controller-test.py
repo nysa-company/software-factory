@@ -252,6 +252,49 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(maximum, 1)
         self.assertEqual({item["status"] for item in results}, {"waiting"})
 
+    def test_temporary_model_outage_waits_four_tickets_after_one_probe(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = []
+        for number in range(4):
+            cell = self.root / f"cell-{number + 1}"
+            cell.mkdir()
+            claims.append({
+                "branch": f"ticket/T-{110 + number}",
+                "lease": f"{number + 1:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": f"T-{110 + number}",
+                "worktree": str(cell),
+            })
+        model_calls = 0
+
+        def json_call(*args, **_kwargs):
+            nonlocal model_calls
+            if args[:2] == ("models", "pin"):
+                model_calls += 1
+                return {
+                    "error": (
+                        "model pin resolution failed: "
+                        "profile_temporarily_unavailable"
+                    ),
+                    "status": "error",
+                }
+            raise AssertionError("state machine must wait for model readiness")
+
+        controller.json_call = json_call
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        with CONTROL.ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(controller.reconcile_ticket, claims))
+
+        self.assertEqual(model_calls, 1)
+        self.assertEqual({item["status"] for item in results}, {"waiting"})
+        self.assertEqual({item["status"] for item in claims}, {"waiting"})
+
     def test_blocked_ticket_is_excluded_without_holding_capacity(self) -> None:
         controller = CONTROL.Controller(self.args)
         blocked = {

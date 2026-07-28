@@ -594,8 +594,19 @@ PY
   fi
   if ! "${resolve_command[@]}" > "$plan_tmp" 2>/dev/null; then
     rm -f "$plan_tmp"
+    if python3 - "$tmp/readiness.json" <<'PY'
+import json
+import sys
+
+states = {value["state"] for value in json.load(open(sys.argv[1])).values()}
+raise SystemExit(not ("UNAVAILABLE" in states and states <= {"READY", "UNAVAILABLE"}))
+PY
+    then
+      FACTORY_RESOLVE_ERROR="profile_temporarily_unavailable"
+    else
+      FACTORY_RESOLVE_ERROR="profile_resolution_failed"
+    fi
     rm -rf "$tmp"
-    FACTORY_RESOLVE_ERROR="profile_resolution_failed"
     return 2
   fi
   chmod 0600 "$plan_tmp" 2>/dev/null || {

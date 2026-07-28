@@ -119,6 +119,7 @@ class Controller:
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
         self.model_pin_lock = threading.Lock()
+        self.model_pin_unavailable = False
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -739,12 +740,36 @@ class Controller:
             route = Path(claim["worktree"]) / f"factory/route-plans/{claim['ticket']}.json"
             if not route.exists():
                 with self.model_pin_lock:
+                    if self.model_pin_unavailable:
+                        claim["status"] = "waiting"
+                        self.save_claim(claim)
+                        self.event("model_pin_wait", claim["ticket"], shared=True)
+                        return {"status": "waiting", "ticket": claim["ticket"]}
                     self.renew(claim)
-                    self.json_call(
+                    pin = self.json_call(
                         "models", "pin", "--ticket", claim["ticket"],
                         "--workdir", claim["worktree"], "--json",
+                        allow=(0, 2),
                         timeout=None,
                     )
+                    if pin.get("status") == "error":
+                        error = pin.get("error", "")
+                        if error == (
+                            "model pin resolution failed: "
+                            "profile_temporarily_unavailable"
+                        ):
+                            self.model_pin_unavailable = True
+                            claim["status"] = "waiting"
+                            self.save_claim(claim)
+                            self.event(
+                                "model_pin_wait", claim["ticket"], shared=False,
+                            )
+                            return {
+                                "status": "waiting", "ticket": claim["ticket"],
+                            }
+                        raise ControllerError(
+                            error or "model pin returned an invalid error"
+                        )
             transition = self.json_call(
                 "state-machine", "--ticket", claim["ticket"],
                 "--lease", claim["lease"], "--workdir", claim["worktree"],

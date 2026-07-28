@@ -1115,3 +1115,12 @@ Contract 1.8 serializes only ticket model-plan pinning inside one controller
 reconciliation. This prevents four identical local CLI readiness probe sets
 from starving one another while preserving four-way concurrency for
 task-bearing roles and protected PR validation.
+
+## 2026-07-27 — Decision 79: Temporary model readiness preserves claims
+
+Category: System change
+
+A model plan containing only ready and temporarily unavailable route evidence
+is a shared controller wait, not a ticket failure. One serialized probe pauses
+the four-ticket cohort without releasing claims; invalid or unknown route
+evidence remains a fail-closed configuration error.
