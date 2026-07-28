@@ -1596,6 +1596,39 @@ Validation: the focused refusal test asserts that no passport migration occurs;
 the focused state-machine and controller suites cover the refusal receipt and
 two-phase recovery. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-071 — Qualification closeout ignored its authenticated recovery evidence
+
+Status: Implemented; qualification pending
+Area: qualification reducer and controller
+Owner: Factory
+First seen: 2026-07-28, Relay generation 27
+Impact: T-168 and T-169 carried valid signed `$40` and `$35` ticket caps but
+the reducer still rejected any passport over the base `$25`. It also required
+four terminal tickets at the final Factory SHA even after the operator accepted
+three, which would reopen the intentionally parked T-166 claim and discard
+authenticated role, restart, relocation, and publication evidence from earlier
+releases.
+Evidence: current authenticated passports total T-166 `$26`, T-167 `$12`,
+T-168 `$32`, and T-169 `$28`; T-168 effective Reviewer/Narrator contexts name
+only replacement record `7380793e…` at `$40`. The reducer nevertheless compared
+every ticket to literal `25_000_000` and every role to the final SHA. The one
+restart/recovery boundary and cell relocation are authenticated under the
+shared `fab7c04` passport history for T-166–T-169.
+Root cause: the qualification reducer implemented the initial fixed canary
+shape rather than the Contract 1.8 passport and envelope contracts, and the
+controller treated every persisted claim as a target even after an explicit
+three-ticket closeout.
+Smallest change: allow an exact target of three or four at capacity four;
+filter reconciliation to those target tickets without deleting excluded
+claims; validate historical evidence only against each passport's authenticated
+Factory release history; derive per-ticket caps from the sealed envelope
+reducer; retain the fixed `$100` cohort ceiling; and require the original
+four-ticket restart/recovery/relocation proof plus a final no-SHA-change freeze.
+Validation: focused reducer coverage includes a three-ticket successor,
+historical role/charge evidence, an authenticated `$30` cap, and refusal at
+`$25`; focused controller coverage proves an excluded fourth claim remains
+untouched. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

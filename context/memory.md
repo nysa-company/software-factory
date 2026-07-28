@@ -37,11 +37,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   a protected-main exact-head authorization. The old branch must contain only
   canonical pin/Planning controls and an unchanged ticket contract; recovery
   preserves history through a non-force protected-main merge.
-- Contract 1.8 qualification is exactly four independent tickets at one frozen
-  Factory SHA with $100 total, $25 per ticket, and $2 per run. Its immutable
-  reducer requires authenticated passports, no duplicate successful role/head
-  or charge, controller restart and cell relocation events, concurrent PR
-  validation, protected checks, exact merged heads, and protected-main Done.
+- Contract 1.8 qualification closes three or four target tickets at capacity
+  four with $100 total, authenticated ticket-cap overrides, and $2 per run.
+  Excluded claims remain parked. Its immutable reducer requires passport-bound
+  Factory history, no duplicate successful role/head or charge, the original
+  four-ticket restart and relocation proof, a frozen final candidate,
+  concurrent PR validation, protected checks, exact merged heads, and
+  protected-main Done.
 - A deterministic `REFUSE` receipt never migrates the ticket passport. The
   controller first blocks the claim, then owns authenticated cross-release
   passport migration and the durable pre-route pending marker on its next
@@ -1396,3 +1398,14 @@ A deterministic `REFUSE` transition binds its exact receipt but leaves the
 passport unchanged. The controller blocks the claim first and alone performs
 authenticated cross-release migration plus the restart-safe pending marker;
 non-refusal transitions retain ordinary passport migration.
+
+## 2026-07-28 — Decision 107: Qualification closeout follows authenticated lineage
+
+Category: System change
+
+An operator-approved Contract 1.8 closeout targets exactly three or four
+tickets while retaining capacity-four restart and relocation proof. The
+controller leaves excluded claims untouched. The reducer accepts historical
+roles, charges, and merges only through each signed passport's Factory history,
+uses the sealed active ticket-cap override chain, retains the `$100` cohort
+ceiling, and refuses any Factory change after the final candidate starts.

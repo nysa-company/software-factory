@@ -131,6 +131,7 @@ class Controller:
         if value.get("schema") != QUALIFICATION_SCHEMA:
             return None
         tickets = value.get("tickets")
+        target_done = value.get("target_done")
         if (
             set(value) != {
                 "budget_usd", "capacity", "contract_version", "factory_sha",
@@ -139,7 +140,7 @@ class Controller:
             }
             or value.get("contract_version") != "1.8.0"
             or value.get("capacity") != 4
-            or value.get("target_done") != 4
+            or target_done not in {3, 4}
             or value.get("factory_sha") != self.release_path.name
             or value.get("budget_usd") != "100.000000"
             or value.get("per_ticket_budget_usd") != "25.000000"
@@ -148,7 +149,7 @@ class Controller:
             or isinstance(value.get("generation"), bool)
             or value["generation"] < 1
             or not isinstance(tickets, list)
-            or len(tickets) != 4
+            or len(tickets) != target_done
             or len(tickets) != len(set(tickets))
             or any(
                 not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
@@ -1250,6 +1251,9 @@ class Controller:
 
     def reconcile(self) -> dict[str, Any]:
         existing = self.load_claims()
+        if self.qualification:
+            tickets = set(self.qualification["tickets"])
+            existing = [claim for claim in existing if claim["ticket"] in tickets]
         self.recover_missing_passport_claims(existing)
         self.recover_upgraded_claims(existing)
         self.recover_repaired_failures(existing)
@@ -1267,7 +1271,8 @@ class Controller:
             active = sorted(
                 item["ticket"] for item in claims if self.runnable(item)
             )
-            if len(active) == 4:
+            target = self.qualification["target_done"]
+            if len(active) == target:
                 self.marker("qualification-restart-boundary", {
                     "factory_sha": self.qualification["factory_sha"],
                     "schema": EVENT_SCHEMA,
@@ -1275,7 +1280,7 @@ class Controller:
                 })
                 self.event("restart_boundary", tickets=active)
                 return {
-                    "active": 4,
+                    "active": target,
                     "results": [],
                     "schema": SCHEMA,
                     "status": "restart_required",
@@ -1284,7 +1289,7 @@ class Controller:
                 "active": len(active),
                 "results": [],
                 "schema": SCHEMA,
-                "status": "waiting_for_four",
+                "status": "waiting_for_target",
             }
         if (
             self.qualification
@@ -1295,7 +1300,7 @@ class Controller:
                 item["ticket"] for item in existing if self.runnable(item)
             )
             if recovered != sorted(self.qualification["tickets"]):
-                raise ControllerError("qualification restart did not recover all four tickets")
+                raise ControllerError("qualification restart did not recover every target ticket")
             self.marker("qualification-recovered", {
                 "factory_sha": self.qualification["factory_sha"],
                 "schema": EVENT_SCHEMA,

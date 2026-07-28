@@ -64,6 +64,10 @@ class QualificationReducerTest(unittest.TestCase):
                 "completed_role_evidence": completed,
                 "contract_version": "1.8.0",
                 "cumulative_charges_micro_usd": 6_000_000,
+                "factory_release_history": [{
+                    "contract_version": "1.8.0",
+                    "factory_sha": candidate,
+                }],
                 "factory_sha": candidate,
                 "head_sha": pr_head,
                 "publication_state": "merged",
@@ -90,17 +94,20 @@ class QualificationReducerTest(unittest.TestCase):
                 "state": "MERGED",
             }
         events = [
-            {"event": "restart_boundary", "tickets": tickets},
-            {"event": "controller_recovered", "tickets": tickets},
-            {"event": "cell_relocated", "ticket": tickets[0]},
+            {"event": "restart_boundary", "factory_sha": candidate, "tickets": tickets},
+            {"event": "controller_recovered", "factory_sha": candidate, "tickets": tickets},
+            {"event": "cell_relocated", "factory_sha": candidate, "ticket": tickets[0]},
         ]
         for ticket in tickets:
             events.extend([
-                {"event": "publication_acquired", "ticket": ticket},
-                {"event": "publication_released", "ticket": ticket},
-                {"event": "ticket_complete", "ticket": ticket},
+                {"event": "publication_acquired", "factory_sha": candidate, "ticket": ticket},
+                {"event": "publication_released", "factory_sha": candidate, "ticket": ticket},
+                {"event": "ticket_complete", "factory_sha": candidate, "ticket": ticket},
             ])
-        return manifest, passports, events, terminals, prs
+        for epoch, event in enumerate(events, 1):
+            event["observed_at_epoch_ns"] = epoch
+        caps = {ticket: 25_000_000 for ticket in tickets}
+        return manifest, passports, events, terminals, prs, caps
 
     def test_exact_green_evidence_passes_and_replayed_role_refuses(self):
         evidence = self.evidence()
@@ -112,6 +119,43 @@ class QualificationReducerTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             REDUCER.QualificationError, "replayed or is incomplete"
+        ):
+            REDUCER.verify(*evidence)
+
+    def test_three_ticket_successor_accepts_authenticated_history_and_cap(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, caps = evidence
+        removed = manifest["tickets"][0]
+        manifest["tickets"] = manifest["tickets"][1:]
+        manifest["target_done"] = 3
+        for values in (passports, terminals, prs, caps):
+            del values[removed]
+
+        prior = "b" * 40
+        for passport in passports.values():
+            passport["factory_release_history"].insert(0, {
+                "contract_version": "1.8.0",
+                "factory_sha": prior,
+            })
+        for event in events[:3]:
+            event["factory_sha"] = prior
+
+        ticket = manifest["tickets"][0]
+        for number in range(10):
+            passports[ticket]["charge_records"].append({
+                "charge_micro_usd": 2_000_000,
+                "contract_version": "1.8.0",
+                "factory_sha": prior,
+                "manifest_sha256": f"{9000 + number:064x}",
+                "run_id": f"{ticket}-failed-{number}",
+            })
+        passports[ticket]["cumulative_charges_micro_usd"] = 26_000_000
+        caps[ticket] = 30_000_000
+        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+
+        caps[ticket] = 25_000_000
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "charges do not match the envelope"
         ):
             REDUCER.verify(*evidence)
 

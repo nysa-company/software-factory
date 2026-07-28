@@ -155,6 +155,52 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("restart_boundary", {item["event"] for item in events})
         self.assertIn("controller_recovered", {item["event"] for item in events})
 
+    def test_three_ticket_qualification_parks_an_excluded_claim(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 113)]
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 2,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 3,
+                "tickets": tickets,
+            }),
+            encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        for number, ticket in enumerate([*tickets, "T-113"], 1):
+            cell = self.root / f"cell-{number}"
+            cell.mkdir()
+            controller.save_claim({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        seen = []
+        controller.recover_missing_passport_claims = lambda claims: seen.extend(
+            claim["ticket"] for claim in claims
+        )
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda claims: claims
+        result = controller.reconcile()
+        self.assertEqual(result["status"], "restart_required")
+        self.assertEqual(result["active"], 3)
+        self.assertEqual(seen, tickets)
+        self.assertTrue(controller.claim_path("T-113").exists())
+
     def test_preflight_runs_once_before_planner_only(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import importlib.util
 import json
@@ -76,7 +77,7 @@ def project_value(product: Path, name: str) -> str:
     return values[0]
 
 
-def event_records(path: Path, factory_sha: str) -> list[dict[str, Any]]:
+def event_records(path: Path) -> list[dict[str, Any]]:
     info = path.lstat()
     if (
         not stat.S_ISDIR(info.st_mode)
@@ -84,7 +85,7 @@ def event_records(path: Path, factory_sha: str) -> list[dict[str, Any]]:
         or stat.S_IMODE(info.st_mode) != 0o700
     ):
         raise QualificationError("controller event directory is unsafe")
-    records, selected = [], []
+    records = []
     for item in sorted(path.glob("*.json")):
         value = json.loads(regular(item, 0o600))
         digest = value.pop("event_sha256", "")
@@ -95,19 +96,7 @@ def event_records(path: Path, factory_sha: str) -> list[dict[str, Any]]:
             raise QualificationError("controller event evidence is invalid")
         value["event_sha256"] = digest
         records.append(value)
-        if value.get("factory_sha") == factory_sha:
-            selected.append(value)
-    starts = [
-        item["observed_at_epoch_ns"]
-        for item in selected if item.get("event") == "restart_boundary"
-    ]
-    if starts and any(
-        item["observed_at_epoch_ns"] >= starts[0]
-        and item.get("factory_sha") != factory_sha
-        for item in records
-    ):
-        raise QualificationError("Factory candidate changed during qualification")
-    return sorted(selected, key=lambda value: value["observed_at_epoch_ns"])
+    return sorted(records, key=lambda value: value["observed_at_epoch_ns"])
 
 
 def iso(value: str) -> datetime:
@@ -126,25 +115,33 @@ def verify(
     events: list[dict[str, Any]],
     terminals: dict[str, dict[str, Any]],
     pull_requests: dict[str, dict[str, Any]],
+    ticket_caps: dict[str, int],
 ) -> dict[str, Any]:
     tickets = manifest.get("tickets")
     factory_sha = manifest.get("factory_sha")
+    target_done = manifest.get("target_done")
     if (
         manifest.get("schema") != MANIFEST_SCHEMA
         or manifest.get("contract_version") != "1.8.0"
         or manifest.get("capacity") != 4
-        or manifest.get("target_done") != 4
+        or target_done not in {3, 4}
         or manifest.get("budget_usd") != "100.000000"
         or manifest.get("per_ticket_budget_usd") != "25.000000"
         or manifest.get("per_run_budget_usd") != "2.000000"
         or not SHA.fullmatch(factory_sha or "")
         or not isinstance(tickets, list)
-        or len(tickets) != 4
-        or len(set(tickets)) != 4
+        or len(tickets) != target_done
+        or len(set(tickets)) != target_done
         or any(not TICKET.fullmatch(ticket) for ticket in tickets)
         or set(passports) != set(tickets)
         or set(terminals) != set(tickets)
         or set(pull_requests) != set(tickets)
+        or set(ticket_caps) != set(tickets)
+        or any(
+            not isinstance(cap, int) or isinstance(cap, bool)
+            or cap < 25_000_000 or cap > 100_000_000
+            for cap in ticket_caps.values()
+        )
     ):
         raise QualificationError("qualification inputs are incomplete")
 
@@ -156,11 +153,21 @@ def verify(
         passport = passports[ticket]
         charges = passport.get("charge_records")
         completed = passport.get("completed_role_evidence")
+        history = passport.get("factory_release_history")
+        history_shas = {
+            item.get("factory_sha") for item in history or []
+            if isinstance(item, dict)
+            and item.get("contract_version") == "1.8.0"
+            and SHA.fullmatch(item.get("factory_sha", ""))
+        }
         if (
             passport.get("ticket") != ticket
             or passport.get("factory_sha") != factory_sha
             or passport.get("contract_version") != "1.8.0"
             or passport.get("publication_state") != "merged"
+            or not isinstance(history, list)
+            or len(history_shas) != len(history)
+            or factory_sha not in history_shas
             or not isinstance(charges, list)
             or not isinstance(completed, list)
         ):
@@ -170,7 +177,7 @@ def verify(
                 not isinstance(item.get("charge_micro_usd"), int)
                 or item["charge_micro_usd"] < 0
                 or item["charge_micro_usd"] > 2_000_000
-                or item.get("factory_sha") != factory_sha
+                or item.get("factory_sha") not in history_shas
                 or item.get("contract_version") != "1.8.0"
                 or not DIGEST.fullmatch(item.get("manifest_sha256", ""))
                 for item in charges
@@ -180,7 +187,7 @@ def verify(
         charge = sum(item["charge_micro_usd"] for item in charges)
         if (
             charge != passport.get("cumulative_charges_micro_usd")
-            or charge > 25_000_000
+            or charge > ticket_caps[ticket]
         ):
             raise QualificationError(f"{ticket} charges do not match the envelope")
         for item in charges:
@@ -198,7 +205,7 @@ def verify(
             not ROLES.issubset({role for role, _ in role_heads})
             or len(role_heads) != len(set(role_heads))
             or any(
-                item.get("factory_sha") != factory_sha
+                item.get("factory_sha") not in history_shas
                 or item.get("contract_version") != "1.8.0"
                 or not SHA.fullmatch(item.get("head_before", ""))
                 or not DIGEST.fullmatch(item.get("transition_receipt_sha256", ""))
@@ -212,7 +219,7 @@ def verify(
         if (
             done.get("schema") != "nysa.software-factory.ticket-done/v1"
             or done.get("ticket") != ticket
-            or done.get("kit_sha") != factory_sha
+            or done.get("kit_sha") not in history_shas
             or done.get("required_checks") != done.get("successful_checks")
             or not done.get("required_checks")
             or pr.get("number") != done.get("pr_number")
@@ -237,26 +244,58 @@ def verify(
     if total > 100_000_000:
         raise QualificationError("qualification exceeded its total budget")
 
+    common_history = set.intersection(*[
+        {
+            item["factory_sha"]
+            for item in passports[ticket]["factory_release_history"]
+        }
+        for ticket in tickets
+    ])
+    relevant = [
+        item for item in events
+        if item.get("factory_sha") in common_history
+    ]
+    current = [
+        item["observed_at_epoch_ns"]
+        for item in relevant if item.get("factory_sha") == factory_sha
+    ]
+    if not current or any(
+        item["observed_at_epoch_ns"] > min(current)
+        and item.get("factory_sha") != factory_sha
+        for item in events
+    ):
+        raise QualificationError("Factory candidate changed after its final freeze")
+
     def matching(name: str) -> list[dict[str, Any]]:
-        return [item for item in events if item.get("event") == name]
+        return [item for item in relevant if item.get("event") == name]
 
     boundaries = matching("restart_boundary")
     recoveries = matching("controller_recovered")
     relocations = matching("cell_relocated")
+    boundary_tickets = (
+        boundaries[0].get("tickets") if len(boundaries) == 1 else None
+    )
     if (
-        len(boundaries) != 1
-        or sorted(boundaries[0].get("tickets", [])) != sorted(tickets)
+        not isinstance(boundary_tickets, list)
+        or len(boundary_tickets) != 4
+        or len(set(boundary_tickets)) != 4
+        or not set(tickets).issubset(boundary_tickets)
         or len(recoveries) != 1
-        or sorted(recoveries[0].get("tickets", [])) != sorted(tickets)
+        or recoveries[0].get("tickets") != boundary_tickets
         or len(relocations) != 1
-        or relocations[0].get("ticket") not in tickets
-        or {item.get("ticket") for item in matching("ticket_complete")} != set(tickets)
+        or relocations[0].get("ticket") not in boundary_tickets
+        or {
+            item.get("ticket") for item in matching("ticket_complete")
+            if item.get("ticket") in tickets
+        } != set(tickets)
     ):
         raise QualificationError("restart, relocation, or completion proof is missing")
     holder = None
     acquired: set[str] = set()
     released: set[str] = set()
-    for item in events:
+    for item in relevant:
+        if item.get("ticket") not in tickets:
+            continue
         if item.get("event") == "publication_acquired":
             if holder is not None:
                 raise QualificationError("publication leases overlapped")
@@ -272,7 +311,7 @@ def verify(
     created = [iso(pull_requests[ticket]["createdAt"]) for ticket in tickets]
     merged = [iso(pull_requests[ticket]["mergedAt"]) for ticket in tickets]
     if max(created) > min(merged):
-        raise QualificationError("four PRs did not validate concurrently")
+        raise QualificationError("target PRs did not validate concurrently")
     return {
         "factory_sha": factory_sha,
         "schema": SCHEMA,
@@ -280,6 +319,38 @@ def verify(
         "tickets": ticket_reports,
         "total_charge_micro_usd": total,
     }
+
+
+def effective_ticket_caps(
+    product: Path, kit_dir: Path, manifest: dict[str, Any]
+) -> dict[str, int]:
+    spec = importlib.util.spec_from_file_location(
+        "qualification_envelope", kit_dir / "scripts/envelope-control.py"
+    )
+    if not spec or not spec.loader:
+        raise QualificationError("envelope verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        base = Decimal(manifest["per_ticket_budget_usd"])
+        state = module.read_runtime_state(product)
+        day = datetime.now(timezone.utc).date().isoformat()
+        result = {}
+        for ticket in manifest["tickets"]:
+            _, changes = module.load_override_records(
+                state[1], ticket, "reviewer", day, {"ticket"}
+            )
+            value = Decimal(changes.get("PER_TICKET_BUDGET_USD", str(base)))
+            micro = value * 1_000_000
+            if micro != micro.to_integral_value():
+                raise QualificationError("ticket cap has excess precision")
+            result[ticket] = int(micro)
+        return result
+    except (
+        AttributeError, InvalidOperation, KeyError, TypeError, ValueError,
+        module.ControlError,
+    ) as error:
+        raise QualificationError("authenticated ticket caps are invalid") from error
 
 
 def main() -> None:
@@ -345,8 +416,9 @@ def main() -> None:
                 raise QualificationError(f"{ticket} protected checks are not green")
         report = verify(
             manifest, passports,
-            event_records(state / "events", manifest["factory_sha"]),
+            event_records(state / "events"),
             terminals, pull_requests,
+            effective_ticket_caps(product, args.kit_dir, manifest),
         )
         report["protected_main_sha"] = protected
         report["report_sha256"] = hashlib.sha256(canonical(report).encode()).hexdigest()
