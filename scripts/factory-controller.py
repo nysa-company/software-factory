@@ -15,6 +15,7 @@ import secrets
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Any
 
@@ -117,6 +118,7 @@ class Controller:
         safe_directory(self.events, create=True)
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
+        self.model_pin_lock = threading.Lock()
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -736,11 +738,13 @@ class Controller:
                 }
             route = Path(claim["worktree"]) / f"factory/route-plans/{claim['ticket']}.json"
             if not route.exists():
-                self.json_call(
-                    "models", "pin", "--ticket", claim["ticket"],
-                    "--workdir", claim["worktree"], "--json",
-                    timeout=None,
-                )
+                with self.model_pin_lock:
+                    self.renew(claim)
+                    self.json_call(
+                        "models", "pin", "--ticket", claim["ticket"],
+                        "--workdir", claim["worktree"], "--json",
+                        timeout=None,
+                    )
             transition = self.json_call(
                 "state-machine", "--ticket", claim["ticket"],
                 "--lease", claim["lease"], "--workdir", claim["worktree"],

@@ -1106,3 +1106,12 @@ The controller does not add a second aggregate timeout around the six-role
 pinning transaction, so slow successful probes cannot block tickets before
 provider submission merely because their combined duration exceeds five
 minutes.
+
+## 2026-07-27 — Decision 78: Machine readiness is probed serially
+
+Category: System change
+
+Contract 1.8 serializes only ticket model-plan pinning inside one controller
+reconciliation. This prevents four identical local CLI readiness probe sets
+from starving one another while preserving four-way concurrency for
+task-bearing roles and protected PR validation.

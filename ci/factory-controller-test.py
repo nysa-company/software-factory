@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 
 
@@ -206,6 +208,49 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(model_calls), 1)
         self.assertIsNone(model_calls[0][1]["timeout"])
+
+    def test_concurrent_tickets_serialize_model_readiness_probes(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = []
+        for number in range(4):
+            cell = self.root / f"cell-{number + 1}"
+            cell.mkdir()
+            claims.append({
+                "branch": f"ticket/T-{110 + number}",
+                "lease": f"{number + 1:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": f"T-{110 + number}",
+                "worktree": str(cell),
+            })
+        guard = threading.Lock()
+        active = 0
+        maximum = 0
+
+        def json_call(*args, **_kwargs):
+            nonlocal active, maximum
+            if args[:2] == ("models", "pin"):
+                with guard:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(0.02)
+                with guard:
+                    active -= 1
+                return {}
+            return {"stage": "AWAIT-OPERATOR test", "receipt": "b" * 64}
+
+        controller.json_call = json_call
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        with CONTROL.ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(controller.reconcile_ticket, claims))
+
+        self.assertEqual(maximum, 1)
+        self.assertEqual({item["status"] for item in results}, {"waiting"})
 
     def test_blocked_ticket_is_excluded_without_holding_capacity(self) -> None:
         controller = CONTROL.Controller(self.args)

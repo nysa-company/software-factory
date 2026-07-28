@@ -423,7 +423,10 @@ route and never silently retries a task-bearing process. Contract 1.4 may
 migrate the v1 plan and append a fallback revision only after an eligible
 terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
-journals automatically.
+journals automatically. Contract 1.8 serializes only the machine-readiness
+portion of concurrent ticket pinning so four identical CLI probe sets cannot
+starve one another; role execution and protected PR validation remain
+four-ticket concurrent.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` for
 Contracts 1.1 through 1.5 and `4` for Contracts 1.6 through 1.8. The older

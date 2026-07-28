@@ -873,6 +873,32 @@ Validation: the focused controller test binds model pinning to `timeout=None`
 while preserving the default timeout for other launcher calls. Fresh live
 four-ticket qualification pending.
 
+## FI-20260727-041 — Concurrent model probes starved every route
+
+Status: Implemented; qualification pending
+Area: state machine
+Owner: Factory
+First seen: 2026-07-27, Relay Contract 1.8 generations 6 and 7
+Impact: T-130 through T-137 were blocked before Planner and before any provider
+charge even though the exact installed CLIs passed independent bounded probes.
+Evidence:
+- both generations retained empty provider-attempt and accounting directories
+- generation 7 launched four `models pin` transactions concurrently
+- each transaction reported every Cursor, Codex, and Claude route as
+  `UNAVAILABLE:version_probe_failed`
+- immediately before generation 7, independent exact CLI probes returned
+  successfully for Cursor status and Claude version
+Root cause: four ticket workers duplicated the same machine-level readiness
+probe set concurrently. CLI startup contention exhausted each bounded probe,
+including version-only probes, so the resolver had no usable route.
+Smallest change: serialize only `models pin` inside one controller
+reconciliation. Keep its individually bounded probes and unlimited aggregate
+duration; preserve four-way concurrency for task-bearing roles and protected
+PR validation.
+Validation: the focused controller test starts four ticket workers and proves
+that at most one model pin is active while every ticket still progresses.
+Fresh live four-ticket qualification pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
