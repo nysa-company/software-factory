@@ -843,6 +843,52 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
 
+    def test_control_only_refresh_invalidates_orphaned_review_lineage(self):
+        tree = command(
+            "git", "rev-parse", "HEAD^{tree}", cwd=self.product,
+        ).stdout.strip()
+        base = command(
+            "git", "rev-parse", "origin/main", cwd=self.product,
+        ).stdout.strip()
+        orphan_reviewer = command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit-tree", tree, "-p", base, "-m", "orphan reviewer",
+            cwd=self.product,
+        ).stdout.strip()
+        orphan_narrator = command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit-tree", tree, "-p", orphan_reviewer, "-m", "orphan narrator",
+            cwd=self.product,
+        ).stdout.strip()
+        for role, head in (
+            ("reviewer", orphan_reviewer),
+            ("narrator", orphan_narrator),
+        ):
+            manifest = self.product / f"factory/runs/{role}-1.meta"
+            manifest.write_text("\n".join(
+                f"role_head_before={head}"
+                if line.startswith("role_head_before=") else line
+                for line in manifest.read_text().splitlines()
+            ) + "\n")
+
+        updater = self.temp / "orphan-control-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "factory/QUALIFICATION.json").write_text('{"generation": 2}\n')
+        migration = updater / f"factory/migrations/inflight-release/{KIT_SHA}.json"
+        migration.parent.mkdir(parents=True)
+        migration.write_text("{}\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected control metadata", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("new post-refresh Reviewer", self.attest("bundle").stderr)
+
     def test_refresh_refuses_symlink_attestation_path(self):
         attestation = self.product / "factory/attestations/T-700"
         attestation.mkdir(parents=True)

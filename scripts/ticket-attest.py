@@ -681,23 +681,35 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         )
     except ClassificationError as error:
         raise Refusal(f"refresh semantic classification failed: {error}")
-    if preserved is not None:
-        return receipt["base_head"]
-    old_raw_reviewers = len(old_verdicts) + len(old_voids)
-    if (
-        len(current_verdicts) <= len(old_verdicts)
-        or any(value <= old_raw_reviewers for value in current_voids[len(old_voids):])
-    ):
-        raise Refusal("a new post-refresh Reviewer verdict is required")
     reviewers = sorted(
         (item for item in manifests if item.get("role") == "reviewer"),
         key=lambda item: item["_ledger_index"],
     )
+    raw_reviewers = len(old_verdicts) + len(old_voids)
+
+    def belongs_to_old_head(item):
+        head = item.get("role_head_before", "")
+        return valid_oid(head) and not git(
+            workdir, "merge-base", "--is-ancestor",
+            head, receipt["old_head"], check=False,
+        ).returncode
+
+    if (
+        preserved is not None
+        and belongs_to_old_head(reviewer)
+        and belongs_to_old_head(narrator)
+    ):
+        return receipt["base_head"]
+    if (
+        len(current_verdicts) <= len(old_verdicts)
+        or any(value <= raw_reviewers for value in current_voids[len(old_voids):])
+    ):
+        raise Refusal("a new post-refresh Reviewer verdict is required")
     try:
         reviewer_ordinal = reviewers.index(reviewer) + 1
     except ValueError:
         raise Refusal("post-refresh Reviewer evidence is missing")
-    if reviewer_ordinal <= old_raw_reviewers:
+    if reviewer_ordinal <= raw_reviewers:
         raise Refusal("post-refresh Reviewer evidence is required")
     for role, manifest in (("Reviewer", reviewer), ("Narrator", narrator)):
         head = manifest.get("role_head_before", "")

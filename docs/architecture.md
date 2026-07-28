@@ -383,10 +383,14 @@ receipt's immutable base delta contains only modified regular blobs at exact
 `factory/KIT_PIN` and `factory/QUALIFICATION.json`, plus added regular blobs at
 exact `factory/migrations/inflight-release/<40-hex>.json` paths. In that narrow
 case the attestor also requires the retained ticket-head blobs to equal the
-protected base and reuses the still-valid Reviewer/Narrator evidence. Every
-application, test, contract, CI, configuration, rename, type, deletion, and
-unknown-path change invalidates review. A malformed or stale refresh receipt
-refuses sequencing.
+protected base and every preserved Reviewer/Narrator manifest head to be an
+ancestor of the receipt-bound old head. Earlier historical rows from a
+discarded force-pushed lineage remain auditable; the latest effective Reviewer
+and the later effective Narrator decide reuse. An orphaned latest Reviewer
+reruns Reviewer and downstream Narrator, while a missing or orphaned Narrator
+reruns only Narrator. Every application, test, contract, CI, configuration,
+rename, type, deletion, and unknown-path change invalidates review. A malformed
+or stale refresh receipt refuses sequencing.
 The early ticket-PR boundary applies that same decision instead of comparing
 only commit SHAs. It accepts retained control paths only under Contract 1.8,
 an exact receipt-authorized stage, a committed direct-after-merge refresh

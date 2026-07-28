@@ -51,8 +51,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 ticket-PR validation preserves Reviewer/Narrator evidence across
   a control-only refresh only when the receipt-authorized stage, committed
   direct-after-merge refresh topology, shared semantic classifier, and exact
-  retained protected-base blobs all agree. Unknown and semantic changes still
-  invalidate review.
+  retained protected-base blobs all agree. The latest effective Reviewer and
+  later Narrator must also belong to the receipt-bound old head; earlier
+  discarded-lineage rows remain auditable but do not disqualify a later valid
+  pair. Unknown and semantic changes still invalidate review.
 - Fresh development lanes and trusted ticket-state reconciliation omit the
   Reviewer checkpoint argument when no authenticated import exists, including
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
@@ -1426,3 +1428,15 @@ exact retained protected-base control blobs all validate. Route migration
 remains independently append-only; application, test, contract, CI,
 configuration, unknown, renamed, deleted, typed, malformed, and stale inputs
 still fail closed.
+
+## 2026-07-28 — Decision 109: Semantic refresh cannot preserve orphaned role evidence
+
+Category: System change
+
+The narrow control-only protected-base allowlist preserves the latest effective
+Reviewer and its later effective Narrator only when their manifest heads belong
+to the receipt-bound old ticket head. Earlier successful runs on a discarded
+force-pushed lineage remain immutable accounting evidence but do not disqualify
+a later valid pair. An orphaned Reviewer reruns Reviewer and downstream
+Narrator; an invalid Narrator reruns only Narrator. Sequencing and bundle
+attestation enforce the same rule.

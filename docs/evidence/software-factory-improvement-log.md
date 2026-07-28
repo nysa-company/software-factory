@@ -1664,6 +1664,38 @@ refresh acceptance followed by an unknown-path refusal. The exact live T-169
 range classifies the four expected refresh/control paths and zero unexpected
 paths. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-073 — Control-only refresh counted Reviewer evidence from a discarded lineage
+
+Status: Implemented; qualification pending
+Area: state machine and review evidence
+Owner: Factory
+First seen: 2026-07-28, Relay T-168 generation 29
+Impact: after the authenticated `ce7ef86` route migration, T-168's passport
+correctly required Reviewer, but deterministic reconciliation selected
+Narrator and failed at the ticket-PR gate once per one-shot cycle. No provider
+call started and no passport changed.
+Evidence: current exact branch head `729ec5c…` does not descend the latest
+successful Reviewer head `e9165f1…`; the latter belongs to a discarded
+force-pushed lineage. The receipt-bound protected-base delta is control-only,
+so the sequencer counted its baseline Reviewer/Narrator totals without first
+binding their manifest heads to the receipt's `old_head`. The Reviewer-stage
+ticket-PR check succeeds on the same exact head while its Narrator-stage check
+fails closed.
+Root cause: semantic base classification answered whether protected main
+changed review inputs, but preservation did not separately prove that the
+evidence being preserved belonged to the surviving ticket lineage.
+Smallest change: retain the existing allowlist, then bind the latest effective
+Reviewer and its later effective Narrator to the exact old head. An orphaned
+Reviewer invalidates Reviewer and downstream Narrator; an orphaned or
+pre-Reviewer Narrator invalidates only Narrator. Earlier superseded rows remain
+auditable and do not invalidate a later valid pair. Apply the same ancestry
+rule at bundle attestation; never delete or rewrite historical runs or charges.
+Validation: focused attestation coverage creates linked Reviewer/Narrator
+commits outside the live ticket ancestry and requires a new Reviewer after a
+control-only refresh. The sequencer regression covers the same discarded-head
+topology, and the exact live T-168 resolver must return `RUN reviewer`.
+Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

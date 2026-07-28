@@ -2885,6 +2885,88 @@ if expect_stage "RUN reviewer" "$NOOP_REFRESH_ROOT" T-511; then
   pass "refresh accepts an authenticated no-op Review ticket reset"
 fi
 
+# Control-only refreshes may preserve only role evidence that belongs to the
+# receipt-bound old head. Auditable runs on a discarded force-pushed lineage
+# must not advance the replacement branch.
+ORPHAN_REFRESH_ROOT="$TMP/orphan-control-refresh"
+write_envelope "$ORPHAN_REFRESH_ROOT"
+cat > "$ORPHAN_REFRESH_ROOT/factory/tickets/T-512.md" <<TICKET
+# T-512
+State: Review
+Kit-SHA: $KIT_SHA
+reviewer round 1: APPROVE
+- [ ] Evidence bundle posted
+- [ ] Operator approved
+TICKET
+printf '{}\n' > "$ORPHAN_REFRESH_ROOT/factory/QUALIFICATION.json"
+{
+  ledger_header
+  ledger_row T-512 planner
+  ledger_row T-512 test-author
+  ledger_row T-512 builder
+  ledger_row_run T-512 reviewer orphan-reviewer
+  ledger_row_run T-512 narrator orphan-narrator
+} > "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+git -C "$ORPHAN_REFRESH_ROOT" add factory
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "pre-refresh orphan evidence"
+ORPHAN_OLD_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+ORPHAN_BRANCH="$(git -C "$ORPHAN_REFRESH_ROOT" branch --show-current)"
+ORPHAN_PARENT="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD^)"
+ORPHAN_TREE="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse 'HEAD^{tree}')"
+ORPHAN_REVIEW_HEAD="$(printf '%s\n' 'orphan reviewer' | \
+  git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit-tree "$ORPHAN_TREE" -p "$ORPHAN_PARENT")"
+ORPHAN_NARRATOR_HEAD="$(printf '%s\n' 'orphan narrator' | \
+  git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit-tree "$ORPHAN_TREE" -p "$ORPHAN_REVIEW_HEAD")"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 reviewer orphan-reviewer \
+  "$ORPHAN_REVIEW_HEAD"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 narrator orphan-narrator \
+  "$ORPHAN_NARRATOR_HEAD"
+git -C "$ORPHAN_REFRESH_ROOT" checkout -qb orphan-control-base
+printf '{"generation":2}\n' > "$ORPHAN_REFRESH_ROOT/factory/QUALIFICATION.json"
+mkdir -p "$ORPHAN_REFRESH_ROOT/factory/migrations/inflight-release"
+printf '{}\n' > \
+  "$ORPHAN_REFRESH_ROOT/factory/migrations/inflight-release/$KIT_SHA.json"
+git -C "$ORPHAN_REFRESH_ROOT" add factory
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "advance protected control metadata"
+ORPHAN_BASE_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+git -C "$ORPHAN_REFRESH_ROOT" checkout -q "$ORPHAN_BRANCH"
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  merge -q --no-ff orphan-control-base -m "refresh protected base"
+ORPHAN_MERGE_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+mkdir -p "$ORPHAN_REFRESH_ROOT/factory/attestations/T-512"
+python3 - "$ORPHAN_REFRESH_ROOT/factory/attestations/T-512/refresh.json" \
+  "$ORPHAN_OLD_HEAD" "$ORPHAN_BASE_HEAD" "$ORPHAN_MERGE_HEAD" <<'PY'
+import json
+import sys
+json.dump({
+    "schema": "nysa.software-factory.ticket-refresh/v1",
+    "ticket": "T-512",
+    "generation": 1,
+    "old_head": sys.argv[2],
+    "base_head": sys.argv[3],
+    "merge_head": sys.argv[4],
+    "prior_reviewer_runs": 1,
+    "prior_approve_verdicts": 1,
+    "prior_request_changes_verdicts": 0,
+    "prior_narrator_runs": 1,
+    "prior_bundle_blob": None,
+    "prior_approval_blob": None,
+    "refreshed_at": "2026-07-21T12:00:00Z",
+}, open(sys.argv[1], "w", encoding="utf-8"), sort_keys=True)
+PY
+git -C "$ORPHAN_REFRESH_ROOT" add \
+  factory/attestations/T-512/refresh.json
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "record orphan control refresh"
+if TEST_CONTRACT_VERSION=1.8.0 \
+   expect_stage "RUN reviewer" "$ORPHAN_REFRESH_ROOT" T-512; then
+  pass "control-only refresh invalidates orphaned role evidence"
+fi
+
 COMMITTED_APPROVAL_ROOT="$TMP/committed-approval"
 write_envelope "$COMMITTED_APPROVAL_ROOT"
 cat > "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md" <<'TICKET'

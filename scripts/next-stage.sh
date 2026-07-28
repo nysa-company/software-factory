@@ -171,6 +171,7 @@ fi
 REFRESH_RECEIPT="$CONTENT_ROOT/factory/attestations/$TICKET/refresh.json"
 REFRESH_ACTIVE=0
 REFRESH_PRESERVE_REVIEW=0
+REFRESH_PRESERVE_NARRATOR=0
 if [[ -e "$REFRESH_RECEIPT" ]]; then
   [[ -f "$REFRESH_RECEIPT" && ! -L "$REFRESH_RECEIPT" ]] || {
     echo "REFUSE refresh receipt is not a regular file"
@@ -355,13 +356,14 @@ for line in lines:
 raw_reviewers = approve + request + len(voids)
 if any(number < 1 or number > raw_reviewers for number in voids):
     raise SystemExit(1)
-print(f"{approve}|{request}|{len(voids)}")
+print(f"{approve}|{request}|{len(voids)}|{','.join(map(str, sorted(voids)))}")
 PY
 )" || {
     echo "REFUSE old ticket has malformed reviewer void evidence"
     exit 1
   }
-  IFS='|' read -r OLD_APPROVES OLD_REQUESTS OLD_VOID_COUNT <<< "$OLD_BASELINES"
+  IFS='|' read -r OLD_APPROVES OLD_REQUESTS OLD_VOID_COUNT OLD_VOID_RUNS \
+    <<< "$OLD_BASELINES"
   if [[ "$REFRESH_APPROVES" -ne "$OLD_APPROVES" ||
         "$REFRESH_REQUESTS" -ne "$OLD_REQUESTS" ||
         "$REFRESH_REVIEWERS" -ne $((OLD_APPROVES + OLD_REQUESTS)) ]]; then
@@ -768,6 +770,54 @@ for index, run_id in selected:
 PY
 }
 
+# A control-only base advance preserves only the effective evidence that
+# actually belongs to the receipt-bound old head. Earlier successful rows left
+# behind by an authorized force-push remain auditable, but do not invalidate a
+# later valid Reviewer/Narrator pair on the surviving lineage.
+if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 1 ]]; then
+  if ! PRESERVED_REVIEW_ROWS="$(refresh_manifest_rows reviewer 0 "$OLD_VOID_RUNS")" ||
+     ! PRESERVED_NARRATOR_ROWS="$(refresh_manifest_rows narrator 0 "")"; then
+    echo "REFUSE preserved refresh evidence lacks an exact successful run manifest"
+    exit 1
+  fi
+  PRESERVED_INDEX=0
+  PRESERVED_REVIEW_LEDGER=0
+  PRESERVED_REVIEW_HEAD=""
+  while IFS='|' read -r _index evidence_head; do
+    [[ -n "$evidence_head" ]] || continue
+    PRESERVED_INDEX=$((PRESERVED_INDEX + 1))
+    if [[ "$PRESERVED_INDEX" -le "$REFRESH_REVIEWERS" ]]; then
+      PRESERVED_REVIEW_LEDGER="$_index"
+      PRESERVED_REVIEW_HEAD="$evidence_head"
+    fi
+  done <<< "$PRESERVED_REVIEW_ROWS"
+  if [[ "$REFRESH_REVIEWERS" -gt 0 ]] &&
+     { [[ -z "$PRESERVED_REVIEW_HEAD" ]] ||
+       ! git -C "$TICKET_WORKTREE_ROOT" merge-base --is-ancestor \
+         "$PRESERVED_REVIEW_HEAD" "$REFRESH_OLD_HEAD" 2>/dev/null; }; then
+    REFRESH_PRESERVE_REVIEW=0
+  fi
+  PRESERVED_INDEX=0
+  PRESERVED_NARRATOR_LEDGER=0
+  PRESERVED_NARRATOR_HEAD=""
+  while IFS='|' read -r _index evidence_head; do
+    [[ -n "$evidence_head" ]] || continue
+    PRESERVED_INDEX=$((PRESERVED_INDEX + 1))
+    if [[ "$PRESERVED_INDEX" -le "$REFRESH_NARRATORS" ]]; then
+      PRESERVED_NARRATOR_LEDGER="$_index"
+      PRESERVED_NARRATOR_HEAD="$evidence_head"
+    fi
+  done <<< "$PRESERVED_NARRATOR_ROWS"
+  if [[ "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
+        "$REFRESH_NARRATORS" -gt 0 &&
+        -n "$PRESERVED_NARRATOR_HEAD" ]] &&
+     git -C "$TICKET_WORKTREE_ROOT" merge-base --is-ancestor \
+       "$PRESERVED_NARRATOR_HEAD" "$REFRESH_OLD_HEAD" 2>/dev/null &&
+     [[ "$PRESERVED_NARRATOR_LEDGER" -gt "$PRESERVED_REVIEW_LEDGER" ]]; then
+    REFRESH_PRESERVE_NARRATOR=1
+  fi
+fi
+
 if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   if ! FRESH_REVIEW_ROWS="$(refresh_manifest_rows reviewer \
     "$REFRESH_RAW_REVIEWERS" "$VOID_RUNS")" ||
@@ -930,6 +980,12 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   # A post-refresh rejection must use the ordinary fix/re-review path below;
   # an approval from the invalidated generation cannot short-circuit it.
 elif [[ "$A" -ge 1 ]]; then
+  if [[ "$REFRESH_ACTIVE" -eq 1 &&
+        "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
+        "$REFRESH_PRESERVE_NARRATOR" -eq 0 ]]; then
+    echo "RUN narrator"
+    exit 0
+  fi
   if [[ "$CHECKPOINT_AWAIT_REOPENED" -eq 1 && "$LOCAL_N" -eq 0 ]]; then
     echo "RUN narrator"
     exit 0
