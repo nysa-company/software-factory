@@ -21,7 +21,7 @@
   <key>RunAtLoad</key>
   <true/>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>StandardOutPath</key>
   <string>__HOME__/.factory/logs/__PROJECT_SLUG__-controller.log</string>
   <key>StandardErrorPath</key>

@@ -954,6 +954,29 @@ four tickets and one shared wait on transient failure. The protected full
 regression covers launcher grammar and exact batch commits. Fresh live
 four-ticket qualification pending.
 
+## FI-20260728-044 — Background LaunchAgent QoS starved readiness
+
+Status: Implemented; qualification pending
+Area: controller
+Owner: Factory
+First seen: 2026-07-28, Relay Contract 1.8 generation 10
+Impact: T-146 through T-149 recovered in four cells but remained before
+Planner with zero provider attempts because every route version probe expired.
+Evidence:
+- the generation recorded one owner and three authenticated shared waits
+- all seven routes reported `version_probe_failed` inside the controller
+- the exact Cursor version command completed directly within its unchanged
+  30-second bound
+- a normal/background launchd job timed out, while an otherwise identical
+  `Interactive` LaunchAgent returned the pinned version in 17 seconds
+Root cause: the canonical controller plist assigned macOS `Background`
+process type to a job that performs bounded local provider-readiness probes.
+Smallest change: run the same non-overlapping one-shot controller with
+`ProcessType=Interactive`; keep every probe assertion and timeout unchanged.
+Validation: the focused controller test parses the canonical plist and binds
+its process type. Protected GitHub CI retains the full regression. Fresh live
+four-ticket qualification pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

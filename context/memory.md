@@ -1134,3 +1134,12 @@ the concurrent ticket worker pool and pins every route-less clean branch from
 that in-process batch resolution. Release validation and per-adapter timeouts
 remain unchanged; only task-bearing roles and protected PR validation fan out
 four ways.
+
+## 2026-07-28 — Decision 81: Controller readiness uses interactive launchd QoS
+
+Category: System change
+
+The Contract 1.8 controller LaunchAgent uses `ProcessType=Interactive`.
+macOS background QoS can exhaust otherwise healthy bounded local CLI
+readiness probes; their timeout, validation, and fail-closed behavior remain
+unchanged.

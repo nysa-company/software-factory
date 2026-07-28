@@ -65,6 +65,8 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
 - For Contract 1.8, instantiate
   `scripts/launchd/com.factory.controller.plist.template` with the exact
   project, home, and product paths and load it as a separate LaunchAgent.
+  Keep its `Interactive` process type: macOS background QoS can exhaust the
+  unchanged bounded provider-readiness probes before ticket work starts.
 - Pre-promotion live qualification uses the owner-only sealed environment
   prepared by `scripts/qualification-environment.py`; it does not replace the
   installed launcher or production activation record. Its generated marker

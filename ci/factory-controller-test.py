@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import tempfile
 import unittest
 
@@ -22,6 +23,12 @@ SPEC.loader.exec_module(CONTROL)
 
 
 class FactoryControllerTest(unittest.TestCase):
+    def test_launch_agent_does_not_throttle_bounded_provider_probes(self) -> None:
+        template = ROOT / "scripts/launchd/com.factory.controller.plist.template"
+        with template.open("rb") as handle:
+            job = plistlib.load(handle)
+        self.assertEqual(job["ProcessType"], "Interactive")
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
