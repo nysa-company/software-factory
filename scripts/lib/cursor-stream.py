@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
@@ -113,11 +115,11 @@ def completed_tool_error(event: dict[str, Any]) -> tuple[str, str] | None:
 
 
 def main() -> int:
-    if len(sys.argv) not in {6, 7}:
+    if len(sys.argv) not in {6, 7, 8}:
         print(
             "usage: cursor-stream.py METRICS_FILE EXPECTED_MODEL "
             "EXPECTED_REPORTED_MODEL EXPECTED_CWD MAX_TURNS "
-            "[REPEATED_TOOL_ERROR_LIMIT]",
+            "[REPEATED_TOOL_ERROR_LIMIT] [PROGRESS_JOURNAL]",
             file=sys.stderr,
         )
         return 2
@@ -127,7 +129,8 @@ def main() -> int:
     expected_reported_model = sys.argv[3]
     expected_cwd = os.path.realpath(sys.argv[4])
     max_turns = int(sys.argv[5])
-    repeated_tool_error_limit = int(sys.argv[6]) if len(sys.argv) == 7 else 0
+    repeated_tool_error_limit = int(sys.argv[6]) if len(sys.argv) >= 7 else 0
+    progress_path = Path(sys.argv[7]) if len(sys.argv) == 8 else None
     if repeated_tool_error_limit < 0:
         print("REPEATED_TOOL_ERROR_LIMIT must be nonnegative", file=sys.stderr)
         return 2
@@ -151,61 +154,102 @@ def main() -> int:
     tool_errors: Counter[tuple[str, str]] = Counter()
     repeated_tool_error_count = 0
     repeated_tool_error_limit_exceeded = False
+    progress_events = 0
+    progress_digest = hashlib.sha256()
+    progress_stream = None
+    if progress_path is not None:
+        descriptor = os.open(
+            progress_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        progress_stream = os.fdopen(descriptor, "wb")
 
-    for raw_line in sys.stdin:
-        line = raw_line.rstrip("\n")
-        try:
-            event = json.loads(line)
-        except (TypeError, json.JSONDecodeError):
-            if line.lstrip().startswith(("{", "[")):
-                malformed_json = True
-            if "-----BEGIN" in line and "PRIVATE KEY-----" in line:
-                in_private_key = True
-                print("[REDACTED PRIVATE KEY]", flush=True)
-            elif in_private_key:
-                if "-----END" in line and "PRIVATE KEY-----" in line:
-                    in_private_key = False
-            else:
-                print(redact_text(line), flush=True)
-            continue
+    try:
+        for raw_line in sys.stdin:
+            line = raw_line.rstrip("\n")
+            try:
+                event = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                if line.lstrip().startswith(("{", "[")):
+                    malformed_json = True
+                if "-----BEGIN" in line and "PRIVATE KEY-----" in line:
+                    in_private_key = True
+                    print("[REDACTED PRIVATE KEY]", flush=True)
+                elif in_private_key:
+                    if "-----END" in line and "PRIVATE KEY-----" in line:
+                        in_private_key = False
+                else:
+                    print(redact_text(line), flush=True)
+                continue
 
-        if not isinstance(event, dict):
+            if not isinstance(event, dict):
+                print(json.dumps(redact_value(event), separators=(",", ":")), flush=True)
+                continue
+            event_type = str(event.get("type", ""))
+            subtype = str(event.get("subtype", ""))
+            if event_type == "retry" and subtype == "starting":
+                internal_retries += 1
+            tool_error = completed_tool_error(event)
+            if tool_error is not None:
+                tool_errors[tool_error] += 1
+                repeated_tool_error_count = max(
+                    repeated_tool_error_count, tool_errors[tool_error]
+                )
+            if event_type == "result" and subtype == "success":
+                terminal_success = True
+            if event_type == "assistant":
+                turns += 1
+            if event_type == "system" and subtype in {"init", "initialize"}:
+                if isinstance(event.get("model"), str):
+                    reported_model = event["model"]
+                if isinstance(event.get("cwd"), str):
+                    reported_cwd = event["cwd"]
+            if progress_stream is not None and (
+                event_type == "assistant"
+                or event_type == "result" and subtype == "success"
+                or event_type == "system" and subtype in {"init", "initialize"}
+                or event_type == "tool_call" and subtype in {"started", "completed"}
+            ):
+                progress_events += 1
+                event_raw = (
+                    json.dumps(
+                        event, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                    )
+                    + "\n"
+                ).encode()
+                record = (
+                    json.dumps({
+                        "event_sha256": hashlib.sha256(event_raw).hexdigest(),
+                        "observed_monotonic_ns": time.monotonic_ns(),
+                        "sequence": progress_events,
+                        "subtype": subtype,
+                        "type": event_type,
+                    }, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                    + "\n"
+                ).encode()
+                progress_stream.write(record)
+                progress_stream.flush()
+                os.fsync(progress_stream.fileno())
+                progress_digest.update(record)
+            for item in dictionaries(event):
+                for key in usage_sources:
+                    amount = numeric(item.get(key))
+                    if amount is not None:
+                        usage_sources[key] = max(usage_sources[key], amount)
             print(json.dumps(redact_value(event), separators=(",", ":")), flush=True)
-            continue
-        event_type = str(event.get("type", ""))
-        subtype = str(event.get("subtype", ""))
-        if event_type == "retry" and subtype == "starting":
-            internal_retries += 1
-        tool_error = completed_tool_error(event)
-        if tool_error is not None:
-            tool_errors[tool_error] += 1
-            repeated_tool_error_count = max(
-                repeated_tool_error_count, tool_errors[tool_error]
-            )
-        if event_type == "result" and subtype == "success":
-            terminal_success = True
-        if event_type == "assistant":
-            turns += 1
-        if event_type == "system" and subtype in {"init", "initialize"}:
-            if isinstance(event.get("model"), str):
-                reported_model = event["model"]
-            if isinstance(event.get("cwd"), str):
-                reported_cwd = event["cwd"]
-        for item in dictionaries(event):
-            for key in usage_sources:
-                amount = numeric(item.get(key))
-                if amount is not None:
-                    usage_sources[key] = max(usage_sources[key], amount)
-        print(json.dumps(redact_value(event), separators=(",", ":")), flush=True)
-        if (
-            repeated_tool_error_limit > 0
-            and repeated_tool_error_count >= repeated_tool_error_limit
-        ):
-            repeated_tool_error_limit_exceeded = True
-            break
-        if turns > max_turns:
-            turn_limit_exceeded = True
-            break
+            if (
+                repeated_tool_error_limit > 0
+                and repeated_tool_error_count >= repeated_tool_error_limit
+            ):
+                repeated_tool_error_limit_exceeded = True
+                break
+            if turns > max_turns:
+                turn_limit_exceeded = True
+                break
+    finally:
+        if progress_stream is not None:
+            progress_stream.close()
 
     usage = {
         "input_tokens": max(
@@ -228,6 +272,8 @@ def main() -> int:
             "reported_model": reported_model,
             "reported_cwd": reported_cwd,
             "internal_retries": internal_retries,
+            "progress_events": progress_events,
+            "progress_sha256": progress_digest.hexdigest(),
             "repeated_tool_error_count": repeated_tool_error_count,
         },
     )

@@ -465,6 +465,7 @@ class CursorStreamTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             metrics = root / "metrics"
+            progress = root / "progress.jsonl"
             result = subprocess.run(
                 [
                     str(STREAM),
@@ -474,6 +475,7 @@ class CursorStreamTest(unittest.TestCase):
                     str(root),
                     "4",
                     str(repeated_error_limit),
+                    str(progress),
                 ],
                 input="".join(json.dumps(event) + "\n" for event in events),
                 text=True,
@@ -481,7 +483,25 @@ class CursorStreamTest(unittest.TestCase):
                 check=False,
             )
             result.metrics = metrics.read_text()  # type: ignore[attr-defined]
+            result.progress = progress.read_text()  # type: ignore[attr-defined]
             return result
+
+    def test_structured_events_create_sequenced_progress_evidence(self) -> None:
+        result = self.run_stream(
+            [
+                {"type": "system", "subtype": "init"},
+                {"type": "assistant", "message": {"content": "working"}},
+                {"type": "tool_call", "subtype": "started"},
+                {"type": "tool_call", "subtype": "completed"},
+                {"type": "result", "subtype": "success"},
+            ],
+            0,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = [json.loads(line) for line in result.progress.splitlines()]
+        self.assertEqual([item["sequence"] for item in records], [1, 2, 3, 4, 5])
+        self.assertIn("progress_events=5", result.metrics)
+        self.assertRegex(result.metrics, r"progress_sha256=[0-9a-f]{64}")
 
     def test_development_mode_refuses_second_identical_tool_error(self) -> None:
         error = {

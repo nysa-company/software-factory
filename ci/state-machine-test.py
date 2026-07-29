@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -199,10 +201,113 @@ class StateMachineTest(unittest.TestCase):
         with (
             mock.patch.object(STATE, "run_helper", side_effect=resume),
             mock.patch.object(STATE, "migrate_passport") as migrate,
+            mock.patch.object(
+                STATE,
+                "authenticated_passport",
+                return_value=({
+                    "branch": "ticket/T-110",
+                    "factory_sha": self.args.factory_sha,
+                    "head_sha": issued["head_sha"],
+                    "passport_sha256": "e" * 64,
+                    "ticket": "T-110",
+                }, b"x" * 32),
+            ),
+            mock.patch.object(
+                STATE, "operator_resume_role", return_value="planner"
+            ),
         ):
             result = STATE.resume_transition(self.args)
         self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["repair_role"], "planner")
         migrate.assert_called_once_with(self.args)
+
+    def test_operator_resume_names_exact_repair_owner_only(self) -> None:
+        head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "ticket": "T-110",
+        }
+        path = self.product / "factory/tickets/T-110.md"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + "\nOPERATOR RESUME: test-author\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "authorize exact test repair", cwd=self.product)
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"),
+            "test-author",
+        )
+
+        (self.product / "unexpected").write_text("drift\n", encoding="utf-8")
+        run("git", "add", "unexpected", cwd=self.product)
+        run("git", "commit", "-qm", "add unrelated drift", cwd=self.product)
+        with self.assertRaisesRegex(
+            STATE.StateError, "operator directive is invalid"
+        ):
+            STATE.operator_resume_role(self.args, passport, "builder")
+
+    def test_authenticated_contract_repair_is_one_success_boundary(self) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        body = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        record = STATE.signed_repair({
+            "blocked_receipt": "b" * 64,
+            "blocked_role": "builder",
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "head_tree": run("git", "rev-parse", "HEAD^{tree}", cwd=self.product),
+            "passport_sha256": passport["passport_sha256"],
+            "repair_role": "test-author",
+            "schema": STATE.REPAIR_SCHEMA,
+            "ticket": "T-110",
+        }, secret)
+        STATE.write_atomic(STATE.repair_path(self.args), record)
+        self.assertEqual(
+            STATE.contract_repair_stage(self.args), ("FIX test-author", True)
+        )
+
+        (self.product / "factory/runs/repair.meta").write_text(
+            "run_id=repair\nphase=completed\naccounting_state=completed\n"
+            "ticket=T-110\nrole=test-author\nexit_status=0\nrole_exit=ok\n"
+            f"role_head_before={head}\n",
+            encoding="utf-8",
+        )
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "State: Planning", "State: Building"
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.object(STATE, "resolve", return_value="RUN planner"):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args), ("RUN planner", True)
+            )
+        with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
+            self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
 
     def test_runner_keeps_host_project_for_pre_go_receipt_check(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")

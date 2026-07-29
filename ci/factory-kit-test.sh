@@ -265,6 +265,37 @@ esac
 [[ "$(pwd -P)" == "$FACTORY_PRODUCT_ROOT" ]]
 [[ "$FACTORY_KIT_RELEASE" == *factory-kit-certification*/release ]]
 [[ -x .context/tools/gitleaks/8.30.1/gitleaks ]]
+python3 - "$FACTORY_CERTIFICATION_EVIDENCE" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = {
+    "ended_at": "2026-07-29T00:00:01Z",
+    "factory_sha": os.environ["FACTORY_KIT_SHA"],
+    "max_workers": 2,
+    "phases": [{
+        "artifact_sha256": "a" * 64,
+        "cache_hit": False,
+        "command": ["fixture"],
+        "ended_at": "2026-07-29T00:00:01Z",
+        "exit_status": 0,
+        "input_sha256": "b" * 64,
+        "name": "fixture",
+        "peak_memory_kb": 1,
+        "started_at": "2026-07-29T00:00:00Z",
+        "system_cpu_seconds": 0,
+        "user_cpu_seconds": 0,
+        "wall_seconds": 1,
+    }],
+    "plan_sha256": "c" * 64,
+    "product_tree": os.environ["FACTORY_PRODUCT_TREE"],
+    "schema": "nysa.software-factory.certification-result/v1",
+    "started_at": "2026-07-29T00:00:00Z",
+    "status": "pass",
+    "wall_seconds": 1,
+}
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+os.chmod(path, 0o600)
+PY
 if [[ -f factory/FAIL_CERTIFY ]]; then
   printf '%s\n' \
     'api_token=supersecret multi token tail' \
@@ -1146,7 +1177,8 @@ fi
 RECEIPT_STALE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 RECEIPT_STALE_ID="$(json_value "$RECEIPT_STALE" receipt_id)"
 if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
-      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "2" &&
+      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "3" &&
+      "$(json_value "$RECEIPT_STALE" product_certification_evidence.mode)" == "measured" &&
       -z "$(json_value "$RECEIPT_STALE" expected_previous_generation)" &&
       ! -e "$PRODUCT_ONE/factory/product-certification-marker" &&
       ! -e "$STATE/releases/$SHA_A/release-certification-marker" &&

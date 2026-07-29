@@ -25,6 +25,10 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
   isolated parallel admission only after exact Contract 1.6 owner activation.
 - Copy exactly three CI files (GitHub requires workflows and helpers to live in the repo they run on): `ci/test-immutability-check.sh` and `ci/lightweight-change.sh` → `.github/scripts/`, and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`. Set `TEST_PATHS` from `PROJECT.env` and review the helper's narrow inert-metadata allowlist for the product. Existing product repositories must receive template updates explicitly; kit updates do not rewrite instantiated CI.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. Optional `<ROLE>_PER_RUN_BUDGET_USD`, `<ROLE>_PER_RUN_MAX_TURNS`, and `<ROLE>_PER_RUN_TIMEOUT_MIN` keys override one role's attempt limits; normalize role hyphens to underscores, and omit a key to inherit its default. Money values are capped at $1,000,000 with six decimal places, turns at 1,000, and timeout at 1,440 minutes. The validator checks the two files agree. `ENVELOPE.env` and `~/.factory/global.env` are parsed as whitelisted data and must never contain shell commands or expansions.
+- Cursor interprets the selected timeout as a soft inactivity window and keeps
+  a nonextendable hard limit at twice that duration. Only normalized structured
+  Cursor events extend the soft window; arbitrary log output and timestamps do
+  not. Other adapters continue to use the selected timeout as their hard limit.
 - If `GLOBAL_DAILY_CAP_USD` is configured, keep its global-ledger parent as a real local directory. The wrapper validates the ledger and holds its exact-owner lock across each complete provider interval, so all globally capped runs on that machine are intentionally serialized.
 - Product docs the factory needs (written per product, not in the kit):
   - `docs/engine-spec.md` — data model, durable job model (retries, idempotency, crash recovery), external-action policy, connector safety (sandboxed/allowlisted sends until production).
@@ -99,6 +103,14 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   while product certification and all product/config/receipt checks still run.
   Set `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS` only as explicit machine policy;
   changing it forces a fresh suite and caps the product receipt to that proof.
+  A product that has independent validation branches may call the sealed
+  `scripts/certification-runner.py` from its certification script with a
+  repository-owned `nysa.software-factory.certification-plan/v1` JSON plan.
+  Start with two workers; the runner permits at most three, isolates phase logs
+  and temporary directories, records timing/CPU/peak-memory/input/artifact
+  evidence, cancels siblings after failure, and binds the passing result into
+  the Factory receipt. Do not add build or test-result caching until measured
+  runs prove a safe exact-key policy.
 
 - Review model policy through the sealed launcher. Run `models profiles --json`,
   preview the intended profile with `models plan [--profile <id>] --json`, and

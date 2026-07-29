@@ -8,6 +8,7 @@ KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
 
 BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD"
+PROGRESS_WATCHDOG_PID=""
 MODEL="" EFFORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -156,6 +157,11 @@ rm -f "$RAW_STREAM"
 mkfifo "$RAW_STREAM"
 CURSOR_PRODUCER_PID=""
 cleanup_cursor() {
+  if [[ -n "$PROGRESS_WATCHDOG_PID" ]] &&
+     kill -0 "$PROGRESS_WATCHDOG_PID" 2>/dev/null; then
+    kill -TERM "$PROGRESS_WATCHDOG_PID" 2>/dev/null || true
+    wait "$PROGRESS_WATCHDOG_PID" 2>/dev/null || true
+  fi
   if [[ -n "$CURSOR_PRODUCER_PID" ]] &&
      kill -0 "$CURSOR_PRODUCER_PID" 2>/dev/null; then
     kill -TERM "$CURSOR_PRODUCER_PID" 2>/dev/null || true
@@ -166,6 +172,10 @@ cleanup_cursor() {
 trap cleanup_cursor EXIT
 
 set +e
+SOFT_TIMEOUT_SECONDS=$((TIMEOUT_MIN * 60))
+HARD_TIMEOUT_SECONDS=$((SOFT_TIMEOUT_SECONDS * 2))
+PROGRESS_JOURNAL="${FACTORY_PROGRESS_JOURNAL:-}"
+PROGRESS_TIMEOUT_MARKER="${PROGRESS_JOURNAL:+$PROGRESS_JOURNAL.timeout}"
 (
   cd "$WORKDIR" || exit
   CURSOR_ARGS=(--print --output-format stream-json \
@@ -179,17 +189,28 @@ set +e
     CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
   fi
   if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then
-    exec env HOME="$CURSOR_HOME" timeout --foreground "$((TIMEOUT_MIN * 60))" \
+    exec env -u FACTORY_PROGRESS_JOURNAL HOME="$CURSOR_HOME" \
+      timeout --foreground "$HARD_TIMEOUT_SECONDS" \
       "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
   else
-    exec env HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
+    exec env -u FACTORY_PROGRESS_JOURNAL HOME="$CURSOR_HOME" \
+      timeout "$HARD_TIMEOUT_SECONDS" \
       "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
   fi
 ) >"$RAW_STREAM" 2>&1 &
 CURSOR_PRODUCER_PID="$!"
+if [[ -n "$PROGRESS_JOURNAL" ]]; then
+  python3 "$KIT_DIR/scripts/lib/progress-timeout.py" \
+    --pid "$CURSOR_PRODUCER_PID" --journal "$PROGRESS_JOURNAL" \
+    --marker "$PROGRESS_TIMEOUT_MARKER" \
+    --soft-seconds "$SOFT_TIMEOUT_SECONDS" \
+    --hard-seconds "$HARD_TIMEOUT_SECONDS" &
+  PROGRESS_WATCHDOG_PID="$!"
+fi
 python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \
   "$NORMALIZED" "$MODEL" "$EXPECTED_REPORTED_MODEL" "$WORKDIR" "$MAX_TURNS" \
-  "${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}" <"$RAW_STREAM"
+  "${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}" \
+  ${PROGRESS_JOURNAL:+"$PROGRESS_JOURNAL"} <"$RAW_STREAM"
 STREAM_STATUS="$?"
 if [[ "$STREAM_STATUS" == 15 ]] &&
    kill -0 "$CURSOR_PRODUCER_PID" 2>/dev/null; then
@@ -198,6 +219,25 @@ fi
 wait "$CURSOR_PRODUCER_PID"
 STATUS="$?"
 CURSOR_PRODUCER_PID=""
+if [[ -n "$PROGRESS_WATCHDOG_PID" ]]; then
+  kill -TERM "$PROGRESS_WATCHDOG_PID" 2>/dev/null || true
+  wait "$PROGRESS_WATCHDOG_PID" 2>/dev/null || true
+  PROGRESS_WATCHDOG_PID=""
+fi
+TIMEOUT_KIND=""
+if [[ -f "$PROGRESS_TIMEOUT_MARKER" && ! -L "$PROGRESS_TIMEOUT_MARKER" ]]; then
+  TIMEOUT_KIND="$(python3 - "$PROGRESS_TIMEOUT_MARKER" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+reason=value.get("reason","")
+print(reason if reason in {"soft_timeout","hard_timeout","invalid_progress"} else "")
+PY
+)"
+  [[ -n "$TIMEOUT_KIND" ]] || STATUS=9
+  [[ "$TIMEOUT_KIND" == "invalid_progress" ]] || STATUS=124
+elif [[ "$STATUS" == 124 ]]; then
+  TIMEOUT_KIND="hard_timeout"
+fi
 set -e
 if [[ "$STREAM_STATUS" == 15 ]]; then
   STATUS=15
@@ -211,10 +251,14 @@ TURNS="$(sed -n 's/^turns=//p' "$NORMALIZED" | awk 'NR==1 {print; exit}')"
 IN_TOKENS="$(sed -n 's/^input_tokens=//p' "$NORMALIZED" | awk 'NR==1 {print; exit}')"
 OUT_TOKENS="$(sed -n 's/^output_tokens=//p' "$NORMALIZED" | awk 'NR==1 {print; exit}')"
 CACHE_TOKENS="$(sed -n 's/^cache_tokens=//p' "$NORMALIZED" | awk 'NR==1 {print; exit}')"
+PROGRESS_EVENTS="$(sed -n 's/^progress_events=//p' "$NORMALIZED" | awk 'NR==1 {print; exit}')"
+PROGRESS_SHA256="$(sed -n 's/^progress_sha256=//p' "$NORMALIZED" | awk 'NR==1 {print; exit}')"
 TURNS="${TURNS:-0}"
 IN_TOKENS="${IN_TOKENS:-0}"
 OUT_TOKENS="${OUT_TOKENS:-0}"
 CACHE_TOKENS="${CACHE_TOKENS:-0}"
+PROGRESS_EVENTS="${PROGRESS_EVENTS:-0}"
+PROGRESS_SHA256="${PROGRESS_SHA256:-}"
 
 if [[ "$TURNS" =~ ^[0-9]+$ && "$MAX_TURNS" =~ ^[0-9]+$ &&
       "$TURNS" -gt "$MAX_TURNS" ]]; then
@@ -256,8 +300,8 @@ if [[ -n "$COST" ]]; then
   # CLI token events are optional and not a stable billing schema. Keep this
   # estimate for observability, but do not emit cost_usd: the wrapper retains
   # the conservative full-budget reservation.
-  echo "turns=$TURNS estimated_cost_usd=$COST cost_basis=conservative_reservation pricing_snapshot_date=$CURSOR_PRICING_SNAPSHOT_DATE input_rate=$RATE_IN output_rate=$RATE_OUT cache_rate=$RATE_CACHE input_tokens=$IN_TOKENS output_tokens=$OUT_TOKENS cache_tokens=$CACHE_TOKENS"
+  echo "turns=$TURNS estimated_cost_usd=$COST cost_basis=conservative_reservation pricing_snapshot_date=$CURSOR_PRICING_SNAPSHOT_DATE input_rate=$RATE_IN output_rate=$RATE_OUT cache_rate=$RATE_CACHE input_tokens=$IN_TOKENS output_tokens=$OUT_TOKENS cache_tokens=$CACHE_TOKENS progress_events=$PROGRESS_EVENTS progress_sha256=$PROGRESS_SHA256 timeout_kind=$TIMEOUT_KIND"
 else
-  echo "turns=$TURNS cost_basis=conservative_reservation input_tokens=$IN_TOKENS output_tokens=$OUT_TOKENS cache_tokens=$CACHE_TOKENS"
+  echo "turns=$TURNS cost_basis=conservative_reservation input_tokens=$IN_TOKENS output_tokens=$OUT_TOKENS cache_tokens=$CACHE_TOKENS progress_events=$PROGRESS_EVENTS progress_sha256=$PROGRESS_SHA256 timeout_kind=$TIMEOUT_KIND"
 fi
 exit "$STATUS"

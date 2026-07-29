@@ -297,8 +297,11 @@ restart, and Factory migration. Four PRs may validate concurrently; one
 renewable per-product publication lease serializes merge requests. A ticket
 withdraws its queue record whenever deterministic reconciliation no longer
 classifies it as merge-ready; an active lease still requires its exact
-capability-bound release. The
-controller serializes only protected-base Git mutations because disposable
+capability-bound release. Each controller worker continues its ticket through
+deterministic terminal boundaries until that ticket reaches a real wait;
+sibling workers do not wait for its checkpoint. A dispatch lease heartbeat
+starts before route resolution and provider admission queues. The controller
+serializes only protected-base Git mutations because disposable
 cells share one Git common directory. Refresh proves staleness from the exact
 certified remote tip, ancestry, and exact open PR identity; GitHub's lagging
 `mergeStateStatus` is not evidence. The two exact receipt-topology
@@ -333,9 +336,14 @@ authenticated passport names the prior release. The controller binds a fresh
 exact-ticket lease, migrates that passport in place, and returns the claim to
 deterministic reconciliation. A same-release contract blocker remains blocked
 until the consumed transition receipt, unique terminal role evidence, passport
-lineage, and exact Linear resume state agree. The state machine then
-materializes only that resume, migrates the passport, reacquires one
-exact-ticket lease, and reruns only the blocked role.
+lineage, and exact Linear resume state agree. An operator may append one exact
+repair-owner directive in the ticket file without changing any other path.
+The state machine authenticates that commit against passport lineage, persists
+an HMAC-bound repair record, and runs only the named owner. If the owner
+precedes the visible coarse state, ordinary deterministic stages may catch up
+under that record without adding a general backward state transition. More
+than one successful owner run fails closed. Without the directive, the
+original blocked role remains the only valid owner.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket
@@ -624,7 +632,17 @@ the exact unchanged sealed release, but always reruns product certification and
 all product, config, receipt, and activation validation. Fresh certification
 refreshes evidence only after the isolated suite, tracked-tree check, and sealed
 release verification pass. Product receipts bind the exact evidence ID/digest
-and cannot expire after that evidence.
+and cannot expire after that evidence. Products may opt into the sealed
+`certification-runner.py` with a repository-owned declarative DAG. It records
+wall time, CPU, peak memory, cache status, exact input digests, and artifact
+digests for every phase; runs at most three workers; gives each phase a
+separate log and temporary directory; and cancels sibling process groups after
+the first failure. A passing measured result is bound to the exact Factory SHA
+and product tree and embedded in the certification receipt. Existing opaque
+certification scripts remain compatible. Cache hits are recorded but the
+initial runner does not reuse build or test results; evidence must justify any
+future cache policy. Exact protected Factory CI proof remains reused rather
+than repeated during product certification.
 An activated contract 1.2, 1.3, or 1.4 keeps that receipt as the runtime destination
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.
@@ -671,6 +689,11 @@ and the ledger schema is unchanged.
 
 - Model output is untrusted data: validate it before persistence and never interpolate it into commands, queries, or HTML.
 - The wrapper owns budget and timeout enforcement; role prompts cannot weaken it.
+- Cursor treats the configured role timeout as an inactivity window extended
+  only by normalized structured events from the trusted stream parser. An
+  absolute limit at twice that duration remains nonextendable; malformed,
+  rewritten, or unsafe progress evidence fails closed. Other adapters retain
+  their configured hard timeout.
 - Builders cannot change protected tests; CI checks commit authorship and paths.
 - Product credentials stay in GitHub or the hosting platform, never in repositories or agent output.
 - External sends require sandboxing or allowlisting, an explicit destination, and irreversible-action evidence.
