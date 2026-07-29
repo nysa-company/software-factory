@@ -1597,6 +1597,9 @@ RECEIPT_WRONG_AUTH="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {
 expect_failure "wrong authorized remote head blocks activation" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_WRONG_AUTH"
+expect_failure "plan and activation reject the same wrong authorized remote head" \
+  plan --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_AUTH"
 
 VALID_INFLIGHT_PLAN="$TMP/t006-valid-route-plan.json"
 cp "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$VALID_INFLIGHT_PLAN"
@@ -1707,6 +1710,12 @@ RECEIPT_B="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print val
   pass "receipt binds expected previous generation" ||
   fail "receipt binds expected previous generation"
 
+git -C "$PRODUCT_ONE" branch ticket/T-092-slice main
+git -C "$PRODUCT_ONE" push -q origin ticket/T-092-slice
+expect_success "plan ignores noncanonical slice branches outside deterministic ticket state" \
+  plan --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_B"
+
 mkdir -p "$PRODUCT_ONE/factory/.dispatch-leases"
 printf '{}\n' > "$PRODUCT_ONE/factory/.dispatch-leases/T-006.json"
 expect_failure "in-flight authorization cannot retain a dispatcher lease" \
@@ -1720,6 +1729,8 @@ expect_failure "fault injection interrupts after receipt claim" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_B"
 unset FACTORY_KIT_FAIL_AFTER_PHASE
+git -C "$PRODUCT_ONE" push -q origin --delete ticket/T-092-slice
+git -C "$PRODUCT_ONE" branch -D ticket/T-092-slice >/dev/null
 RECEIPT_B_ID="$(json_value "$RECEIPT_B" receipt_id)"
 if [[ "$(json_value "$ACTIVE_ALPHA" kit_sha)" == "$SHA_A" &&
       -f "$STATE/receipts/consumed/$RECEIPT_B_ID.json" ]]; then

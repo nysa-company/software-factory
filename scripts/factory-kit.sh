@@ -2332,7 +2332,9 @@ remote_lines = subprocess.check_output([
 for line in remote_lines:
     tip, ref = line.split()
     match = re.fullmatch(r"refs/heads/" + re.escape(prefix) + r"(T-[0-9]+)", ref)
-    if not match or not re.fullmatch(r"[0-9a-f]{40}", tip):
+    if not match:
+        continue
+    if not re.fullmatch(r"[0-9a-f]{40}", tip):
         raise SystemExit("remote ticket ref is malformed")
     ticket_id = match.group(1)
     if ticket_id in remote_tips:
@@ -2899,7 +2901,7 @@ resolve_receipt() {
 
 plan_activation() {
   local slug="$1" product="$2" sha="$3" requested_receipt="$4"
-  local product_top receipt active previous generation
+  local product_top receipt active previous generation previous_product_tree=""
   validate_slug "$slug"
   validate_project_storage "$slug"
   validate_sha "$sha"
@@ -2916,11 +2918,14 @@ plan_activation() {
     [[ "$(json_get "$active" product_path)" == "$product_top" ]] ||
       die "project activation record belongs to a different product path"
     previous="$(json_get "$active" generation)"
+    previous_product_tree="$(json_get "$active" product_tree)"
   fi
   receipt="$(resolve_receipt "$requested_receipt" "$slug" "$sha")"
   validate_receipt "$receipt" "$slug" "$product_top" "$sha" "$previous"
   [[ ! -e "$CONSUMED_DIR/$(json_get "$receipt" receipt_id).json" ]] ||
     die "certification receipt has already been consumed"
+  validate_ticket_leases "$product_top" "$sha" \
+    "$(json_get "$receipt" product_origin)" "$previous_product_tree"
   printf '%s\t%s\t%s\t%s\n' "$receipt" "$generation" "$previous" "$product_top"
 }
 
