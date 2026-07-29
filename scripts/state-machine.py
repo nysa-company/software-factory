@@ -15,6 +15,7 @@ import secrets
 import stat
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 
@@ -229,6 +230,38 @@ def run_manifest(path: Path) -> tuple[dict[str, str], bytes]:
     return values, raw
 
 
+def require_current_lease(args: argparse.Namespace) -> None:
+    directory = args.factory_root / "factory" / ".dispatch-leases"
+    path = directory / f"{args.ticket}.json"
+    try:
+        directory_info = directory.lstat()
+        info = path.lstat()
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        raise StateError("current dispatcher lease is invalid") from None
+    if (
+        directory.is_symlink()
+        or not stat.S_ISDIR(directory_info.st_mode)
+        or path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_size > 1_000_000
+        or not isinstance(record, dict)
+        or record.get("schema_version") != 1
+        or record.get("ticket") != args.ticket
+        or record.get("lease_id") != args.lease
+        or not isinstance(record.get("claimed_epoch"), int)
+        or isinstance(record.get("claimed_epoch"), bool)
+        or not isinstance(record.get("expires_epoch"), int)
+        or isinstance(record.get("expires_epoch"), bool)
+        or record["expires_epoch"] <= record["claimed_epoch"]
+        or record["expires_epoch"] <= int(time.time())
+    ):
+        raise StateError("current dispatcher lease is invalid")
+
+
 def ticket_evidence_digest(factory: Path, ticket: str) -> str:
     selected: list[tuple[str, bytes]] = []
     runs = factory / "runs"
@@ -286,18 +319,80 @@ def current_state(workdir: Path, ticket: str) -> str:
     return ticket_field(workdir, ticket, "State")
 
 
+def migrated_contract_block(
+    args: argparse.Namespace, receipt: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if receipt.get("factory_sha") == args.factory_sha:
+        return None, None
+    passport, _ = authenticated_passport(args)
+    history = passport.get("factory_release_history")
+    charges = passport.get("charge_records")
+    completed = passport.get("completed_role_evidence")
+    receipt_factory = receipt.get("factory_sha", "")
+    receipt_digest = receipt.get("receipt_sha256", "")
+    if (
+        passport.get("ticket") != args.ticket
+        or passport.get("branch") != receipt.get("branch")
+        or passport.get("factory_sha") != args.factory_sha
+        or not isinstance(history, list)
+        or not isinstance(charges, list)
+        or not isinstance(completed, list)
+        or not SHA.fullmatch(receipt_factory)
+    ):
+        raise StateError("contract blocker release lineage is invalid")
+    releases = [
+        item.get("factory_sha")
+        for item in history
+        if isinstance(item, dict)
+        and item.get("contract_version") == args.contract_version
+        and SHA.fullmatch(item.get("factory_sha", ""))
+    ]
+    if (
+        len(releases) != len(history)
+        or len(releases) != len(set(releases))
+        or receipt_factory not in releases
+        or args.factory_sha not in releases
+        or releases.index(receipt_factory) >= releases.index(args.factory_sha)
+    ):
+        raise StateError("contract blocker release lineage is invalid")
+    matches = [
+        item for item in charges
+        if isinstance(item, dict)
+        and item.get("transition_receipt_sha256") == receipt_digest
+        and item.get("factory_sha") == receipt_factory
+        and item.get("contract_version") == args.contract_version
+        and item.get("ticket", args.ticket) == args.ticket
+        and item.get("role") == receipt.get("role")
+        and item.get("head_before") == receipt.get("head_sha")
+        and DIGEST.fullmatch(item.get("manifest_sha256", ""))
+        and isinstance(item.get("run_id"), str)
+        and item.get("run_id")
+    ]
+    if len(matches) != 1 or any(
+        isinstance(item, dict)
+        and item.get("transition_receipt_sha256") == receipt_digest
+        for item in completed
+    ):
+        raise StateError("contract blocker passport evidence is invalid")
+    return passport, matches[0]
+
+
 def contract_blocked_receipt(args: argparse.Namespace) -> str:
     value = safe_receipt(args.state_dir / f"{args.ticket}.json")
     origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
     role = value.get("role", "")
     old_head = value.get("head_sha", "")
+    passport, charge = migrated_contract_block(args, value)
+    migrated = passport is not None
+    if migrated and args.action == "block":
+        require_current_lease(args)
     if (
         not origin
         or value.get("receipt_sha256") != args.receipt
         or not value.get("consumed")
         or value.get("ticket") != args.ticket
         or value.get("contract_version") != args.contract_version
-        or value.get("factory_sha") != args.factory_sha
+        or (value.get("factory_sha") != args.factory_sha and not migrated)
         or value.get("project") != args.project
         or role not in CONTRACT_BLOCK_ROLES
         or not SHA.fullmatch(old_head)
@@ -308,6 +403,7 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
         != hashlib.sha256(origin.encode()).hexdigest()
         or (
             args.action == "block"
+            and not migrated
             and value.get("lease_sha256")
             != hashlib.sha256(args.lease.encode()).hexdigest()
         )
@@ -326,12 +422,12 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
         raise StateError("contract blocker is outside receipt lineage")
     matches = []
     for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
-        fields, _ = run_manifest(path)
+        fields, raw = run_manifest(path)
         if fields.get("transition_receipt_sha256") == args.receipt:
-            matches.append(fields)
+            matches.append((fields, raw))
     if len(matches) != 1:
         raise StateError("contract blocker terminal evidence is ambiguous")
-    terminal = matches[0]
+    terminal, raw = matches[0]
     accounted = terminal.get("accounting_state") == "completed" or (
         terminal.get("accounting_state") == "abandoned_conservative"
         and terminal.get("cost_basis") == "conservative_reservation"
@@ -341,7 +437,7 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
         terminal.get("ticket") != args.ticket,
         terminal.get("role") != role,
         terminal.get("contract_version") != args.contract_version,
-        terminal.get("kit_sha") != args.factory_sha,
+        terminal.get("kit_sha") != value.get("factory_sha"),
         terminal.get("phase") != "completed",
         terminal.get("go_issued") != "1",
         terminal.get("task_submitted") != "1",
@@ -351,6 +447,13 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
         terminal.get("role_head_before") != value.get("head_sha"),
     )):
         raise StateError("contract blocker terminal evidence is invalid")
+    if migrated and (
+        charge is None
+        or charge.get("run_id") != terminal.get("run_id")
+        or charge.get("accounting_state") != terminal.get("accounting_state")
+        or charge.get("manifest_sha256") != hashlib.sha256(raw).hexdigest()
+    ):
+        raise StateError("contract blocker passport evidence is invalid")
     return role
 
 

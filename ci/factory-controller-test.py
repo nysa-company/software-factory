@@ -587,6 +587,98 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["role"], "")
         self.assertIn(("contract_blocker_recovered",), calls)
 
+    def test_upgrade_reconstructs_cleared_contract_blocker_fields(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        receipt = "b" * 64
+        old_factory = "c" * 40
+        head = "d" * 40
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "e" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        controller.save_claim(claim)
+        manifest = self.product / "factory/runs/migrated-block.meta"
+        manifest.write_text(
+            "run_id=migrated-block\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            "phase=completed\n"
+            "accounting_state=completed\n"
+            "exit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            f"kit_sha={old_factory}\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        CONTROL.write(
+            self.state / "T-110.json",
+            {
+                "branch": claim["branch"],
+                "consumed": True,
+                "contract_version": "1.8.0",
+                "factory_sha": old_factory,
+                "head_sha": head,
+                "receipt_sha256": receipt,
+                "role": "builder",
+                "schema": "nysa.software-factory.transition-receipt/v1",
+                "ticket": "T-110",
+            },
+        )
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "branch": claim["branch"],
+                "charge_records": [{
+                    "contract_version": "1.8.0",
+                    "factory_sha": old_factory,
+                    "head_before": head,
+                    "manifest_sha256": CONTROL.hashlib.sha256(
+                        manifest.read_bytes()
+                    ).hexdigest(),
+                    "role": "builder",
+                    "run_id": "migrated-block",
+                    "transition_receipt_sha256": receipt,
+                }],
+                "completed_role_evidence": [],
+                "factory_sha": self.release.name,
+                "ticket": "T-110",
+            },
+        )
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("old lease was withdrawn")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "f" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.remote_passport_valid = lambda _claim: True
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        self.assertTrue(controller.restore_contract_blocker(claim))
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], receipt)
+        self.assertEqual(claim["role"], "builder")
+        self.assertEqual(claim["lease"], "f" * 64)
+        self.assertIn(("contract_blocker_claim_restored",), calls)
+
     def test_exported_terminal_migrates_without_reexport(self) -> None:
         controller = CONTROL.Controller(self.args)
         receipt = "b" * 64
