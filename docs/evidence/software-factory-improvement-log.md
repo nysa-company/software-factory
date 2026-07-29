@@ -2273,6 +2273,43 @@ Validation: shell syntax, the exact status-propagation boundary, and the
 maintained Nysa plan run locally; protected GitHub CI owns the complete
 regression.
 
+## FI-20260729-100 — Release migration cleared the contract-repair checkpoint
+
+Status: Implemented; protected CI pending
+Area: deterministic recovery
+Owner: Factory
+First seen: 2026-07-29, Nysa T-094 after Factory activation to `8ee1d58`
+Impact: no provider call started, but the successor controller cleared the
+blocked Builder receipt and role while migrating the signed passport. The
+state machine then saw the exact `OPERATOR RESUME: test-author` directive
+without its HMAC-bound repair record and refused every scheduled reconciliation.
+Sibling claims remained preserved, but T-094 could not reach Test-author.
+Evidence: controller event `upgraded_claim_recovered` was followed by
+`operator resume lacks authenticated contract repair state`; the current
+passport retained the $10 Builder charge, old Factory SHA, old head, exact
+manifest digest, and current release migration, while the controller claim
+had empty receipt/role fields. A later cleanup also attempted to release an
+already absent exact lease and emitted a raw `FileNotFoundError`.
+Root cause: upgrade recovery treated every blocked checkpoint like an
+interrupted non-contract failure and erased its role/receipt before the
+successor state machine could authenticate it. The contract-block validator
+also required the current Factory SHA and original lease even when the signed
+passport proved an authorized release migration.
+Smallest change: preserve recognized contract-block fields during upgrades;
+recover fields cleared by an earlier controller only from the latest
+passport-bound charge, transition receipt, and exact terminal manifest; and
+allow the state machine to validate that historical receipt only through the
+current signed release lineage and a live exact-ticket lease. Exact release
+cleanup is idempotent when the lease is already absent, while wrong, unsafe, or
+extant ownership still fails closed.
+Validation: focused state-machine tests cover the historical release/charge
+binding plus absent and mismatched current-lease rejection, controller tests
+cover reconstruction of the exact cleared checkpoint, and dispatch-lease tests
+cover absent-release idempotence without weakening ownership. An offline copy
+of T-094's actual signed passport, consumed receipt, five run manifests, branch
+history, and a fresh isolated exact lease resolves only to Builder. Protected
+GitHub CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -220,6 +221,106 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["repair_role"], "planner")
         migrate.assert_called_once_with(self.args)
+
+    def test_migrated_contract_block_uses_historical_charge_and_current_lease(
+        self,
+    ) -> None:
+        old_factory = "b" * 40
+        current_factory = self.args.factory_sha
+        old_lease = "c" * 64
+        self.args.factory_sha = old_factory
+        self.args.lease = old_lease
+        issued = STATE.issue(self.args, "RUN planner")
+        self.args.receipt = issued["receipt_sha256"]
+        STATE.verify(self.args, consume=True)
+        manifest = self.product / "factory/runs/migrated-block.meta"
+        manifest.write_text(
+            "run_id=migrated-block\n"
+            "phase=completed\n"
+            "accounting_state=completed\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            "ticket=T-110\n"
+            "role=planner\n"
+            f"contract_version={self.args.contract_version}\n"
+            f"kit_sha={old_factory}\n"
+            "exit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={issued['head_sha']}\n"
+            f"transition_receipt_sha256={self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        body = {
+            "branch": "ticket/T-110",
+            "charge_records": [{
+                "accounting_state": "completed",
+                "contract_version": self.args.contract_version,
+                "factory_sha": old_factory,
+                "head_before": issued["head_sha"],
+                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "role": "planner",
+                "run_id": "migrated-block",
+                "transition_receipt_sha256": self.args.receipt,
+            }],
+            "completed_role_evidence": [],
+            "factory_release_history": [
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": old_factory,
+                },
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": current_factory,
+                },
+            ],
+            "factory_sha": current_factory,
+            "head_sha": issued["head_sha"],
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        self.args.action = "block"
+        self.args.factory_sha = current_factory
+        self.args.lease = "d" * 64
+        with self.assertRaisesRegex(
+            STATE.StateError, "current dispatcher lease is invalid"
+        ):
+            STATE.contract_blocked_receipt(self.args)
+        leases = self.product / "factory/.dispatch-leases"
+        leases.mkdir()
+        lease_path = leases / "T-110.json"
+        lease_path.write_text(
+            json.dumps({
+                "claimed_epoch": int(time.time()),
+                "expires_epoch": int(time.time()) + 900,
+                "lease_id": "e" * 64,
+                "schema_version": 1,
+                "ticket": "T-110",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(lease_path, 0o600)
+        with self.assertRaisesRegex(
+            STATE.StateError, "current dispatcher lease is invalid"
+        ):
+            STATE.contract_blocked_receipt(self.args)
+        lease = json.loads(lease_path.read_text(encoding="utf-8"))
+        lease["lease_id"] = self.args.lease
+        lease_path.write_text(json.dumps(lease) + "\n", encoding="utf-8")
+        self.assertEqual(STATE.contract_blocked_receipt(self.args), "planner")
 
     def test_operator_resume_names_exact_repair_owner_only(self) -> None:
         head = run("git", "rev-parse", "HEAD", cwd=self.product)

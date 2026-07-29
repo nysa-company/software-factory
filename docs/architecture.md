@@ -334,10 +334,20 @@ directory, passport key, passports, claims, and cumulative provider ledger.
 After the ticket route migrates, a blocked claim may recover only when its
 authenticated passport names the prior release. The controller binds a fresh
 exact-ticket lease, migrates that passport in place, and returns the claim to
-deterministic reconciliation. A same-release contract blocker remains blocked
-until the consumed transition receipt, unique terminal role evidence, passport
-lineage, and exact Linear resume state agree. An operator may append one exact
-repair-owner directive in the ticket file without changing any other path.
+deterministic reconciliation. A contract blocker remains blocked until the
+consumed transition receipt, unique terminal role evidence, passport lineage,
+and exact Linear resume state agree. Across a release migration, the state
+machine accepts the historical receipt only when the current authenticated
+passport orders both releases, contains the exact immutable charge and
+manifest digest, has no successful evidence for that receipt, and the old head
+is in current branch ancestry. A live current exact-ticket lease is validated
+independently; an absent old lease may therefore be replaced without weakening
+receipt, terminal, passport, or current ownership checks. If an earlier
+controller cleared the blocked claim fields during that migration, the
+successor restores them only from the latest passport-bound charge and exact
+terminal receipt. An operator may
+append one exact repair-owner directive in the ticket file without changing
+any other path.
 The state machine authenticates that commit against passport lineage, persists
 an HMAC-bound repair record, and runs only the named owner. If the owner
 precedes the visible coarse state, ordinary deterministic stages may catch up
