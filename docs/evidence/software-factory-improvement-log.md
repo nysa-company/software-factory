@@ -2221,6 +2221,34 @@ valid external `FACTORY_LEDGER` targets have no sibling `runs/` directory.
 The writer now receives the already-authoritative runs root rather than deriving
 it from the output target.
 
+## FI-20260729-098 — Activation confused product slice branches with ticket state
+
+Status: Implemented; protected CI pending
+Area: release activation
+Owner: Factory
+First seen: 2026-07-29, Nysa Factory 1.8 activation
+Impact: a fully green, certified generation 24 plan passed, but activation
+stopped before receipt claim while the independent T-092 follow-up PR #261
+remained open.
+Evidence: the product remote contained canonical Factory branches
+`ticket/T-093`, `ticket/T-094`, `ticket/T-096`, and `ticket/T-100`, plus the
+repository-valid slice branch `ticket/T-092-board-receipts`. Activation's
+broad `refs/heads/ticket/T-*` query rejected the latter as
+`remote ticket ref is malformed`; the preceding plan did not run ticket-lease
+validation and therefore reported `PLAN OK`.
+Root cause: remote discovery treated every branch under the broad Git pattern
+as canonical Factory state even though deterministic ticket identity uses only
+the exact `ticket/T-NNN` ref. Planning and activation also validated different
+inputs.
+Smallest change: ignore noncanonical slice refs while retaining fail-closed
+validation for every exact `ticket/T-NNN` ref, and make plan run the same
+ticket/passport/release validation used by activation. Do not relax ticket
+identity, migration authorization, protected-main, or exact-head checks.
+Validation: shell syntax and diff checks pass; the exact maintained Nysa plan
+now validates the live canonical branches while PR #261 stays open. Focused
+regressions cover a noncanonical slice ref and a wrong authorized exact head;
+protected GitHub CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
