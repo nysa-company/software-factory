@@ -43,3 +43,11 @@ leases with disjoint worktrees and serialized provider intervals. Prioritize:
 - Compare E2B or Daytona with the same canary only if the local-container pilot cannot close the documented same-UID isolation gap.
 - When implementing trusted approval and close-out, evaluate Flow-Next-style requirement-to-evidence traceability and in-toto/SLSA-shaped provenance fields before inventing a factory-specific evidence schema.
 - Reuse Open SWE-style deterministic trigger IDs and short-lived GitHub credentials in the Hermes supervisor only where they preserve Linear and factory authority; adopt metaswarm review rubrics only when an observed review gap justifies them.
+
+## External review feedback pilot
+
+- Implement the bounded, read-only Cursor Bugbot feedback pilot in
+  [docs/plans/2026-07-29-cursor-bugbot-feedback.md](docs/plans/2026-07-29-cursor-bugbot-feedback.md).
+  Keep Bugbot disabled or non-blocking until the trusted ticket-PR boundary
+  can bind exact-head findings and the Factory Reviewer can adjudicate them
+  without operator comment triage.

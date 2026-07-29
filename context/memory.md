@@ -192,6 +192,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
+- 2026-07-29: Recorded a deferred Cursor Bugbot feedback integration plan
+  under `docs/plans/`. It proposes a bounded exact-head read-only audit that
+  feeds untrusted findings to the independent Factory Reviewer and existing
+  repair-owner flow; no Bugbot behavior, authority, or product setting is
+  currently active.
 - 2026-07-28: T-089 exposed that a successful Narrator run could commit the required one-line broken-preview report, after which the sequencer incorrectly treated any Narrator ledger row as approval-ready. Sequencing now validates the current unattested bundle structure, permits one repair run after preview recovery, and escalates if that retry is still invalid.
 - 2026-07-24: Retained sandbox lanes exposed fabricated cancellation start identities, provider descendants outside the recorded group, repeated equivalent Spec-linter findings, and whole-batch export waits. The development branch now fixes those shared boundaries, preserves prior timing batches, and leaves production activation and Contract 1.6 serialization unchanged.
 - 2026-07-24: T-057 reached a new UTC day while fully drained, and checkpoint export incorrectly inherited the ordinary resume day gate. Checkpoint export may now cross that boundary without spending; its v5 successor still carries exact historical charges and consumes a fresh current-day authorization.
