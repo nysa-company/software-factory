@@ -1527,3 +1527,45 @@ Category: System change
 The exact Hermes public-command assertion includes Contract 1.8
 `models pin-batch` alongside its launcher grammar. Static contract drift is
 checked directly without weakening runtime validation.
+
+## 2026-07-28 — Decision 117: Sealed shell helpers never write Python bytecode
+
+Category: System change
+
+The ticket-state boundary disables Python bytecode writes before importing any
+release-local module. A deterministic state transition therefore cannot mutate
+the sealed Factory tree it is validating.
+
+## 2026-07-28 — Decision 118: Contract 1.8 fixtures carry authenticated outputs
+
+Category: System change
+
+Successful role fixtures include an output artifact and its exact SHA-256, and
+protected-main bare remotes advertise their real `main` branch. Budget and
+passport tests now exercise valid authenticated evidence instead of failing
+before the behavior under test.
+
+## 2026-07-28 — Decision 119: Host-specific qualification checks are explicit
+
+Category: System change
+
+macOS `libproc` and `/private/tmp` qualification-root checks run only on macOS;
+portable receipt validation uses secure Python metadata reads. Focused
+development-lane tests load every direct helper dependency they execute.
+
+## 2026-07-28 — Decision 120: Successful Narrator fixtures include their bundle
+
+Category: System change
+
+A successful Narrator ledger row is not sufficient evidence by itself.
+Checkpoint-recovery fixtures create the required evidence bundle so the
+fail-closed state machine still retries or escalates genuinely missing output.
+
+## 2026-07-28 — Decision 121: Provider contract binds after kit validation
+
+Category: System change
+
+The role runner snapshots its effective provider contract immediately after
+kit validation. Mutable development lanes therefore retain concurrent provider
+admission, while sealed launches continue to use provenance-validated release
+metadata.

@@ -1722,6 +1722,7 @@ product_reconcile_reviewer "$RECONCILE_GUARD" T-1 "$RECONCILE_LEASE" ||
 expect_failure "review reconciliation without claimed lease" \
   product_reconcile_reviewer "$RECONCILE_GUARD" T-1
 resume_stage_source="$(sed -n '/^product_resume_stage()/,/^}/p' "$LANE")"
+resolve_stage_source="$(sed -n '/^product_resolve_stage()/,/^}/p' "$LANE")"
 resume_plan_source="$(sed -n '/^product_resume_plan()/,/^}/p' "$LANE")"
 python3 - "$resume_plan_source" <<'PY' ||
 import sys
@@ -1733,6 +1734,7 @@ approval=text.index('approval_hash="$(product_approval_hash')
 assert stage < basis < validate < approval
 PY
   fail "resume approval is not bound to the post-reconcile head and stage"
+eval "$resolve_stage_source"
 eval "$resume_stage_source"
 RESUME_REVIEW_ROOT="$TMP/resume-reviewer-reconcile"
 mkdir -p "$RESUME_REVIEW_ROOT/kit/scripts" "$RESUME_REVIEW_ROOT/runtime"
@@ -2369,6 +2371,23 @@ git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
 printf '%s\n' \
   '2026-07-24,00:02:00,T-994,narrator,mock,test,1,0.10,0,repair-narrate,mock,,,test_fixture,test' \
   >>"$CHECKPOINT_LEDGER"
+cat >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994-bundle.md" <<'EOF'
+## What this does
+Completes the publication repair.
+## Preview
+Focused checkpoint recovery.
+## Screenshots
+Not applicable.
+## Acceptance criteria
+Fresh repair evidence is complete.
+## Risk
+Fixture only.
+## Cost
+Recorded in the ledger.
+## Rollback
+Discard the fixture.
+Approve to merge.
+EOF
 [[ "$(checkpoint_next_stage T-994)" == AWAIT-OPERATOR* ]] ||
   fail "publication repair did not return to operator-await"
 

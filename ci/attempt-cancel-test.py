@@ -194,6 +194,9 @@ class AttemptCancellationTest(unittest.TestCase):
             with self.assertRaisesRegex(IDENTITY.IdentityError, "membership changed"):
                 IDENTITY.signal_group(identity, signal.SIGKILL)
 
+    @unittest.skipUnless(
+        sys.platform == "darwin", "sandbox process probe is macOS-only"
+    )
     def test_sandbox_start_identity_matches_host_and_foreground_timeout_group(self):
         timeout = shutil.which("timeout")
         if timeout is None:

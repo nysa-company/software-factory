@@ -68,6 +68,7 @@ class TicketPassportTest(unittest.TestCase):
         run("git", "commit", "-qm", "seed", cwd=self.product)
         run("git", "remote", "add", "origin", str(self.remote), cwd=self.product)
         run("git", "push", "-qu", "origin", "HEAD:main", cwd=self.product)
+        run("git", "symbolic-ref", "HEAD", "refs/heads/main", cwd=self.remote)
         self.state_dir = STATE.safe_state_dir(self.root / "controller")
         self.state_args = argparse.Namespace(
             contract_version="1.8.0",

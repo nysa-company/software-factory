@@ -31,6 +31,8 @@ def run(root: Path, *arguments: str) -> str:
 
 class QualificationEnvironmentTest(unittest.TestCase):
     def setUp(self) -> None:
+        if not Path("/private/tmp").is_dir():
+            self.skipTest("qualification trust root is macOS-only")
         self.workspace = Path(tempfile.mkdtemp(prefix="qualification-test."))
         self.root = Path(tempfile.mkdtemp(
             prefix="nysa-sf-qualification.q-", dir="/private/tmp",

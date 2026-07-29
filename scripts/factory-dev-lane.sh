@@ -2487,10 +2487,30 @@ PY
 
 product_ticket_pause_requested() {
   local path="$1/runtime/product-ticket-paused/$2"
-  [[ -e "$path" || -L "$path" ]] || return 1
-  [[ -f "$path" && ! -L "$path" &&
-     "$(stat -f '%Su:%Lp:%l' "$path")" == "$(id -un):600:1" &&
-     "$(cat "$path")" == "paused=1" ]]
+  python3 - "$path" <<'PY'
+import os, stat, sys
+path = sys.argv[1]
+try:
+    before = os.lstat(path)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.getuid()
+        or stat.S_IMODE(before.st_mode) != 0o600
+        or before.st_nlink != 1
+    ):
+        raise ValueError
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        after = os.fstat(stream.fileno())
+        if (
+            before.st_dev, before.st_ino, before.st_mode, before.st_nlink
+        ) != (
+            after.st_dev, after.st_ino, after.st_mode, after.st_nlink
+        ) or stream.read() != b"paused=1\n":
+            raise ValueError
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
 }
 
 clear_product_ticket_pause() {

@@ -573,8 +573,10 @@ ledger_row_run() {
 }
 
 write_run_manifest() {
-  local root="$1" ticket="$2" role="$3" run_id="$4" head="$5"
+  local root="$1" ticket="$2" role="$3" run_id="$4" head="$5" output_sha256
   mkdir -p "$root/factory/runs"
+  printf '%s output\n' "$role" > "$root/factory/runs/$run_id.out"
+  output_sha256="$(shasum -a 256 "$root/factory/runs/$run_id.out" | awk '{print $1}')"
   printf '%s\n' \
     "run_id=$run_id" \
     'phase=completed' \
@@ -587,6 +589,7 @@ write_run_manifest() {
     "ticket=$ticket" \
     "role=$role" \
     'role_exit=ok' \
+    "output_sha256=$output_sha256" \
     "role_head_before=$head" > "$root/factory/runs/$run_id.meta"
 }
 

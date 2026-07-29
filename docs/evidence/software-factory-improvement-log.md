@@ -1864,6 +1864,106 @@ list; runtime behavior and assertions are otherwise unchanged.
 Validation: shell syntax and the isolated static contract assertion block pass
 locally. Protected GitHub CI owns execution of the complete Hermes regression.
 
+## FI-20260728-081 — Ticket-state mutated a sealed release with Python bytecode
+
+Status: Implemented; protected CI pending
+Area: release integrity
+Owner: Factory
+First seen: 2026-07-28, protected-main Factory 1.8 promotion
+Impact: a valid state-machine transition changed the physical sealed-release
+tree, so the next deterministic stage resolution failed closed.
+Evidence: protected Factory run `30418343411`; jobs `90469803443` and
+`90469803478` report `transition changed the resolved stage`, followed by
+`physical release tree does not match trusted release provenance`.
+Root cause: `ticket-state.sh` imported a release-local Python module without
+disabling bytecode writes. Its `__pycache__` changed the immutable tree.
+Smallest change: disable Python bytecode writes at the ticket-state boundary,
+matching the existing next-stage boundary.
+Validation: ticket-state's focused transition/push suite passes locally.
+Protected GitHub CI owns the sealed-release regression.
+
+## FI-20260728-082 — Contract 1.8 tests used incomplete authenticated fixtures
+
+Status: Implemented; protected CI pending
+Area: release verification
+Owner: Factory
+First seen: 2026-07-28, protected-main Factory 1.8 promotion
+Impact: the budget reducer correctly refused successful role manifests without
+an output digest, while passport tests could not advance their cloned
+protected-main fixture because the bare remote still advertised `master`.
+Evidence: protected Factory run `30418343411`; Factory jobs `90469803443` and
+`90469803478` report `ticket budget could not be reduced`, and release jobs
+`90469803429` and `90469803463` reject the two protected authorization pushes.
+Root cause: the shared successful-run fixture predated authenticated output
+evidence, and the passport remote fixture created `main` without moving its
+symbolic HEAD.
+Smallest change: emit the successful output plus its SHA-256 in the shared run
+fixture, and point the bare fixture's HEAD at `main`.
+Validation: the focused budget reducer and all three authenticated passport
+tests pass locally. Protected GitHub CI owns the complete regression.
+
+## FI-20260728-083 — Mac-only release tests leaked host assumptions
+
+Status: Implemented; protected CI pending
+Area: protected CI portability
+Owner: Factory
+First seen: 2026-07-28, protected-main Factory 1.8 promotion
+Impact: Linux release verification invoked macOS `libproc`, assumed the
+macOS-only `/private/tmp` qualification trust root, and used BSD `stat` for a
+portable pause receipt. The macOS development-lane test also evaluated
+`product_resume_stage` without its `product_resolve_stage` dependency.
+Evidence: protected Factory run `30418343411`; Linux release job
+`90469803429` and macOS release job `90469803463`.
+Root cause: platform-specific probes lacked exact platform guards, the pause
+receipt used a host-specific metadata command, and the focused shell extractor
+omitted one direct dependency.
+Smallest change: skip only the macOS-only probe and qualification-root tests on
+other hosts, validate the pause receipt with one secure Python read, and load
+the missing resolver in the focused lane test.
+Validation: focused cancellation, qualification-environment, ticket-state,
+passport, shell syntax, and the clean-tree development-lane check pass locally.
+Protected GitHub CI owns the complete regression.
+
+## FI-20260728-084 — Checkpoint repair fixture omitted Narrator output
+
+Status: Implemented; protected CI pending
+Area: release verification
+Owner: Factory
+First seen: 2026-07-28, focused promotion repair
+Impact: the development-lane check reached the recovered Narrator boundary
+and escalated even after recording a successful Narrator run.
+Evidence: focused `ci/factory-dev-lane-test.sh` reported
+`publication repair did not return to operator-await`.
+Root cause: the checkpoint fixture recorded a successful Narrator ledger row
+without creating the required evidence bundle. The state machine correctly
+treated the missing output as invalid.
+Smallest change: add a valid bundle to the successful Narrator fixture; keep
+the fail-closed resolver and its retry limit unchanged.
+Validation: the focused development-lane check passes from the amended clean
+commit; protected GitHub CI owns the complete regression.
+
+## FI-20260728-085 — Development roles bypassed concurrent admission
+
+Status: Implemented; protected CI pending
+Area: provider coordination
+Owner: Factory
+First seen: 2026-07-28, focused promotion repair
+Impact: four explicit provider probes overlapped, but the following 24
+synthetic lifecycle roles ran through legacy serialization and never appeared
+in the provider coordinator.
+Evidence: the focused development-lane check expected 28 terminal attempts but
+the coordinator contained only the four explicit probes, all terminal with
+zero active reservation.
+Root cause: Contract 1.8 moved the provider-contract snapshot before mutable
+kit validation. Development lanes derive their contract during that validation,
+so the early snapshot remained empty.
+Smallest change: initialize the snapshot empty and bind it once, immediately
+after the first successful kit validation and before transition resolution or
+provider admission.
+Validation: the unchanged four-ticket concurrency assertion passes with 28
+terminal attempts and zero active reserve; protected GitHub CI owns the
+complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
