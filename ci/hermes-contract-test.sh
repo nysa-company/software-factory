@@ -2247,6 +2247,7 @@ assert commands["models"]["grammars"] == [
     "activate --profile <safe-id> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
     "disable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --reason credits_exhausted --ttl-seconds <1..604800> --operator-id <safe-id> --json",
     "enable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --json",
+    "pin-batch [--ticket <T-NNN> --workdir <exact-ticket-worktree>]... --json (one to four unique tickets)",
     "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
     "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json",
     "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
