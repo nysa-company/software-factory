@@ -469,6 +469,19 @@ If an operator-authorized repair deliberately removes invalid Git ancestry, a
 cross-release passport migration may use that protected authorization only
 when its source/target kits, ticket, branch, new head, and state match exactly,
 the cell is clean, and the authenticated route digest is unchanged.
+A same-release Test-author repair uses a narrower protected authorization under
+`factory/migrations/ticket-rewrite/<new-head>.json`. It additionally binds the
+old signed passport, consumed `FIX test-author` receipt, typed failed non-force
+push, old/new heads, unchanged route, and exact repository. Migration requires
+a clean cell whose final-tree delta contains at least one configured test path
+and no path outside configured tests plus the exact ticket log; only ordinary
+added or modified regular blobs are accepted. The failed attempt's immutable
+charge is folded into the migrated passport, but it is not promoted to
+successful role evidence. The controller never force-pushes: it waits until
+the exact operator-authorized head is the remote ticket tip, then reopens only
+Test-author through the ordinary state machine. Missing, stale, dirty,
+non-Test-author, semantic, route-changing, or differently headed rewrites
+remain blocked.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior

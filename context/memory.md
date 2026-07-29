@@ -1476,3 +1476,15 @@ Contract 1.8 qualification leaves excluded claims, passports, roles, and
 charges parked, but withdraws their lease-free publication queue records before
 filtering the active cohort. An excluded ticket therefore cannot hold
 checkpoint head-of-line priority over selected independent work.
+
+## 2026-07-28 — Decision 113: Ticket rewrite authorization is lane- and release-neutral
+
+Category: System change
+
+A same-release non-ancestral Test-author repair no longer requires an unrelated
+Factory release cut. One exact protected record must bind the signed old
+passport, consumed repair receipt, typed failed non-force push, old/new ticket
+heads, unchanged route, and a clean final-tree delta limited to configured
+tests plus the ticket log. The failed attempt remains charged but unsuccessful.
+The controller never force-pushes and reopens only Test-author after the exact
+operator-authorized head is observed remotely.

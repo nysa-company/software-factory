@@ -721,7 +721,16 @@ class Controller:
                     "--workdir", claim["worktree"], "--json",
                 )
             except ControllerError:
-                continue
+                if not push_failure:
+                    continue
+                try:
+                    self.migrate_passport(claim, "preserve")
+                    validation = self.json_call(
+                        "passport", "validate", "--ticket", claim["ticket"],
+                        "--workdir", claim["worktree"], "--json",
+                    )
+                except ControllerError:
+                    continue
             passport = read(passport_path)
             head = passport.get("head_sha", "")
             branch = passport.get("branch", "")

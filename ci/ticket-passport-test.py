@@ -48,7 +48,8 @@ class TicketPassportTest(unittest.TestCase):
         (self.product / "factory/route-plans").mkdir()
         (self.product / "factory/runs").mkdir()
         (self.product / "factory/PROJECT.env").write_text(
-            "GH_REPO=nysa-company/relay-factory\n", encoding="utf-8"
+            'GH_REPO=nysa-company/relay-factory\nTEST_PATHS="app/tests/"\n',
+            encoding="utf-8",
         )
         (self.product / "factory/tickets/T-110.md").write_text(
             "# T-110\n\nState: Planning\n", encoding="utf-8"
@@ -215,6 +216,123 @@ class TicketPassportTest(unittest.TestCase):
         self.assertEqual(migrated["head_sha"], rewritten)
         self.assertEqual(migrated["parent_digest"], previous["passport_sha256"])
         self.assertEqual(migrated["factory_sha"], "b" * 40)
+
+    def test_protected_same_release_test_rewrite_is_exact_and_charged(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text("# T-110\n\nState: Building\n", encoding="utf-8")
+        test = self.product / "app/tests/detail.test.js"
+        test.parent.mkdir(parents=True)
+        test.write_text("old test\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "enter building", cwd=self.product)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=self.product)
+
+        secret = PASSPORT.key(self.state_dir)
+        prior_receipt = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = prior_receipt["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "run-prior", "planner", prior_receipt["receipt_sha256"], "a" * 40
+        )
+        self.passport_args.receipt = prior_receipt["receipt_sha256"]
+        previous = PASSPORT.export(self.passport_args, secret)
+        old_head = previous["head_sha"]
+
+        self.state_args.role = "test-author"
+        repair = STATE.issue(self.state_args, "FIX test-author")
+        self.state_args.receipt = repair["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        output = self.product / "factory/runs/run-repair.out"
+        output.write_text("repair output\n", encoding="utf-8")
+        output_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+        (self.product / "factory/runs/run-repair.meta").write_text(
+            "run_id=run-repair\n"
+            "phase=completed\n"
+            "accounting_state=abandoned_conservative\n"
+            "task_submitted=1\n"
+            "effective_cost=2.000000\n"
+            "exit_status=11\n"
+            "ticket=T-110\n"
+            "role=test-author\n"
+            "role_exit=role_exit_push_failed\n"
+            f"role_head_before={old_head}\n"
+            f"kit_sha={'a' * 40}\n"
+            "contract_version=1.8.0\n"
+            f"transition_receipt_sha256={repair['receipt_sha256']}\n"
+            f"output_sha256={output_digest}\n",
+            encoding="utf-8",
+        )
+
+        test.write_text("repaired test\n", encoding="utf-8")
+        ticket.write_text(
+            "# T-110\n\nState: Building\n\nTest-author repair recorded.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=self.product)
+        tree = run("git", "write-tree", cwd=self.product)
+        rewritten = run(
+            "git", "commit-tree", tree, "-m", "test repair rewrite",
+            cwd=self.product,
+        )
+        run("git", "reset", "--hard", rewritten, cwd=self.product)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.migrate(self.passport_args, secret)
+
+        (self.product / "app/server.js").write_text(
+            "unknown semantic change\n", encoding="utf-8"
+        )
+        run("git", "add", ".", cwd=self.product)
+        unsafe_tree = run("git", "write-tree", cwd=self.product)
+        unsafe = run(
+            "git", "commit-tree", unsafe_tree, "-m", "unsafe rewrite",
+            cwd=self.product,
+        )
+        self.assertFalse(PASSPORT.rewrite_delta_allowed(
+            self.product, old_head, unsafe, "app/tests/", "T-110"
+        ))
+        run("git", "reset", "--hard", rewritten, cwd=self.product)
+
+        protected = self.root / "protected-rewrite"
+        run("git", "clone", "-q", str(self.remote), str(protected), cwd=self.root)
+        run("git", "config", "user.name", "Test", cwd=protected)
+        run("git", "config", "user.email", "test@example.invalid", cwd=protected)
+        authorization = (
+            protected / f"factory/migrations/ticket-rewrite/{rewritten}.json"
+        )
+        authorization.parent.mkdir(parents=True)
+        authorization.write_text(
+            json.dumps({
+                "branch": "ticket/T-110",
+                "factory_sha": "a" * 40,
+                "head": rewritten,
+                "passport_sha256": previous["passport_sha256"],
+                "previous_head": old_head,
+                "repository": "nysa-company/relay-factory",
+                "role": "test-author",
+                "route_plan_sha256": hashlib.sha256(
+                    (self.product / "factory/route-plans/T-110.json").read_bytes()
+                ).hexdigest(),
+                "schema": PASSPORT.REWRITE_SCHEMA,
+                "state": "Building",
+                "ticket": "T-110",
+                "transition_receipt_sha256": repair["receipt_sha256"],
+            }, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=protected)
+        run("git", "commit", "-qm", "authorize exact test rewrite", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+
+        migrated = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(migrated["factory_sha"], "a" * 40)
+        self.assertEqual(migrated["head_sha"], rewritten)
+        self.assertEqual(migrated["cumulative_charges_micro_usd"], 3_500_000)
+        self.assertEqual(len(migrated["completed_role_evidence"]), 1)
+        self.assertRegex(
+            migrated["migration_history"][-1]["rewrite_authorization_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
 
 
 if __name__ == "__main__":

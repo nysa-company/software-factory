@@ -27,6 +27,7 @@ TERMINAL_ACCOUNTING = {
     "completed", "abandoned_conservative", "cancelled", "cancelled_conservative",
 }
 INFLIGHT_SCHEMA = "nysa.software-factory.inflight-release-authorization/v1"
+REWRITE_SCHEMA = "nysa.software-factory.ticket-rewrite-authorization/v1"
 INFLIGHT_STATES = {
     "Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved",
 }
@@ -316,6 +317,178 @@ def authorized_inflight_rewrite(
     )
 
 
+def project_value(text: str, name: str) -> str | None:
+    values = []
+    assignment = re.compile(
+        rf"(?:export[ \t]+)?{re.escape(name)}[ \t]*=[ \t]*(.*)"
+    )
+    for raw in text.splitlines():
+        match = assignment.fullmatch(raw.strip())
+        if not match:
+            continue
+        encoded = match.group(1)
+        if encoded[:1] in {"'", '"'}:
+            if (
+                len(encoded) < 2
+                or encoded[-1] != encoded[0]
+                or encoded[0] in encoded[1:-1]
+            ):
+                return None
+            encoded = encoded[1:-1]
+        if any(fragment in encoded for fragment in ("`", "$(", "${", "\\", "\n", "\r")):
+            return None
+        values.append(encoded)
+    return values[0] if len(values) == 1 else None
+
+
+def rewrite_delta_allowed(
+    workdir: Path, old_head: str, new_head: str, test_paths: str, ticket: str
+) -> bool:
+    roots = test_paths.split()
+    if not roots or any(
+        not re.fullmatch(r"[A-Za-z0-9._/-]+", root)
+        or root.startswith("/")
+        or ".." in root.split("/")
+        or "//" in root
+        for root in roots
+    ):
+        return False
+    changed = git(
+        workdir, "diff", "--name-status", "--no-renames",
+        f"{old_head}^{{tree}}", f"{new_head}^{{tree}}",
+    )
+    seen_test = False
+    for line in changed.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 2 or fields[0] not in {"A", "M"}:
+            return False
+        status, path = fields
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+", path):
+            return False
+        is_test = any(
+            path.startswith(root) if root.endswith("/") else path == root
+            for root in roots
+        )
+        if path != f"factory/tickets/{ticket}.md" and not is_test:
+            return False
+        seen_test = seen_test or is_test
+        current = git(workdir, "ls-tree", new_head, "--", path).split()
+        if len(current) < 4 or current[:2] != ["100644", "blob"]:
+            return False
+        if status == "M":
+            prior = git(workdir, "ls-tree", old_head, "--", path).split()
+            if len(prior) < 4 or prior[:2] != ["100644", "blob"]:
+                return False
+    return seen_test
+
+
+def failed_rewrite_manifest(
+    args: argparse.Namespace, previous: dict[str, Any], receipt_digest: str
+) -> bool:
+    matches = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        value = manifest_fields(path)
+        if (
+            value.get("ticket") == args.ticket
+            and value.get("role") == "test-author"
+            and value.get("transition_receipt_sha256") == receipt_digest
+        ):
+            matches.append((path, value))
+    if len(matches) != 1:
+        return False
+    path, value = matches[0]
+    output = path.with_suffix(".out")
+    return (
+        value.get("phase") == "completed"
+        and value.get("accounting_state") == "abandoned_conservative"
+        and value.get("task_submitted") == "1"
+        and value.get("exit_status") == "11"
+        and value.get("role_exit") == "role_exit_push_failed"
+        and value.get("role_head_before") == previous.get("head_sha")
+        and value.get("kit_sha") == args.factory_sha
+        and value.get("contract_version") == args.contract_version
+        and DIGEST.fullmatch(value.get("output_sha256", "")) is not None
+        and output.is_file()
+        and not output.is_symlink()
+        and hashlib.sha256(read_regular(output)).hexdigest()
+        == value["output_sha256"]
+    )
+
+
+def authorized_ticket_rewrite(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    current_state: str,
+    protected: str,
+) -> str | None:
+    if (
+        previous.get("factory_sha") != args.factory_sha
+        or current_state != "Building"
+        or git(args.workdir, "status", "--porcelain=v1", "-z")
+    ):
+        return None
+    project = git(
+        args.factory_root, "show", f"{protected}:factory/PROJECT.env", check=False
+    )
+    repository = project_value(project, "GH_REPO")
+    test_paths = project_value(project, "TEST_PATHS")
+    route = route_digest(args.workdir, args.ticket)
+    if (
+        not repository
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+        or not test_paths
+        or not DIGEST.fullmatch(route or "")
+    ):
+        return None
+    relative = (
+        "factory/migrations/ticket-rewrite/"
+        f"{current['head_sha']}.json"
+    )
+    raw = git(args.factory_root, "show", f"{protected}:{relative}", check=False)
+    if not raw or len(raw.encode()) > 1_000_000:
+        return None
+    try:
+        authorization = json.loads(raw, object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    receipt_digest = authorization.get("transition_receipt_sha256", "")
+    expected = {
+        "branch": current["branch"],
+        "factory_sha": args.factory_sha,
+        "head": current["head_sha"],
+        "passport_sha256": previous.get("passport_sha256"),
+        "previous_head": previous.get("head_sha"),
+        "repository": repository,
+        "role": "test-author",
+        "route_plan_sha256": route,
+        "schema": REWRITE_SCHEMA,
+        "state": current_state,
+        "ticket": args.ticket,
+        "transition_receipt_sha256": receipt_digest,
+    }
+    if authorization != expected or not DIGEST.fullmatch(receipt_digest):
+        return None
+    try:
+        consumed = receipt(args.state_dir, args.ticket, receipt_digest)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, PassportError):
+        return None
+    if (
+        consumed.get("factory_sha") != args.factory_sha
+        or consumed.get("head_sha") != previous.get("head_sha")
+        or consumed.get("project") != args.project
+        or consumed.get("role") != "test-author"
+        or consumed.get("stage") != "FIX test-author"
+        or not failed_rewrite_manifest(args, previous, receipt_digest)
+        or not rewrite_delta_allowed(
+            args.workdir, previous["head_sha"], current["head_sha"],
+            test_paths, args.ticket,
+        )
+    ):
+        return None
+    return hashlib.sha256(canonical(authorization)).hexdigest()
+
+
 def route_digest(workdir: Path, ticket: str) -> str | None:
     path = workdir / "factory" / "route-plans" / f"{ticket}.json"
     return hashlib.sha256(read_regular(path)).hexdigest() if path.exists() else None
@@ -486,6 +659,13 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         stderr=subprocess.DEVNULL,
         check=False,
     ).returncode == 0
+    rewrite_authorization = (
+        None
+        if head_continuous
+        else authorized_ticket_rewrite(
+            args, previous, current, current_ticket_state, protected
+        )
+    )
     base_continuous = subprocess.run(
         [
             "git", "-C", str(args.factory_root), "merge-base", "--is-ancestor",
@@ -506,6 +686,7 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
             and not authorized_inflight_rewrite(
                 args, previous, current, current_ticket_state, protected
             )
+            and rewrite_authorization is None
         )
     ):
         raise PassportError("passport migration is outside authenticated lineage")
@@ -526,6 +707,30 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     }
     if release not in history:
         history.append(release)
+    migration = {
+        "from_factory_sha": previous["factory_sha"],
+        "from_head_sha": previous["head_sha"],
+        "from_protected_base_sha": previous["protected_base_sha"],
+        "to_factory_sha": args.factory_sha,
+        "to_head_sha": current["head_sha"],
+        "to_protected_base_sha": protected,
+    }
+    if rewrite_authorization is not None:
+        migration["rewrite_authorization_sha256"] = rewrite_authorization
+    evidence: dict[str, Any] = {}
+    if rewrite_authorization is not None:
+        completed, charges = run_evidence(args.factory_root / "factory", args.ticket)
+        completed = merge_records(
+            previous.get("completed_role_evidence", []), completed
+        )
+        charges = merge_records(previous.get("charge_records", []), charges)
+        evidence = {
+            "charge_records": charges,
+            "completed_role_evidence": completed,
+            "cumulative_charges_micro_usd": sum(
+                item["charge_micro_usd"] for item in charges
+            ),
+        }
     value = {
         **{
             name: item for name, item in previous.items()
@@ -535,6 +740,7 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
             }
         },
         **current,
+        **evidence,
         "base_history": [
             *previous.get("base_history", []),
             *([] if protected in previous.get("base_history", []) else [protected]),
@@ -545,14 +751,7 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         "factory_sha": args.factory_sha,
         "migration_history": [
             *previous.get("migration_history", []),
-            {
-                "from_factory_sha": previous["factory_sha"],
-                "from_head_sha": previous["head_sha"],
-                "from_protected_base_sha": previous["protected_base_sha"],
-                "to_factory_sha": args.factory_sha,
-                "to_head_sha": current["head_sha"],
-                "to_protected_base_sha": protected,
-            },
+            migration,
         ],
         "nonce": secrets.token_hex(16),
         "parent_digest": previous["passport_sha256"],

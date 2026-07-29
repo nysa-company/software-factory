@@ -810,6 +810,98 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(calls, [])
 
+    def test_push_failure_migrates_authorized_rewrite_before_reclaim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-rewrite"
+        cell.mkdir()
+        receipt = "b" * 64
+        old_digest = "c" * 64
+        new_digest = "d" * 64
+        head = "e" * 40
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "test-author",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        (self.state / "passports").mkdir(mode=0o700)
+        passport_path = self.state / "passports/T-110.json"
+        CONTROL.write(
+            passport_path,
+            {
+                "branch": claim["branch"],
+                "head_sha": "f" * 40,
+                "passport_sha256": old_digest,
+            },
+        )
+        (self.product / "factory/runs/failed-rewrite.meta").write_text(
+            "run_id=failed-rewrite\n"
+            "ticket=T-110\n"
+            "role=test-author\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=11\n"
+            "role_exit=role_exit_push_failed\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        validations = 0
+
+        def json_call(*args, **_kwargs):
+            nonlocal validations
+            calls.append(args)
+            if args[:2] == ("passport", "validate"):
+                validations += 1
+                if validations == 1:
+                    raise CONTROL.ControllerError("passport head is stale")
+                return {"passport": new_digest, "status": "ok"}
+            if args[:2] == ("passport", "migrate"):
+                CONTROL.write(
+                    passport_path,
+                    {
+                        "branch": claim["branch"],
+                        "head_sha": head,
+                        "passport_sha256": new_digest,
+                    },
+                )
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("failed run released its lease")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "f" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        remote = CONTROL.subprocess.CompletedProcess(
+            [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
+        )
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "f" * 64)
+        self.assertEqual(
+            [call[:2] for call in calls],
+            [
+                ("passport", "validate"),
+                ("passport", "migrate"),
+                ("passport", "validate"),
+                ("renew", "--ticket"),
+                ("claim", "--ticket"),
+                ("push_failure_recovered",),
+            ],
+        )
+
     def test_exact_refresh_topology_refusal_runs_attested_refresh(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

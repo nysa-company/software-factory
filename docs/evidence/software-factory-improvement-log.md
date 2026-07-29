@@ -1772,6 +1772,38 @@ Validation: all 24 focused controller tests pass; the three-ticket regression
 requires the excluded fourth claim to remain present while its publication
 state is withdrawn. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-077 — Same-release Test-author repair forced Factory candidate churn
+
+Status: Implemented; qualification pending
+Area: passport and repair recovery
+Owner: Factory
+First seen: 2026-07-28, Relay T-169 generation 32
+Impact: after T-168 merged an application test using port `4771`, T-169's
+Reviewer correctly invalidated only Test-author. The bounded repair changed its
+test port to `4779` and kept test-before-implementation ordering by rewriting
+ticket history. Its trusted non-force push failed as designed, but passport
+export rejected the non-ancestral clean head. The only existing escape required
+another Factory release even though no Factory semantics had changed.
+Evidence: consumed receipt `f48e76b5…` binds `FIX test-author` at old head
+`9ac81f2`; terminal run `1785283996-18796` is a submitted, conservatively
+charged `role_exit_push_failed`; clean head `c155e13` differs from the old tree
+only at `app/tests/outbox-detail.test.js` and `factory/tickets/T-169.md`.
+Root cause: non-ancestral passport migration recognized only cross-release
+in-flight authorization, coupling a ticket-branch repair to Factory release
+identity.
+Smallest change: accept a same-release rewrite only through one exact protected
+record binding repository, Factory SHA, ticket/branch/state, signed prior
+passport, old/new heads, unchanged route, consumed Test-author receipt, and the
+typed terminal push failure. Require a clean cell and an added/modified
+regular-blob delta limited to configured test paths plus the exact ticket log.
+Fold the failed attempt's charge—not successful-role evidence—into the passport.
+The controller does not force-push; after the exact authorized head becomes the
+remote tip it reopens only the invalidated Test-author stage.
+Validation: all three focused passport tests and all 25 focused controller
+tests pass, including unknown semantic-path refusal, exact charge retention,
+pre-validation passport migration, exact remote-head matching, and no automatic
+force push. Protected GitHub CI retains the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
