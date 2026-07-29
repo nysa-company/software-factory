@@ -16,7 +16,7 @@ CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
 INSTALL_MANIFEST_SCHEMA=1
 SUITE_EVIDENCE_SCHEMA=2
-CERTIFICATION_TOOL_VERSION=2
+CERTIFICATION_TOOL_VERSION=3
 # Bump whenever run_kit_checks_isolated command composition or semantics change.
 KIT_SUITE_DEFINITION="factory-kit-suite-v2"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
@@ -30,6 +30,8 @@ TEMP_PATHS=""
 PREPARED_COPY=""
 PREPARED_PRODUCT=""
 ISOLATED_HOME=""
+PRODUCT_CERTIFICATION_EVIDENCE=""
+PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -1683,8 +1685,11 @@ configure_phase_sandbox() {
 run_product_certification() {
   local product_copy="$1" script="$2" sha="$3" release_copy="$4"
   local workspace="$5" real_product="$6" real_release="$7"
+  local product_git_tree="$8"
   local raw="$workspace/certification.raw" redacted="$workspace/certification.redacted"
-  local timeout status=0
+  local evidence="$workspace/product-certification.json" timeout status=0
+  PRODUCT_CERTIFICATION_EVIDENCE=""
+  PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
   timeout="${FACTORY_KIT_CERTIFY_TIMEOUT_SECONDS:-900}"
   [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -gt 0 ]] ||
     die "certification timeout must be positive"
@@ -1694,7 +1699,8 @@ run_product_certification() {
     "$SCRIPT_ROOT/scripts/lib/sandbox-ps.py" \
     "${FACTORY_KIT_SANDBOX_CAPTURE:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
-    "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" <<'PY' || status=$?
+    "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
+    "$product_git_tree" "$evidence" <<'PY' || status=$?
 import os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
 profile = sys.argv[9]
@@ -1703,6 +1709,8 @@ sandbox_ps = sys.argv[11]
 capture = sys.argv[12]
 deny_sibling = sys.argv[13]
 deny_home = sys.argv[14]
+product_tree = sys.argv[15]
+certification_evidence = sys.argv[16]
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
@@ -1750,6 +1758,8 @@ environment = {
     "FACTORY_KIT_SHA": sha,
     "FACTORY_KIT_RELEASE": release,
     "FACTORY_PRODUCT_ROOT": product,
+    "FACTORY_PRODUCT_TREE": product_tree,
+    "FACTORY_CERTIFICATION_EVIDENCE": certification_evidence,
     "FACTORY_KIT_OUTER_SANDBOX": "1",
 }
 environment.update(tool_environment)
@@ -1778,6 +1788,51 @@ PY
   if [[ "$status" -ne 0 ]]; then
     awk '{print "  | " $0}' "$redacted" >&2
     return "$status"
+  fi
+  if [[ -e "$evidence" || -L "$evidence" ]]; then
+    PRODUCT_CERTIFICATION_EVIDENCE_DIGEST="$(python3 - \
+      "$evidence" "$sha" "$product_git_tree" <<'PY'
+import hashlib, json, os, re, stat, sys
+path, factory_sha, product_tree = sys.argv[1:]
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+        or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_size > 1_000_000
+    ):
+        raise SystemExit("product certification evidence is unsafe")
+    with os.fdopen(descriptor, "rb") as stream:
+        descriptor = -1
+        raw = stream.read()
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+value = json.loads(raw)
+phases = value.get("phases")
+digest = re.compile(r"^[0-9a-f]{64}$")
+if (
+    value.get("schema") != "nysa.software-factory.certification-result/v1"
+    or value.get("status") != "pass"
+    or value.get("factory_sha") != factory_sha
+    or value.get("product_tree") != product_tree
+    or value.get("max_workers") not in {1, 2, 3}
+    or not isinstance(phases, list) or not phases
+    or any(
+        not isinstance(phase, dict)
+        or phase.get("exit_status") != 0
+        or phase.get("cache_hit") is not False
+        or not digest.fullmatch(phase.get("input_sha256", ""))
+        or not digest.fullmatch(phase.get("artifact_sha256", ""))
+        for phase in phases
+    )
+):
+    raise SystemExit("product certification evidence is invalid")
+print(hashlib.sha256(raw).hexdigest())
+PY
+)" || return 125
+    PRODUCT_CERTIFICATION_EVIDENCE="$evidence"
   fi
 }
 
@@ -1951,6 +2006,46 @@ validate_receipt_snapshot() {
   case "$(json_get "$receipt" kit_suite_evidence.reused)" in
     true|false) ;;
     *) die "receipt kit-suite evidence reuse marker is invalid" ;;
+  esac
+  case "$(json_get "$receipt" product_certification_evidence.mode)" in
+    legacy) ;;
+    measured)
+      python3 - "$receipt" "$sha" "$product_git_tree" <<'PY' || die "measured product certification evidence is invalid"
+import hashlib, json, re, sys
+receipt, factory_sha, product_tree = sys.argv[1:]
+container = json.load(open(receipt, encoding="utf-8"))[
+    "product_certification_evidence"
+]
+result = container.get("result")
+raw = (
+    json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    + "\n"
+).encode()
+digest = re.compile(r"^[0-9a-f]{64}$")
+phases = result.get("phases") if isinstance(result, dict) else None
+if (
+    container.get("digest") != hashlib.sha256(raw).hexdigest()
+    or result.get("schema")
+    != "nysa.software-factory.certification-result/v1"
+    or result.get("status") != "pass"
+    or result.get("factory_sha") != factory_sha
+    or result.get("product_tree") != product_tree
+    or result.get("max_workers") not in {1, 2, 3}
+    or not isinstance(phases, list)
+    or not phases
+    or any(
+        not isinstance(phase, dict)
+        or phase.get("exit_status") != 0
+        or phase.get("cache_hit") is not False
+        or not digest.fullmatch(phase.get("input_sha256", ""))
+        or not digest.fullmatch(phase.get("artifact_sha256", ""))
+        for phase in phases
+    )
+):
+    raise SystemExit(1)
+PY
+      ;;
+    *) die "product certification evidence mode is invalid" ;;
   esac
   [[ "$(json_get "$receipt" checks.kit_suite)" == "pass" &&
      "$(json_get "$receipt" checks.github_required)" == "pass" &&
@@ -2776,7 +2871,7 @@ cmd_certify() {
   prepare_pinned_scanner "$product_top" "$PREPARED_PRODUCT" "$workspace/tmp" ||
     die "could not stage the product's pinned scanner for isolated certification"
   run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
-    "$workspace" "$product_top" "$release" ||
+    "$workspace" "$product_top" "$release" "$product_git_tree" ||
     die "product certification failed"
   record_certification_trace "product-certification"
   verify_release_from_manifest "$sha" >/dev/null
@@ -2812,13 +2907,24 @@ cmd_certify() {
     "$CERTIFICATION_TOOL_VERSION" "$evidence_id" "$evidence_digest" \
     "$evidence_created" "$evidence_expires" "$DEFAULT_SUITE_EVIDENCE_TTL" \
     "$KIT_SUITE_DEFINITION" "$suite_reused" "$release" "$evidence_source" \
+    "$PRODUCT_CERTIFICATION_EVIDENCE" \
+    "$PRODUCT_CERTIFICATION_EVIDENCE_DIGEST" \
     <<'PY' | atomic_json_from_stdin "$receipt"
 import json, sys, time
 (slug, sha, kit_tree, kit_origin, product_path, product_origin, product_tree,
  kit_pin_hash, project_env_hash, contract, host, os_name, architecture,
  created, expires, receipt_id, previous_generation, tool_version, evidence_id,
  evidence_digest, evidence_created, evidence_expires, evidence_ttl,
- suite_definition, suite_reused, release, evidence_source) = sys.argv[1:]
+ suite_definition, suite_reused, release, evidence_source,
+ product_evidence_path, product_evidence_digest) = sys.argv[1:]
+product_evidence = {"mode": "legacy"}
+if product_evidence_path:
+    with open(product_evidence_path, encoding="utf-8") as stream:
+        product_evidence = {
+            "digest": product_evidence_digest,
+            "mode": "measured",
+            "result": json.load(stream),
+        }
 value = {
     "schema_version": 2,
     "certification_tool_version": int(tool_version),
@@ -2864,6 +2970,7 @@ value = {
         "reused": suite_reused == "true",
         "verification_source": evidence_source,
     },
+    "product_certification_evidence": product_evidence,
     "checks": {
         "kit_suite": "pass",
         "github_required": "pass",

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,8 @@ from typing import Any
 
 SCHEMA = "nysa.software-factory.state-machine/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.transition-receipt/v1"
+REPAIR_SCHEMA = "nysa.software-factory.contract-repair/v1"
+PASSPORT_SCHEMA = "nysa.software-factory.ticket-passport/v1"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -94,6 +97,101 @@ def safe_receipt(path: Path) -> dict[str, Any]:
         raise StateError("transition receipt digest is invalid")
     if not isinstance(value.get("consumed"), bool):
         raise StateError("transition receipt consumption state is invalid")
+    return value
+
+
+def authenticated_passport(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
+    key_path = args.state_dir / "passport.key"
+    passport_path = args.state_dir / "passports" / f"{args.ticket}.json"
+    for path, size in ((key_path, 32), (passport_path, 5_000_000)):
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > size
+            ):
+                raise StateError("passport state is unsafe")
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                raw = stream.read()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if path == key_path:
+            secret = raw
+        else:
+            passport = json.loads(raw)
+    if (
+        len(secret) != 32
+        or not isinstance(passport, dict)
+        or passport.get("schema") != PASSPORT_SCHEMA
+    ):
+        raise StateError("passport state is invalid")
+    passport_digest = passport.pop("passport_sha256", "")
+    if passport_digest != hashlib.sha256(canonical(passport)).hexdigest():
+        raise StateError("passport digest is invalid")
+    authentication = passport.pop("authentication_sha256", "")
+    if not hmac.compare_digest(
+        authentication, hmac.new(secret, canonical(passport), hashlib.sha256).hexdigest()
+    ):
+        raise StateError("passport authentication is invalid")
+    passport["authentication_sha256"] = authentication
+    passport["passport_sha256"] = passport_digest
+    return passport, secret
+
+
+def repair_path(args: argparse.Namespace) -> Path:
+    directory = args.state_dir / "contract-repairs"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if (
+        directory.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise StateError("contract repair directory is unsafe")
+    return directory / f"{args.ticket}.json"
+
+
+def signed_repair(value: dict[str, Any], secret: bytes) -> dict[str, Any]:
+    result = dict(value)
+    result["authentication_sha256"] = hmac.new(
+        secret, canonical(value), hashlib.sha256
+    ).hexdigest()
+    result["repair_sha256"] = hashlib.sha256(canonical(result)).hexdigest()
+    return result
+
+
+def load_repair(args: argparse.Namespace, secret: bytes) -> dict[str, Any] | None:
+    path = repair_path(args)
+    if not path.exists() and not path.is_symlink():
+        return None
+    info = path.lstat()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_size > 1_000_000
+    ):
+        raise StateError("contract repair record is unsafe")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    repair_digest = value.pop("repair_sha256", "")
+    if repair_digest != hashlib.sha256(canonical(value)).hexdigest():
+        raise StateError("contract repair digest is invalid")
+    authentication = value.pop("authentication_sha256", "")
+    if not hmac.compare_digest(
+        authentication, hmac.new(secret, canonical(value), hashlib.sha256).hexdigest()
+    ):
+        raise StateError("contract repair authentication is invalid")
+    value["authentication_sha256"] = authentication
+    value["repair_sha256"] = repair_digest
     return value
 
 
@@ -254,6 +352,132 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
     )):
         raise StateError("contract blocker terminal evidence is invalid")
     return role
+
+
+def operator_resume_role(
+    args: argparse.Namespace, passport: dict[str, Any], blocked_role: str
+) -> str:
+    relative = f"factory/tickets/{args.ticket}.md"
+    prior_head = passport.get("head_sha", "")
+    if (
+        passport.get("ticket") != args.ticket
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("branch")
+        != git(args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD")
+        or not SHA.fullmatch(prior_head)
+    ):
+        raise StateError("contract repair passport is invalid")
+    current = git(args.workdir, "show", f"HEAD:{relative}") + "\n"
+    directives = re.findall(
+        r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
+        current, re.M,
+    )
+    if not directives:
+        if git(args.workdir, "rev-parse", "HEAD") != prior_head:
+            raise StateError("contract repair changed without an operator directive")
+        return blocked_role
+    repair_role = directives[0]
+    directive = f"OPERATOR RESUME: {repair_role}"
+    commits = git(
+        args.workdir, "log", "--format=%H", f"-S{directive}", "--", relative
+    ).splitlines()
+    if len(commits) != 1 or not SHA.fullmatch(commits[0]):
+        raise StateError("contract repair operator directive is invalid")
+    commit = commits[0]
+    parent = git(args.workdir, "rev-parse", f"{commit}^")
+    before = git(args.workdir, "show", f"{parent}:{relative}") + "\n"
+    after = git(args.workdir, "show", f"{commit}:{relative}") + "\n"
+    expected = before.rstrip("\n") + f"\n\n{directive}\n"
+    changed = git(args.workdir, "diff", "--name-only", f"{parent}..{commit}").splitlines()
+    known_heads = {prior_head}
+    for migration in passport.get("migration_history", []):
+        if isinstance(migration, dict):
+            known_heads.update(
+                migration.get(name, "")
+                for name in ("from_head_sha", "to_head_sha")
+                if SHA.fullmatch(migration.get(name, ""))
+            )
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    if (
+        len(directives) != 1
+        or after != expected
+        or changed != [relative]
+        or parent not in known_heads
+        or subprocess.run(
+            ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor", commit, "HEAD"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        ).returncode != 0
+        or current_head not in {commit, prior_head}
+    ):
+        raise StateError("contract repair operator directive is invalid")
+    return repair_role
+
+
+def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
+    text = (
+        args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    ).read_text(encoding="utf-8")
+    has_directive = bool(re.search(r"^OPERATOR RESUME:", text, re.M))
+    path = args.state_dir / "contract-repairs" / f"{args.ticket}.json"
+    if not has_directive and not path.exists() and not path.is_symlink():
+        return None, False
+    passport, secret = authenticated_passport(args)
+    record = load_repair(args, secret)
+    if record is None:
+        if has_directive:
+            raise StateError("operator resume lacks authenticated contract repair state")
+        return None, False
+    owner = record.get("repair_role", "")
+    head = record.get("head_sha", "")
+    if any((
+        record.get("schema") != REPAIR_SCHEMA,
+        record.get("ticket") != args.ticket,
+        record.get("factory_sha") != args.factory_sha,
+        record.get("branch") != passport.get("branch"),
+        owner not in {"planner", "spec-linter", "test-author", "builder"},
+        not SHA.fullmatch(head),
+        subprocess.run(
+            ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor", head, "HEAD"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        ).returncode != 0,
+    )):
+        raise StateError("contract repair record is invalid")
+    successes = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        fields, _ = run_manifest(path)
+        before = fields.get("role_head_before", "")
+        if (
+            fields.get("ticket") == args.ticket
+            and fields.get("role") == owner
+            and fields.get("phase") == "completed"
+            and fields.get("exit_status") == "0"
+            and fields.get("role_exit") == "ok"
+            and SHA.fullmatch(before)
+            and subprocess.run(
+                [
+                    "git", "-C", str(args.workdir), "merge-base",
+                    "--is-ancestor", head, before,
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False, timeout=120,
+            ).returncode == 0
+        ):
+            successes.append(fields.get("run_id", ""))
+    if len(successes) > 1:
+        raise StateError("contract repair has duplicate successful evidence")
+    if not successes:
+        return f"FIX {owner}", True
+    stage = resolve(args)
+    role = stage_role(stage)
+    order = {"Planning": 1, "Building": 2, "Review": 3}
+    if (
+        role is not None
+        and order[TARGET_STATE[role]] < order[current_state(args.workdir, args.ticket)]
+    ):
+        return stage, True
+    return None, False
 
 
 def core(
@@ -446,24 +670,28 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
             args, "ticket-state.sh", "--ticket", args.ticket,
             "--workdir", str(args.workdir), "--action", "materialize",
         )
-    stage = resolve(args)
+    repair_stage, repair_override = contract_repair_stage(args)
+    stage = repair_stage or resolve(args)
     role = stage_role(stage)
     if role:
         current = current_state(args.workdir, args.ticket)
         target = TARGET_STATE[role]
-        while current != target:
-            if current == "Ready":
-                transition(args, "Planning")
-            elif current == "Planning" and target in {"Building", "Review"}:
-                transition(args, "Building")
-            elif current == "Building" and target == "Review":
-                transition(args, "Review")
-            elif current == "Review" and target == "Building":
-                transition(args, "Building")
-            else:
-                raise StateError(f"state machine cannot enter {target} from {current}")
-            current = current_state(args.workdir, args.ticket)
-        if resolve(args) != stage:
+        if not repair_override:
+            while current != target:
+                if current == "Ready":
+                    transition(args, "Planning")
+                elif current == "Planning" and target in {"Building", "Review"}:
+                    transition(args, "Building")
+                elif current == "Building" and target == "Review":
+                    transition(args, "Review")
+                elif current == "Review" and target == "Building":
+                    transition(args, "Building")
+                else:
+                    raise StateError(
+                        f"state machine cannot enter {target} from {current}"
+                    )
+                current = current_state(args.workdir, args.ticket)
+        if (not repair_override or stage.startswith("RUN ")) and resolve(args) != stage:
             raise StateError("transition changed the resolved stage")
     if not stage.startswith("REFUSE "):
         migrate_passport(args)
@@ -512,6 +740,8 @@ def block_transition(args: argparse.Namespace) -> dict[str, Any]:
 
 def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
     role = contract_blocked_receipt(args)
+    passport, secret = authenticated_passport(args)
+    repair_role = operator_resume_role(args, passport, role)
     target = TARGET_STATE[role]
     if ticket_field(args.workdir, args.ticket, "Resume-State") != target:
         raise StateError("contract blocker resume target drifted")
@@ -525,13 +755,42 @@ def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
     if state == "Blocked-Escalated":
         status = "waiting"
     elif state == target:
+        repair_target = TARGET_STATE[repair_role]
+        while state != repair_target:
+            if state == "Planning" and repair_target == "Building":
+                transition(args, "Building")
+            elif state == "Building" and repair_target == "Review":
+                transition(args, "Review")
+            elif state == "Review" and repair_target == "Building":
+                transition(args, "Building")
+            else:
+                raise StateError("contract repair cannot enter its owning state")
+            state = current_state(args.workdir, args.ticket)
         migrate_passport(args)
+        passport, secret = authenticated_passport(args)
+        head = git(args.workdir, "rev-parse", "HEAD")
+        write_atomic(
+            repair_path(args),
+            signed_repair({
+                "blocked_receipt": args.receipt,
+                "blocked_role": role,
+                "branch": passport["branch"],
+                "factory_sha": args.factory_sha,
+                "head_sha": head,
+                "head_tree": git(args.workdir, "rev-parse", "HEAD^{tree}"),
+                "passport_sha256": passport["passport_sha256"],
+                "repair_role": repair_role,
+                "schema": REPAIR_SCHEMA,
+                "ticket": args.ticket,
+            }, secret),
+        )
         status = "ready"
     else:
         raise StateError("contract blocker resumed to an invalid state")
     return {
         "action": "resume",
         "head": git(args.workdir, "rev-parse", "HEAD"),
+        "repair_role": repair_role,
         "role": role,
         "schema": SCHEMA,
         "status": status,

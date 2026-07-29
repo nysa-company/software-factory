@@ -229,6 +229,9 @@ CLI_CURSOR_DATA_DIR=""
 PROVIDER_EXECUTION_MODE="legacy-serialized"
 PROVIDER_BUDGET_MICRO_VALUES=()
 RUN_OUTPUT_SHA256=""
+PROGRESS_EVENTS=""
+PROGRESS_JOURNAL_SHA256=""
+TIMEOUT_KIND=""
 PROMPT_VERSION="unversioned"
 SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
@@ -667,6 +670,9 @@ write_manifest() {
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
     echo "transition_receipt_sha256=$(meta_value "${FACTORY_TRANSITION_RECEIPT_SHA256:-}")"
     echo "output_sha256=$(meta_value "$RUN_OUTPUT_SHA256")"
+    echo "progress_events=$(meta_value "$PROGRESS_EVENTS")"
+    echo "progress_journal_sha256=$(meta_value "$PROGRESS_JOURNAL_SHA256")"
+    echo "timeout_kind=$(meta_value "$TIMEOUT_KIND")"
     echo "cancellation_reason=$(meta_value "$CANCELLATION_REASON")"
     echo "cancellation_preview_hash=$(meta_value "$CANCELLATION_PREVIEW_HASH")"
     echo "updated_at=$(date -u +%FT%TZ)"
@@ -1272,6 +1278,9 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID";
   echo "$FACTORY_DISPATCH_LEASE_ERROR; no task was submitted" >&2
   exit 7
 fi
+# Keep the claim alive while route resolution, launch locking, and provider
+# admission are queued. Later calls are idempotent and retain the same worker.
+start_lease_heartbeat
 # The first manifest phase still records the release affinity that will be
 # persisted under the launch lock. factory_record_ticket_kit_sha revalidates
 # and writes it before any reservation or task submission.
@@ -1963,6 +1972,7 @@ RUN_OUTPUT_TEMP="$(mktemp "$RUNS_DIR/.$RUN_ID.output.XXXXXX")" || {
   echo "could not allocate wrapper-owned output capture" >&2
   exit 125
 }
+export FACTORY_PROGRESS_JOURNAL="$RUNS_DIR/$RUN_ID.progress.jsonl"
 exec 8< "$RUN_OUTPUT_TEMP"
 exec 9> "$RUN_OUTPUT_TEMP"
 rm -f "$RUN_OUTPUT_TEMP"
@@ -2055,6 +2065,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         "CURSOR_DATA_DIR=$CLI_CURSOR_DATA_DIR"
         "FACTORY_CURSOR_INTERNAL_SANDBOX=${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}"
         "FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT=${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}"
+        "FACTORY_PROGRESS_JOURNAL=$FACTORY_PROGRESS_JOURNAL"
         "FACTORY_CLI_INTERNAL_SANDBOX=${FACTORY_CLI_INTERNAL_SANDBOX:-0}"
         "FACTORY_TIMEOUT_FOREGROUND=1"
         "FACTORY_CLI_ATTEMPT_ID=$CLI_ATTEMPT_ID"
@@ -2451,6 +2462,9 @@ METRICS_LINE="$(printf '%s\n' "$RESULT" | tail -n1)"
 TURNS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^turns=/) { sub(/^turns=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 COST="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_usd=/) { sub(/^cost_usd=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 COST_BASIS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_basis=/) { sub(/^cost_basis=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
+PROGRESS_EVENTS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^progress_events=/) { sub(/^progress_events=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
+PROGRESS_JOURNAL_SHA256="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^progress_sha256=/) { sub(/^progress_sha256=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
+TIMEOUT_KIND="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^timeout_kind=/) { sub(/^timeout_kind=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 TELEMETRY_INVALID=0
 if [[ -z "$TURNS" ]]; then
   TURNS=0
@@ -2461,6 +2475,17 @@ fi
 if [[ -n "$COST" ]] &&
    { [[ ! "$COST" =~ ^[0-9]{1,7}([.][0-9]{1,18})?$ ]] ||
      python3 "$MONEY" exceeds --spent "$COST" --reserve 0 --cap 1000000; }; then
+  TELEMETRY_INVALID=1
+fi
+if [[ -n "$PROGRESS_EVENTS" ]] &&
+   { [[ ! "$PROGRESS_EVENTS" =~ ^[0-9]{1,6}$ ]] ||
+     [[ ! "$PROGRESS_JOURNAL_SHA256" =~ ^[0-9a-f]{64}$ ]]; }; then
+  TELEMETRY_INVALID=1
+fi
+if [[ -n "$TIMEOUT_KIND" &&
+      "$TIMEOUT_KIND" != "soft_timeout" &&
+      "$TIMEOUT_KIND" != "hard_timeout" &&
+      "$TIMEOUT_KIND" != "invalid_progress" ]]; then
   TELEMETRY_INVALID=1
 fi
 if [[ "$TELEMETRY_INVALID" -eq 1 ]]; then

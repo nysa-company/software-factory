@@ -1155,6 +1155,62 @@ class FactoryControllerTest(unittest.TestCase):
         ])
         self.assertIn(("admission_blocked", {"error": "unsafe admission"}), events)
 
+    def test_progressed_ticket_advances_while_sibling_is_still_active(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = []
+        for number, ticket in enumerate(("T-110", "T-111"), 1):
+            cell = self.root / f"cell-{number}"
+            cell.mkdir()
+            claims.append({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        controller.load_claims = lambda: claims
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        advanced = __import__("threading").Event()
+        calls = {"T-110": 0, "T-111": 0}
+
+        def reconcile(claim):
+            ticket = claim["ticket"]
+            calls[ticket] += 1
+            if ticket == "T-110" and calls[ticket] == 1:
+                return {"status": "progressed", "ticket": ticket}
+            if ticket == "T-110":
+                advanced.set()
+                return {"status": "waiting", "ticket": ticket}
+            self.assertTrue(advanced.wait(1), "sibling checkpoint did not advance")
+            return {"status": "waiting", "ticket": ticket}
+
+        controller.reconcile_ticket = reconcile
+        result = controller.reconcile()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(calls, {"T-110": 2, "T-111": 1})
+
+    def test_run_wrapper_renews_lease_before_provider_queue(self) -> None:
+        source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
+        required = source.index(
+            'if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET"'
+        )
+        heartbeat = source.index("start_lease_heartbeat", required)
+        provider = source.index(
+            "# --- resolve one backend before reservation", required
+        )
+        self.assertLess(required, heartbeat)
+        self.assertLess(heartbeat, provider)
+
     def test_missing_claim_recovers_only_from_current_passport_cell(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.qualification = {"tickets": ["T-110"]}

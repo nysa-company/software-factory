@@ -760,12 +760,6 @@ class Controller:
                     raise ControllerError(
                         "state machine returned an invalid contract blocker"
                     )
-                try:
-                    valid_passport = self.remote_passport_valid(claim)
-                except ControllerError:
-                    continue
-                if not valid_passport:
-                    continue
                 resumed = self.json_call(
                     "state-machine", "resume", "--ticket", claim["ticket"],
                     "--receipt", claim["receipt"],
@@ -777,6 +771,12 @@ class Controller:
                     raise ControllerError(
                         "state machine returned an invalid contract resume"
                     )
+                try:
+                    valid_passport = self.remote_passport_valid(claim)
+                except ControllerError:
+                    continue
+                if not valid_passport:
+                    continue
             try:
                 valid_passport = self.remote_passport_valid(claim)
             except ControllerError:
@@ -1321,6 +1321,12 @@ class Controller:
             self.event("controller_error", claim["ticket"], error=str(error))
             return {"status": "error", "ticket": claim["ticket"], "error": str(error)}
 
+    def reconcile_ticket_until_wait(self, claim: dict[str, Any]) -> dict[str, str]:
+        while True:
+            result = self.reconcile_ticket(claim)
+            if result.get("status") != "progressed":
+                return result
+
     def reconcile(self) -> dict[str, Any]:
         existing = self.load_claims()
         if self.qualification:
@@ -1387,7 +1393,7 @@ class Controller:
         waiting = {item["ticket"] for item in results}
         ready = [item for item in runnable if item["ticket"] not in waiting]
         with ThreadPoolExecutor(max_workers=min(4, len(ready) or 1)) as executor:
-            results.extend(executor.map(self.reconcile_ticket, ready))
+            results.extend(executor.map(self.reconcile_ticket_until_wait, ready))
         return {
             "active": len(runnable),
             "results": results,

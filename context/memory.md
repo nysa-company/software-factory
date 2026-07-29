@@ -1676,3 +1676,34 @@ Activation planning runs inside a command substitution, where Bash 3 clears
 `errexit`. The plan function therefore explicitly returns any ticket-lease
 validation failure before emitting a plan tuple. Planning and activation keep
 the same fail-closed ticket, passport, protected-head, and release checks.
+
+## 2026-07-29 — Decision 133: Recovery progress is ticket-scoped
+
+Category: System change
+
+A same-release contract blocker may name one exact repair owner in an
+otherwise unchanged ticket commit. Passport lineage authenticates the
+directive and an HMAC-bound repair record keeps only that owner and
+deterministically required downstream roles active. Coarse ticket states do
+not gain a general backward transition, successful roles are not replayed, and
+duplicate owner success fails closed. Controller workers advance each ticket
+until its own real wait instead of waiting for a slow sibling's checkpoint,
+and dispatch leases heartbeat before provider admission queues.
+
+Cursor's configured timeout is an inactivity window. Only structured events
+normalized by the trusted stream parser extend it, an absolute two-window hard
+limit remains, and malformed or rewritten progress terminates the run fail
+closed.
+
+## 2026-07-29 — Decision 134: Product certification is a measured bounded DAG
+
+Category: System change
+
+The Factory may execute a repository-owned certification plan with up to three
+workers, initially two. Every phase records wall time, CPU, peak memory, cache
+status, input and artifact digests, separate logs, and a separate temporary
+directory. The first failure cancels sibling process groups and prevents a
+passing receipt. Passing evidence binds the exact Factory SHA and product tree
+inside the certification receipt. Protected Factory CI evidence continues to
+be reused, and build/test-result caching remains disabled until measurements
+justify an exact-key policy.
