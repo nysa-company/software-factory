@@ -1707,3 +1707,13 @@ passing receipt. Passing evidence binds the exact Factory SHA and product tree
 inside the certification receipt. Protected Factory CI evidence continues to
 be reused, and build/test-result caching remains disabled until measurements
 justify an exact-key policy.
+
+## 2026-07-29 — Decision 135: Failed certification output reaches redaction
+
+Category: System change
+
+The measured certification runner emits the first failed phase's isolated log
+only after terminal accounting. The outer Factory capture still redacts it
+before operator display. Canceled sibling logs remain isolated, and no passing
+receipt is issued. This preserves exact-boundary diagnosis without weakening
+phase isolation or exposing raw output through the Factory command.

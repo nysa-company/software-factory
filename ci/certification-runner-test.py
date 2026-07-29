@@ -90,7 +90,11 @@ class CertificationRunnerTest(unittest.TestCase):
             phases = [
                 {
                     "artifacts": [],
-                    "command": [sys.executable, "-c", "raise SystemExit(7)"],
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        "print('exact failure detail');raise SystemExit(7)",
+                    ],
                     "depends_on": [],
                     "name": "fail",
                 },
@@ -112,6 +116,8 @@ class CertificationRunnerTest(unittest.TestCase):
             completed, result = self.run_plan(root, phases)
             self.assertNotEqual(completed.returncode, 0)
             self.assertEqual(result["status"], "fail")
+            self.assertIn("failed-phase-output:", completed.stdout)
+            self.assertIn("exact failure detail", completed.stdout)
             by_name = {item["name"]: item for item in result["phases"]}
             self.assertEqual(by_name["fail"]["exit_status"], 7)
             self.assertIsNone(by_name["downstream"]["exit_status"])
