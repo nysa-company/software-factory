@@ -63,6 +63,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   lease remains removable only through its capability-bound release.
   Qualification startup also withdraws queue state for excluded parked claims
   without resuming their ticket lifecycle.
+- Protected terminal validation permits a later byte-identical reintroduction
+  of a normal Done receipt after rollback only when exactly one original
+  direct-child closeout still matches its authenticated parent and current
+  blob. Changed or ambiguous evidence remains invalid.
 - Fresh development lanes and trusted ticket-state reconciliation omit the
   Reviewer checkpoint argument when no authenticated import exists, including
   on macOS Bash 3.2. Cancellation recovery accepts authenticated shell status
@@ -1620,3 +1624,13 @@ the host-native process source: macOS `libproc` or Linux `/proc`. Linux identity
 uses raw process-start ticks rather than wall-clock reconstruction, so clock
 adjustment cannot invalidate a live lock. Protected Linux mock lanes can bind
 launch and provider locks without weakening PID-reuse protection.
+
+## 2026-07-29 — Decision 128: Exact terminal evidence survives rollback recutover
+
+Category: System change
+
+Normal Done validation identifies the unique original closeout by its
+authenticated parent topology and exact current blob instead of requiring the
+path to have been added only once in protected history. A protected rollback
+and byte-identical recutover therefore preserve evidence, while changed or
+multiple matching closeouts still fail closed.
