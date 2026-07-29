@@ -312,6 +312,9 @@ EOF
   cat > "$path/factory/tickets/T-005.md" <<'EOF'
 State: Blocked-Escalated
 EOF
+  cat > "$path/factory/tickets/T-006.md" <<'EOF'
+State: Canceled
+EOF
   cat > "$path/factory/tickets/T-101-bundle.md" <<'EOF'
 # Evidence bundle
 
@@ -1251,6 +1254,20 @@ lines.pop(indices[-1])
 path.write_text("\n".join(lines) + "\n")
 PY
 commit_all "$PRODUCT_ONE" "remove duplicate ticket lease fixture"
+push_main "$PRODUCT_ONE"
+
+printf 'State: Canceled\nKit-SHA: %s\n' "$SHA_A" \
+  > "$PRODUCT_ONE/factory/tickets/T-006.md"
+commit_all "$PRODUCT_ONE" "add canceled ticket lease fixture"
+push_main "$PRODUCT_ONE"
+expect_success "candidate with canceled ticket lease can certify" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+RECEIPT_CANCELED_LEASE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_failure "canceled ticket lease blocks activation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  --receipt "$RECEIPT_CANCELED_LEASE"
+printf '%s\n' 'State: Canceled' > "$PRODUCT_ONE/factory/tickets/T-006.md"
+commit_all "$PRODUCT_ONE" "restore lease-free canceled ticket fixture"
 push_main "$PRODUCT_ONE"
 
 printf '%s\n' 'State: Done' 'Kit-SHA: not-a-canonical-sha' \
