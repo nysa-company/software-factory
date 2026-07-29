@@ -546,6 +546,33 @@ class LinearSyncTest(unittest.TestCase):
         updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
         self.assertEqual(updates_before, updates_after)
 
+    def test_linear_list_soft_wrap_does_not_trigger_description_rewrite(self):
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text().replace(
+                "1. It works.",
+                "1. The exact first clause remains semantically joined to the second clause.",
+            )
+        )
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["description"] = issue["description"].replace(
+            "remains semantically joined",
+            "remains\n   semantically joined",
+        )
+        updates_before = sum(
+            "issueUpdate" in query for query, _variables in self.fake.calls
+        )
+        self.reconcile()
+        updates_after = sum(
+            "issueUpdate" in query for query, _variables in self.fake.calls
+        )
+        self.assertEqual(updates_before, updates_after)
+        self.assertNotEqual(
+            LINEAR.normalize_md("1. Parent\n   - Nested child"),
+            LINEAR.normalize_md("1. Parent - Nested child"),
+        )
+
     def test_review_bundle_posts_once_after_successful_narrator(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"

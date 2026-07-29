@@ -4,6 +4,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Linear description comparison treats only three-space soft wrapping inside a
+  list paragraph as semantically inert. Nested list structure remains
+  significant, and Git retains the exact canonical ticket contract.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -1634,3 +1637,12 @@ authenticated parent topology and exact current blob instead of requiring the
 path to have been added only once in protected history. A protected rollback
 and byte-identical recutover therefore preserve evidence, while changed or
 multiple matching closeouts still fail closed.
+
+## 2026-07-29 — Decision 129: Linear soft wraps do not create projection drift
+
+Category: System change
+
+Linear inserts a three-space continuation wrap inside long ordered-list
+paragraphs. Reconciliation now normalizes only that semantically inert form
+when comparing descriptions, while nested list markers and exact Git contract
+bytes remain significant.

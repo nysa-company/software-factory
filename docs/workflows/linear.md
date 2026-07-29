@@ -164,4 +164,6 @@ without changing Linear or local files. Sync health is recorded under
 trusting the board. Evidence comments are keyed by a content digest and are
 posted again only when the committed bundle changes. Fallback approvals read
 the complete current 15-minute comment window and fail closed if pagination or
-a Linear mutation is incomplete.
+a Linear mutation is incomplete. Comparison normalizes only Linear's
+semantically inert three-space soft wraps inside list paragraphs; nested list
+items and every Git-authored contract byte remain distinct and authoritative.
