@@ -196,6 +196,7 @@ def main() -> int:
     running: dict[int, dict[str, Any]] = {}
     completed: dict[str, dict[str, Any]] = {}
     failed = False
+    failure_log: Path | None = None
 
     def launch(name: str) -> None:
         phase = phases[name]
@@ -286,6 +287,8 @@ def main() -> int:
                 "wall_seconds": round(ended - active["started"], 6),
             }
             if process.returncode != 0:
+                if not failed:
+                    failure_log = active["log"]
                 failed = True
                 for sibling in running.values():
                     try:
@@ -333,6 +336,9 @@ def main() -> int:
                 f"wall={phase['wall_seconds']:.3f}s "
                 f"peak_kb={phase['peak_memory_kb']} cache_hit=false"
             )
+    if failure_log is not None:
+        print("failed-phase-output:")
+        print(failure_log.read_text(encoding="utf-8", errors="replace"), end="")
     return 1 if failed else 0
 
 
