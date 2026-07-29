@@ -1822,6 +1822,27 @@ Smallest change: retain the Contract 1.2 model-control coverage, add one
 Contract 1.8 model fixture, and switch the active release only at the batch-pin
 boundary.
 Validation: shell syntax and exact fixture/order assertions pass locally.
+Protected Factory run `30417748648` passed this batch-contract boundary on
+both operating systems before exposing FI-20260728-079.
+
+## FI-20260728-079 — Batch pin overwrote the launcher helper snapshot
+
+Status: Implemented; protected CI pending
+Area: release verification
+Owner: Factory
+First seen: 2026-07-28, protected-main Factory 1.8 promotion
+Impact: both Linux and macOS Hermes shards rejected a valid Contract 1.8 batch
+pin after it succeeded, preventing the merged release from being sealed.
+Evidence: protected Factory run `30417748648`; jobs `90467839766` and
+`90467839758` report
+`FAIL: caller control propagated to helper: FACTORY_PROBE_CODEX`.
+Root cause: the test helper recorded the clean launcher boundary, then the
+batch implementation's internal `pin` subprocess overwrote that file after
+loading trusted machine configuration. The assertion therefore inspected an
+internal call instead of the launcher boundary it was designed to verify.
+Smallest change: retain the existing environment assertions and skip only the
+internal batch subprocess when writing the launcher-boundary snapshot.
+Validation: shell syntax and focused helper-boundary assertions pass locally.
 Protected GitHub CI owns execution of the complete Hermes regression.
 
 ## Maintenance rule
