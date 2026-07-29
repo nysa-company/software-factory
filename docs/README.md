@@ -12,6 +12,7 @@ Durable product and operating truth lives under `docs/`:
 - [ai-review.md](ai-review.md) — local pre-publication AI review rubric.
 - [workflows/](workflows/) — ticket, Linear, and evidence workflows.
 - [runbooks/](runbooks/) — operator recovery procedures.
+- [runbooks/factory-continuous-improvement-session-prompt.md](runbooks/factory-continuous-improvement-session-prompt.md) — reusable evidence-first prompt for improving deterministic four-ticket delivery without changing a frozen candidate.
 - [operations/](operations/) — hosting, rollback, and walking-skeleton guidance.
 - [metrics.md](metrics.md) — factory measurement schema.
 

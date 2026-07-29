@@ -1489,3 +1489,15 @@ heads, unchanged route, and a clean final-tree delta limited to configured
 tests plus the ticket log. The failed attempt remains charged but unsuccessful.
 The controller never force-pushes and reopens only Test-author after the exact
 operator-authorized head is observed remotely.
+
+## 2026-07-28 — Decision 114: Continuous-improvement sessions preserve the qualified candidate
+
+Category: Decision
+
+The reusable Factory improvement-session prompt lives at
+`docs/runbooks/factory-continuous-improvement-session-prompt.md`. It requires
+read-only evidence reconciliation first, a separate improvement branch from
+any frozen promotion candidate, focused local checks with the full regression
+left to protected GitHub CI, mode-aware improvement-log updates, and separate
+non-inheriting authorization for implementation, qualification, promotion,
+sealing, Relay cutover/rollback/recutover, and Nysa activation.
