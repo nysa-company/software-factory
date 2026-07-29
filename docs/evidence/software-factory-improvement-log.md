@@ -2040,6 +2040,24 @@ retain all lease-ordering assertions and production behavior unchanged.
 Validation: the focused publication-lease suite runs locally; protected GitHub
 CI owns the complete regression.
 
+## FI-20260729-090 — Static lane assertions short-circuited GNU sed
+
+Status: Implemented; protected CI pending
+Area: protected CI portability
+Owner: Factory
+First seen: 2026-07-29, protected-main Factory 1.8 promotion
+Impact: Linux release verification stopped in the development-lane suite even
+though the required budget-day binding was present and macOS Release passed.
+Evidence: protected run `30422592572`, Linux release job `90482284118`,
+reports `sed: couldn't flush stdout: Broken pipe` immediately before the false
+missing-binding assertion.
+Root cause: under `pipefail`, `grep -q` exited after its first match and GNU
+`sed` treated the closed pipe as an error.
+Smallest change: keep the exact static assertions but let `grep` consume the
+complete extracted function while discarding its output.
+Validation: focused static extraction and shell syntax checks run locally;
+protected GitHub CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

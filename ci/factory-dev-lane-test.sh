@@ -401,7 +401,8 @@ expect_failure "stale development budget day" env \
   --prompt-file "$ROOT/roles/builder.md" --workdir "$DAY_LANE/product" -- task
 grep -Fq 'development budget day changed; no task was submitted' "$OUT" ||
   fail "stale development budget day did not fail before reservation"
-if sed -n '/^subscription_env()/,/^}/p' "$LANE" | grep -q 'remote.origin.pushurl'; then
+if sed -n '/^subscription_env()/,/^}/p' "$LANE" |
+    grep 'remote.origin.pushurl' >/dev/null; then
   fail "subscription host environment disables its own trusted push destination"
 fi
 
@@ -503,7 +504,7 @@ done
   codex_subscription_ready "$READINESS_ROOT"
 ) || fail "Codex-only canary readiness depended on another provider session"
 sed -n '/^product_resume_plan()/,/^}/p' "$LANE" |
-  grep -q 'subscription_ready "\$root"' ||
+  grep 'subscription_ready "\$root"' >/dev/null ||
   fail "product resume planning does not stabilize authentication before approval"
 (
   eval "$(sed -n '/^load_product_tickets()/,/^product_resume_drained()/p' \
@@ -691,13 +692,13 @@ assert invalidate < run
 PY
   fail "resume-basis drift is not invalidated before provider execution"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
-  grep -Fq 'ensure_product_budget_day "$root" "$DAILY_CAP_USD"' ||
+  grep -F 'ensure_product_budget_day "$root" "$DAILY_CAP_USD"' >/dev/null ||
   fail "fresh product planning does not bind a resumable budget day"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
-  grep -Fq 'GLOBAL_DAILY_CAP_USD=%s' ||
+  grep -F 'GLOBAL_DAILY_CAP_USD=%s' >/dev/null ||
   fail "fresh product planning does not derive the machine cap from its isolated envelope"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
-  grep -Fq 'profile=cursor-balanced-v2' ||
+  grep -F 'profile=cursor-balanced-v2' >/dev/null ||
   fail "product planning does not use the approved Cursor-first profile"
 grep -Fq 'physical /private/tmp' "$LANE" &&
   grep -Fq 'tmp_parent="$(lane_tmp_parent)"' "$LANE" ||
