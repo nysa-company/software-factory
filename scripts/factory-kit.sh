@@ -2409,6 +2409,10 @@ for ticket_id in sorted(ticket_ids):
         ):
             raise SystemExit("%s has an unknown terminal basis" % ticket_id)
         continue
+    if state.lower() == "canceled":
+        if lease:
+            raise SystemExit("%s is canceled but still carries a Kit-SHA lease" % ticket_id)
+        continue
     if lease:
         if lease != candidate:
             if state.lower() == "approved" and protected_legacy_approval(

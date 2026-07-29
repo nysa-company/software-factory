@@ -2097,6 +2097,25 @@ Linux and macOS; a fresh focused Linux mock lane completed all six roles and
 reached deterministic `AWAIT-OPERATOR`. Protected GitHub CI owns the complete
 regression.
 
+## FI-20260729-093 — Activation rejected terminal canceled tickets
+
+Status: Implemented; protected CI pending
+Area: release activation
+Owner: Factory
+First seen: 2026-07-29, Factory 1.8 sealing
+Impact: the qualified candidate could not activate against Nysa protected
+`main`, which contains three valid lease-free `Canceled` tickets.
+Evidence: the activation lease validator accepted only lease-free `Ready`,
+`Backlog`, and `Blocked-Escalated`, while the canonical workflow defines
+`Canceled` as the terminal withdrawn-ticket state.
+Root cause: the activation allowlist omitted `Canceled` even though the shared
+ticket parser and Linear workflow recognize it.
+Smallest change: accept only lease-free `Canceled` tickets during activation;
+a canceled ticket that still carries a lease remains fail-closed through the
+existing lease path. Add the state to the existing activation fixture.
+Validation: shell syntax and the focused validator boundary run locally;
+protected GitHub CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
