@@ -1,0 +1,1244 @@
+#!/usr/bin/env python3
+"""Focused non-agent controller persistence tests."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import plistlib
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location(
+    "factory_controller", ROOT / "scripts/factory-controller.py"
+)
+assert SPEC and SPEC.loader
+CONTROL = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CONTROL)
+
+
+class FactoryControllerTest(unittest.TestCase):
+    def test_launch_agent_does_not_throttle_bounded_provider_probes(self) -> None:
+        template = ROOT / "scripts/launchd/com.factory.controller.plist.template"
+        with template.open("rb") as handle:
+            job = plistlib.load(handle)
+        self.assertEqual(job["ProcessType"], "Interactive")
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        os.chmod(self.root, 0o700)
+        self.product = self.root / "product"
+        (self.product / "factory/runs").mkdir(parents=True)
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=4\n", encoding="utf-8"
+        )
+        (self.product / "factory/ENVELOPE.env").write_text(
+            "PER_TICKET_BUDGET_USD=25.000000\n", encoding="utf-8"
+        )
+        self.state = self.root / "controller"
+        self.state.mkdir(mode=0o700)
+        self.launcher = self.root / "factory-launch"
+        self.launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.launcher.chmod(0o700)
+        self.release = self.root / ("a" * 40)
+        self.release.mkdir()
+        self.args = argparse.Namespace(
+            launcher=self.launcher,
+            product_root=self.product,
+            project="relay",
+            release_path=self.release,
+            state_dir=self.state,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_claims_four_cells_and_recovers_terminal_receipt(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        values = [
+            {
+                "action": "START",
+                "branch": f"ticket/T-{110 + number}",
+                "lease_id": f"{number + 1:064x}",
+                "priority": "normal",
+                "ticket": f"T-{110 + number}",
+                "worktree": str(self.root / f"cell-{number + 1}"),
+            }
+            for number in range(4)
+        ]
+        for value in values:
+            Path(value["worktree"]).mkdir()
+        values.append({"action": "WAIT"})
+        controller.json_call = lambda *_args, **_kwargs: values.pop(0)
+        claims = controller.claim_new([])
+        self.assertEqual(len(claims), 4)
+        self.assertEqual(
+            {item["ticket"] for item in controller.load_claims()},
+            {"T-110", "T-111", "T-112", "T-113"},
+        )
+
+        claim = claims[0]
+        claim.update(
+            receipt="a" * 64,
+            role="planner",
+            status="running",
+        )
+        controller.save_claim(claim)
+        (self.product / "factory/runs/run-1.meta").write_text(
+            "run_id=run-1\n"
+            "ticket=T-110\n"
+            "role=planner\n"
+            "accounting_state=completed\n"
+            "exit_status=0\n"
+            "role_exit=ok\n"
+            f"transition_receipt_sha256={'a' * 64}\n",
+            encoding="utf-8",
+        )
+        exports = []
+        controller.passport = lambda item, state: exports.append((item["ticket"], state))
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(exports, [("T-110", "none")])
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["status"], "claimed")
+
+    def test_qualification_forces_real_restart_before_four_ticket_run(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 114)]
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 4,
+                "tickets": tickets,
+            }),
+            encoding="utf-8",
+        )
+        first = CONTROL.Controller(self.args)
+        values = []
+        for number, ticket in enumerate(tickets, 1):
+            cell = self.root / f"cell-{number}"
+            cell.mkdir()
+            values.append({
+                "action": "START",
+                "branch": f"ticket/{ticket}",
+                "lease_id": f"{number:064x}",
+                "priority": "normal",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        first.json_call = lambda *_args, **_kwargs: values.pop(0)
+        self.assertEqual(first.reconcile()["status"], "restart_required")
+
+        second = CONTROL.Controller(self.args)
+        second.pin_routes = lambda _claims: []
+        second.reconcile_ticket = lambda claim: {
+            "status": "active", "ticket": claim["ticket"],
+        }
+        result = second.reconcile()
+        self.assertEqual(result["active"], 4)
+        events = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (self.state / "events").glob("*.json")
+        ]
+        self.assertIn("restart_boundary", {item["event"] for item in events})
+        self.assertIn("controller_recovered", {item["event"] for item in events})
+
+    def test_three_ticket_qualification_parks_an_excluded_claim(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 113)]
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 2,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 3,
+                "tickets": tickets,
+            }),
+            encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        for number, ticket in enumerate([*tickets, "T-113"], 1):
+            cell = self.root / f"cell-{number}"
+            cell.mkdir()
+            controller.save_claim({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        seen = []
+        controller.recover_missing_passport_claims = lambda claims: seen.extend(
+            claim["ticket"] for claim in claims
+        )
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda claims: claims
+        withdrawn = []
+        controller.withdraw_publication = lambda claim: withdrawn.append(
+            claim["ticket"]
+        )
+        result = controller.reconcile()
+        self.assertEqual(result["status"], "restart_required")
+        self.assertEqual(result["active"], 3)
+        self.assertEqual(seen, tickets)
+        self.assertEqual(withdrawn, ["T-113"])
+        self.assertTrue(controller.claim_path("T-113").exists())
+
+    def test_preflight_runs_once_before_planner_only(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        calls = []
+        controller.json_call = lambda *args, **kwargs: (
+            calls.append((args, kwargs)) or {"exit_code": 0, "status": "ok"}
+        )
+        controller.finish_pending_run = lambda _claim: True
+
+        controller.run_role(claim, "planner", "b" * 64, [])
+        controller.run_role(claim, "builder", "c" * 64, [])
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][0], "preflight")
+        self.assertIn("planner", calls[0][0])
+
+    def test_model_pin_relies_on_its_bounded_probes_not_an_outer_timeout(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        calls = []
+
+        def json_call(*args, **kwargs):
+            calls.append((args, kwargs))
+            route = cell / "factory/route-plans/T-110.json"
+            route.parent.mkdir(parents=True)
+            route.write_text("{}\n", encoding="utf-8")
+            return {
+                "pins": [{}], "schema": "model-pin-batch/v1", "status": "ok",
+            }
+
+        controller.json_call = json_call
+        self.assertEqual(controller.pin_routes([claim]), [])
+        model_calls = [
+            (args, kwargs)
+            for args, kwargs in calls
+            if args[:2] == ("models", "pin-batch")
+        ]
+        self.assertEqual(len(model_calls), 1)
+        self.assertIsNone(model_calls[0][1]["timeout"])
+
+    def test_concurrent_tickets_share_one_batch_readiness_probe(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = []
+        for number in range(4):
+            cell = self.root / f"cell-{number + 1}"
+            cell.mkdir()
+            claims.append({
+                "branch": f"ticket/T-{110 + number}",
+                "lease": f"{number + 1:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": f"T-{110 + number}",
+                "worktree": str(cell),
+            })
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            for claim in claims:
+                route = controller.route_path(claim)
+                route.parent.mkdir(parents=True, exist_ok=True)
+                route.write_text("{}\n", encoding="utf-8")
+            return {
+                "pins": [{} for _ in claims],
+                "schema": "model-pin-batch/v1",
+                "status": "ok",
+            }
+
+        controller.json_call = json_call
+        self.assertEqual(controller.pin_routes(claims), [])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ("models", "pin-batch"))
+        self.assertEqual(
+            [calls[0][index] for index in range(3, len(calls[0]), 4)],
+            [claim["ticket"] for claim in claims],
+        )
+
+    def test_temporary_model_outage_waits_four_tickets_after_one_probe(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = []
+        for number in range(4):
+            cell = self.root / f"cell-{number + 1}"
+            cell.mkdir()
+            claims.append({
+                "branch": f"ticket/T-{110 + number}",
+                "lease": f"{number + 1:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": f"T-{110 + number}",
+                "worktree": str(cell),
+            })
+        model_calls = 0
+
+        def json_call(*args, **_kwargs):
+            nonlocal model_calls
+            if args[:2] == ("models", "pin-batch"):
+                model_calls += 1
+                return {
+                    "error": (
+                        "model pin resolution failed: "
+                        "profile_temporarily_unavailable"
+                    ),
+                    "status": "error",
+                }
+            raise AssertionError("state machine must wait for model readiness")
+
+        controller.json_call = json_call
+        results = controller.pin_routes(claims)
+
+        self.assertEqual(model_calls, 1)
+        self.assertEqual({item["status"] for item in results}, {"waiting"})
+        self.assertEqual({item["status"] for item in claims}, {"waiting"})
+
+    def test_blocked_ticket_is_excluded_without_holding_capacity(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        blocked = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        calls = []
+
+        def dispatch(*arguments, **_kwargs):
+            calls.append(arguments)
+            return {"action": "WAIT"}
+
+        controller.json_call = dispatch
+        controller.claim_new([blocked])
+        self.assertEqual(
+            calls,
+            [(
+                "dispatch-plan", "--claim", "--exclude-ticket", "T-110", "--json"
+            )],
+        )
+
+    def test_qualification_cursor_failure_routes_to_direct_cli(self) -> None:
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 4,
+                "tickets": ["T-110", "T-111", "T-112", "T-113"],
+            }),
+            encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "b" * 64,
+            "role": "planner",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-112",
+            "worktree": str(self.root / "cell-3"),
+        }
+        (self.product / "factory/runs/failed.meta").write_text(
+            "run_id=failed\n"
+            "ticket=T-112\n"
+            "role=planner\n"
+            "route_id=cursor-gpt\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=9\n"
+            "role_exit=provider_failed\n"
+            f"transition_receipt_sha256={'b' * 64}\n",
+            encoding="utf-8",
+        )
+        calls = []
+
+        class FallbackGuard:
+            def __enter__(self):
+                calls.append("fallback-lock")
+
+            def __exit__(self, *_args):
+                return False
+
+        controller.fallback_lock = FallbackGuard()
+        controller.passport = lambda *_args: calls.append("passport")
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args) or {"failed_run_id": "failed"}
+        )
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.event = lambda *_args, **_kwargs: calls.append("event")
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertIn(
+            (
+                "models", "fallback-auto", "--ticket", "T-112",
+                "--failed-run", "failed", "--workdir", claim["worktree"],
+                "--reason", "provider_unavailable", "--json",
+            ),
+            calls,
+        )
+        self.assertIn("fallback-lock", calls)
+        self.assertFalse(
+            any(
+                isinstance(call, tuple) and call and call[0] == "release"
+                for call in calls
+            )
+        )
+
+    def test_invalid_reviewer_output_retries_only_reviewer(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "b" * 64,
+            "role": "reviewer",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        (self.product / "factory/runs/invalid.meta").write_text(
+            "run_id=invalid\n"
+            "ticket=T-110\n"
+            "role=reviewer\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=11\n"
+            "role_exit=role_exit_invalid_output\n"
+            f"transition_receipt_sha256={'b' * 64}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("passport")
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(
+            calls, ["passport", "migrate", "role_output_rejected"]
+        )
+
+    def test_exported_terminal_migrates_without_reexport(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        receipt = "b" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "reviewer",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        (self.product / "factory/runs/exported.meta").write_text(
+            "run_id=exported\n"
+            "ticket=T-110\n"
+            "role=reviewer\n"
+            "accounting_state=completed\n"
+            "exit_status=0\n"
+            "role_exit=ok\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        (self.state / "passports").mkdir(mode=0o700)
+        record = {
+            "role": "reviewer",
+            "run_id": "exported",
+            "transition_receipt_sha256": receipt,
+        }
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "charge_records": [record],
+                "completed_role_evidence": [record],
+                "transition_receipt_sha256": receipt,
+            },
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("export")
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.relocate_qualification_cell = lambda *_args: None
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args[0]) or {}
+        )
+
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(
+            calls,
+            [
+                "migrate", "terminal_export_recovered",
+                "ticket-state", "migrate",
+            ],
+        )
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("export", calls)
+
+    def test_cancelled_run_releases_every_controller_resource(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "b" * 64,
+            "receipt": "c" * 64,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        (self.product / "factory/runs/cancelled.meta").write_text(
+            "run_id=cancelled\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            "accounting_state=cancelled_conservative\n"
+            "exit_status=130\n"
+            "role_exit=cancelled\n"
+            f"transition_receipt_sha256={'c' * 64}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("passport")
+        controller.release = lambda *_args: calls.append("leases-and-claim")
+        controller.remove_cell = lambda *_args: calls.append("cell")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "cancelled")
+        self.assertEqual(
+            calls,
+            ["passport", "leases-and-claim", "cell", "attempt_cancelled"],
+        )
+
+    def test_complete_releases_claim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        controller.finish_pending_run = lambda _claim: True
+
+        def json_call(*args, **_kwargs):
+            if args[0] == "state-machine":
+                return {
+                    "receipt": "b" * 64,
+                    "role": None,
+                    "stage": "COMPLETE attested Done is on protected main",
+                }
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            return {}
+
+        controller.json_call = json_call
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "complete", "ticket": "T-110"},
+        )
+        self.assertFalse(controller.claim_path("T-110").exists())
+
+    def test_factory_upgrade_authenticates_passport_before_route_migration(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        (cell / "factory/route-plans").mkdir(parents=True)
+        (cell / "factory/tickets").mkdir()
+        route = cell / "factory/route-plans/T-110.json"
+        ticket = cell / "factory/tickets/T-110.md"
+        route.write_text(
+            json.dumps({"kit_sha": "b" * 40, "ticket": "T-110"}) + "\n",
+            encoding="utf-8",
+        )
+        ticket.write_text(
+            f"# T-110\n\nState: Review\nKit-SHA: {'b' * 40}\n",
+            encoding="utf-8",
+        )
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {"factory_sha": "b" * 40},
+        )
+        calls = []
+        failures = 1
+
+        def json_call(*args, **_kwargs):
+            nonlocal failures
+            calls.append(args)
+            if args[0] == "passport":
+                if failures:
+                    failures -= 1
+                    raise CONTROL.ControllerError("interrupted passport migration")
+                CONTROL.write(
+                    self.state / "passports/T-110.json",
+                    {"factory_sha": "a" * 40},
+                )
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("old lease was released")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "c" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = json_call
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "interrupted passport migration"
+        ):
+            controller.recover_upgraded_claims([claim])
+        self.assertTrue(controller.marker(
+            "passport-route-migration-pending-T-110-" + "a" * 40
+        ))
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual([call[0] for call in calls], ["passport", "passport"])
+        route.write_text(
+            json.dumps({"kit_sha": "a" * 40, "ticket": "T-110"}) + "\n",
+            encoding="utf-8",
+        )
+        ticket.write_text(
+            f"# T-110\n\nState: Review\nKit-SHA: {'a' * 40}\n",
+            encoding="utf-8",
+        )
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "c" * 64)
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["passport", "passport", "renew", "claim", "passport"],
+        )
+
+    def test_repaired_failure_reclaims_only_exact_remote_passport(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        receipt = "b" * 64
+        head = "c" * 40
+        passport_digest = "d" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "test-author",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "branch": claim["branch"],
+                "head_sha": head,
+                "passport_sha256": passport_digest,
+            },
+        )
+        (self.product / "factory/runs/failed.meta").write_text(
+            "run_id=failed\n"
+            "ticket=T-110\n"
+            "role=test-author\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=11\n"
+            "role_exit=role_exit_push_failed\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "passport":
+                return {"passport": passport_digest, "status": "ok"}
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("failed run released its lease")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "e" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        remote = CONTROL.subprocess.CompletedProcess(
+            [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
+        )
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(claim["lease"], "e" * 64)
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["passport", "renew", "claim", "push_failure_recovered"],
+        )
+
+        receipt = "f" * 64
+        claim.update(receipt=receipt, role="reviewer", status="blocked")
+        (self.product / "factory/runs/interrupted.meta").write_text(
+            "run_id=interrupted\n"
+            "phase=abandoned\n"
+            "ticket=T-110\n"
+            "role=reviewer\n"
+            "accounting_state=abandoned_conservative\n"
+            "task_submitted=0\n"
+            "exit_status=143\n"
+            "role_exit=\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls.clear()
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["passport", "renew", "claim", "interrupted_role_recovered"],
+        )
+        claim.update(receipt=receipt, role="reviewer", status="blocked")
+        calls.clear()
+        (self.product / "factory/runs/interrupted.meta").write_text(
+            (self.product / "factory/runs/interrupted.meta")
+            .read_text(encoding="utf-8")
+            .replace("task_submitted=0", "task_submitted=1"),
+            encoding="utf-8",
+        )
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(calls, [])
+
+    def test_push_failure_migrates_authorized_rewrite_before_reclaim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-rewrite"
+        cell.mkdir()
+        receipt = "b" * 64
+        old_digest = "c" * 64
+        new_digest = "d" * 64
+        head = "e" * 40
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "test-author",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        (self.state / "passports").mkdir(mode=0o700)
+        passport_path = self.state / "passports/T-110.json"
+        CONTROL.write(
+            passport_path,
+            {
+                "branch": claim["branch"],
+                "head_sha": "f" * 40,
+                "passport_sha256": old_digest,
+            },
+        )
+        (self.product / "factory/runs/failed-rewrite.meta").write_text(
+            "run_id=failed-rewrite\n"
+            "ticket=T-110\n"
+            "role=test-author\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=11\n"
+            "role_exit=role_exit_push_failed\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        validations = 0
+
+        def json_call(*args, **_kwargs):
+            nonlocal validations
+            calls.append(args)
+            if args[:2] == ("passport", "validate"):
+                validations += 1
+                if validations == 1:
+                    raise CONTROL.ControllerError("passport head is stale")
+                return {"passport": new_digest, "status": "ok"}
+            if args[:2] == ("passport", "migrate"):
+                CONTROL.write(
+                    passport_path,
+                    {
+                        "branch": claim["branch"],
+                        "head_sha": head,
+                        "passport_sha256": new_digest,
+                    },
+                )
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("failed run released its lease")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "f" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        remote = CONTROL.subprocess.CompletedProcess(
+            [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
+        )
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "f" * 64)
+        self.assertEqual(
+            [call[:2] for call in calls],
+            [
+                ("passport", "validate"),
+                ("passport", "migrate"),
+                ("passport", "validate"),
+                ("renew", "--ticket"),
+                ("claim", "--ticket"),
+                ("push_failure_recovered",),
+            ],
+        )
+
+    def test_exact_refresh_topology_refusal_runs_attested_refresh(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        receipt = "b" * 64
+        calls = []
+        controller.renew = lambda *_args: calls.append("renew")
+        controller.finish_pending_run = lambda *_args: True
+        stage = ""
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "state-machine":
+                return {
+                    "receipt": receipt,
+                    "role": None,
+                    "stage": stage,
+                }
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            if args[0] == "ticket-attest":
+                return {"action": "refresh", "head": "c" * 40}
+            raise AssertionError(args)
+
+        controller.json_call = json_call
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        for stage in (
+            "REFUSE refresh receipt was not committed directly after its merge",
+            "REFUSE stale refresh receipt does not bind this branch history",
+        ):
+            with self.subTest(stage=stage):
+                calls.clear()
+                self.assertEqual(
+                    controller.reconcile_ticket(claim),
+                    {"status": "progressed", "ticket": "T-110"},
+                )
+                self.assertEqual(
+                    calls,
+                    [
+                        "renew",
+                        (
+                            "state-machine", "--ticket", "T-110", "--lease",
+                            "a" * 64, "--workdir", str(cell), "--json",
+                        ),
+                        (
+                            "publication", "withdraw", "--ticket", "T-110",
+                            "--json",
+                        ),
+                        (
+                            "ticket-attest", "--ticket", "T-110", "--lease",
+                            "a" * 64, "--receipt", receipt, "--workdir", str(cell),
+                            "--action", "refresh", "--json",
+                        ),
+                        "passport",
+                        "refresh_topology_repaired",
+                    ],
+                )
+
+    def test_budget_wait_reopens_after_envelope_or_override_change(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        leases = iter(("b" * 64, "c" * 64))
+        controller.json_call = lambda *_args, **_kwargs: {
+            "lease_id": next(leases),
+            "schema_version": 1,
+            "ticket": "T-110",
+        }
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "budget_sha256": controller.envelope_digest(),
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "budget",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        self.assertEqual(len(controller.load_claims()), 1)
+        overrides = self.product / "factory/envelope-overrides"
+        overrides.mkdir()
+        (overrides / "a.json").write_text("{}\n", encoding="utf-8")
+        reopened = controller.load_claims()
+        self.assertEqual(reopened[0]["status"], "claimed")
+        self.assertEqual(reopened[0]["lease"], "b" * 64)
+
+        claim.update(
+            budget_sha256=controller.envelope_digest(),
+            status="budget",
+        )
+        controller.save_claim(claim)
+        (self.product / "factory/ENVELOPE.env").write_text(
+            "PER_TICKET_BUDGET_USD=30.000000\n", encoding="utf-8"
+        )
+        reopened = controller.load_claims()
+        self.assertEqual(reopened[0]["status"], "claimed")
+        self.assertEqual(reopened[0]["lease"], "c" * 64)
+
+    def test_failed_admission_does_not_block_existing_claims(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        Path(claim["worktree"]).mkdir()
+        controller.save_claim(claim)
+        events = []
+        controller.claim_new = lambda _claims: (
+            (_ for _ in ()).throw(CONTROL.ControllerError("unsafe admission"))
+        )
+        controller.pin_routes = lambda _claims: []
+        controller.reconcile_ticket = lambda item: {
+            "status": "active", "ticket": item["ticket"],
+        }
+        controller.event = lambda name, **fields: events.append((name, fields))
+
+        result = controller.reconcile()
+
+        self.assertEqual(result["active"], 1)
+        self.assertEqual(result["results"], [
+            {"status": "active", "ticket": "T-110"},
+        ])
+        self.assertIn(("admission_blocked", {"error": "unsafe admission"}), events)
+
+    def test_missing_claim_recovers_only_from_current_passport_cell(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "branch": "ticket/T-110",
+                "current_state": "Review",
+                "ticket": "T-110",
+            },
+        )
+        calls = []
+        controller.ticket_release_current = lambda _claim: True
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.json_call = lambda *args, **_kwargs: (
+            {
+                "lease_id": "a" * 64,
+                "schema_version": 1,
+                "ticket": "T-110",
+            }
+            if args[0] == "claim"
+            else {}
+        )
+        with patch("subprocess.run") as run:
+            run.return_value.stdout = (
+                f"worktree {cell}\n"
+                "HEAD deadbeef\n"
+                "branch refs/heads/ticket/T-110\n\n"
+            )
+            claims = []
+            controller.recover_missing_passport_claims(claims)
+
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["lease"], "a" * 64)
+        self.assertEqual(claims[0]["worktree"], str(cell))
+        self.assertEqual(calls, ["passport", "missing_claim_recovered"])
+        self.assertEqual(
+            CONTROL.read(controller.claim_path("T-110"))["status"],
+            "claimed",
+        )
+
+    def test_publication_repair_releases_merge_lease_and_preserves_checkpoint(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "b" * 64,
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        calls = []
+        controller.json_call = lambda *_args, **_kwargs: {
+            "owner": "builder", "status": "repair",
+        }
+        controller.release_publication = lambda item: (
+            calls.append("release"), item.update(publication_lease="")
+        )
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda *_args, **_kwargs: calls.append("event")
+        controller.publication_repair(
+            claim, "c" * 64, {"pr_number": 24},
+        )
+        self.assertEqual(calls, ["release", "passport", "event"])
+
+    def test_nonpublication_stage_withdraws_stale_queue_entry(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        (cell / "factory/route-plans").mkdir(parents=True)
+        (cell / "factory/route-plans/T-110.json").write_text("{}\n")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        calls = []
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+
+        def json_call(*arguments, **_kwargs):
+            calls.append(arguments[:2])
+            if arguments[0] == "state-machine":
+                return {
+                    "receipt": "b" * 64,
+                    "role": None,
+                    "stage": "AWAIT-OPERATOR product decision required",
+                }
+            if arguments[:2] == ("publication", "withdraw"):
+                return {"status": "withdrawn"}
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        result = controller.reconcile_ticket(claim)
+
+        self.assertEqual(result, {"status": "waiting", "ticket": "T-110"})
+        self.assertIn(("publication", "withdraw"), calls)
+        self.assertIn(("publication_withdrawn",), calls)
+
+    def test_stale_publication_refreshes_before_acquiring_merge_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "b" * 64,
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        calls = []
+        class RecordingLock:
+            def __enter__(self):
+                calls.append("git-lock")
+
+            def __exit__(self, *_args):
+                calls.append("git-unlock")
+
+        controller.git_lock = RecordingLock()
+        controller.protected_base_current = lambda *_args: (
+            calls.append("base") or False
+        )
+        controller.release_publication = lambda item: (
+            calls.append("release"), item.update(publication_lease="")
+        )
+        controller.json_call = lambda *_args, **_kwargs: (
+            calls.append("refresh") or {
+                "action": "refresh", "head": "d" * 40,
+            }
+        )
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda *_args, **_kwargs: calls.append("event")
+        self.assertFalse(
+            controller.publication_ready(claim, "c" * 64, "d" * 40)
+        )
+        self.assertEqual(
+            calls,
+            [
+                "git-lock", "base", "release", "refresh", "passport", "event",
+                "git-unlock",
+            ],
+        )
+
+    def test_closeout_fetch_uses_shared_git_lock(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        (cell.parent / "closeout-T-110").mkdir()
+        calls = []
+
+        class RecordingLock:
+            def __enter__(self):
+                calls.append("git-lock")
+
+            def __exit__(self, *_args):
+                calls.append("git-unlock")
+
+        controller.git_lock = RecordingLock()
+        controller.json_call = lambda *_args, **_kwargs: (
+            calls.append("done") or {"closeout_pr_state": "OPEN"}
+        )
+
+        def run(command, **_kwargs):
+            calls.append("fetch")
+            return CONTROL.subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(CONTROL.subprocess, "run", side_effect=run):
+            self.assertFalse(controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            }))
+        self.assertEqual(calls, ["git-lock", "fetch", "git-unlock", "done"])
+
+
+if __name__ == "__main__":
+    unittest.main()

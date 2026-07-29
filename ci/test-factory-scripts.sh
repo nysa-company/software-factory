@@ -424,8 +424,19 @@ else
     "probes=$PROFILE_PROBE_COUNT result=$PROFILE_RESULT"
 fi
 
+CLAUDE_AUTH_ROOT="$TMP/claude-auth-readiness"
+mkdir -p "$CLAUDE_AUTH_ROOT"
+chmod 700 "$CLAUDE_AUTH_ROOT"
+python3 - "$CLAUDE_AUTH_ROOT/.credentials.json" <<'PY'
+import json, os, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"claudeAiOauth":{"expiresAt":int(time.time() * 1000) + 3_600_000}}, handle)
+    handle.write("\n")
+os.chmod(sys.argv[1], 0o600)
+PY
 CONTRACT_PROFILE="$(PATH="$STUB_BIN:$PATH" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
   FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
   FACTORY_PROBE_CURSOR_OPENAI=READY:test FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
   "$ROOT/scripts/adapters/contract-test.sh" --profile claude-priority-v1 2>&1)"
@@ -498,6 +509,23 @@ if [[ "$EMPTY_CODEX_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" &&
 else
   fail "empty primary version probes permit startup fallback" \
     "codex=$EMPTY_CODEX_VERSION_PROBE claude=$EMPTY_CLAUDE_VERSION_PROBE missing=$MISSING_CLAUDE_FLAG_PROBE help=$FAILED_CLAUDE_HELP_PROBE"
+fi
+
+python3 - "$CLAUDE_AUTH_ROOT/.credentials.json" <<'PY'
+import json, os, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"claudeAiOauth":{"expiresAt":int(time.time() * 1000) - 1}}, handle)
+    handle.write("\n")
+os.chmod(sys.argv[1], 0o600)
+PY
+EXPIRED_CLAUDE_PROBE="$(PATH="$STUB_BIN:$PATH" CLAUDE_CODE_PINNED=2.1.207 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$EXPIRED_CLAUDE_PROBE" == "UNAVAILABLE:authentication_expired" ]]; then
+  pass "expired Claude OAuth falls back before task submission"
+else
+  fail "expired Claude OAuth falls back before task submission" "$EXPIRED_CLAUDE_PROBE"
 fi
 
 run_mock() {
@@ -573,6 +601,7 @@ expect_stage() {
   certified_origin="$(git -C "$root" remote get-url --push origin 2>/dev/null || true)"
   actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
+    FACTORY_HERMES_CONTRACT_VERSION="${TEST_CONTRACT_VERSION:-1.2.0}" \
     "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
   status=$?
   [[ "$actual" == "$expected"* ]] || {
@@ -594,24 +623,62 @@ SEALED_TREE="$(bash -c '
 SEALED_PRODUCT="$TMP/sealed-product"
 write_envelope "$SEALED_PRODUCT"
 write_ticket "$SEALED_PRODUCT" T-190
+printf '\nKit-SHA: %s\n' "$KIT_SHA" >> "$SEALED_PRODUCT/factory/tickets/T-190.md"
+git -C "$SEALED_PRODUCT" add .gitignore factory/tickets/T-190.md
+git -C "$SEALED_PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "sealed ticket fixture"
+SEALED_ORIGIN="$TMP/sealed-product.git"
+git init --bare -q "$SEALED_ORIGIN"
+git -C "$SEALED_PRODUCT" remote add origin "$SEALED_ORIGIN"
+git -C "$SEALED_PRODUCT" branch -M main
+git -C "$SEALED_PRODUCT" push -q -u origin main
+git -C "$SEALED_PRODUCT" switch -q -c ticket/T-190
+git -C "$SEALED_PRODUCT" push -q -u origin ticket/T-190
 mkdir -p "$SEALED_PRODUCT/factory/runs"
+SEALED_STATE="$TMP/sealed-state"
+mkdir -m 700 "$SEALED_STATE"
 SEALED_STAGE="$(env \
   FACTORY_ROOT="$SEALED_PRODUCT" \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
+SEALED_TRANSITION="$(env \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  FACTORY_RELEASE_SHA="$KIT_SHA" \
+  FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --project sealed)"
+SEALED_RECEIPT="$(python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["receipt"])' \
+  <<<"$SEALED_TRANSITION")"
+env \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --project sealed --receipt "$SEALED_RECEIPT" --role planner >/dev/null
 SEALED_RUN_STATUS=0
 env \
   FACTORY_ROOT="$SEALED_PRODUCT" \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  FACTORY_PROJECT=sealed \
+  FACTORY_TRANSITION_RECEIPT_SHA256="$SEALED_RECEIPT" \
+  FACTORY_TRANSITION_STATE_DIR="$SEALED_STATE" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -620,7 +687,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -631,14 +698,15 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.6.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.8.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
+   grep -q "^transition_receipt_sha256=$SEALED_RECEIPT$" "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
   pass "sealed release runs real sequencer and mock agent"
 else
   fail "sealed release runs real sequencer and mock agent" \
-    "before=$SEALED_STAGE run=$SEALED_RUN_STATUS after=$SEALED_AFTER"
+    "before=$SEALED_STAGE transition=$SEALED_TRANSITION run=$SEALED_RUN_STATUS after=$SEALED_AFTER"
 fi
 
 FORGED_STAGE_STATUS=0
@@ -647,7 +715,7 @@ FORGED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$TMP" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.7.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)" ||
   FORGED_STAGE_STATUS=$?
 if [[ "$FORGED_STAGE_STATUS" -eq 1 &&
@@ -1074,14 +1142,16 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.6.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.8.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
-    fail "unavailable primary selects one redacted Cursor task"
+    fail "unavailable primary selects one redacted Cursor task" \
+      "artifact validation failed: out=$(sed -n '1,4p' "$FALLBACK_OUT" | tr '\n' '|') meta=$(grep -E '^(phase|task_submitted|kit_sha|kit_tree|product_tree|ticket_kit_sha|contract_version|physical_kit_path)=' "$FALLBACK_META" | tr '\n' '|')"
   fi
 else
-  fail "unavailable primary selects one redacted Cursor task"
+  fail "unavailable primary selects one redacted Cursor task" \
+    "route validation failed: ledger=$(tail -n1 "$FALLBACK/factory/runtime-ledger.csv" 2>/dev/null) trace=$(tr '\n' '|' <"$FALLBACK_TRACE") args=$(tail -n2 "$FALLBACK_ARGS" | tr '\n' '|')"
 fi
 
 # Checking roles select the Anthropic-typed Cursor adapter.
@@ -2157,13 +2227,49 @@ reviewer round 2: REQUEST CHANGES — second
 OPERATOR NOTE: reviewer run 3 void — duplicate
 EOF
 
-if expect_stage "ESCALATE" "$ROUNDS" T-300 &&
-   FACTORY_ROOT="$ROUNDS" FACTORY_LEDGER="$ROUNDS/factory/ledger.csv" \
-     "$NEXT_STAGE" --ticket T-300 | grep -q "reviewer round 3"; then
-  pass "duplicate row preserves semantic round 3"
+if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then
+  pass "budget-only review continues after two semantic rounds"
 fi
 
-printf '%s\n' 'OPERATOR AUTHORIZATION: reviewer round 3' >> "$ROUNDS/factory/tickets/T-300.md"
+# Contract 1.7 makes repair ownership mechanical. When both roles own a fix,
+# Test-author must finish before the Builder and only then may Reviewer rerun.
+OWNED_FIX="$TMP/owned-fix"
+mkdir -p "$OWNED_FIX/factory/tickets"
+{
+  ledger_header
+  ledger_row T-302 planner
+  ledger_row T-302 test-author
+  ledger_row T-302 builder
+  ledger_row T-302 reviewer
+} > "$OWNED_FIX/factory/ledger.csv"
+cat > "$OWNED_FIX/factory/tickets/T-302.md" <<'EOF'
+# T-302
+reviewer round 1: REQUEST CHANGES
+reviewer round 1 FIX-OWNER: both
+EOF
+if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302; then
+  ledger_row T-302 test-author >> "$OWNED_FIX/factory/ledger.csv"
+  if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX builder" "$OWNED_FIX" T-302; then
+    ledger_row T-302 builder >> "$OWNED_FIX/factory/ledger.csv"
+    TEST_CONTRACT_VERSION=1.7.0 expect_stage "RUN reviewer" "$OWNED_FIX" T-302 &&
+      pass "contract 1.7 sequences explicit dual-owner repairs"
+  fi
+fi
+
+MISSING_OWNER="$TMP/missing-fix-owner"
+mkdir -p "$MISSING_OWNER/factory/tickets"
+{
+  ledger_header
+  ledger_row T-303 planner
+  ledger_row T-303 test-author
+  ledger_row T-303 builder
+  ledger_row T-303 reviewer
+} > "$MISSING_OWNER/factory/ledger.csv"
+printf '%s\n' '# T-303' 'reviewer round 1: REQUEST CHANGES' \
+  > "$MISSING_OWNER/factory/tickets/T-303.md"
+TEST_CONTRACT_VERSION=1.7.0 expect_stage "REFUSE" "$MISSING_OWNER" T-303 &&
+  pass "contract 1.7 refuses missing repair ownership"
+
 if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then
   ledger_row T-300 builder >> "$ROUNDS/factory/ledger.csv"
   if expect_stage "RUN reviewer" "$ROUNDS" T-300; then
@@ -2171,8 +2277,7 @@ if expect_stage "FIX builder-or-test-author" "$ROUNDS" T-300; then
   fi
 fi
 
-# Spec-linter uses the same exact, next-semantic-round authorization. One
-# authorization permits the replan + lint cycle, not a stale fourth round.
+# Spec-linter continues while each failed round produces a new contract revision.
 SPEC_ROUNDS="$TMP/spec-rounds"
 mkdir -p "$SPEC_ROUNDS/factory/tickets"
 {
@@ -2190,13 +2295,8 @@ OPERATOR AUTHORIZATION: spec-linter round 2
 OPERATOR AUTHORIZATION: spec-linter round 3 because the operator said so
 EOF
 
-if expect_stage "ESCALATE" "$SPEC_ROUNDS" T-301; then
-  pass "stale or inexact spec-linter authorization is ignored"
-fi
-
-printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 3' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
 if expect_stage "RUN planner" "$SPEC_ROUNDS" T-301; then
-  pass "spec-linter authorization starts the next planning cycle"
+  pass "budget-only spec repair starts the next planning cycle"
 fi
 
 ledger_row T-301 planner >> "$SPEC_ROUNDS/factory/ledger.csv"
@@ -2206,8 +2306,8 @@ fi
 
 ledger_row T-301 spec-linter >> "$SPEC_ROUNDS/factory/ledger.csv"
 printf '%s\n' 'SPEC-LINT: FAIL — third' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
-if expect_stage "ESCALATE" "$SPEC_ROUNDS" T-301; then
-  pass "spent spec-linter authorization does not permit a later round"
+if expect_stage "RUN planner" "$SPEC_ROUNDS" T-301; then
+  pass "budget-only spec repair has no semantic-round ceiling"
 fi
 
 sed -i.bak 's/SPEC-LINT: FAIL — third/SPEC-LINT: PASS/' "$SPEC_ROUNDS/factory/tickets/T-301.md"
@@ -2842,6 +2942,88 @@ if expect_stage "RUN reviewer" "$NOOP_REFRESH_ROOT" T-511; then
   pass "refresh accepts an authenticated no-op Review ticket reset"
 fi
 
+# Control-only refreshes may preserve only role evidence that belongs to the
+# receipt-bound old head. Auditable runs on a discarded force-pushed lineage
+# must not advance the replacement branch.
+ORPHAN_REFRESH_ROOT="$TMP/orphan-control-refresh"
+write_envelope "$ORPHAN_REFRESH_ROOT"
+cat > "$ORPHAN_REFRESH_ROOT/factory/tickets/T-512.md" <<TICKET
+# T-512
+State: Review
+Kit-SHA: $KIT_SHA
+reviewer round 1: APPROVE
+- [ ] Evidence bundle posted
+- [ ] Operator approved
+TICKET
+printf '{}\n' > "$ORPHAN_REFRESH_ROOT/factory/QUALIFICATION.json"
+{
+  ledger_header
+  ledger_row T-512 planner
+  ledger_row T-512 test-author
+  ledger_row T-512 builder
+  ledger_row_run T-512 reviewer orphan-reviewer
+  ledger_row_run T-512 narrator orphan-narrator
+} > "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+git -C "$ORPHAN_REFRESH_ROOT" add factory
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "pre-refresh orphan evidence"
+ORPHAN_OLD_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+ORPHAN_BRANCH="$(git -C "$ORPHAN_REFRESH_ROOT" branch --show-current)"
+ORPHAN_PARENT="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD^)"
+ORPHAN_TREE="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse 'HEAD^{tree}')"
+ORPHAN_REVIEW_HEAD="$(printf '%s\n' 'orphan reviewer' | \
+  git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit-tree "$ORPHAN_TREE" -p "$ORPHAN_PARENT")"
+ORPHAN_NARRATOR_HEAD="$(printf '%s\n' 'orphan narrator' | \
+  git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit-tree "$ORPHAN_TREE" -p "$ORPHAN_REVIEW_HEAD")"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 reviewer orphan-reviewer \
+  "$ORPHAN_REVIEW_HEAD"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 narrator orphan-narrator \
+  "$ORPHAN_NARRATOR_HEAD"
+git -C "$ORPHAN_REFRESH_ROOT" checkout -qb orphan-control-base
+printf '{"generation":2}\n' > "$ORPHAN_REFRESH_ROOT/factory/QUALIFICATION.json"
+mkdir -p "$ORPHAN_REFRESH_ROOT/factory/migrations/inflight-release"
+printf '{}\n' > \
+  "$ORPHAN_REFRESH_ROOT/factory/migrations/inflight-release/$KIT_SHA.json"
+git -C "$ORPHAN_REFRESH_ROOT" add factory
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "advance protected control metadata"
+ORPHAN_BASE_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+git -C "$ORPHAN_REFRESH_ROOT" checkout -q "$ORPHAN_BRANCH"
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  merge -q --no-ff orphan-control-base -m "refresh protected base"
+ORPHAN_MERGE_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+mkdir -p "$ORPHAN_REFRESH_ROOT/factory/attestations/T-512"
+python3 - "$ORPHAN_REFRESH_ROOT/factory/attestations/T-512/refresh.json" \
+  "$ORPHAN_OLD_HEAD" "$ORPHAN_BASE_HEAD" "$ORPHAN_MERGE_HEAD" <<'PY'
+import json
+import sys
+json.dump({
+    "schema": "nysa.software-factory.ticket-refresh/v1",
+    "ticket": "T-512",
+    "generation": 1,
+    "old_head": sys.argv[2],
+    "base_head": sys.argv[3],
+    "merge_head": sys.argv[4],
+    "prior_reviewer_runs": 1,
+    "prior_approve_verdicts": 1,
+    "prior_request_changes_verdicts": 0,
+    "prior_narrator_runs": 1,
+    "prior_bundle_blob": None,
+    "prior_approval_blob": None,
+    "refreshed_at": "2026-07-21T12:00:00Z",
+}, open(sys.argv[1], "w", encoding="utf-8"), sort_keys=True)
+PY
+git -C "$ORPHAN_REFRESH_ROOT" add \
+  factory/attestations/T-512/refresh.json
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "record orphan control refresh"
+if TEST_CONTRACT_VERSION=1.8.0 \
+   expect_stage "RUN reviewer" "$ORPHAN_REFRESH_ROOT" T-512; then
+  pass "control-only refresh invalidates orphaned role evidence"
+fi
+
 COMMITTED_APPROVAL_ROOT="$TMP/committed-approval"
 write_envelope "$COMMITTED_APPROVAL_ROOT"
 cat > "$COMMITTED_APPROVAL_ROOT/factory/tickets/T-242.md" <<'TICKET'
@@ -2887,7 +3069,7 @@ expect_stage "RUN narrator" "$WALK" T-501 || REJECT_OK=0
 # (T-501 seeded no spec-linter rows: a ticket already past test-author skips
 # the lint gate — that is the backward-compatibility contract for old tickets.)
 
-# Spec-lint fail → replan → lint → pass; second fail escalates.
+# Spec-lint fail → replan → lint → pass; later failures keep repairing.
 printf '# T-502\n' > "$WALK/factory/tickets/T-502.md"
 {
   ledger_row T-502 planner
@@ -2912,18 +3094,37 @@ printf '# T-503\n' > "$WALK/factory/tickets/T-503.md"
   ledger_row T-503 spec-linter
 } >> "$WALK/factory/ledger.csv"
 printf 'SPEC-LINT: FAIL — round 1\nSPEC-LINT: FAIL — round 2\n' >> "$WALK/factory/tickets/T-503.md"
-if expect_stage "ESCALATE spec-lint failed twice" "$WALK" T-503; then
-  pass "spec-lint two-fail escalation"
+if expect_stage "RUN planner" "$WALK" T-503; then
+  pass "spec-lint two-fail budget-only continuation"
 fi
 
 # Successful mutating roles must commit cleanly; the wrapper owns the push.
 setup_role_exit_fixture() {
-  local ticket="$1"
-  ROLE_EXIT_ROOT="$TMP/role-exit-$ticket"
-  ROLE_EXIT_WORKTREE="$TMP/role-exit-$ticket-worktree"
-  ROLE_EXIT_REMOTE="$TMP/role-exit-$ticket.git"
+  local ticket="$1" authorized_role="${2:-planner}"
+  local fixture_parent="${ROLE_EXIT_PARENT:-$TMP}"
+  ROLE_EXIT_ROOT="$fixture_parent/role-exit-$ticket"
+  ROLE_EXIT_WORKTREE="$fixture_parent/role-exit-$ticket-worktree"
+  ROLE_EXIT_REMOTE="$fixture_parent/role-exit-$ticket.git"
   write_envelope "$ROLE_EXIT_ROOT"
   write_ticket "$ROLE_EXIT_ROOT" "$ticket"
+  case "$authorized_role" in
+    planner) ;;
+    spec-linter)
+      ledger_row "$ticket" planner >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ;;
+    test-author)
+      ledger_row "$ticket" planner >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ledger_row "$ticket" spec-linter >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      printf 'SPEC-LINT: PASS\n' >>"$ROLE_EXIT_ROOT/factory/tickets/$ticket.md"
+      ;;
+    builder)
+      ledger_row "$ticket" planner >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ledger_row "$ticket" spec-linter >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      ledger_row "$ticket" test-author >>"$ROLE_EXIT_ROOT/factory/ledger.csv"
+      printf 'SPEC-LINT: PASS\n' >>"$ROLE_EXIT_ROOT/factory/tickets/$ticket.md"
+      ;;
+    *) fail "invalid role-exit fixture stage: $authorized_role" ;;
+  esac
   git -C "$ROLE_EXIT_ROOT" add "factory/tickets/$ticket.md"
   git -C "$ROLE_EXIT_ROOT" -c user.name=test -c user.email=test@example.com \
     commit -qm "ticket fixture"
@@ -2989,6 +3190,269 @@ if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
 else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
+fi
+
+setup_role_exit_fixture T-650
+ROLE_REAL_GIT="$(type -P git)"
+ROLE_GIT_COUNT="$TMP/role-git-count"
+ROLE_GIT_WRAPPER="$TMP/git"
+cat > "$ROLE_GIT_WRAPPER" <<'STUB'
+#!/usr/bin/env bash
+if [[ " $* " == *" ls-remote "* ]]; then
+  count=0
+  [[ ! -f "$FACTORY_TEST_GIT_COUNT" ]] ||
+    count="$(cat "$FACTORY_TEST_GIT_COUNT")"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$FACTORY_TEST_GIT_COUNT"
+  [[ "$count" != 3 ]] || exit 128
+fi
+exec "$FACTORY_TEST_GIT_REAL" "$@"
+STUB
+chmod +x "$ROLE_GIT_WRAPPER"
+ROLE_REMOTE_RETRY=0
+PATH="$TMP:$PATH" FACTORY_TEST_GIT_REAL="$ROLE_REAL_GIT" \
+  FACTORY_TEST_GIT_COUNT="$ROLE_GIT_COUNT" \
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-650 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "transient remote read" > "$TMP/role-remote-retry.out" 2>&1 ||
+  ROLE_REMOTE_RETRY=$?
+if [[ "$ROLE_REMOTE_RETRY" -eq 0 &&
+      "$(cat "$ROLE_GIT_COUNT")" == "5" &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+        "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-650)" ]]; then
+  pass "role exit retries one failed remote observation without replay"
+else
+  fail "role exit retries one failed remote observation without replay" \
+    "status=$ROLE_REMOTE_RETRY reads=$(cat "$ROLE_GIT_COUNT" 2>/dev/null || true)"
+fi
+
+ROLE_LANE_ROOT="$TMP/nysa-sf-dev.role-output"
+mkdir -p "$ROLE_LANE_ROOT/product"
+printf '%s\n' '{"mode":"product"}' >"$ROLE_LANE_ROOT/marker.json"
+ROLE_EXIT_PARENT="$ROLE_LANE_ROOT/product"
+setup_role_exit_fixture T-649 spec-linter
+ROLE_LANE_REMOTE_BEFORE="$(git --git-dir="$ROLE_EXIT_REMOTE" \
+  rev-parse refs/heads/ticket/T-649)"
+ROLE_LANE_LEAK_STATUS=0
+MOCK_SPEC_LINT_VERDICT='FAIL — /private/tmp/nysa-sf-dev.stale/runtime/db.env' \
+  FACTORY_CLI_LANE_ROOT="$ROLE_LANE_ROOT" FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role spec-linter --ticket T-649 \
+    --workdir "$ROLE_EXIT_WORKTREE" -- "lane path leak" \
+    >"$TMP/role-lane-path.out" 2>&1 || ROLE_LANE_LEAK_STATUS=$?
+ROLE_LANE_REMOTE_AFTER="$(git --git-dir="$ROLE_EXIT_REMOTE" \
+  rev-parse refs/heads/ticket/T-649)"
+if [[ "$ROLE_LANE_LEAK_STATUS" -eq 11 &&
+      "$ROLE_LANE_REMOTE_BEFORE" == "$ROLE_LANE_REMOTE_AFTER" ]] &&
+   grep -q 'role_exit_lane_path_leak' "$TMP/role-lane-path.out" &&
+   grep -q '^role_exit=role_exit_lane_path_leak$' \
+     "$ROLE_EXIT_ROOT/factory/runs/"*.meta; then
+  pass "development role output cannot push a lane-local absolute path"
+else
+  fail "development role output cannot push a lane-local absolute path" \
+    "status=$ROLE_LANE_LEAK_STATUS"
+fi
+
+setup_role_exit_fixture T-650
+ROLE_PORTABLE_STATUS=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_CLI_LANE_ROOT="$ROLE_LANE_ROOT" \
+  FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-650 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "portable role output" >"$TMP/role-portable.out" 2>&1 ||
+  ROLE_PORTABLE_STATUS=$?
+if [[ "$ROLE_PORTABLE_STATUS" -eq 0 &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-650)" ]]; then
+  pass "development role sentinel accepts portable output"
+else
+  fail "development role sentinel accepts portable output" \
+    "status=$ROLE_PORTABLE_STATUS"
+fi
+unset ROLE_EXIT_PARENT
+
+# Contract 1.7 roles may commit a blocker without completing their stage.
+setup_role_exit_fixture T-643 builder
+ROLE_BLOCKED_STATUS=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CONTRACT_VERSION=1.7.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role builder --ticket T-643 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    $'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED' \
+  > "$TMP/role-contract-blocked.out" 2>&1 || ROLE_BLOCKED_STATUS=$?
+ROLE_BLOCKED_META=("$ROLE_EXIT_ROOT"/factory/runs/*.meta)
+ROLE_BLOCKED_LOCAL="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_BLOCKED_REMOTE="$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-643)"
+ROLE_BLOCKED_STAGE="$(FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_LEDGER="$ROLE_EXIT_ROOT/factory/runtime-ledger.csv" \
+  FACTORY_CONTRACT_VERSION=1.7.0 \
+  "$NEXT_STAGE" --ticket T-643 --workdir "$ROLE_EXIT_WORKTREE" 2>/dev/null || true)"
+if [[ "$ROLE_BLOCKED_STATUS" -eq 12 &&
+      "$ROLE_BLOCKED_LOCAL" == "$ROLE_BLOCKED_REMOTE" &&
+      "$ROLE_BLOCKED_STAGE" == "RUN builder" ]] &&
+   grep -q '^phase=completed$' "${ROLE_BLOCKED_META[0]}" &&
+   grep -q '^accounting_state=completed$' "${ROLE_BLOCKED_META[0]}" &&
+   grep -q '^exit_status=12$' "${ROLE_BLOCKED_META[0]}" &&
+   grep -q '^role_exit=role_exit_contract_blocked$' "${ROLE_BLOCKED_META[0]}"; then
+  pass "contract blocker is pushed and accounted without completing the role"
+else
+  fail "contract blocker did not remain a non-successful durable role result" \
+    "status=$ROLE_BLOCKED_STATUS next=$ROLE_BLOCKED_STAGE"
+fi
+
+install_contract_blocker_hook() {
+  local ticket="$1" marker="$2" count="${3:-1}" hook
+  hook="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse --git-path hooks/pre-commit)"
+  mkdir -p "$(dirname "$hook")"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
+    printf 'for _ in $(seq 1 %s); do printf "%%s\\\\n" %q >> %q; done\n' \
+      "$count" "$marker" "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+    printf 'git -C %q add %q\n' "$ROLE_EXIT_WORKTREE" "factory/tickets/$ticket.md"
+  } >"$hook"
+  chmod +x "$hook"
+}
+
+# The committed ticket marker is the durable fallback when a provider omits
+# the matching terminal-response marker.
+setup_role_exit_fixture T-651 test-author
+install_contract_blocker_hook T-651 'ROLE-ESCALATE: CONTRACT-BLOCKED'
+ROLE_DURABLE_BLOCKED=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CONTRACT_VERSION=1.7.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role test-author --ticket T-651 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "durable blocker" >"$TMP/role-durable-contract-blocked.out" 2>&1 ||
+  ROLE_DURABLE_BLOCKED=$?
+ROLE_DURABLE_META=("$ROLE_EXIT_ROOT"/factory/runs/*.meta)
+if [[ "$ROLE_DURABLE_BLOCKED" -eq 12 ]] &&
+   grep -q '^role_exit=role_exit_contract_blocked$' "${ROLE_DURABLE_META[0]}" &&
+   git --git-dir="$ROLE_EXIT_REMOTE" show \
+     refs/heads/ticket/T-651:factory/tickets/T-651.md |
+     grep -Fxq 'ROLE-ESCALATE: CONTRACT-BLOCKED'; then
+  pass "durable ticket marker stops a contract-blocked role"
+else
+  fail "durable ticket marker did not stop the role" \
+    "status=$ROLE_DURABLE_BLOCKED"
+fi
+
+for durable_case in duplicate wrong-role; do
+  case "$durable_case" in
+    duplicate)
+      durable_ticket=T-652
+      durable_role=builder
+      durable_count=2
+      ;;
+    wrong-role)
+      durable_ticket=T-653
+      durable_role=spec-linter
+      durable_count=1
+      ;;
+  esac
+  setup_role_exit_fixture "$durable_ticket" "$durable_role"
+  install_contract_blocker_hook "$durable_ticket" \
+    'ROLE-ESCALATE: CONTRACT-BLOCKED' "$durable_count"
+  ROLE_BAD_DURABLE=0
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+    FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+    FACTORY_CONTRACT_VERSION=1.7.0 \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+    FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role "$durable_role" --ticket "$durable_ticket" \
+      --workdir "$ROLE_EXIT_WORKTREE" -- "invalid durable blocker" \
+    >"$TMP/role-durable-$durable_case.out" 2>&1 || ROLE_BAD_DURABLE=$?
+  if [[ "$ROLE_BAD_DURABLE" -eq 11 ]] &&
+     grep -q 'role_exit_invalid_escalation' \
+       "$TMP/role-durable-$durable_case.out"; then
+    pass "durable contract blocker refuses $durable_case marker"
+  else
+    fail "durable contract blocker accepted $durable_case marker" \
+      "status=$ROLE_BAD_DURABLE"
+  fi
+done
+
+setup_role_exit_fixture T-644
+ROLE_BLOCKED_NO_COMMIT=0
+FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_CONTRACT_VERSION=1.7.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-644 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    $'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED' \
+  > "$TMP/role-contract-blocked-no-commit.out" 2>&1 ||
+  ROLE_BLOCKED_NO_COMMIT=$?
+if [[ "$ROLE_BLOCKED_NO_COMMIT" -eq 11 ]] &&
+   grep -q 'role_exit_no_commit' "$TMP/role-contract-blocked-no-commit.out"; then
+  pass "contract blocker still requires a durable commit"
+else
+  fail "contract blocker bypassed the durable commit requirement" \
+    "status=$ROLE_BLOCKED_NO_COMMIT"
+fi
+
+for escalation_case in malformed duplicate wrong-role; do
+  case "$escalation_case" in
+    malformed)
+      escalation_ticket=T-645
+      escalation_role=planner
+      escalation_task=$'blocked\nROLE-ESCALATE: CONTRACT'
+      ;;
+    duplicate)
+      escalation_ticket=T-646
+      escalation_role=test-author
+      escalation_task=$'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED\nROLE-ESCALATE: CONTRACT-BLOCKED'
+      ;;
+    wrong-role)
+      escalation_ticket=T-647
+      escalation_role=spec-linter
+      escalation_task=$'blocked\nROLE-ESCALATE: CONTRACT-BLOCKED'
+      ;;
+  esac
+  setup_role_exit_fixture "$escalation_ticket" "$escalation_role"
+  ROLE_BAD_ESCALATION=0
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+    FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+    FACTORY_CONTRACT_VERSION=1.7.0 \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+    FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role "$escalation_role" --ticket "$escalation_ticket" \
+      --workdir "$ROLE_EXIT_WORKTREE" -- "$escalation_task" \
+    > "$TMP/role-escalation-$escalation_case.out" 2>&1 ||
+    ROLE_BAD_ESCALATION=$?
+  if [[ "$ROLE_BAD_ESCALATION" -eq 11 ]] &&
+     grep -q 'role_exit_invalid_escalation' \
+       "$TMP/role-escalation-$escalation_case.out"; then
+    pass "contract blocker refuses $escalation_case output"
+  else
+    fail "contract blocker accepted $escalation_case output" \
+      "status=$ROLE_BAD_ESCALATION"
+  fi
+done
+
+setup_role_exit_fixture T-648 builder
+ROLE_LEGACY_COMMIT=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CONTRACT_VERSION=1.6.0 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role builder --ticket T-648 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "ordinary legacy commit" > "$TMP/role-legacy-commit.out" 2>&1 ||
+  ROLE_LEGACY_COMMIT=$?
+if [[ "$ROLE_LEGACY_COMMIT" -eq 0 ]]; then
+  pass "contract 1.6 ordinary role completion is unchanged"
+else
+  fail "contract blocker changed ordinary contract 1.6 completion" \
+    "status=$ROLE_LEGACY_COMMIT"
 fi
 
 setup_role_exit_fixture T-642

@@ -31,7 +31,7 @@ command -v codex >/dev/null || { echo "codex CLI not installed" >&2; exit 6; }
 INSTALLED="$(codex --version 2>/dev/null | head -n1 || true)"
 case "$INSTALLED" in
   *"$PINNED_VERSION"*) : ;;
-  *) echo "WARNING: installed Codex ($INSTALLED) != pinned ($PINNED_VERSION). Run adapters/contract-test.sh before continuing." >&2 ;;
+  *) echo "installed Codex does not match the approved version" >&2; exit 6 ;;
 esac
 
 FULL_TASK="$TASK"
@@ -39,12 +39,20 @@ FULL_TASK="$TASK"
 
 $TASK"
 
+run_with_timeout() {
+  if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then
+    timeout --foreground "$@"
+  else
+    timeout "$@"
+  fi
+}
+
 # First-real-run finding (2026-07-12): workspace-write is not enough — it
 # blocks TCP listen (tests spawn a real server) and blocks git commits from
 # worktrees (their .git metadata lives in the main repo, outside the sandbox).
 # Same call as the claude adapter: bypass the CLI sandbox; containment comes
 # from the envelope (budget, timeout), the worktree, and CI gates.
-OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+OUT="$(cd "$WORKDIR" && run_with_timeout "$((TIMEOUT_MIN * 60))" \
   codex exec --json --dangerously-bypass-approvals-and-sandbox \
     -m "$MODEL" -c "model_reasoning_effort=$EFFORT" "$FULL_TASK" 2>&1)" || STATUS=$?
 STATUS="${STATUS:-0}"

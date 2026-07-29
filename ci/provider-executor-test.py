@@ -68,7 +68,7 @@ elif args[0] == "exec":
     sys.stderr.write("E" * int(os.environ.get("FAKE_STDERR_BYTES", "2")))
     raise SystemExit(int(os.environ.get("FAKE_RETURN_CODE", "0")))
 elif args[0] == "rm":
-    pass
+    raise SystemExit(int(os.environ.get("FAKE_RM_RETURN_CODE", "0")))
 elif args[0] == "inspect":
     if os.environ.get("FAKE_CONTAINER_EXISTS", "1") == "1":
         print(json.dumps({"Running": os.environ.get("FAKE_CONTAINER_RUNNING", "1") == "1"}))
@@ -365,6 +365,13 @@ class ProviderExecutorTest(unittest.TestCase):
         process.wait(timeout=10)
         process.communicate(timeout=1)
         self.assertEqual(self.calls()[-1][0:2], ["rm", "--force"])
+
+    def test_container_removal_failure_is_not_terminal_success(self):
+        environment = {**self.environment, "FAKE_RM_RETURN_CODE": "1"}
+        result = self.execute(env=environment)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("container removal was not proven", result.stderr)
+        self.assertFalse((self.attempts / "attempt-1/result.json").exists())
 
     def test_stdout_stderr_are_bounded_and_legacy_behavior_remains_available(self):
         environment = {

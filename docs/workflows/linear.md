@@ -19,6 +19,7 @@ Linear is authoritative only for:
 - Backlog → Ready;
 - Awaiting Approval → Approved;
 - Blocked-Escalated → a valid resumed stage.
+- Backlog → Canceled for a withdrawn or superseded ticket.
 
 The factory is authoritative for title, description, acceptance criteria,
 frozen contract, branch/PR facts, role-stage movement, escalation into
@@ -59,6 +60,7 @@ see the active stage without opening an issue.
 | Approved | Operator approved the bundle; merge/deploy is pending | operator only |
 | Blocked-Escalated | Needs the operator: deadlock, contract problem, budget stop, open question | agents or operator |
 | Done | Approved PR merged and staging deploy confirmed | factory close-out |
+| Canceled | Withdrawn or superseded before execution; never runnable | operator close-out |
 
 The operator's daily scan is two lists: **Blocked-Escalated** (decide something)
 and **Awaiting Approval** (approve or send back). Everything else is agent
@@ -68,6 +70,10 @@ sends native operator notifications.
 Legal happy-path transitions are:
 
 `Backlog → Ready → Planning → Building → Review → Awaiting Approval → Approved → Done`.
+
+`Backlog → Canceled` is the terminal path for a duplicate, superseded, or
+withdrawn ticket. Its tracked ticket log records the reason and replacement,
+when any; it does not manufacture execution or approval evidence.
 
 This lifecycle is not permission for the generic transition API. Contract 1.2
 stops at Review. Contract 1.3 performs the final three evidence-sensitive moves

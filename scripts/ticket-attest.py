@@ -16,6 +16,13 @@ import sys
 import tempfile
 from urllib.parse import quote
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from refresh_semantics import (  # noqa: E402
+    ClassificationError,
+    preserved_control_paths,
+    retained_control_paths,
+)
+
 
 class Refusal(ValueError):
     pass
@@ -35,7 +42,10 @@ def run(argv, *, cwd=None, input_text=None, check=True):
 
 
 def git(root, *args, check=True):
-    result = run(["git", "-C", str(root), *args], check=False)
+    command = ["git", "-C", str(root), *args]
+    result = run(command, check=False)
+    if result.returncode and args[0] == "ls-remote":
+        result = run(command, check=False)
     if check and result.returncode:
         raise Refusal(f"Git operation failed: {args[0]}")
     return result
@@ -269,8 +279,8 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
                     or legacy.get("resolution", {}).get("selections")
                     != body.get("historical_selections")
                     or not valid_oid(body.get("pin_commit", ""))
+                    or not valid_oid(body.get("old_kit_sha", ""))
                     or not valid_oid(body.get("new_kit_sha", ""))
-                    or body.get("new_kit_sha") == body.get("old_kit_sha")
                 ):
                     raise Refusal("ticket route migration provenance does not match")
                 timestamp(body.get("migrated_at"), "route migration")
@@ -585,7 +595,7 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         ).stdout.strip()
         if historical:
             raise Refusal("committed refresh receipt is missing from the ticket head")
-        return
+        return None
     if not safe_optional_attestation(path):
         raise Refusal("refresh receipt is unsafe")
 
@@ -665,21 +675,41 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         or current_voids[:len(old_voids)] != old_voids
     ):
         raise Refusal("refresh historical review evidence changed")
-    old_raw_reviewers = len(old_verdicts) + len(old_voids)
-    if (
-        len(current_verdicts) <= len(old_verdicts)
-        or any(value <= old_raw_reviewers for value in current_voids[len(old_voids):])
-    ):
-        raise Refusal("a new post-refresh Reviewer verdict is required")
+    try:
+        preserved = preserved_control_paths(
+            workdir, receipt["old_head"], receipt["base_head"],
+        )
+    except ClassificationError as error:
+        raise Refusal(f"refresh semantic classification failed: {error}")
     reviewers = sorted(
         (item for item in manifests if item.get("role") == "reviewer"),
         key=lambda item: item["_ledger_index"],
     )
+    raw_reviewers = len(old_verdicts) + len(old_voids)
+
+    def belongs_to_old_head(item):
+        head = item.get("role_head_before", "")
+        return valid_oid(head) and not git(
+            workdir, "merge-base", "--is-ancestor",
+            head, receipt["old_head"], check=False,
+        ).returncode
+
+    if (
+        preserved is not None
+        and belongs_to_old_head(reviewer)
+        and belongs_to_old_head(narrator)
+    ):
+        return receipt["base_head"]
+    if (
+        len(current_verdicts) <= len(old_verdicts)
+        or any(value <= raw_reviewers for value in current_voids[len(old_voids):])
+    ):
+        raise Refusal("a new post-refresh Reviewer verdict is required")
     try:
         reviewer_ordinal = reviewers.index(reviewer) + 1
     except ValueError:
         raise Refusal("post-refresh Reviewer evidence is missing")
-    if reviewer_ordinal <= old_raw_reviewers:
+    if reviewer_ordinal <= raw_reviewers:
         raise Refusal("post-refresh Reviewer evidence is required")
     for role, manifest in (("Reviewer", reviewer), ("Narrator", narrator)):
         head = manifest.get("role_head_before", "")
@@ -691,6 +721,7 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
             check=False,
         ).returncode:
             raise Refusal(f"post-refresh {role} evidence is required")
+    return None
 
 
 def exact_pr(repo, branch, state):
@@ -794,6 +825,26 @@ def field(text, name):
     if len(matches) != 1:
         raise Refusal(f"ticket must contain exactly one {name} field")
     return matches[0]
+
+
+def merge_policy(text):
+    matches = re.findall(r"^Merge-Policy:\s*(.*?)\s*$", text, re.I | re.M)
+    if len(matches) > 1:
+        raise Refusal("ticket must contain at most one Merge-Policy field")
+    policy = matches[0].lower() if matches else "manual"
+    if policy not in {"manual", "auto"}:
+        raise Refusal("Merge-Policy must be manual or auto")
+    return policy
+
+
+def protected_merge_policy(workdir, ticket):
+    result = git(
+        workdir, "show", f"refs/remotes/origin/main:factory/tickets/{ticket}.md",
+        check=False,
+    )
+    if result.returncode:
+        raise Refusal("protected origin/main ticket is unavailable")
+    return merge_policy(result.stdout)
 
 
 def replace_field(text, name, value):
@@ -1283,7 +1334,18 @@ def refresh(args, product, workdir, repo, prefix, remote):
     old_head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     text = ticket_path.read_text()
-    if field(text, "State").lower() not in {"review", "awaiting approval", "approved"}:
+    state = field(text, "State").lower()
+    repaired_building = (
+        state == "building"
+        and os.environ.get("FACTORY_TRANSITION_STAGE") in {
+            "REFUSE refresh receipt was not committed directly after its merge",
+            "REFUSE stale refresh receipt does not bind this branch history",
+        }
+    )
+    if (
+        state not in {"review", "awaiting approval", "approved"}
+        and not repaired_building
+    ):
         raise Refusal("refresh requires ticket State Review, Awaiting Approval, or Approved")
     pr = exact_pr(repo, branch, "open")
     if pr.get("headRefOid") != old_head:
@@ -1311,7 +1373,6 @@ def refresh(args, product, workdir, repo, prefix, remote):
         or view.get("baseRefName") != "main"
         or view.get("headRefOid") != old_head
         or view.get("state") != "OPEN"
-        or view.get("mergeStateStatus") not in {"BEHIND", "BLOCKED", "DIRTY"}
     ):
         raise Refusal("GitHub did not confirm the exact open PR before refresh")
     if view.get("autoMergeRequest"):
@@ -1477,6 +1538,8 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     bundle_path = workdir / "factory" / "tickets" / f"{args.ticket}-bundle.md"
     text = ticket_path.read_text()
+    if merge_policy(text) != protected_merge_policy(workdir, args.ticket):
+        raise Refusal("Merge-Policy differs from protected origin/main")
     if field(text, "State").lower() != "review":
         raise Refusal("bundle requires ticket State Review")
     bundle_text = bundle_path.read_text()
@@ -1491,7 +1554,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     manifests = successful_runs(product, args.ticket)
     route_plan = route_plan_evidence(workdir, product, args.ticket, kit_sha, manifests)
     reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
-    validate_refresh_review_evidence(
+    preserved_base = validate_refresh_review_evidence(
         workdir, args.ticket, text, manifests, reviewer, narrator,
     )
     allowed = {
@@ -1500,6 +1563,9 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         f"factory/tickets/{args.ticket}-bundle.md",
     }
     changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").stdout.splitlines())
+    if preserved_base:
+        allowed.add(f"factory/attestations/{args.ticket}/refresh.json")
+        allowed.update(retained_control_paths(workdir, head, preserved_base, changed))
     if not changed or changed - allowed:
         raise Refusal("product or code changed after the reviewed SHA")
     pr = exact_pr(repo, branch, "open")

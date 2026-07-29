@@ -8,14 +8,23 @@ export FACTORY_TRUSTED_TEST_HARNESS=1
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFLIGHT="$KIT_DIR/scripts/preflight.sh"
 KIT_HEAD_NOW="$(git -C "$KIT_DIR" rev-parse HEAD)"
+KIT_CONTRACT_VERSION="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["contract_version"])' \
+  "$KIT_DIR/integrations/hermes/contract.json")"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/preflight-test.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 STUB_BIN="$TMP/bin"
+TEST_HOME="$TMP/home"
 FAILURES=0
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-mkdir -p "$STUB_BIN"
+mkdir -p "$STUB_BIN" "$TEST_HOME/.claude"
+chmod 700 "$TEST_HOME" "$TEST_HOME/.claude"
+printf '%s\n' '{"claudeAiOauth":{"expiresAt":4102444800000}}' \
+  > "$TEST_HOME/.claude/.credentials.json"
+chmod 600 "$TEST_HOME/.claude/.credentials.json"
 
 # --- stub CLIs that satisfy contract-test.sh and version-pin checks ---
 write_stub_claude() {
@@ -155,6 +164,7 @@ run_preflight() {
   local role="" lease=""
   local env_args=(
     PATH="$STUB_BIN:$PATH"
+    HOME="$TEST_HOME"
     FACTORY_ROOT="$factory_root"
     FACTORY_GLOBAL_ENV="$TMP/default-global.env"
     CLAUDE_CODE_PINNED=
@@ -186,16 +196,20 @@ run_preflight() {
 
 run_sealed_preflight() {
   local factory_root="$1" ticket="$2" release="$3" tree="$4"
+  local helper_args=(--ticket "$ticket" --workdir "$factory_root")
+  [[ -z "${5:-}" ]] || helper_args+=(--role "$5")
   env \
     PATH="$STUB_BIN:$PATH" \
+    HOME="$TEST_HOME" \
     FACTORY_ROOT="$factory_root" \
     FACTORY_GLOBAL_ENV="$TMP/default-global.env" \
     FACTORY_RELEASE_SHA="$KIT_HEAD_NOW" \
     FACTORY_RELEASE_TREE="$tree" \
     FACTORY_RELEASE_PATH="$release" \
-    FACTORY_RELEASE_CONTRACT_VERSION=1.6.0 \
+    FACTORY_RELEASE_CONTRACT_VERSION="$KIT_CONTRACT_VERSION" \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
-    bash "$release/scripts/preflight.sh" --ticket "$ticket" 2>&1
+    FACTORY_TEST_PROBE_TRACE="${6:-}" \
+    bash "$release/scripts/preflight.sh" "${helper_args[@]}" 2>&1
 }
 
 assert_preflight() {
@@ -419,9 +433,18 @@ SEALED_PRODUCT="$TMP/sealed-product"
 mkdir -p "$SEALED_PRODUCT"
 write_envelope "$SEALED_PRODUCT"
 write_ready_ticket "$SEALED_PRODUCT" "T-090"
+printf '%s\n' \
+  'Product-Decisions: frozen' \
+  'Fixture-Seams: none' \
+  'Authentication-Seams: none' \
+  'Protected-Test-Conflicts: none' \
+  >> "$SEALED_PRODUCT/factory/tickets/T-090.md"
 init_git_repo "$SEALED_PRODUCT"
-SEALED_OUT="$(run_sealed_preflight "$SEALED_PRODUCT" T-090 "$SEALED_RELEASE" "$SEALED_TREE")"
-if [[ "$SEALED_OUT" == *"PASS: kit pin matches sealed physical release"* &&
+SEALED_STATUS=0
+SEALED_OUT="$(run_sealed_preflight "$SEALED_PRODUCT" T-090 "$SEALED_RELEASE" "$SEALED_TREE")" ||
+  SEALED_STATUS=$?
+if [[ "$SEALED_STATUS" -eq 0 &&
+      "$SEALED_OUT" == *"PASS: kit pin matches sealed physical release"* &&
       "$SEALED_OUT" == *"PREFLIGHT PASS"* &&
       ! -e "$SEALED_RELEASE/.git" ]]; then
   echo "PASS: sealed no-.git release runs real preflight"
@@ -741,7 +764,10 @@ write_envelope "$NOWARN"
 write_ready_ticket "$NOWARN" "T-006"
 init_git_repo "$NOWARN"
 FAKE_HOME="$TMP/fakehome"
-mkdir -p "$FAKE_HOME"
+mkdir -p "$FAKE_HOME/.claude"
+chmod 700 "$FAKE_HOME" "$FAKE_HOME/.claude"
+cp "$TEST_HOME/.claude/.credentials.json" "$FAKE_HOME/.claude/.credentials.json"
+chmod 600 "$FAKE_HOME/.claude/.credentials.json"
 out="$(run_preflight "$NOWARN" "T-006" --home "$FAKE_HOME" --gh-token "")" || rc=$?
 rc="${rc:-0}"
 if [[ "$rc" -ne 0 ]]; then
@@ -753,6 +779,111 @@ elif grep -qF "WARN: GH_TOKEN not set" <<<"$out" && grep -qF "PREFLIGHT PASS" <<
 else
   echo "FAIL: GH_TOKEN warn-but-pass — missing WARN or PREFLIGHT PASS"
   echo "$out"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Contract 1.8 readiness is deterministic and runs before provider probing.
+READINESS="$TMP/readiness"
+mkdir -p "$READINESS/app/tests"
+write_envelope "$READINESS"
+write_ready_ticket "$READINESS" "T-110"
+printf '%s\n' \
+  'Product-Decisions: frozen' \
+  'Fixture-Seams: app/tests/fixture.js' \
+  'Authentication-Seams: none' \
+  'Protected-Test-Conflicts: none' \
+  >> "$READINESS/factory/tickets/T-110.md"
+printf '%s\n' 'export const fixture = true;' > "$READINESS/app/tests/fixture.js"
+init_git_repo "$READINESS"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-pass.out" &&
+   grep -qx 'READINESS PASS' "$TMP/readiness-pass.out"; then
+  echo "PASS: contract 1.8 provider-free readiness passes executable seams"
+else
+  echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
+  FAILURES=$((FAILURES + 1))
+fi
+sed 's/^State: Ready$/State: Planning/' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+git -C "$READINESS" add factory/tickets/T-110.md
+git -C "$READINESS" commit -qm "begin deterministic planning"
+git -C "$READINESS" push -q origin main
+READINESS_RELEASE="$TMP/readiness-release"
+build_sealed_release "$READINESS_RELEASE"
+READINESS_RELEASE="$(cd "$READINESS_RELEASE" && pwd -P)"
+READINESS_TREE="$(bash -c '
+  source "$1"
+  factory_directory_tree "$2"
+' _ "$KIT_DIR/scripts/lib/kit-pin.sh" "$READINESS_RELEASE")"
+READINESS_ROUTE_DIR="$READINESS/factory/route-plans"
+READINESS_MODEL_STATE="$TMP/readiness-model-state"
+mkdir -p "$READINESS_ROUTE_DIR" "$READINESS_MODEL_STATE/relay"
+python3 "$KIT_DIR/scripts/model-router.py" probe-list cursor-balanced-v2 \
+  --catalog "$KIT_DIR/scripts/model-routing/catalog-v1.json" \
+  --profiles "$KIT_DIR/scripts/model-routing/profiles-v1.json" \
+  > "$TMP/readiness-probes.json"
+python3 - "$TMP/readiness-probes.json" "$TMP/readiness-routes.json" <<'PY'
+import json
+import sys
+
+probes = json.load(open(sys.argv[1], encoding="utf-8"))
+result = {
+    probe["route_id"]: {
+        "adapter_version": "test",
+        "reason": "local_contract_ready",
+        "reported_identity": probe["expected_reported_identity"],
+        "state": "READY",
+    }
+    for probe in probes
+}
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(result, handle, sort_keys=True, separators=(",", ":"))
+    handle.write("\n")
+PY
+python3 "$KIT_DIR/scripts/model-router.py" resolve cursor-balanced-v2 \
+  "$TMP/readiness-routes.json" \
+  --catalog "$KIT_DIR/scripts/model-routing/catalog-v1.json" \
+  --profiles "$KIT_DIR/scripts/model-routing/profiles-v1.json" \
+  > "$TMP/readiness-resolution.json"
+chmod 600 "$TMP/readiness-resolution.json"
+python3 "$KIT_DIR/scripts/model-manager.py" pin \
+  --state-root "$READINESS_MODEL_STATE" --project relay \
+  --catalog "$KIT_DIR/scripts/model-routing/catalog-v1.json" \
+  --profiles-file "$KIT_DIR/scripts/model-routing/profiles-v1.json" \
+  --ticket T-110 --kit-sha "$KIT_HEAD_NOW" \
+  --resolution-file "$TMP/readiness-resolution.json" \
+  --output "$READINESS_ROUTE_DIR/T-110.json" >/dev/null
+git -C "$READINESS" add factory/route-plans/T-110.json
+git -C "$READINESS" commit -qm "pin deterministic route contract"
+git -C "$READINESS" push -q origin main
+READINESS_PROBE_TRACE="$TMP/readiness-preflight-probes"
+: > "$READINESS_PROBE_TRACE"
+READINESS_PREFLIGHT_STATUS=0
+READINESS_PREFLIGHT_OUT="$(run_sealed_preflight "$READINESS" T-110 \
+  "$READINESS_RELEASE" "$READINESS_TREE" planner "$READINESS_PROBE_TRACE")" ||
+  READINESS_PREFLIGHT_STATUS=$?
+if [[ "$READINESS_PREFLIGHT_STATUS" -eq 0 &&
+      "$READINESS_PREFLIGHT_OUT" == *"PASS: ticket T-110 is Planning"* &&
+      "$READINESS_PREFLIGHT_OUT" == *"planner pinned route contract passed"* &&
+      ! -s "$READINESS_PROBE_TRACE" ]]; then
+  echo "PASS: contract 1.8 planner preflight is provider-free"
+else
+  echo "FAIL: contract 1.8 planner preflight repeated provider readiness"
+  echo "$READINESS_PREFLIGHT_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+sed 's/Product-Decisions: frozen/Product-Decisions: unresolved/' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-blocked.out"; then
+  echo "FAIL: contract 1.8 readiness accepted unresolved product decisions"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'product decisions are not frozen' "$TMP/readiness-blocked.out"; then
+  echo "PASS: contract 1.8 readiness blocks unresolved product decisions"
+else
+  echo "FAIL: contract 1.8 readiness returned an unexpected refusal"
   FAILURES=$((FAILURES + 1))
 fi
 

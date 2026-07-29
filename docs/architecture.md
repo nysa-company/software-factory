@@ -41,6 +41,9 @@ boundary, and later controls follow normal post-submission drain semantics.
 When that boundary stops a launch, integrity checks still run and exempt only
 the exact kill, maintenance, or targeted-cancellation record that caused it;
 any concurrent manifest, claim, lock, ledger, or checkout mutation still fails.
+Cancellation previews are deterministic over the exact manifest, PID record,
+and reason so separate plan and apply launcher invocations agree; any mutation
+to that snapshot changes the preview hash and refuses the apply.
 
 Before creating a manifest, every run acquires a product-level control lock and
 holds it through provider exit and integrity verification. This temporarily
@@ -163,9 +166,9 @@ data. Shell commands, substitutions, and unsupported keys are rejected.
 Calibrate a route only after its task-free identity/readiness probe, adapter
 contract, and conformance smokes pass. Cursor output is redacted while
 streaming; the redacted `.out` artifact remains local and ignored, while the
-manifest and ledger carry durable provenance. Factory Cursor prompts end with
-a trusted execution requirement that keeps every role in the default agent
-execution mode rather than Cursor's Plan or Ask modes.
+manifest and ledger carry durable provenance. Mutating Factory Cursor roles
+stay in the default agent execution mode. Reviewer stays in native read-only
+Ask mode with noninteractive approval so it can run read-only terminal checks.
 
 The disabled experimental Kimi route uses Claude CLI transport, the OpenRouter
 gateway, and Moonshot inference for `moonshotai/kimi-k2.6`. It is in no profile
@@ -192,7 +195,7 @@ Machine-local release state lives under `~/.factory/kits`:
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.6.0` expose machine-readable
+release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -219,6 +222,141 @@ and committing the patch under a per-ticket lock. Production activation remains 
 staged local four-worker canaries and dedicated real-provider API-route
 certification. Native subscription/Cursor CLI routes remain on the serialized
 legacy path.
+Contract `1.7.0` reuses the same transactional coordinator for exact
+owner-activated subscription CLI routes. Activation binds the selected CLI
+adapter/model/family/account tuple and canonical provider-policy digest; all
+limits remain policy-owned. Activation permits account capacity through four
+for Codex, native Claude, and Cursor when each attempt has an isolated
+owner-only home, configuration directory, temporary directory, and credential
+copy. Contract 1.6
+and non-activated 1.7 routes keep the
+serialized path unchanged.
+Its trusted ticket-state reconciliation binds a successful Reviewer's
+read-only head and durable output digest, records the canonical verdict and
+explicit repair owner, and commits a rejection's Review-to-Building transition
+in the same host-owned change.
+Contract `1.8.0` replaces the agentic dispatcher and supervisor with a
+non-overlapping one-shot controller. `launchd` invokes it every 15 seconds and
+watches terminal run evidence for an immediate wakeup. `state-machine` calls
+`next-stage` exactly once and issues a one-use receipt bound to the ticket
+head/tree, evidence, route, passport, Factory release, and certified origin.
+Roles consume that receipt unchanged and never select their next state.
+The role runner retains the validated project only in a non-exported host
+binding for its receipt rechecks; provider processes never inherit the
+project's model-state controls. Its trusted exact-head remote observation
+retries one failed transport call before classifying branch drift; a second
+failure or any different head still fails closed without pushing.
+The ticket-PR boundary applies the same one-retry rule only to its exact
+read-only branch-head observation; every semantic mismatch and second
+transport failure still refuses publication.
+Protected-base attestation applies the same one-retry boundary only to its
+exact read-only `ls-remote`; mutations and semantic refusals never retry.
+Reviewer terminalization accepts the role contract's standalone verdict,
+exact verdict-only or `Verdict:` Markdown headings, and exact Markdown-wrapped
+repair-owner lines. Cursor background-completion text concatenated to the owner
+is split only when every verdict and owner signal remains identical. Ambiguous,
+contradictory, or ownerless output is charged but not recorded as completed-role
+evidence; the controller reruns only Reviewer under the remaining ticket
+budget.
+The ticket-budget stage reduces immutable charges against the authenticated
+base envelope plus any active ticket-scoped cap override. Budget-wait claims
+bind both the envelope and immutable override-record bytes, so adding an
+authorized cap reacquires the exact ticket lease and reopens the retained
+passport/cell directly; expired, conflicting, malformed, or unrelated records
+never raise the effective cap. An authenticated persistent replacement keeps
+its predecessor immutable and names that exact record in its preview-bound
+hash. It is effective only for the same scope, target, base-envelope identity,
+and setting-key set, with a later issue time and no shorter lifetime; missing,
+ambiguous, or malformed supersession lineage refuses reduction.
+Six-role model-plan pinning relies on its individually bounded readiness
+probes and has no aggregate controller timeout; slow successful probes cannot
+become a wall-clock delivery stop before the first provider call.
+Planner preflight validates the complete pinned route contract without
+repeating machine probes; the role runner re-verifies only its selected route
+immediately before provider admission.
+Automatic qualification fallback serializes and reroutes only the failed
+role. Future pinned roles keep their selections and are re-probed only when
+they reach provider admission; later task-bearing roles retain four-way
+execution.
+If interruption occurs after a terminal role was exported but before its claim
+was cleared, restart identifies the exact run, role, and transition receipt in
+both passport charge and completed-role evidence. It authenticates and
+migrates that passport instead of exporting or executing the role again; every
+partial or mismatched checkpoint remains fail-closed.
+If a prior controller version removed a claim, qualification restart may
+reconstruct it only from one signed nonterminal passport, one exact checked-out
+branch, current ticket/route Kit-SHAs, and a newly claimed lease. New-admission
+refusals stop admission but never prevent already authenticated claims from
+reconciling.
+Authenticated passports preserve completed roles, charges, Factory/base
+lineage, and publication state across disposable-cell relocation, controller
+restart, and Factory migration. Four PRs may validate concurrently; one
+renewable per-product publication lease serializes merge requests. A ticket
+withdraws its queue record whenever deterministic reconciliation no longer
+classifies it as merge-ready; an active lease still requires its exact
+capability-bound release. The
+controller serializes only protected-base Git mutations because disposable
+cells share one Git common directory. Refresh proves staleness from the exact
+certified remote tip, ancestry, and exact open PR identity; GitHub's lagging
+`mergeStateStatus` is not evidence. The two exact receipt-topology
+refusals—an old merge no longer in branch history, or a receipt commit no
+longer directly after its merge—route through the same receipt-bound
+protected-base refresh. `Building` is admitted only when the trusted launcher
+supplies one of those exact stages; the refresh performs the ordinary sealed
+reset and never treats stale evidence as valid. The
+qualification reducer reconciles passports, manifests, controller events,
+protected checks, PR heads, merge commits, and protected main. Its closeout
+target is three or four tickets at capacity four. An excluded claim remains
+parked and untouched except that startup withdraws any lease-free publication
+queue record that could block selected tickets; the reducer still requires the
+authenticated four-ticket restart and relocation proof. Historical role,
+charge, publication, and merge evidence keeps its original Factory SHA inside
+each passport's authenticated release history. Ticket totals use only
+currently authenticated ticket-cap overrides, while the cohort remains within
+the fixed qualification budget.
+The sealed qualification launcher binds its owner-only qualification root as
+the release environment for isolated subscription runtimes. That root carries
+the same trusted marker used by disposable development environments; provider
+attempts therefore retain per-attempt homes without depending on a ticket's
+cell path. Environment preparation also rejects a root whose worst-case Cursor
+attempt data path would exceed the adapter's isolated-scratch limit.
+If a proven Factory defect requires a successor during qualification, the
+same preparer upgrades that root only while reconciliation and provider work
+are drained. It seals the successor, verifies unchanged provider policy,
+atomically advances the activation record, and preserves the controller
+directory, passport key, passports, claims, and cumulative provider ledger.
+After the ticket route migrates, a blocked claim may recover only when its
+authenticated passport names the prior release. The controller binds a fresh
+exact-ticket lease, migrates that passport in place, and returns the claim to
+deterministic reconciliation; same-release blockers remain blocked.
+When a zero-provider qualification attempt leaves only canonical pin and state
+commits on a now-divergent remote ticket branch, a protected-main reset
+authorization may bind its exact head. Admission validates that no ticket
+contract or product path changed, non-force merges current protected main,
+removes only the obsolete pin/state control, and preserves the old commits in
+branch history before repinning. Every unlisted head or non-control change
+fails closed. A later successor may repeat that recovery only when every
+first-parent commit follows the same canonical pin, transition, merge,
+supersede, and repin grammar and every merged base belongs to current protected
+main lineage.
+During a protected qualification, the development scheduler authenticates a
+durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
+against the exact qualification kit SHA before returning only that ticket to
+`Backlog`. Outside qualification it retains the ordinary
+`Blocked-Escalated` workflow. In either case its lease is released and sibling
+lifecycles continue. A qualification Spec-linter `FAIL` also returns the
+ticket directly to Backlog instead of entering the ordinary replan/round-three
+authorization loop.
+The first terminal failed Cursor attempt for a protected qualification keeps
+its claim and authenticated evidence while the controller appends the existing
+same-family direct-CLI fallback and resumes the same deterministic stage. The
+fallback atomically converts an initial v1 route plan into a same-release v2
+journal before appending its revision, preserving the original plan bytes and
+provenance. It is idempotent across controller restart. A second task-submitted
+attempt for that ticket and role is refused as no progress instead of replayed.
+An exit 143 before task submission reopens only that interrupted role, and only
+after the current signed passport, clean cell, branch, and remote head agree
+exactly; every submitted or differently terminated interruption stays blocked.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -248,9 +386,25 @@ If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a
 receipt binding the two-parent merge and prior role/verdict baselines. The
-sequencer then requires a new Reviewer verdict and a later Narrator run before
-another bundle and Linear approval. A malformed or stale refresh receipt
-refuses sequencing.
+sequencer requires a new Reviewer verdict and later Narrator run unless the
+receipt's immutable base delta contains only modified regular blobs at exact
+`factory/KIT_PIN` and `factory/QUALIFICATION.json`, plus added regular blobs at
+exact `factory/migrations/inflight-release/<40-hex>.json` paths. In that narrow
+case the attestor also requires the retained ticket-head blobs to equal the
+protected base and every preserved Reviewer/Narrator manifest head to be an
+ancestor of the receipt-bound old head. Earlier historical rows from a
+discarded force-pushed lineage remain auditable; the latest effective Reviewer
+and the later effective Narrator decide reuse. An orphaned latest Reviewer
+reruns Reviewer and downstream Narrator, while a missing or orphaned Narrator
+reruns only Narrator. Every application, test, contract, CI, configuration,
+rename, type, deletion, and unknown-path change invalidates review. A malformed
+or stale refresh receipt refuses sequencing.
+The early ticket-PR boundary applies that same decision instead of comparing
+only commit SHAs. It accepts retained control paths only under Contract 1.8,
+an exact receipt-authorized stage, a committed direct-after-merge refresh
+receipt, unambiguous merge ancestry, the shared non-semantic classifier, and
+control blobs that still equal the receipt's protected base. Route-journal
+changes retain their independent append-only migration validation.
 When concurrency is greater than one, every attestation action also requires the matching
 unexpired opaque dispatcher lease through the trusted launcher environment;
 the lease is validated with the existing lease helper and never enters an
@@ -304,12 +458,46 @@ route plan or a v2 route journal whose ticket and Kit-SHA match the
 authorization and whose complete history passes the candidate's migration
 validator. The normal maintenance, zero-active-run, and zero-dispatcher-lease
 barriers still apply.
+Qualification upgrades bind liveness to the non-overlapping controller lock
+and active-run markers. A terminal orphaned `running` claim remains portable
+state for the successor controller rather than an upgrade deadlock.
+Upgrade recovery keeps the claim blocked while it first authenticates the
+current clean head into the successor passport. This pre-route boundary lets an
+exact protected rewrite authorization bind the unchanged old route digest.
+The state machine never migrates a passport for a `REFUSE` transition; the
+controller blocks the claim first so the next one-shot owns that boundary and
+its durable pending marker.
+After the preview-bound route migration commits the successor Kit-SHA to both
+the ticket and route journal, a second ordinary descendant migration updates
+the passport route digest and only then reopens the claim. A durable
+controller marker makes the between-migrations restart boundary idempotent.
+If an operator-authorized repair deliberately removes invalid Git ancestry, a
+cross-release passport migration may use that protected authorization only
+when its source/target kits, ticket, branch, new head, and state match exactly,
+the cell is clean, and the authenticated route digest is unchanged.
+A same-release Test-author repair uses a narrower protected authorization under
+`factory/migrations/ticket-rewrite/<new-head>.json`. It additionally binds the
+old signed passport, consumed `FIX test-author` receipt, typed failed non-force
+push, old/new heads, unchanged route, and exact repository. Migration requires
+a clean cell whose final-tree delta contains at least one configured test path
+and no path outside configured tests plus the exact ticket log; only ordinary
+added or modified regular blobs are accepted. The failed attempt's immutable
+charge is folded into the migrated passport, but it is not promoted to
+successful role evidence. The controller never force-pushes: it waits until
+the exact operator-authorized head is the remote ticket tip, then reopens only
+Test-author through the ordinary state machine. Missing, stale, dirty,
+non-Test-author, semantic, route-changing, or differently headed rewrites
+remain blocked.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior
 revision and the active resolution. Both paths update the ticket Kit-SHA before
-work is reclaimed. This authorization never changes ticket state, migrates a
-branch, renews a lease, or permits an unprotected-main record.
+work is reclaimed. The initial v1-to-v2 schema-migration revision may preserve
+the same Kit-SHA; only a later `release-migration` revision claims a release
+change. In both cases the embedded legacy bytes, digest, policy, selections,
+pin commit, and revision hash chain must match exactly. This authorization
+never changes ticket state, migrates a branch, renews a lease, or permits an
+unprotected-main record.
 
 A one-time Contract 1.2 migration may instead use the separate
 `factory/migrations/contract-1.3/` legacy-closeout format. It does not create or
@@ -358,11 +546,19 @@ route and never silently retries a task-bearing process. Contract 1.4 may
 migrate the v1 plan and append a fallback revision only after an eligible
 terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
-journals automatically.
+journals automatically. Contract 1.8 resolves machine readiness once before
+concurrent ticket execution, then pins one to four clean ticket branches from
+that in-process batch resolution. This prevents both duplicate probes and
+concurrent release-integrity fan-out from starving bounded CLI startup; role
+execution and protected PR validation remain four-ticket concurrent. A
+readiness plan containing only ready and temporarily unavailable routes yields
+one shared controller wait for the cohort; it does not release claims or block
+tickets. Invalid or unknown route evidence still fails closed.
 
 `MAX_CONCURRENT_TICKETS` in the product `PROJECT.env` defaults to `1` for
-Contracts 1.1 through 1.5 and `4` for Contract 1.6. The older contracts accept
-integers through `4`; Contract 1.6 accepts `1` through `6`. At any value above `1`, every sequencing and role launch
+Contracts 1.1 through 1.5 and `4` for Contracts 1.6 through 1.8. The older
+contracts accept integers through `4`; Contracts 1.6 and 1.7 accept `1`
+through `6`, while Contract 1.8 accepts `1` through `4`. At any value above `1`, every sequencing and role launch
 requires the matching opaque record under
 `factory/.dispatch-leases/`. Claims are atomic and deterministically refuse once
 the configured capacity is full. Stale records continue to consume capacity and
@@ -383,23 +579,33 @@ relays only the bounded provider result into the worker. Tokens bind the
 attempt, route, model, reserved budget, expiry, and bounded request count;
 revocation, expiry, wrong-model requests, redirects, and unconfigured
 destinations fail closed. Only token-free, credential-free state is exposed by
-status reporting.
+status reporting. A broker-stage failure or controller signal releases its
+slot only after the token is revoked and the broker reports no request in
+flight; otherwise the full reservation remains active. The executor likewise
+publishes a successful result only after removing its bound container.
 Maintenance blocks claims and
 renewals while allowing matching owners to release; activation and rollback
 refuse until every lease drains. The kill switch clears only validated safe
 lease state after stopping recorded runs.
+Renewal serializes only on the dispatcher lease lock, not the provider launch
+lock; matching ownership and pre/post mutation control checks keep maintenance
+and kill fail-closed while unrelated provider entry cannot starve a heartbeat.
 
-The Contract 1.6 Hermes supervisor is deliberately one-shot: one invocation
+The Contract 1.6/1.7 Hermes supervisor is deliberately one-shot: one invocation
 asks the stable launcher for one deterministic claim, starts at most one
 ephemeral dispatcher child on `START`, and exits on `WAIT` or `ESCALATE`.
 Autonomous claiming requires configured capacity above one so the lease can be
 transferred in memory to that child. At the first sequencer-authorized Reviewer
 boundary, the trusted ticket-PR helper creates or reuses exactly one open PR for
 the clean pushed ticket head. It waits without launching a role while required
-checks are pending, supplies completed failures to Reviewer, and revalidates
-successful exact-head checks and Reviewer lineage before Narrator. A later
+checks are not yet reported or pending, supplies completed failures to
+Reviewer, and revalidates successful exact-head checks and Reviewer lineage
+before Narrator. A later
 Builder or Test-author run forces fresh review. The helper has no approval or
 merge authority.
+Under Contract 1.8, compatibility `dispatch-plan` performs deterministic
+admission only and cannot spawn a dispatcher. The release-owned controller is
+the sole caller that advances work through state-machine receipts.
 
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,10 +13,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "dispatch-plan.py"
+SPEC = importlib.util.spec_from_file_location("dispatch_plan", HELPER)
+assert SPEC and SPEC.loader
+DISPATCH = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(DISPATCH)
 
 
 def run(*command, cwd=None):
@@ -96,6 +102,104 @@ class DispatchPlanTest(unittest.TestCase):
             + "\n"
         )
 
+    def write_qualification(self, dependencies=None):
+        tickets = [f"T-{number}" for number in range(100, 110)]
+        for ticket in tickets:
+            self.ticket(ticket, "normal", "Ready")
+        for ticket, required in (dependencies or {}).items():
+            path = self.product / "factory/tickets" / f"{ticket}.md"
+            path.write_text(
+                path.read_text() + f"Depends-On: {','.join(required)}\n"
+            )
+        manifest = {
+            "factory_sha": "a" * 40,
+            "final_capacity": 4,
+            "generation": 1,
+            "initial_capacity": 3,
+            "ramp_after_done": 3,
+            "schema": "nysa.software-factory.qualification/v1",
+            "target_done": 10,
+            "tickets": tickets,
+        }
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        return tickets
+
+    def write_contract_18_qualification(self):
+        tickets = [f"T-{number}" for number in range(110, 114)]
+        for ticket in tickets:
+            self.ticket(ticket, "normal", "Ready")
+        (self.product / "factory/PROJECT.env").write_text(
+            "TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS=4\n"
+        )
+        manifest = {
+            "budget_usd": "100.000000",
+            "capacity": 4,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "target_done": 4,
+            "tickets": tickets,
+        }
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        return tickets
+
+    def stale_preprovider_branch(self, change_spec=False):
+        ticket = "T-110"
+        branch = f"ticket/{ticket}"
+        run("git", "switch", "-qc", branch, cwd=self.product)
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.write_text(ticket_path.read_text() + f"\nKit-SHA: {'b' * 40}\n")
+        plan = self.product / f"factory/route-plans/{ticket}.json"
+        plan.parent.mkdir()
+        plan.write_text(json.dumps({
+            "kit_sha": "b" * 40,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }) + "\n")
+        run("git", "add", str(ticket_path), str(plan), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: pin kit and model route plan", cwd=self.product,
+        )
+        text = ticket_path.read_text().replace("State: Ready", "State: Planning")
+        if change_spec:
+            text += "\nProvider-authored specification drift.\n"
+        ticket_path.write_text(text)
+        run("git", "add", str(ticket_path), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: transition ticket state", cwd=self.product,
+        )
+        head = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run("git", "push", "-qu", "origin", branch, cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        return head
+
+    def authorize_preprovider_reset(self, head):
+        path = self.product / "factory/qualification/preprovider-branch-resets.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({
+            "factory_sha": "a" * 40,
+            "resets": [{
+                "branch": "ticket/T-110",
+                "head": head,
+                "ticket": "T-110",
+            }],
+            "schema": "nysa.software-factory.preprovider-branch-resets/v1",
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "authorize pre-provider reset", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
     def command(self, action, expected=0):
         result = subprocess.run(
             [
@@ -125,6 +229,7 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(first["ticket"], "T-200")
         self.assertRegex(first["lease_id"], r"^[0-9a-f]{64}$")
         worktree = Path(first["worktree"])
+        self.assertEqual(worktree.name, "cell-1")
         self.assertEqual(
             run("git", "symbolic-ref", "--short", "HEAD", cwd=worktree).strip(),
             "ticket/T-200",
@@ -139,6 +244,17 @@ class DispatchPlanTest(unittest.TestCase):
             results = list(executor.map(lambda _: self.command("claim"), range(2)))
         self.assertEqual({item["ticket"] for item in results}, {"T-100", "T-200"})
         self.assertEqual(len({item["lease_id"] for item in results}), 2)
+
+    def test_ticket_identity_survives_cell_relocation(self):
+        first = self.command("claim")
+        old_cell = Path(first["worktree"])
+        new_cell = self.worktrees / "cell-4"
+        (self.product / "factory/.dispatch-leases/T-200.json").unlink()
+        run("git", "worktree", "move", str(old_cell), str(new_cell), cwd=self.product)
+
+        resumed = self.command("claim")
+        self.assertEqual(resumed["ticket"], "T-200")
+        self.assertEqual(Path(resumed["worktree"]), new_cell)
 
     def test_stale_reconciliation_maintenance_and_dirty_root_refuse(self):
         self.write_mapping(age=601)
@@ -156,7 +272,7 @@ class DispatchPlanTest(unittest.TestCase):
         value = self.command("claim")
         self.assertEqual(value["action"], "WAIT")
         self.assertEqual(value["reason_code"], "capacity_full")
-        self.assertFalse((self.worktrees / "T-400").exists())
+        self.assertFalse((self.worktrees / "cell-3").exists())
 
     def test_failed_lease_write_removes_new_worktree_and_branch(self):
         lease_dir = self.product / "factory/.dispatch-leases"
@@ -165,7 +281,7 @@ class DispatchPlanTest(unittest.TestCase):
             self.command("claim", expected=2)
         finally:
             lease_dir.chmod(0o700)
-        self.assertFalse((self.worktrees / "T-200").exists())
+        self.assertFalse((self.worktrees / "cell-1").exists())
         branches = run("git", "branch", "--format=%(refname:short)", cwd=self.product)
         self.assertNotIn("ticket/T-200", branches.splitlines())
 
@@ -179,6 +295,134 @@ class DispatchPlanTest(unittest.TestCase):
         value = self.command("claim", expected=2)
         self.assertIn("divergent or unpushed", value["error"])
 
+    def test_authorized_control_only_remote_branch_rejoins_current_main(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim")
+
+        worktree = Path(value["worktree"])
+        self.assertEqual(value["preprovider_reset_head"], old_head)
+        self.assertEqual(
+            run("git", "rev-parse", "HEAD^{tree}", cwd=worktree),
+            run("git", "rev-parse", "origin/main^{tree}", cwd=worktree),
+        )
+        ticket = (worktree / "factory/tickets/T-110.md").read_text()
+        self.assertIn("State: Ready", ticket)
+        self.assertNotIn("Kit-SHA:", ticket)
+        self.assertFalse((worktree / "factory/route-plans/T-110.json").exists())
+        self.assertIn(
+            "supersede pre-provider control state",
+            run("git", "log", "-1", "--format=%s", cwd=worktree),
+        )
+
+    def test_authorized_reset_rejects_non_control_ticket_drift(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch(change_spec=True)
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("control state is invalid", value["error"])
+        self.assertEqual(list(self.worktrees.iterdir()), [])
+
+    def test_repeated_authorized_control_recovery_preserves_lineage(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.authorize_preprovider_reset(self.stale_preprovider_branch())
+        first = self.command("claim")
+        worktree = Path(first["worktree"])
+        ticket = worktree / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text() + f"\nKit-SHA: {'c' * 40}\n")
+        plan = worktree / "factory/route-plans/T-110.json"
+        plan.parent.mkdir(exist_ok=True)
+        plan.write_text(json.dumps({
+            "kit_sha": "c" * 40,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-110",
+        }) + "\n")
+        run("git", "add", str(ticket), str(plan), cwd=worktree)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: pin kit and model route plan", cwd=worktree,
+        )
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Planning"))
+        run("git", "add", str(ticket), cwd=worktree)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: transition ticket state", cwd=worktree,
+        )
+        repeated_head = run("git", "rev-parse", "HEAD", cwd=worktree).strip()
+        run("git", "push", "-q", "origin", "ticket/T-110", cwd=worktree)
+        (self.product / "factory/.dispatch-leases/T-110.json").unlink()
+        run("git", "worktree", "remove", str(worktree), cwd=self.product)
+        run("git", "branch", "-D", "ticket/T-110", cwd=self.product)
+        self.authorize_preprovider_reset(repeated_head)
+
+        value = self.command("claim")
+
+        recovered = Path(value["worktree"])
+        self.assertEqual(value["preprovider_reset_head"], repeated_head)
+        self.assertEqual(
+            run("git", "rev-parse", "HEAD^{tree}", cwd=recovered),
+            run("git", "rev-parse", "origin/main^{tree}", cwd=recovered),
+        )
+
+    def test_qualification_ramps_filters_dependencies_and_completes(self):
+        tickets = self.write_qualification({"T-109": ["T-100"]})
+
+        def state(done):
+            def terminal(_product, ticket):
+                if ticket not in done:
+                    raise DISPATCH.ValidationError("not done")
+                return {"ticket": ticket}
+
+            with mock.patch.object(DISPATCH, "protected_terminal", side_effect=terminal):
+                return DISPATCH.qualification(
+                    self.product, self.product / "factory", 4
+                )
+
+        initial = state(set())
+        self.assertEqual(initial["capacity"], 3)
+        self.assertNotIn("T-100", initial["terminal"])
+        self.assertEqual(initial["dependencies"]["T-109"], ("T-100",))
+
+        ramped = state(set(tickets[:3]))
+        self.assertEqual(ramped["capacity"], 4)
+        self.assertEqual(ramped["done"], 3)
+        self.assertIn("T-100", ramped["terminal"])
+
+        complete = state(set(tickets))
+        self.assertEqual(complete["done"], complete["target_done"])
+
+    def test_qualification_rejects_dependency_cycle(self):
+        self.write_qualification({"T-100": ["T-101"], "T-101": ["T-100"]})
+        with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
+            DISPATCH.qualification(self.product, self.product / "factory", 4)
+
+    def test_contract_18_qualification_requires_four_independent_canaries(self):
+        tickets = self.write_contract_18_qualification()
+        with mock.patch.object(
+            DISPATCH, "protected_terminal", side_effect=DISPATCH.ValidationError("not done")
+        ):
+            value = DISPATCH.qualification(
+                self.product, self.product / "factory", 4
+            )
+        self.assertEqual(value["tickets"], tickets)
+        self.assertEqual(value["capacity"], 4)
+        self.assertEqual(value["dependencies"], {ticket: () for ticket in tickets})
+        self.assertEqual(value["done"], 0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,13 +68,15 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.6.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.8.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
+~/.factory/bin/factory-launch <project> reconcile --json
+~/.factory/bin/factory-launch <project> qualification --json
 ~/.factory/bin/factory-launch <project> dispatch-plan --shadow --json
 ~/.factory/bin/factory-launch <project> dispatch-plan --claim --json
 ~/.factory/bin/factory-launch <project> ticket-pr --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --json
@@ -85,9 +87,14 @@ Contract versions `1.0.0` through `1.6.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Under Contracts 1.5 and 1.6, pass the exact role returned by `next-stage` to `preflight`;
+Under Contracts 1.5 through 1.7, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the
 one reserved by `run`.
+Under Contract 1.8, callers do not invoke `next-stage` directly. The
+non-agent controller obtains a one-use `state-machine` receipt and supplies it
+unchanged to execution and ticket attestations. It runs provider-free
+preflight once on the Planner receipt after the state machine enters Planning;
+later roles retain their valid evidence and do not repeat kickoff preflight.
 
 Model policy is task-free and sealed:
 
@@ -101,6 +108,7 @@ Model policy is task-free and sealed:
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
+~/.factory/bin/factory-launch <project> models fallback-auto --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason provider_unavailable --json
 ```
 
 The operator activates only the exact profile hash returned by preview.
@@ -123,7 +131,7 @@ snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
 Contracts `1.1.0` through `1.5.0` keep one-ticket behavior by default and accept
-`MAX_CONCURRENT_TICKETS` only from `1` through `4`. Contract 1.6 defaults to
+`MAX_CONCURRENT_TICKETS` only from `1` through `4`. Contracts 1.6 and 1.7 default to
 `4` and accepts `1` through `6`. Above one, the dispatcher uses
 `claim`, `renew`, and `release`, and supplies the matching `--lease` to
 preflight, next-stage, run, and ticket-attest. Capacity refusal is deterministic,
@@ -134,12 +142,41 @@ leases are gone. Leases expire after 15 minutes unless renewed, but expiration
 never makes them available to another dispatcher and a stale record still
 occupies capacity. This one product setting is the coupled ticket-worktree and
 provider-call capacity; there is no separate provider-capacity setting. The
-product-wide provider lock remains held for native subscription, Cursor CLI,
-and every other legacy provider interval. An exact Contract 1.6 API route may
-bypass it only when selected by the owner-only isolated-v1 activation file;
-missing or malformed activation never enables parallel provider work.
+product-wide provider lock remains held for every non-activated legacy
+provider interval. An exact Contract 1.6 API route may bypass it only through
+owner-only isolated-v1 activation. Contract 1.7 additionally admits exact
+Codex, Claude Code, and Cursor subscription CLI routes through canonical
+`cli-concurrent-v1` activation bound to the selected route and provider-policy
+SHA-256. Missing, malformed, or mismatched activation never enables parallel
+provider work. The initial policy caps Cursor at one concurrent process because
+its scratch root is account-global; limits are not duplicated in activation.
 
-The `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
+Contract 1.8 caps controller capacity at four. Tickets are identified by
+product, ticket, branch, and authenticated passport; numbered cells are
+disposable worktrees. A 15-second non-overlapping LaunchAgent and terminal-run
+watch call `reconcile`. Four PRs may validate concurrently while one renewable
+publication lease serializes merge requests. `qualification --json` writes an
+immutable green report only when all four passports, charges, restart and
+relocation events, protected checks, PR heads, merge commits, and protected
+main attestations match.
+
+Before promotion, `scripts/qualification-environment.py` may materialize the
+exact clean candidate as a read-only release under an owner-only
+`/private/tmp/nysa-sf-qualification.*` root. Its launcher derives that root
+from its sealed path, isolates controller and worktree state, and retains the
+account's real credential boundary while registering only the qualification
+product clone. It does not install or activate the candidate in the production
+kit registry.
+
+A repeated pre-provider qualification may retain remote ticket branches from
+the prior candidate. `factory/qualification/preprovider-branch-resets.json`
+may authorize their exact heads from protected main. `dispatch-plan` accepts
+only canonical Factory pin/Planning commits with unchanged ticket contracts,
+non-force merges current protected main, records the superseded head, and
+removes the obsolete pin before normal repinning. It refuses provider-authored,
+unlisted, ambiguous, or rewritten history.
+
+For Contracts 1.6 and 1.7, the `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
 wakeup claims at most one ticket and starts at most one ephemeral dispatcher
 child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque
 lease can remain in memory and accompany the child. `WAIT` and `ESCALATE` never
@@ -154,12 +191,31 @@ same call may create it at the Narrator boundary only after that reviewed-head
 lineage passes unchanged. A completed, role-valid Cursor run remains eligible
 when its billing state conservatively reserves the full run budget. It cannot
 approve or merge.
+For Contract 1.8, both profile skills are compatibility documentation only.
+They invoke `reconcile` and cannot choose stages or spawn an agentic
+dispatcher or supervisor.
 
 Narrator recovery treats only the current ticket document and its exact route
 journal as post-review factory metadata. A changed journal must pass the sealed
 model manager and prove an exact append-only suffix containing only
 release-migration revisions. Any rewritten route history, product, test,
 sibling-ticket, or other path change invalidates review before GitHub access.
+
+Contract 1.7 may bind a sandbox qualification to one exact kit SHA and ten
+protected ticket IDs through `factory/QUALIFICATION.json`. Dispatch admits only
+that set, holds capacity at three until three protected Done results, then
+raises it to four, respects tracked `Depends-On` edges, stops after ten, and
+marks the generation invalid when a started ticket exceeds ninety minutes.
+An authenticated Planner, Test-author, or Builder contract blocker returns
+only that qualification ticket to Backlog; a Spec-linter `FAIL` does the same
+without requesting another planning round. Siblings continue.
+`Merge-Policy: auto` must already exist on protected main; a ticket branch
+cannot grant itself automatic approval. A first terminal Cursor availability
+failure may use `fallback-auto` to preserve its handoff and select the approved
+direct Codex or Claude Code route for the second and final role attempt. When
+the ticket still has its initial v1 route plan, that same handoff commit first
+preserves it as revision zero of a same-release v2 journal; successful roles
+and the failed attempt are not replayed.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission
@@ -178,8 +234,15 @@ the host artifact controller verifies its executor hash, full identity,
 telemetry, base, paths, protected-path policy, and temporary-index application,
 then applies and commits it under a per-ticket lock. Each route remains
 disabled until its activation evidence and owner configuration are installed;
-legacy serialized runs remain available for non-activated routes. Under
-maintenance, recover a stale record explicitly with:
+legacy serialized runs remain available for non-activated routes.
+Contract 1.7 reuses that coordinator for subscription CLIs through
+`scripts/provider-cli-runtime.py`. Admission and terminalization remain short
+transactions, unknown post-submission outcomes retain their full reservation,
+and provider roles may commit locally but never push. Contract 1.6 accepts only
+the API activation-v1 schema and therefore preserves its serialized native-CLI
+behavior unchanged.
+
+Under maintenance, recover a stale record explicitly with:
 
 ```bash
 bash scripts/factory-kit.sh recover-lease \

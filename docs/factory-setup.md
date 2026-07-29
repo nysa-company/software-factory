@@ -16,8 +16,9 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
 - Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid. Set `AUTO_MERGE_METHOD=squash`, `merge`, or `rebase` to the repository's protected merge strategy.
 - Leave `MAX_CONCURRENT_TICKETS` absent to use the contract default. Contracts
-  1.1 through 1.5 default to `1` and accept integers through `4`; Contract 1.6
-  defaults to `4` and accepts `1` through `6`. Set a value above `1` only after a bounded
+  1.1 through 1.5 default to `1` and accept integers through `4`; Contracts
+  1.6 and 1.7 default to `4` and accept `1` through `6`; Contract 1.8 defaults
+  to `4` and accepts `1` through `4`. Set a value above `1` only after a bounded
   concurrency pilot is approved. This is the one coupled worktree/provider
   capacity setting. The retained product-level control lock serializes native
   subscription, Cursor CLI, and every other legacy route. An API route may use
@@ -61,6 +62,20 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
 - Create the dedicated factory profile at
   `~/.hermes/profiles/factory`. Install the canonical `SOUL.md` and
   `skills/factory-dispatch/SKILL.md` from `integrations/hermes/templates/`.
+- For Contract 1.8, instantiate
+  `scripts/launchd/com.factory.controller.plist.template` with the exact
+  project, home, and product paths and load it as a separate LaunchAgent.
+  Keep its `Interactive` process type: macOS background QoS can exhaust the
+  unchanged bounded provider-readiness probes before ticket work starts.
+- Pre-promotion live qualification uses the owner-only sealed environment
+  prepared by `scripts/qualification-environment.py`; it does not replace the
+  installed launcher or production activation record. Its generated marker
+  and launcher-supplied root binding are required for isolated subscription
+  provider attempts; never construct that environment by hand. The preparer
+  also fails before admission when the chosen root is too long for Cursor's
+  isolated attempt scratch. After a proven candidate defect, use its
+  `--upgrade` mode only after the product pin advances and all provider actions
+  drain; it preserves the authenticated controller/passport state in place.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry

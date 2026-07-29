@@ -5,6 +5,45 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.8.0 — 2026-07-27
+
+- Replaces agent-selected routing with deterministic reconciliation and
+  one-use, head- and passport-bound transition receipts.
+- Reinterprets ticket worktrees as disposable execution cells; ticket identity
+  is product, ticket, branch, and authenticated portable passport.
+- Adds provider-free Contract 1.8 readiness checks before Planner and removes
+  wall-clock qualification expiry as a delivery stop.
+- Retains the generation-wide provider coordinator and budget ledger while
+  allowing four ticket cells and four validating PRs.
+- Retains `dispatch-plan` for one release as a deterministic compatibility
+  alias; it cannot spawn an agentic dispatcher.
+- Adds a sealed non-production release environment for live qualification of
+  an unmerged candidate through the real controller.
+
+## 1.7.0 — 2026-07-22
+
+- Adds protected qualification manifests for an exact ten-ticket generation,
+  dependency-aware rolling capacity from three to four, a terminal stop, and a
+  ninety-minute invalidation boundary.
+- Adds protected per-ticket `Merge-Policy` preauthorization, qualification-only
+  Cursor-to-direct fallback after one terminal availability failure, and a
+  trusted spec-failure return to Backlog.
+- Adds owner-activated `cli-concurrent-v1` admission for the existing Codex,
+  Claude Code, and Cursor subscription CLI routes without API credentials.
+- Reuses Contract 1.6's transactional coordinator for short atomic capacity
+  and conservative budget reservations; limits remain exclusively in the
+  owner-local provider policy.
+- Binds activation to the exact selected adapter, model, provider family,
+  account route, and canonical provider-policy SHA-256. Invalid or mismatched
+  activation fails closed to the serialized path.
+- Caps Cursor at one concurrent process in the initial policy because its
+  scratch root is account-global; the coupled global capacity remains four.
+- Keeps Contract 1.6 activation v1 and serialized native-CLI behavior
+  unchanged, and preserves serialization as the rollback path for 1.7.
+- Adds trusted Reviewer reconciliation that binds the successful run's head and
+  output digest, records its explicit repair owner, and atomically returns a
+  rejected ticket from Review to Building.
+
 ## 1.6.0 — 2026-07-20
 
 - Adds an atomic `dispatch-plan` launcher command and a bounded

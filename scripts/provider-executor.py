@@ -677,6 +677,7 @@ def isolated_execute_locked(
         "trap 'exit 0' TERM INT; while :; do sleep 3600; done",
     ]
     created = False
+    result = None
     try:
         runtime_call(
             args.runtime, create, timeout=args.runtime_timeout,
@@ -750,18 +751,22 @@ def isolated_execute_locked(
             artifact_bytes=artifact_bytes,
             artifact_hash=artifact_hash,
         )
-        raw = canonical(result)
-        if len(raw) > args.result_bytes:
-            raise ExecutorError("result exceeds configured size limit")
-        write_exclusive(attempt / "result.json", raw)
-        return result
     finally:
         if created:
-            runtime_call(
+            removed = runtime_call(
                 args.runtime, ["rm", "--force", name],
                 timeout=args.runtime_timeout, output_limit=args.output_bytes,
                 check=False,
             )
+            if removed[0] != 0:
+                raise ExecutorError("container removal was not proven")
+    if result is None:
+        raise ExecutorError("provider execution produced no result")
+    raw = canonical(result)
+    if len(raw) > args.result_bytes:
+        raise ExecutorError("result exceeds configured size limit")
+    write_exclusive(attempt / "result.json", raw)
+    return result
 
 
 def isolated_execute(args: argparse.Namespace, request: dict[str, Any]) -> dict[str, Any]:

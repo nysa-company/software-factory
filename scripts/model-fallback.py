@@ -211,7 +211,7 @@ def load_policy_files(catalog_path, profiles_path):
     return ROUTER.load_policy(catalog_path, profiles_path)
 
 
-def calculate(args, nonce):
+def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
     repo = Path(args.workdir).resolve()
     factory_root = Path(args.factory_root).resolve()
     plan_path = repo / f"factory/route-plans/{args.ticket}.json"
@@ -220,7 +220,28 @@ def calculate(args, nonce):
     catalog, routes, _profiles, profile_map = load_policy_files(
         args.catalog, args.profiles
     )
-    MANAGER.validate_journal(journal, catalog, routes, profile_map)
+    if (
+        migrate_legacy
+        and journal.get("schema") == "ticket-model-route-plan/v1"
+    ):
+        pin_commit = git(
+            repo, "log", "-1", "--format=%H", "--",
+            f"factory/route-plans/{args.ticket}.json",
+        ).decode().strip()
+        commit_epoch = int(
+            git(repo, "show", "-s", "--format=%ct", pin_commit).decode()
+        )
+        migrated_at = (
+            dt.datetime.fromtimestamp(commit_epoch, dt.timezone.utc)
+            .replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
+        journal = MANAGER.migrate_v1_plan(
+            raw_journal, pin_commit, journal["kit_sha"], migrated_at,
+            catalog, routes, profile_map,
+        )
+        raw_journal = (canonical(journal) + "\n").encode()
+    else:
+        MANAGER.validate_journal(journal, catalog, routes, profile_map)
     failed, failed_raw, ledger_raw, manifests = load_evidence(
         factory_root, args.ticket, args.failed_run
     )
@@ -259,7 +280,10 @@ def calculate(args, nonce):
     )
     readiness = json.loads(Path(args.readiness).read_text())
     contributors = contributors_from(journal, manifests)
-    future_roles = list(ROLE_ORDER[ROLE_ORDER.index(role):])
+    future_roles = (
+        [role] if failed_role_only
+        else list(ROLE_ORDER[ROLE_ORDER.index(role):])
+    )
     prior = MANAGER.active_resolution(journal)
     if prior["profile_id"] == "project-policy":
         profile = ROUTER.model_policy_profile(prior["model_policy"], routes)
@@ -421,14 +445,7 @@ def recover(args):
     return result
 
 
-def apply(args):
-    approval = json.loads(Path(args.approval).read_text())
-    recovered = recover_applied(args, approval)
-    if recovered is not None:
-        return recovered
-    result = calculate(args, approval["nonce"])
-    if approval.get("approval_hash") != result["approval_hash"]:
-        raise FallbackError("Linear approval does not match the current fallback preview")
+def apply_result(args, approval, result):
     created_at = (
         dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         .replace("+00:00", "Z")
@@ -470,9 +487,89 @@ def apply(args):
     }
 
 
+def apply(args):
+    approval = json.loads(Path(args.approval).read_text())
+    recovered = recover_applied(args, approval)
+    if recovered is not None:
+        return recovered
+    result = calculate(args, approval["nonce"])
+    if approval.get("approval_hash") != result["approval_hash"]:
+        raise FallbackError("Linear approval does not match the current fallback preview")
+    return apply_result(args, approval, result)
+
+
+def qualification_apply(args):
+    try:
+        journal = json.loads(
+            git(
+                Path(args.workdir), "show",
+                f"HEAD:factory/route-plans/{args.ticket}.json",
+            )
+        )
+        approval = journal["revisions"][-1]["body"]["approval_receipt"]
+    except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
+        approval = None
+    if isinstance(approval, dict):
+        recovered = recover_applied(args, approval)
+        if recovered is not None:
+            return recovered
+    result = calculate(
+        args, secrets.token_hex(16),
+        migrate_legacy=True,
+        failed_role_only=True,
+    )
+    failed = result["failed"]
+    if not failed.get("route_id", "").startswith("cursor-"):
+        raise FallbackError("qualification fallback requires a failed Cursor route")
+    expected_adapter = (
+        "claude-code"
+        if failed["role"] in {"spec-linter", "test-author", "reviewer"}
+        else "codex"
+    )
+    if result["resolution"]["selections"][failed["role"]]["adapter"] != expected_adapter:
+        raise FallbackError("qualification fallback did not resolve the approved direct CLI")
+    attempts = 0
+    for path in (Path(args.factory_root) / "factory/runs").glob("*.meta"):
+        if path.is_file() and not path.is_symlink():
+            value = read_meta(path)
+            attempts += (
+                value.get("ticket") == args.ticket
+                and value.get("role") == failed["role"]
+                and value.get("go_issued") == "1"
+            )
+    if attempts != 1:
+        raise FallbackError("qualification fallback is allowed only after the first role attempt")
+    raw = git(
+        Path(args.workdir), "show", "refs/remotes/origin/main:factory/QUALIFICATION.json"
+    )
+    try:
+        qualification = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise FallbackError("protected qualification manifest is malformed") from error
+    if (
+        qualification.get("schema") not in {
+            "nysa.software-factory.qualification/v1",
+            "nysa.software-factory.qualification/v2",
+        }
+        or qualification.get("factory_sha") != result["journal"]["kit_sha"]
+        or args.ticket not in qualification.get("tickets", [])
+        or not isinstance(qualification.get("generation"), int)
+        or qualification["generation"] < 1
+    ):
+        raise FallbackError("protected qualification manifest does not authorize fallback")
+    approval = {
+        "approval_hash": result["approval_hash"],
+        "generation": qualification["generation"],
+        "manifest_digest": digest(raw),
+        "nonce": result["nonce"],
+        "schema": "ticket-model-fallback-qualification/v1",
+    }
+    return apply_result(args, approval, result)
+
+
 def parser():
     value = argparse.ArgumentParser()
-    value.add_argument("action", choices=("preview", "apply", "recover"))
+    value.add_argument("action", choices=("preview", "apply", "qualification-apply", "recover"))
     value.add_argument("--workdir", required=True)
     value.add_argument("--factory-root", required=True)
     value.add_argument("--project", required=True)
@@ -504,6 +601,8 @@ def main():
         value = preview(args)
     elif args.action == "recover":
         value = recover(args)
+    elif args.action == "qualification-apply":
+        value = qualification_apply(args)
     else:
         value = apply(args)
     print(canonical(value))

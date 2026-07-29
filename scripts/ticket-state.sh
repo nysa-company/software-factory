@@ -2,19 +2,35 @@
 # Materialize Linear-owned fields or commit one legal factory-owned state move.
 set -euo pipefail
 
-TICKET="" WORKDIR="" ACTION="" STATE=""
+TICKET="" WORKDIR="" ACTION="" STATE="" ROLE=""
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2 ;;
     --workdir) WORKDIR="$2"; shift 2 ;;
     --action) ACTION="$2"; shift 2 ;;
     --state) STATE="$2"; shift 2 ;;
+    --role) ROLE="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 [[ "$TICKET" =~ ^T-[0-9]+$ && -n "$WORKDIR" ]] || { echo "invalid ticket-state arguments" >&2; exit 2; }
-[[ "$ACTION" == "materialize" || "$ACTION" == "transition" ]] || { echo "invalid ticket-state action" >&2; exit 2; }
-[[ "$ACTION" == "materialize" || -n "$STATE" ]] || { echo "transition requires --state" >&2; exit 2; }
+[[ "$ACTION" == "materialize" || "$ACTION" == "transition" ||
+   "$ACTION" == "reviewer-reconcile" ||
+   "$ACTION" == "qualification-backlog" ]] || { echo "invalid ticket-state action" >&2; exit 2; }
+[[ "$ACTION" != "transition" || -n "$STATE" ]] || { echo "transition requires --state" >&2; exit 2; }
+[[ -z "$ROLE" || "$ACTION" == "qualification-backlog" ]] ||
+  { echo "--role is valid only for qualification backlog return" >&2; exit 2; }
+[[ "$ACTION" != "reviewer-reconcile" ||
+   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] || {
+  echo "reviewer reconciliation requires contract 1.7.0" >&2
+  exit 1
+}
+[[ "$ACTION" != "qualification-backlog" ||
+   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] || {
+  echo "qualification backlog return requires contract 1.7.0" >&2
+  exit 1
+}
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
@@ -93,12 +109,12 @@ elif [[ "$ACTION" == "transition" ]]; then
     echo "pending operator fields require materialization before factory transition" >&2
     exit 1
   }
-  python3 - "$TMP" "$STATE" <<'PY'
+  python3 - "$TMP" "$STATE" "$CONTRACT_VERSION" <<'PY'
 import re
 import sys
 from pathlib import Path
 
-path, target = Path(sys.argv[1]), sys.argv[2]
+path, target, contract = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 text = path.read_text()
 match = re.search(r"^State:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
 if not match:
@@ -106,9 +122,9 @@ if not match:
 current = match.group(1).strip().lower()
 target_key = target.strip().lower()
 states = {
-    "planning": "Planning", "building": "Building", "review": "Review",
+    "ready": "Ready", "planning": "Planning", "building": "Building", "review": "Review",
     "awaiting approval": "Awaiting Approval", "blocked-escalated": "Blocked-Escalated",
-    "done": "Done",
+    "approved": "Approved", "done": "Done",
 }
 allowed = {
     ("ready", "planning"), ("planning", "building"), ("building", "review"),
@@ -120,7 +136,133 @@ if target_key == "blocked-escalated" and current in {
     allowed.add((current, target_key))
 if (current, target_key) not in allowed or target_key not in states:
     raise SystemExit(f"illegal factory transition: {current} -> {target_key}")
-path.write_text(re.sub(r"^State:\s*.*$", f"State: {states[target_key]}", text, count=1, flags=re.MULTILINE | re.IGNORECASE))
+text = re.sub(
+    r"^State:\s*.*$", f"State: {states[target_key]}", text,
+    count=1, flags=re.MULTILINE | re.IGNORECASE,
+)
+if target_key == "blocked-escalated" and contract in {"1.7.0", "1.8.0"}:
+    resume = f"Resume-State: {states[current]}"
+    resume_fields = re.findall(
+        r"^Resume-State:\s*.*$", text, re.MULTILINE | re.IGNORECASE,
+    )
+    if len(resume_fields) > 1:
+        raise SystemExit("ticket contains duplicate Resume-State fields")
+    if resume_fields:
+        text = re.sub(
+            r"^Resume-State:\s*.*$", resume, text,
+            count=1, flags=re.MULTILINE | re.IGNORECASE,
+        )
+    else:
+        text = re.sub(
+            r"^(State:\s*.*)$", rf"\1\n{resume}", text,
+            count=1, flags=re.MULTILINE | re.IGNORECASE,
+        )
+path.write_text(text)
+PY
+elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
+  cmp -s "$TMP" "$TICKET_FILE" || {
+    echo "pending operator fields require materialization before reviewer reconciliation" >&2
+    exit 1
+  }
+  HEAD_BEFORE="$(git -C "$WORKDIR" rev-parse HEAD)" || {
+    echo "ticket head cannot be resolved" >&2
+    exit 1
+  }
+  if [[ -n "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]]; then
+    python3 "$KIT_DIR/scripts/lib/reviewer-reconcile.py" \
+      --runs-dir "$PRODUCT_ROOT/factory/runs" \
+      --ticket-file "$TICKET_FILE" --ticket "$TICKET" \
+      --head "$HEAD_BEFORE" \
+      --contract-version "$CONTRACT_VERSION" \
+      --checkpoint "$FACTORY_DEV_PRODUCT_CHECKPOINT" \
+      --output "$TMP"
+  else
+    python3 "$KIT_DIR/scripts/lib/reviewer-reconcile.py" \
+      --runs-dir "$PRODUCT_ROOT/factory/runs" \
+      --ticket-file "$TICKET_FILE" --ticket "$TICKET" \
+      --head "$HEAD_BEFORE" \
+      --contract-version "$CONTRACT_VERSION" \
+      --output "$TMP"
+  fi
+elif [[ "$ACTION" == "qualification-backlog" ]]; then
+  cmp -s "$TMP" "$TICKET_FILE" || {
+    echo "pending operator fields require materialization before backlog return" >&2
+    exit 1
+  }
+  PINNED_KIT_SHA="$(git -C "$KIT_DIR" rev-parse --verify HEAD 2>/dev/null)" || {
+    echo "pinned Factory SHA is unavailable" >&2
+    exit 1
+  }
+  git -C "$WORKDIR" show \
+    "refs/remotes/origin/main:factory/QUALIFICATION.json" > "$OPERATOR_VERSION_FILE" ||
+    { echo "protected qualification manifest is unavailable" >&2; exit 1; }
+  python3 - "$TMP" "$OPERATOR_VERSION_FILE" "$TICKET" \
+    "$PRODUCT_ROOT/factory/runs" "$ROLE" "$PINNED_KIT_SHA" \
+    "$CONTRACT_VERSION" <<'PY'
+import json
+import re
+import stat
+import sys
+from pathlib import Path
+
+ticket_path, qualification_path, ticket, runs_path, role, pinned_kit_sha, contract_version = (
+    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]),
+    sys.argv[5], sys.argv[6], sys.argv[7]
+)
+text = ticket_path.read_text()
+qualification = json.loads(qualification_path.read_text())
+if (
+    qualification.get("schema") != "nysa.software-factory.qualification/v1"
+    or ticket not in qualification.get("tickets", [])
+):
+    raise SystemExit("protected qualification manifest does not authorize backlog return")
+states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
+spec_failed = (
+    states == ["Planning"]
+    and re.search(
+        r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$", text, re.I | re.M
+    )
+)
+contract_blocked = False
+if role:
+    if role not in {"planner", "test-author", "builder"} or states not in (
+        ["Planning"], ["Building"]
+    ):
+        raise SystemExit("qualification contract blocker has invalid role or state")
+    candidates = []
+    for path in runs_path.glob("*.meta"):
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SystemExit("unsafe role manifest")
+        values = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key in values:
+                raise SystemExit("malformed role manifest")
+            values[key] = value
+        if values.get("ticket") == ticket and values.get("role") == role:
+            candidates.append(values)
+    if candidates:
+        latest = max(candidates, key=lambda value: (
+            value.get("started_at", ""), value.get("run_id", "")
+        ))
+        accounted = latest.get("accounting_state") == "completed" or (
+            latest.get("accounting_state") == "abandoned_conservative"
+            and latest.get("cost_basis") == "conservative_reservation"
+            and latest.get("effective_cost") == latest.get("reserved_usd")
+        )
+        contract_blocked = accounted and all((
+            latest.get("contract_version") == contract_version,
+            latest.get("phase") == "completed",
+            latest.get("exit_status") == "12",
+            latest.get("role_exit") == "role_exit_contract_blocked",
+            latest.get("kit_sha") == pinned_kit_sha,
+        ))
+if not spec_failed and not contract_blocked:
+    raise SystemExit("qualification backlog return lacks authenticated failure evidence")
+ticket_path.write_text(re.sub(
+    r"^State:\s*.*$", "State: Backlog", text, count=1, flags=re.I | re.M,
+))
 PY
 fi
 

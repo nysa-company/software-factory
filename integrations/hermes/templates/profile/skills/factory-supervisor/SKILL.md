@@ -1,34 +1,23 @@
 ---
 name: factory-supervisor
-version: 1.6.0
-description: Start bounded factory dispatchers from atomic launcher claims.
+version: 1.8.0
+description: Deprecated compatibility alias for deterministic Factory reconciliation.
 ---
 
-# Factory supervisor
+# Factory supervisor compatibility
 
-Accept only a trusted project slug from installed job configuration. Use no
-repository path, ticket prose, board scan, or mutable checkout script.
+Contract 1.8 has no agentic supervisor and starts no child dispatcher.
 
-1. Run `~/.factory/bin/factory-launch <project> contract --json`, require
-   Contract `1.6.0`, then run
-   `~/.factory/bin/factory-launch <project> doctor --json` and stop on any
+1. Run `~/.factory/bin/factory-launch <project> contract --json` and require
+   Contract `1.8.0`.
+2. Run `~/.factory/bin/factory-launch <project> doctor --json` and stop on an
    error category.
-2. Run `factory-launch <project> dispatch-plan --claim --json` once.
-3. On `WAIT`, exit successfully. On `ESCALATE`, publish one redacted operator
-   message containing only its fixed reason code, then exit without retrying.
-4. On `START`, keep the returned lease capability only in supervisor memory.
-   Start one ephemeral child session using the installed `factory-dispatch`
-   skill with the returned project, ticket, exact worktree, and lease. Never
-   put the lease in prompts, logs, files, board state, evidence, or status.
-5. The child dispatcher renews before every sequencing or role action and
-   releases only at the contract's terminal state. A refusal or unknown result
-   is terminal and must be escalated, never retried or worked around.
+3. Run `~/.factory/bin/factory-launch <project> reconcile --json` once.
 
-One invocation starts at most one child and then exits. The existing Hermes
-gateway/cron owns scheduling and overlap suppression; do not add a daemon,
-poll, busy-loop, scan Markdown, or create a second queue. Disabling that one
-job returns the product to manual `factory-dispatch` operation.
+The installed per-product launchd job normally performs that same non-agent
+reconciliation every 15 seconds. `dispatch-plan --claim --json` remains a
+deprecated deterministic compatibility alias for one release; it never starts
+an agent or exposes a lease to a prompt.
 
-Use Hermes native child-session delegation only. Never invoke a worker CLI,
-approve, merge, activate, clear maintenance, recover leases, or mutate factory
-state outside the stable launcher.
+Never invoke roles, worker CLIs, approval, merge, release activation, or manual
+state edits from this skill.

@@ -246,7 +246,9 @@ case "$command_name" in
     done
     [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]] ||
       json_error "route migration requires contract 1.4.0 or newer"
     if [[ "$command_name" == "migrate" ]]; then
       [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
@@ -394,7 +396,7 @@ value.update(commit_sha=sys.argv[2], approved_by=sys.argv[3])
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
     ;;
-  fallback-plan|fallback)
+  fallback-plan|fallback|fallback-auto)
     ticket="" failed_run="" workdir="" reason="" allow_reviewer_family=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -412,8 +414,15 @@ PY
     done
     [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.4.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]] ||
       json_error "mid-ticket fallback requires contract 1.4.0 or newer"
+    if [[ "$command_name" == "fallback-auto" &&
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.7.0" &&
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.8.0" ]]; then
+      json_error "automatic qualification fallback requires contract 1.7.0"
+    fi
     [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
       json_error "failed run identifier is invalid"
     [[ "$reason" == "credits_exhausted" || "$reason" == "provider_unavailable" ]] ||
@@ -427,18 +436,21 @@ PY
       fallback_exception_args=(--allow-reviewer-family "$allow_reviewer_family")
     validate_control_workdir "$ticket" "$workdir" 1
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
-      json_error "v2 ticket route journal is missing or unsafe"
-    profile_id="$(python3 - "$CONTROL_PLAN_FILE" <<'PY'
+      json_error "ticket route document is missing or unsafe"
+    profile_id="$(python3 - "$CONTROL_PLAN_FILE" "$command_name" <<'PY'
 import base64, json, sys
 value = json.load(open(sys.argv[1]))
-if value.get("schema") != "ticket-model-route-journal/v2":
-    raise SystemExit(2)
-body = value["revisions"][-1]["body"]
-if body["kind"] == "migration":
-    plan = json.loads(base64.b64decode(body["legacy_plan_b64"]))
-    resolution = plan["resolution"]
+if value.get("schema") == "ticket-model-route-plan/v1" and sys.argv[2] == "fallback-auto":
+    resolution = value["resolution"]
+elif value.get("schema") == "ticket-model-route-journal/v2":
+    body = value["revisions"][-1]["body"]
+    if body["kind"] == "migration":
+        plan = json.loads(base64.b64decode(body["legacy_plan_b64"]))
+        resolution = plan["resolution"]
+    else:
+        resolution = body.get("new_resolution", body["prior_resolution"])
 else:
-    resolution = body.get("new_resolution", body["prior_resolution"])
+    raise SystemExit(2)
 print(resolution["profile_id"])
 PY
 )" || json_error "route journal cannot select its profile"
@@ -469,6 +481,41 @@ PY
       fi
       cat "$preview_file"
       rm -f "$preview_file"
+      exit 0
+    fi
+    if [[ "$command_name" == "fallback-auto" ]]; then
+      launch_lock="$FACTORY_ROOT/factory/.launch.lock"
+      provider_lock="$FACTORY_ROOT/factory/.provider.lock"
+      ledger_lock="$FACTORY_ROOT/factory/.ledger.lock"
+      mkdir "$launch_lock" 2>/dev/null || json_error "launch lock is busy"
+      FALLBACK_LAUNCH_LOCK="$launch_lock"
+      [[ ! -e "$provider_lock" && ! -L "$provider_lock" &&
+         ! -e "$ledger_lock" && ! -L "$ledger_lock" ]] ||
+        json_error "provider or accounting state is busy"
+      expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
+      [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
+        json_error "remote tracking state is unavailable"
+      apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
+        json_error "could not allocate fallback result"
+      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" qualification-apply \
+        --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
+        --project "$FACTORY_PROJECT" --ticket "$ticket" \
+        --failed-run "$failed_run" --reason "$reason" \
+        --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$apply_file"; then
+        rm -f "$apply_file"
+        json_error "automatic qualification fallback failed"
+      fi
+      commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
+        "$CONTROL_REMOTE" "$expected_remote_head")"
+      rmdir "$FALLBACK_LAUNCH_LOCK"
+      FALLBACK_LAUNCH_LOCK=""
+      python3 - "$apply_file" "$commit_sha" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+value["commit_sha"] = sys.argv[2]
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+      rm -f "$apply_file"
       exit 0
     fi
     approval_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-approval.XXXXXX")" ||
@@ -584,7 +631,57 @@ print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
     rm -f "$apply_file" "$approval_file"
     ;;
+  pin-batch)
+    tickets=()
+    workdirs=()
+    while [[ $# -gt 0 ]]; do
+      [[ $# -ge 4 && "$1" == "--ticket" && "$3" == "--workdir" ]] ||
+        json_error "pin-batch requires ticket/workdir pairs"
+      [[ "$2" =~ ^T-[0-9]+$ ]] || json_error "ticket must match T-NNN"
+      [[ "$4" == /* ]] || json_error "workdir must be absolute"
+      for existing in "${tickets[@]-}"; do
+        [[ "$existing" != "$2" ]] || json_error "pin-batch tickets must be unique"
+      done
+      tickets+=("$2")
+      workdirs+=("$4")
+      shift 4
+    done
+    [[ "${#tickets[@]}" -ge 1 && "${#tickets[@]}" -le 4 ]] ||
+      json_error "pin-batch requires one to four tickets"
+    for index in "${!tickets[@]}"; do
+      validate_control_workdir "${tickets[$index]}" "${workdirs[$index]}"
+    done
+    load_machine_config
+    factory_load_model_probe_context ||
+      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-batch.XXXXXX")" ||
+      json_error "could not allocate batch pin resolution"
+    TEMPORARY_FILE="$resolution"
+    factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+      "$FACTORY_DISABLED_ROUTE_IDS" ||
+      json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    pin_results=()
+    for index in "${!tickets[@]}"; do
+      pin_result="$(FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+        FACTORY_INTERNAL_BATCH_RESOLUTION="$resolution" \
+        /bin/bash "$KIT_DIR/scripts/model-control.sh" pin \
+        --ticket "${tickets[$index]}" --workdir "${workdirs[$index]}")" ||
+        json_error "batch ticket pin failed for ${tickets[$index]}"
+      pin_results+=("$pin_result")
+    done
+    python3 - "${pin_results[@]}" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "pins": [json.loads(value) for value in sys.argv[1:]],
+    "schema": "model-pin-batch/v1",
+    "status": "ok",
+}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+PY
+    ;;
   pin)
+    internal_resolution="${FACTORY_INTERNAL_BATCH_RESOLUTION:-}"
+    unset FACTORY_INTERNAL_BATCH_RESOLUTION
     ticket=""
     workdir=""
     while [[ $# -gt 0 ]]; do
@@ -732,15 +829,41 @@ PY
       factory_record_ticket_kit_sha "$ticket_file" "$FACTORY_KIT_SHA" ||
         json_error "$FACTORY_TICKET_KIT_ERROR"
     fi
-    load_machine_config
-    factory_load_model_probe_context ||
-      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
-    resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-pin.XXXXXX")" ||
-      json_error "could not allocate pin resolution"
-    TEMPORARY_FILE="$resolution"
-    factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
-      "$FACTORY_DISABLED_ROUTE_IDS" ||
-      json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    if [[ -n "$internal_resolution" ]]; then
+      resolution_parent="$(cd "$(dirname "$internal_resolution")" 2>/dev/null && pwd -P)" ||
+        json_error "batch pin resolution is unavailable"
+      resolution="$resolution_parent/$(basename "$internal_resolution")"
+      [[ "$resolution" == "$internal_resolution" &&
+         "$resolution_parent" == "$(cd "$FACTORY_MODEL_STATE_ROOT" && pwd -P)" &&
+         "$(basename "$resolution")" == .model-control-batch.* ]] ||
+        json_error "batch pin resolution is outside model state"
+      python3 - "$resolution" <<'PY' ||
+import os
+import pathlib
+import stat
+import sys
+
+value = pathlib.Path(sys.argv[1]).lstat()
+if (
+    not stat.S_ISREG(value.st_mode)
+    or value.st_uid != os.geteuid()
+    or value.st_nlink != 1
+    or stat.S_IMODE(value.st_mode) != 0o600
+):
+    raise SystemExit(1)
+PY
+        json_error "batch pin resolution is unsafe"
+    else
+      load_machine_config
+      factory_load_model_probe_context ||
+        json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-pin.XXXXXX")" ||
+        json_error "could not allocate pin resolution"
+      TEMPORARY_FILE="$resolution"
+      factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+        "$FACTORY_DISABLED_ROUTE_IDS" ||
+        json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    fi
     pin_json="$(manager pin --ticket "$ticket" --kit-sha "$FACTORY_KIT_SHA" \
       --resolution-file "$resolution" --output "$output")" ||
       json_error "ticket route pin is invalid or conflicts with an existing pin"

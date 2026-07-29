@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "ticket-pr.py"
@@ -18,6 +19,9 @@ ROUTER_PATH = ROOT / "scripts" / "model-router.py"
 ROUTER_SPEC = importlib.util.spec_from_file_location("ticket_pr_model_router", ROUTER_PATH)
 ROUTER = importlib.util.module_from_spec(ROUTER_SPEC)
 ROUTER_SPEC.loader.exec_module(ROUTER)
+HELPER_SPEC = importlib.util.spec_from_file_location("ticket_pr_helper", HELPER)
+TICKET_PR = importlib.util.module_from_spec(HELPER_SPEC)
+HELPER_SPEC.loader.exec_module(TICKET_PR)
 MANAGER_SPEC = importlib.util.spec_from_file_location("ticket_pr_model_manager", MANAGER_PATH)
 MANAGER = importlib.util.module_from_spec(MANAGER_SPEC)
 MANAGER_SPEC.loader.exec_module(MANAGER)
@@ -58,6 +62,7 @@ class TicketPrTest(unittest.TestCase):
             "expires_epoch": 4102444800,
         }))
         (factory / "KIT_PIN").write_text(KIT_SHA + "\n")
+        (factory / "QUALIFICATION.json").write_text('{"generation":1}\n')
         (factory / "tickets/T-100.md").write_text(
             f"# T-100\n\nState: Building\nInitiative: I-1\nPriority: normal\n"
             f"Kit-SHA: {KIT_SHA}\nSPEC-LINT: PASS\n"
@@ -107,6 +112,9 @@ elif args[:2] == ['pr', 'create']:
     state.write_text(json.dumps(prs))
 elif args[:2] == ['pr', 'checks']:
     bucket = os.environ.get('FAKE_CHECK_BUCKET', 'pass')
+    if bucket == 'unreported':
+        print("no required checks reported on the 'ticket/T-100' branch", file=sys.stderr)
+        raise SystemExit(1)
     print(json.dumps([{'name': 'ci', 'state': bucket, 'bucket': bucket}]))
     raise SystemExit(8 if bucket == 'pending' else 1 if bucket != 'pass' else 0)
 else:
@@ -127,15 +135,33 @@ else:
             )
         self.ledger.write_text("\n".join(rows) + "\n")
 
-    def command(self, expected=0, bucket="pass", lease_id=LEASE_ID):
+    def test_exact_remote_head_retries_once(self):
+        failed = subprocess.CompletedProcess(
+            ["git"], 128, stdout="", stderr="transport unavailable"
+        )
+        passed = subprocess.CompletedProcess(
+            ["git"], 0, stdout="a" * 40 + "\trefs/heads/ticket/T-100\n", stderr=""
+        )
+        with patch.object(TICKET_PR.subprocess, "run", side_effect=[failed, passed]) as run:
+            self.assertEqual(
+                TICKET_PR.git(self.product, "ls-remote", "origin"),
+                "a" * 40 + "\trefs/heads/ticket/T-100",
+            )
+            self.assertEqual(run.call_count, 2)
+        with patch.object(TICKET_PR.subprocess, "run", side_effect=[failed, failed]) as run:
+            with self.assertRaises(TICKET_PR.Refusal):
+                TICKET_PR.git(self.product, "ls-remote", "origin")
+            self.assertEqual(run.call_count, 2)
+
+    def command(
+        self, expected=0, bucket="pass", lease_id=LEASE_ID,
+        contract="", stage="", receipt="",
+    ):
         head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
         ).stdout.strip()
-        result = subprocess.run(
-            [sys.executable, HELPER, "--ticket", "T-100", "--workdir", self.product],
-            text=True, capture_output=True, check=False,
-            env={
+        environment = {
                 **os.environ,
                 "PATH": f"{self.bin}:{os.environ['PATH']}",
                 "FACTORY_ROOT": str(self.product),
@@ -148,10 +174,82 @@ else:
                 "FAKE_PR_TRACE": str(self.trace),
                 "FAKE_PR_HEAD": head,
                 "FAKE_CHECK_BUCKET": bucket,
-            },
+        }
+        if contract:
+            environment.update({
+                "FACTORY_RELEASE_CONTRACT_VERSION": contract,
+                "FACTORY_TRANSITION_STAGE": stage,
+                "FACTORY_TRANSITION_RECEIPT_SHA256": receipt,
+            })
+        result = subprocess.run(
+            [sys.executable, HELPER, "--ticket", "T-100", "--workdir", self.product],
+            text=True, capture_output=True, check=False,
+            env=environment,
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
+
+    def prepare_control_refresh(self):
+        old_head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        base = self.root / "base"
+        subprocess.run(
+            ["git", "-C", self.product, "worktree", "add", "-q", base, "main"],
+            check=True,
+        )
+        target = "e" * 40
+        (base / "factory/KIT_PIN").write_text(target + "\n")
+        (base / "factory/QUALIFICATION.json").write_text('{"generation":2}\n')
+        migration = base / "factory/migrations/inflight-release" / f"{target}.json"
+        migration.parent.mkdir(parents=True)
+        migration.write_text("{}\n")
+        subprocess.run(["git", "-C", base, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", base, "commit", "-qm", "advance control metadata"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", base, "push", "-q", "origin", "main"], check=True)
+        base_head = subprocess.run(
+            ["git", "-C", base, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", self.product, "merge", "--no-ff", "-m",
+             "merge protected control metadata", base_head],
+            text=True, capture_output=True, check=True,
+        )
+        merge_head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        refresh = self.product / "factory/attestations/T-100/refresh.json"
+        refresh.parent.mkdir(parents=True)
+        refresh.write_text(json.dumps({
+            "schema": "nysa.software-factory.ticket-refresh/v1",
+            "ticket": "T-100",
+            "generation": 1,
+            "old_head": old_head,
+            "base_head": base_head,
+            "merge_head": merge_head,
+            "prior_reviewer_runs": 1,
+            "prior_approve_verdicts": 1,
+            "prior_request_changes_verdicts": 0,
+            "prior_narrator_runs": 0,
+            "prior_bundle_blob": None,
+            "prior_approval_blob": None,
+            "refreshed_at": "2026-07-20T00:02:00Z",
+        }, sort_keys=True) + "\n")
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "record refresh evidence"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
 
     def prepare_route_migration(self):
         route_plans = self.product / "factory/route-plans"
@@ -247,6 +345,9 @@ else:
         self.assertIn("reviewer or narrator stage", refused["error"])
 
     def test_required_checks_gate_reviewer_and_narrator(self):
+        unreported = self.command(bucket="unreported")
+        self.assertEqual(unreported["status"], "wait")
+        self.assertEqual(unreported["checks"], ["required checks not reported"])
         pending = self.command(bucket="pending")
         self.assertEqual(pending["status"], "wait")
         failed = self.command(bucket="fail")
@@ -295,6 +396,30 @@ else:
         recovered = self.command()
         self.assertEqual(recovered["boundary"], "narrator")
         self.assertEqual(recovered["status"], "ready")
+
+    def test_narrator_recovery_accepts_only_authenticated_control_refresh(self):
+        self.prepare_narrator(accounting_state="abandoned_conservative")
+        self.prepare_control_refresh()
+        recovered = self.command(
+            contract="1.8.0", stage="RUN narrator", receipt="f" * 64,
+        )
+        self.assertEqual(recovered["boundary"], "narrator")
+        self.assertEqual(recovered["status"], "ready")
+
+        (self.product / "implementation.txt").write_text("changed after refresh\n")
+        subprocess.run(["git", "-C", self.product, "add", "implementation.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "late implementation"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
+        refused = self.command(
+            expected=2, contract="1.8.0", stage="RUN narrator", receipt="f" * 64,
+        )
+        self.assertIn("implementation changed", refused["error"])
 
     def test_narrator_recovery_rejects_tampered_route_migration(self):
         route_plan, journal = self.prepare_route_migration()

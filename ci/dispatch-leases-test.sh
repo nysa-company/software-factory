@@ -104,9 +104,12 @@ else
   fail "sequencing requires the matching lease" "wrong=$WRONG_STAGE right=$RIGHT_STAGE"
 fi
 
+LEASE_EXPIRY_BEFORE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["expires_epoch"])' \
+  "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json")"
 MOCK_SLEEP=2 FACTORY_DISPATCH_LEASE_ID="$FIRST_ID" FACTORY_ROOT="$PRODUCT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_TRUSTED_TEST_HARNESS=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_TEST_LEASE_HEARTBEAT_SECONDS=1 \
   "$RUN" --role planner --ticket "$FIRST_TICKET" -- "bounded run" > "$TMP/bounded-run.out" 2>&1 &
 RUN_PID=$!
 for _try in $(seq 1 200); do
@@ -118,14 +121,17 @@ FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRS
   > "$TMP/live-release.out" 2>&1 || LIVE_RELEASE_RC=$?
 RUN_RC=0
 wait "$RUN_PID" || RUN_RC=$?
+LEASE_EXPIRY_AFTER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["expires_epoch"])' \
+  "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json")"
 if [[ "$RUN_RC" -eq 0 &&
-      ( "$LIVE_RELEASE_RC" -eq 7 || "$LIVE_RELEASE_RC" -eq 8 ) ]] &&
+      ( "$LIVE_RELEASE_RC" -eq 7 || "$LIVE_RELEASE_RC" -eq 8 ) &&
+      "$LEASE_EXPIRY_AFTER" -gt "$LEASE_EXPIRY_BEFORE" ]] &&
    grep -q "mock adapter ran task" "$TMP/bounded-run.out" &&
    ! grep -q "lease leaked" "$TMP/bounded-run.out"; then
-  pass "live role safely refuses lease release while the task adapter receives no lease capability"
+  pass "live role renews its lease without giving the adapter lease capability"
 else
-  fail "live role safely refuses lease release while the task adapter receives no lease capability" \
-    "run=$RUN_RC release=$LIVE_RELEASE_RC"
+  fail "live role renews its lease without giving the adapter lease capability" \
+    "run=$RUN_RC release=$LIVE_RELEASE_RC before=$LEASE_EXPIRY_BEFORE after=$LEASE_EXPIRY_AFTER"
 fi
 
 python3 - "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json" <<'PY'
@@ -143,6 +149,38 @@ if [[ "$STALE_STAGE" == "REFUSE dispatcher lease is stale"* && "$RENEWED_STAGE" 
   pass "stale lease blocks work until its owner renews"
 else
   fail "stale lease blocks work until its owner renews" "stale=$STALE_STAGE renewed=$RENEWED_STAGE"
+fi
+
+mkdir "$PRODUCT/factory/.launch.lock"
+BUSY_RENEW_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
+  > "$TMP/busy-renew.out" 2>&1 || BUSY_RENEW_RC=$?
+if [[ "$BUSY_RENEW_RC" -eq 0 && -d "$PRODUCT/factory/.launch.lock" ]]; then
+  pass "lease renewal does not wait for an unrelated provider launch lock"
+else
+  fail "lease renewal does not wait for an unrelated provider launch lock" "status=$BUSY_RENEW_RC"
+fi
+cp "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json" "$TMP/busy-lease-before.json"
+WRONG_BUSY_RENEW_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" \
+  --lease 0000000000000000000000000000000000000000000000000000000000000000 \
+  >/dev/null 2>&1 || WRONG_BUSY_RENEW_RC=$?
+if [[ "$WRONG_BUSY_RENEW_RC" -ne 0 ]] &&
+   cmp -s "$TMP/busy-lease-before.json" "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json"; then
+  pass "busy launch lock does not weaken exact renewal ownership"
+else
+  fail "busy launch lock does not weaken exact renewal ownership" "status=$WRONG_BUSY_RENEW_RC"
+fi
+touch "$PRODUCT/factory/MAINTENANCE"
+BLOCKED_BUSY_RENEW_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
+  >/dev/null 2>&1 || BLOCKED_BUSY_RENEW_RC=$?
+rm "$PRODUCT/factory/MAINTENANCE"
+rmdir "$PRODUCT/factory/.launch.lock"
+if [[ "$BLOCKED_BUSY_RENEW_RC" -eq 4 ]]; then
+  pass "maintenance still blocks renewal while the launch lock is busy"
+else
+  fail "maintenance still blocks renewal while the launch lock is busy" "status=$BLOCKED_BUSY_RENEW_RC"
 fi
 
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null

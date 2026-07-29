@@ -88,6 +88,17 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 
+if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]]; then
+  if [[ -z "$WORKDIR" ]] ||
+     ! python3 -B "$KIT_DIR/scripts/ticket-readiness.py" \
+       --ticket "$TICKET" --workdir "$CONTENT_ROOT"; then
+    fail "provider-free ticket readiness contract is not executable"
+    echo "PREFLIGHT FAIL"
+    exit 1
+  fi
+  pass "provider-free ticket readiness contract passed"
+fi
+
 # Product and machine configuration are data-only trust boundaries. Validate
 # both before any backend probe can touch a credential-bearing CLI.
 [[ -f "$ENV_FILE" ]] || {
@@ -154,9 +165,9 @@ if [[ -n "$ROLE" ]]; then
   done <<<"$EFFECTIVE_ENVELOPE"
   pass "$ROLE attempt envelope: budget \$$PER_RUN_BUDGET_USD, max turns $PER_RUN_MAX_TURNS, timeout ${PER_RUN_TIMEOUT_MIN}m"
 fi
-# (a) backend routes — resolve without submitting any task. The authenticated
-# isolated harness fixes the mock adapter before this script starts, so it must
-# not probe credential-bearing production CLIs.
+# (a) backend routes — validate the pinned contract without repeating the
+# controller's machine-readiness probes. The role runner re-probes its one
+# selected route immediately before provider admission.
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
 ROUTE_PLAN="$CONTENT_ROOT/factory/route-plans/$TICKET.json"
@@ -179,14 +190,7 @@ elif [[ -f "$ROUTE_PLAN" ]]; then
       fail "$ROLE_SAMPLE pinned route is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
       continue
     fi
-    PINNED_ROUTE="$FACTORY_SELECTED_ROUTE_ID"
-    PINNED_ADAPTER="$FACTORY_SELECTED_ADAPTER"
-    PINNED_MODEL="$FACTORY_SELECTED_MODEL"
-    if factory_verify_selected_pinned_route_ready; then
-      pass "$ROLE_SAMPLE pinned route ready ($PINNED_ROUTE: $PINNED_ADAPTER/$PINNED_MODEL)"
-    else
-      fail "$ROLE_SAMPLE pinned route unavailable or drifted ($PINNED_ROUTE): ${FACTORY_RESOLVE_ERROR:-unknown}"
-    fi
+    pass "$ROLE_SAMPLE pinned route contract passed ($FACTORY_SELECTED_ROUTE_ID)"
   done
 else
   warn "legacy routing is unpinned for $TICKET"
@@ -297,11 +301,16 @@ else
   fi
 fi
 
-# (e) ticket exists, is reconciled Ready, and belongs to a known initiative
+# (e) ticket is in the exact kickoff state and belongs to a known initiative
+EXPECTED_STATE="Ready"
+if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
+      "$ROLE" == "planner" ]]; then
+  EXPECTED_STATE="Planning"
+fi
 if [[ ! -f "$TICKET_FILE" ]]; then
   fail "ticket file missing: $TICKET_FILE"
-elif grep -qE '^State: Ready' "$TICKET_FILE"; then
-  pass "ticket $TICKET is Ready"
+elif grep -qE "^State: $EXPECTED_STATE$" "$TICKET_FILE"; then
+  pass "ticket $TICKET is $EXPECTED_STATE"
   INITIATIVE="$(sed -n 's/^Initiative:[[:space:]]*//p' "$TICKET_FILE" | head -n1)"
   if [[ -z "$INITIATIVE" ]]; then
     fail "ticket has no Initiative field"
@@ -312,7 +321,7 @@ elif grep -qE '^State: Ready' "$TICKET_FILE"; then
   fi
 else
   STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
-  fail "ticket not Ready ($STATE)"
+  fail "ticket not $EXPECTED_STATE ($STATE)"
 fi
 
 LINEAR_MAP="$FACTORY_DIR/linear-map.json"

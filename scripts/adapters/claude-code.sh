@@ -25,13 +25,75 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 TASK="${*:-}"
+CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions)
+
+run_with_timeout() {
+  if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then
+    timeout --foreground "$@"
+  else
+    timeout "$@"
+  fi
+}
 
 command -v claude >/dev/null || { echo "claude CLI not installed" >&2; exit 6; }
 INSTALLED="$(claude --version 2>/dev/null | head -n1 || true)"
 case "$INSTALLED" in
   *"$PINNED_VERSION"*) : ;;
-  *) echo "WARNING: installed Claude Code ($INSTALLED) != pinned ($PINNED_VERSION). Run adapters/contract-test.sh before continuing." >&2 ;;
+  *) echo "installed Claude Code does not match the approved version" >&2; exit 6 ;;
 esac
+
+if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+  [[ "${FACTORY_CLAUDE_SETTINGS:-}" == /* && -f "$FACTORY_CLAUDE_SETTINGS" &&
+     ! -L "$FACTORY_CLAUDE_SETTINGS" ]] || {
+    echo "lane-local Claude sandbox settings are unavailable" >&2
+    exit 6
+  }
+  [[ "${CLAUDE_CODE_TMPDIR:-}" == "${TMPDIR:-}" ]] || {
+    echo "Claude CLI temporary root is not attempt-local" >&2
+    exit 6
+  }
+  python3 - "${HOME:-}" "${CLAUDE_CONFIG_DIR:-}" "${TMPDIR:-}" \
+    "${FACTORY_CLI_ATTEMPT_ID:-}" <<'PY' || {
+import os
+import pathlib
+import stat
+import sys
+
+home, config, tmp = map(pathlib.Path, sys.argv[1:4])
+attempt = sys.argv[4]
+paths = (home, config, tmp)
+root = home.parent
+if (
+    not attempt
+    or any(not path.is_absolute() or path.is_symlink() or not path.is_dir()
+           for path in paths)
+    or config.parent != root
+    or tmp.parent != root
+    or root.name != attempt
+    or (root / "owner").read_text(encoding="utf-8") != attempt + "\n"
+):
+    raise SystemExit(1)
+for path in (*paths, root):
+    info = path.stat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise SystemExit(1)
+credential = config / ".credentials.json"
+info = credential.lstat()
+if (
+    not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) & 0o077
+):
+    raise SystemExit(1)
+PY
+    echo "Claude CLI attempt runtime is unsafe" >&2
+    exit 6
+  }
+  CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions
+    --settings "$FACTORY_CLAUDE_SETTINGS"
+    --no-session-persistence --disable-slash-commands)
+fi
 
 # Shakedown finding (2026-07-11, Claude Code 2.1.207): --max-turns is gone from
 # the CLI; --max-budget-usd exists and is a HARD in-run dollar stop — strictly
@@ -39,19 +101,18 @@ esac
 # JSON result; timeout guards the wall clock.
 # Note: no bash arrays for the optional prompt (macOS ships bash 3.2, where
 # empty-array expansion under `set -u` aborts).
-# First-real-run finding (2026-07-12): headless -p mode cannot edit files or
-# run commands without --dangerously-skip-permissions. Factory runs are
-# autonomous by design; containment comes from the envelope (budget, timeout),
-# the worktree, and CI gates — not from interactive permission prompts.
+# Legacy execution retains its established permission mode. Contract 1.7's
+# isolated development lane instead delegates process isolation to the outer
+# Factory Seatbelt; macOS refuses Claude's redundant nested Seatbelt.
 if [[ -s "$PROMPT_FILE" ]]; then
-  OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+  OUT="$(cd "$WORKDIR" && run_with_timeout "$((TIMEOUT_MIN * 60))" \
     claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
-    --dangerously-skip-permissions \
+    "${CLAUDE_PERMISSION_ARGS[@]}" \
     --append-system-prompt "$(cat "$PROMPT_FILE")" 2>&1)" || STATUS=$?
 else
-  OUT="$(cd "$WORKDIR" && timeout "$((TIMEOUT_MIN * 60))" \
+  OUT="$(cd "$WORKDIR" && run_with_timeout "$((TIMEOUT_MIN * 60))" \
     claude -p "$TASK" --model "$MODEL" --effort "$EFFORT" --output-format json --max-budget-usd "$BUDGET" \
-    --dangerously-skip-permissions 2>&1)" || STATUS=$?
+    "${CLAUDE_PERMISSION_ARGS[@]}" 2>&1)" || STATUS=$?
 fi
 STATUS="${STATUS:-0}"
 

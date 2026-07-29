@@ -15,8 +15,19 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
+from refresh_semantics import (  # noqa: E402
+    ClassificationError,
+    preserved_control_paths,
+    retained_control_paths,
+)
 
 SCHEMA = "nysa.software-factory.ticket-pr/v1"
+REFRESH_RECEIPT_KEYS = {
+    "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
+    "prior_reviewer_runs", "prior_approve_verdicts",
+    "prior_request_changes_verdicts", "prior_narrator_runs",
+    "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
+}
 
 
 class Refusal(ValueError):
@@ -31,7 +42,13 @@ def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedP
 
 
 def git(root: Path, *arguments: str) -> str:
-    return run(["git", "-C", str(root), *arguments]).stdout.strip()
+    command = ["git", "-C", str(root), *arguments]
+    try:
+        return run(command).stdout.strip()
+    except Refusal:
+        if arguments[0] != "ls-remote":
+            raise
+        return run(command).stdout.strip()
 
 
 def project_repo(factory: Path) -> str:
@@ -107,6 +124,109 @@ def latest_reviewer_head(product: Path, ticket: str) -> str:
     return head
 
 
+def unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+
+def preserved_refresh_metadata(
+    workdir: Path, ticket: str, reviewed: str, head: str, changed: set[str],
+) -> set[str]:
+    if (
+        os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION") != "1.8.0"
+        or not re.fullmatch(
+            r"[0-9a-f]{64}",
+            os.environ.get("FACTORY_TRANSITION_RECEIPT_SHA256", ""),
+        )
+    ):
+        return set()
+    relative = f"factory/attestations/{ticket}/refresh.json"
+    path = workdir / relative
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+        return set()
+    try:
+        receipt = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+        )
+        if not isinstance(receipt, dict):
+            return set()
+        counts = [
+            receipt.get(name) for name in (
+                "prior_reviewer_runs", "prior_approve_verdicts",
+                "prior_request_changes_verdicts", "prior_narrator_runs",
+            )
+        ]
+        if (
+            set(receipt) != REFRESH_RECEIPT_KEYS
+            or receipt.get("schema") != "nysa.software-factory.ticket-refresh/v1"
+            or receipt.get("ticket") != ticket
+            or isinstance(receipt.get("generation"), bool)
+            or not isinstance(receipt.get("generation"), int)
+            or receipt["generation"] < 1
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+                   for value in counts)
+            or counts[0] != counts[1] + counts[2]
+            or any(
+                not re.fullmatch(r"[0-9a-f]{40}", receipt.get(name, ""))
+                for name in ("old_head", "base_head", "merge_head")
+            )
+            or any(
+                value is not None
+                and not re.fullmatch(r"[0-9a-f]{40}", value)
+                for value in (
+                    receipt.get("prior_bundle_blob"),
+                    receipt.get("prior_approval_blob"),
+                )
+            )
+            or not isinstance(receipt.get("refreshed_at"), str)
+            or not receipt["refreshed_at"].endswith("Z")
+        ):
+            return set()
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return set()
+    receipt_commit = git(workdir, "log", "-1", "--format=%H", head, "--", relative)
+    if (
+        git(workdir, "rev-list", "--parents", "-n", "1", receipt_commit).split()
+        != [receipt_commit, receipt["merge_head"]]
+        or git(
+            workdir, "rev-list", "--parents", "-n", "1", receipt["merge_head"],
+        ).split()
+        != [
+            receipt["merge_head"], receipt["old_head"], receipt["base_head"],
+        ]
+    ):
+        return set()
+    for ancestor, descendant in (
+        (reviewed, receipt["old_head"]),
+        (receipt_commit, head),
+    ):
+        if subprocess.run(
+            ["git", "-C", str(workdir), "merge-base", "--is-ancestor",
+             ancestor, descendant],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode:
+            return set()
+    try:
+        preserved = preserved_control_paths(
+            workdir, receipt["old_head"], receipt["base_head"],
+        )
+    except ClassificationError:
+        return set()
+    if preserved is None:
+        return set()
+    return {
+        relative,
+        *retained_control_paths(workdir, head, receipt["base_head"], changed),
+    }
+
+
 def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str) -> None:
     reviewed = latest_reviewer_head(product, ticket)
     run(["git", "-C", str(workdir), "merge-base", "--is-ancestor", reviewed, head])
@@ -114,8 +234,13 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
     route_path = f"factory/route-plans/{ticket}.json"
     trusted_metadata = {
         route_path,
+        f"factory/attestations/{ticket}/bundle.json",
+        f"factory/tickets/{ticket}-bundle.md",
         f"factory/tickets/{ticket}.md",
     }
+    trusted_metadata.update(
+        preserved_refresh_metadata(workdir, ticket, reviewed, head, changed)
+    )
     if changed - trusted_metadata:
         raise Refusal("ticket implementation changed after the latest successful review")
     if route_path not in changed:
@@ -185,6 +310,15 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
     )
     if result.returncode not in (0, 1, 8):
         raise Refusal(result.stderr.strip() or "GitHub required-check query failed")
+    if (
+        result.returncode == 1
+        and not result.stdout.strip()
+        and re.fullmatch(
+            r"no (?:required )?checks reported on the '[^'\r\n]+' branch",
+            result.stderr.strip(),
+        )
+    ):
+        return "wait", ["required checks not reported"]
     try:
         checks = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -240,23 +374,34 @@ def main() -> None:
         if not remote or remote[0] != head:
             raise Refusal("ticket branch is not pushed at the exact local head")
         lease_id = os.environ.get("FACTORY_DISPATCH_LEASE_ID", "")
-        stage_command = [
-            "bash", str(Path(__file__).resolve().parent / "next-stage.sh"),
-            "--ticket", args.ticket,
-        ]
-        if lease_id:
-            if not re.fullmatch(r"[0-9a-f]{64}", lease_id):
-                raise Refusal("dispatcher lease is invalid")
-            stage_command.extend(["--lease", lease_id])
-        stage_command.extend(["--workdir", str(workdir)])
-        stage = run(stage_command).stdout.strip()
+        contract = os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION", "")
+        if lease_id and not re.fullmatch(r"[0-9a-f]{64}", lease_id):
+            raise Refusal("dispatcher lease is invalid")
+        if contract == "1.8.0":
+            stage = os.environ.get("FACTORY_TRANSITION_STAGE", "")
+            if not re.fullmatch(
+                r"(?:RUN (?:reviewer|narrator)|AWAIT-(?:OPERATOR|MERGE) .+)",
+                stage,
+            ):
+                raise Refusal("transition receipt does not authorize ticket PR verification")
+        else:
+            stage_command = [
+                "bash", str(Path(__file__).resolve().parent / "next-stage.sh"),
+                "--ticket", args.ticket,
+            ]
+            if lease_id:
+                stage_command.extend(["--lease", lease_id])
+            stage_command.extend(["--workdir", str(workdir)])
+            stage = run(stage_command).stdout.strip()
         if stage.startswith("RUN reviewer"):
             boundary = "reviewer"
         elif stage.startswith("RUN narrator"):
             boundary = "narrator"
+        elif stage.startswith(("AWAIT-OPERATOR", "AWAIT-MERGE")):
+            boundary = "publication"
         else:
             raise Refusal("ticket PR verification requires the reviewer or narrator stage")
-        if boundary == "narrator":
+        if boundary in {"narrator", "publication"}:
             validate_review_lineage(product, workdir, args.ticket, head)
         repo = project_repo(factory)
         fields = "number,headRefName,baseRefName,headRefOid,url,state"
@@ -292,7 +437,7 @@ def main() -> None:
             raise Refusal("ticket PR branch, base, head, or state is invalid")
         check_status, checks = required_check_status(repo, pr["number"])
         status = (
-            "ready" if boundary == "narrator" and check_status == "pass"
+            "ready" if boundary in {"narrator", "publication"} and check_status == "pass"
             else "prepared" if check_status == "pass"
             else check_status
         )

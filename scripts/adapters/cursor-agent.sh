@@ -55,6 +55,60 @@ fi
 
 CURSOR_BIN="${CURSOR_AGENT_BIN:-agent}"
 CURSOR_HOME="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
+if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+  python3 - "$CURSOR_HOME" "${CURSOR_CONFIG_DIR:-}" "${CURSOR_DATA_DIR:-}" \
+    "${TMPDIR:-}" "${FACTORY_CLI_ATTEMPT_ID:-}" <<'PY' || {
+import os
+import pathlib
+import stat
+import sys
+
+home, config, data, tmp = map(pathlib.Path, sys.argv[1:5])
+attempt = sys.argv[5]
+runtime = data.parent
+expected = {
+    "home": runtime / "home",
+    "config": runtime / "home" / ".cursor",
+    "data": runtime / "data",
+    "tmp": runtime / "tmp",
+}
+paths = {"home": home, "config": config, "data": data, "tmp": tmp}
+if (
+    not attempt
+    or runtime.name != attempt
+    or runtime.parent.name != "c"
+    or len(str(data / "projects")) > 84
+):
+    raise SystemExit(1)
+for name, path in paths.items():
+    if not path.is_absolute() or path != expected[name] or path.is_symlink():
+        raise SystemExit(1)
+    info = path.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise SystemExit(1)
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise SystemExit(1)
+owner = runtime / "owner"
+if (
+    owner.is_symlink()
+    or owner.read_text(encoding="utf-8") != attempt + "\n"
+    or stat.S_IMODE(owner.stat().st_mode) != 0o600
+):
+    raise SystemExit(1)
+for name in ("auth.json", "cli-config.json"):
+    path = config / name
+    info = path.stat()
+    if path.is_symlink() or not stat.S_ISREG(info.st_mode):
+        raise SystemExit(1)
+    if info.st_uid != os.geteuid() or info.st_nlink != 1:
+        raise SystemExit(1)
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise SystemExit(1)
+PY
+    echo "Cursor CLI attempt runtime is unsafe" >&2
+    exit 6
+  }
+fi
 command -v "$CURSOR_BIN" >/dev/null 2>&1 || {
   echo "Cursor Agent CLI not installed" >&2
   exit 6
@@ -86,33 +140,68 @@ if [[ -s "$PROMPT_FILE" ]]; then
 
 $TASK"
 fi
-FULL_TASK="$FULL_TASK
+if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
+  FULL_TASK="$FULL_TASK
+
+Reviewer CLI control: remain read-only in native Ask mode, inspect the supplied change, run the required deterministic checks with read-only terminal access, and return the required verdict without editing or committing."
+else
+  FULL_TASK="$FULL_TASK
 
 Cursor CLI control: stay in the default execution mode. Do not switch to Plan or Ask mode, invoke createPlan, or merely describe intended work. Execute the supplied role contract now while preserving its mutation limits."
+fi
 
 NORMALIZED="$(mktemp "${TMPDIR:-/tmp}/factory-cursor-metrics.XXXXXX")"
+RAW_STREAM="$(mktemp "${TMPDIR:-/tmp}/factory-cursor-stream.XXXXXX")"
+rm -f "$RAW_STREAM"
+mkfifo "$RAW_STREAM"
+CURSOR_PRODUCER_PID=""
 cleanup_cursor() {
-  rm -f "$NORMALIZED"
+  if [[ -n "$CURSOR_PRODUCER_PID" ]] &&
+     kill -0 "$CURSOR_PRODUCER_PID" 2>/dev/null; then
+    kill -TERM "$CURSOR_PRODUCER_PID" 2>/dev/null || true
+    wait "$CURSOR_PRODUCER_PID" 2>/dev/null || true
+  fi
+  rm -f "$NORMALIZED" "$RAW_STREAM"
 }
 trap cleanup_cursor EXIT
 
 set +e
 (
-  cd "$WORKDIR" &&
-    CURSOR_ARGS=(--print --output-format stream-json \
-      --workspace "$WORKDIR" --trust --force --model "$MODEL") &&
-    if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
-      CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
-    fi &&
-    HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
+  cd "$WORKDIR" || exit
+  CURSOR_ARGS=(--print --output-format stream-json \
+    --workspace "$WORKDIR" --trust --model "$MODEL")
+  if [[ "${FACTORY_ROLE:-}" == reviewer ]]; then
+    CURSOR_ARGS=(--mode ask --force "${CURSOR_ARGS[@]}")
+  else
+    CURSOR_ARGS=(--force "${CURSOR_ARGS[@]}")
+  fi
+  if [[ "${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+    CURSOR_ARGS=(--sandbox enabled "${CURSOR_ARGS[@]}")
+  fi
+  if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then
+    exec env HOME="$CURSOR_HOME" timeout --foreground "$((TIMEOUT_MIN * 60))" \
       "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
-) 2>&1 | python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \
-  "$NORMALIZED" "$MODEL" "$EXPECTED_REPORTED_MODEL" "$WORKDIR" "$MAX_TURNS"
-PIPE_RESULT="${PIPESTATUS[*]}"
-STATUS="${PIPE_RESULT%% *}"
-STREAM_STATUS="${PIPE_RESULT##* }"
+  else
+    exec env HOME="$CURSOR_HOME" timeout "$((TIMEOUT_MIN * 60))" \
+      "$CURSOR_BIN" "${CURSOR_ARGS[@]}" "$FULL_TASK"
+  fi
+) >"$RAW_STREAM" 2>&1 &
+CURSOR_PRODUCER_PID="$!"
+python3 "$KIT_DIR/scripts/lib/cursor-stream.py" \
+  "$NORMALIZED" "$MODEL" "$EXPECTED_REPORTED_MODEL" "$WORKDIR" "$MAX_TURNS" \
+  "${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}" <"$RAW_STREAM"
+STREAM_STATUS="$?"
+if [[ "$STREAM_STATUS" == 15 ]] &&
+   kill -0 "$CURSOR_PRODUCER_PID" 2>/dev/null; then
+  kill -TERM "$CURSOR_PRODUCER_PID" 2>/dev/null || true
+fi
+wait "$CURSOR_PRODUCER_PID"
+STATUS="$?"
+CURSOR_PRODUCER_PID=""
 set -e
-if [[ "$STREAM_STATUS" != "0" && "$STATUS" == "0" ]]; then
+if [[ "$STREAM_STATUS" == 15 ]]; then
+  STATUS=15
+elif [[ "$STREAM_STATUS" != "0" && "$STATUS" == "0" ]]; then
   echo "Cursor output validation/redaction failed" >&2
   STATUS=9
 fi

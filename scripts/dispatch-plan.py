@@ -24,10 +24,15 @@ from effective_ticket import (  # noqa: E402
     operator_fields,
     ticket_branch_prefix,
 )
+from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
+QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v1"
+QUALIFICATION_SCHEMA_V2 = "nysa.software-factory.qualification/v2"
+PREPROVIDER_RESET_SCHEMA = "nysa.software-factory.preprovider-branch-resets/v1"
 TICKET = re.compile(r"^T-([0-9]+)$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
 PRIORITY = {"urgent": 0, "high": 1, "normal": 2, "low": 3, "none": 4}
 
 
@@ -50,6 +55,16 @@ def git(root: Path, *arguments: str, check: bool = True) -> str:
     if check and result.returncode:
         raise DispatchError(result.stderr.strip() or "Git operation failed")
     return result.stdout
+
+
+def git_succeeds(root: Path, *arguments: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    ).returncode == 0
 
 
 def certified_origin(product: Path) -> str:
@@ -114,9 +129,186 @@ def capacity(factory: Path) -> int:
     if len(values) > 1:
         raise DispatchError("MAX_CONCURRENT_TICKETS is ambiguous")
     selected = values[0] if values else 4
-    if not 1 <= selected <= 6:
+    if not 1 <= selected <= 4:
         raise DispatchError("MAX_CONCURRENT_TICKETS is invalid")
     return selected
+
+
+def dependencies(text: str) -> tuple[str, ...]:
+    raw = field(text, "Depends-On", "none")
+    if raw.lower() == "none":
+        return ()
+    values = tuple(item.strip() for item in raw.split(","))
+    if (
+        not values
+        or any(not TICKET.fullmatch(item) for item in values)
+        or len(values) != len(set(values))
+    ):
+        raise DispatchError("ticket dependencies are invalid")
+    return values
+
+
+def qualification(
+    product: Path, factory: Path, configured_capacity: int
+) -> dict[str, Any] | None:
+    path = factory / "QUALIFICATION.json"
+    if not path.exists():
+        return None
+    value = json.loads(safe_file(path, "qualification manifest", 100_000))
+    if value.get("schema") == QUALIFICATION_SCHEMA_V2:
+        keys = {
+            "budget_usd", "capacity", "contract_version", "factory_sha",
+            "generation", "per_run_budget_usd", "per_ticket_budget_usd",
+            "schema", "target_done", "tickets",
+        }
+        tickets = value.get("tickets")
+        pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
+        if (
+            set(value) != keys
+            or value.get("contract_version") != "1.8.0"
+            or value.get("factory_sha") != pin
+            or not isinstance(value.get("generation"), int)
+            or isinstance(value.get("generation"), bool)
+            or value["generation"] < 1
+            or not isinstance(tickets, list)
+            or len(tickets) != 4
+            or len(tickets) != len(set(tickets))
+            or any(
+                not isinstance(item, str) or not TICKET.fullmatch(item)
+                for item in tickets
+            )
+            or value.get("target_done") != 4
+            or value.get("capacity") != 4
+            or value.get("budget_usd") != "100.000000"
+            or value.get("per_ticket_budget_usd") != "25.000000"
+            or value.get("per_run_budget_usd") != "2.000000"
+            or configured_capacity != 4
+        ):
+            raise DispatchError("Contract 1.8 qualification manifest is invalid")
+        graph = {}
+        for ticket in tickets:
+            text = safe_file(factory / "tickets" / f"{ticket}.md", f"ticket {ticket}")
+            graph[ticket] = dependencies(text)
+            if graph[ticket]:
+                raise DispatchError("Contract 1.8 canaries must be independent")
+        terminal = set()
+        for ticket in tickets:
+            try:
+                protected_terminal(product, ticket)
+            except ValidationError:
+                continue
+            terminal.add(ticket)
+        return {
+            **value,
+            "capacity": 4,
+            "dependencies": graph,
+            "done": len(terminal),
+            "terminal": terminal,
+        }
+    keys = {
+        "factory_sha", "final_capacity", "generation", "initial_capacity",
+        "ramp_after_done", "schema", "target_done", "tickets",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise DispatchError("qualification manifest fields are invalid")
+    tickets = value["tickets"]
+    pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
+    if (
+        value["schema"] != QUALIFICATION_SCHEMA
+        or value["factory_sha"] != pin
+        or not isinstance(value["generation"], int)
+        or isinstance(value["generation"], bool)
+        or value["generation"] < 1
+        or not isinstance(tickets, list)
+        or len(tickets) != 10
+        or len(tickets) != len(set(tickets))
+        or any(not isinstance(item, str) or not TICKET.fullmatch(item) for item in tickets)
+        or value["target_done"] != len(tickets)
+        or not all(
+            isinstance(value[name], int) and not isinstance(value[name], bool)
+            for name in ("initial_capacity", "ramp_after_done", "final_capacity")
+        )
+        or not 1 < value["initial_capacity"] <= value["final_capacity"] <= configured_capacity
+        or not 1 <= value["ramp_after_done"] < value["target_done"]
+    ):
+        raise DispatchError("qualification manifest is invalid")
+
+    graph: dict[str, tuple[str, ...]] = {}
+    for ticket in tickets:
+        text = safe_file(factory / "tickets" / f"{ticket}.md", f"ticket {ticket}")
+        graph[ticket] = dependencies(text)
+        if ticket in graph[ticket]:
+            raise DispatchError("qualification ticket depends on itself")
+    pending = {ticket: {item for item in graph[ticket] if item in graph} for ticket in tickets}
+    while pending:
+        ready = {ticket for ticket, items in pending.items() if not items}
+        if not ready:
+            raise DispatchError("qualification dependencies contain a cycle")
+        pending = {
+            ticket: items - ready
+            for ticket, items in pending.items()
+            if ticket not in ready
+        }
+
+    terminal = set()
+    for ticket in set(tickets).union(*(set(items) for items in graph.values())):
+        try:
+            protected_terminal(product, ticket)
+        except ValidationError:
+            continue
+        terminal.add(ticket)
+    done = len(set(tickets) & terminal)
+    return {
+        **value,
+        "capacity": (
+            value["initial_capacity"]
+            if done < value["ramp_after_done"]
+            else value["final_capacity"]
+        ),
+        "dependencies": graph,
+        "done": done,
+        "terminal": terminal,
+    }
+
+
+def preprovider_reset_authorizations(
+    factory: Path, qualification_state: dict[str, Any] | None, prefix: str
+) -> dict[str, str]:
+    path = factory / "qualification/preprovider-branch-resets.json"
+    if not path.exists():
+        return {}
+    if (
+        qualification_state is None
+        or qualification_state.get("schema") != QUALIFICATION_SCHEMA_V2
+    ):
+        raise DispatchError("pre-provider branch resets require Contract 1.8 qualification")
+    value = json.loads(safe_file(path, "pre-provider branch reset authorization"))
+    resets = value.get("resets")
+    if (
+        set(value) != {"factory_sha", "resets", "schema"}
+        or value.get("schema") != PREPROVIDER_RESET_SCHEMA
+        or value.get("factory_sha") != qualification_state["factory_sha"]
+        or not isinstance(resets, list)
+        or not resets
+    ):
+        raise DispatchError("pre-provider branch reset authorization is invalid")
+    result = {}
+    for item in resets:
+        ticket = item.get("ticket") if isinstance(item, dict) else None
+        branch = item.get("branch") if isinstance(item, dict) else None
+        head = item.get("head") if isinstance(item, dict) else None
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"branch", "head", "ticket"}
+            or ticket not in qualification_state["tickets"]
+            or branch != prefix + ticket
+            or not isinstance(head, str)
+            or not SHA.fullmatch(head)
+            or ticket in result
+        ):
+            raise DispatchError("pre-provider branch reset entry is invalid")
+        result[ticket] = head
+    return result
 
 
 def fresh_mapping(path: Path, maximum_age: int) -> dict[str, Any]:
@@ -190,7 +382,12 @@ def active_tickets(factory: Path) -> set[str]:
     return result
 
 
-def candidates(factory: Path, mapping: dict[str, Any], excluded: set[str]):
+def candidates(
+    factory: Path,
+    mapping: dict[str, Any],
+    excluded: set[str],
+    qualification_state: dict[str, Any] | None = None,
+):
     result = []
     tickets = factory / "tickets"
     safe_directory(tickets, "ticket directory")
@@ -201,7 +398,21 @@ def candidates(factory: Path, mapping: dict[str, Any], excluded: set[str]):
         match = TICKET.fullmatch(path.stem)
         if not match or path.stem in excluded:
             continue
+        if (
+            qualification_state is not None
+            and path.stem not in qualification_state["tickets"]
+        ):
+            continue
         text = safe_file(path, f"ticket {path.stem}")
+        ticket_dependencies = dependencies(text)
+        if (
+            qualification_state is not None
+            and any(
+                item not in qualification_state["terminal"]
+                for item in ticket_dependencies
+            )
+        ):
+            continue
         operator = operator_fields(mapping, path.stem)
         effective = apply_operator_fields(text, operator)
         ticket_pin = field(effective, "Kit-SHA")
@@ -230,6 +441,7 @@ def candidates(factory: Path, mapping: dict[str, Any], excluded: set[str]):
                     "resumable": resumable,
                     "state": field(effective, "State"),
                     "ticket": path.stem,
+                    "depends_on": list(ticket_dependencies),
                 },
             )
         )
@@ -250,11 +462,139 @@ def worktree_records(product: Path) -> list[dict[str, str]]:
     return records
 
 
+def ticket_without_control(text: str) -> str:
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if not re.match(r"^(?:State|Kit-SHA):", line, re.IGNORECASE)
+    ).strip()
+
+
+def reconcile_preprovider_branch(
+    product: Path,
+    worktree: Path,
+    ticket: str,
+    branch: str,
+    remote: str,
+    main: str,
+    authorized_head: str,
+) -> str:
+    remote_head = git(worktree, "rev-parse", "HEAD").strip()
+    if remote_head != authorized_head:
+        raise DispatchError("ticket remote branch does not match reset authorization")
+    base = git(product, "merge-base", main, remote_head).strip()
+    if not SHA.fullmatch(base) or not git_succeeds(
+        product, "merge-base", "--is-ancestor", base, main
+    ):
+        raise DispatchError("pre-provider branch lineage is invalid")
+    ticket_path = f"factory/tickets/{ticket}.md"
+    plan_path = f"factory/route-plans/{ticket}.json"
+    changed = set(
+        git(product, "diff", "--name-only", f"{base}..{remote_head}").splitlines()
+    )
+    if changed != {ticket_path, plan_path}:
+        raise DispatchError("pre-provider branch is not control-only")
+    commits = [
+        tuple(line.split("\0"))
+        for line in git(
+            product,
+            "log", "--first-parent",
+            "--reverse", "--format=%H%x00%P%x00%an%x00%ae%x00%s",
+            f"{base}..{remote_head}",
+        ).splitlines()
+    ]
+    if not commits or any(
+        len(item) != 5
+        or item[2:4] != ("Software Factory", "factory@local")
+        for item in commits
+    ):
+        raise DispatchError("pre-provider branch commits are not canonical")
+    pin = f"{ticket}: pin kit and model route plan"
+    transition = f"{ticket}: transition ticket state"
+    supersede = f"{ticket}: supersede pre-provider control state"
+    index = 0
+    while index < len(commits):
+        if commits[index][4] != pin:
+            raise DispatchError("pre-provider branch commits are not canonical")
+        index += 1
+        if index < len(commits) and commits[index][4] == transition:
+            index += 1
+        if index == len(commits):
+            break
+        if index + 1 >= len(commits):
+            raise DispatchError("pre-provider branch commits are not canonical")
+        merge, reset = commits[index:index + 2]
+        parents = merge[1].split()
+        if (
+            len(parents) != 2
+            or parents[0] != commits[index - 1][0]
+            or merge[4] != f"Merge commit '{parents[1]}' into {branch}"
+            or not git_succeeds(
+                product, "merge-base", "--is-ancestor", parents[1], main
+            )
+            or reset[1] != merge[0]
+            or reset[4] != supersede
+        ):
+            raise DispatchError("pre-provider branch commits are not canonical")
+        index += 2
+    base_ticket = git(product, "show", f"{base}:{ticket_path}")
+    main_ticket = git(product, "show", f"{main}:{ticket_path}")
+    remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")
+    route = json.loads(git(product, "show", f"{remote_head}:{plan_path}"))
+    kit_sha = field(remote_ticket, "Kit-SHA")
+    if (
+        ticket_without_control(base_ticket) != ticket_without_control(main_ticket)
+        or ticket_without_control(base_ticket) != ticket_without_control(remote_ticket)
+        or field(main_ticket, "State").lower() != "ready"
+        or field(main_ticket, "Kit-SHA")
+        or field(remote_ticket, "State").lower() not in {"ready", "planning"}
+        or not SHA.fullmatch(kit_sha)
+        or not isinstance(route, dict)
+        or route.get("schema") != "ticket-model-route-plan/v1"
+        or route.get("ticket") != ticket
+        or route.get("kit_sha") != kit_sha
+        or git_succeeds(product, "cat-file", "-e", f"{main}:{plan_path}")
+    ):
+        raise DispatchError("pre-provider branch control state is invalid")
+    git(
+        worktree,
+        "-c", "user.name=Software Factory",
+        "-c", "user.email=factory@local",
+        "merge", "--no-ff", "--no-edit", main,
+    )
+    git(worktree, "checkout", main, "--", ticket_path)
+    git(worktree, "rm", "-f", "--", plan_path)
+    git(
+        worktree,
+        "-c", "user.name=Software Factory",
+        "-c", "user.email=factory@local",
+        "commit", "-m", f"{ticket}: supersede pre-provider control state",
+        "--", ticket_path, plan_path,
+    )
+    reset_head = git(worktree, "rev-parse", "HEAD").strip()
+    git(
+        worktree, "push", "--no-force", "--", remote,
+        f"{reset_head}:refs/heads/{branch}",
+    )
+    observed = git(
+        worktree, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}"
+    ).split()
+    if not observed or observed[0] != reset_head:
+        raise DispatchError("pre-provider branch reset remote verification failed")
+    git(
+        product, "fetch", "--quiet", remote,
+        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+    )
+    if git(worktree, "status", "--porcelain=v1", "-z"):
+        raise DispatchError("pre-provider branch reset left a dirty worktree")
+    return remote_head
+
+
 def prepare_worktree(
-    product: Path, worktree_root: Path, ticket: str, prefix: str, remote: str
-) -> tuple[Path, bool, bool]:
+    product: Path, worktree_root: Path, ticket: str, prefix: str, remote: str,
+    authorized_reset_head: str = "",
+) -> tuple[Path, bool, bool, str]:
     branch = prefix + ticket
-    destination = worktree_root / ticket
     safe_directory(worktree_root, "worktree root", owner_only=True)
     records = worktree_records(product)
     git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
@@ -264,28 +604,64 @@ def prepare_worktree(
     ).split()
     if remote_branch and (len(remote_branch) != 2 or remote_branch[1] != f"refs/heads/{branch}"):
         raise DispatchError("ticket remote branch result is ambiguous")
-    if destination.exists() or destination.is_symlink():
+    matching = [item for item in records if item.get("branch") == f"refs/heads/{branch}"]
+    if len(matching) > 1:
+        raise DispatchError("ticket branch is checked out more than once")
+    if matching:
+        destination = Path(matching[0].get("worktree", "")).resolve(strict=True)
+        if destination.parent != worktree_root or not re.fullmatch(
+            r"cell-[1-6]", destination.name
+        ):
+            raise DispatchError("ticket branch is checked out outside a trusted cell")
         safe_directory(destination, "ticket worktree")
-        matching = [
-            item for item in records if Path(item.get("worktree", "")).resolve() == destination
-        ]
-        if len(matching) != 1 or matching[0].get("branch") != f"refs/heads/{branch}":
-            raise DispatchError("ticket worktree path collides with another worktree")
         if git(destination, "status", "--porcelain=v1", "-z"):
             raise DispatchError("ticket worktree is dirty")
         local = git(destination, "rev-parse", "HEAD").strip()
         expected = remote_branch[0] if remote_branch else main
         if local != expected:
             raise DispatchError("ticket worktree branch is divergent or unpushed")
-        return destination, False, False
-    if any(item.get("branch") == f"refs/heads/{branch}" for item in records):
-        raise DispatchError("ticket branch is checked out at an unexpected path")
+        reset_head = ""
+        if remote_branch and not git_succeeds(
+            product, "merge-base", "--is-ancestor", main, remote_branch[0]
+        ):
+            reset_head = reconcile_preprovider_branch(
+                product, destination, ticket, branch, remote, main,
+                authorized_reset_head,
+            )
+        return destination, False, False, reset_head
+    occupied = {
+        Path(item.get("worktree", "")).resolve()
+        for item in records
+        if item.get("worktree")
+    }
+    destination = next(
+        (
+            worktree_root / f"cell-{number}"
+            for number in range(1, 7)
+            if worktree_root / f"cell-{number}" not in occupied
+            and not (worktree_root / f"cell-{number}").exists()
+            and not (worktree_root / f"cell-{number}").is_symlink()
+        ),
+        None,
+    )
+    if destination is None:
+        raise DispatchError("no disposable execution cell is available")
     if git(product, "show-ref", "--verify", f"refs/heads/{branch}", check=False):
         branch_sha = git(product, "rev-parse", branch).strip()
         if not remote_branch or remote_branch[0] != branch_sha:
             raise DispatchError("existing ticket branch is divergent or unpushed")
         git(product, "worktree", "add", "--quiet", str(destination), branch)
         branch_created = False
+    elif remote_branch:
+        git(
+            product, "fetch", "--quiet", remote,
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        )
+        git(
+            product, "worktree", "add", "--quiet", "-b", branch,
+            str(destination), f"origin/{branch}",
+        )
+        branch_created = True
     else:
         git(
             product,
@@ -298,7 +674,33 @@ def prepare_worktree(
             main,
         )
         branch_created = True
-    return destination, True, branch_created
+    reset_head = ""
+    if remote_branch and not git_succeeds(
+        product, "merge-base", "--is-ancestor", main, remote_branch[0]
+    ):
+        try:
+            reset_head = reconcile_preprovider_branch(
+                product, destination, ticket, branch, remote, main,
+                authorized_reset_head,
+            )
+        except (
+            DispatchError, OSError, UnicodeError, json.JSONDecodeError,
+            subprocess.SubprocessError,
+        ):
+            subprocess.run(
+                ["git", "-C", str(product), "worktree", "remove", "--force",
+                 str(destination)],
+                capture_output=True,
+                check=False,
+            )
+            if branch_created:
+                subprocess.run(
+                    ["git", "-C", str(product), "branch", "-D", branch],
+                    capture_output=True,
+                    check=False,
+                )
+            raise
+    return destination, True, branch_created, reset_head
 
 
 def create_lease(
@@ -348,6 +750,7 @@ def main() -> None:
     parser.add_argument("--worktree-root", required=True, type=Path)
     parser.add_argument("--max-linear-age", type=int, default=600)
     parser.add_argument("--lease-ttl", type=int, default=900)
+    parser.add_argument("--exclude-ticket", action="append", default=[])
     parser.add_argument("action", choices=("shadow", "claim"))
     args = parser.parse_args()
     launch_lock = args.factory_root / "factory" / ".launch.lock"
@@ -358,6 +761,8 @@ def main() -> None:
     lease_created = False
     try:
         product = args.factory_root.resolve(strict=True)
+        if any(not TICKET.fullmatch(item) for item in args.exclude_ticket):
+            raise DispatchError("excluded ticket is invalid")
         if product != args.factory_root:
             raise DispatchError("factory root must be physical")
         safe_directory(product, "factory root")
@@ -368,8 +773,27 @@ def main() -> None:
             raise DispatchError("factory control blocks dispatch")
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout is dirty")
+        git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
         mapping = fresh_mapping(factory / "linear-map.json", args.max_linear_age)
         maximum = capacity(factory)
+        qualification_state = qualification(product, factory, maximum)
+        prefix = ticket_branch_prefix(factory)
+        reset_authorizations = preprovider_reset_authorizations(
+            factory, qualification_state, prefix
+        )
+        if qualification_state is not None:
+            maximum = qualification_state["capacity"]
+            if qualification_state["done"] == qualification_state["target_done"]:
+                print(canonical({
+                    "action": "WAIT",
+                    "qualification_done": qualification_state["done"],
+                    "qualification_generation": qualification_state["generation"],
+                    "qualification_target": qualification_state["target_done"],
+                    "reason_code": "qualification_complete",
+                    "schema": SCHEMA,
+                    "status": "WAIT",
+                }))
+                return
         if maximum == 1:
             raise DispatchError("autonomous dispatch requires bounded concurrency")
         lease_dir = factory / ".dispatch-leases"
@@ -389,7 +813,12 @@ def main() -> None:
                 "schema": SCHEMA, "status": "WAIT",
             }))
             return
-        selected = candidates(factory, mapping, leased | active_tickets(factory))
+        selected = candidates(
+            factory,
+            mapping,
+            leased | active_tickets(factory) | set(args.exclude_ticket),
+            qualification_state,
+        )
         if not selected:
             print(canonical({
                 "action": "WAIT", "reason_code": "no_candidate",
@@ -403,9 +832,9 @@ def main() -> None:
                 "status": "SHADOW",
             }))
             return
-        destination, created, branch_created = prepare_worktree(
+        destination, created, branch_created, reset_head = prepare_worktree(
             product, args.worktree_root, ticket["ticket"],
-            ticket_branch_prefix(factory), remote,
+            prefix, remote, reset_authorizations.get(ticket["ticket"], ""),
         )
         if created:
             created_worktree = destination
@@ -420,9 +849,10 @@ def main() -> None:
                 {
                     **ticket,
                     "action": "START",
-                    "branch": ticket_branch_prefix(factory) + ticket["ticket"],
+                    "branch": prefix + ticket["ticket"],
                     "expires_epoch": lease["expires_epoch"],
                     "lease_id": lease["lease_id"],
+                    "preprovider_reset_head": reset_head or None,
                     "schema": SCHEMA,
                     "status": "CLAIMED",
                     "worktree": str(destination),

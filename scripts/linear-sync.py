@@ -58,6 +58,7 @@ STATES = {
     "approved": ("Approved", "started"),
     "blocked-escalated": ("Blocked-Escalated", "started"),
     "done": ("Done", "completed"),
+    "canceled": ("Canceled", "canceled"),
 }
 STATE_COLORS = {
     "backlog": "#BEC2C8",
@@ -69,6 +70,7 @@ STATE_COLORS = {
     "approved": "#4CB782",
     "blocked-escalated": "#EB5757",
     "done": "#27AE60",
+    "canceled": "#6B7280",
 }
 STATE_POSITIONS = {
     "backlog": 0.0,
@@ -80,9 +82,7 @@ STATE_POSITIONS = {
     "approved": 5000.0,
     "blocked-escalated": 6000.0,
     "done": 0.0,
-}
-AUXILIARY_STATE_COLORS = {
-    "canceled": "#6B7280",
+    "canceled": 0.0,
 }
 LEGACY_STATES = {"in progress": "planning"}
 PRIORITIES = {"none": 0, "urgent": 1, "high": 2, "normal": 3, "low": 4}
@@ -99,6 +99,7 @@ Initiative: I-NNN
 Priority: none
 Risk class: low
 External: no
+Merge-Policy: manual
 
 ## Description
 
@@ -127,12 +128,13 @@ What changes, why, and source links.
 """
 OPERATOR_TRANSITIONS = {
     ("backlog", "ready"),
+    ("backlog", "canceled"),
     ("awaiting approval", "approved"),
 }
 
 BANNER = (
     "**Factory-managed issue.** Linear owns priority, Project membership, "
-    "Backlog → Ready, Awaiting Approval → Approved, and approved unblock "
+    "Backlog → Ready/Canceled, Awaiting Approval → Approved, and approved unblock "
     "decisions. Contract, execution stage, logs, evidence, and cost are "
     "projected from the product repo."
 )
@@ -200,6 +202,16 @@ def field(text, name, default=""):
     return match.group(1).strip() if match else default
 
 
+def merge_policy(text):
+    matches = re.findall(r"^Merge-Policy:\s*(.*?)\s*$", text, re.MULTILINE | re.IGNORECASE)
+    if len(matches) > 1:
+        raise ValueError("ticket contains duplicate Merge-Policy fields")
+    policy = matches[0].lower() if matches else "manual"
+    if policy not in {"manual", "auto"}:
+        raise ValueError("Merge-Policy must be manual or auto")
+    return policy
+
+
 def section(text, name):
     match = re.search(
         rf"^##\s+{name}\b[^\n]*\n(.*?)(?=^##\s|\Z)",
@@ -228,12 +240,30 @@ def parse_ticket_text(ticket_id, path, text):
         "branch": field(text, "Branch"),
         "risk": field(text, "Risk class", "low").lower().split()[0],
         "external": field(text, "External", "no").lower() in ("yes", "true", "1"),
+        "merge_policy": merge_policy(text),
         "description": section(text, "Description"),
         "criteria": section(text, r"Acceptance criteria"),
         "log_lines": [
             line for line in section(text, "Log").splitlines() if line.strip().startswith("- ")
         ],
     }
+
+
+def protected_merge_policy(factory_dir, ticket_id):
+    repo = subprocess.run(
+        ["git", "-C", str(factory_dir), "rev-parse", "--show-toplevel"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    result = subprocess.run(
+        ["git", "-C", repo, "show", f"refs/remotes/origin/main:factory/tickets/{ticket_id}.md"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(f"{ticket_id}: protected origin/main ticket is unavailable")
+    return merge_policy(result.stdout)
 
 
 def parse_initiative(path):
@@ -484,20 +514,6 @@ def setup(key, mapping, map_path, dry=False):
                 )
         state_ids[lower] = state["id"]
 
-    for name, color in AUXILIARY_STATE_COLORS.items():
-        state = by_state.get(name)
-        if state and state.get("color", "").lower() != color.lower():
-            if dry:
-                log(f"DRY would recolor workflow state {state['name']}")
-            else:
-                gql(
-                    key,
-                    """mutation($id: String!, $input: WorkflowStateUpdateInput!) {
-                         workflowStateUpdate(id: $id, input: $input) { success }
-                       }""",
-                    {"id": state["id"], "input": {"color": color}},
-                )
-
     by_label = {item["name"].lower(): item for item in existing["labels"]["nodes"]}
     label_ids = {}
     for name, color in LABELS.items():
@@ -726,6 +742,33 @@ def fetch_issue(key, issue_id):
     return issue
 
 
+def factory_issue_index(key, team_id):
+    result = {}
+    after = None
+    while True:
+        page = gql(
+            key,
+            """query($id: String!, $after: String) { team(id: $id) {
+                 issues(first: 100, after: $after) {
+                   nodes { id identifier title description state { type } }
+                   pageInfo { hasNextPage endCursor }
+                 }
+               } }""",
+            {"id": team_id, "after": after},
+        )["team"]["issues"]
+        for issue in page["nodes"]:
+            if (
+                issue.get("state", {}).get("type") != "canceled"
+                and (issue.get("description") or "").startswith(BANNER)
+            ):
+                result.setdefault(issue["title"], []).append(issue)
+        if not page["pageInfo"]["hasNextPage"]:
+            return result
+        after = page["pageInfo"].get("endCursor")
+        if not after:
+            raise RuntimeError("Linear issue history is incomplete")
+
+
 def ingest_fallback_approval(actual, entry, dry):
     consumed = set(entry.get("consumed_model_fallback_comment_ids", []))
     observed_at = utc_now()
@@ -885,6 +928,7 @@ def post_comment(key, issue_id, body, dry):
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
     config = mapping["_config"]
     viewer_id = fetch_viewer_id(key)
+    existing_issues = factory_issue_index(key, config["team_id"])
     stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
@@ -932,7 +976,31 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
             project_id = project_ids.get(ticket["initiative"])
             desired_state_id = config["states"].get(ticket["state"])
         else:
-            actual = None
+            candidates = existing_issues.get(ticket["title"], [])
+            if len(candidates) > 1:
+                raise RuntimeError(
+                    f"{ticket['id']}: multiple active Factory issues require reconciliation"
+                )
+            actual = fetch_issue(key, candidates[0]["id"]) if candidates else None
+            if actual is not None:
+                entry.update({
+                    "issue_id": actual["id"],
+                    "identifier": actual["identifier"],
+                    "operator_fields_initialized": True,
+                    "source_ref": source_ref,
+                })
+                ingest_fallback_approval(actual, entry, dry)
+                ticket = ingest_operator_fields(ticket, actual, mapping, entry, dry)
+                project_id = project_ids.get(ticket["initiative"])
+                desired_state_id = config["states"].get(ticket["state"])
+                if not dry:
+                    save_map(map_path, mapping)
+                    log(f"{ticket['id']}: adopted existing issue {actual['identifier']}")
+        if ticket["state"] == "awaiting approval" and ticket["merge_policy"] == "auto":
+            if protected_merge_policy(factory_dir, ticket["id"]) == "auto":
+                desired_state_id = config["states"].get("approved")
+            else:
+                log(f"{ticket['id']}: protected Merge-Policy is not auto; awaiting operator")
 
         description = build_description(ticket, stats)
         label_ids = desired_labels(ticket, config)

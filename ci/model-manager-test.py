@@ -320,6 +320,19 @@ class ModelManagerTest(unittest.TestCase):
         self.assertEqual(len(self.output("status")["overrides"]), 2)
         self.assertEqual(overrides.read_bytes(), before)
 
+    def test_runtime_isolation_failure_can_circuit_break_one_route(self):
+        self.output(
+            "disable",
+            "--scope-type", "route",
+            "--scope-id", "claude-fable",
+            "--reason", "runtime_isolation_failure",
+            "--ttl-seconds", "60",
+            "--operator-id", "factory-dev-lane",
+        )
+        status = self.output("status")
+        self.assertEqual(status["overrides"][0]["reason"], "runtime_isolation_failure")
+        self.assertEqual(status["overrides"][0]["scope_id"], "claude-fable")
+
     def test_probe_context_applies_scopes_and_uses_active_or_default_profile(self):
         initial = self.output("probe-context")
         self.assertEqual(initial["profile_id"], "cursor-balanced-v2")

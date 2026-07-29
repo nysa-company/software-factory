@@ -18,6 +18,7 @@ The kit provides role contracts, budgeted CLI adapters, ticket sequencing, CI en
 2. Tests are authored before implementation by a different model family, and builders cannot edit them.
 3. External actions remain sandboxed or explicitly allowlisted until production approval.
 4. CI and an independent reviewer verify the frozen contract before merge.
-5. A human approves from a Narrator evidence bundle; two failed review rounds escalate.
+5. A human approves from a Narrator evidence bundle; lifecycle repair continues
+   while budget remains and every transition retains valid role evidence.
 
 See [architecture.md](architecture.md) for the engine model and [factory-setup.md](factory-setup.md) to instantiate it.

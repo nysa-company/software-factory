@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,7 @@ class TicketAttestTests(unittest.TestCase):
         (self.product / "factory/KIT_PIN").write_text(
             command("git", "-C", str(ROOT), "rev-parse", "HEAD").stdout.strip() + "\n"
         )
+        (self.product / "factory/QUALIFICATION.json").write_text("{}\n")
         selection = {
             "account_route_id": "test-account",
             "adapter": "mock",
@@ -108,6 +110,7 @@ class TicketAttestTests(unittest.TestCase):
         (self.product / "app.txt").write_text("reviewed code\n")
         self.commit("implementation")
         self.reviewed = self.head()
+
         (self.product / "factory/tickets/T-700.md").write_text(
             self.ticket("Review") + "\nreviewer round 1: APPROVE\n"
         )
@@ -138,6 +141,16 @@ class TicketAttestTests(unittest.TestCase):
         })
         self.workdir = self.product
 
+    def test_ls_remote_retries_one_transport_failure(self):
+        failed = subprocess.CompletedProcess(["git"], 128, "", "transport failed")
+        passed = subprocess.CompletedProcess(["git"], 0, "head\trefs/heads/main\n", "")
+        with patch.object(TICKET_ATTEST, "run", side_effect=[failed, passed]) as call:
+            result = TICKET_ATTEST.git(
+                self.product, "ls-remote", "--heads", "origin", "refs/heads/main",
+            )
+        self.assertEqual(result.stdout, passed.stdout)
+        self.assertEqual(call.call_count, 2)
+
     def tearDown(self):
         shutil.rmtree(self.temp)
 
@@ -147,6 +160,7 @@ class TicketAttestTests(unittest.TestCase):
 
 State: {state}
 Priority: normal
+Merge-Policy: manual
 
 ## Factory checklist
 - [x] Reviewer approved
@@ -257,6 +271,7 @@ Priority: normal
         value = {
             "duplicate": False, "wrong_head": False, "merge_fail": False,
             "auto_merge": True, "draft": True, "merged": False, "merge_sha": "b" * 40,
+            "merge_state": "BLOCKED",
             "merge_on_second_open": False, "open_list_count": 0,
             "pr_head": None, "checks": {"ci": True, "deploy-production": True},
             "check_runs": {},
@@ -343,7 +358,7 @@ elif a[:2] == ["pr", "view"]:
     else:
         print(json.dumps({"number": 7, "headRefName": "ticket/T-700",
                           "baseRefName": "main", "headRefOid": head, "state": "OPEN",
-                          "mergeStateStatus": "BLOCKED",
+                          "mergeStateStatus": s["merge_state"],
                           "isDraft": s["draft"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
 elif a[:1] == ["api"]:
@@ -406,6 +421,17 @@ else:
         ))
         self.bundle()
 
+    def test_bundle_refuses_changed_merge_policy(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Merge-Policy: manual", "Merge-Policy: auto",
+        ))
+        self.commit("grant branch auto merge")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        result = self.attest("bundle")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Policy differs from protected origin/main", result.stderr)
+
     def test_stale_approval_is_refused(self):
         self.bundle()
         self.approval_overlay(stale=True)
@@ -435,7 +461,7 @@ else:
         legacy = json.loads(
             (self.product / "factory/route-plans/T-700.json").read_text()
         )
-        legacy["kit_sha"] = "e" * 40
+        legacy["kit_sha"] = "b" * 40
         legacy_raw = (json.dumps(legacy, indent=2, sort_keys=True) + "\n").encode()
         resolution = legacy["resolution"]
         migration = {
@@ -445,7 +471,7 @@ else:
             "legacy_plan_sha256": hashlib.sha256(legacy_raw).hexdigest(),
             "migrated_at": "2026-07-17T11:10:00Z",
             "new_kit_sha": "b" * 40,
-            "old_kit_sha": "e" * 40,
+            "old_kit_sha": "b" * 40,
             "pin_commit": "1" * 40,
             "policy_hash": resolution["policy_hash"],
         }
@@ -705,6 +731,7 @@ else:
         )
         command("git", "push", "-q", "origin", "main", cwd=updater)
         base_head = self.head_at(updater)
+        self.update_state(merge_state="UNKNOWN")
 
         result = self.attest("refresh")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -777,6 +804,91 @@ else:
         self.bundle()
         self.assertIn("already based", self.attest("refresh").stderr)
 
+    def test_control_only_refresh_preserves_review_and_narrator(self):
+        self.bundle()
+        updater = self.temp / "control-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        (updater / "factory/QUALIFICATION.json").write_text('{"generation": 2}\n')
+        migration = updater / f"factory/migrations/inflight-release/{KIT_SHA}.json"
+        migration.parent.mkdir(parents=True)
+        migration.write_text("{}\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected control metadata", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.attest("bundle")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        attestation = json.loads(
+            (self.product / "factory/attestations/T-700/bundle.json").read_text()
+        )
+        self.assertEqual(attestation["reviewer_run_id"], "reviewer-1")
+        self.assertEqual(attestation["narrator_run_id"], "narrator-1")
+
+        (updater / "factory/unknown-control.json").write_text("{}\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance unknown factory metadata", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
+
+    def test_control_only_refresh_invalidates_orphaned_review_lineage(self):
+        tree = command(
+            "git", "rev-parse", "HEAD^{tree}", cwd=self.product,
+        ).stdout.strip()
+        base = command(
+            "git", "rev-parse", "origin/main", cwd=self.product,
+        ).stdout.strip()
+        orphan_reviewer = command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit-tree", tree, "-p", base, "-m", "orphan reviewer",
+            cwd=self.product,
+        ).stdout.strip()
+        orphan_narrator = command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit-tree", tree, "-p", orphan_reviewer, "-m", "orphan narrator",
+            cwd=self.product,
+        ).stdout.strip()
+        for role, head in (
+            ("reviewer", orphan_reviewer),
+            ("narrator", orphan_narrator),
+        ):
+            manifest = self.product / f"factory/runs/{role}-1.meta"
+            manifest.write_text("\n".join(
+                f"role_head_before={head}"
+                if line.startswith("role_head_before=") else line
+                for line in manifest.read_text().splitlines()
+            ) + "\n")
+
+        updater = self.temp / "orphan-control-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "factory/QUALIFICATION.json").write_text('{"generation": 2}\n')
+        migration = updater / f"factory/migrations/inflight-release/{KIT_SHA}.json"
+        migration.parent.mkdir(parents=True)
+        migration.write_text("{}\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected control metadata", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("new post-refresh Reviewer", self.attest("bundle").stderr)
+
     def test_refresh_refuses_symlink_attestation_path(self):
         attestation = self.product / "factory/attestations/T-700"
         attestation.mkdir(parents=True)
@@ -797,6 +909,32 @@ else:
 
         self.assertIn("attestation path is unsafe", self.attest("refresh").stderr)
         self.assertEqual(external.read_text(), "unchanged\n")
+
+    def test_refresh_allows_building_only_for_exact_topology_receipt(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(
+            ticket.read_text().replace("State: Review", "State: Building")
+        )
+        self.commit("record failed repair state")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        updater = self.temp / "building-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("protected update\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected main", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.write_state()
+
+        self.assertIn("requires ticket State", self.attest("refresh").stderr)
+        self.env["FACTORY_TRANSITION_STAGE"] = (
+            "REFUSE stale refresh receipt does not bind this branch history"
+        )
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("State: Review", ticket.read_text())
 
     def test_refresh_detects_pr_merge_race_after_push(self):
         updater = self.temp / "race-main-update"

@@ -5,8 +5,10 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
+import subprocess
 import sys
 
 
@@ -187,6 +189,121 @@ def validate_snapshot(expected):
         raise ValueError("invalid runs snapshot")
 
 
+def parse_manifest(content, name):
+    values = {}
+    for raw in content.decode("utf-8").splitlines():
+        if "=" not in raw:
+            raise ValueError(f"invalid run manifest row: {name}")
+        key, value = raw.split("=", 1)
+        if not key or key in values:
+            raise ValueError(f"duplicate run manifest field: {name}")
+        values[key] = value
+    return values
+
+
+def concurrent_check(directory, active_directory, coordinator, database, expected):
+    validate_snapshot(expected)
+    runs_descriptor, runs_stat = open_real_directory(directory, "runs root")
+    try:
+        if not same_identity(runs_stat, expected["directory"]):
+            raise ValueError("runs root identity changed")
+        own_name = expected.get("own_manifest")
+        if (not isinstance(own_name, str) or "/" in own_name or
+                own_name not in expected["manifests"] or
+                read_manifest(runs_descriptor, own_name) != expected["manifests"][own_name]):
+            raise ValueError("owned run manifest changed")
+        live = {}
+        referenced_attempts = set()
+        for name in manifest_names(runs_descriptor):
+            content = base64.b64decode(read_manifest(runs_descriptor, name), validate=True)
+            values = parse_manifest(content, name)
+            if values.get("provider_attempt_id"):
+                referenced_attempts.add(values["provider_attempt_id"])
+            if (values.get("accounting_state") == "reserved" and
+                    values.get("provider_execution_mode") == "cli-concurrent-v1"):
+                key = (values.get("ticket"), values.get("role"))
+                if not all(key) or key in live:
+                    raise ValueError("concurrent run identity is ambiguous")
+                live[key] = values
+    finally:
+        os.close(runs_descriptor)
+
+    claim_owners = {}
+    claims_descriptor, _ = open_real_directory(active_directory, "active runs root")
+    try:
+        claims = sorted(os.listdir(claims_descriptor))
+        for name in claims:
+            info = os.stat(name, dir_fd=claims_descriptor, follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError("active run claim is unsafe")
+            claim_descriptor = os.open(name, DIRECTORY_FLAGS, dir_fd=claims_descriptor)
+            try:
+                if sorted(os.listdir(claim_descriptor)) != ["owner"]:
+                    raise ValueError("active run claim has unexpected entries")
+                owner = base64.b64decode(read_manifest(claim_descriptor, "owner"), validate=True)
+                fields = parse_manifest(owner, name)
+                if set(fields) != {"pid", "process_start", "token"}:
+                    raise ValueError("active run claim owner is invalid")
+                if (not fields["pid"].isdigit() or not fields["process_start"] or
+                        len(fields["token"]) != 32 or
+                        any(character not in "0123456789abcdef" for character in fields["token"])):
+                    raise ValueError("active run claim owner is incomplete")
+                pid = int(fields["pid"])
+                observed = subprocess.run(
+                    ["ps", "-o", "lstart=", "-p", str(pid)], text=True,
+                    capture_output=True, check=False, timeout=10,
+                ).stdout.strip()
+                observed = " ".join(observed.split())
+                if observed != fields["process_start"]:
+                    raise ValueError("active run claim owner is not live")
+                claim_owners[name] = fields
+            finally:
+                os.close(claim_descriptor)
+    finally:
+        os.close(claims_descriptor)
+
+    result = subprocess.run(
+        [sys.executable, str(coordinator), "--db", str(database), "status"],
+        text=True, capture_output=True, check=False, timeout=60,
+    )
+    if result.returncode:
+        raise ValueError("provider coordinator status failed")
+    status = json.loads(result.stdout)
+    attempts = {item["attempt_id"]: item for item in status.get("attempts", [])}
+    expected_claims = set()
+    for (ticket, role), values in live.items():
+        attempt = attempts.get(values.get("provider_attempt_id"))
+        if (not attempt or attempt.get("state") not in {"reserved", "GO", "submitted"} or
+                attempt.get("ticket_id") != ticket or
+                attempt.get("provider_family") != values.get("provider_family") or
+                attempt.get("account_route") != values.get("account_route_id") or
+                attempt.get("policy_sha256") != values.get("activation_policy_sha256")):
+            raise ValueError("concurrent run lacks an authorized provider attempt")
+        expected_claims.add(".".join((ticket, role)) + ".lock")
+    missing = expected_claims - set(claims)
+    if missing:
+        raise ValueError("active claims do not match authorized concurrent runs")
+    for name in set(claims) - expected_claims:
+        match = re.fullmatch(
+            r"(T-[0-9]+)\.(planner|spec-linter|test-author|builder|reviewer|narrator)\.lock",
+            name,
+        )
+        if not match:
+            raise ValueError("active claims do not match authorized concurrent runs")
+        ticket = match.group(1)
+        pid = claim_owners[name]["pid"]
+        waiting = [
+            attempt for attempt in attempts.values()
+            if attempt.get("ticket_id") == ticket
+            and attempt.get("state") in {"prepared", "reserved"}
+            and re.fullmatch(rf"[0-9]+-{re.escape(pid)}-cli", attempt["attempt_id"])
+            and attempt["attempt_id"] not in referenced_attempts
+        ]
+        if len(waiting) != 1:
+            raise ValueError("active claims do not match authorized concurrent runs")
+    return True
+
+
 def check(directory, expected):
     validate_snapshot(expected)
     directory = Path(os.path.abspath(directory))
@@ -220,13 +337,29 @@ def check(directory, expected):
 
 
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in {"snapshot", "check"}:
-        raise SystemExit("usage: runs-integrity.py {snapshot|check} RUNS_DIR")
+    if len(sys.argv) < 3 or sys.argv[1] not in {"snapshot", "snapshot-one", "check", "check-concurrent"}:
+        raise SystemExit("usage: runs-integrity.py {snapshot|snapshot-one|check|check-concurrent} PATH ...")
     directory = Path(sys.argv[2])
     if sys.argv[1] == "snapshot":
         print(json.dumps(snapshot(directory), sort_keys=True, separators=(",", ":")))
         return
+    if sys.argv[1] == "snapshot-one":
+        if len(sys.argv) != 4:
+            raise SystemExit("snapshot-one requires RUNS_DIR MANIFEST_NAME")
+        value = snapshot(directory)
+        name = sys.argv[3]
+        value["manifests"] = {name: value["manifests"][name]}
+        value["own_manifest"] = name
+        print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        return
     expected = json.load(sys.stdin)
+    if sys.argv[1] == "check-concurrent":
+        if len(sys.argv) != 6:
+            raise SystemExit("check-concurrent requires RUNS_DIR ACTIVE_RUNS COORDINATOR DB")
+        concurrent_check(directory, Path(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]), expected)
+        return
+    if len(sys.argv) != 3:
+        raise SystemExit("check requires RUNS_DIR")
     if not check(directory, expected):
         print("role_exit_control_plane_mutation: run manifests changed during provider execution", file=sys.stderr)
         raise SystemExit(1)

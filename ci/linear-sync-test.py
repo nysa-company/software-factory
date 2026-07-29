@@ -41,6 +41,25 @@ class FakeLinear:
             return {"viewer": {"id": self.viewer_id}}
         if "teams {" in query:
             return {"teams": {"nodes": [{"id": "team-1", "name": "Software Factory", "key": "SF"}]}}
+        if "issues(first:" in query:
+            return {"team": {"issues": {
+                "nodes": [
+                    {
+                        "description": issue["description"],
+                        "id": issue["id"],
+                        "identifier": issue["identifier"],
+                        "state": {
+                            "type": next(
+                                kind for _state, (name, kind) in LINEAR.STATES.items()
+                                if name == issue["state"]["name"]
+                            ),
+                        },
+                        "title": issue["title"],
+                    }
+                    for issue in self.issues.values()
+                ],
+                "pageInfo": {"endCursor": None, "hasNextPage": False},
+            }}}
         if "team(id:" in query:
             return {
                 "team": {
@@ -189,7 +208,7 @@ class LinearSyncTest(unittest.TestCase):
         )
         (self.factory / "tickets" / "T-001.md").write_text(
             "# T-001 — first ticket\n\nState: Backlog\nInitiative: I-001\n"
-            "Priority: none\nRisk class: medium\nExternal: yes\n\n"
+            "Priority: none\nRisk class: medium\nExternal: yes\nMerge-Policy: manual\n\n"
             "## Description\n\nBuild it.\n\n## Acceptance criteria\n\n1. It works.\n\n## Log\n"
         )
         (self.factory / "ledger.csv").write_text(
@@ -223,6 +242,24 @@ class LinearSyncTest(unittest.TestCase):
         )
         self.assertTrue(self.mapping["tickets"]["T-001"]["identifier"].startswith("SF-"))
         self.assertIsNone(self.mapping["_sync"]["last_error"])
+
+    def test_missing_mapping_adopts_one_existing_issue_and_refuses_duplicates(self):
+        self.reconcile()
+        issue = next(iter(self.fake.issues.values()))
+        issue["priority"] = LINEAR.PRIORITIES["high"]
+        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        self.mapping["tickets"].clear()
+        self.reconcile()
+        self.assertEqual(self.mapping["tickets"]["T-001"]["issue_id"], issue["id"])
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["priority"], "high")
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Ready")
+        duplicate = dict(issue)
+        duplicate["id"] = "issue-duplicate"
+        duplicate["identifier"] = "SF-duplicate"
+        self.fake.issues[duplicate["id"]] = duplicate
+        self.mapping["tickets"].clear()
+        with self.assertRaisesRegex(RuntimeError, "multiple active Factory issues"):
+            self.reconcile()
 
     def test_first_reconciliation_initializes_missing_runs_root(self):
         (self.factory / "runs").rmdir()
@@ -264,6 +301,16 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Ready")
 
+    def test_operator_can_cancel_a_backlog_ticket(self):
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["state"] = {"id": config()["states"]["canceled"], "name": "Canceled"}
+        self.reconcile()
+        self.assertEqual(
+            self.mapping["tickets"]["T-001"]["operator"]["state"], "Canceled"
+        )
+        self.assertEqual(issue["state"]["name"], "Canceled")
+
     def test_legacy_issue_bootstraps_operator_fields_before_pull(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"
@@ -295,6 +342,36 @@ class LinearSyncTest(unittest.TestCase):
         operator = self.mapping["tickets"]["T-001"]["operator"]
         self.assertEqual(operator["state"], "Approved")
         self.assertEqual(operator["approval"], "Linear")
+
+    def test_protected_auto_merge_policy_advances_linear_approval(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Awaiting Approval")
+            .replace("Merge-Policy: manual", "Merge-Policy: auto")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        with patch.object(LINEAR, "protected_merge_policy", return_value="auto"):
+            self.reconcile()
+            self.assertEqual(issue["state"]["name"], "Approved")
+            self.reconcile()
+        operator = self.mapping["tickets"]["T-001"]["operator"]
+        self.assertEqual(operator["state"], "Approved")
+        self.assertEqual(operator["approval"], "Linear")
+
+    def test_unprotected_auto_merge_policy_waits_for_operator(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Awaiting Approval")
+            .replace("Merge-Policy: manual", "Merge-Policy: auto")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        with patch.object(LINEAR, "protected_merge_policy", return_value="manual"):
+            self.reconcile()
+        self.assertEqual(issue["state"]["name"], "Awaiting Approval")
 
     def test_blocked_ticket_resumes_only_to_declared_state(self):
         self.reconcile()
@@ -441,6 +518,7 @@ class LinearSyncTest(unittest.TestCase):
             "awaiting approval",
             "blocked-escalated",
             "done",
+            "canceled",
         ):
             text = replace_state(path.read_text(), LINEAR.STATES[state][0])
             path.write_text(text)

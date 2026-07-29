@@ -57,6 +57,9 @@ UTC_TIMESTAMP = re.compile(
 OPERATOR_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 OVERRIDE_REASONS = {"budget_exhausted", "operator_requested"}
 MAX_OVERRIDE_SECONDS = 7 * 24 * 60 * 60
+OVERRIDE_V1 = "factory-envelope-override/v1"
+OVERRIDE_V2 = "factory-envelope-override/v2"
+OVERRIDE_SCOPES = {"next-attempt", "ticket", "role", "product-day", "global-day"}
 
 
 class ControlError(Exception):
@@ -494,8 +497,8 @@ def apply_command(args):
         launch_lock.rmdir()
 
 
-def override_directory(factory):
-    return secure_directory(factory / "envelope-overrides", create=True)
+def override_directory(factory, create=True):
+    return secure_directory(factory / "envelope-overrides", create=create)
 
 
 def override_changes(scope, changes):
@@ -512,6 +515,139 @@ def override_changes(scope, changes):
     validate_values(local)
     if "GLOBAL_DAILY_CAP_USD" in changes:
         positive_money("GLOBAL_DAILY_CAP_USD", changes["GLOBAL_DAILY_CAP_USD"])
+
+
+def override_records(base):
+    directory = base / "envelope-overrides"
+    if not directory.exists():
+        return {}
+    secure_directory(directory)
+    records = {}
+    base_keys = {
+        "base_env_sha256", "changes", "day", "expires_at", "issued_at",
+        "operator_id", "reason", "role", "schema", "scope", "ticket",
+    }
+    for path in sorted(directory.glob("*.json")):
+        info = secure_file(path)
+        if info.st_size > 16_384:
+            raise ControlError("override record is oversized")
+        raw = secure_read(path, 16_384).rstrip(b"\n")
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ControlError("override record identity is invalid")
+        schema = value.get("schema")
+        expected = base_keys | ({"supersedes"} if schema == OVERRIDE_V2 else set())
+        if value.get("scope") == "global-day":
+            expected.add("global_env_sha256")
+        if (
+            schema not in {OVERRIDE_V1, OVERRIDE_V2}
+            or set(value) != expected
+            or digest(canonical(value)) != path.stem
+            or not HASH.fullmatch(value.get("base_env_sha256", ""))
+            or value.get("scope") not in OVERRIDE_SCOPES
+            or not isinstance(value.get("changes"), dict)
+        ):
+            raise ControlError("override record identity is invalid")
+        scope = value["scope"]
+        override_changes(scope, value["changes"])
+        if value["ticket"] is not None and not TICKET.fullmatch(value["ticket"]):
+            raise ControlError("override record ticket is invalid")
+        if value["role"] is not None and value["role"] not in ROLES:
+            raise ControlError("override record role is invalid")
+        if scope == "ticket" and value["ticket"] is None:
+            raise ControlError("ticket override record lacks a ticket")
+        if scope == "role" and value["role"] is None:
+            raise ControlError("role override record lacks a role")
+        if scope == "next-attempt" and value["ticket"] is None and value["role"] is None:
+            raise ControlError("next-attempt override record lacks a target")
+        if scope.endswith("-day"):
+            if not isinstance(value["day"], str) or not UTC_DATE.fullmatch(value["day"]):
+                raise ControlError("day override record lacks a day")
+        elif value["day"] is not None:
+            raise ControlError("non-day override record contains a day")
+        if scope == "global-day":
+            if not HASH.fullmatch(value.get("global_env_sha256", "")):
+                raise ControlError("global override record identity is invalid")
+        if schema == OVERRIDE_V2:
+            supersedes = value.get("supersedes")
+            if (
+                not isinstance(supersedes, list)
+                or len(supersedes) != 1
+                or not HASH.fullmatch(supersedes[0])
+                or supersedes[0] == path.stem
+            ):
+                raise ControlError("override supersession identity is invalid")
+        expires = validate_override_authority(value, require_current_issue=False)
+        records[path.stem] = (value, expires)
+    return records
+
+
+def active_override_records(base, current=None):
+    current = current or datetime.now(timezone.utc)
+    records = override_records(base)
+    superseded = set()
+    for record_id, (value, expires) in records.items():
+        if value["schema"] != OVERRIDE_V2:
+            continue
+        target_id = value["supersedes"][0]
+        target = records.get(target_id)
+        if target is None:
+            raise ControlError("override supersession target is missing")
+        previous, previous_expires = target
+        context = (
+            "scope", "ticket", "role", "day", "base_env_sha256",
+            "global_env_sha256",
+        )
+        if (
+            any(value.get(key) != previous.get(key) for key in context)
+            or set(value["changes"]) != set(previous["changes"])
+            or timestamp(value["issued_at"], "override issued_at")
+            <= timestamp(previous["issued_at"], "override issued_at")
+            or expires < previous_expires
+        ):
+            raise ControlError("override supersession does not exactly replace its target")
+        if expires > current:
+            if target_id in superseded:
+                raise ControlError("override record has multiple active supersessions")
+            superseded.add(target_id)
+    active = {
+        record_id: value
+        for record_id, (value, expires) in records.items()
+        if expires > current and record_id not in superseded
+    }
+    return active
+
+
+def replacement_target(base, body):
+    if body["scope"] == "next-attempt":
+        return None
+    context = (
+        "scope", "ticket", "role", "day", "base_env_sha256",
+        "global_env_sha256",
+    )
+    matches = []
+    for record_id, value in active_override_records(base).items():
+        if any(value.get(key) != body.get(key) for key in context):
+            continue
+        overlap = set(value["changes"]) & set(body["changes"])
+        if not overlap:
+            continue
+        if set(value["changes"]) != set(body["changes"]):
+            raise ControlError("active override replacement must use the same setting keys")
+        matches.append((record_id, value))
+    if len(matches) > 1:
+        raise ControlError("active override replacement is ambiguous")
+    if not matches:
+        return None
+    record_id, previous = matches[0]
+    if (
+        timestamp(body["issued_at"], "override issued_at")
+        <= timestamp(previous["issued_at"], "override issued_at")
+        or timestamp(body["expires_at"], "override expires_at")
+        < timestamp(previous["expires_at"], "override expires_at")
+    ):
+        raise ControlError("replacement must be newer and outlive the active override")
+    return record_id
 
 
 def override_preview(args):
@@ -552,7 +688,7 @@ def override_preview(args):
         "operator_id": args.operator_id,
         "reason": args.reason,
         "role": args.role or None,
-        "schema": "factory-envelope-override/v1",
+        "schema": OVERRIDE_V1,
         "scope": args.scope,
         "ticket": args.ticket or None,
     }
@@ -562,6 +698,13 @@ def override_preview(args):
             raise ControlError("global-day scope requires an absolute --global-env")
         global_path = Path(args.global_env)
         body["global_env_sha256"] = digest(secure_read(global_path, 1_000_000))
+        base = secure_directory(global_path.parent)
+    else:
+        base = state[1]
+    target = replacement_target(base, body)
+    if target:
+        body["schema"] = OVERRIDE_V2
+        body["supersedes"] = [target]
     record_id = digest(canonical(body))
     preview = {
         "record": body,
@@ -636,7 +779,6 @@ def load_override_records(base, ticket, role, day, scopes=None):
     directory = base / "envelope-overrides"
     if not directory.exists():
         return [], {}
-    secure_directory(directory)
     consumption = base / "envelope-override-consumptions"
     consumed = set()
     if consumption.exists():
@@ -647,24 +789,12 @@ def load_override_records(base, ticket, role, day, scopes=None):
             consumed.add(value["record_id"])
     records = []
     changes = {}
-    for path in sorted(directory.glob("*.json")):
-        info = secure_file(path)
-        if info.st_size > 16_384:
-            raise ControlError("override record is oversized")
-        raw = secure_read(path, 16_384).rstrip(b"\n")
-        value = json.loads(raw)
-        if value.get("schema") != "factory-envelope-override/v1" or digest(canonical(value)) != path.stem:
-            raise ControlError("override record identity is invalid")
-        expires = validate_override_authority(
-            value, require_current_issue=False
-        )
-        if expires <= datetime.now(timezone.utc):
-            continue
+    for record_id, value in sorted(active_override_records(base).items()):
         scope = value["scope"]
         if scopes is not None and scope not in scopes:
             continue
         applies = (
-            (scope == "next-attempt" and path.stem not in consumed
+            (scope == "next-attempt" and record_id not in consumed
              and (not value["ticket"] or value["ticket"] == ticket)
              and (not value["role"] or value["role"] == role))
             or (scope == "ticket" and value["ticket"] == ticket)
@@ -678,7 +808,7 @@ def load_override_records(base, ticket, role, day, scopes=None):
             if overlap:
                 raise ControlError(f"active override conflict for {sorted(overlap)[0]}")
             changes.update(value["changes"])
-            records.append((path.stem, scope))
+            records.append((record_id, scope))
     return records, changes
 
 
@@ -705,6 +835,11 @@ def effective_command(args):
         records.extend(global_records)
         changes.update(global_changes)
     values = dict(state[-1])
+    if args.base_envelope:
+        base_path = Path(args.base_envelope)
+        if not base_path.is_absolute():
+            raise ControlError("base envelope path must be absolute")
+        values = parse_env_bytes(secure_read(base_path, 1_000_000))
     values.update({key: value for key, value in changes.items() if key in ALL_KEYS})
     validate_values(values)
     effective = effective_role(values, args.role)
@@ -796,6 +931,7 @@ def parser():
     effective.add_argument("--ticket", required=True)
     effective.add_argument("--role", required=True)
     effective.add_argument("--day", required=True)
+    effective.add_argument("--base-envelope")
     effective.add_argument("--global-env")
     effective.add_argument("--format", choices=("json", "shell"), default="json")
     effective.set_defaults(handler=effective_command)

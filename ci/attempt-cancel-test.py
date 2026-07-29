@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -193,6 +194,45 @@ class AttemptCancellationTest(unittest.TestCase):
             with self.assertRaisesRegex(IDENTITY.IdentityError, "membership changed"):
                 IDENTITY.signal_group(identity, signal.SIGKILL)
 
+    def test_sandbox_start_identity_matches_host_and_foreground_timeout_group(self):
+        timeout = shutil.which("timeout")
+        if timeout is None:
+            self.skipTest("GNU timeout is unavailable")
+        process = subprocess.Popen(
+            [
+                timeout, "--foreground", "30",
+                sys.executable, "-c", "import time; time.sleep(30)",
+            ],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.processes.append(process)
+        for _ in range(100):
+            table = IDENTITY.process_table()
+            members = [item for item in table.values() if item.pgid == process.pid]
+            if len(members) >= 2:
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("foreground timeout did not retain its child process group")
+        observed = subprocess.check_output(
+            [
+                sys.executable, str(ROOT / "scripts/lib/sandbox-ps.py"),
+                "-o", "lstart=", "-p", str(process.pid),
+            ],
+            text=True,
+        ).strip()
+        self.assertEqual(" ".join(observed.split()), table[process.pid].started)
+        self.manifest(process, table[process.pid].started, go="1")
+        identity = IDENTITY.load_identity(self.runs, "run-1")
+        self.assertGreaterEqual(len(identity.members), 2)
+        reaper = threading.Thread(target=process.wait)
+        reaper.start()
+        self.assertIn(IDENTITY.terminate(identity, 0.2), {"TERM", "KILL"})
+        reaper.join(timeout=2)
+        self.assertFalse(IDENTITY.group_alive(process.pid))
+
     def test_pre_go_cancel_is_zero_cost_and_replay_safe(self):
         process, started = self.spawn()
         values = self.manifest(process, started, go="0")
@@ -225,6 +265,14 @@ class AttemptCancellationTest(unittest.TestCase):
     def test_preview_hash_and_manifest_cas_refuse_drift(self):
         process, started = self.spawn()
         values = self.manifest(process, started)
+        self.assertEqual(
+            CANCEL.calculate(
+                self.root, "T-1", "run-1", "budget_exhausted", None,
+            ),
+            CANCEL.calculate(
+                self.root, "T-1", "run-1", "budget_exhausted", None,
+            ),
+        )
         plan = CANCEL.calculate(self.root, "T-1", "run-1", "budget_exhausted", "c" * 32)
         with self.assertRaisesRegex(CANCEL.CancelError, "preview hash"):
             CANCEL.validate_plan(plan, "0" * 64)
@@ -245,6 +293,51 @@ class AttemptCancellationTest(unittest.TestCase):
         (self.runs / "run-1.cancel-request.json").write_bytes(CANCEL.canonical(other))
         with self.assertRaisesRegex(CANCEL.CancelError, "another cancellation request"):
             CANCEL.apply_plan(self.root, plan, 0.1)
+
+    def test_stale_process_converges_without_signalling_or_replay(self):
+        process, started = self.spawn()
+        self.manifest(process, started, go="1")
+        process.terminate()
+        process.wait(timeout=5)
+        claim = self.root / "factory/.active-runs/T-1.builder.lock"
+        claim.mkdir(parents=True)
+        (claim / "owner").write_text(
+            f"pid={process.pid}\nprocess_start={started}\ntoken={'a' * 32}\n"
+        )
+        leases = self.root / "factory/.dispatch-leases"
+        leases.mkdir()
+        (leases / "T-1.json").write_bytes(CANCEL.canonical({
+            "claimed_epoch": 1,
+            "expires_epoch": 2,
+            "lease_id": "b" * 64,
+            "schema_version": 1,
+            "ticket": "T-1",
+        }))
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "e" * 32,
+        )
+        receipt = CANCEL.apply_plan(self.root, plan, 1)
+        manifest = IDENTITY.parse_fields(
+            (self.runs / "run-1.meta").read_bytes(), "run manifest",
+        )
+        self.assertEqual(
+            (receipt["accounting_state"], receipt["charged_usd"]),
+            ("cancelled_conservative", "2.00"),
+        )
+        self.assertEqual(
+            (manifest["phase"], manifest["role_exit"]),
+            ("cancelled_conservative", "cancelled"),
+        )
+        self.assertFalse((self.runs / "run-1.pid").exists())
+        self.assertFalse(claim.exists())
+        self.assertFalse((leases / "T-1.json").exists())
+        self.assertEqual(
+            CANCEL.ledger_row(
+                self.root / "factory/runtime-ledger.csv", "run-1",
+            )["exit_status"],
+            "130",
+        )
+        self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -90,11 +91,33 @@ def write_metrics(path: Path, values: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def completed_tool_error(event: dict[str, Any]) -> tuple[str, str] | None:
+    if event.get("type") != "tool_call" or event.get("subtype") != "completed":
+        return None
+    tool_call = event.get("tool_call")
+    if not isinstance(tool_call, dict):
+        return None
+    for kind, value in tool_call.items():
+        if not str(kind).endswith("ToolCall") or not isinstance(value, dict):
+            continue
+        result = value.get("result")
+        if not isinstance(result, dict):
+            continue
+        error = result.get("error")
+        if not isinstance(error, dict):
+            continue
+        message = error.get("error", error.get("modelVisibleError"))
+        if isinstance(message, str) and message.strip():
+            return str(kind), " ".join(redact_text(message).split())
+    return None
+
+
 def main() -> int:
-    if len(sys.argv) != 6:
+    if len(sys.argv) not in {6, 7}:
         print(
             "usage: cursor-stream.py METRICS_FILE EXPECTED_MODEL "
-            "EXPECTED_REPORTED_MODEL EXPECTED_CWD MAX_TURNS",
+            "EXPECTED_REPORTED_MODEL EXPECTED_CWD MAX_TURNS "
+            "[REPEATED_TOOL_ERROR_LIMIT]",
             file=sys.stderr,
         )
         return 2
@@ -104,6 +127,10 @@ def main() -> int:
     expected_reported_model = sys.argv[3]
     expected_cwd = os.path.realpath(sys.argv[4])
     max_turns = int(sys.argv[5])
+    repeated_tool_error_limit = int(sys.argv[6]) if len(sys.argv) == 7 else 0
+    if repeated_tool_error_limit < 0:
+        print("REPEATED_TOOL_ERROR_LIMIT must be nonnegative", file=sys.stderr)
+        return 2
     terminal_success = False
     malformed_json = False
     reported_model = ""
@@ -120,6 +147,10 @@ def main() -> int:
     }
     in_private_key = False
     turn_limit_exceeded = False
+    internal_retries = 0
+    tool_errors: Counter[tuple[str, str]] = Counter()
+    repeated_tool_error_count = 0
+    repeated_tool_error_limit_exceeded = False
 
     for raw_line in sys.stdin:
         line = raw_line.rstrip("\n")
@@ -143,6 +174,14 @@ def main() -> int:
             continue
         event_type = str(event.get("type", ""))
         subtype = str(event.get("subtype", ""))
+        if event_type == "retry" and subtype == "starting":
+            internal_retries += 1
+        tool_error = completed_tool_error(event)
+        if tool_error is not None:
+            tool_errors[tool_error] += 1
+            repeated_tool_error_count = max(
+                repeated_tool_error_count, tool_errors[tool_error]
+            )
         if event_type == "result" and subtype == "success":
             terminal_success = True
         if event_type == "assistant":
@@ -158,6 +197,12 @@ def main() -> int:
                 if amount is not None:
                     usage_sources[key] = max(usage_sources[key], amount)
         print(json.dumps(redact_value(event), separators=(",", ":")), flush=True)
+        if (
+            repeated_tool_error_limit > 0
+            and repeated_tool_error_count >= repeated_tool_error_limit
+        ):
+            repeated_tool_error_limit_exceeded = True
+            break
         if turns > max_turns:
             turn_limit_exceeded = True
             break
@@ -182,8 +227,17 @@ def main() -> int:
             "requested_model": expected_model,
             "reported_model": reported_model,
             "reported_cwd": reported_cwd,
+            "internal_retries": internal_retries,
+            "repeated_tool_error_count": repeated_tool_error_count,
         },
     )
+    if repeated_tool_error_limit_exceeded:
+        print(
+            "cursor repeated identical tool failure limit reached: "
+            f"{repeated_tool_error_count} >= {repeated_tool_error_limit}",
+            file=sys.stderr,
+        )
+        return 15
     if turn_limit_exceeded:
         print(
             f"cursor stream exceeded turn limit: {turns} > {max_turns}",

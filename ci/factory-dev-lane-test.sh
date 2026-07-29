@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export LANG=C LC_ALL=C LC_CTYPE=C
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_ROOT="$ROOT"
 LANE="${FACTORY_DEV_LANE_UNDER_TEST:-$ROOT/scripts/factory-dev-lane.sh}"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-dev-lane-test.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
@@ -11,6 +13,10 @@ OUT="$TMP/out"
 CALLER_HOME="$TMP/caller-home"
 
 cleanup() {
+  if [[ -n "${CURSOR_LANE:-}" ]]; then
+    chmod -R u+w "$CURSOR_LANE" 2>/dev/null || true
+    rm -rf -- "$CURSOR_LANE"
+  fi
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
@@ -18,6 +24,11 @@ trap cleanup EXIT
 trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed -n "1,120p" "$OUT" >&2; exit "$status"' ERR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+grep -Fq 'SPEC-WARN: <one-line recommendation>' "$ROOT/roles/spec-linter.md" &&
+  grep -Fq 'PASS may include `SPEC-WARN` recommendations' \
+    "$ROOT/roles/spec-linter.md" ||
+  fail "Spec-linter contract does not distinguish warnings from blockers"
 
 expect_failure() {
   local label="$1"
@@ -27,11 +38,38 @@ expect_failure() {
   fi
 }
 
+eval "$(sed -n \
+  '/^write_product_ticket_approval()/,/^provision_product_databases()/p' \
+  "$LANE" | sed '$d')"
+APPROVALS="$TMP/runtime/product-ticket-approvals"
+mkdir -p "$TMP/runtime"
+APPROVAL_A="$(printf approval-a | shasum -a 256 | awk '{print $1}')"
+APPROVAL_B="$(printf approval-b | shasum -a 256 | awk '{print $1}')"
+write_product_ticket_approval "$TMP" T-1 "$APPROVAL_A" ||
+  fail "first ticket approval was not created"
+write_product_ticket_approval "$TMP" T-2 "$APPROVAL_B" ||
+  fail "sibling ticket approval was not created"
+consume_product_ticket_approval "$TMP" T-1 "$APPROVAL_A" ||
+  fail "ticket approval was not consumed"
+[[ ! -e "$APPROVALS/T-1" && -f "$APPROVALS/T-2" &&
+   -f "$APPROVALS/used/T-1-$APPROVAL_A" ]] ||
+  fail "ticket approval consumption affected its sibling"
+expect_failure "consumed ticket approval replay" \
+  consume_product_ticket_approval "$TMP" T-1 "$APPROVAL_A"
+write_product_ticket_pause "$TMP" T-2 ||
+  fail "ticket pause was not recorded"
+product_ticket_pause_requested "$TMP" T-2 ||
+  fail "ticket pause record was not recognized"
+clear_product_ticket_pause "$TMP" T-2 ||
+  fail "ticket pause record was not cleared"
+expect_failure "cleared ticket pause" product_ticket_pause_requested "$TMP" T-2
+
 test_env() {
   FACTORY_DEV_LANE_TEST_MODE=1 \
   FACTORY_TRUSTED_TEST_HARNESS=1 \
   FACTORY_DEV_LANE_UNAME=Darwin \
   FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
+  FACTORY_DEV_LANE_ACCOUNT_HOME="$CALLER_HOME" \
   HOME="$CALLER_HOME" \
   TMPDIR="$TMP/lanes" \
   "$@"
@@ -50,19 +88,22 @@ cursor_env() {
   "$@"
 }
 
-clean_cmd() { TMPDIR="$TMP/lanes" bash "$LANE" clean --root "$1"; }
+clean_cmd() { test_env bash "$LANE" clean --root "$1"; }
 
 mkdir -p "$TMP/lanes" "$CALLER_HOME/.factory" "$CALLER_HOME/.cursor" \
-  "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents"
+  "$CALLER_HOME/.hermes/profiles/factory" "$CALLER_HOME/Library/LaunchAgents" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app"
 printf 'factory production sentinel\n' >"$CALLER_HOME/.factory/sentinel"
 printf 'profile production sentinel\n' >"$CALLER_HOME/.hermes/profiles/factory/sentinel"
 printf 'service production sentinel\n' >"$CALLER_HOME/Library/LaunchAgents/sentinel"
+printf 'product production sentinel\n' >"$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel"
 printf '{"accessToken":"test","refreshToken":"test"}\n' >"$CALLER_HOME/.cursor/auth.json"
 printf '{}\n' >"$CALLER_HOME/.cursor/cli-config.json"
 chmod 600 "$CALLER_HOME/.cursor/"*.json
 sentinels_before="$(cksum "$CALLER_HOME/.factory/sentinel" \
   "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
-  "$CALLER_HOME/Library/LaunchAgents/sentinel")"
+  "$CALLER_HOME/Library/LaunchAgents/sentinel" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel")"
 cursor_session_before="$(cksum "$CALLER_HOME/.cursor/auth.json" \
   "$CALLER_HOME/.cursor/cli-config.json")"
 cat >"$FAKE_SANDBOX" <<'EOF'
@@ -86,7 +127,3227 @@ esac
 EOF
 chmod +x "$FAKE_CURSOR"
 
+eval "$(sed -n \
+  '/^product_retry_has_progress()/,/^product_dependencies_satisfied()/p' \
+  "$LANE" | sed '$d')"
+RETRY_GATE="$TMP/retry-gate"
+mkdir -p "$RETRY_GATE/worktrees/T-9" "$RETRY_GATE/product/factory/runs"
+git -C "$RETRY_GATE/worktrees/T-9" init -q
+printf '%s\n' retry >"$RETRY_GATE/worktrees/T-9/input"
+git -C "$RETRY_GATE/worktrees/T-9" add input
+git -C "$RETRY_GATE/worktrees/T-9" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Retry basis'
+RETRY_HEAD="$(git -C "$RETRY_GATE/worktrees/T-9" rev-parse HEAD)"
+for retry_number in 1 2; do
+  printf '%s\n' "ticket=T-9" 'role=builder' \
+    "role_head_before=$RETRY_HEAD" 'accounting_state=abandoned_conservative' \
+    'exit_status=11' 'role_exit=provider_failed' 'output_sha256=same' \
+    "started_at=2026-07-27T00:00:0${retry_number}Z" \
+    >"$RETRY_GATE/product/factory/runs/retry-$retry_number.meta"
+done
+expect_failure "two identical no-progress retries" \
+  product_retry_has_progress "$RETRY_GATE" T-9 builder
+sed -i '' 's/output_sha256=same/output_sha256=changed/' \
+  "$RETRY_GATE/product/factory/runs/retry-2.meta"
+product_retry_has_progress "$RETRY_GATE" T-9 builder ||
+  fail "changed retry evidence was treated as identical"
+
+eval "$(sed -n \
+  '/^product_dependencies_satisfied()/,/^product_prepare_role_state()/p' \
+  "$LANE" | sed '$d')"
+DEPENDENCY_GATE="$TMP/dependency-gate"
+mkdir -p "$DEPENDENCY_GATE/worktrees/T-2/factory/tickets" \
+  "$DEPENDENCY_GATE/origin.git/factory/tickets"
+printf '%s\n' 'Depends-On: T-1' \
+  >"$DEPENDENCY_GATE/worktrees/T-2/factory/tickets/T-2.md"
+printf '%s\n' 'State: Done' \
+  >"$DEPENDENCY_GATE/origin.git/factory/tickets/T-1.md"
+git -C "$DEPENDENCY_GATE/origin.git" init -q
+git -C "$DEPENDENCY_GATE/origin.git" add factory
+git -C "$DEPENDENCY_GATE/origin.git" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Protected dependency'
+git -C "$DEPENDENCY_GATE/origin.git" branch -M main
+product_dependencies_satisfied "$DEPENDENCY_GATE" T-2 ||
+  fail "protected Done dependency was rejected"
+printf '%s\n' 'State: Review' \
+  >"$DEPENDENCY_GATE/origin.git/factory/tickets/T-1.md"
+git -C "$DEPENDENCY_GATE/origin.git" add factory
+git -C "$DEPENDENCY_GATE/origin.git" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Dependency is no longer terminal'
+expect_failure "nonterminal protected dependency" \
+  product_dependencies_satisfied "$DEPENDENCY_GATE" T-2
+
 [[ -x "$LANE" ]] || fail "development lane wrapper is not executable"
+LANE_PATH_REPO="$TMP/lane-path-repo"
+git init -q "$LANE_PATH_REPO"
+printf '%s\n' 'source ../../runtime/product-db/T-1.env' \
+  >"$LANE_PATH_REPO/contract.md"
+git -C "$LANE_PATH_REPO" add contract.md
+git -C "$LANE_PATH_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add portable contract'
+LANE_PATH_BASE="$(git -C "$LANE_PATH_REPO" rev-parse HEAD)"
+printf '%s\n' 'portable role output' >>"$LANE_PATH_REPO/contract.md"
+git -C "$LANE_PATH_REPO" add contract.md
+git -C "$LANE_PATH_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add portable role output'
+python3 "$ROOT/scripts/lib/lane-path-sentinel.py" "$LANE_PATH_REPO" \
+  "$LANE_PATH_BASE" HEAD ||
+  fail "portable development role output was rejected"
+printf '%s\n' \
+  "source '/private/tmp/old lane/nysa-sf-dev.stale/runtime/product-db/T-1.env'" \
+  >>"$LANE_PATH_REPO/contract.md"
+git -C "$LANE_PATH_REPO" add contract.md
+git -C "$LANE_PATH_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add stale lane path'
+expect_failure "lane-local absolute role path" \
+  python3 "$ROOT/scripts/lib/lane-path-sentinel.py" "$LANE_PATH_REPO" \
+    "$LANE_PATH_BASE" HEAD
+subscription_plan_source="$(sed -n \
+  '/^subscription_probe_and_plan()/,/^run_subscription_internal()/p' "$LANE")"
+grep -Fq '"account_routes":{account:limit(4)}' \
+  <<<"$subscription_plan_source" ||
+  fail "subscription canary does not grant the selected account four slots"
+grep -Fq '"claude":("claude-code","sonnet","anthropic","lane-claude-subscription")' \
+  <<<"$subscription_plan_source" ||
+  fail "subscription canary does not support native Claude"
+grep -Fq '"codex":("codex","gpt-5.6-sol","openai","lane-codex-subscription")' \
+  <<<"$subscription_plan_source" ||
+  fail "subscription canary does not preserve Codex"
+subscription_run_source="$(sed -n \
+  '/^run_subscription_internal()/,/^product_role_run()/p' "$LANE")"
+grep -Fq 'PROVIDER_SPLIT=$selected:4' <<<"$subscription_run_source" ||
+  fail "subscription canary does not report four selected-adapter calls"
+grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
+  fail "subscription canary lost Codex readiness"
+create_lane_source="$(sed -n '/^create_lane()/,/^validate_lane()/p' "$LANE")"
+grep -Fq 'physical "$(dirname "$claude_token_source")"' <<<"$create_lane_source" ||
+  fail "Claude token source was resolved as a directory instead of a file"
+grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
+  fail "subscription canary lacks Claude readiness"
+grep -Fq 'if [[ "$selected" == claude ]]; then' <<<"$subscription_run_source" ||
+  fail "Codex canary still expands the Bash-3.2-empty Claude runtime array"
+grep -Fq 'CLAUDE_CODE_TMPDIR="$attempt_root/tmp"' <<<"$subscription_run_source" ||
+  fail "Claude canary does not isolate the CLI hard-coded temp root"
+lane_env_source="$(sed -n '/^lane_env()/,/^lane_cursor_env()/p' "$LANE")"
+grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
+  fail "trusted product helpers lost the checkpoint lane-root binding"
+grep -Fq 'FACTORY_CLI_INTERNAL_SANDBOX=1' <<<"$lane_env_source" ||
+  fail "trusted product helpers lost the development sandbox marker"
+seatbelt_source="$(sed -n '/^write_seatbelt_profiles()/,/^}/p' "$LANE")"
+grep -Fq 'for item in ("/opt/homebrew", "/usr/local"):' <<<"$seatbelt_source" ||
+  fail "development sandbox dropped the trusted Node toolchain roots"
+grep -Fq '(allow file-read-data (literal "/dev/dtracehelper"))' \
+  <<<"$seatbelt_source" ||
+  fail "native Claude startup lost its read-only dtracehelper allowance"
+grep -Fq 'file-write-data (literal "/dev/dtracehelper")' \
+  <<<"$seatbelt_source" &&
+  fail "native Claude startup made dtracehelper writable"
+grep -Fq '"sandbox":{"enabled":False}' <<<"$create_lane_source" ||
+  fail "Claude still attempts an unsupported nested macOS Seatbelt"
+grep -Fq 'exec "$(sandbox_exec)" -f "$root/runtime/native.sb"' \
+  <<<"$create_lane_source" ||
+  fail "Claude lost the Factory-owned outer Seatbelt"
+grep -Fq 'CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions' \
+  "$ROOT/scripts/adapters/claude-code.sh" ||
+  fail "Claude cannot run role-owned git inside the outer Seatbelt"
+if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
+  fail "development sandbox made the host toolchain writable"
+fi
+if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
+  eval "$seatbelt_source"
+  OUTER_PROBE_ROOT="$(mktemp -d /private/tmp/nysa-sb.XXXXXX)"
+  REAL_GIT="$(/usr/bin/xcrun -f git)"
+  mkdir -p "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
+  mkdir -p "$OUTER_PROBE_ROOT/runtime/cli-attempts/A/tmp"
+  chmod 700 "$OUTER_PROBE_ROOT" "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
+  ln -s "$REAL_GIT" "$OUTER_PROBE_ROOT/home/git"
+  write_seatbelt_profiles "$OUTER_PROBE_ROOT" /usr/bin/true "" "" ""
+  "$REAL_GIT" init -q "$OUTER_PROBE_ROOT/work"
+  printf 'before\n' >"$OUTER_PROBE_ROOT/work/ticket"
+  "$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" add ticket
+  "$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" \
+    -c user.name=Test -c user.email=test@local \
+    commit -qm before
+  ( cd "$OUTER_PROBE_ROOT/work"
+    /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+      /usr/bin/env -i HOME="$OUTER_PROBE_ROOT/home" PATH=/usr/bin:/bin \
+      /bin/sh -c 'printf "after\n" >>ticket &&
+        "$0" add ticket &&
+        "$0" -c user.name=Role -c user.email=role@local commit -qm after' \
+      "$REAL_GIT" ) ||
+    fail "Claude role cannot commit beneath the Factory outer Seatbelt"
+  [[ "$("$REAL_GIT" -C "$OUTER_PROBE_ROOT/work" rev-list --count HEAD)" -eq 2 ]] ||
+    fail "outer Seatbelt role commit was not durable"
+  ( cd "$OUTER_PROBE_ROOT"
+    /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+      /usr/bin/ruby --disable-gems -rsocket \
+      -e 's=UNIXServer.new(ARGV[0]); s.close' \
+      "$OUTER_PROBE_ROOT/runtime/cli-attempts/A/tmp/srt-mux.sock" ) ||
+    fail "Claude attempt-local Unix socket is blocked by the outer Seatbelt"
+  if ( cd "$OUTER_PROBE_ROOT"
+    /usr/bin/sandbox-exec -f "$OUTER_PROBE_ROOT/runtime/native.sb" \
+      /usr/bin/ruby --disable-gems -rsocket \
+      -e 's=UNIXServer.new(ARGV[0]); s.close' \
+      "$OUTER_PROBE_ROOT/tmp/outside.sock" 2>/dev/null ); then
+    fail "native Seatbelt permits a Unix socket outside the attempt root"
+  fi
+  rm -rf -- "$OUTER_PROBE_ROOT"
+fi
+eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
+sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
+DEPENDENCY_ROOT="$TMP/nysa-sf-dev.dependencies"
+mkdir -p "$DEPENDENCY_ROOT"/{home,product,runtime,tmp,worktrees/T-1,worktrees/T-2,worktrees/T-FAIL,worktrees/T-DRIFT}
+: >"$DEPENDENCY_ROOT/runtime/native.sb"
+printf '{}\n' >"$DEPENDENCY_ROOT/product/package-lock.json"
+cat >"$DEPENDENCY_ROOT/home/node" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$DEPENDENCY_ROOT/home/npm" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+prefix=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == --prefix ]]; then prefix="$2"; shift 2; else shift; fi
+done
+[[ -n "$prefix" ]]
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
+printf '%s\n' "$(basename "$prefix")" >>"$root/runtime/npm-calls"
+case "$(basename "$prefix")" in
+  T-FAIL) exit 9 ;;
+  T-DRIFT) printf '\n' >>"$prefix/package.json" ;;
+esac
+mkdir -p "$prefix/node_modules/.bin"
+EOF
+chmod +x "$DEPENDENCY_ROOT/home/node" "$DEPENDENCY_ROOT/home/npm"
+for dependency_ticket in T-1 T-2 T-FAIL T-DRIFT; do
+  dependency_work="$DEPENDENCY_ROOT/worktrees/$dependency_ticket"
+  printf '{"scripts":{}}\n' >"$dependency_work/package.json"
+  printf '{}\n' >"$dependency_work/package-lock.json"
+  printf 'node_modules/\n' >"$dependency_work/.gitignore"
+  git -C "$dependency_work" init -q
+  git -C "$dependency_work" add .
+  git -C "$dependency_work" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Create dependency fixture'
+done
+( die() { printf '%s\n' "$*" >&2; exit 1; }
+  prepare_product_dependencies "$DEPENDENCY_ROOT" T-1 T-2 ) ||
+  fail "pinned dependency bootstrap rejected clean ticket worktrees"
+[[ "$(cat "$DEPENDENCY_ROOT/runtime/npm-calls")" == $'T-1\nT-2' ]] ||
+  fail "pinned dependency bootstrap did not run exactly once per ticket"
+for dependency_ticket in T-1 T-2; do
+  [[ -d "$DEPENDENCY_ROOT/worktrees/$dependency_ticket/node_modules" ]] ||
+    fail "pinned dependency bootstrap omitted ticket-local node_modules"
+done
+if ( die() { exit 1; }
+     prepare_product_dependencies "$DEPENDENCY_ROOT" T-FAIL ); then
+  fail "pinned dependency bootstrap accepted an npm failure"
+fi
+if ( die() { exit 1; }
+     prepare_product_dependencies "$DEPENDENCY_ROOT" T-DRIFT ); then
+  fail "pinned dependency bootstrap accepted tracked-tree drift"
+fi
+lane_count_before="$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+expect_failure "production product source" test_env bash "$LANE" product-plan \
+  --source "$CALLER_HOME/Projects/nysa-company/nysa-app" \
+  --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --tickets T-1,T-2,T-3,T-4
+expect_failure "duplicate product tickets" test_env bash "$LANE" product-plan \
+  --source "$TMP/safe-source" --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --tickets T-1,T-1,T-2,T-3
+expect_failure "two-ticket source validation" test_env bash "$LANE" product-plan \
+  --source "$TMP/safe-source" --base-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --tickets T-1,T-2
+grep -Fq 'product source must be an absolute, non-symlink repository' "$OUT" ||
+  fail "two-ticket source validation returned: $(sed -n '1p' "$OUT")"
+[[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
+   "$lane_count_before" ]] ||
+  fail "invalid product input created a lane"
+MISSING_SESSION_HOME="$TMP/missing-session-home"
+mkdir -p "$MISSING_SESSION_HOME"
+expect_failure "incomplete lane cleanup" env \
+  FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DEV_LANE_UNAME=Darwin FACTORY_DEV_LANE_SANDBOX_EXEC="$FAKE_SANDBOX" \
+  FACTORY_DEV_LANE_CURSOR_BIN="$FAKE_CURSOR" \
+  FACTORY_DEV_LANE_ACCOUNT_HOME="$MISSING_SESSION_HOME" \
+  FACTORY_DEV_LANE_CURSOR_SESSION_HOME="$MISSING_SESSION_HOME" \
+  HOME="$MISSING_SESSION_HOME" TMPDIR="$TMP/lanes" \
+  bash "$LANE" cursor-plan
+[[ "$(find "$TMP/lanes" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == \
+   "$lane_count_before" ]] ||
+  fail "failed lane construction retained an isolated root"
+DAY_LANE="$TMP/nysa-sf-dev.day"
+mkdir -p "$DAY_LANE/product"
+printf '{}\n' >"$DAY_LANE/marker.json"
+STALE_RUN_DAY="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).date()-datetime.timedelta(days=1))')"
+expect_failure "stale development budget day" env \
+  FACTORY_ROOT="$DAY_LANE/product" FACTORY_CLI_LANE_ROOT="$DAY_LANE" \
+  FACTORY_DEV_BUDGET_DAY="$STALE_RUN_DAY" \
+  bash "$ROOT/scripts/run-agent.sh" --role builder --ticket T-1 \
+  --prompt-file "$ROOT/roles/builder.md" --workdir "$DAY_LANE/product" -- task
+grep -Fq 'development budget day changed; no task was submitted' "$OUT" ||
+  fail "stale development budget day did not fail before reservation"
+if sed -n '/^subscription_env()/,/^}/p' "$LANE" | grep -q 'remote.origin.pushurl'; then
+  fail "subscription host environment disables its own trusted push destination"
+fi
+
+READINESS_ROOT="$TMP/nysa-sf-dev.readiness"
+mkdir -p "$READINESS_ROOT/home" "$READINESS_ROOT/session-home" \
+  "$READINESS_ROOT/session-home/.claude" \
+  "$READINESS_ROOT/kit/scripts/lib" "$READINESS_ROOT/tmp"
+cp "$ROOT/scripts/lib/backend-policy.sh" \
+  "$READINESS_ROOT/kit/scripts/lib/backend-policy.sh"
+python3 - "$READINESS_ROOT/session-home/.claude/.credentials.json" <<'PY'
+import json, os, sys, time
+path=sys.argv[1]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({"claudeAiOauth":{"expiresAt":int(time.time() * 1000) + 3_600_000}}, handle)
+    handle.write("\n")
+os.chmod(path, 0o600)
+PY
+cat >"$READINESS_ROOT/home/timeout" <<'EOF'
+#!/usr/bin/env bash
+shift
+exec "$@"
+EOF
+chmod +x "$READINESS_ROOT/home/timeout"
+for readiness_tool in agent codex claude; do
+  cat >"$READINESS_ROOT/home/$readiness_tool" <<EOF
+#!/usr/bin/env bash
+[[ -z "\${AMBIENT_AUTH_READY+x}" ]]
+[[ "\$HOME" == "$READINESS_ROOT/session-home" ]]
+[[ "\$PWD" == "$READINESS_ROOT" ]]
+[[ "\${FACTORY_CURSOR_SESSION_HOME:-}" == "$READINESS_ROOT/session-home" ]]
+if [[ "\${1:-}" == --version ]]; then
+  if [[ "$readiness_tool" == claude ]]; then
+    printf '%s\n' '2.1.209 (Claude Code)'
+    exit 0
+  fi
+  printf '%s\n' "$readiness_tool 1.0-test"
+  exit 0
+fi
+if [[ "$readiness_tool" == claude && "\${1:-}" == --help ]]; then
+  printf '%s\n' '--max-budget-usd --output-format --append-system-prompt --model --effort'
+  exit 0
+fi
+if [[ "$readiness_tool" == codex && -f "\$HOME/.transient-auth" ]]; then
+  count="\$(cat "\$HOME/.transient-auth")"
+  if [[ "\$count" -lt 2 ]]; then
+    printf '%s\n' "\$((count + 1))" >"\$HOME/.transient-auth"
+    exit 1
+  fi
+fi
+[[ -f "\$HOME/.auth-ready" ]]
+EOF
+  chmod +x "$READINESS_ROOT/home/$readiness_tool"
+done
+eval "$(sed -n '/^subscription_base_env()/,/^subscription_approval_hash()/p' \
+  "$LANE" | sed '$d')"
+eval "$(sed -n '/^subscription_env()/,/^product_approval_hash()/p' \
+  "$LANE" | sed '$d')"
+[[ "$(subscription_base_env "$READINESS_ROOT" \
+  /usr/bin/printenv AGENT_CLI_CREDENTIAL_STORE)" == file ]] ||
+  fail "subscription environment did not isolate Cursor credentials in the lane"
+if (
+  die() { exit 1; }
+  AMBIENT_AUTH_READY=1 \
+    FACTORY_CURSOR_SESSION_HOME="$TMP/external-cursor-home" \
+    subscription_ready "$READINESS_ROOT"
+); then
+  fail "ambient-only subscription authentication passed lane readiness"
+fi
+touch "$READINESS_ROOT/session-home/.auth-ready"
+(
+  die() { exit 1; }
+  AMBIENT_AUTH_READY=1 \
+    FACTORY_CURSOR_SESSION_HOME="$TMP/external-cursor-home" \
+    subscription_ready "$READINESS_ROOT"
+) || fail "lane-local subscription authentication failed readiness"
+AMBIENT_AUTH_READY=1 \
+  FACTORY_CURSOR_SESSION_HOME="$TMP/external-cursor-home" \
+  subscription_env "$READINESS_ROOT" \
+    "$READINESS_ROOT/home/codex" login status >/dev/null ||
+  fail "role environment disagreed with lane-local readiness"
+printf '%s\n' 0 >"$READINESS_ROOT/session-home/.transient-auth"
+(
+  die() { exit 1; }
+  subscription_ready "$READINESS_ROOT"
+) || fail "subscription readiness did not outwait transient authentication"
+[[ "$(<"$READINESS_ROOT/session-home/.transient-auth")" == 2 ]] ||
+  fail "subscription readiness did not exercise bounded authentication retries"
+(
+  die() { exit 1; }
+  claude_subscription_ready "$READINESS_ROOT"
+) || fail "Claude-only canary readiness did not validate the copied OAuth lifetime"
+for unused_tool in agent claude; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' \
+    >"$READINESS_ROOT/home/$unused_tool"
+  chmod +x "$READINESS_ROOT/home/$unused_tool"
+done
+(
+  die() { exit 1; }
+  codex_subscription_ready "$READINESS_ROOT"
+) || fail "Codex-only canary readiness depended on another provider session"
+sed -n '/^product_resume_plan()/,/^}/p' "$LANE" |
+  grep -q 'subscription_ready "\$root"' ||
+  fail "product resume planning does not stabilize authentication before approval"
+(
+  eval "$(sed -n '/^load_product_tickets()/,/^product_resume_drained()/p' \
+    "$LANE" | sed '$d')"
+  eval "$(sed -n '/^validate_product_resume_basis()/,/^restore_product_resume_source()/p' \
+    "$LANE" | sed '$d')"
+  sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+  sha256_text() { shasum -a 256 | awk '{print $1}'; }
+  die() { printf 'resume fixture failed: %s\n' "$*" >&2; return 1; }
+  require_lane_mode() { :; }
+  validate_runtime_paths() { :; }
+  product_resume_drained() { :; }
+  ensure_cursor_file_credential_config() { :; }
+  refresh_product_subscription_credentials() { :; }
+  subscription_ready() { :; }
+  product_role_for_stage() {
+    case "$1" in
+      'RUN reviewer'|'RUN builder') return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  product_approval_hash() { printf '%064d\n' 1; }
+
+  RESUME_ROOT="$TMP/targeted-resume"
+  SOURCE_ROOT="$TMP/targeted-resume-controller"
+  mkdir -p "$RESUME_ROOT/kit/scripts" "$RESUME_ROOT/runtime/product-envelope" \
+    "$RESUME_ROOT/product/factory" "$RESUME_ROOT/worktrees" "$SOURCE_ROOT"
+  git -C "$SOURCE_ROOT" init -q
+  git -C "$SOURCE_ROOT" config user.name 'Factory Test'
+  git -C "$SOURCE_ROOT" config user.email factory-test@local
+  printf 'controller\n' >"$SOURCE_ROOT/controller"
+  git -C "$SOURCE_ROOT" add controller
+  git -C "$SOURCE_ROOT" commit -qm 'controller'
+  git init -q --bare "$RESUME_ROOT/origin.git"
+  cat >"$RESUME_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+#!/usr/bin/env python3
+import json
+print(json.dumps({"active_reserve_micro_usd":0,"attempts":[],"counts":{}}))
+PY
+  chmod +x "$RESUME_ROOT/kit/scripts/provider-coordinator.py"
+  : >"$RESUME_ROOT/runtime/provider-state.sqlite3"
+  printf '%s\n' disabled >"$RESUME_ROOT/runtime/product-cursor-fallback"
+  chmod 600 "$RESUME_ROOT/runtime/product-cursor-fallback"
+  python3 - "$RESUME_ROOT/runtime/product-source.json" <<'PY'
+import json, sys
+value={
+  "schema":"factory-dev-product-source/v1",
+  "tickets":["T-046","T-047","T-048"],
+  "base_sha":"a"*40,
+  "base_tree":"b"*40,
+  "lane_control_sha":"c"*40,
+}
+open(sys.argv[1],"w",encoding="utf-8").write(
+  json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+)
+PY
+  for ticket in T-046 T-047 T-048; do
+    work="$RESUME_ROOT/worktrees/$ticket"
+    mkdir -p "$work/factory/tickets" "$work/factory/route-plans"
+    git -C "$work" init -q
+    git -C "$work" config user.name 'Factory Test'
+    git -C "$work" config user.email factory-test@local
+    printf '# %s\nState: Building\n' "$ticket" >"$work/factory/tickets/$ticket.md"
+    printf '{}\n' >"$work/factory/route-plans/$ticket.json"
+    git -C "$work" add .
+    git -C "$work" commit -qm "$ticket fixture"
+    git -C "$work" push -q "$RESUME_ROOT/origin.git" \
+      "HEAD:refs/heads/ticket/$ticket"
+    printf 'PER_TICKET_BUDGET_USD=100.00\n' \
+      >"$RESUME_ROOT/runtime/product-envelope/$ticket.env"
+    chmod 600 "$RESUME_ROOT/runtime/product-envelope/$ticket.env"
+  done
+  printf 'GLOBAL_DAILY_CAP_USD=500.00\n' \
+    >"$RESUME_ROOT/runtime/product-envelope/global.env"
+  chmod 600 "$RESUME_ROOT/runtime/product-envelope/global.env"
+  rm "$RESUME_ROOT/runtime/product-envelope/T-048.env"
+  STAGE_TRACE="$RESUME_ROOT/stages"
+  : >"$STAGE_TRACE"
+  product_resume_stage() {
+    printf '%s\n' "$2" >>"$STAGE_TRACE"
+    case "$2" in
+      T-048) printf 'RUN reviewer\n' ;;
+      T-047) printf 'RUN builder\n' ;;
+      *) return 1 ;;
+    esac
+  }
+
+  RESUME_STDERR="$RESUME_ROOT/resume.stderr"
+  fallback_binding="$(
+    product_resume_envelope_binding "$RESUME_ROOT" T-048 2>"$RESUME_STDERR"
+  )"
+  [[ "$fallback_binding" == \
+    $'envelope_source=runtime/product-envelope/global.env\nenvelope_sha256='* &&
+     ! -s "$RESUME_STDERR" ]] ||
+    fail "global resume-envelope fallback was not bound silently"
+  first="$(product_resume_plan "$RESUME_ROOT" T-048)"
+  [[ "$first" == *'TICKETS=T-048'* &&
+     -s "$STAGE_TRACE" &&
+     -z "$(grep -Fvx T-048 "$STAGE_TRACE")" ]] ||
+    fail "targeted resume resolved an excluded blocked sibling or lost T-048 stage"
+  python3 - "$RESUME_ROOT/runtime/product-source.json" <<'PY' ||
+import json, sys
+v=json.load(open(sys.argv[1],encoding="utf-8"))
+assert v["tickets"] == ["T-048"]
+assert v["resume_original_tickets"] == ["T-046","T-047","T-048"]
+PY
+    fail "targeted resume lost its original ticket universe"
+
+  cp "$RESUME_ROOT/runtime/product-envelope/global.env" \
+    "$RESUME_ROOT/runtime/product-envelope/global.saved"
+  printf 'GLOBAL_DAILY_CAP_USD=499.00\n' \
+    >"$RESUME_ROOT/runtime/product-envelope/global.env"
+  if validate_product_resume_basis "$RESUME_ROOT"; then
+    fail "targeted resume accepted effective global envelope drift"
+  fi
+  mv "$RESUME_ROOT/runtime/product-envelope/global.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/global.env"
+
+  rm "$RESUME_ROOT/runtime/product-approval"
+  : >"$STAGE_TRACE"
+  second="$(product_resume_plan "$RESUME_ROOT" T-047)"
+  [[ "$second" == *'TICKETS=T-047'* &&
+     -s "$STAGE_TRACE" &&
+     -z "$(grep -Fvx T-047 "$STAGE_TRACE")" ]] ||
+    fail "subsequent targeted resume could not select another original sibling"
+  override_binding="$(product_resume_envelope_binding "$RESUME_ROOT" T-047)"
+  [[ "$override_binding" == \
+    $'envelope_source=runtime/product-envelope/T-047.env\nenvelope_sha256='* ]] ||
+    fail "targeted resume did not bind the ticket envelope override"
+
+  cp "$RESUME_ROOT/runtime/product-envelope/T-047.env" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.saved"
+  printf 'PER_TICKET_BUDGET_USD=99.00\n' \
+    >"$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  if validate_product_resume_basis "$RESUME_ROOT"; then
+    fail "targeted resume accepted ticket envelope drift"
+  fi
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.env" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.saved"
+  ln -s global.env "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  : >"$RESUME_STDERR"
+  if product_resume_envelope_binding "$RESUME_ROOT" T-047 \
+      >/dev/null 2>"$RESUME_STDERR"; then
+    fail "targeted resume accepted an unsafe ticket envelope"
+  fi
+  [[ ! -s "$RESUME_STDERR" ]] ||
+    fail "unsafe ticket envelope emitted stderr"
+  rm "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.env" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.saved"
+  mkdir "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  if product_resume_envelope_binding "$RESUME_ROOT" T-047 >/dev/null 2>&1; then
+    fail "targeted resume accepted a nonregular ticket envelope"
+  fi
+  rmdir "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+  mv "$RESUME_ROOT/runtime/product-envelope/T-047.saved" \
+    "$RESUME_ROOT/runtime/product-envelope/T-047.env"
+
+  printf 'excluded drift\n' >>"$RESUME_ROOT/worktrees/T-046/excluded"
+  git -C "$RESUME_ROOT/worktrees/T-046" add excluded
+  git -C "$RESUME_ROOT/worktrees/T-046" commit -qm 'drift excluded sibling'
+  git -C "$RESUME_ROOT/worktrees/T-046" push -q "$RESUME_ROOT/origin.git" \
+    "HEAD:refs/heads/ticket/T-046"
+  if validate_product_resume_basis "$RESUME_ROOT"; then
+    fail "targeted resume accepted excluded sibling head/tree drift"
+  fi
+)
+run_product_readiness="$(sed -n '/^run_product_internal()/,/^}/p' "$LANE")"
+grep -Fq '[[ "$readiness_proven" == 1 ]] ||' <<<"$run_product_readiness" &&
+  grep -Fq 'subscription_ready "$root" "$cursor_enabled"' \
+  <<<"$run_product_readiness" ||
+  fail "product runtime cannot reuse the trusted resume readiness proof"
+product_run_command="$(sed -n '/^  product-run)/,/^  product-export)/p' "$LANE")"
+python3 - "$product_run_command" <<'PY' ||
+import sys
+text=sys.argv[1]
+invalidate=text.index('invalidate_product_resume_approval "$root" "$approve"')
+run=text.index('run_product_internal "$root" "$approve" 1')
+assert invalidate < run
+PY
+  fail "resume-basis drift is not invalidated before provider execution"
+sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
+  grep -Fq 'ensure_product_budget_day "$root" "$DAILY_CAP_USD"' ||
+  fail "fresh product planning does not bind a resumable budget day"
+sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
+  grep -Fq 'GLOBAL_DAILY_CAP_USD=%s' ||
+  fail "fresh product planning does not derive the machine cap from its isolated envelope"
+sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
+  grep -Fq 'profile=cursor-balanced-v2' ||
+  fail "product planning does not use the approved Cursor-first profile"
+grep -Fq 'physical /private/tmp' "$LANE" &&
+  grep -Fq 'tmp_parent="$(lane_tmp_parent)"' "$LANE" ||
+  fail "real development lanes do not use the short macOS temporary root"
+eval "$(sed -n '/^ensure_product_budget_day()/,/^}/p' "$LANE")"
+BUDGET_DAY_ROOT="$TMP/product-budget-day"
+mkdir -p "$BUDGET_DAY_ROOT/runtime"
+ensure_product_budget_day "$BUDGET_DAY_ROOT" 1400.00 ||
+  fail "fresh product planning could not create its budget envelope"
+[[ "$(cat "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day")" == \
+   "$(date -u +%F)" ]] ||
+  fail "fresh product planning wrote the wrong budget day"
+[[ "$(stat -f '%Lp' "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day")" == 600 ]] ||
+  fail "fresh product budget day is not owner-only"
+[[ "$(cat "$BUDGET_DAY_ROOT/runtime/product-envelope/global.env")" == \
+   "GLOBAL_DAILY_CAP_USD=1400.00" &&
+   "$(stat -f '%Lp' "$BUDGET_DAY_ROOT/runtime/product-envelope/global.env")" == 600 ]] ||
+  fail "fresh product planning did not persist its owner-only global cap"
+printf '%s\n' 2000-01-01 \
+  >"$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day"
+chmod 600 "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day"
+if ensure_product_budget_day "$BUDGET_DAY_ROOT"; then
+  fail "fresh product planning overwrote a stale budget day"
+fi
+
+EXPORT_ROOT="$TMP/product-export"
+EXPORT_WORK="$EXPORT_ROOT/worktrees/T-1"
+mkdir -p "$EXPORT_ROOT/product/factory/runs" "$EXPORT_WORK/app" \
+  "$EXPORT_WORK/factory/tickets"
+ln -s "$ROOT" "$EXPORT_ROOT/kit"
+git -C "$EXPORT_WORK" init -q
+git -C "$EXPORT_WORK" config user.name 'Factory Dev Lane'
+git -C "$EXPORT_WORK" config user.email factory-dev@local
+printf '%s\n' old >"$EXPORT_WORK/app/source.txt"
+printf '%s\n' 'State: Ready' >"$EXPORT_WORK/factory/tickets/T-1.md"
+printf '%s\n' sibling >"$EXPORT_WORK/factory/tickets/T-2.md"
+printf '%s\n' 'TEST_PATHS="app/tests/"' >"$EXPORT_WORK/factory/PROJECT.env"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm base
+EXPORT_BASE="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+mkdir -p "$EXPORT_WORK/docs" "$EXPORT_WORK/factory/route-plans"
+mkdir -p "$EXPORT_WORK/app/tests"
+printf '%s\n' acceptance >"$EXPORT_WORK/app/tests/acceptance.test"
+printf '%s\n' 'State: Building' >"$EXPORT_WORK/factory/tickets/T-1.md"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm 'T-1: author acceptance tests'
+EXPORT_TEST_AUTHOR_1="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+printf '%s\n' new >"$EXPORT_WORK/app/source.txt"
+git -C "$EXPORT_WORK" add app/source.txt
+git -C "$EXPORT_WORK" commit -qm 'T-1: build initial implementation'
+printf '%s\n' acceptance repaired >"$EXPORT_WORK/app/tests/acceptance.test"
+git -C "$EXPORT_WORK" add app/tests/acceptance.test
+git -C "$EXPORT_WORK" commit -qm 'T-1: repair acceptance tests'
+printf '\000\001\002' >"$EXPORT_WORK/app/binary.dat"
+printf '%s\n' reviewed >"$EXPORT_WORK/docs/contract.md"
+printf '%s\n' 'State: Review' \
+  >"$EXPORT_WORK/factory/tickets/T-1.md"
+printf '%s\n' changed >"$EXPORT_WORK/factory/tickets/T-2.md"
+printf '%s\n' '{}' >"$EXPORT_WORK/factory/route-plans/T-1.json"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm 'T-1: repair implementation'
+EXPORT_REVIEWED="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+printf '%s\n' 'State: Review' 'reviewer round 1: APPROVE' \
+  >"$EXPORT_WORK/factory/tickets/T-1.md"
+git -C "$EXPORT_WORK" add "factory/tickets/T-1.md"
+git -C "$EXPORT_WORK" commit -qm 'T-1: reviewer reconcile ticket state'
+printf '%s\n' evidence >"$EXPORT_WORK/factory/tickets/T-1-bundle.md"
+git -C "$EXPORT_WORK" add .
+git -C "$EXPORT_WORK" commit -qm narrator
+EXPORT_HEAD="$(git -C "$EXPORT_WORK" rev-parse HEAD)"
+cat >"$EXPORT_ROOT/product/factory/runs/export-review.meta" <<EOF
+ticket=T-1
+role=reviewer
+phase=completed
+accounting_schema=1
+accounting_state=completed
+go_issued=1
+task_submitted=1
+exit_status=0
+role_exit=ok
+run_id=export-review
+cost_basis=estimated_tokens
+role_head_before=$EXPORT_REVIEWED
+EOF
+cat >"$EXPORT_ROOT/product/factory/runtime-ledger.csv" <<'EOF'
+date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version
+2026-01-01,00:00:00,T-1,reviewer,mock,3,1,0.00,0,export-review,test,test,pinned_route_plan,estimated_tokens,test
+EOF
+eval "$(sed -n '/^product_export_patch()/,/^select_product_export_tickets()/p' \
+  "$LANE" | sed '$d')"
+EXPORT_PATCH="$EXPORT_ROOT/T-1.patch"
+[[ "$(product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+  "$EXPORT_HEAD" "$EXPORT_PATCH")" == "$EXPORT_REVIEWED" ]] ||
+  fail "approved product patch did not bind the Reviewer head"
+mkdir -p "$EXPORT_ROOT/runtime"
+EXPORT_CHECKPOINT="$EXPORT_ROOT/runtime/product-checkpoint-source.json"
+printf '%s\n' \
+  "{\"tickets\":[{\"ticket\":\"T-1\",\"roles\":[{\"role\":\"reviewer\"},{\"role\":\"narrator\"}]}]}" \
+  >"$EXPORT_CHECKPOINT"
+EXPORT_CHECKPOINT_SHA="$(shasum -a 256 "$EXPORT_CHECKPOINT" | awk '{print $1}')"
+printf '%s\n' \
+  "{\"checkpoint_sha256\":\"$EXPORT_CHECKPOINT_SHA\",\"tickets\":[{\"ticket\":\"T-1\",\"import_head\":\"$EXPORT_HEAD\",\"roles\":[\"reviewer\",\"narrator\"],\"expected_next_stage\":\"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step\"}]}" \
+  >"$EXPORT_ROOT/runtime/product-checkpoint-import.json"
+printf '%s\n' "{\"base_sha\":\"$EXPORT_BASE\"}" \
+  >"$EXPORT_ROOT/runtime/product-source.json"
+mv "$EXPORT_ROOT/product/factory/runs/export-review.meta" \
+  "$EXPORT_ROOT/product/factory/runs/export-review.meta.saved"
+printf '%s\n' \
+  'date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version' \
+  >"$EXPORT_ROOT/product/factory/runtime-ledger.csv"
+[[ "$(product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+  "$EXPORT_HEAD" "$EXPORT_ROOT/T-1-checkpoint.patch")" == "$EXPORT_REVIEWED" ]] ||
+  fail "approved product patch did not bind the checkpoint Reviewer head"
+mv "$EXPORT_ROOT/product/factory/runs/export-review.meta.saved" \
+  "$EXPORT_ROOT/product/factory/runs/export-review.meta"
+cat >"$EXPORT_ROOT/product/factory/runtime-ledger.csv" <<'EOF'
+date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version
+2026-01-01,00:00:00,T-1,reviewer,mock,3,1,0.00,0,export-review,test,test,pinned_route_plan,estimated_tokens,test
+EOF
+EXPORT_APPLY="$TMP/product-export-apply"
+git clone -q "$EXPORT_WORK" "$EXPORT_APPLY"
+git -C "$EXPORT_APPLY" checkout -q "$EXPORT_BASE"
+git -C "$EXPORT_APPLY" apply --check "$EXPORT_PATCH" ||
+  fail "approved product patch is not applicable"
+patch_paths="$(git -C "$EXPORT_APPLY" apply --numstat "$EXPORT_PATCH" | cut -f3-)"
+for expected_path in app/source.txt app/binary.dat docs/contract.md; do
+  grep -Fxq "$expected_path" <<<"$patch_paths" ||
+    fail "approved product patch omitted $expected_path"
+done
+if grep -Eq '^factory(/|$)' <<<"$patch_paths"; then
+  fail "approved product patch exported Factory control state"
+fi
+EXPORT_MBOX="$EXPORT_ROOT/T-1.mbox"
+product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" "$EXPORT_REVIEWED" \
+  "$EXPORT_MBOX" ||
+  fail "approved product mailbox was not created"
+product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" "$EXPORT_REVIEWED" \
+  "$EXPORT_ROOT/T-1-repeat.mbox" ||
+  fail "approved product mailbox was not reproducible"
+cmp -s "$EXPORT_MBOX" "$EXPORT_ROOT/T-1-repeat.mbox" ||
+  fail "approved product mailbox changed for identical reviewed input"
+[[ -z "$(find "$EXPORT_ROOT" -maxdepth 1 -type d \
+  -name 'factory-export-mbox.*' -print -quit)" ]] ||
+  fail "product mailbox left its lane-local temporary repository"
+git -C "$EXPORT_APPLY" config user.name 'Factory Export Test'
+git -C "$EXPORT_APPLY" config user.email factory-export@local
+git -C "$EXPORT_APPLY" am "$EXPORT_MBOX" >/dev/null ||
+  fail "approved product mailbox is not applicable"
+[[ "$(git -C "$EXPORT_APPLY" rev-list --count "$EXPORT_BASE..HEAD")" == 2 ]] ||
+  fail "product mailbox did not produce exactly two publication strata"
+[[ "$(git -C "$EXPORT_APPLY" log -1 --format=%s HEAD~1)" == \
+   'T-1: publish approved tests' ]] ||
+  fail "product mailbox did not publish the final test stratum first"
+[[ "$(git -C "$EXPORT_APPLY" log -1 --format=%s HEAD)" == \
+   'T-1: publish approved implementation' ]] ||
+  fail "product mailbox did not publish the implementation stratum last"
+first_paths="$(git -C "$EXPORT_APPLY" diff-tree --no-commit-id --name-only -r HEAD~1)"
+[[ -n "$first_paths" ]] &&
+  [[ -z "$(grep -Ev '^app/tests/' <<<"$first_paths")" ]] ||
+  fail "product mailbox test stratum is not pure"
+second_paths="$(git -C "$EXPORT_APPLY" diff-tree --no-commit-id --name-only -r HEAD)"
+[[ -n "$second_paths" ]] &&
+  [[ -z "$(grep -E '^app/tests/' <<<"$second_paths")" ]] ||
+  fail "product mailbox implementation stratum contains tests"
+(cd "$EXPORT_APPLY" &&
+  BASE_REF="$EXPORT_BASE" TEST_PATHS='app/tests/' EXEMPT_PATHS='factory/' \
+    bash "$ROOT/ci/test-immutability-check.sh" >/dev/null) ||
+  fail "product mailbox does not satisfy tests-first immutability"
+if git -C "$EXPORT_APPLY" diff-tree --no-commit-id --name-only -r \
+    "$EXPORT_BASE..HEAD" | grep -Eq '^factory(/|$)'; then
+  fail "product mailbox exported Factory control state"
+fi
+git -C "$EXPORT_APPLY" diff --exit-code "$EXPORT_REVIEWED" -- . \
+  ':(exclude)factory' >/dev/null ||
+  fail "product mailbox tree differs from the reviewed application projection"
+if product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+    "$EXPORT_TEST_AUTHOR_1" "$EXPORT_ROOT/empty-stratum.mbox"; then
+  fail "product mailbox accepted an empty implementation stratum"
+fi
+printf '%s\n' drift >>"$EXPORT_WORK/app/source.txt"
+git -C "$EXPORT_WORK" add app/source.txt
+git -C "$EXPORT_WORK" commit -qm post-review-drift
+if product_export_patch "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+    "$(git -C "$EXPORT_WORK" rev-parse HEAD)" "$EXPORT_ROOT/drift.patch" \
+    >/dev/null; then
+  fail "post-review product drift was exportable"
+fi
+ln -s source.txt "$EXPORT_WORK/app/unsafe-link"
+git -C "$EXPORT_WORK" add app/unsafe-link
+git -C "$EXPORT_WORK" commit -qm 'unsafe application link'
+if product_export_mbox "$EXPORT_ROOT" T-1 "$EXPORT_BASE" \
+    "$(git -C "$EXPORT_WORK" rev-parse HEAD)" "$EXPORT_ROOT/symlink.mbox"; then
+  fail "product mailbox accepted an application symlink"
+fi
+eval "$(sed -n '/^select_product_export_tickets()/,/^}/p' "$LANE")"
+PRODUCT_TICKETS=(T-1 T-2)
+select_product_export_tickets T-2
+[[ "${PRODUCT_TICKETS[*]}" == T-2 ]] ||
+  fail "product export did not select the requested completed sibling"
+LOAD_TICKETS_ROOT="$TMP/load-product-tickets"
+mkdir -p "$LOAD_TICKETS_ROOT/runtime"
+printf '%s\n' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1"],"resume_original_tickets":["T-1","T-2"]}' \
+  >"$LOAD_TICKETS_ROOT/runtime/product-source.json"
+eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
+load_product_tickets "$LOAD_TICKETS_ROOT" retained
+[[ "${PRODUCT_TICKETS[*]}" == "T-1 T-2" ]] ||
+  fail "product export cannot recover retained siblings after a targeted resume"
+PRODUCT_TICKETS=(T-1 T-2)
+if (die() { exit 1; }; select_product_export_tickets T-2,T-2) ||
+   (die() { exit 1; }; select_product_export_tickets T-3); then
+  fail "product export accepted an unsafe ticket selection"
+fi
+
+export_internal_source="$(sed -n '/^export_product_internal()/,/^cursor_probe_and_pin()/p' \
+  "$LANE" | sed '$d')"
+grep -Fq 'export_dir="${requested_output:-$root/export}"' \
+  <<<"$export_internal_source" ||
+  fail "product export changed its default output compatibility"
+grep -Fq 'exit "$status"'\'' EXIT' \
+  <<<"$export_internal_source" ||
+  fail "product export cleanup does not preserve failure status"
+(
+  require_lane_path() {
+    case "$2" in "$1"/*) ;; *) return 1 ;; esac
+  }
+  refuse_production_path() { :; }
+  physical() { (cd "$1" && pwd -P); }
+  die() { printf 'export fixture failed: %s\n' "$*" >&2; exit 1; }
+  eval "$(sed -n '/^validate_product_export_output()/,/^select_product_export_tickets()/p' \
+    "$LANE" | sed '$d')"
+
+  PATH_ROOT="$TMP/nysa-sf-dev.export-paths"
+  mkdir -m 700 "$PATH_ROOT"
+  mkdir -m 700 "$PATH_ROOT/exports" "$PATH_ROOT/runtime"
+  validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/export"
+  validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/exports/first"
+  if (validate_product_export_output "$PATH_ROOT" "$TMP/outside-export") ||
+     (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT") ||
+     (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/runtime/export"); then
+    fail "product export accepted an outside, root, or sensitive output"
+  fi
+  mkdir "$PATH_ROOT/exports/existing"
+  if (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/exports/existing"); then
+    fail "product export accepted an existing output"
+  fi
+  ln -s missing "$PATH_ROOT/exports/symlink"
+  if (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/exports/symlink"); then
+    fail "product export accepted a symlink output"
+  fi
+  mkdir -m 700 "$PATH_ROOT/physical-parent"
+  ln -s physical-parent "$PATH_ROOT/linked-parent"
+  if (validate_product_export_output "$PATH_ROOT" "$PATH_ROOT/linked-parent/output"); then
+    fail "product export accepted a symlinked parent"
+  fi
+)
+(
+  die() { printf 'sequential export fixture failed: %s\n' "$*" >&2; exit 1; }
+  require_lane_mode() { :; }
+  validate_runtime_paths() { :; }
+  require_lane_path() {
+    case "$2" in "$1"/*) ;; *) return 1 ;; esac
+  }
+  refuse_production_path() { :; }
+  physical() { (cd "$1" && pwd -P); }
+  load_product_tickets() { PRODUCT_TICKETS=(T-1 T-2); }
+  product_export_roles_complete() { :; }
+  product_export_patch() {
+    printf 'patch for %s\n' "$2" >"$5"
+    git -C "$1/worktrees/$2" rev-parse HEAD
+  }
+  product_export_mbox() { printf 'mbox for %s\n' "$2" >"$5"; }
+  eval "$(sed -n '/^validate_product_export_output()/,/^select_product_export_tickets()/p' \
+    "$LANE" | sed '$d')"
+  eval "$(sed -n '/^select_product_export_tickets()/,/^}/p' "$LANE")"
+  eval "$(sed -n \
+    '/^product_selected_drained()/,/^product_ticket_pause_internal()/p' \
+    "$LANE" | sed '$d')"
+  eval "$export_internal_source"
+
+  SEQUENTIAL_ROOT="$TMP/nysa-sf-dev.sequential-export"
+  mkdir -m 700 "$SEQUENTIAL_ROOT"
+  mkdir -p "$SEQUENTIAL_ROOT/product/factory/runs" \
+    "$SEQUENTIAL_ROOT/worktrees" "$SEQUENTIAL_ROOT/runtime" \
+    "$SEQUENTIAL_ROOT/exports"
+  chmod 700 "$SEQUENTIAL_ROOT/exports"
+  git init -q "$SEQUENTIAL_ROOT/kit"
+  git -C "$SEQUENTIAL_ROOT/kit" config user.name Test
+  git -C "$SEQUENTIAL_ROOT/kit" config user.email test@local
+  printf 'kit\n' >"$SEQUENTIAL_ROOT/kit/file"
+  git -C "$SEQUENTIAL_ROOT/kit" add file
+  git -C "$SEQUENTIAL_ROOT/kit" commit -qm kit
+  git init -q --bare "$SEQUENTIAL_ROOT/origin.git"
+  cat >"$SEQUENTIAL_ROOT/kit/scripts-provider-coordinator.py" <<'PY'
+import json
+print(json.dumps({"attempts":[{
+  "attempt_id":"active-sibling","ticket_id":"T-2","state":"admitted"}]}))
+PY
+  mkdir -p "$SEQUENTIAL_ROOT/kit/scripts"
+  mv "$SEQUENTIAL_ROOT/kit/scripts-provider-coordinator.py" \
+    "$SEQUENTIAL_ROOT/kit/scripts/provider-coordinator.py"
+  for ticket in T-1 T-2; do
+    work="$SEQUENTIAL_ROOT/worktrees/$ticket"
+    git init -q "$work"
+    git -C "$work" config user.name Test
+    git -C "$work" config user.email test@local
+    mkdir -p "$work/app" "$work/factory/tickets" "$work/factory/route-plans"
+    printf 'base\n' >"$work/app/value"
+    git -C "$work" add .
+    git -C "$work" commit -qm base
+    printf '%s\n' "$ticket" >"$work/app/value"
+    printf '%s\n' 'State: Review' 'reviewer round 1: APPROVE' \
+      >"$work/factory/tickets/$ticket.md"
+    printf '{}\n' >"$work/factory/route-plans/$ticket.json"
+    git -C "$work" add .
+    git -C "$work" commit -qm reviewed
+    git -C "$work" push -q "$SEQUENTIAL_ROOT/origin.git" \
+      "HEAD:refs/heads/ticket/$ticket"
+  done
+  python3 - "$SEQUENTIAL_ROOT/runtime/product-source.json" <<'PY'
+import json, sys
+json.dump({"base_sha":"0"*40,"base_tree":"1"*40},open(sys.argv[1],"w"))
+PY
+  printf '%s\n' "approval_hash=$(printf '0%.0s' {1..64})" 'used=0' \
+    >"$SEQUENTIAL_ROOT/runtime/product-approval"
+  chmod 600 "$SEQUENTIAL_ROOT/runtime/product-approval"
+  mkdir -p "$SEQUENTIAL_ROOT/product/factory/.dispatch-leases" \
+    "$SEQUENTIAL_ROOT/product/factory/.active-runs/T-2.builder.lock"
+  : >"$SEQUENTIAL_ROOT/product/factory/.dispatch-leases/T-2.json"
+
+  first="$(export_product_internal "$SEQUENTIAL_ROOT" T-1)"
+  [[ "$first" == *"EXPORT_ROOT=$SEQUENTIAL_ROOT/export"* &&
+    -f "$SEQUENTIAL_ROOT/export/manifest.json" ]] ||
+    fail "completed ticket could not export while its sibling remained active"
+  first_digest="$(shasum -a 256 "$SEQUENTIAL_ROOT/export/manifest.json")"
+  if (export_product_internal "$SEQUENTIAL_ROOT" T-2 \
+      "$SEQUENTIAL_ROOT/exports/active-sibling" >/dev/null 2>&1); then
+    fail "active sibling was exportable"
+  fi
+  [[ ! -e "$SEQUENTIAL_ROOT/exports/active-sibling" ]] ||
+    fail "refused active-sibling export left its output claim"
+  rm "$SEQUENTIAL_ROOT/product/factory/.dispatch-leases/T-2.json"
+  rmdir "$SEQUENTIAL_ROOT/product/factory/.active-runs/T-2.builder.lock"
+  cat >"$SEQUENTIAL_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+import json
+print(json.dumps({"attempts":[{
+  "attempt_id":"finished-sibling","ticket_id":"T-2","state":"terminal"}]}))
+PY
+  second="$(export_product_internal "$SEQUENTIAL_ROOT" T-2 \
+    "$SEQUENTIAL_ROOT/exports/second")"
+  [[ "$second" == *"EXPORT_ROOT=$SEQUENTIAL_ROOT/exports/second"* &&
+     -f "$SEQUENTIAL_ROOT/exports/second/manifest.json" &&
+     "$(shasum -a 256 "$SEQUENTIAL_ROOT/export/manifest.json")" == \
+       "$first_digest" ]] ||
+    fail "sequential sibling export changed the first output"
+  export_product_internal "$SEQUENTIAL_ROOT" T-1 \
+    "$SEQUENTIAL_ROOT/exports/overlap" >/dev/null ||
+    fail "overlapping ticket selection was not output-independent"
+  [[ "$(shasum -a 256 "$SEQUENTIAL_ROOT/export/T-1.patch" | awk '{print $1}')" == \
+     "$(shasum -a 256 "$SEQUENTIAL_ROOT/exports/overlap/T-1.patch" | awk '{print $1}')" ]] ||
+    fail "overlapping ticket export changed the artifact"
+
+  product_export_patch() { return 1; }
+  if (export_product_internal "$SEQUENTIAL_ROOT" T-2 \
+      "$SEQUENTIAL_ROOT/exports/failed" >/dev/null 2>&1); then
+    fail "failed product export unexpectedly succeeded"
+  fi
+  [[ ! -e "$SEQUENTIAL_ROOT/exports/failed" ]] ||
+    fail "failed product export left its claimed output"
+)
+
+VERDICT="$TMP/reviewer.out"
+printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter cursor-anthropic --input "$VERDICT")" == APPROVE ]] ||
+  fail "strict reviewer parser rejected a Cursor approval"
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
+  fail "strict reviewer parser rejected a plain request-changes verdict"
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' 'FIX-OWNER: both' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT" \
+  --contract-version 1.7.0 --format fields)" == $'REQUEST CHANGES\tboth' ]] ||
+  fail "contract 1.7 reviewer parser lost explicit repair ownership"
+printf '%s\n' 'Review complete.' 'REQUEST CHANGES' >"$VERDICT"
+expect_failure "missing contract 1.7 fix owner" \
+  python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT" \
+    --contract-version 1.7.0
+printf '%s\n' 'Review complete.' 'APPROVE' 'FIX-OWNER: builder' >"$VERDICT"
+expect_failure "approval with contract 1.7 fix owner" \
+  python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT" \
+    --contract-version 1.7.0
+printf '%s\n' '**Request changes.**' 'Build is not green.' '**REQUEST CHANGES** due to the build failure.' >"$VERDICT"
+[[ "$(python3 "$ROOT/scripts/lib/reviewer-verdict.py" --adapter codex --input "$VERDICT")" == 'REQUEST CHANGES' ]] ||
+  fail "reviewer parser rejected repeated agreeing Markdown verdicts"
+rm -f "$TMP/cursor-args"
+FACTORY_ROLE=reviewer FACTORY_CURSOR_SESSION_HOME="$CALLER_HOME" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/reviewer.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- review \
+    >/dev/null 2>&1 || true
+if ! python3 - "$TMP/cursor-args" <<'PY'
+import sys
+args = open(sys.argv[1], encoding="utf-8").read().splitlines()
+assert args[args.index("--mode") + 1] == "ask"
+assert "--force" in args
+assert "Reviewer CLI control: remain read-only" in args[-1]
+assert "run the required deterministic checks" in args[-1]
+assert "read-only terminal access" in args[-1]
+PY
+then
+  fail "concurrent Cursor Reviewer did not use executable read-only mode"
+fi
+CURSOR_LANE="$(mktemp -d /tmp/nysa-sf-dev.XXXXXX)"
+CURSOR_LANE="$(cd "$CURSOR_LANE" && pwd -P)"
+CURSOR_ATTEMPT="$CURSOR_LANE/c/A"
+mkdir -p "$CURSOR_LANE/c"
+mkdir -m 700 "$CURSOR_ATTEMPT" "$CURSOR_ATTEMPT/home" \
+  "$CURSOR_ATTEMPT/home/.cursor" "$CURSOR_ATTEMPT/data" "$CURSOR_ATTEMPT/tmp"
+printf 'A\n' >"$CURSOR_ATTEMPT/owner"
+cp "$CALLER_HOME/.cursor/auth.json" "$CALLER_HOME/.cursor/cli-config.json" \
+  "$CURSOR_ATTEMPT/home/.cursor/"
+chmod 600 "$CURSOR_ATTEMPT/owner" "$CURSOR_ATTEMPT/home/.cursor/"*.json
+cursor_attempt_status=0
+FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
+  FACTORY_CLI_ATTEMPT_ID=A FACTORY_CURSOR_SESSION_HOME="$CURSOR_ATTEMPT/home" \
+  CURSOR_CONFIG_DIR="$CURSOR_ATTEMPT/home/.cursor" \
+  CURSOR_DATA_DIR="$CURSOR_ATTEMPT/data" TMPDIR="$CURSOR_ATTEMPT/tmp" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/builder.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- build \
+    >"$OUT" 2>&1 || cursor_attempt_status=$?
+[[ "$cursor_attempt_status" != 6 ]] ||
+  fail "valid attempt-local Cursor runtime was rejected"
+chmod 755 "$CURSOR_ATTEMPT/data"
+expect_failure "unsafe attempt-local Cursor runtime" env \
+  FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
+  FACTORY_CLI_ATTEMPT_ID=A FACTORY_CURSOR_SESSION_HOME="$CURSOR_ATTEMPT/home" \
+  CURSOR_CONFIG_DIR="$CURSOR_ATTEMPT/home/.cursor" \
+  CURSOR_DATA_DIR="$CURSOR_ATTEMPT/data" TMPDIR="$CURSOR_ATTEMPT/tmp" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/builder.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- build
+grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
+  fail "unsafe attempt-local Cursor runtime did not fail closed"
+LONG_CURSOR_ATTEMPT="$CURSOR_LANE/$(printf '%060d' 0)/c/A"
+mkdir -p "$(dirname "$LONG_CURSOR_ATTEMPT")"
+mkdir -m 700 "$LONG_CURSOR_ATTEMPT" "$LONG_CURSOR_ATTEMPT/home" \
+  "$LONG_CURSOR_ATTEMPT/home/.cursor" "$LONG_CURSOR_ATTEMPT/data" \
+  "$LONG_CURSOR_ATTEMPT/tmp"
+printf 'A\n' >"$LONG_CURSOR_ATTEMPT/owner"
+cp "$CALLER_HOME/.cursor/auth.json" "$CALLER_HOME/.cursor/cli-config.json" \
+  "$LONG_CURSOR_ATTEMPT/home/.cursor/"
+chmod 600 "$LONG_CURSOR_ATTEMPT/owner" \
+  "$LONG_CURSOR_ATTEMPT/home/.cursor/"*.json
+expect_failure "overlong attempt-local Cursor runtime" env \
+  FACTORY_ROLE=builder FACTORY_CLI_INTERNAL_SANDBOX=1 \
+  FACTORY_CLI_ATTEMPT_ID=A \
+  FACTORY_CURSOR_SESSION_HOME="$LONG_CURSOR_ATTEMPT/home" \
+  CURSOR_CONFIG_DIR="$LONG_CURSOR_ATTEMPT/home/.cursor" \
+  CURSOR_DATA_DIR="$LONG_CURSOR_ATTEMPT/data" \
+  TMPDIR="$LONG_CURSOR_ATTEMPT/tmp" \
+  FACTORY_CURSOR_INTERNAL_SANDBOX=1 CURSOR_AGENT_BIN="$FAKE_CURSOR" \
+  CURSOR_AGENT_VERSION=2026.07.17-test \
+  "$ROOT/scripts/adapters/cursor-anthropic.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file "$ROOT/roles/builder.md" --workdir "$TMP" \
+    --model claude-sonnet-5-thinking-high --effort high -- build
+grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
+  fail "overlong attempt-local Cursor runtime did not fail closed"
+(
+  eval "$(sed -n \
+    '/^prepare_cli_runtime()/,/^}/p;
+     /^cleanup_cli_runtime()/,/^}/p' "$ROOT/scripts/run-agent.sh")"
+  CLI_CONCURRENT_RUN=1
+  ADAPTER=cursor-anthropic
+  DEVELOPMENT_LANE_ROOT="$CURSOR_LANE"
+  CLI_ATTEMPT_ID=1785024575-76769-cli
+  CLI_RUNTIME_ROOT=""
+  CLI_PROVIDER_HOME=""
+  CLI_PROVIDER_TMPDIR=""
+  CLI_CLAUDE_CONFIG_DIR=""
+  CLI_CURSOR_CONFIG_DIR=""
+  CLI_CURSOR_DATA_DIR=""
+  RUN_GROUP_TERMINATED=1
+  FACTORY_CURSOR_SESSION_HOME="$CALLER_HOME"
+  prepare_cli_runtime
+  [[ "$CLI_RUNTIME_ROOT" == "$CURSOR_LANE/c/$CLI_ATTEMPT_ID" ]] ||
+    fail "Cursor attempt did not use the short lane-local root"
+  python3 - "$CLI_RUNTIME_ROOT" <<'PY' ||
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+assert len(str(root / "data")) <= 75
+assert len(str(root / "data" / "projects")) <= 84
+assert stat.S_IMODE(root.parent.stat().st_mode) == 0o700
+assert stat.S_IMODE(root.stat().st_mode) == 0o700
+PY
+    fail "normal development-lane Cursor attempt path exceeded its limits"
+  retained_runtime="$CLI_RUNTIME_ROOT"
+  cleanup_cli_runtime
+  [[ -z "$CLI_RUNTIME_ROOT" && ! -e "$retained_runtime" ]] ||
+    fail "Cursor attempt cleanup retained its isolated runtime"
+)
+rm -rf -- "$CURSOR_LANE"
+CURSOR_LANE=""
+grep -Fq 'FACTORY_DEV_PRLESS_EVIDENCE_V1' "$ROOT/roles/narrator.md" ||
+  fail "Narrator backend-only exception lacks its trusted development marker"
+grep -Fq 'export LANG=C LC_ALL=C LC_CTYPE=C' "$LANE" ||
+  fail "development lane does not normalize the macOS locale"
+grep -Fq 'Not applicable — backend-only contract' "$ROOT/roles/narrator.md" ||
+  fail "Narrator cannot represent an explicitly backend-only preview"
+grep -Fq 'never weakens the normal' \
+  "$ROOT/roles/narrator.md" ||
+  fail "Narrator backend-only exception weakens production preview evidence"
+grep -Fq 'backend-only HTTP API' "$ROOT/roles/narrator.md" ||
+  fail "Narrator still excludes backend-only HTTP APIs from development evidence"
+grep -Fq 'Deferred — publication visual gate' "$ROOT/roles/narrator.md" ||
+  fail "Narrator cannot defer visual evidence to trusted publication"
+product_role_source="$(sed -n '/^product_role_run()/,/^product_transition_contract_blocked()/p' "$LANE")"
+printf '%s\n' "$product_role_source" |
+  grep -Fq 'Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1' ||
+  fail "development product runner did not supply the PR-less evidence marker"
+printf '%s\n' "$product_role_source" |
+  grep -Fq 'including a backend-only HTTP API' ||
+  fail "development product runner still excludes backend-only HTTP APIs"
+printf '%s\n' "$product_role_source" |
+  grep -Fq 'trusted publication gate must resolve every deferral before merge' ||
+  fail "development Narrator does not preserve the publication visual gate"
+printf '%s\n' "$product_role_source" |
+  grep -Fq -- '--action qualification-backlog' &&
+  printf '%s\n' "$product_role_source" |
+    grep -Fq 'SPEC-LINT:[[:space:]]*FAIL' ||
+  fail "qualification Spec-lint failure does not return directly to Backlog"
+for boundary in \
+  'planner || "$role" == spec-linter' \
+  'run only the focused tests you add or change' \
+  'run the build and focused tests for this ticket only' \
+  'run only a focused read-only check needed to resolve a concrete uncertainty'; do
+  grep -Fq "$boundary" <<<"$product_role_source" ||
+    fail "development role efficiency boundary is incomplete: $boundary"
+done
+[[ "$(grep -Fc 'trusted publication owns broad deterministic gates' \
+  <<<"$product_role_source")" -eq 3 ]] ||
+  fail "development broad-check ownership is not exact"
+eval "$(sed -n '/^validate_product_dev_bundle()/,/^}/p' "$LANE")"
+cat >"$TMP/http-backend-bundle.md" <<'EOF'
+# Development-only evidence — not a production attestation
+## What this does
+Adds a backend HTTP API.
+## Preview
+Not applicable — backend-only contract
+## Screenshots
+Not applicable — backend-only contract
+## Acceptance criteria
+| Criterion | Evidence | Result |
+| --- | --- | --- |
+| HTTP behavior | focused API test | Pass |
+## Risk
+Internal change.
+## Cost
+$1.00, one attempt.
+## Rollback
+Revert the later PR.
+Approve to merge, or send back with what's wrong?
+EOF
+validate_product_dev_bundle "$TMP/http-backend-bundle.md" ||
+  fail "development validator rejected a backend-only HTTP API bundle"
+sed 's/^Not applicable — backend-only contract$/Not applicable — backend-only contract. No browser or visual surface exists./' \
+  "$TMP/http-backend-bundle.md" >"$TMP/annotated-backend-bundle.md"
+validate_product_dev_bundle "$TMP/annotated-backend-bundle.md" ||
+  fail "development validator rejected an annotated backend-only marker"
+sed '/^## Preview$/,/^## Screenshots$/{
+  /Not applicable — backend-only contract/c\
+Unavailable in this sandbox; pending until the PR/deploy publication gate.
+}' "$TMP/http-backend-bundle.md" >"$TMP/pending-http-backend-bundle.md"
+validate_product_dev_bundle "$TMP/pending-http-backend-bundle.md" ||
+  fail "development validator rejected a pending HTTP publication preview"
+sed '/^## Screenshots$/,/^## Acceptance criteria$/{
+  /Not applicable — backend-only contract/c\
+**Unavailable — no preview deploy exists.** This backend HTTP contract has no UI or visual surface.
+}' "$TMP/pending-http-backend-bundle.md" >"$TMP/retained-http-backend-bundle.md"
+validate_product_dev_bundle "$TMP/retained-http-backend-bundle.md" ||
+  fail "development validator rejected the retained HTTP bundle shape"
+sed 's/no UI or visual surface/a changed UI/' \
+  "$TMP/retained-http-backend-bundle.md" >"$TMP/visual-bundle-without-evidence.md"
+expect_failure "visual bundle without preview evidence" \
+  validate_product_dev_bundle "$TMP/visual-bundle-without-evidence.md"
+sed -e '/^## Preview$/,/^## Screenshots$/{
+  /Unavailable in this sandbox/c\
+Deferred — publication visual gate\
+Verify the authenticated preview before merge.
+}' -e '/^## Screenshots$/,/^## Acceptance criteria$/{
+  /Not applicable — backend-only contract/c\
+Deferred — publication visual gate\
+Capture the frozen viewports and compare them with the product references.
+}' "$TMP/pending-http-backend-bundle.md" >"$TMP/deferred-visual-bundle.md"
+validate_product_dev_bundle "$TMP/deferred-visual-bundle.md" ||
+  fail "development validator rejected an explicit visual publication deferral"
+sed 's/^Deferred — publication visual gate$/**Deferred — publication visual gate.**/' \
+  "$TMP/deferred-visual-bundle.md" >"$TMP/bold-deferred-visual-bundle.md"
+validate_product_dev_bundle "$TMP/bold-deferred-visual-bundle.md" ||
+  fail "development validator rejected emphasized visual publication markers"
+sed '/^Deferred — publication visual gate$/{
+  x
+  /removed/{
+    x
+    d
+  }
+  x
+  h
+  s/.*/removed/
+  x
+}' "$TMP/deferred-visual-bundle.md" >"$TMP/incomplete-visual-deferral.md"
+expect_failure "incomplete visual evidence deferral" \
+  validate_product_dev_bundle "$TMP/incomplete-visual-deferral.md"
+subscription_cases="$(sed -n '/^  subscription-plan)/,/^  product-seed-lineage)/p' "$LANE")"
+printf '%s\n' "$subscription_cases" |
+  grep -Fq 'run_in_sandbox "$root" subscription __subscription-plan' ||
+  fail "Codex subscription planning still depends on the Cursor scratch bridge"
+printf '%s\n' "$subscription_cases" |
+  grep -Fq 'run_in_sandbox "$root" subscription __subscription-run' ||
+  fail "Codex subscription execution still depends on the Cursor scratch bridge"
+eval "$(sed -n '/^cleanup_empty_cursor_bridge()/,/^}/p' "$LANE")"
+REPLACED_BRIDGE="$TMP/replaced-cursor-bridge"
+mkdir -p "$REPLACED_BRIDGE/empty-session"
+chmod 755 "$REPLACED_BRIDGE" "$REPLACED_BRIDGE/empty-session"
+cleanup_empty_cursor_bridge "$REPLACED_BRIDGE" ||
+  fail "empty Cursor-replaced bridge was not cleanable"
+[[ ! -e "$REPLACED_BRIDGE" ]] ||
+  fail "empty Cursor-replaced bridge survived cleanup"
+mkdir -p "$REPLACED_BRIDGE"
+printf '%s\n' unsafe >"$REPLACED_BRIDGE/provider-state"
+expect_failure "nonempty Cursor-replaced bridge" \
+  cleanup_empty_cursor_bridge "$REPLACED_BRIDGE"
+[[ -f "$REPLACED_BRIDGE/provider-state" ]] ||
+  fail "Cursor bridge cleanup removed unrecognized provider state"
+(
+  BRIDGE_CLAIM_ROOT="$TMP/cursor-bridge-claim"
+  BRIDGE_CLAIM_PATH="$TMP/cursor-bridge-claim-path"
+  mkdir -p "$BRIDGE_CLAIM_ROOT/kit/scripts" "$BRIDGE_CLAIM_ROOT/runtime" \
+    "$BRIDGE_CLAIM_ROOT/home" "$BRIDGE_CLAIM_ROOT/tmp" \
+    "$BRIDGE_CLAIM_ROOT/session-home" "$BRIDGE_CLAIM_PATH/empty-session"
+  cat >"$BRIDGE_CLAIM_ROOT/kit/scripts/factory-dev-lane.sh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == verify && -L "$2" ]]
+[[ "$(python3 - "$2" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)" == "$3" ]]
+EOF
+  chmod +x "$BRIDGE_CLAIM_ROOT/kit/scripts/factory-dev-lane.sh"
+  eval "$(sed -n '/^run_in_sandbox()/,/^}/p' "$LANE")"
+  cursor_tmp_bridge() { printf '%s\n' "$BRIDGE_CLAIM_PATH"; }
+  subscription_provider_idle() { :; }
+  die() { echo "$*" >&2; exit 1; }
+  run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+    "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp" ||
+    fail "safe empty Cursor bridge was not reclaimed and atomically claimed"
+  [[ ! -e "$BRIDGE_CLAIM_PATH" && ! -L "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "reclaimed Cursor bridge survived normal cleanup"
+
+  mkdir -p "$BRIDGE_CLAIM_PATH/empty-session"
+  subscription_provider_idle() { return 1; }
+  expect_failure "active-provider Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -d "$BRIDGE_CLAIM_PATH/empty-session" ]] ||
+    fail "active-provider refusal changed the Cursor bridge"
+  rm -rf "$BRIDGE_CLAIM_PATH"
+
+  subscription_provider_idle() { :; }
+  mkdir -p "$BRIDGE_CLAIM_PATH"
+  printf '%s\n' unsafe >"$BRIDGE_CLAIM_PATH/provider-state"
+  expect_failure "nonempty Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -f "$BRIDGE_CLAIM_PATH/provider-state" ]] ||
+    fail "nonempty Cursor bridge refusal removed provider state"
+  rm -rf "$BRIDGE_CLAIM_PATH"
+
+  mkdir "$BRIDGE_CLAIM_PATH"
+  chmod 777 "$BRIDGE_CLAIM_PATH"
+  expect_failure "unsafe-mode Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -d "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "unsafe-mode Cursor bridge refusal removed the directory"
+  chmod 700 "$BRIDGE_CLAIM_PATH"
+  rmdir "$BRIDGE_CLAIM_PATH"
+
+  printf '%s\n' unsafe >"$BRIDGE_CLAIM_PATH"
+  expect_failure "file Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -f "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "file Cursor bridge refusal removed the file"
+  rm "$BRIDGE_CLAIM_PATH"
+
+  ln -s "$BRIDGE_CLAIM_ROOT" "$BRIDGE_CLAIM_PATH"
+  expect_failure "symlink Cursor bridge reclaim" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" cursor verify "$BRIDGE_CLAIM_PATH" \
+      "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -L "$BRIDGE_CLAIM_PATH" ]] ||
+    fail "symlink Cursor bridge refusal removed the link"
+  bridge_target_before="$(readlink "$BRIDGE_CLAIM_PATH")"
+  expect_failure "product Cursor bridge claim race" \
+    run_in_sandbox "$BRIDGE_CLAIM_ROOT" product-cursor verify \
+      "$BRIDGE_CLAIM_PATH" "$BRIDGE_CLAIM_ROOT/runtime/cursor-tmp"
+  [[ -L "$BRIDGE_CLAIM_PATH" &&
+     "$(readlink "$BRIDGE_CLAIM_PATH")" == "$bridge_target_before" ]] ||
+    fail "product Cursor bridge race changed the foreign path"
+)
+(
+  eval "$(sed -n '/^configure_product_cursor_fallback()/,/^}/p' "$LANE")"
+  FALLBACK_ROOT="$TMP/product-cursor-policy"
+  FALLBACK_BRIDGE="$TMP/product-cursor-policy-bridge"
+  mkdir -p "$FALLBACK_ROOT/runtime"
+  cursor_tmp_bridge() { printf '%s\n' "$FALLBACK_BRIDGE"; }
+  die() { echo "$*" >&2; exit 1; }
+  [[ "$(configure_product_cursor_fallback "$FALLBACK_ROOT")" == cursor ]] ||
+    fail "available Cursor bridge did not retain the optional fallback"
+  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == enabled ]] ||
+    fail "available Cursor bridge wrote the wrong lane policy"
+
+  rm -rf "$FALLBACK_ROOT"
+  mkdir -p "$FALLBACK_ROOT/runtime"
+  [[ "$(FACTORY_DEV_LANE_CURSOR_FALLBACK=0 \
+    configure_product_cursor_fallback "$FALLBACK_ROOT")" == subscription ]] ||
+    fail "explicit native-only policy retained Cursor fallback"
+  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == disabled ]] ||
+    fail "explicit native-only policy wrote the wrong lane policy"
+
+  rm -rf "$FALLBACK_ROOT"
+  mkdir -p "$FALLBACK_ROOT/runtime" "$FALLBACK_BRIDGE"
+  printf '%s\n' do-not-touch >"$FALLBACK_BRIDGE/foreign-state"
+  bridge_before="$(cksum "$FALLBACK_BRIDGE/foreign-state")"
+  [[ "$(configure_product_cursor_fallback "$FALLBACK_ROOT")" == cursor ]] ||
+    fail "unrelated Cursor bridge disabled isolated Cursor"
+  [[ "$(cat "$FALLBACK_ROOT/runtime/product-cursor-fallback")" == enabled ]] ||
+    fail "unrelated Cursor bridge wrote the wrong lane policy"
+  [[ "$(cksum "$FALLBACK_BRIDGE/foreign-state")" == "$bridge_before" ]] ||
+    fail "isolated Cursor planning changed the pre-existing bridge"
+)
+product_command_source="$(sed -n \
+  '/^  product-plan)/,/^  product-resume-plan)/p;
+   /^  product-run)/,/^  product-export)/p' "$LANE")"
+if grep -Fq 'product_profile=product-cursor' <<<"$product_command_source"; then
+  fail "isolated product planning still claims the legacy Cursor bridge"
+fi
+grep -Fq '"CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"' \
+  "$ROOT/scripts/run-agent.sh" &&
+  grep -Fq '"CURSOR_DATA_DIR=$CLI_CURSOR_DATA_DIR"' \
+    "$ROOT/scripts/run-agent.sh" &&
+  grep -Fq 'base="$DEVELOPMENT_LANE_ROOT/c"' \
+    "$ROOT/scripts/run-agent.sh" &&
+  grep -Fq 'mkdir -m 700 "$CLI_PROVIDER_HOME/.cursor" "$CLI_RUNTIME_ROOT/data"' \
+    "$ROOT/scripts/run-agent.sh" ||
+  fail "concurrent Cursor does not use attempt-local config and data roots"
+for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
+  printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
+  expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
+    --adapter codex --input "$VERDICT"
+done
+product_role_source="$(sed -n '/^product_role_run()/,/^product_reconcile_reviewer()/p' "$LANE")"
+if grep -Fq '"$role" == builder' <<<"$product_role_source" ||
+   grep -Fq 'set_review_state "$root"' <<<"$product_role_source"; then
+  fail "product Builder still owns a bespoke Review-state transition"
+fi
+product_scheduler_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()/p' "$LANE")"
+grep -Fq 'product_prepare_role_state "$root" "$ticket" "$role"' \
+  <<<"$product_scheduler_source" ||
+  fail "development scheduler does not prepare shared role state before launch"
+python3 - "$product_scheduler_source" <<'PY' ||
+import sys
+text=sys.argv[1]
+prepare=text.index('product_prepare_role_state "$root" "$ticket" "$role"')
+launch=text.index('product_role_run "$root" "$ticket"',prepare)
+assert prepare < launch
+assert "failed_stages[$i]=state-transition" in text[prepare:launch]
+PY
+  fail "development role-state refusal is not pre-provider"
+provider_wait_source="$(sed -n '/^subscription_provider_wait()/,/^}/p' "$LANE")"
+(
+  eval "$provider_wait_source"
+  provider_checks=0
+  subscription_provider_idle() {
+    provider_checks=$((provider_checks + 1))
+    [[ "$provider_checks" -ge 3 ]]
+  }
+  sleep() { :; }
+  subscription_provider_wait 2
+  [[ "$provider_checks" -eq 3 ]]
+) || fail "subscription provider wait did not retry until idle"
+(
+  eval "$provider_wait_source"
+  subscription_provider_idle() { return 1; }
+  sleep() { :; }
+  expect_failure "bounded subscription provider wait" subscription_provider_wait 1
+) || fail "subscription provider wait did not stop at its bound"
+product_scheduler_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()/p' "$LANE")"
+if grep -Fq 'subscription_provider_wait 120' <<<"$product_scheduler_source"; then
+  fail "product lifecycle still waits for unrelated subscription providers"
+fi
+printf '%s\n' "$product_role_source" |
+  grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' ||
+  fail "development product wait is not the bounded fifteen-minute policy"
+printf '%s\n' "$product_role_source" |
+  grep -Fq "latest quoted 'Reviewer round N signed detail' block" ||
+  fail "development repair roles are not bound to durable reviewer detail"
+printf '%s\n' "$product_role_source" |
+  grep -Fq '\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env' ||
+  fail "product role instruction does not use a portable database path"
+if printf '%s\n' "$product_role_source" |
+   grep -Fq "source '\$root/runtime/product-db"; then
+  fail "product role instruction still exposes a physical lane path"
+fi
+seed_source="$(sed -n \
+  '/^seed_product_worktrees()/,/^write_product_checkpoint_import()/p' "$LANE")"
+printf '%s\n' "$seed_source" |
+  grep -Fq 'scripts/lib/lane-path-sentinel.py' ||
+  fail "checkpoint import lost its lane-path sentinel"
+checkpoint_export_source="$(sed -n \
+  '/^export_product_checkpoint_internal()/,/^product_export_roles_complete()/p' \
+  "$LANE")"
+printf '%s\n' "$checkpoint_export_source" |
+  grep -Fq '"$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py"' ||
+  fail "checkpoint export does not use the trusted controller sentinel"
+if printf '%s\n' "$checkpoint_export_source" |
+   grep -Fq '"$root/kit/scripts/lib/lane-path-sentinel.py"'; then
+  fail "checkpoint export still requires the retained kit sentinel"
+fi
+grep -Fq '["lane_control_sha"]' <<<"$checkpoint_export_source" ||
+  fail "checkpoint export does not exclude trusted lane-control output"
+(
+  RETAINED="$TMP/retained-pre-sentinel"
+  mkdir -p "$RETAINED/runtime" "$RETAINED/worktrees" "$RETAINED/kit/scripts/lib"
+  git init -q "$RETAINED/source"
+  printf '%s\n' portable >"$RETAINED/source/output.txt"
+  git -C "$RETAINED/source" add output.txt
+  git -C "$RETAINED/source" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Base'
+  RETAINED_BASE="$(git -C "$RETAINED/source" rev-parse HEAD)"
+  mkdir -p "$RETAINED/source/factory"
+  printf '%s\n' \
+    'WORKTREES_DIR="/private/tmp/nysa-sf-dev.trusted-control/worktrees"' \
+    >"$RETAINED/source/factory/PROJECT.env"
+  git -C "$RETAINED/source" add factory/PROJECT.env
+  git -C "$RETAINED/source" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Trusted lane control'
+  RETAINED_CONTROL="$(git -C "$RETAINED/source" rev-parse HEAD)"
+  git -C "$RETAINED/source" checkout -qb ticket/T-997
+  printf '%s\n' retained >>"$RETAINED/source/output.txt"
+  git -C "$RETAINED/source" add output.txt
+  git -C "$RETAINED/source" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Retained role output'
+  git clone -q --bare "$RETAINED/source" "$RETAINED/origin.git"
+  git clone -q "$RETAINED/origin.git" "$RETAINED/worktrees/T-997"
+  git -C "$RETAINED/worktrees/T-997" checkout -q ticket/T-997
+  printf '{"base_sha":"%s","lane_control_sha":"%s"}\n' \
+    "$RETAINED_BASE" "$RETAINED_CONTROL" \
+    >"$RETAINED/runtime/product-source.json"
+  chmod 700 "$RETAINED"
+  RETAINED_OUTPUT_PARENT="$TMP/retained-checkpoint-output"
+  mkdir -m 700 "$RETAINED_OUTPUT_PARENT"
+
+  require_lane_mode() { :; }
+  load_product_tickets() { PRODUCT_TICKETS=(T-997); }
+  select_product_export_tickets() { PRODUCT_TICKETS=(T-997); }
+  validate_runtime_paths() { :; }
+  recover_product_cancelled_role_output() { :; }
+  product_selected_drained() { :; }
+  write_product_stage_map() {
+    printf '%s\t%s\n' T-997 'RUN reviewer' >"$2"
+  }
+  refuse_production_path() { :; }
+  subscription_env() { :; }
+  write_product_checkpoint() {
+    printf '%s\n' retained >"$3"
+  }
+  eval "$(sed -n \
+    '/^export_product_checkpoint_internal()/,/^write_product_checkpoint()/p' \
+    "$LANE" | sed '$d')"
+  export_product_checkpoint_internal "$RETAINED" T-997 \
+    "$RETAINED_OUTPUT_PARENT/checkpoint-1" >"$OUT"
+  [[ -s "$RETAINED_OUTPUT_PARENT/checkpoint-1/seed.bundle" &&
+     -s "$RETAINED_OUTPUT_PARENT/checkpoint-1/checkpoint.json" ]] ||
+    fail "checkpoint export from a pre-sentinel retained kit failed"
+)
+REC="$TMP/reviewer-reconcile"
+mkdir -p "$REC/product/factory/runs" "$REC/worktrees/T-900001/factory/tickets"
+ln -s "$ROOT" "$REC/kit"
+review_ticket="$REC/worktrees/T-900001/factory/tickets/T-900001.md"
+printf '%s\n' 'State: Review' >"$review_ticket"
+review_head=1111111111111111111111111111111111111111
+printf '%s\n' '{"type":"result","subtype":"success","result":"Reviewed safely.\n\nAPPROVE"}' \
+  >"$REC/product/factory/runs/review.out"
+review_digest="$(shasum -a 256 "$REC/product/factory/runs/review.out" | awk '{print $1}')"
+printf '%s\n' \
+  'ticket=T-900001' 'role=reviewer' 'adapter=cursor-anthropic' \
+  'contract_version=1.7.0' 'role_exit=ok' \
+  "role_head_before=$review_head" "role_remote_before=$review_head" \
+  "output_sha256=$review_digest" \
+  'accounting_state=abandoned_conservative' 'exit_status=0' 'started_at=2026-01-01T00:00:00Z' \
+  >"$REC/product/factory/runs/review.meta"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled"
+mv "$REC/reconciled" "$review_ticket"
+python3 - "$review_ticket" <<'PY'
+import pathlib, sys
+path=pathlib.Path(sys.argv[1]); text=path.read_text(encoding="utf-8")
+text=text.replace(
+    "\nreviewer round 1: APPROVE\n",
+    "\n> That background `/private/tmp/stale-lane/home/node` finished.\n\n"
+    "reviewer round 1: APPROVE\n",
+)
+path.write_text(text,encoding="utf-8")
+PY
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled" ||
+  fail "successful unpaired review was not reconciled"
+if grep -Fq '/private/tmp/stale-lane' "$REC/reconciled"; then
+  fail "review reconciliation retained late lane-local callback detail"
+fi
+mv "$REC/reconciled" "$review_ticket"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900001 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled" ||
+  fail "canonical review reconciliation was not replay-safe"
+cmp -s "$review_ticket" "$REC/reconciled" ||
+  fail "canonical review reconciliation was not idempotent"
+[[ "$(grep -c '^reviewer round 1: APPROVE$' "$review_ticket")" -eq 1 ]] ||
+  fail "review reconciliation did not append exactly once"
+review_ticket="$REC/worktrees/T-900003/factory/tickets/T-900003.md"
+mkdir -p "$(dirname "$review_ticket")"
+printf '%s\n' 'State: Review' 'reviewer round 1: REQUEST CHANGES' \
+  'reviewer round 1 FIX-OWNER: builder' >"$review_ticket"
+printf '%s\n' \
+  '{"schema":"factory-dev-product-checkpoint-import/v2","checkpoint_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tickets":[{"ticket":"T-900003","import_head":"1111111111111111111111111111111111111111","import_tree":"2222222222222222222222222222222222222222","roles":["planner","spec-linter","test-author","builder","reviewer"],"spec_verdicts":["SPEC-LINT: PASS"],"expected_next_stage":"FIX builder"}]}' \
+  >"$REC/checkpoint.json"
+chmod 600 "$REC/checkpoint.json"
+printf '%s\n' '{"type":"result","subtype":"success","result":"Repair verified.\n\nAPPROVE"}' \
+  >"$REC/product/factory/runs/review-checkpoint.out"
+review_digest="$(shasum -a 256 "$REC/product/factory/runs/review-checkpoint.out" | awk '{print $1}')"
+printf '%s\n' \
+  'ticket=T-900003' 'role=reviewer' 'adapter=cursor-anthropic' \
+  'contract_version=1.7.0' 'role_exit=ok' \
+  "role_head_before=$review_head" "role_remote_before=$review_head" \
+  "output_sha256=$review_digest" \
+  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-03T00:00:00Z' \
+  >"$REC/product/factory/runs/review-checkpoint.meta"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900003 --head "$review_head" --contract-version 1.7.0 \
+  --checkpoint "$REC/checkpoint.json" --output "$REC/reconciled" ||
+  fail "portable reviewer prefix was not counted during reconciliation"
+grep -qx 'reviewer round 2: APPROVE' "$REC/reconciled" ||
+  fail "portable reviewer prefix replayed or displaced the current verdict"
+review_ticket="$REC/worktrees/T-900002/factory/tickets/T-900002.md"
+mkdir -p "$(dirname "$review_ticket")"
+printf '%s\n' 'State: Review' >"$review_ticket"
+printf '%s\n' 'Review complete.' \
+  'Item 1: add the exact workspace-row no-chevron assertion.' \
+  'State: Done' 'REQUEST CHANGES' 'FIX-OWNER: test-author' \
+  >"$REC/product/factory/runs/review-request.out"
+review_digest="$(shasum -a 256 "$REC/product/factory/runs/review-request.out" | awk '{print $1}')"
+printf '%s\n' \
+  'ticket=T-900002' 'role=reviewer' 'adapter=codex' \
+  'contract_version=1.7.0' 'role_exit=ok' \
+  "role_head_before=$review_head" "role_remote_before=$review_head" \
+  "output_sha256=$review_digest" \
+  'accounting_state=completed' 'exit_status=0' 'started_at=2026-01-02T00:00:00Z' \
+  >"$REC/product/factory/runs/review-request.meta"
+python3 "$ROOT/scripts/lib/reviewer-reconcile.py" \
+  --runs-dir "$REC/product/factory/runs" --ticket-file "$review_ticket" \
+  --ticket T-900002 --head "$review_head" --contract-version 1.7.0 \
+  --output "$REC/reconciled" ||
+  fail "request-changes review was treated as a terminal lifecycle failure"
+mv "$REC/reconciled" "$review_ticket"
+grep -qx 'State: Building' "$review_ticket" ||
+  fail "request-changes review did not atomically return the ticket to Building"
+grep -qx 'reviewer round 1: REQUEST CHANGES' "$review_ticket" ||
+  fail "request-changes review was not recorded durably"
+grep -qx 'reviewer round 1 FIX-OWNER: test-author' "$review_ticket" ||
+  fail "request-changes repair ownership was not recorded durably"
+grep -qx 'Reviewer round 1 signed detail:' "$review_ticket" &&
+  grep -qx '> Item 1: add the exact workspace-row no-chevron assertion.' "$review_ticket" &&
+  grep -qx '> State: Done' "$review_ticket" ||
+  fail "request-changes actionable detail was not durably quoted"
+[[ "$(grep -c '^State:' "$review_ticket")" -eq 1 ]] ||
+  fail "quoted reviewer detail injected a ticket State field"
+product_reconcile_source="$(sed -n '/^product_reconcile_reviewer()/,/^}/p' "$LANE")"
+printf '%s\n' "$product_reconcile_source" |
+  grep -Fq '"$SOURCE_ROOT/scripts/ticket-state.sh"' ||
+  fail "development scheduler does not use the corrected trusted controller"
+if printf '%s\n' "$product_reconcile_source" |
+   grep -Fq '"$root/kit/scripts/ticket-state.sh"'; then
+  fail "development scheduler still uses the retained kit for reconciliation"
+fi
+printf '%s\n' "$product_reconcile_source" | grep -Fq -- '--action reviewer-reconcile' ||
+  fail "development scheduler does not request shared reviewer reconciliation"
+eval "$product_reconcile_source"
+RECONCILE_GUARD="$TMP/reviewer-reconcile-guard"
+mkdir -p "$RECONCILE_GUARD/product/factory/runs"
+lane_env() {
+  local argument
+  for argument in "$@"; do
+    if [[ "$argument" == FACTORY_DEV_PRODUCT_CHECKPOINT=* ]]; then
+      [[ -f "${argument#*=}" ]] || return 1
+    fi
+  done
+  printf '%s\n' called >>"$RECONCILE_GUARD/calls"
+}
+RECONCILE_LEASE="$(printf 'a%.0s' {1..64})"
+product_reconcile_reviewer "$RECONCILE_GUARD" T-1 "$RECONCILE_LEASE" ||
+  fail "scheduler rejected a ticket before its first Reviewer output"
+[[ ! -e "$RECONCILE_GUARD/calls" ]] ||
+  fail "scheduler reconciled before a successful Reviewer output existed"
+printf '%s\n' ticket=T-1 role=reviewer phase=completed exit_status=0 \
+  >"$RECONCILE_GUARD/product/factory/runs/reviewer.meta"
+product_reconcile_reviewer "$RECONCILE_GUARD" T-1 "$RECONCILE_LEASE" ||
+  fail "scheduler did not reconcile a successful Reviewer output"
+[[ "$(cat "$RECONCILE_GUARD/calls")" == called ]] ||
+  fail "scheduler did not use the shared reconciliation helper exactly once"
+expect_failure "review reconciliation without claimed lease" \
+  product_reconcile_reviewer "$RECONCILE_GUARD" T-1
+resume_stage_source="$(sed -n '/^product_resume_stage()/,/^}/p' "$LANE")"
+resume_plan_source="$(sed -n '/^product_resume_plan()/,/^}/p' "$LANE")"
+python3 - "$resume_plan_source" <<'PY' ||
+import sys
+text=sys.argv[1]
+stage=text.index('stage="$(product_resume_stage')
+basis=text.index('basis="$(product_resume_basis_hash')
+validate=text.index('validate_product_resume_basis')
+approval=text.index('approval_hash="$(product_approval_hash')
+assert stage < basis < validate < approval
+PY
+  fail "resume approval is not bound to the post-reconcile head and stage"
+eval "$resume_stage_source"
+RESUME_REVIEW_ROOT="$TMP/resume-reviewer-reconcile"
+mkdir -p "$RESUME_REVIEW_ROOT/kit/scripts" "$RESUME_REVIEW_ROOT/runtime"
+RESUME_REVIEW_TRACE="$RESUME_REVIEW_ROOT/trace"
+RESUME_REVIEW_LEASE="$(printf 'b%.0s' {1..64})"
+subscription_env() {
+  local ignored_root="$1" ignored_command="$2" operation="$3"
+  shift 3
+  printf '%s\n' "$operation" >>"$RESUME_REVIEW_TRACE"
+  if [[ "$operation" == claim ]]; then
+    printf '{"lease_id":"%s"}\n' "$RESUME_REVIEW_LEASE"
+  fi
+}
+product_reconcile_reviewer() {
+  [[ "$2" == T-054 && "$3" == "$RESUME_REVIEW_LEASE" ]] || return 1
+  printf '%s\n' reconciled >>"$RESUME_REVIEW_TRACE"
+  printf '%s\n' post-reconcile >"$RESUME_REVIEW_ROOT/head"
+}
+next_stage() {
+  [[ "$2" == "$RESUME_REVIEW_LEASE" &&
+     "$(<"$RESUME_REVIEW_ROOT/head")" == post-reconcile ]] || return 1
+  printf '%s\n' next-stage >>"$RESUME_REVIEW_TRACE"
+  printf '%s\n' 'FIX test-author'
+}
+[[ "$(product_resume_stage "$RESUME_REVIEW_ROOT" T-054)" == 'FIX test-author' ]] ||
+  fail "retained successful Reviewer did not resume at its owned repair stage"
+[[ "$(cat "$RESUME_REVIEW_TRACE")" == \
+   $'claim\nreconciled\nnext-stage\nrelease' ]] ||
+  fail "resume did not reconcile before stage resolution and release its lease"
+product_reconcile_reviewer() {
+  printf '%s\n' reconcile-refused >>"$RESUME_REVIEW_TRACE"
+  return 9
+}
+: >"$RESUME_REVIEW_TRACE"
+expect_failure "resume reviewer reconciliation refusal" \
+  product_resume_stage "$RESUME_REVIEW_ROOT" T-054
+[[ "$(cat "$RESUME_REVIEW_TRACE")" == \
+   $'claim\nreconcile-refused\nrelease' ]] ||
+  fail "failed resume reconciliation replayed a role or retained its lease"
+product_reconcile_reviewer() {
+  printf '%s\n' reconciled >>"$RESUME_REVIEW_TRACE"
+}
+next_stage() {
+  printf '%s\n' sequencing-refused >>"$RESUME_REVIEW_TRACE"
+  return 10
+}
+: >"$RESUME_REVIEW_TRACE"
+expect_failure "post-reconcile resume sequencing refusal" \
+  product_resume_stage "$RESUME_REVIEW_ROOT" T-054
+[[ "$(cat "$RESUME_REVIEW_TRACE")" == \
+   $'claim\nreconciled\nsequencing-refused\nrelease' ]] ||
+  fail "failed post-reconcile sequencing retained its lease"
+eval "$(sed -n \
+  '/^product_transition_contract_blocked()/,/^product_reconcile_reviewer()/p' \
+  "$LANE" | sed '$d')"
+BLOCKED_ROOT="$TMP/contract-blocked"
+mkdir -p "$BLOCKED_ROOT/product/factory/runs" "$BLOCKED_ROOT/worktrees/T-1"
+printf '%s\n' \
+  'run_id=blocked-run' 'ticket=T-1' 'role=builder' \
+  'contract_version=1.7.0' 'phase=completed' \
+  'accounting_state=abandoned_conservative' \
+  'reserved_usd=10.00' 'effective_cost=10.00' \
+  'cost_basis=conservative_reservation' \
+  'exit_status=12' 'role_exit=role_exit_contract_blocked' \
+  'started_at=2026-07-23T00:00:00Z' \
+  >"$BLOCKED_ROOT/product/factory/runs/blocked.meta"
+lane_env() { printf '%s\n' "$*" >"$BLOCKED_ROOT/transition"; }
+product_qualification_active() { :; }
+product_transition_contract_blocked "$BLOCKED_ROOT" T-1 builder ||
+  fail "authenticated contract blocker was not transitioned"
+grep -Fq -- '--action qualification-backlog --role builder' \
+  "$BLOCKED_ROOT/transition" ||
+  fail "contract blocker did not use the trusted qualification backlog return"
+unset -f product_qualification_active
+grep -Fq 'GIT_CONFIG_KEY_0=remote.origin.pushurl' "$ROOT/scripts/run-agent.sh" ||
+  fail "provider task environment no longer owns the push guard"
+grep -Fq '"AGENT_CLI_CREDENTIAL_STORE=${AGENT_CLI_CREDENTIAL_STORE:-}"' \
+  "$ROOT/scripts/run-agent.sh" ||
+  fail "provider task environment dropped the lane-local Cursor credential store"
+grep -Fq -- '--base-envelope "$ENV_FILE"' "$ROOT/scripts/run-agent.sh" ||
+  fail "effective budget resolution dropped the ticket-specific envelope"
+
+eval "$(sed -n '/^product_resume_reason()/,/^}/p' "$LANE")"
+printf '%s\n' 'Resolved Cursor model is unavailable' >"$TMP/retryable-role.log"
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == pinned-route-readiness ]] ||
+  fail "resume handoff lost the model-readiness diagnosis"
+printf '%s\n' 'subscription authentication is unavailable' >"$TMP/retryable-role.log"
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == role-failed ]] ||
+  fail "resume handoff misclassified a provider failure"
+printf '%s\n' \
+  "pinned route unavailable or drifted for role 'reviewer': pinned_route_UNAVAILABLE_authentication_unavailable; no task was submitted" \
+  >"$TMP/retryable-role.log"
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == pinned-route-readiness ]] ||
+  fail "resume handoff lost the pinned-route authentication diagnosis"
+printf '%s\n' \
+  "pinned route unavailable or drifted for role 'reviewer': pinned_route_INVALID_version_mismatch; no task was submitted" \
+  >"$TMP/retryable-role.log"
+[[ "$(product_resume_reason "$TMP/retryable-role.log")" == role-failed ]] ||
+  fail "resume handoff misclassified identity or contract drift"
+run_product_source="$(sed -n '/^run_product_internal()/,/^product_export_patch()/p' "$LANE")"
+if grep -Eq 'retries\[|retry_after|product_role_retryable' <<<"$run_product_source"; then
+  fail "product scheduler retained automatic provider retries"
+fi
+for expected in 'STATUS=RESUME-REQUIRED' 'RESUME_RECOMMENDED=1' \
+  'RESUME_TICKETS=' 'RESUME_NEXT=product-resume-plan' 'FAILED_STAGE=' \
+  'COMPLETED_ROLES=' 'REMAINING_BUDGET_USD=' 'RETAINED_ROOT=' \
+  'RESUME_COMMAND=' 'STATUS=BLOCKED-ESCALATED' 'BLOCKED_TICKETS=' \
+  'BLOCKED_STAGE=' 'STATUS=RETURNED-TO-BACKLOG' 'BACKLOG_TICKETS=' \
+  'BACKLOG_STAGE='; do
+  grep -Fq "$expected" <<<"$run_product_source" ||
+    fail "product failure omitted explicit same-lane resume handoff: $expected"
+done
+product_plan_case="$(sed -n '/^  product-plan)/,/^  product-resume-plan)/p' "$LANE")"
+python3 - "$product_plan_case" <<'PY' ||
+import sys
+text=sys.argv[1]
+if text.index("run_in_sandbox") >= text.index("consume_product_seed_authorization"):
+    raise SystemExit(1)
+if text.index("consume_product_seed_authorization") >= text.rindex('echo "ROOT=$root"'):
+    raise SystemExit(1)
+PY
+  fail "seed authorization is exposed before successful lane planning"
+eval "$(sed -n '/^prepare_fresh_product_ticket()/,/^}/p' "$LANE")"
+FRESH_TICKET="$TMP/fresh-ticket.md"
+printf '%s\n' '# Fresh ticket' 'State: Backlog' \
+  'SPEC-LINT: FAIL — historical finding' '  SPEC-LINT: PASS' \
+  'Reviewer round 1 signed detail:' '> State: Done' \
+  'reviewer round 1: REQUEST CHANGES' \
+  'reviewer round 1 FIX-OWNER: test-author' >"$FRESH_TICKET"
+prepare_fresh_product_ticket "$FRESH_TICKET"
+grep -qx 'State: Ready' "$FRESH_TICKET" ||
+  fail "fresh product ticket did not reset to Ready"
+if grep -Eiq '^\s*SPEC-LINT:|^\s*reviewer round [0-9]+: (APPROVE|REQUEST CHANGES)|^\s*reviewer round [0-9]+ FIX-OWNER:' \
+    "$FRESH_TICKET"; then
+  fail "fresh product ticket retained stale role-control evidence"
+fi
+grep -qx 'Reviewer round 1 signed detail:' "$FRESH_TICKET" &&
+  grep -qx '> State: Done' "$FRESH_TICKET" ||
+  fail "fresh product ticket discarded quoted historical review evidence"
+eval "$(sed -n '/^product_completed_roles()/,/^run_product_internal()/p' \
+  "$LANE" | sed '$d')"
+TIMING_ROOT="$TMP/product-timing"
+mkdir -p "$TIMING_ROOT/kit/scripts" "$TIMING_ROOT/runtime" \
+  "$TIMING_ROOT/product/factory/runs"
+cat >"$TIMING_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+#!/usr/bin/env python3
+import json
+base={
+  "ticket_id":"T-1","prepared_at":9,"admitted_at":10,"submitted_at":11,
+  "state":"terminal","terminal_result":"succeeded","reserve_micro_usd":10000000,
+  "charge_micro_usd":10000000,
+}
+print(json.dumps({"attempts":[
+  dict(base,attempt_id="one",go_at=10,terminal_at=20),
+  dict(base,attempt_id="two",go_at=12,terminal_at=18),
+]}))
+PY
+chmod +x "$TIMING_ROOT/kit/scripts/provider-coordinator.py"
+: >"$TIMING_ROOT/runtime/provider-state.sqlite3"
+printf '%s\n' 'PER_TICKET_BUDGET_USD=100.00' \
+  >"$TIMING_ROOT/product/factory/ENVELOPE.env"
+for timing_run in one two; do
+  printf '%s\n' phase=completed ticket=T-1 role=planner exit_status=0 \
+    >"$TIMING_ROOT/product/factory/runs/$timing_run.meta"
+done
+[[ "$(product_completed_roles "$TIMING_ROOT" T-1)" == planner ]] ||
+  fail "resume diagnostics lost completed-role evidence"
+[[ "$(product_remaining_budget "$TIMING_ROOT" T-1)" == 80.000000 ]] ||
+  fail "resume diagnostics calculated the wrong remaining budget"
+product_write_timing_report "$TIMING_ROOT" 5 35
+python3 - "$TIMING_ROOT/runtime/product-timing.json" <<'PY' ||
+import json, pathlib, stat, sys
+path=pathlib.Path(sys.argv[1]); value=json.loads(path.read_text())
+assert stat.S_IMODE(path.stat().st_mode)==0o600
+assert value["schema"]=="factory-dev-product-timing/v2"
+assert value["elapsed_seconds"]==30
+assert value["batches"]==[{
+    "batch_started_at":5,"batch_terminal_at":35,"elapsed_seconds":30}]
+assert value["maximum_provider_overlap"]==2
+assert value["successful_role_replay_count"]==1
+assert len(value["attempts"])==2
+PY
+  fail "product timing evidence was incomplete"
+product_write_timing_report "$TIMING_ROOT" 40 50
+python3 - "$TIMING_ROOT/runtime/product-timing.json" <<'PY' ||
+import json, sys
+value=json.load(open(sys.argv[1]))
+assert value["elapsed_seconds"]==10
+assert [item["elapsed_seconds"] for item in value["batches"]]==[30,10]
+PY
+  fail "product timing evidence overwrote a prior resume batch"
+eval "$(sed -n '/^product_role_for_stage()/,/^}/p' "$LANE")"
+if product_role_for_stage 'FIX builder-or-test-author' >/dev/null; then
+  fail "development lane guessed Builder for ambiguous repair ownership"
+fi
+[[ "$(product_role_for_stage 'FIX test-author')" == test-author ]] ||
+  fail "explicit review ownership did not select Test-author"
+[[ "$(product_role_for_stage 'FIX planner')" == planner ]] ||
+  fail "authorized contract repair did not select Planner"
+[[ "$(product_role_for_stage 'FIX spec-linter')" == spec-linter ]] ||
+  fail "authorized contract repair did not select Spec-linter"
+[[ "$(product_role_for_stage 'RUN reviewer')" == reviewer ]] ||
+  fail "ordinary sequencer role mapping changed"
+if product_role_for_stage AWAIT-OPERATOR >/dev/null; then
+  fail "operator boundary was mapped to a provider role"
+fi
+eval "$(sed -n '/^refresh_product_subscription_credentials()/,/^}/p' "$LANE")"
+CREDENTIAL_ROOT="$TMP/credential-refresh"
+CREDENTIAL_SOURCE="$CREDENTIAL_ROOT/source"
+mkdir -p "$CREDENTIAL_ROOT/lane/session-home"/{.cursor,.codex,.claude} \
+  "$CREDENTIAL_SOURCE"/{.cursor,.codex,.claude}
+chmod 700 "$CREDENTIAL_ROOT/lane/session-home"/{.cursor,.codex,.claude}
+for credential in \
+  .cursor/auth.json .cursor/cli-config.json \
+  .codex/auth.json .claude/.credentials.json; do
+  printf 'stale:%s\n' "$credential" \
+    >"$CREDENTIAL_ROOT/lane/session-home/$credential"
+  chmod 600 "$CREDENTIAL_ROOT/lane/session-home/$credential"
+  printf 'fresh:%s\n' "$credential" >"$CREDENTIAL_SOURCE/$credential"
+  chmod 600 "$CREDENTIAL_SOURCE/$credential"
+done
+cursor_session_home() { printf '%s\n' "$CREDENTIAL_SOURCE"; }
+die() { return 1; }
+refresh_product_subscription_credentials "$CREDENTIAL_ROOT/lane" ||
+  fail "safe subscription credentials did not refresh"
+for credential in .codex/auth.json .claude/.credentials.json; do
+  cmp -s "$CREDENTIAL_SOURCE/$credential" \
+    "$CREDENTIAL_ROOT/lane/session-home/$credential" ||
+    fail "subscription credential remained stale: $credential"
+  [[ "$(stat -f '%Su:%Lp:%l' \
+    "$CREDENTIAL_ROOT/lane/session-home/$credential")" == "$(id -un):600:1" ]] ||
+    fail "refreshed subscription credential is unsafe: $credential"
+done
+grep -qx 'stale:.cursor/auth.json' \
+  "$CREDENTIAL_ROOT/lane/session-home/.cursor/auth.json" &&
+  grep -qx 'stale:.cursor/cli-config.json' \
+    "$CREDENTIAL_ROOT/lane/session-home/.cursor/cli-config.json" ||
+  fail "native credential refresh changed Cursor session state"
+[[ -z "$(find "$CREDENTIAL_ROOT/lane/session-home" -name '*.refresh.*' -print -quit)" ]] ||
+  fail "subscription credential refresh left a temporary file"
+eval "$(sed -n '/^materialize_claude_subscription_token()/,/^}/p' "$LANE")"
+TOKEN_ROOT="$TMP/claude-token-materialize"
+mkdir -m 700 -p "$TOKEN_ROOT/source" "$TOKEN_ROOT/target"
+TOKEN_SOURCE="$TOKEN_ROOT/source/oauth.token"
+TOKEN_TARGET="$TOKEN_ROOT/target/.credentials.json"
+TOKEN_VALUE="sk-ant-oat01-$(printf 'A%.0s' {1..80})"
+printf '%s\n' "$TOKEN_VALUE" >"$TOKEN_SOURCE"
+chmod 600 "$TOKEN_SOURCE"
+materialize_claude_subscription_token "$TOKEN_SOURCE" "$TOKEN_TARGET" ||
+  fail "safe Claude subscription token did not materialize"
+python3 - "$TOKEN_SOURCE" "$TOKEN_TARGET" <<'PY' ||
+import json, pathlib, stat, sys, time
+source, target = map(pathlib.Path, sys.argv[1:])
+value = json.loads(target.read_text())
+oauth = value["claudeAiOauth"]
+expected = source.stat().st_mtime_ns // 1_000_000 + 365 * 24 * 60 * 60 * 1000
+assert stat.S_IMODE(target.stat().st_mode) == 0o600
+assert oauth["accessToken"] == source.read_text().strip()
+assert oauth["expiresAt"] == expected > int(time.time() * 1000) + 300_000
+assert oauth["refreshTokenExpiresAt"] == expected
+assert oauth["refreshToken"] == ""
+assert oauth["scopes"] == ["user:inference"]
+assert oauth["subscriptionType"] == "team"
+PY
+  fail "Claude subscription credential materialization was invalid"
+TOKEN_TARGET_BEFORE="$(cksum "$TOKEN_TARGET")"
+ln -s "$TOKEN_SOURCE" "$TOKEN_ROOT/source/link.token"
+expect_failure "symlinked Claude subscription token" \
+  materialize_claude_subscription_token \
+    "$TOKEN_ROOT/source/link.token" "$TOKEN_TARGET"
+[[ "$(cksum "$TOKEN_TARGET")" == "$TOKEN_TARGET_BEFORE" ]] ||
+  fail "unsafe Claude token source changed the materialized credential"
+
+mkdir -m 700 -p "$CREDENTIAL_ROOT/lane/runtime"
+printf '%s\n' "$TOKEN_SOURCE" \
+  >"$CREDENTIAL_ROOT/lane/runtime/claude-token-source"
+chmod 600 "$CREDENTIAL_ROOT/lane/runtime/claude-token-source"
+printf 'stale-again\n' \
+  >"$CREDENTIAL_ROOT/lane/session-home/.claude/.credentials.json"
+refuse_production_path() { :; }
+refresh_product_subscription_credentials "$CREDENTIAL_ROOT/lane" ||
+  fail "recorded Claude subscription token did not refresh"
+python3 - "$TOKEN_SOURCE" \
+  "$CREDENTIAL_ROOT/lane/session-home/.claude/.credentials.json" <<'PY' ||
+import json, pathlib, sys
+source, target = map(pathlib.Path, sys.argv[1:])
+assert json.loads(target.read_text())["claudeAiOauth"]["accessToken"] == \
+       source.read_text().strip()
+PY
+  fail "recorded Claude token source was not used"
+chmod 644 "$CREDENTIAL_ROOT/lane/runtime/claude-token-source"
+unsafe_token_record_refresh() (
+  die() { exit 1; }
+  refresh_product_subscription_credentials "$CREDENTIAL_ROOT/lane"
+)
+expect_failure "unsafe Claude token source record" \
+  unsafe_token_record_refresh
+eval "$(sed -n '/^product_prepare_role_state()/,/^}/p' "$LANE")"
+ROLE_STATE_ROOT="$TMP/role-state-parity"
+ROLE_STATE_TICKET="$ROLE_STATE_ROOT/worktrees/T-1/factory/tickets/T-1.md"
+mkdir -p "$(dirname "$ROLE_STATE_TICKET")"
+printf '%s\n' 'State: Ready' >"$ROLE_STATE_TICKET"
+lane_env() {
+  local ignored_root="$1" command="$2" target="" workdir="" ticket="" action="" state_file
+  shift 2
+  [[ "$command" == "$ROOT/scripts/ticket-state.sh" ]] || return 1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ticket) ticket="$2"; shift 2 ;;
+      --workdir) workdir="$2"; shift 2 ;;
+      --action) action="$2"; shift 2 ;;
+      --state) target="$2"; shift 2 ;;
+      *) return 1 ;;
+    esac
+  done
+  [[ "$workdir" == "$ignored_root/worktrees/$ticket" ]] ||
+    return 1
+  state_file="$workdir/factory/tickets/$ticket.md"
+  if [[ "$action" == materialize ]]; then
+    target="$(sed -n 's/^Resume-State: //p' "$state_file")"
+    [[ "$target" == Planning || "$target" == Building ||
+       "$target" == Review ]] || return 1
+    sed -i '' "s/^State: Blocked-Escalated$/State: $target/" "$state_file"
+    printf '%s\n' materialize >>"$ignored_root/transitions"
+    return
+  fi
+  [[ "$action" == transition ]] || return 1
+  python3 - "$state_file" "$target" <<'PY'
+import re, sys
+path,target=sys.argv[1:]
+text=open(path,encoding="utf-8").read()
+current=re.search(r"^State:\s*(.+)$",text,re.M).group(1)
+allowed={("Ready","Planning"),("Planning","Building"),("Building","Review")}
+if (current,target) not in allowed: raise SystemExit(1)
+open(path,"w",encoding="utf-8").write(
+    re.sub(r"^State:\s*.*$",f"State: {target}",text,count=1,flags=re.M))
+PY
+  printf '%s\n' "$target" >>"$ignored_root/transitions"
+}
+role_states=""
+for role in planner spec-linter test-author builder reviewer narrator; do
+  product_prepare_role_state "$ROLE_STATE_ROOT" T-1 "$role" ||
+    fail "development role state preparation rejected $role"
+  state="$(sed -n 's/^State: //p' "$ROLE_STATE_TICKET")"
+  role_states="${role_states:+$role_states }$state"
+done
+[[ "$role_states" == \
+   'Planning Planning Building Building Review Review' ]] ||
+  fail "development and shared role-state sequences diverged: $role_states"
+[[ "$(cat "$ROLE_STATE_ROOT/transitions")" == $'Planning\nBuilding\nReview' ]] ||
+  fail "no-op development stages created redundant state transitions"
+printf '%s\n' 'State: Ready' >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+product_prepare_role_state "$ROLE_STATE_ROOT" T-1 spec-linter ||
+  fail "authenticated Ready checkpoint could not normalize before Spec-linter"
+grep -qx 'State: Planning' "$ROLE_STATE_TICKET" ||
+  fail "Ready checkpoint did not normalize to Planning before Spec-linter"
+printf '%s\n' 'State: Review' >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+if product_prepare_role_state "$ROLE_STATE_ROOT" T-1 spec-linter; then
+  fail "regressive Spec-linter state was accepted"
+fi
+[[ ! -s "$ROLE_STATE_ROOT/transitions" ]] ||
+  fail "invalid role state mutated the ticket before refusal"
+printf '%s\n' 'State: Blocked-Escalated' 'Resume-State: Planning' \
+  >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+product_prepare_role_state "$ROLE_STATE_ROOT" T-1 planner ||
+  fail "operator-resolved blocked Planner could not materialize its resume state"
+grep -qx 'State: Planning' "$ROLE_STATE_TICKET" &&
+  [[ "$(cat "$ROLE_STATE_ROOT/transitions")" == materialize ]] ||
+  fail "blocked resume did not reuse the shared operator materialization path"
+printf '%s\n' 'State: Blocked-Escalated' 'Resume-State: Building' \
+  >"$ROLE_STATE_TICKET"
+: >"$ROLE_STATE_ROOT/transitions"
+product_prepare_role_state "$ROLE_STATE_ROOT" T-1 builder ||
+  fail "blocked Builder could not materialize its exact resume state"
+grep -qx 'State: Building' "$ROLE_STATE_TICKET" ||
+  fail "blocked Builder resumed through an earlier phase"
+eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
+refuse_production_path() { :; }
+die() { return 1; }
+SEED_ACCOUNTING="$TMP/seed-accounting.json"
+SEED_BUNDLE="$TMP/seed.bundle"
+SEED_BASE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SEED_DAY="$(date -u +%F)"
+SEED_NONCE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+printf '%s\n' seed >"$SEED_BUNDLE"
+chmod 600 "$SEED_BUNDLE"
+sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+seed_bundle_sha="$(sha256_file "$SEED_BUNDLE")"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":90000000,\"T-2\":140000000}}" \
+  >"$SEED_ACCOUNTING"
+chmod 600 "$SEED_ACCOUNTING"
+validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1 ||
+  fail "valid cumulative seed accounting was rejected"
+SEED_ACCOUNTING_LINK="$TMP/seed-accounting-link.json"
+ln "$SEED_ACCOUNTING" "$SEED_ACCOUNTING_LINK"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "hard-linked cumulative seed accounting was accepted"
+fi
+unlink "$SEED_ACCOUNTING_LINK"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-2; then
+  fail "selected exhausted cumulative seed accounting was accepted"
+fi
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-3; then
+  fail "missing selected cumulative seed accounting was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":90000000,\"T-2\":410000000}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "exhausted cumulative global seed accounting was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":90000000,\"T-2\":140000000}}" \
+  >"$SEED_ACCOUNTING"
+printf '%s\n' changed >>"$SEED_BUNDLE"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "seed accounting detached from its bundle was accepted"
+fi
+printf '%s\n' seed >"$SEED_BUNDLE"
+eval "$(sed -n '/^prepare_product_seed_accounting()/,/^}/p' "$LANE")"
+SEED_ROOT="$TMP/seed-root"
+mkdir -p "$SEED_ROOT/product/factory" "$SEED_ROOT/runtime"
+printf '%s\n' \
+  'PER_RUN_BUDGET_USD=10.00' 'PER_TICKET_BUDGET_USD=100.00' \
+  'PER_RUN_MAX_TURNS=15' 'PER_RUN_TIMEOUT_MIN=20' 'DAILY_CAP_USD=1000.00' \
+  >"$SEED_ROOT/product/factory/ENVELOPE.env"
+prepare_product_seed_accounting "$SEED_ROOT" "$SEED_ACCOUNTING" \
+  "$SEED_BUNDLE" "$SEED_BASE" T-1
+grep -qx 'PER_TICKET_BUDGET_USD=10.000000' \
+  "$SEED_ROOT/runtime/product-envelope/T-1.env" ||
+  fail "selected ticket remaining budget was not carried"
+grep -qx 'GLOBAL_DAILY_CAP_USD=270.000000' \
+  "$SEED_ROOT/runtime/product-envelope/global.env" ||
+  fail "excluded ticket spend did not reduce the resumed global cap"
+[[ ! -e "$SEED_ROOT/runtime/product-envelope/T-2.env" ]] ||
+  fail "excluded ticket received an active budget envelope"
+
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":130000000,\"T-2\":140000000,\"T-3\":80000000,\"T-4\":100000000}}" \
+  >"$SEED_ACCOUNTING"
+validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" \
+  T-1 T-3 ||
+  fail "operator-authorized cumulative seed accounting was rejected"
+SEED_ROOT_V3="$TMP/seed-root-v3"
+mkdir -p "$SEED_ROOT_V3/product/factory" "$SEED_ROOT_V3/runtime"
+cp "$SEED_ROOT/product/factory/ENVELOPE.env" \
+  "$SEED_ROOT_V3/product/factory/ENVELOPE.env"
+prepare_product_seed_accounting "$SEED_ROOT_V3" "$SEED_ACCOUNTING" \
+  "$SEED_BUNDLE" "$SEED_BASE" T-1 T-3
+grep -qx 'PER_TICKET_BUDGET_USD=70.000000' \
+  "$SEED_ROOT_V3/runtime/product-envelope/T-1.env" ||
+  fail "authorized ticket cap did not carry cumulative spend"
+grep -qx 'PER_TICKET_BUDGET_USD=120.000000' \
+  "$SEED_ROOT_V3/runtime/product-envelope/T-3.env" ||
+  fail "authorized sibling ticket cap did not carry cumulative spend"
+grep -qx 'GLOBAL_DAILY_CAP_USD=250.000000' \
+  "$SEED_ROOT_V3/runtime/product-envelope/global.env" ||
+  fail "authorized aggregate cap did not carry cumulative spend"
+grep -qx "$SEED_DAY" "$SEED_ROOT_V3/runtime/product-envelope/budget-day" ||
+  fail "authorized budget day was not carried"
+SEED_ACCOUNTING_V4="$TMP/accounting-v4.json"
+SEED_NONCE_V4="$(printf 'v4-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v4\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_caps_micro_usd\":{\"T-1\":300000000,\"T-2\":200000000,\"T-3\":200000000,\"T-4\":200000000},\"aggregate_cap_micro_usd\":1000000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE_V4\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":210000000,\"T-2\":140000000,\"T-3\":150000000,\"T-4\":160000000}}" \
+  >"$SEED_ACCOUNTING_V4"
+chmod 600 "$SEED_ACCOUNTING_V4"
+validate_product_seed_accounting "$SEED_ACCOUNTING_V4" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1 T-3 ||
+  fail "operator-authorized per-ticket seed accounting was rejected"
+SEED_ACCOUNTING_V4_BAD="$TMP/accounting-v4-bad.json"
+sed 's/"T-2":200000000/"T-2":350000001/' "$SEED_ACCOUNTING_V4" \
+  >"$SEED_ACCOUNTING_V4_BAD"
+chmod 600 "$SEED_ACCOUNTING_V4_BAD"
+if validate_product_seed_accounting "$SEED_ACCOUNTING_V4_BAD" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1; then
+  fail "oversized per-ticket seed accounting was accepted"
+fi
+SEED_ROOT_V4="$TMP/seed-root-v4"
+mkdir -p "$SEED_ROOT_V4/product/factory" "$SEED_ROOT_V4/runtime"
+cp "$SEED_ROOT/product/factory/ENVELOPE.env" \
+  "$SEED_ROOT_V4/product/factory/ENVELOPE.env"
+prepare_product_seed_accounting "$SEED_ROOT_V4" "$SEED_ACCOUNTING_V4" \
+  "$SEED_BUNDLE" "$SEED_BASE" T-1 T-3
+grep -qx 'PER_TICKET_BUDGET_USD=90.000000' \
+  "$SEED_ROOT_V4/runtime/product-envelope/T-1.env" ||
+  fail "per-ticket override did not carry cumulative spend"
+grep -qx 'PER_TICKET_BUDGET_USD=50.000000' \
+  "$SEED_ROOT_V4/runtime/product-envelope/T-3.env" ||
+  fail "unchanged sibling cap did not carry cumulative spend"
+grep -qx 'GLOBAL_DAILY_CAP_USD=340.000000' \
+  "$SEED_ROOT_V4/runtime/product-envelope/global.env" ||
+  fail "per-ticket accounting did not carry aggregate spend"
+SEED_ACCOUNTING_V4_HIGH="$TMP/accounting-v4-high.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v4\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_caps_micro_usd\":{\"T-1\":350000000,\"T-2\":350000000,\"T-3\":300000000,\"T-4\":300000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE_V4\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":210000000,\"T-2\":140000000,\"T-3\":150000000,\"T-4\":160000000}}" \
+  >"$SEED_ACCOUNTING_V4_HIGH"
+chmod 600 "$SEED_ACCOUNTING_V4_HIGH"
+validate_product_seed_accounting "$SEED_ACCOUNTING_V4_HIGH" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1 T-2 ||
+  fail "higher operator-authorized development caps were rejected"
+eval "$(sed -n '/^validate_product_checkpoint()/,/^seed_product_worktrees()/p' \
+  "$LANE" | sed '$d')"
+eval "$(sed -n '/^validate_checkpoint_accounting()/,/^prepare_product_seed_accounting()/p' \
+  "$LANE" | sed '$d')"
+SEED_CHECKPOINT="$TMP/seed-checkpoint.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint/v1\",\"base_sha\":\"$SEED_BASE\",\"base_tree\":\"$SEED_BASE\",\"source_factory_sha\":\"$SEED_BASE\",\"source_factory_tree\":\"$SEED_BASE\",\"source_marker_sha256\":\"$SEED_NONCE\",\"source_product_sha256\":\"$SEED_NONCE\",\"prior_accounting_sha256\":null,\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"lane_charges_micro_usd\":{\"T-1\":10000000,\"T-2\":20000000,\"T-3\":30000000,\"T-4\":40000000},\"tickets\":[{\"ticket\":\"T-1\",\"head_sha\":\"$SEED_BASE\",\"head_tree\":\"$SEED_BASE\",\"ticket_blob\":\"$SEED_BASE\",\"route_plan_sha256\":\"$SEED_NONCE\",\"next_stage\":\"RUN spec-linter\",\"state\":\"Ready\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"checkpoint-planner\",\"manifest_sha256\":\"$SEED_NONCE\",\"output_sha256\":\"$SEED_NONCE\",\"role_head_before\":\"$SEED_BASE\"}],\"spec_verdicts\":[]}]}" \
+  >"$SEED_CHECKPOINT"
+chmod 600 "$SEED_CHECKPOINT"
+SEED_CHECKPOINT_SHA="$(sha256_file "$SEED_CHECKPOINT")"
+SEED_ACCOUNTING_V5="$TMP/accounting-v5.json"
+SEED_NONCE_V5="$(printf 'v5-checkpoint-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v5\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"checkpoint_sha256\":\"$SEED_CHECKPOINT_SHA\",\"parent_manifest_sha256\":null,\"checkpoint_charges_micro_usd\":{\"T-1\":10000000,\"T-2\":20000000,\"T-3\":30000000,\"T-4\":40000000},\"base_sha\":\"$SEED_BASE\",\"ticket_caps_micro_usd\":{\"T-1\":350000000,\"T-2\":350000000,\"T-3\":300000000,\"T-4\":300000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE_V5\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":10000000,\"T-2\":20000000,\"T-3\":30000000,\"T-4\":40000000}}" \
+  >"$SEED_ACCOUNTING_V5"
+chmod 600 "$SEED_ACCOUNTING_V5"
+validate_product_checkpoint "$SEED_CHECKPOINT" "$SEED_BUNDLE" "$SEED_BASE" \
+  T-1 T-2 T-3 T-4 ||
+  fail "valid partial pre-Reviewer checkpoint was rejected"
+validate_product_checkpoint "$SEED_CHECKPOINT" "$SEED_BUNDLE" "$SEED_BASE" \
+  T-1 T-2 ||
+  fail "targeted checkpoint lost full original-ticket charges"
+SEED_CHECKPOINT_MISSING_CHARGE="$TMP/seed-checkpoint-missing-charge.json"
+sed 's/,\"T-2\":20000000//' "$SEED_CHECKPOINT" \
+  >"$SEED_CHECKPOINT_MISSING_CHARGE"
+chmod 600 "$SEED_CHECKPOINT_MISSING_CHARGE"
+if validate_product_checkpoint "$SEED_CHECKPOINT_MISSING_CHARGE" \
+  "$SEED_BUNDLE" "$SEED_BASE" T-1 T-2; then
+  fail "targeted checkpoint accepted a selected ticket without accounting"
+fi
+validate_product_seed_accounting "$SEED_ACCOUNTING_V5" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1 T-2 T-3 T-4 ||
+  fail "valid checkpoint accounting was rejected"
+validate_checkpoint_accounting "$SEED_ACCOUNTING_V5" "$SEED_CHECKPOINT" ||
+  fail "checkpoint accounting was not bound to its evidence"
+SEED_ACCOUNTING_V5_BAD="$TMP/accounting-v5-bad.json"
+sed 's/"T-1":10000000,"T-2":20000000/"T-1":10000001,"T-2":20000000/' \
+  "$SEED_ACCOUNTING_V5" >"$SEED_ACCOUNTING_V5_BAD"
+chmod 600 "$SEED_ACCOUNTING_V5_BAD"
+if validate_checkpoint_accounting "$SEED_ACCOUNTING_V5_BAD" "$SEED_CHECKPOINT"; then
+  fail "underreported checkpoint accounting was accepted"
+fi
+SEED_ACCOUNTING_V5_CAP_BAD="$TMP/accounting-v5-cap-bad.json"
+sed 's/"aggregate_cap_micro_usd":1500000000/"aggregate_cap_micro_usd":1500000001/' \
+  "$SEED_ACCOUNTING_V5" >"$SEED_ACCOUNTING_V5_CAP_BAD"
+chmod 600 "$SEED_ACCOUNTING_V5_CAP_BAD"
+SEED_ROOT_V5_BAD="$TMP/seed-root-v5-bad"
+mkdir -p "$SEED_ROOT_V5_BAD/product/factory" "$SEED_ROOT_V5_BAD/runtime"
+cp "$SEED_ROOT/product/factory/ENVELOPE.env" \
+  "$SEED_ROOT_V5_BAD/product/factory/ENVELOPE.env"
+validate_product_seed_accounting() { :; }
+expect_failure "v5 internal aggregate defense" prepare_product_seed_accounting \
+  "$SEED_ROOT_V5_BAD" "$SEED_ACCOUNTING_V5_CAP_BAD" "$SEED_BUNDLE" \
+  "$SEED_BASE" T-1
+eval "$(sed -n '/^validate_product_seed_accounting()/,/^}/p' "$LANE")"
+
+CHECKPOINT_SEQ_REPO="$TMP/checkpoint-sequencer"
+git clone -q "$ROOT" "$CHECKPOINT_SEQ_REPO"
+for ticket in T-991 T-992; do
+  printf '%s\n' "# $ticket checkpoint fixture" '' 'State: Ready' \
+    >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/$ticket.md"
+done
+printf '%s\n' '# T-993 checkpoint fixture' '' 'State: Review' \
+  '  SPEC-LINT: PASS' \
+  >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-993.md"
+printf '%s\n' '# T-994 checkpoint fixture' '' 'State: Review' \
+  'SPEC-LINT: PASS' 'reviewer round 1: APPROVE' \
+  'PUBLICATION FAILURE: https://github.com/nysa-company/nysa-app/actions/runs/1/job/2' \
+  'OPERATOR PUBLICATION REPAIR: test-author' \
+  >"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add checkpoint sequencing fixtures'
+CHECKPOINT_SEQ_HEAD="$(git -C "$CHECKPOINT_SEQ_REPO" rev-parse HEAD)"
+CHECKPOINT_SEQ_TREE="$(git -C "$CHECKPOINT_SEQ_REPO" rev-parse 'HEAD^{tree}')"
+CHECKPOINT_LANE="$TMP/nysa-sf-dev.checkpoint"
+mkdir -m 700 -p "$CHECKPOINT_LANE/runtime"
+printf '%s\n' '{"mode":"product"}' >"$CHECKPOINT_LANE/marker.json"
+chmod 600 "$CHECKPOINT_LANE/marker.json"
+CHECKPOINT_IMPORT="$CHECKPOINT_LANE/runtime/product-checkpoint-import.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint-import/v1\",\"checkpoint_sha256\":\"$SEED_NONCE\",\"tickets\":[{\"ticket\":\"T-991\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\"],\"spec_verdicts\":[],\"expected_next_stage\":\"RUN spec-linter\"},{\"ticket\":\"T-993\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"RUN reviewer\"},{\"ticket\":\"T-994\",\"import_head\":\"$CHECKPOINT_SEQ_HEAD\",\"import_tree\":\"$CHECKPOINT_SEQ_TREE\",\"roles\":[\"planner\",\"spec-linter\",\"test-author\",\"builder\",\"reviewer\",\"narrator\"],\"spec_verdicts\":[\"SPEC-LINT: PASS\"],\"expected_next_stage\":\"FIX test-author\"}]}" \
+  >"$CHECKPOINT_IMPORT"
+chmod 600 "$CHECKPOINT_IMPORT"
+CHECKPOINT_LEDGER="$CHECKPOINT_SEQ_REPO/conformance/factory/checkpoint-ledger.csv"
+head -n 1 "$CHECKPOINT_SEQ_REPO/conformance/factory/ledger.csv" >"$CHECKPOINT_LEDGER"
+checkpoint_next_stage() {
+  env FACTORY_ROOT="$CHECKPOINT_SEQ_REPO/conformance" \
+    FACTORY_LEDGER="$CHECKPOINT_LEDGER" \
+    FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
+    FACTORY_CLI_LANE_ROOT="$CHECKPOINT_LANE" \
+    FACTORY_DEV_PRODUCT_CHECKPOINT="$CHECKPOINT_IMPORT" \
+    bash "$CHECKPOINT_SEQ_REPO/scripts/next-stage.sh" \
+      --ticket "$1" --workdir "$CHECKPOINT_SEQ_REPO/conformance"
+}
+AUTH_CHECKPOINT_STAGE="$(checkpoint_next_stage T-991)"
+[[ "$AUTH_CHECKPOINT_STAGE" == "RUN spec-linter" ]] ||
+  fail "Planner checkpoint did not resume at Spec-linter"
+mkdir -p "$CHECKPOINT_LANE/worktrees/T-991/factory/tickets"
+cp "$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-991.md" \
+  "$CHECKPOINT_LANE/worktrees/T-991/factory/tickets/T-991.md"
+: >"$CHECKPOINT_LANE/transitions"
+product_prepare_role_state "$CHECKPOINT_LANE" T-991 \
+  "$(product_role_for_stage "$AUTH_CHECKPOINT_STAGE")" ||
+  fail "authenticated Ready checkpoint could not normalize before Spec-linter"
+grep -qx 'State: Planning' \
+  "$CHECKPOINT_LANE/worktrees/T-991/factory/tickets/T-991.md" ||
+  fail "authenticated Ready checkpoint remained outside Planning"
+[[ "$(checkpoint_next_stage T-993)" == "RUN reviewer" ]] ||
+  fail "Builder checkpoint did not resume at Reviewer"
+[[ "$(checkpoint_next_stage T-992)" == "RUN planner" ]] ||
+  fail "ticket omitted from checkpoint did not remain at Planner"
+[[ "$(checkpoint_next_stage T-994)" == "FIX test-author" ]] ||
+  fail "publication checkpoint did not preserve its exact repair stage"
+printf '%s\n' \
+  '2026-07-24,00:00:00,T-994,test-author,mock,test,1,0.10,0,repair-test,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+[[ "$(checkpoint_next_stage T-994)" == "RUN reviewer" ]] ||
+  fail "publication repair did not require fresh Reviewer evidence"
+printf '%s\n' \
+  '2026-07-24,00:01:00,T-994,reviewer,mock,test,1,0.10,0,repair-review,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+printf '%s\n' 'reviewer round 2: APPROVE' \
+  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-994.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-994.md
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Approve checkpoint publication repair'
+[[ "$(checkpoint_next_stage T-994)" == "RUN narrator" ]] ||
+  fail "publication repair did not require fresh Narrator evidence"
+printf '%s\n' \
+  '2026-07-24,00:02:00,T-994,narrator,mock,test,1,0.10,0,repair-narrate,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+[[ "$(checkpoint_next_stage T-994)" == AWAIT-OPERATOR* ]] ||
+  fail "publication repair did not return to operator-await"
+
+printf '%s\n' 'SPEC-LINT: FAIL — current-lane finding' \
+  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-991.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-991.md
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Record current-lane checkpoint verdict'
+printf '%s\n' \
+  '2026-07-24,00:00:00,T-991,spec-linter,mock,test,1,0.10,0,current-lint,mock,,,test_fixture,test' \
+  >>"$CHECKPOINT_LEDGER"
+[[ "$(checkpoint_next_stage T-991)" == "RUN planner" ]] ||
+  fail "current-lane verdict did not extend the checkpoint prefix"
+
+cp "$CHECKPOINT_IMPORT" "$CHECKPOINT_IMPORT.good"
+sed 's/SPEC-LINT: PASS/SPEC-LINT: FAIL/' \
+  "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
+expect_failure "altered checkpoint spec prefix" checkpoint_next_stage T-993
+cp "$CHECKPOINT_IMPORT.good" "$CHECKPOINT_IMPORT"
+
+printf '%s\n' 'SPEC-LINT: PASS' \
+  >>"$CHECKPOINT_SEQ_REPO/conformance/factory/tickets/T-991.md"
+git -C "$CHECKPOINT_SEQ_REPO" add conformance/factory/tickets/T-991.md
+git -C "$CHECKPOINT_SEQ_REPO" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Add unmatched current-lane verdict'
+expect_failure "current-lane verdict without successful run" \
+  checkpoint_next_stage T-991
+
+sed "s/\"import_tree\":\"$CHECKPOINT_SEQ_TREE\"/\"import_tree\":\"$SEED_BASE\"/" \
+  "$CHECKPOINT_IMPORT.good" >"$CHECKPOINT_IMPORT"
+expect_failure "checkpoint head tree drift" checkpoint_next_stage T-991
+mv "$CHECKPOINT_IMPORT.good" "$CHECKPOINT_IMPORT"
+
+eval "$(sed -n '/^product_export_roles_complete()/,/^export_product_internal()/p' \
+  "$LANE" | sed '$d')"
+EXPORT_GATE_ROOT="$TMP/checkpoint-export-gate"
+mkdir -p "$EXPORT_GATE_ROOT/product/factory/runs" "$EXPORT_GATE_ROOT/runtime"
+cp "$CHECKPOINT_IMPORT" "$EXPORT_GATE_ROOT/runtime/product-checkpoint-import.json"
+python3 - "$EXPORT_GATE_ROOT/runtime/product-checkpoint-import.json" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); value=json.loads(path.read_text())
+record=next(item for item in value["tickets"] if item["ticket"] == "T-993")
+record["roles"] += ["reviewer","narrator"]
+path.write_text(json.dumps(value,separators=(",",":"))+"\n")
+PY
+product_export_roles_complete "$EXPORT_GATE_ROOT" T-993 ||
+  fail "checkpoint export rejected authenticated completed roles"
+python3 - "$EXPORT_GATE_ROOT/runtime/product-checkpoint-import.json" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); value=json.loads(path.read_text())
+record=next(item for item in value["tickets"] if item["ticket"] == "T-993")
+record["roles"].remove("narrator")
+path.write_text(json.dumps(value,separators=(",",":"))+"\n")
+PY
+expect_failure "checkpoint export without current Narrator" \
+  product_export_roles_complete "$EXPORT_GATE_ROOT" T-993
+printf '%s\n' 'ticket=T-993' 'role=narrator' 'accounting_state=completed' \
+  'exit_status=0' >"$EXPORT_GATE_ROOT/product/factory/runs/narrator.meta"
+product_export_roles_complete "$EXPORT_GATE_ROOT" T-993 ||
+  fail "checkpoint export rejected current Narrator"
+
+eval "$(sed -n '/^write_product_checkpoint_import()/,/^validate_product_seed_accounting()/p' \
+  "$LANE" | sed '$d')"
+eval "$(sed -n '/^write_product_checkpoint()/,/^product_export_roles_complete()/p' \
+  "$LANE" | sed '$d')"
+CHAIN_ROOT="$TMP/checkpoint-chain"
+mkdir -p "$CHAIN_ROOT/runtime" "$CHAIN_ROOT/product/factory/runs" \
+  "$CHAIN_ROOT/worktrees"
+git init -q --bare "$CHAIN_ROOT/origin.git"
+CHAIN_NONCE="$(printf 'checkpoint-chain-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+for ticket in T-046 T-048; do
+  work="$CHAIN_ROOT/worktrees/$ticket"
+  git init -q "$work"
+  mkdir -p "$work/factory/tickets" "$work/factory/route-plans"
+  if [[ "$ticket" == T-046 ]]; then
+    printf '%s\n' "# $ticket chain fixture" '' 'State: Ready' \
+      >"$work/factory/tickets/$ticket.md"
+  else
+    printf '%s\n' "# $ticket chain fixture" '' 'State: Review' 'SPEC-LINT: PASS' \
+      >"$work/factory/tickets/$ticket.md"
+  fi
+  printf '%s\n' '{"route":"checkpoint-chain"}' \
+    >"$work/factory/route-plans/$ticket.json"
+  git -C "$work" add factory
+  git -C "$work" -c user.name=Test -c user.email=test@local \
+    commit -qm 'Import checkpoint prefix'
+  git -C "$work" update-ref "refs/remotes/origin/ticket/$ticket" HEAD
+  git -C "$work" push -q "$CHAIN_ROOT/origin.git" \
+    "HEAD:refs/heads/ticket/$ticket"
+done
+CHAIN_T46_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse HEAD)"
+CHAIN_T46_TREE="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse 'HEAD^{tree}')"
+CHAIN_T48_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-048" rev-parse HEAD)"
+CHAIN_T48_TREE="$(git -C "$CHAIN_ROOT/worktrees/T-048" rev-parse 'HEAD^{tree}')"
+CHAIN_SOURCE="$CHAIN_ROOT/source-checkpoint.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"source_factory_sha\":\"$CHAIN_T46_HEAD\",\"source_factory_tree\":\"$CHAIN_T46_TREE\",\"source_marker_sha256\":\"$CHAIN_NONCE\",\"source_product_sha256\":\"$CHAIN_NONCE\",\"prior_accounting_sha256\":null,\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"lane_charges_micro_usd\":{\"T-045\":0,\"T-046\":11000000,\"T-047\":0,\"T-048\":13000000},\"tickets\":[{\"ticket\":\"T-046\",\"head_sha\":\"$CHAIN_T46_HEAD\",\"head_tree\":\"$CHAIN_T46_TREE\",\"ticket_blob\":\"$CHAIN_T46_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN spec-linter\",\"state\":\"Ready\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t46-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T46_HEAD\"}],\"spec_verdicts\":[]},{\"ticket\":\"T-048\",\"head_sha\":\"$CHAIN_T48_HEAD\",\"head_tree\":\"$CHAIN_T48_TREE\",\"ticket_blob\":\"$CHAIN_T48_HEAD\",\"route_plan_sha256\":\"$CHAIN_NONCE\",\"next_stage\":\"RUN reviewer\",\"state\":\"Review\",\"roles\":[{\"role\":\"planner\",\"run_id\":\"prior-t48-planner\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"spec-linter\",\"run_id\":\"prior-t48-spec\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"test-author\",\"run_id\":\"prior-t48-tests\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"},{\"role\":\"builder\",\"run_id\":\"prior-t48-builder\",\"manifest_sha256\":\"$CHAIN_NONCE\",\"output_sha256\":\"$CHAIN_NONCE\",\"role_head_before\":\"$CHAIN_T48_HEAD\"}],\"spec_verdicts\":[\"SPEC-LINT: PASS\"]}]}" \
+  >"$CHAIN_SOURCE"
+chmod 600 "$CHAIN_SOURCE"
+PRODUCT_TICKETS=(T-046 T-048)
+write_product_checkpoint_import "$CHAIN_ROOT" "$CHAIN_SOURCE"
+cmp -s "$CHAIN_SOURCE" "$CHAIN_ROOT/runtime/product-checkpoint-source.json" ||
+  fail "checkpoint import did not retain the exact source"
+[[ "$(stat -f '%Su:%Lp:%l' \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.json")" == "$(id -un):600:1" ]] ||
+  fail "retained checkpoint source is unsafe"
+printf '%s\n' 'SPEC-LINT: FAIL — retry Planner' \
+  >>"$CHAIN_ROOT/worktrees/T-046/factory/tickets/T-046.md"
+git -C "$CHAIN_ROOT/worktrees/T-046" add factory/tickets/T-046.md
+git -C "$CHAIN_ROOT/worktrees/T-046" -c user.name=Test -c user.email=test@local \
+  commit -qm 'Record current Spec-linter failure'
+CHAIN_T46_CURRENT_HEAD="$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse HEAD)"
+git -C "$CHAIN_ROOT/worktrees/T-046" push -q "$CHAIN_ROOT/origin.git" \
+  "HEAD:refs/heads/ticket/T-046"
+[[ "$(git -C "$CHAIN_ROOT/worktrees/T-046" rev-parse \
+  refs/remotes/origin/ticket/T-046)" == "$CHAIN_T46_HEAD" ]] ||
+  fail "checkpoint stale-ref fixture did not remain stale"
+CHAIN_CURRENT_OUT="$CHAIN_ROOT/product/factory/runs/current-spec.out"
+printf '%s\n' 'SPEC-LINT: FAIL — retry Planner' >"$CHAIN_CURRENT_OUT"
+CHAIN_CURRENT_OUT_SHA="$(sha256_file "$CHAIN_CURRENT_OUT")"
+printf '%s\n' 'run_id=current-spec' 'ticket=T-046' 'role=spec-linter' \
+  'phase=completed' 'accounting_state=completed' 'contract_version=1.7.0' \
+  'exit_status=0' 'role_exit=ok' 'task_submitted=1' 'go_issued=1' \
+  "output_sha256=$CHAIN_CURRENT_OUT_SHA" "role_head_before=$CHAIN_T46_HEAD" \
+  'effective_cost=7.000000' \
+  >"$CHAIN_ROOT/product/factory/runs/current-spec.meta"
+printf '%s\n' 'ticket,role,run_id,exit_status' \
+  'T-046,spec-linter,current-spec,0' \
+  >"$CHAIN_ROOT/product/factory/runtime-ledger.csv"
+CHAIN_CHECKPOINT_SHA="$(sha256_file "$CHAIN_SOURCE")"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-source/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"lane_control_sha\":\"$CHAIN_T46_HEAD\",\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"seed_accounting_sha256\":\"$CHAIN_NONCE\",\"seed_lineage_sha256\":\"$CHAIN_NONCE\",\"seed_checkpoint_sha256\":\"$CHAIN_CHECKPOINT_SHA\",\"tickets\":[\"T-046\",\"T-048\"],\"resume_original_tickets\":[\"T-045\",\"T-046\",\"T-047\",\"T-048\"]}" \
+  >"$CHAIN_ROOT/runtime/product-source.json"
+printf '%s\n' \
+  "{\"kit_sha\":\"$CHAIN_T46_HEAD\",\"kit_tree\":\"$CHAIN_T46_TREE\"}" \
+  >"$CHAIN_ROOT/marker.json"
+printf '%s\n' 'new chained bundle' >"$CHAIN_ROOT/seed.bundle"
+printf '%s\t%s\n' T-046 'RUN planner' T-048 'RUN reviewer' \
+  >"$CHAIN_ROOT/stages"
+chmod 600 "$CHAIN_ROOT/stages"
+write_product_checkpoint "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" \
+  "$CHAIN_ROOT/chained.json" "$CHAIN_ROOT/stages" T-046 T-048 ||
+  fail "checkpoint chaining rejected valid prior roles"
+python3 - "$CHAIN_ROOT/chained.json" "$CHAIN_SOURCE" "$CHAIN_NONCE" \
+  "$CHAIN_T46_CURRENT_HEAD" <<'PY' ||
+import json, sys
+chained=json.load(open(sys.argv[1])); source=json.load(open(sys.argv[2]))
+new={item["ticket"]:item for item in chained["tickets"]}
+old={item["ticket"]:item for item in source["tickets"]}
+if (new["T-046"]["next_stage"] != "RUN planner" or
+    new["T-046"]["head_sha"] != sys.argv[4] or
+    new["T-046"]["roles"][0] != old["T-046"]["roles"][0] or
+    [run["role"] for run in new["T-046"]["roles"]] !=
+        ["planner","spec-linter"] or
+    new["T-048"]["next_stage"] != "RUN reviewer" or
+    new["T-048"]["roles"] != old["T-048"]["roles"] or
+    chained["lane_charges_micro_usd"] !=
+        {"T-045":0,"T-046":18000000,"T-047":0,"T-048":13000000} or
+    chained["prior_accounting_sha256"] != sys.argv[3]):
+    raise SystemExit(1)
+PY
+  fail "chained checkpoint lost sequence, evidence, accounting, or stage"
+validate_product_checkpoint "$CHAIN_ROOT/chained.json" \
+  "$CHAIN_ROOT/seed.bundle" "$CHAIN_T46_HEAD" T-046 T-048 ||
+  fail "two-ticket export with four-ticket charge history was rejected"
+rm -f "$CHAIN_ROOT/runtime/product-checkpoint-import.json" \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.json"
+PRODUCT_TICKETS=(T-046 T-048)
+write_product_checkpoint_import "$CHAIN_ROOT" "$CHAIN_ROOT/chained.json"
+python3 - "$CHAIN_ROOT/runtime/product-checkpoint-import.json" <<'PY' ||
+import json, sys
+if [item["ticket"] for item in
+    json.load(open(sys.argv[1],encoding="utf-8"))["tickets"]] != ["T-046","T-048"]:
+    raise SystemExit(1)
+PY
+  fail "two-ticket checkpoint import changed the selected ticket set"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-source/v1\",\"base_sha\":\"$CHAIN_T46_HEAD\",\"base_tree\":\"$CHAIN_T46_TREE\",\"lane_control_sha\":\"$CHAIN_T46_HEAD\",\"seed_bundle_sha256\":\"$CHAIN_NONCE\",\"seed_accounting_sha256\":\"$CHAIN_NONCE\",\"seed_lineage_sha256\":\"$CHAIN_NONCE\",\"seed_checkpoint_sha256\":\"$(sha256_file "$CHAIN_ROOT/chained.json")\",\"tickets\":[\"T-046\",\"T-048\"]}" \
+  >"$CHAIN_ROOT/runtime/product-source.json"
+rm -f "$CHAIN_ROOT/product/factory/runs/current-spec.meta" \
+  "$CHAIN_ROOT/product/factory/runs/current-spec.out"
+printf '%s\n' 'ticket,role,run_id,exit_status' \
+  >"$CHAIN_ROOT/product/factory/runtime-ledger.csv"
+printf '%s\n' 'second chained bundle' >"$CHAIN_ROOT/seed-2.bundle"
+chmod 600 "$CHAIN_ROOT/seed-2.bundle"
+write_product_checkpoint "$CHAIN_ROOT" "$CHAIN_ROOT/seed-2.bundle" \
+  "$CHAIN_ROOT/chained-2.json" "$CHAIN_ROOT/stages" T-046 T-048 ||
+  fail "second targeted checkpoint chain lost its full accounting universe"
+python3 - "$CHAIN_ROOT/chained-2.json" <<'PY' ||
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+if (set(value["lane_charges_micro_usd"]) !=
+        {"T-045","T-046","T-047","T-048"} or
+    value["lane_charges_micro_usd"] !=
+        {"T-045":0,"T-046":18000000,"T-047":0,"T-048":13000000}):
+    raise SystemExit(1)
+PY
+  fail "second targeted checkpoint did not retain four-ticket charge keys"
+validate_product_checkpoint "$CHAIN_ROOT/chained-2.json" \
+  "$CHAIN_ROOT/seed-2.bundle" "$CHAIN_T46_HEAD" T-046 T-048 ||
+  fail "second targeted checkpoint failed selected-ticket validation"
+CHAIN_SECOND_SHA="$(sha256_file "$CHAIN_ROOT/chained-2.json")"
+CHAIN_SECOND_BUNDLE_SHA="$(sha256_file "$CHAIN_ROOT/seed-2.bundle")"
+CHAIN_V5="$CHAIN_ROOT/accounting-v5.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v5\",\"seed_bundle_sha256\":\"$CHAIN_SECOND_BUNDLE_SHA\",\"checkpoint_sha256\":\"$CHAIN_SECOND_SHA\",\"parent_manifest_sha256\":\"$CHAIN_NONCE\",\"checkpoint_charges_micro_usd\":{\"T-045\":0,\"T-046\":18000000,\"T-047\":0,\"T-048\":13000000},\"base_sha\":\"$CHAIN_T46_HEAD\",\"ticket_caps_micro_usd\":{\"T-045\":350000000,\"T-046\":350000000,\"T-047\":350000000,\"T-048\":350000000},\"aggregate_cap_micro_usd\":1500000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$CHAIN_NONCE\",\"budget_day\":\"$(date -u +%F)\",\"reserved_micro_usd\":{\"T-045\":0,\"T-046\":18000000,\"T-047\":0,\"T-048\":13000000}}" \
+  >"$CHAIN_V5"
+chmod 600 "$CHAIN_V5"
+validate_product_seed_accounting "$CHAIN_V5" "$CHAIN_ROOT/seed-2.bundle" \
+  "$CHAIN_T46_HEAD" T-046 T-048 ||
+  fail "second targeted checkpoint v5 successor was rejected"
+validate_checkpoint_accounting "$CHAIN_V5" "$CHAIN_ROOT/chained-2.json" ||
+  fail "second targeted checkpoint detached from its v5 successor"
+CHAIN_IMPORT="$CHAIN_ROOT/runtime/product-checkpoint-import.json"
+cp "$CHAIN_IMPORT" "$CHAIN_IMPORT.good"
+CHAIN_IMPORTED_T46_HEAD="$(python3 - "$CHAIN_IMPORT" <<'PY'
+import json, sys
+print(next(item["import_head"] for item in
+    json.load(open(sys.argv[1],encoding="utf-8"))["tickets"]
+    if item["ticket"] == "T-046"))
+PY
+)"
+CHAIN_ROGUE_HEAD="$(printf 'detached checkpoint head\n' | \
+  git -C "$CHAIN_ROOT/worktrees/T-046" -c user.name=Test \
+    -c user.email=test@local commit-tree "$CHAIN_T46_TREE")"
+sed "s/\"import_head\":\"$CHAIN_IMPORTED_T46_HEAD\"/\"import_head\":\"$CHAIN_ROGUE_HEAD\"/" \
+  "$CHAIN_IMPORT.good" >"$CHAIN_IMPORT"
+expect_failure "detached imported checkpoint head" write_product_checkpoint \
+  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/detached.json" \
+  "$CHAIN_ROOT/stages" T-046 T-048
+mv "$CHAIN_IMPORT.good" "$CHAIN_IMPORT"
+cp "$CHAIN_ROOT/runtime/product-checkpoint-source.json" \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.good"
+printf '\n' >>"$CHAIN_ROOT/runtime/product-checkpoint-source.json"
+expect_failure "altered retained checkpoint source" write_product_checkpoint \
+  "$CHAIN_ROOT" "$CHAIN_ROOT/seed.bundle" "$CHAIN_ROOT/altered.json" \
+  "$CHAIN_ROOT/stages" T-046 T-048
+mv "$CHAIN_ROOT/runtime/product-checkpoint-source.good" \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.json"
+
+eval "$(sed -n '/^consume_product_seed_authorization()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^product_seed_lineage_id()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^write_product_seed_lineage()/,/^}/p' "$LANE")"
+physical() { (cd "$1" 2>/dev/null && pwd -P); }
+SEED_LINEAGE="$TMP/seed-lineage.json"
+SEED_LINEAGE_ID="$(product_seed_lineage_id "$SEED_ACCOUNTING")"
+SEED_MANIFEST_SHA="$(sha256_file "$SEED_ACCOUNTING")"
+write_product_seed_lineage "$SEED_ACCOUNTING" "$SEED_LINEAGE"
+SEED_V5_ROOT="$TMP/v5-lineage"
+mkdir -m 700 "$SEED_V5_ROOT"
+cp "$SEED_ACCOUNTING_V5" "$SEED_V5_ROOT/accounting.json"
+SEED_ACCOUNTING_V5_ISOLATED="$SEED_V5_ROOT/accounting.json"
+SEED_LINEAGE_V5="$SEED_V5_ROOT/lineage.json"
+write_product_seed_lineage "$SEED_ACCOUNTING_V5_ISOLATED" "$SEED_LINEAGE_V5"
+python3 - "$SEED_ACCOUNTING_V5_ISOLATED" \
+  "$SEED_V5_ROOT/accounting-child.json" <<'PY'
+import hashlib, json, os, sys
+parent_path, child_path=sys.argv[1:]
+parent_raw=open(parent_path,"rb").read(); value=json.loads(parent_raw)
+value["parent_manifest_sha256"]=hashlib.sha256(parent_raw).hexdigest()
+value["authorization_nonce"]="f"*64
+value["checkpoint_sha256"]="e"*64
+value["checkpoint_charges_micro_usd"]["T-1"]+=5_000_000
+value["reserved_micro_usd"]=dict(value["checkpoint_charges_micro_usd"])
+open(child_path,"w",encoding="utf-8").write(
+    json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+)
+os.chmod(child_path,0o600)
+PY
+write_product_seed_lineage "$SEED_V5_ROOT/accounting-child.json" \
+  "$SEED_V5_ROOT/lineage-child.json" "$SEED_ACCOUNTING_V5_ISOLATED"
+cp "$SEED_V5_ROOT/accounting-child.json" \
+  "$SEED_V5_ROOT/accounting-double-charge.json"
+python3 - "$SEED_V5_ROOT/accounting-double-charge.json" <<'PY'
+import json, sys
+path=sys.argv[1]; value=json.load(open(path,encoding="utf-8"))
+value["reserved_micro_usd"]["T-1"]+=10_000_000
+open(path,"w",encoding="utf-8").write(
+    json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+)
+PY
+die() { exit 1; }
+if (write_product_seed_lineage "$SEED_V5_ROOT/accounting-double-charge.json" \
+    "$SEED_V5_ROOT/lineage-double-charge.json" \
+    "$SEED_ACCOUNTING_V5_ISOLATED" >"$OUT" 2>&1); then
+  fail "checkpoint cumulative charges counted twice unexpectedly succeeded"
+fi
+die() { return 1; }
+SEED_ACCOUNTING_V5_SHA="$(sha256_file "$SEED_ACCOUNTING_V5_ISOLATED")"
+consume_product_seed_authorization "$SEED_ACCOUNTING_V5_ISOLATED" \
+  "$SEED_ACCOUNTING_V5_SHA" "$SEED_LINEAGE_V5"
+CHECKPOINT_CONSUMPTION="$SEED_V5_ROOT/.seed-accounting-lineages/$(product_seed_lineage_id "$SEED_ACCOUNTING_V5_ISOLATED")/checkpoints/$SEED_CHECKPOINT_SHA.used/receipt"
+[[ "$(stat -f '%Su:%Lp' "$CHECKPOINT_CONSUMPTION")" == "$(id -un):600" ]] ||
+  fail "checkpoint consumption receipt is unsafe"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_ACCOUNTING_V5_ISOLATED" \
+    "$SEED_ACCOUNTING_V5_SHA" "$SEED_LINEAGE_V5"); then
+  fail "checkpoint authorization was consumed twice"
+fi
+die() { return 1; }
+ROGUE_LINEAGE="$TMP/rogue-lineage.json"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-lineage/v1\",\"lineage_id\":\"$(printf rogue | shasum -a 256 | awk '{print $1}')\",\"parent_manifest_sha256\":null,\"manifest_sha256\":\"$SEED_MANIFEST_SHA\"}" \
+  >"$ROGUE_LINEAGE"
+chmod 600 "$ROGUE_LINEAGE"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_ACCOUNTING" \
+    "$SEED_MANIFEST_SHA" "$ROGUE_LINEAGE"); then
+  fail "caller-selected sibling lineage identity was accepted"
+fi
+die() { return 1; }
+consume_product_seed_authorization "$SEED_ACCOUNTING" \
+  "$SEED_MANIFEST_SHA" "$SEED_LINEAGE"
+CONSUMPTION="$TMP/.seed-accounting-lineages/$SEED_LINEAGE_ID/nonces/$SEED_NONCE.used/receipt"
+[[ "$(stat -f '%Su:%Lp' "$CONSUMPTION")" == "$(id -un):600" ]] ||
+  fail "seed authorization consumption receipt is unsafe"
+[[ "$(sed -n '1p' "$TMP/.seed-accounting-lineages/$SEED_LINEAGE_ID/head")" == \
+   "$SEED_MANIFEST_SHA" ]] ||
+  fail "seed accounting lineage head was not advanced"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_ACCOUNTING" \
+    "$SEED_MANIFEST_SHA" "$SEED_LINEAGE"); then
+  fail "seed authorization was consumed twice"
+fi
+die() { return 1; }
+SEED_SUCCESSOR="$TMP/seed-successor.json"
+SEED_SIBLING="$TMP/seed-sibling.json"
+SEED_SUCCESSOR_NONCE="$(printf 'successor-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+SEED_SIBLING_NONCE="$(printf 'sibling-%s' "$TMP" | shasum -a 256 | awk '{print $1}')"
+sed "s/$SEED_NONCE/$SEED_SUCCESSOR_NONCE/" "$SEED_ACCOUNTING" >"$SEED_SUCCESSOR"
+sed "s/$SEED_NONCE/$SEED_SIBLING_NONCE/" "$SEED_ACCOUNTING" >"$SEED_SIBLING"
+chmod 600 "$SEED_SUCCESSOR" "$SEED_SIBLING"
+SEED_SUCCESSOR_SHA="$(sha256_file "$SEED_SUCCESSOR")"
+SEED_SIBLING_SHA="$(sha256_file "$SEED_SIBLING")"
+SEED_SUCCESSOR_LINEAGE="$TMP/seed-successor-lineage.json"
+SEED_SIBLING_LINEAGE="$TMP/seed-sibling-lineage.json"
+write_product_seed_lineage "$SEED_SUCCESSOR" "$SEED_SUCCESSOR_LINEAGE" \
+  "$SEED_ACCOUNTING"
+write_product_seed_lineage "$SEED_SIBLING" "$SEED_SIBLING_LINEAGE" \
+  "$SEED_ACCOUNTING"
+consume_product_seed_authorization "$SEED_SUCCESSOR" \
+  "$SEED_SUCCESSOR_SHA" "$SEED_SUCCESSOR_LINEAGE"
+die() { exit 1; }
+if (consume_product_seed_authorization "$SEED_SIBLING" \
+    "$SEED_SIBLING_SHA" "$SEED_SIBLING_LINEAGE"); then
+  fail "stale sibling seed accounting lineage was consumed"
+fi
+die() { return 1; }
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":200000000}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "authorized exhausted ticket accounting was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000001,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":0}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "unauthorized aggregate cap was accepted"
+fi
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"agent\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":0}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "agent-authored budget authorization was accepted"
+fi
+STALE_SEED_DAY="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).date()-datetime.timedelta(days=1))')"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v3\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"ticket_cap_micro_usd\":200000000,\"aggregate_cap_micro_usd\":700000000,\"authorized_by\":\"operator\",\"authorization_nonce\":\"$SEED_NONCE\",\"budget_day\":\"$STALE_SEED_DAY\",\"reserved_micro_usd\":{\"T-1\":0}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "stale authorized budget day was accepted"
+fi
+
+SEED_HISTORY="$TMP/seed-history"
+SEED_HISTORY_ROOT="$TMP/seed-history-root"
+mkdir -p "$SEED_HISTORY/factory/tickets" "$SEED_HISTORY/factory/route-plans" \
+  "$SEED_HISTORY/app" "$SEED_HISTORY_ROOT/worktrees"
+git -C "$SEED_HISTORY" init -q
+printf '%s\n' 'State: Ready' >"$SEED_HISTORY/factory/tickets/T-1.md"
+printf '%s\n' base >"$SEED_HISTORY/app/base"
+git -C "$SEED_HISTORY" add .
+git -C "$SEED_HISTORY" -c user.name=Base -c user.email=base@local \
+  commit -qm 'Create base'
+SEED_HISTORY_BASE="$(git -C "$SEED_HISTORY" rev-parse HEAD)"
+printf '%s\n' kit >"$SEED_HISTORY/factory/KIT_PIN"
+printf '%s\n' \
+  'WORKTREES_DIR="/private/tmp/nysa-sf-dev.trusted-control/worktrees"' \
+  >"$SEED_HISTORY/factory/PROJECT.env"
+git -C "$SEED_HISTORY" add factory
+git -C "$SEED_HISTORY" -c user.name='Factory Dev Lane' \
+  -c user.email=factory-dev@local commit -qm \
+  'Configure isolated Contract 1.7 product lane'
+printf '%s\n' before >"$SEED_HISTORY/app/before"
+git -C "$SEED_HISTORY" add app/before
+git -C "$SEED_HISTORY" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm 'T-1: retain earlier lifecycle output'
+printf '%s\n' '{}' >"$SEED_HISTORY/factory/route-plans/T-1.json"
+printf '\n%s\n' 'Kit-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  >>"$SEED_HISTORY/factory/tickets/T-1.md"
+git -C "$SEED_HISTORY" add factory/route-plans/T-1.json \
+  factory/tickets/T-1.md
+git -C "$SEED_HISTORY" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm 'T-1: pin kit and model route plan'
+printf '%s\n' after >"$SEED_HISTORY/app/after"
+printf '%s\n' '# T-1 evidence bundle' \
+  >"$SEED_HISTORY/factory/tickets/T-1-bundle.md"
+printf '%s\n' 'State: Review' 'SPEC-LINT: PASS' \
+  'reviewer round 1: REQUEST CHANGES' \
+  >"$SEED_HISTORY/factory/tickets/T-1.md"
+git -C "$SEED_HISTORY" add app/after factory/tickets/T-1.md \
+  factory/tickets/T-1-bundle.md
+git -C "$SEED_HISTORY" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm 'T-1: retain later lifecycle output'
+git -C "$SEED_HISTORY" branch ticket/T-1
+git -C "$SEED_HISTORY" bundle create "$TMP/seed-history.bundle" ticket/T-1
+chmod 600 "$TMP/seed-history.bundle"
+git clone -q "$ROOT" "$SEED_HISTORY_ROOT/kit"
+git clone -q "$SEED_HISTORY" "$SEED_HISTORY_ROOT/product"
+git -C "$SEED_HISTORY_ROOT/product" checkout -q --detach "$SEED_HISTORY_BASE"
+git init -q --bare "$SEED_HISTORY_ROOT/origin.git"
+git -C "$SEED_HISTORY_ROOT/product" remote set-url origin \
+  "$SEED_HISTORY_ROOT/origin.git"
+printf '%s\n' kit >"$SEED_HISTORY_ROOT/product/factory/KIT_PIN"
+printf 'WORKTREES_DIR="%s"\n' "$SEED_HISTORY_ROOT/worktrees" \
+  >"$SEED_HISTORY_ROOT/product/factory/PROJECT.env"
+git -C "$SEED_HISTORY_ROOT/product" add factory
+git -C "$SEED_HISTORY_ROOT/product" -c user.name='Factory Dev Lane' \
+  -c user.email=factory-dev@local commit -qm \
+  'Configure isolated Contract 1.7 product lane'
+git -C "$SEED_HISTORY_ROOT/product" worktree add -q -b ticket/T-1 \
+  "$SEED_HISTORY_ROOT/worktrees/T-1" HEAD
+git -C "$SEED_HISTORY_ROOT/worktrees/T-1" push -q -u origin ticket/T-1
+eval "$(sed -n \
+  '/^seed_product_worktrees()/,/^write_product_checkpoint_import()/p' \
+  "$LANE" | sed '$d')"
+PRODUCT_SEED_CHECKPOINT=""
+require_lane_path() { :; }
+die() { exit 1; }
+seed_product_worktrees "$SEED_HISTORY_ROOT" "$TMP/seed-history.bundle" \
+  "$SEED_HISTORY_BASE" T-1
+[[ -f "$SEED_HISTORY_ROOT/worktrees/T-1/app/before" &&
+   -f "$SEED_HISTORY_ROOT/worktrees/T-1/app/after" &&
+   -f "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1-bundle.md" ]] ||
+  fail "late route pin caused retained lifecycle output to be skipped"
+[[ ! -e "$SEED_HISTORY_ROOT/worktrees/T-1/factory/route-plans/T-1.json" ]] ||
+  fail "stale retained route plan was replayed"
+grep -qx 'State: Ready' \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
+  fail "retained ticket was not reset to its evidence-backed start"
+grep -qx "Kit-SHA: $(git -C "$SEED_HISTORY_ROOT/kit" rev-parse HEAD)" \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md" ||
+  fail "retained ticket did not receive the current development kit"
+if grep -Eq '^(SPEC-LINT:|reviewer round )' \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/tickets/T-1.md"; then
+  fail "retained ticket kept stale role evidence"
+fi
+grep -Fxq "WORKTREES_DIR=\"$SEED_HISTORY_ROOT/worktrees\"" \
+  "$SEED_HISTORY_ROOT/worktrees/T-1/factory/PROJECT.env" ||
+  fail "retained seed replaced the new lane configuration"
+
+CHECKPOINT_ADVANCE_SOURCE="$TMP/checkpoint-advance-source"
+mkdir -p "$CHECKPOINT_ADVANCE_SOURCE/factory/tickets" \
+  "$CHECKPOINT_ADVANCE_SOURCE/app" "$CHECKPOINT_ADVANCE_SOURCE/context"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" init -q
+printf '%s\n' 'GH_REPO=nysa-company/nysa-app' \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/PROJECT.env"
+printf '%s\n' '# T-83' 'State: Review' \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/tickets/T-83.md"
+printf '%s\n' old >"$CHECKPOINT_ADVANCE_SOURCE/app/shared"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add .
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Base \
+  -c user.email=base@local commit -qm 'Create old protected base'
+CHECKPOINT_ADVANCE_OLD_PROTECTED="$(
+  git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD
+)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" branch -m main
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c qualification-old
+printf '%s\n' old-qualification >"$CHECKPOINT_ADVANCE_SOURCE/context/memory.md"
+printf '%s\n' '{}' >"$CHECKPOINT_ADVANCE_SOURCE/factory/QUALIFICATION.json"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add context factory/QUALIFICATION.json
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Create old qualification base'
+CHECKPOINT_ADVANCE_OLD="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c ticket/T-83
+printf '%s\n' ticket >"$CHECKPOINT_ADVANCE_SOURCE/app/shared"
+printf '%s\n' '# T-83' 'State: Review' \
+  'PUBLICATION CONFLICT: https://github.com/nysa-company/nysa-app/pull/224' \
+  'OPERATOR PUBLICATION REPAIR: builder' \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/tickets/T-83.md"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add app/shared factory/tickets/T-83.md
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Authorize publication repair'
+CHECKPOINT_ADVANCE_HEAD="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD)"
+CHECKPOINT_ADVANCE_BLOB="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" \
+  rev-parse HEAD:factory/tickets/T-83.md)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" bundle create \
+  "$TMP/checkpoint-advance.bundle" ticket/T-83
+chmod 600 "$TMP/checkpoint-advance.bundle"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c publication-224 \
+  "$CHECKPOINT_ADVANCE_OLD"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" checkout ticket/T-83 -- app/shared
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add app/shared
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Factory \
+  -c user.email=factory@local commit -qm 'Publish sealed T-83 product patch'
+CHECKPOINT_ADVANCE_PR_HEAD="$(
+  git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD
+)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" update-ref refs/pull/224/head \
+  "$CHECKPOINT_ADVANCE_PR_HEAD"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q main
+printf '%s\n' current >"$CHECKPOINT_ADVANCE_SOURCE/app/shared"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add app/shared
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Main \
+  -c user.email=main@local commit -qm 'Advance protected main'
+CHECKPOINT_ADVANCE_NEW_PROTECTED="$(
+  git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD
+)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" switch -q -c qualification-new
+printf '%s\n' new-qualification \
+  >"$CHECKPOINT_ADVANCE_SOURCE/factory/QUALIFICATION.json"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" add factory/QUALIFICATION.json
+git -C "$CHECKPOINT_ADVANCE_SOURCE" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Advance qualification base'
+CHECKPOINT_ADVANCE_NEW="$(git -C "$CHECKPOINT_ADVANCE_SOURCE" rev-parse HEAD)"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" remote add origin \
+  "$CHECKPOINT_ADVANCE_SOURCE"
+git -C "$CHECKPOINT_ADVANCE_SOURCE" update-ref refs/remotes/origin/main \
+  "$CHECKPOINT_ADVANCE_NEW_PROTECTED"
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-checkpoint/v2\",\"base_sha\":\"$CHECKPOINT_ADVANCE_OLD\",\"tickets\":[{\"ticket\":\"T-83\",\"head_sha\":\"$CHECKPOINT_ADVANCE_HEAD\",\"ticket_blob\":\"$CHECKPOINT_ADVANCE_BLOB\",\"next_stage\":\"AWAIT-OPERATOR bundle posted; operator approval + merge is the next step\"}]}" \
+  >"$TMP/checkpoint-advance.json"
+chmod 600 "$TMP/checkpoint-advance.json"
+printf '%s\n' \
+  '{"authorization_nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+  >"$TMP/checkpoint-advance-accounting.json"
+chmod 600 "$TMP/checkpoint-advance-accounting.json"
+printf '%s\n' \
+  "{\"baseRefName\":\"main\",\"baseRefOid\":\"$CHECKPOINT_ADVANCE_NEW_PROTECTED\",\"headRefOid\":\"$CHECKPOINT_ADVANCE_PR_HEAD\",\"isDraft\":false,\"mergeable\":\"CONFLICTING\",\"state\":\"OPEN\"}" \
+  >"$TMP/checkpoint-advance-pr.json"
+chmod 600 "$TMP/checkpoint-advance-pr.json"
+(
+  eval "$(sed -n \
+    '/^product_checkpoint_base()/,/^seed_product_worktrees()/p' \
+    "$LANE" | sed '$d')"
+  lane_tmp_parent() { printf '%s\n' "$TMP"; }
+  refuse_production_path() { :; }
+  die() { echo "factory-dev-lane: $*" >&2; exit 1; }
+  TEST_MODE=1
+  FACTORY_DEV_LANE_PR_VIEW_JSON="$TMP/checkpoint-advance-pr.json"
+  receipt="$(
+    build_product_publication_conflict_receipt "$CHECKPOINT_ADVANCE_SOURCE" \
+      "$CHECKPOINT_ADVANCE_NEW" "$TMP/checkpoint-advance.json" \
+      "$TMP/checkpoint-advance-accounting.json" \
+      "$TMP/checkpoint-advance.bundle" T-83
+  )"
+  python3 - "$receipt" "$CHECKPOINT_ADVANCE_OLD_PROTECTED" \
+    "$CHECKPOINT_ADVANCE_NEW_PROTECTED" <<'PY'
+import json, sys
+value=json.loads(sys.argv[1])
+assert value["schema"]=="factory-dev-publication-conflict/v1"
+assert value["old_protected_base_sha"]==sys.argv[2]
+assert value["new_protected_base_sha"]==sys.argv[3]
+assert value["repair_owner"]=="builder"
+PY
+  CHECKPOINT_REPLAY_ROOT="$TMP/checkpoint-replay-root"
+  CHECKPOINT_REPLAY_WORK="$CHECKPOINT_REPLAY_ROOT/worktrees/T-83"
+  mkdir -p "$CHECKPOINT_REPLAY_ROOT/runtime" \
+    "$CHECKPOINT_REPLAY_ROOT/worktrees"
+  printf '%s\n' "$receipt" \
+    >"$CHECKPOINT_REPLAY_ROOT/runtime/product-publication-conflict.json"
+  chmod 600 \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/product-publication-conflict.json"
+  git clone -q "$CHECKPOINT_ADVANCE_SOURCE" "$CHECKPOINT_REPLAY_WORK"
+  git -C "$CHECKPOINT_REPLAY_WORK" checkout -q -b ticket/T-83-replay \
+    "$CHECKPOINT_ADVANCE_NEW_PROTECTED"
+  git -C "$CHECKPOINT_REPLAY_WORK" fetch -q \
+    "$TMP/checkpoint-advance.bundle" \
+    refs/heads/ticket/T-83:refs/retry/T-83
+  : >"$CHECKPOINT_REPLAY_ROOT/runtime/conflicts"
+  chmod 600 "$CHECKPOINT_REPLAY_ROOT/runtime/conflicts"
+  if git -C "$CHECKPOINT_REPLAY_WORK" cherry-pick \
+    "$CHECKPOINT_ADVANCE_HEAD" >/dev/null 2>&1; then
+    fail "publication replay fixture did not produce its source conflict"
+  fi
+  resolve_product_publication_cherry_pick "$CHECKPOINT_REPLAY_ROOT" \
+    "$CHECKPOINT_REPLAY_WORK" T-83 "$CHECKPOINT_ADVANCE_HEAD" \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/conflicts" ||
+    fail "Builder-owned publication conflict was not preserved safely"
+  grep -qx current "$CHECKPOINT_REPLAY_WORK/app/shared" ||
+    fail "publication replay overwrote protected-main content"
+  write_product_publication_replay "$CHECKPOINT_REPLAY_ROOT" T-83 \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/conflicts"
+  python3 - \
+    "$CHECKPOINT_REPLAY_ROOT/runtime/product-publication-replay.json" <<'PY'
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+assert value["schema"]=="factory-dev-publication-replay/v1"
+assert [item["path"] for item in value["conflicts"]]==["app/shared"]
+PY
+) || fail "authorized publication checkpoint could not bind protected conflict"
+
+git -C "$SEED_HISTORY" checkout -q ticket/T-1
+printf '%s\n' \
+  "source '/private/tmp/nysa-sf-dev.untrusted/runtime/product-db/T-1.env'" \
+  >"$SEED_HISTORY/app/untrusted-path"
+git -C "$SEED_HISTORY" add app/untrusted-path
+git -C "$SEED_HISTORY" -c user.name=Provider -c user.email=provider@local \
+  commit -qm 'Add untrusted stale lane path'
+git -C "$SEED_HISTORY" bundle create "$TMP/seed-history-untrusted.bundle" \
+  ticket/T-1
+chmod 600 "$TMP/seed-history-untrusted.bundle"
+if ( seed_product_worktrees "$SEED_HISTORY_ROOT" \
+    "$TMP/seed-history-untrusted.bundle" "$SEED_HISTORY_BASE" T-1 \
+    >"$OUT" 2>&1 ); then
+  fail "untrusted retained lane path unexpectedly succeeded"
+fi
+grep -Fq 'lane-local absolute path detected in role output' "$OUT" ||
+  fail "untrusted retained lane path did not fail at the seed sentinel"
+die() { return 1; }
+
+eval "$(sed -n '/^recover_product_failed_role_commit()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^recover_product_cancelled_role_output()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^product_contract_repair_stage()/,/^}/p' "$LANE")"
+CONTRACT_REPAIR_ROOT="$TMP/contract-repair-stage"
+mkdir -p "$CONTRACT_REPAIR_ROOT/product/factory/runs" \
+  "$CONTRACT_REPAIR_ROOT/worktrees/T-71/factory/tickets"
+printf '%s\n' 'State: Backlog' 'OPERATOR RESUME: test-author' \
+  >"$CONTRACT_REPAIR_ROOT/worktrees/T-71/factory/tickets/T-71.md"
+printf '%s\n' \
+  'run_id=blocked' 'started_at=2026-07-27T03:00:00Z' 'ticket=T-71' \
+  'role=builder' 'role_exit=role_exit_contract_blocked' \
+  'accounting_state=abandoned_conservative' 'exit_status=12' \
+  >"$CONTRACT_REPAIR_ROOT/product/factory/runs/blocked.meta"
+[[ "$(product_contract_repair_stage "$CONTRACT_REPAIR_ROOT" T-71)" == \
+     'FIX test-author' ]] ||
+  fail "operator contract repair did not route to the exact named role"
+sed -i.bak 's/exit_status=12/exit_status=0/' \
+  "$CONTRACT_REPAIR_ROOT/product/factory/runs/blocked.meta"
+[[ "$(product_contract_repair_stage "$CONTRACT_REPAIR_ROOT" T-71)" == \
+     INACTIVE ]] ||
+  fail "consumed operator contract repair did not return to ordinary sequencing"
+
+PUBLICATION_REPAIR_ROOT="$TMP/publication-repair-stage"
+PUBLICATION_REPAIR_WORK="$PUBLICATION_REPAIR_ROOT/worktrees/T-81"
+mkdir -p "$PUBLICATION_REPAIR_ROOT/product/factory/runs" \
+  "$PUBLICATION_REPAIR_ROOT/runtime" "$PUBLICATION_REPAIR_WORK/factory/tickets"
+printf '%s\n' \
+  '{"tickets":[{"ticket":"T-81","expected_next_stage":"FIX test-author"}]}' \
+  >"$PUBLICATION_REPAIR_ROOT/runtime/product-checkpoint-import.json"
+git init -q "$PUBLICATION_REPAIR_WORK"
+printf '%s\n' '# T-81' 'State: Review' \
+  >"$PUBLICATION_REPAIR_WORK/factory/tickets/T-81.md"
+git -C "$PUBLICATION_REPAIR_WORK" add factory/tickets/T-81.md
+git -C "$PUBLICATION_REPAIR_WORK" -c user.name=Factory \
+  -c user.email=factory@local commit -qm 'Create completed ticket'
+printf '%s\n' \
+  'PUBLICATION FAILURE: https://github.com/nysa-company/nysa-app/actions/runs/1/job/2' \
+  'OPERATOR PUBLICATION REPAIR: test-author' \
+  >>"$PUBLICATION_REPAIR_WORK/factory/tickets/T-81.md"
+git -C "$PUBLICATION_REPAIR_WORK" add factory/tickets/T-81.md
+git -C "$PUBLICATION_REPAIR_WORK" -c user.name=Operator \
+  -c user.email=operator@local commit -qm 'Authorize publication repair'
+PUBLICATION_REPAIR_HEAD="$(git -C "$PUBLICATION_REPAIR_WORK" rev-parse HEAD)"
+[[ "$(product_contract_repair_stage "$PUBLICATION_REPAIR_ROOT" T-81)" == \
+     'FIX test-author' ]] ||
+  fail "publication repair did not route to its exact owning role"
+printf '%s\n' \
+  'run_id=test-author' 'started_at=2026-07-27T04:00:00Z' 'ticket=T-81' \
+  'role=test-author' 'phase=completed' 'role_exit=ok' 'exit_status=0' \
+  "role_head_before=$PUBLICATION_REPAIR_HEAD" \
+  >"$PUBLICATION_REPAIR_ROOT/product/factory/runs/test-author.meta"
+[[ "$(product_contract_repair_stage "$PUBLICATION_REPAIR_ROOT" T-81)" == \
+     INACTIVE ]] ||
+  fail "completed publication repair did not return to ordinary sequencing"
+
+FAILED_ROLE_ROOT="$TMP/failed-role-resume"
+FAILED_ROLE_WORK="$FAILED_ROLE_ROOT/worktrees/T-72"
+mkdir -p "$FAILED_ROLE_ROOT/product/factory/runs" \
+  "$FAILED_ROLE_ROOT/runtime" "$FAILED_ROLE_ROOT/worktrees"
+chmod 700 "$FAILED_ROLE_ROOT/runtime"
+git init -q --bare "$FAILED_ROLE_ROOT/origin.git"
+git init -q "$FAILED_ROLE_WORK"
+printf '%s\n' base >"$FAILED_ROLE_WORK/base"
+git -C "$FAILED_ROLE_WORK" add base
+git -C "$FAILED_ROLE_WORK" -c user.name=Base -c user.email=base@local \
+  commit -qm 'Create trusted role base'
+git -C "$FAILED_ROLE_WORK" branch -m ticket/T-72
+git -C "$FAILED_ROLE_WORK" remote add origin "$FAILED_ROLE_ROOT/origin.git"
+git -C "$FAILED_ROLE_WORK" push -qu origin ticket/T-72
+FAILED_ROLE_BASE="$(git -C "$FAILED_ROLE_WORK" rev-parse HEAD)"
+mkdir -p "$FAILED_ROLE_WORK/apps/api/src"
+printf '%s\n' 'test("fails before implementation", () => {})' \
+  >"$FAILED_ROLE_WORK/apps/api/src/pipeline.test.ts"
+git -C "$FAILED_ROLE_WORK" add apps/api/src/pipeline.test.ts
+git -C "$FAILED_ROLE_WORK" -c user.name='Software Factory' \
+  -c user.email=factory@local commit -qm \
+  'T-72: author failing production pipeline tests'
+FAILED_ROLE_HEAD="$(git -C "$FAILED_ROLE_WORK" rev-parse HEAD)"
+FAILED_ROLE_MANIFEST="$FAILED_ROLE_ROOT/product/factory/runs/budget-failed.meta"
+printf '%s\n' \
+  'run_id=budget-failed' 'phase=completed' 'accounting_state=completed' \
+  'reserved_usd=10.00' 'effective_cost=10.2822515' 'exit_status=7' \
+  'go_issued=1' 'task_submitted=1' \
+  'started_at=2026-07-25T23:00:00Z' \
+  'ticket=T-72' 'role=test-author' 'role_exit=provider_failed' \
+  "role_head_before=$FAILED_ROLE_BASE" \
+  "role_remote_before=$FAILED_ROLE_BASE" >"$FAILED_ROLE_MANIFEST"
+chmod 600 "$FAILED_ROLE_MANIFEST"
+FAILED_ROLE_MANIFEST_BEFORE="$(sha256_file "$FAILED_ROLE_MANIFEST")"
+recover_product_failed_role_commit "$FAILED_ROLE_ROOT" T-72 ||
+  fail "explicit resume could not recover a budget-failed durable role commit"
+[[ "$(git -C "$FAILED_ROLE_WORK" rev-parse HEAD)" == "$FAILED_ROLE_BASE" &&
+   "$(git -C "$FAILED_ROLE_ROOT/origin.git" \
+      rev-parse refs/heads/ticket/T-72)" == "$FAILED_ROLE_BASE" ]] ||
+  fail "failed role output advanced the trusted ticket branch"
+[[ "$(git -C "$FAILED_ROLE_WORK" \
+      rev-parse refs/factory-dev/discarded/T-72/budget-failed)" == \
+      "$FAILED_ROLE_HEAD" ]] ||
+  fail "failed durable role commit was not retained for diagnosis"
+[[ "$(sha256_file "$FAILED_ROLE_MANIFEST")" == \
+   "$FAILED_ROLE_MANIFEST_BEFORE" ]] ||
+  fail "failed role accounting was rewritten during resume recovery"
+python3 - "$FAILED_ROLE_ROOT/runtime/product-discarded/T-72-budget-failed.json" \
+  "$FAILED_ROLE_HEAD" "$FAILED_ROLE_MANIFEST_BEFORE" <<'PY' ||
+import json, os, stat, sys
+path, head, manifest=sys.argv[1:]
+value=json.load(open(path,encoding="utf-8"))
+assert stat.S_IMODE(os.stat(path).st_mode)==0o600
+assert value["schema"]=="factory-dev-discarded-role/v1"
+assert value["head_sha"]==head
+assert value["manifest_sha256"]==manifest
+assert value["role"]=="test-author"
+PY
+  fail "failed role recovery receipt was incomplete"
+recover_product_failed_role_commit "$FAILED_ROLE_ROOT" T-72 ||
+  fail "failed role recovery was not idempotent"
+
+CANCELLED_ROLE_ROOT="$TMP/cancelled-role-resume"
+CANCELLED_ROLE_WORK="$CANCELLED_ROLE_ROOT/worktrees/T-73"
+mkdir -p "$CANCELLED_ROLE_ROOT/product/factory/runs" \
+  "$CANCELLED_ROLE_ROOT/runtime" "$CANCELLED_ROLE_ROOT/worktrees"
+chmod 700 "$CANCELLED_ROLE_ROOT/runtime"
+git init -q --bare "$CANCELLED_ROLE_ROOT/origin.git"
+git init -q "$CANCELLED_ROLE_WORK"
+printf '%s\n' base >"$CANCELLED_ROLE_WORK/base"
+git -C "$CANCELLED_ROLE_WORK" add base
+git -C "$CANCELLED_ROLE_WORK" -c user.name=Base -c user.email=base@local \
+  commit -qm 'Create trusted cancelled-role base'
+git -C "$CANCELLED_ROLE_WORK" branch -m ticket/T-73
+git -C "$CANCELLED_ROLE_WORK" remote add origin \
+  "$CANCELLED_ROLE_ROOT/origin.git"
+git -C "$CANCELLED_ROLE_WORK" push -qu origin ticket/T-73
+CANCELLED_ROLE_BASE="$(git -C "$CANCELLED_ROLE_WORK" rev-parse HEAD)"
+printf '%s\n' interrupted >"$CANCELLED_ROLE_WORK/base"
+printf '%s\n' untracked >"$CANCELLED_ROLE_WORK/new"
+CANCELLED_ROLE_MANIFEST="$CANCELLED_ROLE_ROOT/product/factory/runs/cancelled.meta"
+printf '%s\n' \
+  'run_id=cancelled' 'phase=cancelled_conservative' \
+  'accounting_state=cancelled_conservative' 'reserved_usd=10.00' \
+  'effective_cost=10.00' 'exit_status=143' 'go_issued=1' \
+  'started_at=2026-07-27T04:00:00Z' 'ticket=T-73' 'role=builder' \
+  'role_exit=cancelled' "role_head_before=$CANCELLED_ROLE_BASE" \
+  "role_remote_before=$CANCELLED_ROLE_BASE" >"$CANCELLED_ROLE_MANIFEST"
+chmod 600 "$CANCELLED_ROLE_MANIFEST"
+CANCELLED_ROLE_MANIFEST_BEFORE="$(sha256_file "$CANCELLED_ROLE_MANIFEST")"
+recover_product_cancelled_role_output "$CANCELLED_ROLE_ROOT" T-73 ||
+  fail "cancelled role output could not be retained and rolled back"
+CANCELLED_SNAPSHOT="$(git -C "$CANCELLED_ROLE_WORK" \
+  rev-parse refs/factory-dev/discarded/T-73/cancelled)"
+[[ "$(git -C "$CANCELLED_ROLE_WORK" rev-parse HEAD)" == \
+     "$CANCELLED_ROLE_BASE" &&
+   -z "$(git -C "$CANCELLED_ROLE_WORK" status --porcelain --untracked-files=all)" &&
+   "$(git -C "$CANCELLED_ROLE_WORK" show "$CANCELLED_SNAPSHOT:base")" == \
+     interrupted &&
+   "$(git -C "$CANCELLED_ROLE_WORK" show "$CANCELLED_SNAPSHOT:new")" == \
+     untracked &&
+   "$(sha256_file "$CANCELLED_ROLE_MANIFEST")" == \
+     "$CANCELLED_ROLE_MANIFEST_BEFORE" ]] ||
+  fail "cancelled role recovery lost output or rewrote accounting"
+python3 - \
+  "$CANCELLED_ROLE_ROOT/runtime/product-discarded/T-73-cancelled.json" \
+  "$CANCELLED_SNAPSHOT" "$CANCELLED_ROLE_MANIFEST_BEFORE" <<'PY' ||
+import json, sys
+path, snapshot, manifest=sys.argv[1:]
+value=json.load(open(path,encoding="utf-8"))
+assert value["schema"]=="factory-dev-discarded-cancelled-role/v1"
+assert value["snapshot_sha"]==snapshot
+assert value["manifest_sha256"]==manifest
+assert value["role"]=="builder"
+PY
+  fail "cancelled role recovery receipt was incomplete"
+recover_product_cancelled_role_output "$CANCELLED_ROLE_ROOT" T-73 ||
+  fail "cancelled role recovery was not idempotent"
+
+RESUME_ROOT="$TMP/resume-drained"
+mkdir -p "$RESUME_ROOT/kit/scripts" "$RESUME_ROOT/runtime/product-envelope" \
+  "$RESUME_ROOT/product/factory/.dispatch-leases" \
+  "$RESUME_ROOT/product/factory/.active-runs"
+cat >"$RESUME_ROOT/kit/scripts/provider-coordinator.py" <<'PY'
+#!/usr/bin/env python3
+print('{"active_reserve_micro_usd":0,"attempts":[{"state":"terminal"}],"counts":{"terminal":1}}')
+PY
+chmod 700 "$RESUME_ROOT/kit/scripts/provider-coordinator.py"
+printf '%s\n' \
+  approval_hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  used=0 \
+  >"$RESUME_ROOT/runtime/product-approval.used"
+chmod 600 "$RESUME_ROOT/runtime/product-approval.used"
+python3 - "$RESUME_ROOT/runtime/product-source.json" \
+  "$RESUME_ROOT/runtime/product-resume.json" <<'PY'
+import hashlib, json, os, sys
+source_path,resume_path=sys.argv[1:]
+resume={"schema":"factory-dev-product-resume/v1","basis_sha256":"b"*64,
+        "original_tickets":["T-72","T-73"],"selected_tickets":["T-72"]}
+raw=json.dumps(resume,sort_keys=True,separators=(",",":"))+"\n"
+open(resume_path,"w",encoding="utf-8").write(raw)
+source={"schema":"factory-dev-product-source/v1","tickets":["T-72"],
+        "resume_original_tickets":["T-72","T-73"],
+        "resume_sha256":hashlib.sha256(raw.encode()).hexdigest()}
+open(source_path,"w",encoding="utf-8").write(
+    json.dumps(source,sort_keys=True,separators=(",",":"))+"\n"
+)
+os.chmod(source_path,0o600); os.chmod(resume_path,0o600)
+PY
+cp "$RESUME_ROOT/runtime/product-approval.used" \
+  "$RESUME_ROOT/runtime/product-approval"
+printf '%s\n' '{"containers":[]}' \
+  >"$RESUME_ROOT/runtime/product-containers.json"
+date -u +%F >"$RESUME_ROOT/runtime/product-envelope/budget-day"
+eval "$(sed -n '/^product_resume_drained()/,/^}/p' "$LANE")"
+eval "$(sed -n '/^invalidate_product_resume_approval()/,/^ensure_product_budget_day()/p' \
+  "$LANE" | sed '$d')"
+subscription_provider_idle() { :; }
+INVALIDATE_STDERR="$RESUME_ROOT/invalidate.stderr"
+invalidate_product_resume_approval "$RESUME_ROOT" \
+  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  2>"$INVALIDATE_STDERR" ||
+  fail "pre-GO resume-basis drift approval could not be invalidated"
+[[ ! -e "$RESUME_ROOT/runtime/product-approval" &&
+   "$(find "$RESUME_ROOT/runtime/product-discarded" -type f | wc -l | tr -d ' ')" == 2 &&
+   "$(cat "$INVALIDATE_STDERR")" == \
+     INVALIDATED_RESUME_APPROVAL=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] ||
+  fail "invalidated resume approval or evidence was incomplete"
+python3 - "$RESUME_ROOT/runtime/product-source.json" <<'PY' ||
+import json, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+assert value["tickets"] == ["T-72","T-73"]
+assert "resume_sha256" not in value
+assert "resume_original_tickets" not in value
+PY
+  fail "resume source was not restored after pre-GO drift"
+product_resume_drained "$RESUME_ROOT" ||
+  fail "approval invalidation did not leave the lane checkpoint-drainable"
+printf '%s\n' 2000-01-01 >"$RESUME_ROOT/runtime/product-envelope/budget-day"
+if product_resume_drained "$RESUME_ROOT"; then
+  fail "ordinary resume accepted an expired budget day"
+fi
+product_resume_drained "$RESUME_ROOT" 0 0 ||
+  fail "drained checkpoint export could not cross a budget-day boundary"
+date -u +%F >"$RESUME_ROOT/runtime/product-envelope/budget-day"
+printf 'pid=%s\n' "$$" >"$RESUME_ROOT/runtime/live.pid"
+if product_resume_drained "$RESUME_ROOT"; then
+  fail "retained lane with a live process was resumable"
+fi
+rm "$RESUME_ROOT/runtime/live.pid"
+cp "$RESUME_ROOT/runtime/product-approval.used" \
+  "$RESUME_ROOT/runtime/product-approval"
+if product_resume_drained "$RESUME_ROOT"; then
+  fail "retained lane with a fresh approval was rearmed twice"
+fi
+
+eval "$(sed -n '/^load_product_tickets()/,/^}/p' "$LANE")"
+SOURCE_ROOT_TEST="$TMP/source-binding"
+mkdir -p "$SOURCE_ROOT_TEST/runtime"
+  printf '%s\n' \
+    '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3","T-4","T-5","T-6","T-7","T-8","T-9","T-10"]}' \
+    >"$SOURCE_ROOT_TEST/runtime/product-source.json"
+  load_product_tickets "$SOURCE_ROOT_TEST"
+  [[ "${PRODUCT_TICKETS[*]}" == \
+     'T-1 T-2 T-3 T-4 T-5 T-6 T-7 T-8 T-9 T-10' ]] ||
+    fail "ten-ticket generation source binding was rejected"
+for invalid_source in \
+  '{"schema":"factory-dev-product-source/v1","tickets":[]}' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-1"]}' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","bad"]}' \
+  '{"schema":"factory-dev-product-source/v1","tickets":["T-1","T-2","T-3","T-4","T-5","T-6","T-7","T-8","T-9","T-10","T-11"]}'; do
+  printf '%s\n' "$invalid_source" >"$SOURCE_ROOT_TEST/runtime/product-source.json"
+  if load_product_tickets "$SOURCE_ROOT_TEST"; then
+    fail "malformed partial product source binding was accepted: $invalid_source"
+  fi
+done
+
+eval "$(sed -n '/^run_product_internal()/,/^}/p' "$LANE")"
+eval "$(sed -n \
+  '/^product_mark_await_operator()/,/^product_write_timing_report()/p' \
+  "$LANE" | sed '$d')"
+CLAIM_ROOT="$TMP/claim-rollback"
+mkdir -p "$CLAIM_ROOT/runtime"
+printf '%s\n' 'approval_hash=test-approval' 'used=0' \
+  >"$CLAIM_ROOT/runtime/product-approval"
+printf '%s\n' disabled >"$CLAIM_ROOT/runtime/product-cursor-fallback"
+chmod 600 "$CLAIM_ROOT/runtime/product-cursor-fallback"
+require_lane_mode() { :; }
+load_product_tickets() { PRODUCT_TICKETS=(T-1 T-2 T-3); }
+validate_runtime_paths() { :; }
+product_approval_hash() { printf '%s\n' test-approval; }
+product_dependencies_satisfied() { :; }
+subscription_ready() { :; }
+subscription_provider_idle() { :; }
+subscription_provider_wait() { subscription_provider_idle; }
+subscription_env() {
+  local ignored="$1" command action ticket
+  shift
+  command="$1"; action="$2"; ticket="$4"
+  printf '%s %s\n' "$action" "$ticket" >>"$CLAIM_ROOT/lease-actions"
+  [[ "$action" != claim || "$ticket" != T-2 ]] || return 1
+  [[ "$action" != claim ]] || printf '{"lease_id":"lease-%s"}\n' "$ticket"
+}
+die() { exit 1; }
+if (run_product_internal "$CLAIM_ROOT" test-approval); then
+  fail "partial lease claim failure unexpectedly succeeded"
+fi
+[[ "$(cat "$CLAIM_ROOT/lease-actions")" == $'claim T-1\nclaim T-2\nrelease T-1' ]] ||
+  fail "partial lease claim failure did not release only prior leases"
+
+PARTIAL_ROOT="$TMP/partial-run"
+mkdir -p "$PARTIAL_ROOT/runtime" "$PARTIAL_ROOT/worktrees"
+printf '%s\n' 'approval_hash=test-approval' 'used=0' \
+  >"$PARTIAL_ROOT/runtime/product-approval"
+printf '%s\n' disabled >"$PARTIAL_ROOT/runtime/product-cursor-fallback"
+chmod 600 "$PARTIAL_ROOT/runtime/product-cursor-fallback"
+for ticket in T-1 T-2 T-3; do
+  mkdir -p "$PARTIAL_ROOT/worktrees/$ticket"
+  git -C "$PARTIAL_ROOT/worktrees/$ticket" init -q
+  git -C "$PARTIAL_ROOT/worktrees/$ticket" -c user.name=Test \
+    -c user.email=test@local commit -qm "initialize $ticket" --allow-empty
+done
+subscription_env() {
+  local ignored="$1" command action ticket
+  shift
+  command="$1"; action="$2"; ticket="$4"
+  printf '%s %s\n' "$action" "$ticket" >>"$PARTIAL_ROOT/lease-actions"
+  [[ "$action" != claim ]] || printf '{"lease_id":"lease-%s"}\n' "$ticket"
+}
+product_reconcile_reviewer() { :; }
+product_prepare_role_state() { :; }
+next_stage() { printf '%s\n' AWAIT-OPERATOR; }
+product_write_timing_report() { :; }
+die() { exit 1; }
+partial_output="$(run_product_internal "$PARTIAL_ROOT" test-approval)"
+grep -qx 'STATUS=AWAIT-OPERATOR' <<<"$partial_output" ||
+  fail "partial product lifecycle did not reach operator approval"
+for ticket in T-1 T-2 T-3; do
+  grep -qx "TICKET_STATUS=$ticket:AWAIT-OPERATOR" <<<"$partial_output" ||
+    fail "partial product lifecycle omitted ticket readiness: $ticket"
+  python3 - "$PARTIAL_ROOT/runtime/product-scheduler/$ticket.await-operator.json" \
+    "$ticket" <<'PY' || fail "ticket readiness record is incomplete"
+import json, os, stat, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+assert value["schema"]=="factory-dev-ticket-ready/v1"
+assert value["ticket"]==sys.argv[2] and value["status"]=="AWAIT-OPERATOR"
+assert value["elapsed_seconds"] >= 0
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode)==0o600
+PY
+done
+[[ "$(cat "$PARTIAL_ROOT/lease-actions")" == \
+   $'claim T-1\nclaim T-2\nclaim T-3\nrenew T-1\nrelease T-1\nrenew T-2\nrelease T-2\nrenew T-3\nrelease T-3' ]] ||
+  fail "partial product lifecycle did not claim, renew, and release exactly its tickets"
+
+die() { return 1; }
+printf '%s\n' \
+  "{\"schema\":\"factory-dev-product-seed-accounting/v2\",\"seed_bundle_sha256\":\"$seed_bundle_sha\",\"base_sha\":\"$SEED_BASE\",\"reserved_micro_usd\":{\"T-1\":100000000}}" \
+  >"$SEED_ACCOUNTING"
+if validate_product_seed_accounting "$SEED_ACCOUNTING" "$SEED_BUNDLE" "$SEED_BASE" T-1; then
+  fail "exhausted cumulative seed accounting was accepted"
+fi
+grep -Fq 'FACTORY_ENVELOPE="$envelope"' "$LANE" ||
+  fail "seeded remaining-budget envelope is not passed to role execution"
 
 review_pattern='^[[:space:]#*]*(((Review[[:space:]]+)?Verdict:[[:space:]*]*)?APPROVE|Review[[:space:]]+verdict:[[:space:]]+T-[0-9]+[[:space:]]+—[[:space:]]+APPROVE)[*[:space:]]*$'
 printf '%s\n' '## Verdict: Approve' | grep -Eiq "$review_pattern" ||
@@ -126,10 +3387,12 @@ test_env bash "$LANE" mock --keep >"$OUT"
 elapsed=$((SECONDS - started))
 [[ "$(cksum "$CALLER_HOME/.factory/sentinel" \
   "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
-  "$CALLER_HOME/Library/LaunchAgents/sentinel")" == "$sentinels_before" ]] ||
+  "$CALLER_HOME/Library/LaunchAgents/sentinel" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel")" == "$sentinels_before" ]] ||
   fail "mock changed caller production sentinels"
 [[ "$(find "$CALLER_HOME/.factory" "$CALLER_HOME/.hermes/profiles/factory" \
-  "$CALLER_HOME/Library/LaunchAgents" -type f | wc -l | tr -d ' ')" -eq 3 ]] ||
+  "$CALLER_HOME/Library/LaunchAgents" "$CALLER_HOME/Projects/nysa-company/nysa-app" \
+  -type f | wc -l | tr -d ' ')" -eq 4 ]] ||
   fail "mock added caller production state"
 lane_root="$(sed -n 's/^ROOT=//p' "$OUT")"
 [[ "$lane_root" == "$TMP/lanes"/nysa-sf-dev.* ]] || fail "mock returned an unsafe root"
@@ -214,7 +3477,7 @@ grep -Eq '\(deny +default\)' "$profile" || fail "mock profile is not default-den
 grep -Eq '\(deny +network' "$profile" || fail "mock profile does not deny network"
 grep -Fq "$lane_root" "$profile" || fail "mock profile does not bind filesystem access to its lane"
 for forbidden in "$CALLER_HOME/.factory" "$CALLER_HOME/.hermes/profiles/factory" \
-  "$CALLER_HOME/Library/LaunchAgents" "/Users/sofiagonzalez/Projects/nysa-company/nysa-app"; do
+  "$CALLER_HOME/Library/LaunchAgents" "$CALLER_HOME/Projects/nysa-company/nysa-app"; do
   grep -Fq "$forbidden" "$profile" && fail "mock profile names production path: $forbidden"
 done
 
@@ -240,7 +3503,12 @@ mv "$root_saved" "$lane_root"
 
 mkdir "$TMP/other-parent"
 expect_failure "TMP parent drift cleanup" env TMPDIR="$TMP/other-parent" \
+  FACTORY_DEV_LANE_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
   bash "$LANE" clean --root "$lane_root"
+
+printf 'pid=%s\n' "$$" >"$lane_root/runtime/live-cleanup-test.pid"
+expect_failure "live process cleanup" clean_cmd "$lane_root"
+rm "$lane_root/runtime/live-cleanup-test.pid"
 
 clean_cmd "$lane_root"
 [[ ! -e "$lane_root" ]] || fail "clean retained the lane"
@@ -257,6 +3525,54 @@ mkdir -p "$forged"
 printf '{}\n' >"$forged/marker.json"
 expect_failure "forged cleanup" clean_cmd "$forged"
 [[ -d "$unmarked" && -d "$forged" ]] || fail "refused cleanup removed data"
+
+started=$SECONDS
+test_env bash "$LANE" mock-concurrency --keep >"$OUT"
+elapsed=$((SECONDS - started))
+concurrency_root="$(sed -n 's/^ROOT=//p' "$OUT")"
+[[ "$concurrency_root" == "$TMP/lanes"/nysa-sf-dev.* ]] ||
+  fail "concurrency mock returned an unsafe root"
+grep -qx 'PROVIDER_CALLS=4' "$OUT" || fail "concurrency mock did not run four providers"
+grep -qx 'PROVIDER_MODE=cli-concurrent-v1' "$OUT" ||
+  fail "concurrency mock did not use the subscription CLI coordinator path"
+overlap_ms="$(sed -n 's/^PROVIDER_OVERLAP_MILLISECONDS=//p' "$OUT")"
+[[ "$overlap_ms" =~ ^[0-9]+$ && "$overlap_ms" -ge 2000 && "$overlap_ms" -lt 5000 ]] ||
+  fail "four provider calls did not overlap for one bounded interval"
+reported_elapsed="$(sed -n 's/^ELAPSED_SECONDS=//p' "$OUT")"
+[[ "$reported_elapsed" =~ ^[0-9]+$ && "$reported_elapsed" -lt 900 && "$elapsed" -lt 900 ]] ||
+  fail "four lifecycle batch exceeded the 15-minute ceiling"
+[[ "$(cksum "$CALLER_HOME/.factory/sentinel" \
+  "$CALLER_HOME/.hermes/profiles/factory/sentinel" \
+  "$CALLER_HOME/Library/LaunchAgents/sentinel" \
+  "$CALLER_HOME/Projects/nysa-company/nysa-app/sentinel")" == "$sentinels_before" ]] ||
+  fail "concurrency mock changed production sentinels"
+python3 "$concurrency_root/kit/scripts/provider-coordinator.py" \
+  --db "$concurrency_root/runtime/provider-state.sqlite3" status | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+assert value["counts"] == {"terminal":28}, value
+assert value["active_reserve_micro_usd"] == 0, value
+' || fail "concurrency mock retained provider capacity or reservations"
+[[ "$(find "$concurrency_root/product/factory/runs" -type f -name '*.meta' | wc -l | tr -d ' ')" -eq 24 ]] ||
+  fail "four lifecycle batch did not record 24 role runs"
+if find "$concurrency_root/product/factory/runs" -type f -name '*.meta' -exec \
+     grep -L '^provider_execution_mode=cli-concurrent-v1$' {} + | grep -q .; then
+  fail "synthetic lifecycles did not use CLI concurrent admission"
+fi
+for ticket in T-900001 T-900002 T-900003 T-900004; do
+  work="$concurrency_root/worktrees/$ticket"
+  grep -qx 'State: Review' "$work/factory/tickets/$ticket.md" ||
+    fail "$ticket did not complete in Review"
+  [[ "$(git -C "$work" rev-parse HEAD)" == \
+     "$(git -C "$concurrency_root/origin.git" rev-parse "refs/heads/ticket/$ticket")" ]] ||
+    fail "$ticket trusted host output was not pushed locally"
+done
+if find "$concurrency_root/product/factory" -type f -name '*.pid' -print -quit | grep -q . ||
+   find "$concurrency_root" -type f \( -name active.json -o -path '*/receipts/*.json' \) -print -quit | grep -q .; then
+  fail "concurrency mock retained a live process or activation artifact"
+fi
+clean_cmd "$concurrency_root"
+[[ ! -e "$concurrency_root" ]] || fail "concurrency cleanup retained its lane"
 
 # Real Cursor cannot authenticate inside a nested Seatbelt profile. Its lane
 # uses Cursor's own explicit sandbox; only mock mode invokes sandbox-exec.
@@ -298,6 +3614,11 @@ chmod +x "$FAKE_CURSOR"
 # consumed so a post-submission failure cannot be replayed.
 expect_failure "fake cursor execution" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$approval_hash"
+grep -qx 'State: Ready' "$cursor_root/worktrees/T-900001/factory/tickets/T-900001.md" ||
+  fail "failed provider output advanced ticket state"
+[[ "$(git -C "$cursor_root/worktrees/T-900001" rev-parse HEAD)" == \
+   "$(git -C "$cursor_root/origin.git" rev-parse refs/heads/ticket/T-900001)" ]] ||
+  fail "failed provider output changed the trusted remote"
 grep -qx -- '--sandbox' "$cursor_root/home/cursor-args" ||
   fail "real Cursor lane did not enable Cursor's internal sandbox"
 grep -qx -- 'enabled' "$cursor_root/home/cursor-args" ||

@@ -7,3 +7,11 @@ useDefault = true
 description = "Baseline receipt contains SHA-256 ownership hashes, not credentials"
 targetRules = ["generic-api-key"]
 paths = ['''(^|/)\.agents/repo-standard\.json$''']
+
+[[allowlists]]
+description = "Historical activation parser default is a mode name, not a credential"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)scripts/(run-agent\.sh|secret-scan)$''']
+regexTarget = "match"
+regexes = ['''key, "api-isolated-v1"''']

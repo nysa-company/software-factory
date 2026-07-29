@@ -162,7 +162,8 @@ PY
 )"
   if [[ "$contract" == "1.2.0" || "$contract" == "1.3.0" ||
         "$contract" == "1.4.0" || "$contract" == "1.5.0" ||
-        "$contract" == "1.6.0" ]]; then
+        "$contract" == "1.6.0" || "$contract" == "1.7.0" ||
+        "$contract" == "1.8.0" ]]; then
     origin="$(git -C "$product" remote get-url --push origin)"
     product_tree="$(git -C "$product" rev-parse 'HEAD^{tree}')"
     receipt_id="$(printf '%s' "$sha|$tree|$product|$origin" | shasum -a 256 | awk '{print $1}')"
@@ -263,7 +264,7 @@ PY
 import pathlib, sys
 path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
 text = path.read_text()
-old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.6.0}"'
+old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.8.0}"'
 new = f'CONTRACT_VERSION="${{FACTORY_RELEASE_CONTRACT_VERSION:-{contract}}}"'
 if text.count(old) != 1:
     raise SystemExit("factory-doctor contract fixture is ambiguous")
@@ -526,7 +527,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.6.0"
+assert data["contract_version"] == "1.8.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
@@ -558,6 +559,103 @@ assert "[redacted]" in checks["linear_sync"]["last_error"]
 allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(check["status"] in allowed for check in checks.values())
+PY
+
+PROVIDER_TEST_ROOT="$(cd "$TMP" && pwd -P)/provider-v2"
+mkdir -m 700 "$PROVIDER_TEST_ROOT" "$PROVIDER_TEST_ROOT/attempts" \
+  "$PROVIDER_TEST_ROOT/apply-locks"
+python3 - "$PROVIDER_TEST_ROOT/policy.json" "$PROVIDER_TEST_ROOT/activation.json" <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+policy_path, activation_path = sys.argv[1:]
+limit = {"max_concurrent": 4, "max_starts": 20, "window_seconds": 60}
+account_limit = {"max_concurrent": 2, "max_starts": 20, "window_seconds": 60}
+policy = {
+    "schema": "factory-provider-concurrency-policy/v1",
+    "coupled_max_concurrent": 4,
+    "global": limit,
+    "provider_families": {"openai": limit},
+    "account_routes": {"codex-native": account_limit},
+}
+canonical_policy = json.dumps(policy, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+with open(policy_path, "w", encoding="utf-8") as handle:
+    handle.write(canonical_policy + "\n")
+activation = {
+    "enabled": True,
+    "mode": "cli-concurrent-v1",
+    "policy_sha256": hashlib.sha256(canonical_policy.encode()).hexdigest(),
+    "routes": {
+        "codex-gpt-5.6-sol": {
+            "account_route": "codex-native",
+            "adapter": "codex",
+            "model": "gpt-5.6-sol",
+            "provider_family": "openai",
+        }
+    },
+    "schema": "nysa.software-factory.provider-activation/v2",
+}
+with open(activation_path, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(activation, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+os.chmod(activation_path, 0o600)
+PY
+python3 "$ROOT/scripts/provider-coordinator.py" \
+  --db "$PROVIDER_TEST_ROOT/state.sqlite3" status >/dev/null
+PROVIDER_DB_BEFORE="$(cksum "$PROVIDER_TEST_ROOT/state.sqlite3")"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_PROVIDER_ACTIVATION="$PROVIDER_TEST_ROOT/activation.json" \
+  FACTORY_PROVIDER_POLICY="$PROVIDER_TEST_ROOT/policy.json" \
+  FACTORY_PROVIDER_DB="$PROVIDER_TEST_ROOT/state.sqlite3" \
+  FACTORY_PROVIDER_ATTEMPT_ROOT="$PROVIDER_TEST_ROOT/attempts" \
+  FACTORY_PROVIDER_APPLY_LOCK_ROOT="$PROVIDER_TEST_ROOT/apply-locks" \
+  bash "$DOCTOR" --json --project relay > "$TMP/provider-v2-doctor.json"
+[[ "$(cksum "$PROVIDER_TEST_ROOT/state.sqlite3")" == "$PROVIDER_DB_BEFORE" ]] ||
+  fail "Contract 1.7 doctor mutated provider coordinator state"
+python3 - "$TMP/provider-v2-doctor.json" <<'PY'
+import json
+import sys
+
+provider = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["isolated_provider"]
+assert provider == {
+    "status": "ok",
+    "activated": True,
+    "execution_mode": "cli-concurrent-v1",
+    "active_attempts": 0,
+    "active_tokens": 0,
+    "unknown_workers": 0,
+    "legacy_intervals": 0,
+}
+PY
+python3 - "$PROVIDER_TEST_ROOT/activation.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["policy_sha256"] = "0" * 64
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+PROVIDER_MISMATCH_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" \
+  FACTORY_PROVIDER_ACTIVATION="$PROVIDER_TEST_ROOT/activation.json" \
+  FACTORY_PROVIDER_POLICY="$PROVIDER_TEST_ROOT/policy.json" \
+  FACTORY_PROVIDER_DB="$PROVIDER_TEST_ROOT/state.sqlite3" \
+  FACTORY_PROVIDER_ATTEMPT_ROOT="$PROVIDER_TEST_ROOT/attempts" \
+  FACTORY_PROVIDER_APPLY_LOCK_ROOT="$PROVIDER_TEST_ROOT/apply-locks" \
+  bash "$DOCTOR" --json --project relay > "$TMP/provider-v2-mismatch.json" ||
+  PROVIDER_MISMATCH_RC=$?
+[[ "$PROVIDER_MISMATCH_RC" -eq 1 ]] ||
+  fail "Contract 1.7 doctor accepted a mismatched provider policy digest"
+python3 - "$TMP/provider-v2-mismatch.json" <<'PY'
+import json
+import sys
+
+provider = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["isolated_provider"]
+assert provider["status"] == "error"
+assert provider["activated"] is True
 PY
 
 sed -i.bak 's/^process_start=.*/process_start=stale/' "$PRODUCT/factory/.provider.lock/owner"
@@ -772,7 +870,7 @@ HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
   > "$TMP/signal-wrapper.json" &
 SIGNAL_PID=$!
 BACKGROUND_PIDS="$BACKGROUND_PIDS $SIGNAL_PID"
-for _try in $(seq 1 200); do
+for _try in $(seq 1 1500); do
   [[ -e "$SIGNAL_MARKER" ]] && break
   sleep 0.02
 done
@@ -1010,7 +1108,7 @@ touch "$LAUNCH_PRODUCT/factory/test-preflight-block"
 run_launcher launchtest preflight --ticket T-999 --json > "$TMP/race.json" &
 RACE_PID=$!
 BACKGROUND_PIDS="$BACKGROUND_PIDS $RACE_PID"
-for _try in $(seq 1 200); do
+for _try in $(seq 1 1500); do
   [[ -e "$RACE_MARKER" ]] && break
   sleep 0.02
 done
@@ -1122,15 +1220,19 @@ assert_model_call disable disable --scope-type route --scope-id codex-gpt-5.6-so
 assert_model_call enable enable --scope-type route --scope-id codex-gpt-5.6-sol --json
 
 PIN_HEAD_BEFORE="$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)"
-if ! run_launcher launchtest models pin --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
+if ! run_launcher launchtest models pin-batch \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
   --json > "$TMP/models-pin.json"; then
   cat "$TMP/models-pin.json" >&2
-  fail "valid model pin invocation failed"
+  fail "valid batch model pin invocation failed"
 fi
 python3 - "$TMP/models-pin.json" "$RUN_WORKTREE_PHYS" "$SHA_MODELS" <<'PY'
 import json, pathlib, subprocess, sys
 path, workdir, kit_sha = sys.argv[1:]
-value = json.load(open(path, encoding="utf-8"))
+batch = json.load(open(path, encoding="utf-8"))
+assert batch["schema"] == "model-pin-batch/v1", batch
+assert batch["status"] == "ok" and len(batch["pins"]) == 1, batch
+value = batch["pins"][0]
 assert value["schema"] == "ticket-model-route-plan/v1", value
 assert value["commit_created"] is True, value
 assert len(value["commit_sha"]) == 40 and len(value["pin_hash"]) == 64, value
@@ -1164,7 +1266,8 @@ if ! run_launcher launchtest models pin --ticket T-123 --workdir "$RUN_WORKTREE_
 fi
 python3 - "$TMP/models-pin.json" "$TMP/models-pin-again.json" <<'PY'
 import json, sys
-first, second = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:])
+first = json.load(open(sys.argv[1], encoding="utf-8"))["pins"][0]
+second = json.load(open(sys.argv[2], encoding="utf-8"))
 assert second["commit_created"] is False, second
 assert second["commit_sha"] == first["commit_sha"], (first, second)
 assert second["pin_hash"] == first["pin_hash"], (first, second)
@@ -1197,6 +1300,9 @@ expect_bad_model large-ttl disable --scope-type route --scope-id codex-gpt-5.6-s
 expect_bad_model pin-main pin --ticket T-123 --workdir "$LAUNCH_PRODUCT_PHYS" --json
 expect_bad_model pin-wrong-ticket pin --ticket T-123 \
   --workdir "$WRONG_TICKET_WORKTREE_PHYS" --json
+expect_bad_model pin-batch-duplicate pin-batch \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
 
 mv "$KITS_ROOT/projects/launchtest/routing" \
   "$KITS_ROOT/projects/launchtest/routing-real"
@@ -1221,6 +1327,8 @@ expect_bad_model maintenance-enable enable --scope-type route \
   --scope-id codex-gpt-5.6-sol --json
 expect_bad_model maintenance-pin pin --ticket T-123 \
   --workdir "$RUN_WORKTREE_PHYS" --json
+expect_bad_model maintenance-pin-batch pin-batch \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
 rm -f "$LAUNCH_PRODUCT/factory/MAINTENANCE"
 # Keep later launcher/run accounting fixtures independent from the model-state
 # mutation coverage above.
@@ -1446,10 +1554,17 @@ SHA_C="cccccccccccccccccccccccccccccccccccccccc"
 RELEASE_C="$KITS_ROOT/releases/$SHA_C"
 mkdir -p "$RELEASE_C/integrations/hermes" "$RELEASE_C/scripts/model-routing"
 cp "$CONTRACT" "$RELEASE_C/integrations/hermes/contract.json"
+python3 - "$RELEASE_C/integrations/hermes/contract.json" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1])
+value=json.loads(path.read_text())
+value["contract_version"]="1.7.0"
+path.write_text(json.dumps(value,indent=2)+"\n")
+PY
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ticket-pr.py ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh dispatch-plan.py model-control.sh model-manager.py model-router.py; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ticket-pr.py ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh dispatch-lease-heartbeat.py dispatch-plan.py model-control.sh model-manager.py model-router.py; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 cp -p "$ROOT/scripts/model-routing/catalog-v1.json" \
@@ -1496,7 +1611,7 @@ REAL_TREE="$(tree_for_directory "$RELEASE_C")"
 chmod -R a-w "$RELEASE_C"
 printf '%s\n' "$SHA_C" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 mkdir -p "$LAUNCH_PRODUCT/factory/tickets" "$LAUNCH_PRODUCT/factory/initiatives"
-for ticket in T-777 T-778 T-779 T-780; do
+for ticket in T-777 T-778 T-779 T-780 T-781 T-782; do
   cat > "$LAUNCH_PRODUCT/factory/tickets/$ticket.md" <<TICKET
 # $ticket — sealed runtime concurrency smoke
 
@@ -1525,7 +1640,7 @@ printf '%s\n' \
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'MAX_CONCURRENT_TICKETS=2' \
   > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add factory/tickets/T-77{7,8,9}.md \
-  factory/tickets/T-780.md factory/initiatives/I-777.md \
+  factory/tickets/T-78{0,1,2}.md factory/initiatives/I-777.md \
   factory/ENVELOPE.env factory/ledger.csv factory/PROJECT.env factory/KIT_PIN
 git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
 git -C "$LAUNCH_PRODUCT" push -q origin main
@@ -1634,6 +1749,12 @@ REAL_RUN_WORKTREE_779_PHYS="$(cd "$REAL_RUN_WORKTREE_779" && pwd -P)"
 REAL_RUN_WORKTREE_780="$TMP/real-run-worktree-780"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-780 "$REAL_RUN_WORKTREE_780"
 REAL_RUN_WORKTREE_780_PHYS="$(cd "$REAL_RUN_WORKTREE_780" && pwd -P)"
+REAL_RUN_WORKTREE_781="$TMP/real-run-worktree-781"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-781 "$REAL_RUN_WORKTREE_781"
+REAL_RUN_WORKTREE_781_PHYS="$(cd "$REAL_RUN_WORKTREE_781" && pwd -P)"
+REAL_RUN_WORKTREE_782="$TMP/real-run-worktree-782"
+git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-782 "$REAL_RUN_WORKTREE_782"
+REAL_RUN_WORKTREE_782_PHYS="$(cd "$REAL_RUN_WORKTREE_782" && pwd -P)"
 
 ROLELESS_PREFLIGHT_RC=0
 run_launcher launchtest preflight --ticket T-777 \
@@ -1691,6 +1812,69 @@ run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTRE
   --action materialize --json > "$TMP/real-ticket-state-779.json"
 run_launcher launchtest ticket-state --ticket T-780 --workdir "$REAL_RUN_WORKTREE_780_PHYS" \
   --action materialize --json > "$TMP/real-ticket-state-780.json"
+run_launcher launchtest ticket-state --ticket T-781 --workdir "$REAL_RUN_WORKTREE_781_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state-781.json"
+run_launcher launchtest ticket-state --ticket T-782 --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action materialize --json > "$TMP/real-ticket-state-782.json"
+
+# Development and Hermes consume the same trusted Reviewer reconciliation.
+mkdir -p "$LAUNCH_PRODUCT/factory/runs"
+for transition in Planning Building Review; do
+  run_launcher launchtest ticket-state --ticket T-781 \
+    --workdir "$REAL_RUN_WORKTREE_781_PHYS" \
+    --action transition --state "$transition" --json >/dev/null
+  run_launcher launchtest ticket-state --ticket T-782 \
+    --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+    --action transition --state "$transition" --json >/dev/null
+done
+for ticket in T-781 T-782; do
+  worktree="$REAL_RUN_WORKTREE_781_PHYS"
+  [[ "$ticket" == T-781 ]] || worktree="$REAL_RUN_WORKTREE_782_PHYS"
+  output="$LAUNCH_PRODUCT/factory/runs/reviewer-$ticket.out"
+  manifest="$LAUNCH_PRODUCT/factory/runs/reviewer-$ticket.meta"
+  printf '%s\n' 'Review complete.' 'REQUEST CHANGES' 'FIX-OWNER: both' > "$output"
+  head="$(git -C "$worktree" rev-parse HEAD)"
+  digest="$(shasum -a 256 "$output" | awk '{print $1}')"
+  printf '%s\n' \
+    "run_id=reviewer-$ticket" "ticket=$ticket" 'role=reviewer' 'adapter=codex' \
+    'contract_version=1.7.0' 'role_exit=ok' \
+    "role_head_before=$head" "role_remote_before=$head" "output_sha256=$digest" \
+    'accounting_state=completed' 'exit_status=0' 'started_at=2026-07-23T00:00:00Z' \
+    > "$manifest"
+done
+FACTORY_ROOT="$LAUNCH_PRODUCT" \
+FACTORY_CERTIFIED_PRODUCT_ORIGIN="$LAUNCH_PRODUCT_REMOTE" \
+FACTORY_HERMES_CONTRACT_VERSION=1.7.0 \
+  "$RELEASE_C_PHYS/scripts/ticket-state.sh" \
+    --ticket T-781 --workdir "$REAL_RUN_WORKTREE_781_PHYS" \
+    --action reviewer-reconcile > "$TMP/direct-reviewer-reconcile.json"
+run_launcher launchtest ticket-state --ticket T-782 \
+  --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action reviewer-reconcile --json > "$TMP/launcher-reviewer-reconcile.json"
+python3 - \
+  "$REAL_RUN_WORKTREE_781_PHYS/factory/tickets/T-781.md" \
+  "$REAL_RUN_WORKTREE_782_PHYS/factory/tickets/T-782.md" <<'PY'
+import re
+import sys
+
+left = open(sys.argv[1], encoding="utf-8").read().replace("T-781", "T-TEST")
+right = open(sys.argv[2], encoding="utf-8").read().replace("T-782", "T-TEST")
+assert left == right
+assert re.search(r"^State: Building$", left, re.M)
+assert left.count("reviewer round 1: REQUEST CHANGES") == 1
+assert left.count("reviewer round 1 FIX-OWNER: both") == 1
+PY
+run_launcher launchtest ticket-state --ticket T-782 \
+  --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action reviewer-reconcile --json > "$TMP/launcher-reviewer-reconcile-replay.json"
+printf '%s\n' 'tampered output' >> "$LAUNCH_PRODUCT/factory/runs/reviewer-T-782.out"
+REVIEWER_OUTPUT_DRIFT_RC=0
+run_launcher launchtest ticket-state --ticket T-782 \
+  --workdir "$REAL_RUN_WORKTREE_782_PHYS" \
+  --action reviewer-reconcile --json >/dev/null 2>&1 || REVIEWER_OUTPUT_DRIFT_RC=$?
+[[ "$REVIEWER_OUTPUT_DRIFT_RC" -eq 1 ]] ||
+  fail "reviewer reconciliation accepted output drift"
+rm -f "$LAUNCH_PRODUCT/factory/runs/reviewer-T-78"{1,2}.{meta,out}
 
 assert_bad_real_preflight() {
   local label="$1" rc=0
@@ -1935,7 +2119,7 @@ REAL_MANIFEST="$(awk -F= '$1=="ticket" && $2=="T-777" {print FILENAME}' \
   "$LAUNCH_PRODUCT/factory/runs/"*.meta | tail -1)"
 grep -qF "kit_sha=$SHA_C" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release SHA"
 grep -qF "kit_tree=$REAL_TREE" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release tree"
-grep -qF "contract_version=1.6.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
+grep -qF "contract_version=1.7.0" "$REAL_MANIFEST" || fail "real sealed run manifest omitted release contract"
 grep -qF "physical_kit_path=$RELEASE_C_PHYS" "$REAL_MANIFEST" || fail "real sealed run manifest omitted physical release path"
 grep -qF "role=planner" "$REAL_MANIFEST" || fail "real sealed run did not use the sequencer-authorized role"
 grep -qF "adapter=mock" "$REAL_MANIFEST" || fail "isolated launcher did not enforce the mock adapter"
@@ -1994,10 +2178,11 @@ with open(contract_path, encoding="utf-8") as handle:
     contract = json.load(handle)
 
 assert contract["contract"] == "nysa.software-factory.hermes"
-assert contract["contract_version"] == "1.6.0"
+assert contract["contract_version"] == "1.8.0"
 assert contract["doctor_schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert contract["preflight_schema"] == "nysa.software-factory.preflight/v1"
 assert contract["next_stage_schema"] == "nysa.software-factory.next-stage/v1"
+assert contract["state_machine_schema"] == "nysa.software-factory.state-machine/v1"
 assert contract["status_categories"] == ["ok", "warning", "error", "unknown"]
 assert contract["exit_codes"] == {
     "0": "no error-category checks",
@@ -2012,9 +2197,27 @@ assert contract["supported_hermes"] == [{
 assert contract["launcher"]["path"] == "~/.factory/bin/factory-launch"
 assert contract["launcher"]["source"] == "integrations/hermes/bin/factory-launch"
 commands = contract["launcher"]["commands"]
+assert commands["reconcile"]["output_schema"] == \
+    "nysa.software-factory.controller/v1"
+assert commands["qualification"]["output_schema"] == \
+    "nysa.software-factory.qualification-report/v1"
+assert commands["state-machine"]["output_schema"] == \
+    "nysa.software-factory.state-machine/v1"
+assert commands["passport"]["output_schema"] == \
+    "nysa.software-factory.ticket-passport/v1"
+assert commands["publication"]["output_schema"] == \
+    "nysa.software-factory.publication-lease/v1"
+assert commands["publication-repair"]["output_schema"] == \
+    "nysa.software-factory.publication-repair/v1"
+assert commands["ci-rerun"]["output_schema"] == \
+    "nysa.software-factory.ci-rerun/v1"
 dispatch = commands["dispatch-plan"]
 assert dispatch["minimum_contract_version"] == "1.6.0"
-assert dispatch["grammars"] == ["--shadow --json", "--claim --json"]
+assert dispatch["grammars"] == [
+    "--shadow --json",
+    "--claim --json",
+    "--claim [--exclude-ticket <T-NNN> ...] --json",
+]
 assert dispatch["output_schema"] == "nysa.software-factory.dispatch-plan/v1"
 ticket_pr = commands["ticket-pr"]
 assert ticket_pr["minimum_contract_version"] == "1.6.0"
@@ -2040,6 +2243,7 @@ assert commands["models"]["grammars"] == [
     "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json",
     "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
     "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
+    "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> [--allow-reviewer-family <safe-id>] --json",
 ]
 assert commands["models"]["state"] == {
@@ -2065,12 +2269,12 @@ assert commands["models"]["maintenance"] == {
     ],
     "refused": [
         "activate", "disable", "enable", "policy-apply", "pin", "migrate",
-        "fallback",
+        "fallback-auto", "fallback",
     ],
 }
 assert commands["preflight"]["arguments"] == [
     "--ticket", "<T-NNN>", "--role", "<next-stage-role>",
-    "[--lease <opaque-lease-id>]", "--workdir",
+    "[--lease <opaque-lease-id>]", "--receipt", "<lowercase-sha256>", "--workdir",
     "<absolute-product-worktree>", "--json",
 ]
 assert commands["next-stage"]["arguments"] == [
@@ -2082,13 +2286,15 @@ assert commands["next-stage"]["contract_1_3_terminal_action"].startswith(
 )
 assert commands["ticket-state"]["arguments"] == [
     "--ticket", "<T-NNN>", "--workdir", "<absolute-product-worktree>",
-    "--action", "<materialize|transition>", "[--state <ticket-state>]", "--json"
+    "--action", "<materialize|transition|reviewer-reconcile|qualification-backlog>",
+    "[--state <ticket-state>]", "--json"
 ]
 assert commands["ticket-state"]["transition_states"] == [
     "Planning", "Building", "Review", "Blocked-Escalated"
 ]
 assert commands["ticket-attest"]["arguments"] == [
     "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]",
+    "[--receipt <lowercase-sha256> (required for Contract 1.8 non-done actions)]",
     "--workdir", "<absolute-worktree>",
     "--action", "<bundle|approval|refresh|done>", "--json"
 ]
@@ -2105,20 +2311,26 @@ assert commands["claim"]["arguments"] == ["--ticket", "<T-NNN>"]
 assert commands["renew"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert commands["release"]["arguments"][-2:] == ["--lease", "<opaque-lease-id>"]
 assert contract["concurrency"]["default"] == 4
-assert contract["concurrency"]["maximum"] == 6
+assert contract["concurrency"]["maximum"] == 4
 assert contract["concurrency"]["enabled_value"] == 4
-assert contract["concurrency"]["enabled_values"] == [2, 3, 4, 5, 6]
-assert contract["concurrency"]["capacity_scope"] == \
-    "coupled ticket-worktree and provider-call capacity"
+assert contract["concurrency"]["enabled_values"] == [2, 3, 4]
+assert "disposable per-ticket execution cells" in \
+    contract["concurrency"]["capacity_scope"]
 assert "provider lock" in contract["concurrency"]["parallel_execution_gate"]
 assert contract["concurrency"]["lease_required_when_greater_than"] == 1
 provider_execution = contract["provider_execution"]
 assert provider_execution["contract_1_6_mode"] == "isolated-v1"
+assert provider_execution["contract_1_7_mode"] == "cli-concurrent-v1"
+assert provider_execution["contract_1_8_mode"] == "cli-concurrent-v1"
+assert set(provider_execution["activation_schemas"]) == {
+    "nysa.software-factory.provider-activation/v1",
+    "nysa.software-factory.provider-activation/v2",
+}
 assert provider_execution["runtime_authority"] == "scripts/provider-runtime.py"
 assert provider_execution["state_machine"] == [
     "prepared", "reserved", "GO", "submitted", "terminal",
 ]
-assert "disabled until" in provider_execution["activation_gate"]
+assert "owner-only canonical activation" in provider_execution["activation_gate"]
 assert "1.0.0 through 1.5.0" in provider_execution["legacy_contracts"]
 assert provider_execution["coordinator"]["transaction"] == "BEGIN IMMEDIATE"
 assert provider_execution["coordinator"]["database"].endswith("state-v2.sqlite3")
@@ -2155,7 +2367,13 @@ assert provider_execution["controller"]["artifact_schema"].endswith(
 assert provider_execution["recovery"]["authority"] == "scripts/provider-recovery.py"
 assert "persist request before signaling" in \
     provider_execution["recovery"]["cancellation"]
-assert "no isolated-v1 admission" in provider_execution["legacy_barrier"]
+assert "no isolated-v1 or cli-concurrent-v1 admission" in provider_execution["legacy_barrier"]
+assert provider_execution["subscription_cli"]["authority"] == \
+    "scripts/provider-cli-runtime.py"
+assert provider_execution["subscription_cli"]["allowed_adapters"] == [
+    "codex", "claude-code", "cursor-openai", "cursor-anthropic",
+]
+assert "Cursor at one" in provider_execution["subscription_cli"]["account_limits"]
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
     "<T-NNN>",
@@ -2197,14 +2415,16 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROJECT": "validated launcher project slug",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
-    "FACTORY_PROVIDER_DB": "fixed Contract 1.6 owner-local transactional database",
-    "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6 owner-local admission policy",
+    "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
+    "FACTORY_TRANSITION_STATE_DIR": "Contract 1.8 owner-only controller state directory",
+    "FACTORY_PROVIDER_DB": "fixed Contract 1.6+ owner-local transactional database",
+    "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6+ owner-local admission policy",
     "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
     "FACTORY_PROVIDER_CREDENTIALS": "fixed Contract 1.6 owner-local credential configuration",
     "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
-    "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6 owner-local attempt directory",
-    "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6 owner-local apply-lock directory",
-    "FACTORY_PROVIDER_ACTIVATION": "fixed Contract 1.6 owner-local isolated-v1 activation gate",
+    "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6+ owner-local attempt directory",
+    "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6+ owner-local apply-lock directory",
+    "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
     "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
     "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor",
 }
@@ -2221,6 +2441,8 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_PROJECT",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
+    "FACTORY_TRANSITION_RECEIPT_SHA256",
+    "FACTORY_TRANSITION_STATE_DIR",
     "FACTORY_PROVIDER_DB",
     "FACTORY_PROVIDER_POLICY",
     "FACTORY_PROVIDER_BROKER_DB",
@@ -2260,7 +2482,17 @@ assert contract["launcher"]["active_record"]["contract_1_2_required_fields"] == 
 assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 for surface in [
+    "scripts/factory-controller.py",
+    "scripts/qualification-environment.py",
+    "scripts/state-machine.py",
+    "scripts/ticket-passport.py",
+    "scripts/publication-lease.py",
+    "scripts/publication-conflict-policy.py",
+    "scripts/ci-rerun.py",
+    "scripts/ticket-readiness.py",
+    "scripts/launchd/com.factory.controller.plist.template",
     "scripts/provider-coordinator.py",
+    "scripts/provider-cli-runtime.py",
     "scripts/provider-credential-broker.py",
     "scripts/provider-activation.py",
     "scripts/provider-artifact-controller.py",
@@ -2291,6 +2523,19 @@ for surface in [
 ]:
     assert surface in contract["compatibility_sensitive_surfaces"], surface
 
+launcher_text = open(
+    os.path.join(root, "integrations", "hermes", "bin", "factory-launch"),
+    encoding="utf-8",
+).read()
+assert "/private/tmp/nysa-sf-qualification" in launcher_text
+assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
+assert 'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")' in launcher_text
+assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
+runner_text = open(
+    os.path.join(root, "scripts", "run-agent.sh"), encoding="utf-8"
+).read()
+assert 'nysa-sf-qualification.*' in runner_text
+
 integration = os.path.join(root, "integrations", "hermes")
 required = [
     "contract.json",
@@ -2309,7 +2554,7 @@ for relative in required:
 assert os.access(os.path.join(integration, "bin/factory-launch"), os.X_OK)
 
 changelog = open(os.path.join(integration, "CHANGELOG.md"), encoding="utf-8").read()
-assert "## 1.6.0" in changelog and "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
+assert "## 1.8.0" in changelog and "## 1.7.0" in changelog and "## 1.6.0" in changelog and "## 1.5.0" in changelog and "## 1.4.0" in changelog and "## 1.3.0" in changelog and "## 1.2.0" in changelog and "## 1.1.0" in changelog and "## 1.0.0" in changelog
 assert "0.18.2" in changelog and "2026.7.7.2" in changelog
 
 for relative in [
@@ -2336,44 +2581,27 @@ skill = open(
     os.path.join(integration, "templates/profile/skills/factory-dispatch/SKILL.md"),
     encoding="utf-8",
 ).read()
-assert "factory-launch <project> reorder-test-fixes" in skill
-assert "version: 1.6.0" in skill
-assert "Contracts `1.2.0` through `1.5.0` retain `1.1.0` lease behavior unchanged" in skill
-assert re.search(
-    r"Contract `1\.6\.0` accepts a capacity from `1`\s+through `6`", skill
-)
-assert "preflight --ticket <T-NNN> --role <next-stage-role>" in skill
-assert "factory-launch <project> ticket-state" in skill
-assert "factory-launch <project> ticket-attest" in skill
-assert "factory-launch <project> project-ledger" in skill
-assert "factory-launch <project> ticket-pr" in skill
-assert "copy, reconstruct, reorder, or hand-edit ledger rows" in skill
-assert "--ticket <T-NNN>" in skill
-assert "--workdir <absolute-product-worktree>" in skill
+assert "version: 1.8.0" in skill
+assert "reconcile --json" in skill
+assert "cannot spawn an agentic dispatcher" in skill
+assert "four disposable execution cells" in skill
 
 supervisor = open(
     os.path.join(integration, "templates/profile/skills/factory-supervisor/SKILL.md"),
     encoding="utf-8",
 ).read()
-assert "version: 1.6.0" in supervisor
+assert "version: 1.8.0" in supervisor
 assert "dispatch-plan --claim --json" in supervisor
-assert "starts at most one child" in supervisor
-assert re.search(r"Never\s+put the lease", supervisor)
+assert "no agentic supervisor" in supervisor
+assert "reconcile --json" in supervisor
 
 soul = open(
     os.path.join(integration, "templates/profile/SOUL.md"), encoding="utf-8"
 ).read()
-assert re.search(
-    r"Contracts `1\.2\.0` through `1\.5\.0` retain contract `1\.1\.0` lease behavior\s+unchanged",
-    soul,
-)
-assert "Contract `1.6.0` accepts up to six" in soul
-assert "preflight --ticket <T-NNN> --role <next-stage-role>" in soul
-assert "next-stage --ticket <T-NNN> --workdir <ticket-worktree> --json" in soul
-assert "factory-launch <project> ticket-state" in soul
-assert "factory-launch <project> ticket-attest" in soul
-assert "factory-launch <project> project-ledger" in soul
-assert "never hand-edit ticket state or" in soul
+assert "no agentic dispatcher or supervisor" in soul
+assert "reconcile --json" in soul
+assert "every 15 seconds" in soul
+assert "exactly one product publication lease" in soul
 
 fixture = json.load(open(os.path.join(integration, "fixtures/factory-profile.json"), encoding="utf-8"))
 assert fixture["redacted"] is True
@@ -2381,6 +2609,7 @@ assert fixture["secret_values_included"] is False
 assert fixture["profile"]["environment_key_presence"] == {"GH_TOKEN": True}
 assert "skills/factory-supervisor/SKILL.md" in fixture["profile"]["files"]
 assert fixture["services"] == [
+    {"kind": "controller", "launch_agent": "per-product"},
     {"kind": "gateway", "launch_agent": "separate"},
     {"kind": "dashboard", "launch_agent": "separate"},
 ]

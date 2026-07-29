@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -122,10 +123,31 @@ class ProviderCoordinatorTest(unittest.TestCase):
             *arguments,
         )
 
+    def prepare(
+        self, attempt, operation=None, family="openai", account="account-a",
+        reserve_micro_usd=1_250_000, product="product-a", ticket="T-123",
+        product_cap=100_000_000, ticket_cap=100_000_000,
+        machine_cap=100_000_000,
+    ):
+        return self.json_command(
+            "prepare", "--operation-id", operation or f"prepare-{attempt}",
+            "--attempt-id", attempt, "--provider-family", family,
+            "--account-route", account,
+            "--reserve-micro-usd", reserve_micro_usd,
+            "--product-id", product, "--ticket-id", ticket,
+            "--budget-day", "2026-07-20",
+            "--product-daily-cap-micro-usd", product_cap,
+            "--ticket-cap-micro-usd", ticket_cap,
+            "--machine-daily-cap-micro-usd", machine_cap,
+        )
+
     def test_six_way_coupled_limit_and_terminal_release(self):
-        admitted = [self.reserve(f"run-{number}") for number in range(6)]
+        admitted = [
+            self.reserve(f"run-{number}", ticket=f"T-{number + 100}")
+            for number in range(6)
+        ]
         self.assertTrue(all(item["admitted"] for item in admitted))
-        denied = self.reserve("run-7")
+        denied = self.reserve("run-7", ticket="T-107")
         self.assertFalse(denied["admitted"])
         self.assertIn(
             {"limit": "max_concurrent", "scope": "coupled"}, denied["denials"]
@@ -318,6 +340,81 @@ class ProviderCoordinatorTest(unittest.TestCase):
             thread.join()
         self.assertEqual(sorted(item["admitted"] for item in outputs), [False, True])
 
+    def test_wait_admit_rechecks_without_persisting_denial_operations(self):
+        self.write_policy(coupled=1, global_concurrent=1)
+        self.assertTrue(self.reserve("holder", ticket="T-1")["admitted"])
+        self.prepare("waiter", ticket="T-2")
+        started = time.monotonic()
+        waiting = subprocess.Popen([
+            "python3", str(COORDINATOR), "--db", str(self.db), "wait-admit",
+            "--operation-id", "wait-waiter", "--attempt-id", "waiter",
+            "--expected-version", "1", "--policy", str(self.policy),
+            "--wait-seconds", "3",
+        ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(0.25)
+        self.transition(
+            "terminalize", "holder", 2, "finish-holder", 1001,
+            "--result", "succeeded", "--charge-micro-usd", "0",
+        )
+        stdout, stderr = waiting.communicate(timeout=5)
+        self.assertEqual(waiting.returncode, 0, stderr)
+        self.assertTrue(json.loads(stdout)["admitted"])
+        self.assertLess(time.monotonic() - started, 2)
+        with sqlite3.connect(self.db) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM operations WHERE command='wait-admit'"
+                ).fetchone()[0],
+                1,
+            )
+
+    def test_wait_admit_cancellation_stops_only_waiting_attempt(self):
+        self.write_policy(coupled=1, global_concurrent=1)
+        self.assertTrue(self.reserve("holder", ticket="T-1")["admitted"])
+        self.prepare("waiter", ticket="T-2")
+        cancel = self.root / "cancel"
+        waiting = subprocess.Popen([
+            "python3", str(COORDINATOR), "--db", str(self.db), "wait-admit",
+            "--operation-id", "wait-cancel", "--attempt-id", "waiter",
+            "--expected-version", "1", "--policy", str(self.policy),
+            "--wait-seconds", "3", "--cancel-path", str(cancel),
+        ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(0.25)
+        cancel.write_text("cancel\n", encoding="utf-8")
+        stdout, stderr = waiting.communicate(timeout=5)
+        self.assertEqual(waiting.returncode, 0, stderr)
+        result = json.loads(stdout)
+        self.assertFalse(result["admitted"])
+        self.assertEqual(result["stopped_by"], str(cancel))
+        attempts = {
+            item["attempt_id"]: item for item in self.json_command("status")["attempts"]
+        }
+        self.assertEqual(attempts["holder"]["state"], "reserved")
+        self.assertEqual(attempts["waiter"]["state"], "prepared")
+
+    def test_wait_admit_budget_denial_is_immediate(self):
+        self.assertTrue(self.reserve(
+            "spent", reserve_micro_usd=100, ticket="T-1",
+            product_cap=100, ticket_cap=100, machine_cap=100,
+        )["admitted"])
+        self.prepare(
+            "blocked", reserve_micro_usd=100, ticket="T-2",
+            product_cap=100, ticket_cap=100, machine_cap=100,
+        )
+        started = time.monotonic()
+        result = self.json_command(
+            "wait-admit", "--operation-id", "wait-budget",
+            "--attempt-id", "blocked", "--expected-version", "1",
+            "--policy", self.policy, "--wait-seconds", "3",
+        )
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(result["admitted"])
+        self.assertFalse(result["timed_out"])
+        self.assertIn(
+            {"limit": "budget_micro_usd", "scope": "product_day"},
+            result["denials"],
+        )
+
     def test_seven_simultaneous_reservations_admit_exactly_six(self):
         barrier = threading.Barrier(8)
         outputs = []
@@ -328,6 +425,7 @@ class ProviderCoordinatorTest(unittest.TestCase):
                 f"parallel-{number}",
                 operation=f"parallel-reserve-{number}",
                 now=200,
+                ticket=f"T-{number + 200}",
             ))
 
         threads = [threading.Thread(target=reserve, args=(number,)) for number in range(7)]

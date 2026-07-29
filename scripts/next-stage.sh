@@ -136,7 +136,8 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
 fi
 TERMINAL_BASIS=""
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]]; then
+      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
   TERMINAL_BASIS="$(python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
     --terminal-basis 2>/dev/null || true)"
@@ -163,11 +164,14 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 
-# A sealed base refresh invalidates all review/narration evidence at or before
-# the recorded baselines. The receipt is committed by ticket-attest; fail
-# closed if it is edited, malformed, or no longer belongs to this history.
+# A sealed base refresh invalidates review/narration evidence unless the exact
+# protected-base delta contains only authenticated, non-semantic control files.
+# The receipt is committed by ticket-attest; fail closed if it is edited,
+# malformed, or no longer belongs to this history.
 REFRESH_RECEIPT="$CONTENT_ROOT/factory/attestations/$TICKET/refresh.json"
 REFRESH_ACTIVE=0
+REFRESH_PRESERVE_REVIEW=0
+REFRESH_PRESERVE_NARRATOR=0
 if [[ -e "$REFRESH_RECEIPT" ]]; then
   [[ -f "$REFRESH_RECEIPT" && ! -L "$REFRESH_RECEIPT" ]] || {
     echo "REFUSE refresh receipt is not a regular file"
@@ -255,6 +259,22 @@ PY
     echo "REFUSE refresh receipt was not committed directly after its merge"
     exit 1
   fi
+  if ! REFRESH_CLASSIFICATION="$(python3 \
+    "$KIT_DIR/scripts/lib/refresh_semantics.py" \
+    --repo "$TICKET_WORKTREE_ROOT" \
+    --old-head "$REFRESH_OLD_HEAD" \
+    --base-head "$REFRESH_BASE_HEAD")"; then
+    echo "REFUSE protected-base semantic classification failed"
+    exit 1
+  fi
+  case "$REFRESH_CLASSIFICATION" in
+    PRESERVE) REFRESH_PRESERVE_REVIEW=1 ;;
+    INVALIDATE) ;;
+    *)
+      echo "REFUSE protected-base semantic classification was invalid"
+      exit 1
+      ;;
+  esac
   REFRESH_PATHS="$(git -C "$TICKET_WORKTREE_ROOT" diff-tree --no-commit-id \
     --name-status -r "$REFRESH_COMMIT" 2>/dev/null || true)"
   REFRESH_TICKET_CHANGED="$(REFRESH_PATHS_INPUT="$REFRESH_PATHS" python3 - "$TICKET" <<'PY'
@@ -336,13 +356,14 @@ for line in lines:
 raw_reviewers = approve + request + len(voids)
 if any(number < 1 or number > raw_reviewers for number in voids):
     raise SystemExit(1)
-print(f"{approve}|{request}|{len(voids)}")
+print(f"{approve}|{request}|{len(voids)}|{','.join(map(str, sorted(voids)))}")
 PY
 )" || {
     echo "REFUSE old ticket has malformed reviewer void evidence"
     exit 1
   }
-  IFS='|' read -r OLD_APPROVES OLD_REQUESTS OLD_VOID_COUNT <<< "$OLD_BASELINES"
+  IFS='|' read -r OLD_APPROVES OLD_REQUESTS OLD_VOID_COUNT OLD_VOID_RUNS \
+    <<< "$OLD_BASELINES"
   if [[ "$REFRESH_APPROVES" -ne "$OLD_APPROVES" ||
         "$REFRESH_REQUESTS" -ne "$OLD_REQUESTS" ||
         "$REFRESH_REVIEWERS" -ne $((OLD_APPROVES + OLD_REQUESTS)) ]]; then
@@ -391,7 +412,8 @@ if [[ -n "$TERMINAL_BASIS" ]]; then
   exit 0
 fi
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]]; then
+      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
   if [[ "$COMMITTED_STATE" == "done" ]]; then
@@ -449,6 +471,39 @@ if [[ -z "${FACTORY_LEDGER:-}" ]] &&
   echo "REFUSE effective ledger could not be reduced"
   exit 1
 fi
+if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+  BUDGET_STAGE="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
+    "$REPO_ROOT" "$TICKET")" || {
+      echo "REFUSE ticket budget could not be reduced"
+      exit 1
+    }
+  if [[ "$BUDGET_STAGE" == AWAIT_BUDGET* ]]; then
+    echo "$BUDGET_STAGE"
+    exit 0
+  fi
+  [[ "$BUDGET_STAGE" == "AVAILABLE" ]] || {
+    echo "REFUSE ticket budget reducer returned an invalid stage"
+    exit 1
+  }
+  if [[ -n "${FACTORY_TRANSITION_STATE_DIR:-}" ]]; then
+    REPAIR_STAGE="$(python3 -B "$KIT_DIR/scripts/publication-repair.py" stage \
+      --factory-root "$REPO_ROOT" --workdir "$CONTENT_ROOT" \
+      --state-dir "$FACTORY_TRANSITION_STATE_DIR" --kit-dir "$KIT_DIR" \
+      --ticket "$TICKET" --factory-sha "$FACTORY_RELEASE_SHA" \
+      --ledger "$LEDGER")" || {
+        echo "REFUSE publication repair stage could not be reduced"
+        exit 1
+      }
+    if [[ "$REPAIR_STAGE" != "INACTIVE" ]]; then
+      echo "$REPAIR_STAGE"
+      exit 0
+    fi
+    if grep -q '^FACTORY PUBLICATION REPAIR:' "$TICKET_FILE"; then
+      echo "REFUSE publication repair directive lacks authenticated controller state"
+      exit 1
+    fi
+  fi
+fi
 
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
 # (cat the ledger defensively: a missing ledger means zero runs, not an error.)
@@ -458,6 +513,111 @@ count_authorization() { # role semantic-round
 }
 P="$(count_ok planner)"; SL="$(count_ok spec-linter)"; TA="$(count_ok test-author)"
 B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"
+LOCAL_P="$P"; LOCAL_SL="$SL"; LOCAL_TA="$TA"
+LOCAL_B="$B"; LOCAL_R="$R"; LOCAL_N="$N"
+CHECKPOINT_P=0; CHECKPOINT_SL=0; CHECKPOINT_TA=0
+CHECKPOINT_B=0; CHECKPOINT_R=0; CHECKPOINT_N=0
+CHECKPOINT_NEXT_STAGE=""
+CHECKPOINT_AWAIT_REOPENED=0
+if [[ -n "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]]; then
+  CHECKPOINT_COUNTS="$(python3 - "$FACTORY_DEV_PRODUCT_CHECKPOINT" \
+    "${FACTORY_CLI_LANE_ROOT:-}" "$CONTENT_ROOT" "$TICKET" "$COMMITTED_HEAD" \
+    "$TICKET_FILE" <<'PY'
+import json, os, pathlib, re, stat, subprocess, sys
+checkpoint, lane, work, ticket, head, ticket_file=sys.argv[1:]
+path=pathlib.Path(checkpoint); lane_path=pathlib.Path(lane)
+if (not lane_path.is_absolute() or not lane_path.name.startswith("nysa-sf-dev.") or
+    path.resolve() != (lane_path/"runtime/product-checkpoint-import.json").resolve()):
+    raise SystemExit(1)
+for item, mode in ((lane_path/"marker.json",0o600),(path,0o600)):
+    info=item.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+        info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
+        raise SystemExit(1)
+marker=json.load(open(lane_path/"marker.json",encoding="utf-8"))
+value=json.load(open(path,encoding="utf-8"))
+if (marker.get("mode") != "product" or
+    set(value) != {"schema","checkpoint_sha256","tickets"} or
+    value.get("schema") not in {
+        "factory-dev-product-checkpoint-import/v1",
+        "factory-dev-product-checkpoint-import/v2",
+    }):
+    raise SystemExit(1)
+records=[item for item in value["tickets"] if item.get("ticket") == ticket]
+if not records:
+    print("0\t0\t0\t0\t0\t0\t")
+    raise SystemExit(0)
+if len(records) != 1: raise SystemExit(1)
+record=records[0]
+if set(record) != {"ticket","import_head","import_tree","roles",
+                   "spec_verdicts","expected_next_stage"}:
+    raise SystemExit(1)
+sha=lambda item: isinstance(item,str) and re.fullmatch(r"[0-9a-f]{40}",item)
+if (not sha(record["import_head"]) or not sha(record["import_tree"]) or
+    subprocess.run(["git","-C",work,"merge-base","--is-ancestor",
+                    record["import_head"],head]).returncode != 0):
+    raise SystemExit(1)
+actual=subprocess.check_output(
+    ["git","-C",work,"rev-parse",record["import_head"]+"^{tree}"],text=True).strip()
+if actual != record["import_tree"]: raise SystemExit(1)
+roles=record["roles"]
+if (not isinstance(roles,list) or not roles or
+    any(role not in {
+        "planner","spec-linter","test-author","builder","reviewer","narrator"
+    }
+        for role in roles)):
+    raise SystemExit(1)
+text=pathlib.Path(ticket_file).read_text(encoding="utf-8")
+specs=[
+    line.strip() for line in re.findall(
+        r"^\s*SPEC-LINT: (?:PASS|FAIL(?: — .+)?)$", text, re.M
+    )
+]
+checkpoint_specs=record["spec_verdicts"]
+if (not isinstance(checkpoint_specs,list) or
+    specs[:len(checkpoint_specs)] != checkpoint_specs):
+    raise SystemExit(1)
+print("\t".join([
+    *(str(roles.count(role)) for role in
+      ("planner","spec-linter","test-author","builder","reviewer","narrator")),
+    record["expected_next_stage"],
+]))
+PY
+  )" || { echo "REFUSE development checkpoint binding is invalid"; exit 1; }
+  IFS=$'\t' read -r CHECKPOINT_P CHECKPOINT_SL CHECKPOINT_TA CHECKPOINT_B \
+    CHECKPOINT_R CHECKPOINT_N CHECKPOINT_NEXT_STAGE <<<"$CHECKPOINT_COUNTS"
+  P=$((P + CHECKPOINT_P)); SL=$((SL + CHECKPOINT_SL))
+  TA=$((TA + CHECKPOINT_TA)); B=$((B + CHECKPOINT_B))
+  R=$((R + CHECKPOINT_R)); N=$((N + CHECKPOINT_N))
+  if [[ "$CHECKPOINT_NEXT_STAGE" == "FIX test-author" && "$LOCAL_TA" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN test-author" && "$LOCAL_TA" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "FIX builder" && "$LOCAL_B" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN builder" && "$LOCAL_B" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN planner" && "$LOCAL_P" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN spec-linter" && "$LOCAL_SL" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN reviewer" && "$LOCAL_R" -eq 0 ]] ||
+     [[ "$CHECKPOINT_NEXT_STAGE" == "RUN narrator" && "$LOCAL_N" -eq 0 ]]; then
+    echo "$CHECKPOINT_NEXT_STAGE"
+    exit 0
+  fi
+  if { [[ "$CHECKPOINT_NEXT_STAGE" == "FIX test-author" && "$LOCAL_TA" -gt 0 ]] ||
+       [[ "$CHECKPOINT_NEXT_STAGE" == "FIX builder" && "$LOCAL_B" -gt 0 ]]; }; then
+    grep -qxE 'OPERATOR PUBLICATION REPAIR: (test-author|builder)' \
+      "$TICKET_FILE" ||
+      { echo "REFUSE repaired checkpoint lacks a publication repair directive"; exit 1; }
+    CHECKPOINT_AWAIT_REOPENED=1
+  fi
+  if [[ "$CHECKPOINT_NEXT_STAGE" == AWAIT-OPERATOR* ]]; then
+    if [[ "$LOCAL_TA" -eq 0 && "$LOCAL_B" -eq 0 ]]; then
+      echo "$CHECKPOINT_NEXT_STAGE"
+      exit 0
+    fi
+    grep -qxE 'OPERATOR PUBLICATION REPAIR: (test-author|builder)' \
+      "$TICKET_FILE" ||
+      { echo "REFUSE operator-await checkpoint changed without a publication repair directive"; exit 1; }
+    CHECKPOINT_AWAIT_REOPENED=1
+  fi
+fi
 
 evidence_bundle_is_valid() {
   local bundle="$CONTENT_ROOT/factory/tickets/$TICKET-bundle.md"
@@ -555,14 +715,6 @@ if [[ "$TA" -eq 0 ]]; then
     exit 1
   fi
   SPEC_VERDICTS=$((SLP + SLF))
-  if [[ "$SLF" -ge 2 && "$SLF" -eq "$SPEC_VERDICTS" ]]; then
-    NEXT_SPEC_ROUND=$((SPEC_VERDICTS + 1))
-    SPEC_AUTH="$(count_authorization spec-linter "$NEXT_SPEC_ROUND")"; SPEC_AUTH="${SPEC_AUTH:-0}"
-    if [[ "$SPEC_AUTH" -eq 0 ]]; then
-      echo "ESCALATE spec-lint failed twice — the spec keeps failing its own checklist; operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: spec-linter round $NEXT_SPEC_ROUND' line on the ticket, written on explicit operator instruction)"
-      exit 0
-    fi
-  fi
   if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
   if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
 fi
@@ -655,7 +807,55 @@ for index, run_id in selected:
 PY
 }
 
-if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
+# A control-only base advance preserves only the effective evidence that
+# actually belongs to the receipt-bound old head. Earlier successful rows left
+# behind by an authorized force-push remain auditable, but do not invalidate a
+# later valid Reviewer/Narrator pair on the surviving lineage.
+if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 1 ]]; then
+  if ! PRESERVED_REVIEW_ROWS="$(refresh_manifest_rows reviewer 0 "$OLD_VOID_RUNS")" ||
+     ! PRESERVED_NARRATOR_ROWS="$(refresh_manifest_rows narrator 0 "")"; then
+    echo "REFUSE preserved refresh evidence lacks an exact successful run manifest"
+    exit 1
+  fi
+  PRESERVED_INDEX=0
+  PRESERVED_REVIEW_LEDGER=0
+  PRESERVED_REVIEW_HEAD=""
+  while IFS='|' read -r _index evidence_head; do
+    [[ -n "$evidence_head" ]] || continue
+    PRESERVED_INDEX=$((PRESERVED_INDEX + 1))
+    if [[ "$PRESERVED_INDEX" -le "$REFRESH_REVIEWERS" ]]; then
+      PRESERVED_REVIEW_LEDGER="$_index"
+      PRESERVED_REVIEW_HEAD="$evidence_head"
+    fi
+  done <<< "$PRESERVED_REVIEW_ROWS"
+  if [[ "$REFRESH_REVIEWERS" -gt 0 ]] &&
+     { [[ -z "$PRESERVED_REVIEW_HEAD" ]] ||
+       ! git -C "$TICKET_WORKTREE_ROOT" merge-base --is-ancestor \
+         "$PRESERVED_REVIEW_HEAD" "$REFRESH_OLD_HEAD" 2>/dev/null; }; then
+    REFRESH_PRESERVE_REVIEW=0
+  fi
+  PRESERVED_INDEX=0
+  PRESERVED_NARRATOR_LEDGER=0
+  PRESERVED_NARRATOR_HEAD=""
+  while IFS='|' read -r _index evidence_head; do
+    [[ -n "$evidence_head" ]] || continue
+    PRESERVED_INDEX=$((PRESERVED_INDEX + 1))
+    if [[ "$PRESERVED_INDEX" -le "$REFRESH_NARRATORS" ]]; then
+      PRESERVED_NARRATOR_LEDGER="$_index"
+      PRESERVED_NARRATOR_HEAD="$evidence_head"
+    fi
+  done <<< "$PRESERVED_NARRATOR_ROWS"
+  if [[ "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
+        "$REFRESH_NARRATORS" -gt 0 &&
+        -n "$PRESERVED_NARRATOR_HEAD" ]] &&
+     git -C "$TICKET_WORKTREE_ROOT" merge-base --is-ancestor \
+       "$PRESERVED_NARRATOR_HEAD" "$REFRESH_OLD_HEAD" 2>/dev/null &&
+     [[ "$PRESERVED_NARRATOR_LEDGER" -gt "$PRESERVED_REVIEW_LEDGER" ]]; then
+    REFRESH_PRESERVE_NARRATOR=1
+  fi
+fi
+
+if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   if ! FRESH_REVIEW_ROWS="$(refresh_manifest_rows reviewer \
     "$REFRESH_RAW_REVIEWERS" "$VOID_RUNS")" ||
      ! FRESH_NARRATOR_ROWS="$(refresh_manifest_rows narrator \
@@ -677,22 +877,114 @@ fi
 
 # A Builder or Test-author run after the latest non-void Reviewer invalidates
 # that review, including after a protected-base evidence refresh.
-FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" '
-  BEGIN { voids="," void_list ","; reviewer_run=0 }
+FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
+  -v imported_reviewers="$CHECKPOINT_R" '
+  BEGIN {
+    voids="," void_list ","
+    reviewer_run=imported_reviewers
+    if (imported_reviewers>0) last_r=1
+  }
   NR>1 && $3==t && $9=="0" {
     if ($4=="reviewer") {
       reviewer_run++
-      if (index(voids, "," reviewer_run ",")==0) { last_r=NR; fix=0 }
+      if (index(voids, "," reviewer_run ",")==0) {
+        last_r=NR; builder=0; test_author=0; builder_after_test=0
+      }
     }
-    else if (($4=="builder" || $4=="test-author") && last_r>0) fix=1
+    else if ($4=="builder" && last_r>0) {
+      builder=1
+      if (test_author) builder_after_test=1
+    }
+    else if ($4=="test-author" && last_r>0) test_author=1
   }
-  END { print fix+0 }' "$LEDGER")"
-if [[ "$FIX_AFTER" -eq 1 ]]; then
+  END { print builder+0 "|" test_author+0 "|" builder_after_test+0 }' "$LEDGER")"
+IFS='|' read -r FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST <<<"$FIX_AFTER"
+
+LATEST_VERDICT=""
+LATEST_FIX_OWNER=""
+CONTRACT17_FIX_ACTION=""
+if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
+      "$VERDICTS" -gt 0 ]]; then
+  OWNER_DATA="$(python3 - "$TICKET_FILE" <<'PY'
+import re
+import sys
+
+verdicts = {}
+owners = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    match = re.fullmatch(
+        r"\s*reviewer round\s+(\d+):\s*(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*",
+        line, re.I,
+    )
+    if match:
+        round_number = int(match.group(1))
+        verdict = match.group(2).upper()
+        verdict = "REQUEST CHANGES" if verdict.startswith("REQUEST CHANGES") else verdict
+        if round_number in verdicts:
+            raise SystemExit(1)
+        verdicts[round_number] = verdict
+        continue
+    match = re.fullmatch(
+        r"\s*reviewer round\s+(\d+)\s+FIX-OWNER:\s*(builder|test-author|both)\s*",
+        line, re.I,
+    )
+    if match:
+        round_number = int(match.group(1))
+        if round_number in owners:
+            raise SystemExit(1)
+        owners[round_number] = match.group(2).lower()
+
+if not verdicts or set(owners) - set(verdicts):
+    raise SystemExit(1)
+for round_number, verdict in verdicts.items():
+    if (verdict == "REQUEST CHANGES") != (round_number in owners):
+        raise SystemExit(1)
+latest = max(verdicts)
+print(f"{verdicts[latest]}|{owners.get(latest, '')}")
+PY
+  )" || {
+    echo "REFUSE contract 1.7 reviewer verdicts require exact, unambiguous FIX-OWNER records"
+    exit 1
+  }
+  IFS='|' read -r LATEST_VERDICT LATEST_FIX_OWNER <<<"$OWNER_DATA"
+fi
+
+if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
+      "$LATEST_VERDICT" == "REQUEST CHANGES" ]]; then
+  case "$LATEST_FIX_OWNER" in
+    builder)
+      if [[ "$FIX_BUILDER" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX builder"
+      else
+        echo "RUN reviewer"
+        exit 0
+      fi
+      ;;
+    test-author)
+      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX test-author"
+      else
+        echo "RUN reviewer"
+        exit 0
+      fi
+      ;;
+    both)
+      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX test-author"
+      elif [[ "$FIX_BUILDER_AFTER_TEST" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX builder"
+      else
+        echo "RUN reviewer"
+        exit 0
+      fi
+      ;;
+  esac
+elif [[ "$FIX_BUILDER" -eq 1 || "$FIX_TEST_AUTHOR" -eq 1 ]]; then
   echo "RUN reviewer"
   exit 0
 fi
 
-if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
+if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   FRESH_REVIEWERS=$((REVIEWER_RUNS - REFRESH_REVIEWERS))
   FRESH_APPROVES=$((A - REFRESH_APPROVES))
   FRESH_REQUESTS=$((RC - REFRESH_REQUESTS))
@@ -724,6 +1016,16 @@ if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
   # A post-refresh rejection must use the ordinary fix/re-review path below;
   # an approval from the invalidated generation cannot short-circuit it.
 elif [[ "$A" -ge 1 ]]; then
+  if [[ "$REFRESH_ACTIVE" -eq 1 &&
+        "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
+        "$REFRESH_PRESERVE_NARRATOR" -eq 0 ]]; then
+    echo "RUN narrator"
+    exit 0
+  fi
+  if [[ "$CHECKPOINT_AWAIT_REOPENED" -eq 1 && "$LOCAL_N" -eq 0 ]]; then
+    echo "RUN narrator"
+    exit 0
+  fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
   # future bundle-attestation path. Contract 1.2 stops before that boundary.
   if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
@@ -735,21 +1037,4 @@ elif [[ "$A" -ge 1 ]]; then
   exit 0
 fi
 
-# All recorded verdicts are REQUEST CHANGES.
-if [[ "$RC" -ge 2 ]]; then
-  # Operator override: after the two-round limit, the operator can authorize
-  # exactly one extra reviewer round by recording a ticket line of the form
-  #   OPERATOR AUTHORIZATION: reviewer round <N>
-  # where N is the next semantic round (recorded verdicts + 1). The dispatcher may
-  # never write this line on its own initiative — only on an explicit
-  # operator instruction, which the escalation that got the operator here
-  # provides the audit trail for.
-  NEXT_ROUND=$((VERDICTS + 1))
-  AUTH="$(count_authorization reviewer "$NEXT_ROUND")"; AUTH="${AUTH:-0}"
-  if [[ "$AUTH" -lt 1 ]]; then
-    echo "ESCALATE reviewer requested changes twice — two-round limit reached, operator decides (an extra round needs an 'OPERATOR AUTHORIZATION: reviewer round $NEXT_ROUND' line on the ticket, written on explicit operator instruction)"
-    exit 0
-  fi
-fi
-
-echo "FIX builder-or-test-author"
+echo "${CONTRACT17_FIX_ACTION:-FIX builder-or-test-author}"

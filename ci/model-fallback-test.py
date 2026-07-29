@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end regression for fallback preview and trusted handoff commit."""
 
+import base64
 import datetime as dt
 import importlib.util
 import json
@@ -52,7 +53,7 @@ class FallbackTest(unittest.TestCase):
         git(self.repo, "remote", "add", "origin", str(self.remote))
 
         catalog, routes, profiles, profile_map = ROUTER.load_policy()
-        profile = profile_map[sorted(profile_map)[0]]
+        profile = profile_map["cursor-balanced-v2"]
         readiness = {
             route_id: {
                 "adapter_version": "test-v1",
@@ -87,6 +88,12 @@ class FallbackTest(unittest.TestCase):
         (self.repo / "factory/route-plans/T-1.json").write_text(
             ROUTER.canonical_json(journal) + "\n"
         )
+        (self.repo / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "schema": "nysa.software-factory.qualification/v2",
+            "tickets": ["T-1"],
+        }))
         (self.repo / "factory/tickets/T-1.md").write_text(
             "State: in-progress\nKit-SHA: " + "a" * 40 + "\n"
         )
@@ -97,6 +104,7 @@ class FallbackTest(unittest.TestCase):
         git(self.repo, "config", "remote.origin.pushurl", str(self.remote))
         git(self.repo, "config", "remote.origin.url", str(self.fetch_remote))
         self.head = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", self.head)
 
         failed = resolution["selections"]["builder"]
         readiness[failed["route_id"]]["state"] = "UNAVAILABLE"
@@ -233,6 +241,74 @@ class FallbackTest(unittest.TestCase):
             )["revisions"]),
             2,
         )
+
+    def test_qualification_apply_uses_direct_cli_once(self):
+        initial = json.loads(
+            (self.repo / "factory/route-plans/T-1.json").read_text()
+        )
+        reviewer_route = MANAGER.active_resolution(initial)["selections"]["reviewer"][
+            "route_id"
+        ]
+        readiness = json.loads(self.readiness.read_text())
+        readiness[reviewer_route].update({
+            "reason": "model_unavailable",
+            "state": "INVALID",
+        })
+        self.readiness.write_text(ROUTER.canonical_json(readiness) + "\n")
+
+        applied = self.command("qualification-apply")
+        journal = json.loads(
+            git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
+        )
+        resolution = journal["revisions"][-1]["body"]["new_resolution"]
+        self.assertEqual(resolution["future_roles"], ["builder"])
+        self.assertEqual(resolution["selections"]["builder"]["adapter"], "codex")
+        self.assertEqual(
+            resolution["selections"]["reviewer"]["route_id"], reviewer_route
+        )
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+        recovered = self.command("qualification-apply")
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
+
+    def test_qualification_apply_migrates_initial_v1_plan(self):
+        path = self.repo / "factory/route-plans/T-1.json"
+        journal = json.loads(path.read_text())
+        legacy = base64.b64decode(
+            journal["revisions"][0]["body"]["legacy_plan_b64"]
+        )
+        path.write_bytes(legacy)
+        git(self.repo, "add", str(path.relative_to(self.repo)))
+        git(self.repo, "commit", "-m", "restore initial route plan")
+        git(self.repo, "push", "origin", "ticket/T-1")
+        head = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", head)
+        manifest = self.product / "factory/runs/run-failed-1.meta"
+        manifest.write_text(
+            manifest.read_text()
+            .replace(f"role_head_before={self.head}", f"role_head_before={head}")
+            .replace(f"role_remote_before={self.head}", f"role_remote_before={head}")
+        )
+
+        applied = self.command("qualification-apply")
+        migrated = json.loads(
+            git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
+        )
+        self.assertEqual(
+            [item["body"]["kind"] for item in migrated["revisions"]],
+            ["migration", "fallback"],
+        )
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+
+    def test_qualification_apply_refuses_a_second_role_attempt(self):
+        second = self.product / "factory/runs/run-failed-2.meta"
+        second.write_text(
+            (self.product / "factory/runs/run-failed-1.meta").read_text()
+            .replace("run_id=run-failed-1", "run_id=run-failed-2")
+        )
+        result = self.command("qualification-apply", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("only after the first role attempt", result.stderr)
 
     def test_handoff_preserves_role_commits_and_remaining_dirty_work(self):
         git(self.repo, "add", "src/app.txt")

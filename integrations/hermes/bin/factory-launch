@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|dispatch-plan|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|qualification|dispatch-plan|state-machine|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -58,6 +58,8 @@ PY
 )" || die "launcher self path cannot be resolved"
 INSTALLED_LAUNCHER_PATH="$ACCOUNT_HOME/.factory/bin/factory-launch"
 ISOLATED_TEST_LAUNCHER=0
+QUALIFICATION_LAUNCHER=0
+QUALIFICATION_PROFILE_ENV=""
 
 if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
   if [[ ${FACTORY_LAUNCH_TEST_MODE+x} == x ||
@@ -71,34 +73,55 @@ if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
   RAW_KITS_ROOT="$ACCOUNT_HOME/.factory/kits"
   RAW_PROFILE="$ACCOUNT_HOME/.hermes/profiles/factory"
 else
-  [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
-    die "launcher must execute from the installed trust-root path"
-  ISOLATED_TEST_LAUNCHER=1
-  if [[ -n "${FACTORY_LAUNCH_TEST_ACCOUNT_HOME:-}" ]]; then
-    case "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" in
+  QUALIFICATION_RELEASE="$(cd "$(dirname "$SELF_PATH")/../../.." 2>/dev/null && pwd -P)"
+  QUALIFICATION_SHA="$(basename "$QUALIFICATION_RELEASE")"
+  QUALIFICATION_ROOT="$(dirname "$(dirname "$QUALIFICATION_RELEASE")")"
+  if [[ "$SELF_PATH" == "$QUALIFICATION_RELEASE/integrations/hermes/bin/factory-launch" &&
+        "$QUALIFICATION_SHA" =~ ^[0-9a-f]{40}$ &&
+        "$QUALIFICATION_ROOT" =~ ^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9._-]+$ ]]; then
+    "$BOOTSTRAP_PYTHON" -I -S - "$QUALIFICATION_ROOT" <<'PY' ||
+import os, stat, sys
+path = os.path.realpath(sys.argv[1])
+info = os.stat(path)
+if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit(1)
+PY
+      die "qualification release root is unsafe"
+    QUALIFICATION_LAUNCHER=1
+    HOME="$ACCOUNT_HOME"
+    RAW_KITS_ROOT="$QUALIFICATION_ROOT"
+    RAW_PROFILE="$QUALIFICATION_ROOT/profile"
+    QUALIFICATION_PROFILE_ENV="$ACCOUNT_HOME/.hermes/profiles/factory/.env"
+  else
+    [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
+      die "launcher must execute from the installed or sealed qualification trust root"
+    ISOLATED_TEST_LAUNCHER=1
+    if [[ -n "${FACTORY_LAUNCH_TEST_ACCOUNT_HOME:-}" ]]; then
+      case "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" in
+        /*) ;;
+        *) die "test account home must be absolute" ;;
+      esac
+      [[ -d "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" ]] ||
+        die "test account home is missing"
+      TEST_ACCOUNT_HOME="$(cd "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" 2>/dev/null && pwd -P)" ||
+        die "test account home cannot be resolved"
+      [[ "$SELF_PATH" != "$TEST_ACCOUNT_HOME/.factory/bin/factory-launch" ]] ||
+        die "installed launcher path refuses repository test mode"
+    fi
+    [[ -n "${FACTORY_LAUNCH_TEST_HOME:-}" &&
+       -n "${FACTORY_KITS_ROOT:-}" &&
+       -n "${HERMES_FACTORY_PROFILE:-}" ]] ||
+      die "repository test mode requires explicit isolated roots"
+    case "$FACTORY_LAUNCH_TEST_HOME" in
       /*) ;;
-      *) die "test account home must be absolute" ;;
+      *) die "test HOME must be absolute" ;;
     esac
-    [[ -d "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" ]] ||
-      die "test account home is missing"
-    TEST_ACCOUNT_HOME="$(cd "$FACTORY_LAUNCH_TEST_ACCOUNT_HOME" 2>/dev/null && pwd -P)" ||
-      die "test account home cannot be resolved"
-    [[ "$SELF_PATH" != "$TEST_ACCOUNT_HOME/.factory/bin/factory-launch" ]] ||
-      die "installed launcher path refuses repository test mode"
+    [[ -d "$FACTORY_LAUNCH_TEST_HOME" ]] || die "test HOME is missing"
+    HOME="$(cd "$FACTORY_LAUNCH_TEST_HOME" 2>/dev/null && pwd -P)" ||
+      die "test HOME cannot be resolved"
+    RAW_KITS_ROOT="$FACTORY_KITS_ROOT"
+    RAW_PROFILE="$HERMES_FACTORY_PROFILE"
   fi
-  [[ -n "${FACTORY_LAUNCH_TEST_HOME:-}" &&
-     -n "${FACTORY_KITS_ROOT:-}" &&
-     -n "${HERMES_FACTORY_PROFILE:-}" ]] ||
-    die "repository test mode requires explicit isolated roots"
-  case "$FACTORY_LAUNCH_TEST_HOME" in
-    /*) ;;
-    *) die "test HOME must be absolute" ;;
-  esac
-  [[ -d "$FACTORY_LAUNCH_TEST_HOME" ]] || die "test HOME is missing"
-  HOME="$(cd "$FACTORY_LAUNCH_TEST_HOME" 2>/dev/null && pwd -P)" ||
-    die "test HOME cannot be resolved"
-  RAW_KITS_ROOT="$FACTORY_KITS_ROOT"
-  RAW_PROFILE="$HERMES_FACTORY_PROFILE"
 fi
 
 export HOME
@@ -185,7 +208,7 @@ PROFILE_DIR="$(cd "$PROFILE_DIR" 2>/dev/null && pwd -P)" ||
   die "Hermes factory profile cannot be resolved"
 
 PROFILE_GH_TOKEN=""
-PROFILE_ENV_FILE="$PROFILE_DIR/.env"
+PROFILE_ENV_FILE="${QUALIFICATION_PROFILE_ENV:-$PROFILE_DIR/.env}"
 if [[ -e "$PROFILE_ENV_FILE" || -L "$PROFILE_ENV_FILE" ]]; then
   reject_symlink_components "$PROFILE_ENV_FILE" "Hermes profile environment"
   PROFILE_GH_TOKEN=$("$PYTHON_BIN" -I -S - "$PROFILE_ENV_FILE" 2>/dev/null <<'PY'
@@ -324,7 +347,7 @@ for key in required:
     if not isinstance(item, str) or not item or "\n" in item or "\r" in item or "\t" in item:
         raise SystemExit(1)
 optional = (value.get("receipt_id", ""), value.get("product_tree", ""))
-if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"):
+if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0"):
     for item in optional:
         if not isinstance(item, str) or not item or any(ch in item for ch in "\n\r\t"):
             raise SystemExit(1)
@@ -363,14 +386,14 @@ EOF
 [[ "$KIT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
   die "active kit tree is not a lowercase full object ID"
 case "$ACTIVE_CONTRACT" in
-  1.0.0|1.1.0|1.2.0|1.3.0|1.4.0|1.5.0|1.6.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
+  1.0.0|1.1.0|1.2.0|1.3.0|1.4.0|1.5.0|1.6.0|1.7.0|1.8.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
   *) die "active Hermes contract is incompatible" ;;
 esac
 
 CERTIFIED_PRODUCT_ORIGIN=""
 if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
       "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-      "$CONTRACT_VERSION" == "1.6.0" ]]; then
+      "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
   [[ "$RECEIPT_ID" =~ ^[0-9a-f]{64}$ ]] ||
     die "contract 1.2 active record lacks a valid receipt binding"
   [[ "$ACTIVE_PRODUCT_TREE" =~ ^[0-9a-f]{40}$ ]] ||
@@ -531,6 +554,13 @@ export FACTORY_RELEASE_TREE="$KIT_TREE"
 export FACTORY_RELEASE_PATH="$RELEASE_PATH"
 export FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT"
 
+PROVIDER_STATE_ROOT="$HOME/.factory"
+PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/isolated-v1.enabled"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"
+  PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/provider-activation.json"
+fi
+
 HELPER_ENV=(
   /usr/bin/env -i
   "HOME=$HOME"
@@ -545,19 +575,22 @@ HELPER_ENV=(
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
   "FACTORY_RELEASE_CONTRACT_VERSION=$ACTIVE_CONTRACT"
 )
-if [[ "$ACTIVE_CONTRACT" == "1.6.0" ]]; then
+if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE_CONTRACT" == "1.8.0" ]]; then
   HELPER_ENV+=(
-    "FACTORY_PROVIDER_DB=$HOME/.factory/accounting/state-v2.sqlite3"
-    "FACTORY_PROVIDER_POLICY=$HOME/.factory/provider-policy.json"
+    "FACTORY_PROVIDER_DB=$PROVIDER_STATE_ROOT/accounting/state-v2.sqlite3"
+    "FACTORY_PROVIDER_POLICY=$PROVIDER_STATE_ROOT/provider-policy.json"
     "FACTORY_PROVIDER_BROKER_DB=$HOME/.factory/accounting/credential-broker.sqlite3"
     "FACTORY_PROVIDER_CREDENTIALS=$HOME/.factory/provider-credentials.json"
     "FACTORY_PROVIDER_ARTIFACT_POLICY=$HOME/.factory/provider-artifact-policy.json"
-    "FACTORY_PROVIDER_ATTEMPT_ROOT=$HOME/.factory/provider-attempts"
-    "FACTORY_PROVIDER_APPLY_LOCK_ROOT=$HOME/.factory/provider-apply-locks"
-    "FACTORY_PROVIDER_ACTIVATION=$HOME/.factory/isolated-v1.enabled"
+    "FACTORY_PROVIDER_ATTEMPT_ROOT=$PROVIDER_STATE_ROOT/provider-attempts"
+    "FACTORY_PROVIDER_APPLY_LOCK_ROOT=$PROVIDER_STATE_ROOT/provider-apply-locks"
+    "FACTORY_PROVIDER_ACTIVATION=$PROVIDER_ACTIVATION_PATH"
     "FACTORY_PROVIDER_BROKER_URL=https://127.0.0.1:8765"
     "FACTORY_PROVIDER_BROKER_CA=$HOME/.factory/provider-broker-ca.pem"
   )
+fi
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")
 fi
 if [[ -n "$PROFILE_GH_TOKEN" ]]; then
   HELPER_ENV+=("GH_TOKEN=$PROFILE_GH_TOKEN")
@@ -608,7 +641,7 @@ validate_ticket_command() {
   TICKET="$2"
   if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
         "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-        "$CONTRACT_VERSION" == "1.6.0" ]] &&
+        "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] &&
      [[ -z "$TICKET_WORKDIR" ]]; then
     die "contract $CONTRACT_VERSION requires a ticket workdir"
   fi
@@ -620,8 +653,31 @@ validate_ticket_command() {
 }
 
 validate_preflight_command() {
-  PREFLIGHT_ROLE=""
-  if [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]]; then
+  PREFLIGHT_ROLE="" TRANSITION_RECEIPT=""
+  if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+    if [[ $# -eq 9 && "$1" == "--ticket" && "$3" == "--role" &&
+          "$5" == "--receipt" && "$7" == "--workdir" && "$9" == "--json" ]]; then
+      TICKET="$2" PREFLIGHT_ROLE="$4" TRANSITION_RECEIPT="$6"
+      LEASE_ID="" TICKET_WORKDIR="$8"
+    elif [[ $# -eq 11 && "$1" == "--ticket" && "$3" == "--role" &&
+            "$5" == "--lease" && "$7" == "--receipt" &&
+            "$9" == "--workdir" && "${11}" == "--json" ]]; then
+      TICKET="$2" PREFLIGHT_ROLE="$4" LEASE_ID="$6"
+      TRANSITION_RECEIPT="$8" TICKET_WORKDIR="${10}"
+      [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    else
+      usage
+    fi
+    [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    [[ "$TRANSITION_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+      die "invalid transition receipt"
+    role_is_allowed "$PREFLIGHT_ROLE" ||
+      die "preflight role is not allowed by the active contract"
+    resolve_product_workdir "$TICKET_WORKDIR"
+    validate_ticket_worktree "$TICKET"
+    TICKET_WORKDIR="$RESOLVED_WORKDIR"
+  elif [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+          "$CONTRACT_VERSION" == "1.7.0" ]]; then
     [[ $# -ge 5 && "$1" == "--ticket" && "$3" == "--role" ]] || usage
     local ticket_arg="$2"
     PREFLIGHT_ROLE="$4"
@@ -634,11 +690,47 @@ validate_preflight_command() {
   fi
 }
 
+controller_state_dir() {
+  CONTROLLER_STATE_DIR="$KITS_ROOT/projects/$PROJECT/controller"
+  if [[ ! -e "$CONTROLLER_STATE_DIR" ]]; then
+    mkdir -m 700 "$CONTROLLER_STATE_DIR" ||
+      die "cannot create controller state directory"
+  fi
+  require_managed_directory "$CONTROLLER_STATE_DIR" "controller state directory"
+}
+
+transition_receipt() {
+  local action="$1" role="${2:-}"
+  local output
+  controller_state_dir
+  add_certified_origin_env
+  local -a arguments=(
+    "$action"
+    --factory-root "$PRODUCT_ROOT"
+    --workdir "$RESOLVED_WORKDIR"
+    --kit-dir "$RELEASE_PATH"
+    --state-dir "$CONTROLLER_STATE_DIR"
+    --ticket "$TICKET"
+    --contract-version "$CONTRACT_VERSION"
+    --factory-sha "$KIT_SHA"
+    --project "$PROJECT"
+    --receipt "$TRANSITION_RECEIPT"
+  )
+  [[ -z "$LEASE_ID" ]] || arguments+=(--lease "$LEASE_ID")
+  [[ -z "$role" ]] || arguments+=(--role "$role")
+  output="$(run_selected_python "$RELEASE_PATH/scripts/state-machine.py" \
+    "${arguments[@]}")" || return 1
+  TRANSITION_STAGE="$("$PYTHON_BIN" -I -S -c \
+    'import json,sys; print(json.load(sys.stdin)["stage"])' <<<"$output")" ||
+    return 1
+}
+
 add_dispatch_lease_env() {
   if [[ -n "${1:-}" ]]; then
     [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ||
        "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "dispatcher leases require contract 1.1.0 or newer"
     HELPER_ENV+=("FACTORY_DISPATCH_LEASE_ID=$1")
   fi
@@ -647,7 +739,7 @@ add_dispatch_lease_env() {
 add_certified_origin_env() {
   [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
      "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-     "$CONTRACT_VERSION" == "1.6.0" ]] || return 0
+     "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] || return 0
   [[ -n "$CERTIFIED_PRODUCT_ORIGIN" ]] ||
     die "certified product origin is unavailable"
   HELPER_ENV+=("FACTORY_CERTIFIED_PRODUCT_ORIGIN=$CERTIFIED_PRODUCT_ORIGIN")
@@ -656,7 +748,8 @@ add_certified_origin_env() {
 validate_lease_command() {
   [[ "$CONTRACT_VERSION" == "1.1.0" || "$CONTRACT_VERSION" == "1.2.0" ||
      "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-     "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+     "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+     "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
     die "dispatcher leases require contract 1.1.0 or newer"
   LEASE_ID=""
   if [[ "$1" == "claim" ]]; then
@@ -785,7 +878,7 @@ validate_ticket_worktree() {
   if [[ "$allow_dirty" -ne 1 ]] &&
      [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
         "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-        "$CONTRACT_VERSION" == "1.6.0" ]]; then
+        "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
     worktree_status="$(git -C "$RESOLVED_WORKDIR" status --porcelain \
       --untracked-files=all --ignore-submodules=none)" ||
       die "ticket worktree cannot be inspected"
@@ -925,16 +1018,58 @@ PY
       --profile-dir "$PROFILE_DIR" --registry "$REGISTRY_FILE" \
       --kit-dir "$RELEASE_PATH" --product-root "$PRODUCT_ROOT" --kit-sha "$KIT_SHA"
     ;;
+  reconcile)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "deterministic reconciliation requires contract 1.8.0"
+    require_exact "--json" "$@"
+    controller_state_dir
+    CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
+    require_managed_file "$CONTROLLER" "active release controller"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+      --launcher "$SELF_PATH" \
+      --project "$PROJECT" \
+      --product-root "$PRODUCT_ROOT" \
+      --release-path "$RELEASE_PATH" \
+      --state-dir "$CONTROLLER_STATE_DIR"
+    ;;
+  qualification)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "qualification reduction requires contract 1.8.0"
+    require_exact "--json" "$@"
+    controller_state_dir
+    QUALIFICATION_REDUCER="$RELEASE_PATH/scripts/qualification-reducer.py"
+    require_managed_file "$QUALIFICATION_REDUCER" "active release qualification reducer"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$QUALIFICATION_REDUCER" \
+      --product-root "$PRODUCT_ROOT" \
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      --kit-dir "$RELEASE_PATH"
+    ;;
   dispatch-plan)
-    [[ "$ACTIVE_CONTRACT" == "1.6.0" ]] ||
-      die "autonomous dispatch requires contract 1.6.0"
-    [[ $# -eq 2 && "$2" == "--json" &&
-       ( "$1" == "--shadow" || "$1" == "--claim" ) ]] || usage
+    [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "autonomous dispatch requires contract 1.6.0 or newer"
+    [[ $# -ge 2 && ( "$1" == "--shadow" || "$1" == "--claim" ) ]] || usage
+    ACTION="${1#--}"
+    shift
+    DISPATCH_ARGS=()
+    while [[ $# -gt 1 ]]; do
+      [[ "$1" == "--exclude-ticket" && "$2" =~ ^T-[0-9]+$ ]] || usage
+      DISPATCH_ARGS+=(--exclude-ticket "$2")
+      shift 2
+    done
+    require_exact "--json" "$@"
+    DISPATCH_ARGS+=("$ACTION")
     DISPATCH_HELPER="$RELEASE_PATH/scripts/dispatch-plan.py"
     require_managed_file "$DISPATCH_HELPER" "active release dispatch planner"
-    WORKTREE_PARENT="$HOME/.factory/worktrees"
+    if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+      WORKTREE_PARENT="$KITS_ROOT/worktrees"
+    else
+      WORKTREE_PARENT="$HOME/.factory/worktrees"
+    fi
     WORKTREE_ROOT="$WORKTREE_PARENT/$PROJECT"
-    ACTION="${1#--}"
     if [[ "$ACTION" == "claim" ]]; then
       mkdir -p "$WORKTREE_ROOT" || die "cannot create trusted worktree root"
       chmod 700 "$WORKTREE_PARENT" "$WORKTREE_ROOT" ||
@@ -948,16 +1083,219 @@ PY
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$DISPATCH_HELPER" \
       --factory-root "$PRODUCT_ROOT" \
       --worktree-root "$WORKTREE_ROOT" \
-      "$ACTION"
+      "${DISPATCH_ARGS[@]}"
+    ;;
+  state-machine)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "deterministic state-machine requires contract 1.8.0"
+    validate_ticket_command "$@"
+    add_dispatch_lease_env "$LEASE_ID"
+    add_certified_origin_env
+    controller_state_dir
+    STATE_MACHINE="$RELEASE_PATH/scripts/state-machine.py"
+    require_managed_file "$STATE_MACHINE" "active release state-machine"
+    STATE_ARGS=(
+      next
+      --factory-root "$PRODUCT_ROOT"
+      --workdir "$TICKET_WORKDIR"
+      --kit-dir "$RELEASE_PATH"
+      --state-dir "$CONTROLLER_STATE_DIR"
+      --ticket "$TICKET"
+      --contract-version "$CONTRACT_VERSION"
+      --factory-sha "$KIT_SHA"
+      --project "$PROJECT"
+    )
+    [[ -z "$LEASE_ID" ]] || STATE_ARGS+=(--lease "$LEASE_ID")
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \
+      "$STATE_MACHINE" "${STATE_ARGS[@]}"
+    ;;
+  passport)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "portable passports require contract 1.8.0"
+    PASSPORT_ACTION="${1:-}"
+    PASSPORT_RECEIPT="" PASSPORT_PUBLICATION="preserve"
+    if [[ "$PASSPORT_ACTION" == "export" && $# -eq 10 &&
+          "$2" == "--ticket" && "$4" == "--receipt" &&
+          "$6" == "--publication-state" && "$8" == "--workdir" &&
+          "${10}" == "--json" ]]; then
+      TICKET="$3" PASSPORT_RECEIPT="$5" PASSPORT_PUBLICATION="$7"
+      TICKET_WORKDIR="$9"
+      [[ "$PASSPORT_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid transition receipt"
+      [[ "$PASSPORT_PUBLICATION" =~ ^(none|validating|ready|merge-pending|merged|repair)$ ]] ||
+        die "invalid publication state"
+    elif [[ "$PASSPORT_ACTION" == "migrate" && $# -eq 8 &&
+            "$2" == "--ticket" && "$4" == "--publication-state" &&
+            "$6" == "--workdir" && "$8" == "--json" ]]; then
+      TICKET="$3" PASSPORT_PUBLICATION="$5" TICKET_WORKDIR="$7"
+      [[ "$PASSPORT_PUBLICATION" =~ ^(preserve|none|validating|ready|merge-pending|merged|repair)$ ]] ||
+        die "invalid publication state"
+    elif [[ "$PASSPORT_ACTION" == "validate" && $# -eq 6 &&
+            "$2" == "--ticket" && "$4" == "--workdir" && "$6" == "--json" ]]; then
+      TICKET="$3" TICKET_WORKDIR="$5"
+    else
+      usage
+    fi
+    [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    resolve_product_workdir "$TICKET_WORKDIR"
+    validate_ticket_worktree "$TICKET"
+    TICKET_WORKDIR="$RESOLVED_WORKDIR"
+    add_certified_origin_env
+    controller_state_dir
+    PASSPORT_HELPER="$RELEASE_PATH/scripts/ticket-passport.py"
+    require_managed_file "$PASSPORT_HELPER" "active release passport helper"
+    PASSPORT_ARGS=(
+      "$PASSPORT_ACTION"
+      --factory-root "$PRODUCT_ROOT"
+      --workdir "$TICKET_WORKDIR"
+      --state-dir "$CONTROLLER_STATE_DIR"
+      --ticket "$TICKET"
+      --contract-version "$CONTRACT_VERSION"
+      --factory-sha "$KIT_SHA"
+      --project "$PROJECT"
+    )
+    if [[ "$PASSPORT_ACTION" == "export" ]]; then
+      PASSPORT_ARGS+=(
+        --receipt "$PASSPORT_RECEIPT"
+        --publication-state "$PASSPORT_PUBLICATION"
+      )
+    elif [[ "$PASSPORT_ACTION" == "migrate" ]]; then
+      PASSPORT_ARGS+=(--publication-state "$PASSPORT_PUBLICATION")
+    fi
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \
+      "$PASSPORT_HELPER" "${PASSPORT_ARGS[@]}"
+    ;;
+  publication)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "publication leases require contract 1.8.0"
+    PUBLICATION_ACTION="${1:-}"
+    if [[ ( "$PUBLICATION_ACTION" == "ready" ||
+            "$PUBLICATION_ACTION" == "acquire" ) &&
+          $# -eq 8 && "$2" == "--ticket" && "$4" == "--head" &&
+          "$6" == "--priority" && "$8" == "--json" ]]; then
+      TICKET="$3" PUBLICATION_HEAD="$5" PUBLICATION_PRIORITY="$7"
+      [[ "$PUBLICATION_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
+        die "invalid publication head"
+      [[ "$PUBLICATION_PRIORITY" =~ ^(urgent|high|normal|low|none)$ ]] ||
+        die "invalid publication priority"
+      PUBLICATION_ARGS=(
+        "$PUBLICATION_ACTION" --ticket "$TICKET"
+        --head "$PUBLICATION_HEAD" --priority "$PUBLICATION_PRIORITY"
+      )
+    elif [[ "$PUBLICATION_ACTION" == "release" && $# -eq 6 &&
+            "$2" == "--ticket" && "$4" == "--lease" && "$6" == "--json" ]]; then
+      TICKET="$3" PUBLICATION_LEASE="$5"
+      [[ "$PUBLICATION_LEASE" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid publication lease"
+      PUBLICATION_ARGS=(
+        release --ticket "$TICKET" --lease "$PUBLICATION_LEASE"
+      )
+    elif [[ "$PUBLICATION_ACTION" == "withdraw" && $# -eq 4 &&
+            "$2" == "--ticket" && "$4" == "--json" ]]; then
+      TICKET="$3"
+      PUBLICATION_ARGS=(withdraw --ticket "$TICKET")
+    else
+      usage
+    fi
+    [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    controller_state_dir
+    PUBLICATION_HELPER="$RELEASE_PATH/scripts/publication-lease.py"
+    require_managed_file "$PUBLICATION_HELPER" "active release publication helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \
+      "$PUBLICATION_HELPER" "${PUBLICATION_ARGS[@]}" \
+      --state-dir "$CONTROLLER_STATE_DIR"
+    ;;
+  publication-repair)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "publication repair requires contract 1.8.0"
+    [[ $# -eq 11 && "$1" == "--ticket" && "$3" == "--lease" &&
+       "$5" == "--receipt" && "$7" == "--pr" &&
+       "$9" == "--workdir" && "${11}" == "--json" ]] || usage
+    TICKET="$2" LEASE_ID="$4" TRANSITION_RECEIPT="$6"
+    PUBLICATION_PR="$8" TICKET_WORKDIR="${10}"
+    [[ "$TICKET" =~ ^T-[0-9]+$ && "$LEASE_ID" =~ ^[0-9a-f]{64}$ &&
+       "$TRANSITION_RECEIPT" =~ ^[0-9a-f]{64}$ &&
+       "$PUBLICATION_PR" =~ ^[1-9][0-9]*$ ]] ||
+      die "invalid publication repair arguments"
+    resolve_product_workdir "$TICKET_WORKDIR"
+    validate_ticket_worktree "$TICKET"
+    TICKET_WORKDIR="$RESOLVED_WORKDIR"
+    add_dispatch_lease_env "$LEASE_ID"
+    add_certified_origin_env
+    transition_receipt verify ||
+      die "transition receipt verification failed"
+    [[ "$TRANSITION_STAGE" == AWAIT-MERGE\ protected\ auto-merge* ]] ||
+      die "transition receipt does not authorize publication repair"
+    transition_receipt consume ||
+      die "transition receipt consumption failed"
+    PUBLICATION_REPAIR="$RELEASE_PATH/scripts/publication-repair.py"
+    require_managed_file "$PUBLICATION_REPAIR" "active release publication repair"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$PUBLICATION_REPAIR" create \
+      --factory-root "$PRODUCT_ROOT" --workdir "$TICKET_WORKDIR" \
+      --state-dir "$CONTROLLER_STATE_DIR" --kit-dir "$RELEASE_PATH" \
+      --ticket "$TICKET" --factory-sha "$KIT_SHA" --pr "$PUBLICATION_PR"
+    ;;
+  ci-rerun)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "targeted CI rerun requires contract 1.8.0"
+    [[ $# -eq 11 && "$1" == "--ticket" && "$3" == "--lease" &&
+       "$5" == "--receipt" && "$7" == "--pr" &&
+       "$9" == "--workdir" && "${11}" == "--json" ]] || usage
+    TICKET="$2" LEASE_ID="$4" TRANSITION_RECEIPT="$6"
+    CI_PR="$8" TICKET_WORKDIR="${10}"
+    [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    [[ "$TRANSITION_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+      die "invalid transition receipt"
+    [[ "$CI_PR" =~ ^[1-9][0-9]*$ ]] || die "invalid PR number"
+    resolve_product_workdir "$TICKET_WORKDIR"
+    validate_ticket_worktree "$TICKET"
+    TICKET_WORKDIR="$RESOLVED_WORKDIR"
+    add_dispatch_lease_env "$LEASE_ID"
+    transition_receipt verify ||
+      die "transition receipt verification failed"
+    [[ "$TRANSITION_STAGE" == RUN\ reviewer ||
+       "$TRANSITION_STAGE" == RUN\ narrator ||
+       "$TRANSITION_STAGE" == AWAIT-* ]] ||
+      die "transition receipt does not authorize CI inspection"
+    controller_state_dir
+    CI_RERUN_HELPER="$RELEASE_PATH/scripts/ci-rerun.py"
+    require_managed_file "$CI_RERUN_HELPER" "active release CI rerun helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$CI_RERUN_HELPER" \
+      --factory-root "$PRODUCT_ROOT" --state-dir "$CONTROLLER_STATE_DIR" \
+      --workdir "$TICKET_WORKDIR" --ticket "$TICKET" --pr "$CI_PR"
     ;;
   ticket-pr)
-    [[ "$ACTIVE_CONTRACT" == "1.6.0" ]] ||
-      die "early ticket PR requires contract 1.6.0"
-    TICKET_PR_LEASE=""
-    if [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--workdir" &&
+    [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "early ticket PR requires contract 1.6.0 or newer"
+    TICKET_PR_LEASE="" TICKET_PR_RECEIPT=""
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 7 &&
+          "$1" == "--ticket" && "$3" == "--receipt" &&
+          "$5" == "--workdir" && "$7" == "--json" ]]; then
+      TICKET_PR_TICKET="$2" TICKET_PR_RECEIPT="$4" TICKET_PR_WORKDIR="$6"
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 9 &&
+            "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--receipt" && "$7" == "--workdir" &&
+            "$9" == "--json" ]]; then
+      TICKET_PR_TICKET="$2" TICKET_PR_LEASE="$4"
+      TICKET_PR_RECEIPT="$6" TICKET_PR_WORKDIR="$8"
+      [[ "$TICKET_PR_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    elif [[ "$CONTRACT_VERSION" != "1.8.0" && $# -eq 5 &&
+            "$1" == "--ticket" && "$3" == "--workdir" &&
           "$5" == "--json" ]]; then
       TICKET_PR_TICKET="$2" TICKET_PR_WORKDIR="$4"
-    elif [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--lease" &&
+    elif [[ "$CONTRACT_VERSION" != "1.8.0" && $# -eq 7 &&
+            "$1" == "--ticket" && "$3" == "--lease" &&
             "$5" == "--workdir" && "$7" == "--json" ]]; then
       TICKET_PR_TICKET="$2" TICKET_PR_LEASE="$4" TICKET_PR_WORKDIR="$6"
       [[ "$TICKET_PR_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
@@ -965,6 +1303,10 @@ PY
       usage
     fi
     [[ "$TICKET_PR_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+      [[ "$TICKET_PR_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid transition receipt"
+    fi
     resolve_product_workdir "$TICKET_PR_WORKDIR"
     validate_ticket_worktree "$TICKET_PR_TICKET"
     [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
@@ -973,6 +1315,16 @@ PY
     require_managed_file "$TICKET_PR_HELPER" "active release ticket PR helper"
     add_certified_origin_env
     add_dispatch_lease_env "$TICKET_PR_LEASE"
+    if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+      TICKET="$TICKET_PR_TICKET" LEASE_ID="$TICKET_PR_LEASE"
+      TRANSITION_RECEIPT="$TICKET_PR_RECEIPT"
+      transition_receipt verify ||
+        die "transition receipt verification failed"
+      HELPER_ENV+=(
+        "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
+        "FACTORY_TRANSITION_STAGE=$TRANSITION_STAGE"
+      )
+    fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$TICKET_PR_HELPER" \
@@ -982,7 +1334,7 @@ PY
   models)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
        "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-       "$CONTRACT_VERSION" == "1.6.0" ]] ||
+       "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "models requires contract 1.2.0 or newer"
     [[ $# -ge 2 ]] || usage
     MODEL_ACTION="$1"
@@ -993,27 +1345,31 @@ PY
         MODEL_ARGS=("$MODEL_ACTION")
         ;;
       policy-candidates|reviewer-exception-contract)
-        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+           "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "$MODEL_ACTION requires contract 1.5.0"
         [[ $# -eq 2 && "$2" == "--json" ]] || usage
         MODEL_ARGS=("$MODEL_ACTION")
         ;;
       ticket-status)
-        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+           "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "model ticket status requires contract 1.5.0"
         [[ $# -eq 4 && "$2" == "--ticket" && "$4" == "--json" ]] || usage
         [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
         MODEL_ARGS=("$MODEL_ACTION" --ticket "$3")
         ;;
       policy-preview)
-        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+           "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "model policy preview requires contract 1.5.0"
         [[ $# -eq 4 && "$2" == "--policy" && "$4" == "--json" ]] || usage
         [[ ${#3} -le 65536 ]] || die "model policy payload is oversized"
         MODEL_ARGS=("$MODEL_ACTION" --policy "$3")
         ;;
       policy-apply)
-        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+        [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+           "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "model policy apply requires contract 1.5.0"
         [[ $# -eq 8 && "$2" == "--policy" &&
            "$4" == "--expected-current-hash" &&
@@ -1089,7 +1445,7 @@ PY
         ;;
       migrate-plan)
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-           "$CONTRACT_VERSION" == "1.6.0" ]] ||
+           "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "model route migration requires contract 1.4.0 or newer"
         [[ $# -eq 6 && "$2" == "--ticket" && "$4" == "--workdir" &&
            "$6" == "--json" ]] || usage
@@ -1101,7 +1457,7 @@ PY
         ;;
       migrate)
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-           "$CONTRACT_VERSION" == "1.6.0" ]] ||
+           "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "model route migration requires contract 1.4.0 or newer"
         [[ $# -eq 10 && "$2" == "--ticket" && "$4" == "--workdir" &&
            "$6" == "--approve-hash" && "$8" == "--approved-by" &&
@@ -1117,10 +1473,12 @@ PY
         add_certified_origin_env
         MODEL_MUTATION=1
         ;;
-      fallback-plan|fallback)
+      fallback-plan|fallback|fallback-auto)
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-           "$CONTRACT_VERSION" == "1.6.0" ]] ||
+           "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "mid-ticket model fallback requires contract 1.4.0 or newer"
+        [[ "$MODEL_ACTION" != "fallback-auto" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
+          die "automatic qualification fallback requires contract 1.7.0"
         [[ ( $# -eq 10 || $# -eq 12 ) &&
            "$2" == "--ticket" && "$4" == "--failed-run" &&
            "$6" == "--workdir" && "$8" == "--reason" ]] || usage
@@ -1144,9 +1502,30 @@ PY
           MODEL_ARGS+=(--allow-reviewer-family "${11}")
         fi
         add_certified_origin_env
-        if [[ "$MODEL_ACTION" == "fallback" ]]; then
+        if [[ "$MODEL_ACTION" == "fallback" || "$MODEL_ACTION" == "fallback-auto" ]]; then
           MODEL_MUTATION=1
         fi
+        ;;
+      pin-batch)
+        [[ "$CONTRACT_VERSION" == "1.8.0" ]] ||
+          die "batch model pinning requires contract 1.8.0"
+        [[ "${!#}" == "--json" ]] || usage
+        set -- "${@:1:$(($# - 1))}"
+        shift
+        MODEL_ARGS=("$MODEL_ACTION")
+        MODEL_BATCH_COUNT=0
+        while [[ $# -gt 0 ]]; do
+          [[ $# -ge 4 && "$1" == "--ticket" && "$3" == "--workdir" ]] || usage
+          [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+          resolve_product_workdir "$4"
+          validate_ticket_worktree "$2"
+          MODEL_ARGS+=(--ticket "$2" --workdir "$RESOLVED_WORKDIR")
+          MODEL_BATCH_COUNT=$((MODEL_BATCH_COUNT + 1))
+          shift 4
+        done
+        [[ "$MODEL_BATCH_COUNT" -ge 1 && "$MODEL_BATCH_COUNT" -le 4 ]] || usage
+        add_certified_origin_env
+        MODEL_MUTATION=1
         ;;
       pin)
         [[ $# -eq 6 && "$2" == "--ticket" && "$4" == "--workdir" &&
@@ -1177,7 +1556,8 @@ PY
     exec "${MODEL_HELPER_ENV[@]}" /bin/bash "$MODEL_HELPER" "${MODEL_ARGS[@]}"
     ;;
   operator-snapshot)
-    [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+    [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "operator snapshots require contract 1.5.0"
     [[ $# -eq 2 && "$1" =~ ^(workflow|envelope|spend)$ &&
        "$2" == "--json" ]] || usage
@@ -1188,7 +1568,8 @@ PY
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$SNAPSHOT_HELPER" "$1"
     ;;
   envelope)
-    [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+    [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "envelope control requires contract 1.5.0"
     [[ $# -ge 2 ]] || usage
     ENVELOPE_ACTION="$1"
@@ -1307,7 +1688,8 @@ PY
       "$ENVELOPE_HELPER" "${ENVELOPE_ARGS[@]}"
     ;;
   attempt)
-    [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+    [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "attempt control requires contract 1.5.0"
     [[ $# -ge 8 ]] || usage
     ATTEMPT_ACTION="$1"
@@ -1362,6 +1744,14 @@ PY
   preflight)
     validate_preflight_command "$@"
     add_dispatch_lease_env "$LEASE_ID"
+    if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+      transition_receipt verify "$PREFLIGHT_ROLE" ||
+        die "transition receipt verification failed"
+      HELPER_ENV+=(
+        "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
+        "FACTORY_TRANSITION_STATE_DIR=$CONTROLLER_STATE_DIR"
+      )
+    fi
     PREFLIGHT_ARGS=(--ticket "$TICKET")
     [[ -z "$PREFLIGHT_ROLE" ]] ||
       PREFLIGHT_ARGS+=(--role "$PREFLIGHT_ROLE")
@@ -1375,6 +1765,8 @@ PY
     exit "$rc"
     ;;
   next-stage)
+    [[ "$CONTRACT_VERSION" != "1.8.0" ]] ||
+      die "contract 1.8 transitions require state-machine receipts"
     validate_ticket_command "$@"
     add_dispatch_lease_env "$LEASE_ID"
     if [[ -n "$LEASE_ID" && -n "$TICKET_WORKDIR" ]]; then
@@ -1397,7 +1789,7 @@ PY
   ticket-state)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
        "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-       "$CONTRACT_VERSION" == "1.6.0" ]] ||
+       "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "ticket-state requires contract 1.2.0 or newer"
     if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
           "$5" == "--action" && "$7" == "--json" ]]; then
@@ -1410,10 +1802,22 @@ PY
     fi
     TICKET="$2" TICKET_ACTION="$6"
     [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
-    [[ "$TICKET_ACTION" == "materialize" || "$TICKET_ACTION" == "transition" ]] ||
+    [[ "$TICKET_ACTION" == "materialize" || "$TICKET_ACTION" == "transition" ||
+       "$TICKET_ACTION" == "reviewer-reconcile" ||
+       "$TICKET_ACTION" == "qualification-backlog" ]] ||
       die "invalid ticket-state action"
-    [[ "$TICKET_ACTION" == "materialize" || -n "$TICKET_STATE_VALUE" ]] ||
+    [[ "$CONTRACT_VERSION" != "1.8.0" ||
+       "$TICKET_ACTION" == "reviewer-reconcile" ||
+       "$TICKET_ACTION" == "qualification-backlog" ]] ||
+      die "contract 1.8 ticket stages are state-machine owned"
+    [[ "$TICKET_ACTION" != "transition" || -n "$TICKET_STATE_VALUE" ]] ||
       die "transition requires a state"
+    [[ "$TICKET_ACTION" != "reviewer-reconcile" ||
+       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
+      die "reviewer reconciliation requires contract 1.7.0"
+    [[ "$TICKET_ACTION" != "qualification-backlog" ||
+       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
+      die "qualification backlog return requires contract 1.7.0"
     resolve_product_workdir "$4"
     validate_ticket_worktree "$TICKET"
     [[ ! -e "$PRODUCT_ROOT/factory/MAINTENANCE" ]] ||
@@ -1433,10 +1837,22 @@ PY
     ;;
   ticket-attest)
     [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
-       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ]] ||
+       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
+       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "ticket-attest requires contract 1.3.0 or newer"
-    ATTEST_LEASE=""
-    if [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
+    ATTEST_LEASE="" ATTEST_RECEIPT=""
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 9 &&
+          "$1" == "--ticket" && "$3" == "--receipt" &&
+          "$5" == "--workdir" && "$7" == "--action" && "$9" == "--json" ]]; then
+      ATTEST_RECEIPT="$4" ATTEST_WORKDIR="$6" ATTEST_ACTION="$8"
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 11 &&
+            "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--receipt" && "$7" == "--workdir" &&
+            "$9" == "--action" && "${11}" == "--json" ]]; then
+      ATTEST_LEASE="$4" ATTEST_RECEIPT="$6"
+      ATTEST_WORKDIR="$8" ATTEST_ACTION="${10}"
+      [[ "$ATTEST_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    elif [[ $# -eq 7 && "$1" == "--ticket" && "$3" == "--workdir" &&
           "$5" == "--action" && "$7" == "--json" ]]; then
       ATTEST_WORKDIR="$4" ATTEST_ACTION="$6"
     elif [[ $# -eq 9 && "$1" == "--ticket" && "$3" == "--lease" &&
@@ -1451,6 +1867,10 @@ PY
     [[ "$ATTEST_ACTION" == "bundle" || "$ATTEST_ACTION" == "approval" ||
        "$ATTEST_ACTION" == "refresh" || "$ATTEST_ACTION" == "done" ]] ||
       die "invalid ticket-attest action"
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" ]]; then
+      [[ "$ATTEST_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid transition receipt"
+    fi
     resolve_product_workdir "$ATTEST_WORKDIR"
     if [[ "$ATTEST_ACTION" == "done" ]]; then
       ATTEST_BRANCH="chore/$(printf '%s' "$ATTEST_TICKET" | tr '[:upper:]' '[:lower:]' | tr -d '-')-closeout"
@@ -1472,6 +1892,32 @@ PY
     require_managed_file "$ATTEST_HELPER" "active release ticket-attest helper"
     add_certified_origin_env
     add_dispatch_lease_env "$ATTEST_LEASE"
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" ]]; then
+      TICKET="$ATTEST_TICKET" LEASE_ID="$ATTEST_LEASE"
+      TRANSITION_RECEIPT="$ATTEST_RECEIPT"
+      transition_receipt verify ||
+        die "transition receipt verification failed"
+      case "$ATTEST_ACTION" in
+        bundle)
+          [[ "$TRANSITION_STAGE" == AWAIT-OPERATOR\ bundle\ posted* ]] ||
+            die "transition receipt does not authorize bundle attestation"
+          ;;
+        approval)
+          [[ "$TRANSITION_STAGE" == AWAIT-OPERATOR\ Linear\ approval\ observed* ]] ||
+            die "transition receipt does not authorize approval attestation"
+          ;;
+        refresh)
+          [[ "$TRANSITION_STAGE" == REFUSE* || "$TRANSITION_STAGE" == AWAIT-* ]] ||
+            die "transition receipt does not authorize refresh"
+          ;;
+      esac
+      transition_receipt consume ||
+        die "transition receipt consumption failed"
+      HELPER_ENV+=(
+        "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
+        "FACTORY_TRANSITION_STAGE=$TRANSITION_STAGE"
+      )
+    fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec_selected_helper "$ATTEST_HELPER" \
@@ -1480,7 +1926,7 @@ PY
   project-ledger)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
        "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
-       "$CONTRACT_VERSION" == "1.6.0" ]] ||
+       "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "project-ledger requires contract 1.2.0 or newer"
     [[ $# -eq 5 && "$1" == "--ticket" && "$3" == "--workdir" && "$5" == "--json" ]] || usage
     PROJECT_TICKET="$2"
@@ -1515,11 +1961,26 @@ PY
     exec_selected_helper "$REORDER_HELPER" "$@"
     ;;
   run)
-    LEASE_ID=""
-    if [[ $# -ge 10 && "$1" == "--role" && "$3" == "--ticket" &&
-          "$5" == "--prompt-file" && "$7" == "--workdir" && "$9" == "--" ]]; then
+    LEASE_ID="" TRANSITION_RECEIPT=""
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && $# -ge 12 &&
+          "$1" == "--role" && "$3" == "--ticket" &&
+          "$5" == "--receipt" && "$7" == "--prompt-file" &&
+          "$9" == "--workdir" && "${11}" == "--" ]]; then
+      TRANSITION_RECEIPT="$6" RUN_PROMPT="$8" RUN_WORKDIR="${10}" RUN_SHIFT=11
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -ge 14 &&
+            "$1" == "--role" && "$3" == "--ticket" &&
+            "$5" == "--lease" && "$7" == "--receipt" &&
+            "$9" == "--prompt-file" && "${11}" == "--workdir" &&
+            "${13}" == "--" ]]; then
+      LEASE_ID="$6" TRANSITION_RECEIPT="$8"
+      [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+      RUN_PROMPT="${10}" RUN_WORKDIR="${12}" RUN_SHIFT=13
+    elif [[ "$CONTRACT_VERSION" != "1.8.0" && $# -ge 10 &&
+            "$1" == "--role" && "$3" == "--ticket" &&
+            "$5" == "--prompt-file" && "$7" == "--workdir" && "$9" == "--" ]]; then
       RUN_PROMPT="$6" RUN_WORKDIR="$8" RUN_SHIFT=9
-    elif [[ $# -ge 12 && "$1" == "--role" && "$3" == "--ticket" &&
+    elif [[ "$CONTRACT_VERSION" != "1.8.0" && $# -ge 12 &&
+            "$1" == "--role" && "$3" == "--ticket" &&
             "$5" == "--lease" && "$7" == "--prompt-file" &&
             "$9" == "--workdir" && "${11}" == "--" ]]; then
       LEASE_ID="$6"
@@ -1532,6 +1993,10 @@ PY
     RUN_TICKET="$4"
     role_is_allowed "$RUN_ROLE" || die "run role is not allowed by the active contract"
     [[ "$RUN_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+      [[ "$TRANSITION_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid transition receipt"
+    fi
     resolve_prompt_path "$RUN_PROMPT" "$RUN_ROLE"
     resolve_product_workdir "$RUN_WORKDIR"
     validate_ticket_worktree "$RUN_TICKET"
@@ -1547,6 +2012,15 @@ PY
     require_managed_file "$RUNNER" "active release run helper"
     add_dispatch_lease_env "$LEASE_ID"
     add_certified_origin_env
+    if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+      TICKET="$RUN_TICKET"
+      transition_receipt consume "$RUN_ROLE" ||
+        die "transition receipt consumption failed"
+      HELPER_ENV+=(
+        "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
+        "FACTORY_TRANSITION_STATE_DIR=$CONTROLLER_STATE_DIR"
+      )
+    fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec_selected_helper "$RUNNER" \
