@@ -147,8 +147,9 @@ for retry_number in 1 2; do
 done
 expect_failure "two identical no-progress retries" \
   product_retry_has_progress "$RETRY_GATE" T-9 builder
-sed -i '' 's/output_sha256=same/output_sha256=changed/' \
+sed -i.bak 's/output_sha256=same/output_sha256=changed/' \
   "$RETRY_GATE/product/factory/runs/retry-2.meta"
+rm "$RETRY_GATE/product/factory/runs/retry-2.meta.bak"
 product_retry_has_progress "$RETRY_GATE" T-9 builder ||
   fail "changed retry evidence was treated as identical"
 

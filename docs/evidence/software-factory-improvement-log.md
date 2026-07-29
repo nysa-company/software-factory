@@ -1944,7 +1944,7 @@ commit; protected GitHub CI owns the complete regression.
 
 ## FI-20260728-085 — Development roles bypassed concurrent admission
 
-Status: Implemented; protected CI pending
+Status: Superseded by FI-20260728-086
 Area: provider coordination
 Owner: Factory
 First seen: 2026-07-28, focused promotion repair
@@ -1957,12 +1957,52 @@ zero active reservation.
 Root cause: Contract 1.8 moved the provider-contract snapshot before mutable
 kit validation. Development lanes derive their contract during that validation,
 so the early snapshot remained empty.
-Smallest change: initialize the snapshot empty and bind it once, immediately
-after the first successful kit validation and before transition resolution or
-provider admission.
-Validation: the unchanged four-ticket concurrency assertion passes with 28
-terminal attempts and zero active reserve; protected GitHub CI owns the
-complete regression.
+Smallest change attempted: initialize the snapshot empty and bind it once after
+kit validation.
+Validation: the four-ticket assertion passed locally, but protected run
+`30420132613` proved that this over-bound unrelated mutable fixtures to
+Contract 1.8. FI-20260728-086 replaces that change.
+
+## FI-20260728-086 — Post-validation contract binding overreached
+
+Status: Implemented; protected CI pending
+Area: role execution
+Owner: Factory
+First seen: 2026-07-29, protected-main Factory 1.8 promotion
+Impact: 80 factory-script cases refused before their intended boundary because
+mutable direct fixtures were treated as Contract 1.8 executions without
+transition receipts.
+Evidence: protected run `30420132613`; Linux job `90475085324` and macOS job
+`90475085355` repeatedly report
+`consumed transition receipt is unavailable; no task was submitted`.
+Root cause: FI-20260728-085 moved the provider-contract snapshot after mutable
+kit validation, where the current kit manifest supplied Contract 1.8 even when
+the caller had not selected a Contract 1.8 execution path.
+Smallest change: restore the intentional pre-validation snapshot and add only
+the trusted development contract as its final fallback. Sealed production
+still receives Contract 1.8 from release provenance and therefore still
+requires transition receipts; explicit Contract 1.7 development lanes retain
+concurrent provider admission.
+Validation: focused shell syntax and the unchanged four-ticket development
+lane assertion pass with 28 terminal attempts and zero active reserve;
+protected GitHub CI owns the complete regression.
+
+## FI-20260728-087 — Retry fixture used BSD-only in-place sed syntax
+
+Status: Implemented; protected CI pending
+Area: protected CI portability
+Owner: Factory
+First seen: 2026-07-29, protected-main Factory 1.8 promotion
+Impact: Linux release verification stopped before running the development-lane
+suite.
+Evidence: protected run `30420132613`, job `90475085316`, reports
+`sed: can't read s/output_sha256=same/output_sha256=changed/`.
+Root cause: the retry fixture used `sed -i ''`, whose empty backup argument is
+BSD-specific.
+Smallest change: use the repository's existing portable `sed -i.bak` pattern
+and remove the temporary backup.
+Validation: focused shell syntax and the development-lane suite pass;
+protected GitHub CI owns the complete regression.
 
 ## Maintenance rule
 

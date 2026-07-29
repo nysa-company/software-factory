@@ -1563,9 +1563,19 @@ fail-closed state machine still retries or escalates genuinely missing output.
 
 ## 2026-07-28 — Decision 121: Provider contract binds after kit validation
 
-Category: System change
+Category: Superseded
 
 The role runner snapshots its effective provider contract immediately after
 kit validation. Mutable development lanes therefore retain concurrent provider
 admission, while sealed launches continue to use provenance-validated release
 metadata.
+
+## 2026-07-29 — Decision 122: Provider contract binds from launcher metadata
+
+Category: System change
+
+Decision 121 over-bound mutable direct fixtures to the kit manifest's Contract
+1.8 path. The role runner instead snapshots the caller's sealed-release,
+explicit, or trusted development contract before validation. Sealed Contract
+1.8 execution remains receipt-only, while explicit Contract 1.7 development
+lanes retain concurrent admission without changing unrelated harnesses.
