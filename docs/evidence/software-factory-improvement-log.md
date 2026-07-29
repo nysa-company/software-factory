@@ -1845,6 +1845,25 @@ internal batch subprocess when writing the launcher-boundary snapshot.
 Validation: shell syntax and focused helper-boundary assertions pass locally.
 Protected GitHub CI owns execution of the complete Hermes regression.
 
+## FI-20260728-080 — Contract assertion omitted the batch-pin grammar
+
+Status: Implemented; protected CI pending
+Area: release verification
+Owner: Factory
+First seen: 2026-07-28, protected-main Factory 1.8 promotion
+Impact: the Linux Hermes shard reached and rejected the static public-contract
+assertion after all preceding runtime boundaries passed, preventing release
+sealing.
+Evidence: protected Factory run `30418059944`, job `90468771301`, reports an
+`AssertionError` at the exact `commands["models"]["grammars"]` comparison.
+Root cause: the public Contract 1.8 manifest and launcher both included
+`models pin-batch`, but the exact expected grammar list still reflected the
+pre-batch interface.
+Smallest change: add the existing public batch-pin grammar to the expected
+list; runtime behavior and assertions are otherwise unchanged.
+Validation: shell syntax and the isolated static contract assertion block pass
+locally. Protected GitHub CI owns execution of the complete Hermes regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

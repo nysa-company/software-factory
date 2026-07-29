@@ -1519,3 +1519,11 @@ The Hermes model helper fixture records every external launcher invocation but
 does not let `pin-batch`'s internal `pin` subprocess overwrite that snapshot
 after trusted machine configuration has loaded. Caller-control confinement
 remains fail closed at the actual launcher boundary.
+
+## 2026-07-28 — Decision 116: Contract grammar assertions track batch pin
+
+Category: System change
+
+The exact Hermes public-command assertion includes Contract 1.8
+`models pin-batch` alongside its launcher grammar. Static contract drift is
+checked directly without weakening runtime validation.
