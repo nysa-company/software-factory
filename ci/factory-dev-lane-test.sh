@@ -2072,7 +2072,8 @@ lane_env() {
     target="$(sed -n 's/^Resume-State: //p' "$state_file")"
     [[ "$target" == Planning || "$target" == Building ||
        "$target" == Review ]] || return 1
-    sed -i '' "s/^State: Blocked-Escalated$/State: $target/" "$state_file"
+    sed -i.bak "s/^State: Blocked-Escalated$/State: $target/" "$state_file"
+    rm "$state_file.bak"
     printf '%s\n' materialize >>"$ignored_root/transitions"
     return
   fi
