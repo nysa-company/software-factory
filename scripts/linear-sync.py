@@ -446,7 +446,12 @@ def normalize_md(text):
         line = re.sub(r"^(\s*)\*(\s)", r"\1-\2", line)
         line = re.sub(r"(\[[^\]\n]*\]\()<([^<>\n]+)>(\))", r"\1\2\3", line)
         lines.append(line.rstrip())
-    return "\n".join(lines).strip()
+    normalized = "\n".join(lines).strip()
+    return re.sub(
+        r"(?<=\S)\n {3}(?![-+*] |\d+[.)] |[>#|])(?=\S)",
+        " ",
+        normalized,
+    )
 
 
 def setup(key, mapping, map_path, dry=False):

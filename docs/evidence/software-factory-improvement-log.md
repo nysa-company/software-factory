@@ -2141,6 +2141,28 @@ Validation: the focused legacy-terminal regression and the exact Relay lease
 validator boundary run locally; protected GitHub CI owns the complete
 regression.
 
+## FI-20260729-095 — Linear soft wrapping caused endless description rewrites
+
+Status: Implemented; protected CI pending
+Area: Linear reconciliation
+Owner: Factory
+First seen: 2026-07-29, Nysa Factory 1.8 production admission
+Impact: completed tickets were rewritten every three-minute cycle, shared API
+quota was exhausted, and four Ready tickets remained fail-closed before any
+provider admission.
+Evidence: authenticated cycles at 10:10, 10:14, 10:18, 10:22, and 10:26 UTC
+repeatedly patched T-021 and T-025. Exact remote comparison showed Linear
+inserted `\n   ` inside one ordered-list sentence in each issue while every
+other normalized byte matched Git.
+Root cause: Markdown comparison normalized bullet glyphs and link wrappers but
+not Linear's semantically inert three-space list-paragraph soft wrap.
+Smallest change: collapse only that continuation boundary during comparison;
+do not collapse nested list markers, mutate projected text, or change canonical
+ticket contracts and sync health.
+Validation: the focused Linear sync test simulates the remote wrap and proves a
+second reconciliation issues no update while nested list structure remains
+distinct; protected GitHub CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
