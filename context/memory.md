@@ -1579,3 +1579,19 @@ Decision 121 over-bound mutable direct fixtures to the kit manifest's Contract
 explicit, or trusted development contract before validation. Sealed Contract
 1.8 execution remains receipt-only, while explicit Contract 1.7 development
 lanes retain concurrent admission without changing unrelated harnesses.
+
+## 2026-07-29 — Decision 123: Development trust metadata is host-neutral
+
+Category: System change
+
+Development-lane security checks obtain numeric ownership, octal permissions,
+and link counts through Python `lstat` rather than host-specific `stat`
+formats. The same fail-closed expectations now run on Linux and macOS.
+
+## 2026-07-29 — Decision 124: Ordering fixtures create clock ties explicitly
+
+Category: System change
+
+Publication ordering tests persist the exact same `publication_ready_at` for
+tickets whose ticket-ID tie-break is under test. Production continues to order
+by priority, actual ready time, then ticket ID.

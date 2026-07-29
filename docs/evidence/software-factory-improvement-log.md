@@ -2004,6 +2004,42 @@ and remove the temporary backup.
 Validation: focused shell syntax and the development-lane suite pass;
 protected GitHub CI owns the complete regression.
 
+## FI-20260729-088 — Development-lane trust checks used BSD-only stat
+
+Status: Implemented; protected CI pending
+Area: protected CI portability
+Owner: Factory
+First seen: 2026-07-29, protected-main Factory 1.8 promotion
+Impact: Linux release verification could not validate the product source and
+stopped the development-lane suite before exercising its state transitions.
+Evidence: protected run `30421453064`, Linux release job `90479005243`,
+reports `stat: cannot read file system information for '%Su:%Lp:%l'`.
+Root cause: development-lane file, directory, and test-fixture trust checks
+used BSD `stat` formats throughout a cross-platform release suite.
+Smallest change: route all of those metadata reads through one Python `lstat`
+helper using numeric owner, octal mode, and link count; keep every existing
+fail-closed comparison.
+Validation: focused development-lane and shell syntax checks run locally;
+protected GitHub CI owns the complete cross-platform regression.
+
+## FI-20260729-089 — Publication ordering test relied on a one-second clock tie
+
+Status: Implemented; protected CI pending
+Area: release verification
+Owner: Factory
+First seen: 2026-07-29, protected-main Factory 1.8 promotion
+Impact: macOS release verification expected ticket-ID ordering, but the two
+normal-priority records occasionally crossed a wall-clock second and correctly
+ordered by their different `publication_ready_at` values.
+Evidence: protected run `30421453064`, macOS release job `90479005246`,
+reports T-111 remained `queued` after T-112 released.
+Root cause: the fixture assumed two subprocesses would receive the same
+second-resolution ready timestamp instead of creating that tie explicitly.
+Smallest change: make the two queue records share an exact fixture timestamp;
+retain all lease-ordering assertions and production behavior unchanged.
+Validation: the focused publication-lease suite runs locally; protected GitHub
+CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

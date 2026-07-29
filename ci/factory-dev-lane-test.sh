@@ -24,6 +24,19 @@ trap cleanup EXIT
 trap 'status=$?; printf "FAIL: unexpected command at line %s (exit %s)\n" "${BASH_LINENO[0]:-$LINENO}" "$status" >&2; [[ ! -s "$OUT" ]] || sed -n "1,120p" "$OUT" >&2; exit "$status"' ERR
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+path_metadata() {
+  python3 - "$1" "${2:-owner-mode-links}" <<'PY'
+import os, stat, sys
+info = os.lstat(sys.argv[1])
+mode = f"{stat.S_IMODE(info.st_mode):o}"
+values = {
+    "mode": mode,
+    "owner-mode": f"{info.st_uid}:{mode}",
+    "owner-mode-links": f"{info.st_uid}:{mode}:{info.st_nlink}",
+}
+print(values[sys.argv[2]])
+PY
+}
 
 grep -Fq 'SPEC-WARN: <one-line recommendation>' "$ROOT/roles/spec-linter.md" &&
   grep -Fq 'PASS may include `SPEC-WARN` recommendations' \
@@ -697,11 +710,11 @@ ensure_product_budget_day "$BUDGET_DAY_ROOT" 1400.00 ||
 [[ "$(cat "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day")" == \
    "$(date -u +%F)" ]] ||
   fail "fresh product planning wrote the wrong budget day"
-[[ "$(stat -f '%Lp' "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day")" == 600 ]] ||
+[[ "$(path_metadata "$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day" mode)" == 600 ]] ||
   fail "fresh product budget day is not owner-only"
 [[ "$(cat "$BUDGET_DAY_ROOT/runtime/product-envelope/global.env")" == \
    "GLOBAL_DAILY_CAP_USD=1400.00" &&
-   "$(stat -f '%Lp' "$BUDGET_DAY_ROOT/runtime/product-envelope/global.env")" == 600 ]] ||
+   "$(path_metadata "$BUDGET_DAY_ROOT/runtime/product-envelope/global.env" mode)" == 600 ]] ||
   fail "fresh product planning did not persist its owner-only global cap"
 printf '%s\n' 2000-01-01 \
   >"$BUDGET_DAY_ROOT/runtime/product-envelope/budget-day"
@@ -1965,8 +1978,8 @@ for credential in .codex/auth.json .claude/.credentials.json; do
   cmp -s "$CREDENTIAL_SOURCE/$credential" \
     "$CREDENTIAL_ROOT/lane/session-home/$credential" ||
     fail "subscription credential remained stale: $credential"
-  [[ "$(stat -f '%Su:%Lp:%l' \
-    "$CREDENTIAL_ROOT/lane/session-home/$credential")" == "$(id -un):600:1" ]] ||
+  [[ "$(path_metadata \
+    "$CREDENTIAL_ROOT/lane/session-home/$credential")" == "$(id -u):600:1" ]] ||
     fail "refreshed subscription credential is unsafe: $credential"
 done
 grep -qx 'stale:.cursor/auth.json' \
@@ -2492,8 +2505,8 @@ PRODUCT_TICKETS=(T-046 T-048)
 write_product_checkpoint_import "$CHAIN_ROOT" "$CHAIN_SOURCE"
 cmp -s "$CHAIN_SOURCE" "$CHAIN_ROOT/runtime/product-checkpoint-source.json" ||
   fail "checkpoint import did not retain the exact source"
-[[ "$(stat -f '%Su:%Lp:%l' \
-  "$CHAIN_ROOT/runtime/product-checkpoint-source.json")" == "$(id -un):600:1" ]] ||
+[[ "$(path_metadata \
+  "$CHAIN_ROOT/runtime/product-checkpoint-source.json")" == "$(id -u):600:1" ]] ||
   fail "retained checkpoint source is unsafe"
 printf '%s\n' 'SPEC-LINT: FAIL — retry Planner' \
   >>"$CHAIN_ROOT/worktrees/T-046/factory/tickets/T-046.md"
@@ -2681,7 +2694,7 @@ SEED_ACCOUNTING_V5_SHA="$(sha256_file "$SEED_ACCOUNTING_V5_ISOLATED")"
 consume_product_seed_authorization "$SEED_ACCOUNTING_V5_ISOLATED" \
   "$SEED_ACCOUNTING_V5_SHA" "$SEED_LINEAGE_V5"
 CHECKPOINT_CONSUMPTION="$SEED_V5_ROOT/.seed-accounting-lineages/$(product_seed_lineage_id "$SEED_ACCOUNTING_V5_ISOLATED")/checkpoints/$SEED_CHECKPOINT_SHA.used/receipt"
-[[ "$(stat -f '%Su:%Lp' "$CHECKPOINT_CONSUMPTION")" == "$(id -un):600" ]] ||
+[[ "$(path_metadata "$CHECKPOINT_CONSUMPTION" owner-mode)" == "$(id -u):600" ]] ||
   fail "checkpoint consumption receipt is unsafe"
 die() { exit 1; }
 if (consume_product_seed_authorization "$SEED_ACCOUNTING_V5_ISOLATED" \
@@ -2703,7 +2716,7 @@ die() { return 1; }
 consume_product_seed_authorization "$SEED_ACCOUNTING" \
   "$SEED_MANIFEST_SHA" "$SEED_LINEAGE"
 CONSUMPTION="$TMP/.seed-accounting-lineages/$SEED_LINEAGE_ID/nonces/$SEED_NONCE.used/receipt"
-[[ "$(stat -f '%Su:%Lp' "$CONSUMPTION")" == "$(id -un):600" ]] ||
+[[ "$(path_metadata "$CONSUMPTION" owner-mode)" == "$(id -u):600" ]] ||
   fail "seed authorization consumption receipt is unsafe"
 [[ "$(sed -n '1p' "$TMP/.seed-accounting-lineages/$SEED_LINEAGE_ID/head")" == \
    "$SEED_MANIFEST_SHA" ]] ||

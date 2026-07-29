@@ -38,8 +38,17 @@ class PublicationLeaseTest(unittest.TestCase):
         return json.loads(result.stdout)
 
     def test_only_ordered_winner_holds_lease_and_release_unblocks_next(self) -> None:
-        self.call("ready", "T-113", "d" * 40, "normal")
+        ready_at = self.call("ready", "T-113", "d" * 40, "normal")[
+            "publication_ready_at"
+        ]
         self.call("ready", "T-111", "b" * 40, "normal")
+        record = self.state / "publication" / "queue" / "T-111.json"
+        value = json.loads(record.read_text(encoding="utf-8"))
+        value["publication_ready_at"] = ready_at
+        record.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
         self.call("ready", "T-112", "c" * 40, "urgent")
         self.assertEqual(
             self.call("acquire", "T-111", "b" * 40)["status"], "queued"
