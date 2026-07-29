@@ -367,9 +367,11 @@ EOF
   cat > "$release/scripts/model-control.sh" <<'EOF'
 #!/usr/bin/env bash
 ENV_OUT="$FACTORY_ROOT/factory/model-helper.env"
-env | awk -F= '$1 != "GH_TOKEN"' | LC_ALL=C sort > "$ENV_OUT"
-if [[ ${GH_TOKEN+x} == x ]]; then
-  printf 'GH_TOKEN_PRESENT=true\n' >> "$ENV_OUT"
+if [[ -z "${FACTORY_INTERNAL_BATCH_RESOLUTION:-}" ]]; then
+  env | awk -F= '$1 != "GH_TOKEN"' | LC_ALL=C sort > "$ENV_OUT"
+  if [[ ${GH_TOKEN+x} == x ]]; then
+    printf 'GH_TOKEN_PRESENT=true\n' >> "$ENV_OUT"
+  fi
 fi
 if [[ -e "$FACTORY_ROOT/factory/test-model-args-only" ]]; then
   printf 'ARG=%s\n' "$@"

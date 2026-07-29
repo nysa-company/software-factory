@@ -1510,3 +1510,12 @@ The first protected-main run for Factory 1.8 correctly refused a valid
 `models pin-batch` test executed through a Contract 1.2 release on both Linux
 and macOS. The release remains unsealed until a separate Contract 1.8 batch
 fixture passes protected GitHub CI; the launcher guard is unchanged.
+
+## 2026-07-28 — Decision 115: Launcher-boundary fixtures exclude internal batch calls
+
+Category: System change
+
+The Hermes model helper fixture records every external launcher invocation but
+does not let `pin-batch`'s internal `pin` subprocess overwrite that snapshot
+after trusted machine configuration has loaded. Caller-control confinement
+remains fail closed at the actual launcher boundary.
