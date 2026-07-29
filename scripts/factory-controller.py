@@ -710,6 +710,15 @@ class Controller:
                     "--lease", claim["lease"],
                 )
                 raise
+            if (
+                not claim.get("receipt")
+                and self.restore_contract_blocker(claim)
+            ):
+                self.event(
+                    "upgraded_claim_recovered", claim["ticket"],
+                    from_factory_sha=prior,
+                )
+                continue
             terminal = (
                 self.terminal_for_receipt(claim["ticket"], claim["receipt"])
                 if claim.get("receipt")
@@ -1257,7 +1266,21 @@ class Controller:
         try:
             if (self.product / "factory/MAINTENANCE").exists():
                 return {"status": "maintenance", "ticket": claim["ticket"]}
-            self.renew(claim)
+            try:
+                self.renew(claim)
+            except ControllerError:
+                if self.active_run(claim["ticket"]):
+                    raise
+                lease = self.json_call("claim", "--ticket", claim["ticket"])
+                if (
+                    lease.get("schema_version") != 1
+                    or lease.get("ticket") != claim["ticket"]
+                    or not DIGEST.fullmatch(lease.get("lease_id", ""))
+                ):
+                    raise ControllerError("recovered ticket lease is invalid")
+                claim["lease"] = lease["lease_id"]
+                self.save_claim(claim)
+                self.event("ticket_lease_recovered", claim["ticket"])
             if not self.finish_pending_run(claim):
                 return {
                     "status": (
