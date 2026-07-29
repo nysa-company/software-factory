@@ -2116,6 +2116,31 @@ existing lease path. Add the state to the existing activation fixture.
 Validation: shell syntax and the focused validator boundary run locally;
 protected GitHub CI owns the complete regression.
 
+## FI-20260729-094 — Factory upgrades replayed previously certified legacy Done
+
+Status: Implemented; protected CI pending
+Area: release activation
+Owner: Factory
+First seen: 2026-07-29, Relay Factory 1.8 sealing
+Impact: Relay activation stopped at T-101 even though T-101 through T-105 and
+T-107 were already unchanged `Done` records in generation 7's certified
+product tree.
+Evidence: generation 7 records product tree `bcadcf0…`; its ancestor commit
+`83162d6…` contains the same six terminal ticket blobs, while activation
+required newer attestation formats that did not exist when those tickets
+terminalized.
+Root cause: cross-release activation revalidated every historical Done claim
+as newly terminal instead of carrying forward the prior certified product-tree
+boundary.
+Smallest change: accept an otherwise-unattested Done claim only when its exact
+ticket blob is unchanged from an ancestor commit with the previous active
+generation's certified product tree. New or changed Done claims, non-ancestor
+trees, deleted modern evidence, stale branches, and non-protected HEADs remain
+fail-closed.
+Validation: the focused legacy-terminal regression and the exact Relay lease
+validator boundary run locally; protected GitHub CI owns the complete
+regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

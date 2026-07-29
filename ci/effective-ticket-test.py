@@ -17,6 +17,7 @@ from effective_ticket import (  # noqa: E402
     operator_fields,
     operator_version,
 )
+from legacy_closeout import certified_legacy_terminal  # noqa: E402
 
 BASE_TICKET = """# T-700: Overlay test
 
@@ -31,6 +32,66 @@ Priority: normal
 
 
 class EffectiveTicketTests(unittest.TestCase):
+    def test_certified_legacy_done_requires_an_unchanged_ancestor_blob(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "product"
+            ticket = repo / "factory/tickets/T-700.md"
+            subprocess.run(["git", "init", "-q", "-b", "main", repo], check=True)
+            ticket.parent.mkdir(parents=True)
+            ticket.write_text("# T-700\n\nState: Done\n")
+            subprocess.run(["git", "-C", repo, "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "legacy done",
+            ], check=True)
+            certified_tree = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "HEAD^{tree}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            (repo / "README.md").write_text("new release metadata\n")
+            subprocess.run(["git", "-C", repo, "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "advance",
+            ], check=True)
+            preserved = certified_legacy_terminal(
+                repo, "T-700", "HEAD", certified_tree,
+            )
+            self.assertEqual(preserved["basis"], "certified-legacy-done")
+
+            ticket.write_text("# T-700\n\nState: Done\n\nchanged\n")
+            subprocess.run(["git", "-C", repo, "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "mutate ticket",
+            ], check=True)
+            self.assertIsNone(certified_legacy_terminal(
+                repo, "T-700", "HEAD", certified_tree,
+            ))
+
+            ticket.write_text("# T-700\n\nState: Done\n")
+            done = repo / "factory/attestations/T-700/done.json"
+            done.parent.mkdir(parents=True)
+            done.write_text("{}\n")
+            subprocess.run(["git", "-C", repo, "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "modern evidence",
+            ], check=True)
+            modern_tree = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "HEAD^{tree}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            (repo / "README.md").write_text("later release metadata\n")
+            subprocess.run(["git", "-C", repo, "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", repo, "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "advance again",
+            ], check=True)
+            self.assertIsNone(certified_legacy_terminal(
+                repo, "T-700", "HEAD", modern_tree,
+            ))
+
     def test_legitimate_overlay_and_cleanup_version_are_preserved(self):
         operator = {
             "state": "Ready",

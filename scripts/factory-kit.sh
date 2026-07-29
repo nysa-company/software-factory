@@ -2079,17 +2079,19 @@ require_maintenance_after_lock() {
 }
 
 validate_ticket_leases() {
-  local product="$1" sha="$2" origin="$3"
+  local product="$1" sha="$2" origin="$3" certified_previous_tree="${4:-}"
   python3 - "$product/factory" "$sha" "$SCRIPT_ROOT/scripts/lib" \
-    "$RELEASES_DIR/$sha/scripts" "$origin" <<'PY'
+    "$RELEASES_DIR/$sha/scripts" "$origin" "$certified_previous_tree" <<'PY'
 import importlib.util, json, pathlib, re, subprocess, sys
-factory, candidate, lib, candidate_scripts, origin = (
+factory, candidate, lib, candidate_scripts, origin, certified_previous_tree = (
     pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3]),
-    pathlib.Path(sys.argv[4]), sys.argv[5],
+    pathlib.Path(sys.argv[4]), sys.argv[5], sys.argv[6],
 )
 sys.path.insert(0, sys.argv[3])
 from effective_ticket import ticket_branch_prefix
-from legacy_closeout import ValidationError, protected_terminal
+from legacy_closeout import (
+    ValidationError, certified_legacy_terminal, protected_terminal,
+)
 
 authorization = None
 authorized = {}
@@ -2302,6 +2304,15 @@ def protected_legacy_approval(ticket_id, lease, source_ref, text):
 tickets = factory / "tickets"
 repo = factory.parent
 prefix = ticket_branch_prefix(factory)
+head = subprocess.check_output(
+    ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+).strip()
+remote_main = subprocess.check_output([
+    "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
+    "refs/heads/main",
+], text=True).split()
+if not remote_main or remote_main[0] != head:
+    raise SystemExit("activation product HEAD is not current protected main")
 ticket_ids = set()
 if tickets.is_dir():
     for path in tickets.glob("T-*.md"):
@@ -2398,14 +2409,23 @@ for ticket_id in sorted(ticket_ids):
         try:
             terminal = protected_terminal(repo, ticket_id)
         except ValidationError as error:
-            raise SystemExit(
-                "%s claims Done without valid protected-main terminal evidence: %s"
-                % (ticket_id, error)
+            terminal = (
+                certified_legacy_terminal(
+                    repo, ticket_id, "HEAD", certified_previous_tree,
+                )
+                if source_ref == "HEAD"
+                else None
             )
+            if terminal is None:
+                raise SystemExit(
+                    "%s claims Done without valid protected-main terminal evidence: %s"
+                    % (ticket_id, error)
+                )
         if terminal.get("basis") not in (
             "attested-done", "validated-legacy-closeout",
             "validated-terminal-backfill",
             "validated-protected-merge-reconciliation",
+            "certified-legacy-done",
         ):
             raise SystemExit("%s has an unknown terminal basis" % ticket_id)
         continue
@@ -2967,6 +2987,7 @@ cmd_activate() {
   local slug="$1" product="$2" sha="$3" requested_receipt="$4"
   local receipt generation previous product_top project_dir journal_dir journal
   local active project_lock launch_lock phase snapshot receipt_id transaction open
+  local previous_product_tree=""
   validate_slug "$slug"
   validate_sha "$sha"
   product_top="$(absolute_dir "$product")"
@@ -2993,6 +3014,7 @@ cmd_activate() {
     [[ "$(json_get "$active" product_path)" == "$product_top" ]] ||
       die "project activation record belongs to a different product path"
     previous="$(json_get "$active" generation)"
+    previous_product_tree="$(json_get "$active" product_tree)"
   fi
   generation="$(next_generation "$slug" "$active")"
   receipt="$(resolve_receipt "$requested_receipt" "$slug" "$sha")"
@@ -3012,7 +3034,8 @@ cmd_activate() {
     die "product acquired launch lock with active runs"
   fi
   require_dispatch_drained "$product_top"
-  validate_ticket_leases "$product_top" "$sha" "$(json_get "$snapshot" product_origin)"
+  validate_ticket_leases "$product_top" "$sha" \
+    "$(json_get "$snapshot" product_origin)" "$previous_product_tree"
   validate_receipt_snapshot "$snapshot" "$slug" "$product_top" "$sha" "$previous" "$receipt_id"
   transaction="$(printf '%020d-%s-%s' "$generation" "$sha" "$receipt_id")"
   journal="$journal_dir/$(printf '%020d' "$generation")-$sha.json"
@@ -3086,6 +3109,7 @@ PY
 cmd_reconcile() {
   local slug="$1" product="$2" project_dir journal_dir journal active product_top
   local project_lock launch_lock phase sha receipt_id snapshot previous transaction
+  local previous_product_tree
   local claim pre_pointer=0 valid=0
   validate_slug "$slug"
   ensure_managed_directories "$slug"
@@ -3117,6 +3141,9 @@ cmd_reconcile() {
   receipt_id="$(json_get "$journal" candidate_record.receipt_id)"
   transaction="$(json_get "$journal" transaction_id)"
   previous="$(json_get "$journal" candidate_record.previous_generation)"
+  previous_product_tree="$(
+    json_get "$journal" previous_record.product_tree 2>/dev/null || true
+  )"
   snapshot="$project_dir/.reconcile-receipt-$receipt_id-$(random_nonce).json"
   snapshot_receipt_from_journal "$journal" "$snapshot"
   remember_temp "$snapshot"
@@ -3133,7 +3160,7 @@ cmd_reconcile() {
       validate_receipt_snapshot "$snapshot" "$slug" "$product_top" "$sha" \
         "$previous" "$receipt_id" &&
       validate_ticket_leases "$product_top" "$sha" \
-        "$(json_get "$snapshot" product_origin)" &&
+        "$(json_get "$snapshot" product_origin)" "$previous_product_tree" &&
       { [[ "$pre_pointer" == "0" ]] ||
         active_matches_journal_record "$journal" "$active" previous_record; } &&
       { [[ "$pre_pointer" == "1" ]] ||
@@ -3234,7 +3261,8 @@ cmd_rollback() {
   [[ "$(product_tree "$product_top")" == "$previous_product_tree" ]] ||
     die "rollback requires product Git tree already restored to previous tree"
   validate_ticket_leases "$product_top" "$previous_sha" \
-    "$(json_get "$journal" receipt_snapshot.product_origin)"
+    "$(json_get "$journal" receipt_snapshot.product_origin)" \
+    "$previous_product_tree"
   switch_active_from_journal "$journal" "$active" previous_record
   set_journal_phase "$journal" rolled_back
   release_lock "$launch_lock"
