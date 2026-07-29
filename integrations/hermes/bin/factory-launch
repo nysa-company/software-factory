@@ -1088,14 +1088,37 @@ PY
   state-machine)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
       die "deterministic state-machine requires contract 1.8.0"
-    validate_ticket_command "$@"
+    STATE_ACTION="next" TRANSITION_RECEIPT=""
+    if [[ "${1:-}" == "block" && $# -eq 10 &&
+          "$2" == "--ticket" && "$4" == "--lease" &&
+          "$6" == "--receipt" && "$8" == "--workdir" &&
+          "${10}" == "--json" ]]; then
+      STATE_ACTION="$1" TICKET="$3" LEASE_ID="$5"
+      TRANSITION_RECEIPT="$7" TICKET_WORKDIR="$9"
+    elif [[ "${1:-}" == "resume" && $# -eq 8 &&
+            "$2" == "--ticket" && "$4" == "--receipt" &&
+            "$6" == "--workdir" && "$8" == "--json" ]]; then
+      STATE_ACTION="$1" TICKET="$3" LEASE_ID=""
+      TRANSITION_RECEIPT="$5" TICKET_WORKDIR="$7"
+    else
+      validate_ticket_command "$@"
+    fi
+    [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    [[ -z "$TRANSITION_RECEIPT" ||
+       "$TRANSITION_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+      die "invalid transition receipt"
+    [[ -z "$LEASE_ID" || "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] ||
+      die "invalid dispatcher lease"
+    resolve_product_workdir "$TICKET_WORKDIR"
+    validate_ticket_worktree "$TICKET"
+    TICKET_WORKDIR="$RESOLVED_WORKDIR"
     add_dispatch_lease_env "$LEASE_ID"
     add_certified_origin_env
     controller_state_dir
     STATE_MACHINE="$RELEASE_PATH/scripts/state-machine.py"
     require_managed_file "$STATE_MACHINE" "active release state-machine"
     STATE_ARGS=(
-      next
+      "$STATE_ACTION"
       --factory-root "$PRODUCT_ROOT"
       --workdir "$TICKET_WORKDIR"
       --kit-dir "$RELEASE_PATH"
@@ -1106,6 +1129,8 @@ PY
       --project "$PROJECT"
     )
     [[ -z "$LEASE_ID" ]] || STATE_ARGS+=(--lease "$LEASE_ID")
+    [[ -z "$TRANSITION_RECEIPT" ]] ||
+      STATE_ARGS+=(--receipt "$TRANSITION_RECEIPT")
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \

@@ -1646,3 +1646,14 @@ Linear inserts a three-space continuation wrap inside long ordered-list
 paragraphs. Reconciliation now normalizes only that semantically inert form
 when comparing descriptions, while nested list markers and exact Git contract
 bytes remain significant.
+
+## 2026-07-29 — Decision 130: Same-release contract resume is receipt-bound
+
+Category: System change
+
+Contract 1.8 moves a durable Planner, Test-author, or Builder contract blocker
+to `Blocked-Escalated` only when its consumed transition receipt and unique
+terminal manifest agree. The controller releases its lease and waits for
+Linear to select the exact recorded resume state. The state machine then
+migrates the signed passport and reclaims only that ticket, preserving prior
+role evidence, charges, and sibling execution.

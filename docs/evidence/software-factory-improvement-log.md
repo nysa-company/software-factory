@@ -2163,6 +2163,32 @@ Validation: the focused Linear sync test simulates the remote wrap and proves a
 second reconciliation issues no update while nested list structure remains
 distinct; protected GitHub CI owns the complete regression.
 
+## FI-20260729-096 — Contract blockers had no same-release controller resume
+
+Status: Implemented; protected CI pending
+Area: deterministic lifecycle
+Owner: Factory
+First seen: 2026-07-29, Nysa T-093/T-094/T-096/T-100
+Impact: four authenticated Planner contract blockers preserved their $10
+charges but stayed excluded forever after the operator supplied the missing
+product decisions; only a Factory upgrade could reopen them.
+Evidence: each claim remained `blocked` with a unique
+`role_exit_contract_blocked` terminal manifest and signed passport, while the
+controller recovered only cross-release claims, push failures, or
+pre-submission interruptions.
+Root cause: Contract 1.8 exported the terminal passport and released the lease
+without asking the state machine to enter `Blocked-Escalated`; it also had no
+receipt-bound path to consume the exact Linear resume overlay.
+Smallest change: reuse `ticket-state` behind two controller-only state-machine
+actions. `block` requires the consumed receipt and unique exact terminal
+manifest; `resume` accepts only the recorded prior role state, migrates the
+passport, and lets the controller reclaim one ticket lease. Successful roles,
+sibling claims, and existing charges remain untouched.
+Validation: focused state-machine and controller tests cover malformed
+terminal refusal, exact block, operator wait, exact resume, and single-ticket
+reclaim; shell syntax and diff checks pass. Protected GitHub CI owns the
+complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

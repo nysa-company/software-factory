@@ -485,6 +485,108 @@ class FactoryControllerTest(unittest.TestCase):
             calls, ["passport", "migrate", "role_output_rejected"]
         )
 
+    def test_contract_block_waits_for_exact_resume_then_reclaims(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        receipt = "b" * 64
+        head = "c" * 40
+        passport_digest = "d" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "planner",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        (self.product / "factory/runs/blocked.meta").write_text(
+            "run_id=blocked\n"
+            "ticket=T-110\n"
+            "role=planner\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("passport")
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("state-machine", "block"):
+                return {"status": "blocked"}
+            return {}
+
+        controller.json_call = json_call
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(
+            [call if isinstance(call, str) else call[:2] for call in calls],
+            [
+                "passport", ("state-machine", "block"),
+                ("release", "--ticket"),
+            ],
+        )
+
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "branch": claim["branch"],
+                "head_sha": head,
+                "passport_sha256": passport_digest,
+            },
+        )
+        calls.clear()
+        resume_status = "waiting"
+
+        def recover_call(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("state-machine", "block"):
+                return {"status": "blocked"}
+            if args[:2] == ("state-machine", "resume"):
+                return {"status": resume_status}
+            if args[:2] == ("passport", "validate"):
+                return {"passport": passport_digest, "status": "ok"}
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("released")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "e" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = recover_call
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        remote = CONTROL.subprocess.CompletedProcess(
+            [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
+        )
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertNotIn(("claim", "--ticket", "T-110"), calls)
+        self.assertIn(("state-machine", "resume"), [call[:2] for call in calls])
+
+        calls.clear()
+        resume_status = "ready"
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "e" * 64)
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertIn(("contract_blocker_recovered",), calls)
+
     def test_exported_terminal_migrates_without_reexport(self) -> None:
         controller = CONTROL.Controller(self.args)
         receipt = "b" * 64

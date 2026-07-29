@@ -23,6 +23,7 @@ TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ROLE = re.compile(r"^(planner|spec-linter|test-author|builder|reviewer|narrator)$")
+CONTRACT_BLOCK_ROLES = frozenset(("planner", "test-author", "builder"))
 TARGET_STATE = {
     "planner": "Planning",
     "spec-linter": "Planning",
@@ -112,6 +113,24 @@ def write_atomic(path: Path, value: dict[str, Any]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def run_manifest(path: Path) -> tuple[dict[str, str], bytes]:
+    info = path.lstat()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+    ):
+        raise StateError("run manifest is unsafe")
+    raw = path.read_bytes()
+    values: dict[str, str] = {}
+    for line in raw.decode("utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or not key or key in values:
+            raise StateError("run manifest is malformed")
+        values[key] = value
+    return values, raw
+
+
 def ticket_evidence_digest(factory: Path, ticket: str) -> str:
     selected: list[tuple[str, bytes]] = []
     runs = factory / "runs"
@@ -120,20 +139,7 @@ def ticket_evidence_digest(factory: Path, ticket: str) -> str:
         if not stat.S_ISDIR(info.st_mode) or runs.is_symlink():
             raise StateError("run manifest directory is unsafe")
         for path in sorted(runs.glob("*.meta")):
-            info = path.lstat()
-            if (
-                path.is_symlink()
-                or not stat.S_ISREG(info.st_mode)
-                or info.st_nlink != 1
-            ):
-                raise StateError("run manifest is unsafe")
-            raw = path.read_bytes()
-            values: dict[str, str] = {}
-            for line in raw.decode("utf-8").splitlines():
-                key, separator, value = line.partition("=")
-                if not separator or key in values:
-                    raise StateError("run manifest is malformed")
-                values[key] = value
+            values, raw = run_manifest(path)
             if (
                 values.get("ticket") == ticket
                 and values.get("accounting_state") not in {None, "", "reserved"}
@@ -161,14 +167,93 @@ def stage_role(stage: str) -> str | None:
     raise StateError("state resolver returned an unsupported transition")
 
 
-def current_state(workdir: Path, ticket: str) -> str:
+def ticket_field(workdir: Path, ticket: str, name: str) -> str:
     text = (workdir / "factory" / "tickets" / f"{ticket}.md").read_text(
         encoding="utf-8"
     )
-    values = re.findall(r"^State:\s*(.*?)\s*$", text, re.IGNORECASE | re.MULTILINE)
+    values = re.findall(
+        rf"^{re.escape(name)}:\s*(.*?)\s*$", text,
+        re.IGNORECASE | re.MULTILINE,
+    )
     if len(values) != 1:
-        raise StateError("ticket state is ambiguous")
+        raise StateError(
+            "ticket state is ambiguous"
+            if name == "State"
+            else f"ticket {name} is ambiguous"
+        )
     return values[0]
+
+
+def current_state(workdir: Path, ticket: str) -> str:
+    return ticket_field(workdir, ticket, "State")
+
+
+def contract_blocked_receipt(args: argparse.Namespace) -> str:
+    value = safe_receipt(args.state_dir / f"{args.ticket}.json")
+    origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
+    role = value.get("role", "")
+    old_head = value.get("head_sha", "")
+    if (
+        not origin
+        or value.get("receipt_sha256") != args.receipt
+        or not value.get("consumed")
+        or value.get("ticket") != args.ticket
+        or value.get("contract_version") != args.contract_version
+        or value.get("factory_sha") != args.factory_sha
+        or value.get("project") != args.project
+        or role not in CONTRACT_BLOCK_ROLES
+        or not SHA.fullmatch(old_head)
+        or value.get("branch") != git(
+            args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD"
+        )
+        or value.get("product_origin_sha256")
+        != hashlib.sha256(origin.encode()).hexdigest()
+        or (
+            args.action == "block"
+            and value.get("lease_sha256")
+            != hashlib.sha256(args.lease.encode()).hexdigest()
+        )
+    ):
+        raise StateError("contract blocker receipt is invalid")
+    if subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+            old_head, "HEAD",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=120,
+    ).returncode:
+        raise StateError("contract blocker is outside receipt lineage")
+    matches = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        fields, _ = run_manifest(path)
+        if fields.get("transition_receipt_sha256") == args.receipt:
+            matches.append(fields)
+    if len(matches) != 1:
+        raise StateError("contract blocker terminal evidence is ambiguous")
+    terminal = matches[0]
+    accounted = terminal.get("accounting_state") == "completed" or (
+        terminal.get("accounting_state") == "abandoned_conservative"
+        and terminal.get("cost_basis") == "conservative_reservation"
+        and terminal.get("effective_cost") == terminal.get("reserved_usd")
+    )
+    if not accounted or any((
+        terminal.get("ticket") != args.ticket,
+        terminal.get("role") != role,
+        terminal.get("contract_version") != args.contract_version,
+        terminal.get("kit_sha") != args.factory_sha,
+        terminal.get("phase") != "completed",
+        terminal.get("go_issued") != "1",
+        terminal.get("task_submitted") != "1",
+        terminal.get("exit_status") != "12",
+        terminal.get("role_exit") != "role_exit_contract_blocked",
+        terminal.get("role_branch_before") != value.get("branch"),
+        terminal.get("role_head_before") != value.get("head_sha"),
+    )):
+        raise StateError("contract blocker terminal evidence is invalid")
+    return role
 
 
 def core(
@@ -395,9 +480,70 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def block_transition(args: argparse.Namespace) -> dict[str, Any]:
+    role = contract_blocked_receipt(args)
+    target = TARGET_STATE[role]
+    state = current_state(args.workdir, args.ticket)
+    if state != "Blocked-Escalated":
+        if state != target:
+            raise StateError("contract blocker role state drifted")
+        run_helper(
+            args, "ticket-state.sh", "--ticket", args.ticket,
+            "--workdir", str(args.workdir), "--action", "materialize",
+        )
+        if current_state(args.workdir, args.ticket) != target:
+            raise StateError("operator overlay changed the contract blocker state")
+        transition(args, "Blocked-Escalated")
+    if (
+        current_state(args.workdir, args.ticket) != "Blocked-Escalated"
+        or ticket_field(args.workdir, args.ticket, "Resume-State") != target
+    ):
+        raise StateError("contract blocker transition is invalid")
+    migrate_passport(args)
+    return {
+        "action": "block",
+        "head": git(args.workdir, "rev-parse", "HEAD"),
+        "role": role,
+        "schema": SCHEMA,
+        "status": "blocked",
+        "ticket": args.ticket,
+    }
+
+
+def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
+    role = contract_blocked_receipt(args)
+    target = TARGET_STATE[role]
+    if ticket_field(args.workdir, args.ticket, "Resume-State") != target:
+        raise StateError("contract blocker resume target drifted")
+    state = current_state(args.workdir, args.ticket)
+    if state == "Blocked-Escalated":
+        run_helper(
+            args, "ticket-state.sh", "--ticket", args.ticket,
+            "--workdir", str(args.workdir), "--action", "materialize",
+        )
+        state = current_state(args.workdir, args.ticket)
+    if state == "Blocked-Escalated":
+        status = "waiting"
+    elif state == target:
+        migrate_passport(args)
+        status = "ready"
+    else:
+        raise StateError("contract blocker resumed to an invalid state")
+    return {
+        "action": "resume",
+        "head": git(args.workdir, "rev-parse", "HEAD"),
+        "role": role,
+        "schema": SCHEMA,
+        "status": status,
+        "ticket": args.ticket,
+    }
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser()
-    value.add_argument("action", choices=("next", "verify", "consume"))
+    value.add_argument(
+        "action", choices=("next", "verify", "consume", "block", "resume")
+    )
     value.add_argument("--factory-root", required=True, type=Path)
     value.add_argument("--workdir", required=True, type=Path)
     value.add_argument("--kit-dir", required=True, type=Path)
@@ -422,6 +568,8 @@ def main() -> None:
             or not SHA.fullmatch(args.factory_sha)
             or (args.receipt and not DIGEST.fullmatch(args.receipt))
             or (args.role and not ROLE.fullmatch(args.role))
+            or (args.action in {"block", "resume"} and not args.receipt)
+            or (args.action == "block" and not args.lease)
         ):
             raise StateError("invalid state-machine arguments")
         args.factory_root = args.factory_root.resolve(strict=True)
@@ -430,6 +578,10 @@ def main() -> None:
         args.state_dir = safe_state_dir(args.state_dir)
         if args.action == "next":
             result = next_transition(args)
+        elif args.action == "block":
+            result = block_transition(args)
+        elif args.action == "resume":
+            result = resume_transition(args)
         else:
             if not args.receipt:
                 raise StateError("receipt is required")

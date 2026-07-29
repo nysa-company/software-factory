@@ -619,6 +619,34 @@ class Controller:
             and leases == [self.release_path.name]
         )
 
+    def remote_passport_valid(self, claim: dict[str, Any]) -> bool:
+        validation = self.json_call(
+            "passport", "validate", "--ticket", claim["ticket"],
+            "--workdir", claim["worktree"], "--json",
+        )
+        passport = read(
+            self.state / "passports" / f"{claim['ticket']}.json"
+        )
+        head = passport.get("head_sha", "")
+        branch = passport.get("branch", "")
+        if (
+            validation.get("status") != "ok"
+            or validation.get("passport") != passport.get("passport_sha256")
+            or not SHA.fullmatch(head)
+            or branch != claim["branch"]
+        ):
+            return False
+        remote = subprocess.run(
+            [
+                "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
+                "origin", f"refs/heads/{branch}",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        return remote.returncode == 0 and remote.stdout == (
+            f"{head}\trefs/heads/{branch}\n"
+        )
+
     def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             if claim["status"] != "blocked":
@@ -710,47 +738,56 @@ class Controller:
                 and terminal.get("exit_status") == "143"
                 and not terminal.get("role_exit")
             )
-            if not push_failure and not interrupted_before_submission:
+            contract_blocked = (
+                terminal is not None
+                and terminal.get("role_exit") == "role_exit_contract_blocked"
+                and terminal.get("exit_status") == "12"
+            )
+            if not (
+                push_failure or interrupted_before_submission or contract_blocked
+            ):
                 continue
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if not passport_path.exists():
                 continue
-            try:
-                validation = self.json_call(
-                    "passport", "validate", "--ticket", claim["ticket"],
+            if contract_blocked:
+                blocked = self.json_call(
+                    "state-machine", "block", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--receipt", claim["receipt"],
                     "--workdir", claim["worktree"], "--json",
                 )
+                if blocked.get("status") != "blocked":
+                    raise ControllerError(
+                        "state machine returned an invalid contract blocker"
+                    )
+                try:
+                    valid_passport = self.remote_passport_valid(claim)
+                except ControllerError:
+                    continue
+                if not valid_passport:
+                    continue
+                resumed = self.json_call(
+                    "state-machine", "resume", "--ticket", claim["ticket"],
+                    "--receipt", claim["receipt"],
+                    "--workdir", claim["worktree"], "--json",
+                )
+                if resumed.get("status") == "waiting":
+                    continue
+                if resumed.get("status") != "ready":
+                    raise ControllerError(
+                        "state machine returned an invalid contract resume"
+                    )
+            try:
+                valid_passport = self.remote_passport_valid(claim)
             except ControllerError:
                 if not push_failure:
                     continue
                 try:
                     self.migrate_passport(claim, "preserve")
-                    validation = self.json_call(
-                        "passport", "validate", "--ticket", claim["ticket"],
-                        "--workdir", claim["worktree"], "--json",
-                    )
+                    valid_passport = self.remote_passport_valid(claim)
                 except ControllerError:
                     continue
-            passport = read(passport_path)
-            head = passport.get("head_sha", "")
-            branch = passport.get("branch", "")
-            if (
-                validation.get("status") != "ok"
-                or validation.get("passport") != passport.get("passport_sha256")
-                or not SHA.fullmatch(head)
-                or branch != claim["branch"]
-            ):
-                continue
-            remote = subprocess.run(
-                [
-                    "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
-                    "origin", f"refs/heads/{branch}",
-                ],
-                text=True, capture_output=True, check=False, timeout=120,
-            )
-            if remote.returncode != 0 or remote.stdout != (
-                f"{head}\trefs/heads/{branch}\n"
-            ):
+            if not valid_passport:
                 continue
             try:
                 self.renew(claim)
@@ -770,7 +807,11 @@ class Controller:
                 (
                     "push_failure_recovered"
                     if push_failure
-                    else "interrupted_role_recovered"
+                    else (
+                        "contract_blocker_recovered"
+                        if contract_blocked
+                        else "interrupted_role_recovered"
+                    )
                 ),
                 claim["ticket"],
                 failed_run_id=failed_run,
@@ -908,6 +949,16 @@ class Controller:
                     route_id=terminal["route_id"],
                 )
                 return True
+            if terminal.get("role_exit") == "role_exit_contract_blocked":
+                blocked = self.json_call(
+                    "state-machine", "block", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--receipt", claim["receipt"],
+                    "--workdir", claim["worktree"], "--json",
+                )
+                if blocked.get("status") != "blocked":
+                    raise ControllerError(
+                        "state machine returned an invalid contract blocker"
+                    )
             claim["status"] = "blocked"
             self.save_claim(claim)
             self.json_call(
