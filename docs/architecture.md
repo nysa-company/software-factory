@@ -416,6 +416,12 @@ revalidates the same remote commit. Only valid attested Done on protected main
 produces sequencer action `COMPLETE`, after which the dispatcher releases the
 lease; closeout PR creation is never terminal evidence.
 
+Before bundle attestation, the sequencer checks the Narrator artifact for the
+same required sections and approval question as the trusted attestation path.
+When that artifact is structurally invalid and no bundle attestation exists,
+exactly one additional Narrator run is allowed; another invalid result
+escalates instead of entering operator approval.
+
 The Done receipt always binds the hash of the complete projected ledger. Its
 closeout commit includes `factory/ledger.csv` only when projection changes the
 tracked bytes; a prior concurrent closeout may already have projected the same

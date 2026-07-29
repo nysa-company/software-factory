@@ -619,6 +619,43 @@ PY
   fi
 fi
 
+evidence_bundle_is_valid() {
+  local bundle="$CONTENT_ROOT/factory/tickets/$TICKET-bundle.md"
+  [[ -f "$bundle" && ! -L "$bundle" ]] || return 1
+  python3 - "$bundle" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+required = (
+    "What this does", "Preview", "Screenshots", "Acceptance criteria",
+    "Risk", "Cost", "Rollback",
+)
+if any(not re.search(rf"^#+\s+.*{re.escape(section)}", text, re.I | re.M)
+       for section in required):
+    raise SystemExit(1)
+if not re.search(r"approve to merge", text, re.I):
+    raise SystemExit(1)
+PY
+}
+
+narrator_bundle_stage() {
+  local narrator_runs="$1"
+  local attestation="$CONTENT_ROOT/factory/attestations/$TICKET/bundle.json"
+  if [[ "$narrator_runs" -eq 0 ]]; then
+    echo "RUN narrator"
+  elif [[ ! -e "$attestation" && ! -L "$attestation" ]] &&
+       ! evidence_bundle_is_valid; then
+    if [[ "$narrator_runs" -eq 1 ]]; then
+      echo "RUN narrator"
+    else
+      echo "ESCALATE evidence bundle remained invalid after one Narrator retry"
+    fi
+  else
+    echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
+  fi
+}
+
 # Reviewer verdicts must be recorded on the ticket file by the dispatcher.
 # Count them; they are the only stage input outside the ledger.
 A="$(grep -ciE '^[[:space:]]*reviewer round[[:space:]]+[0-9]+:[[:space:]]*APPROVE[[:space:]]*$' "$TICKET_FILE" || true)"; A="${A:-0}"
@@ -972,9 +1009,8 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
     LAST_FRESH_REVIEW_INDEX="$(printf '%s\n' "$FRESH_REVIEW_ROWS" | \
       awk -F'|' 'NF==2 { value=$1 } END { print value+0 }')"
     NARRATOR_AFTER_REVIEWER="$(printf '%s\n' "$FRESH_NARRATOR_ROWS" | \
-      awk -F'|' -v review="$LAST_FRESH_REVIEW_INDEX" 'NF==2 && $1>review { found=1 } END { print found+0 }')"
-    if [[ "$NARRATOR_AFTER_REVIEWER" -ne 1 ]]; then echo "RUN narrator"; exit 0; fi
-    echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
+      awk -F'|' -v review="$LAST_FRESH_REVIEW_INDEX" 'NF==2 && $1>review { count++ } END { print count+0 }')"
+    narrator_bundle_stage "$NARRATOR_AFTER_REVIEWER"
     exit 0
   fi
   # A post-refresh rejection must use the ordinary fix/re-review path below;
@@ -990,7 +1026,6 @@ elif [[ "$A" -ge 1 ]]; then
     echo "RUN narrator"
     exit 0
   fi
-  if [[ "$N" -eq 0 ]]; then echo "RUN narrator"; exit 0; fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
   # future bundle-attestation path. Contract 1.2 stops before that boundary.
   if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
@@ -998,7 +1033,7 @@ elif [[ "$A" -ge 1 ]]; then
     echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
     exit 1
   fi
-  echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
+  narrator_bundle_stage "$N"
   exit 0
 fi
 
