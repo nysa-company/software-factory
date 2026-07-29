@@ -740,3 +740,50 @@ def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     if ticket in reconciliation:
         return dict(reconciliation[ticket])
     raise ValidationError("protected main lacks valid terminal evidence")
+
+
+@lru_cache(maxsize=64)
+def _ancestor_commit_for_tree(repo, commit, tree):
+    repo = Path(repo)
+    if run(repo, "cat-file", "-t", tree, check=False).stdout.strip() != "tree":
+        return None
+    for line in run(repo, "log", "--format=%H%x09%T", commit).stdout.splitlines():
+        candidate, candidate_tree = line.split("\t", 1)
+        if candidate_tree == tree:
+            return candidate
+    return None
+
+
+def certified_legacy_terminal(repo, ticket, ref, certified_tree):
+    """Preserve an unchanged legacy Done blob from the prior certified tree."""
+    if not isinstance(ticket, str) or not TICKET_ID.fullmatch(ticket):
+        raise ValidationError("invalid ticket identifier")
+    if not isinstance(certified_tree, str) or not OID.fullmatch(certified_tree):
+        return None
+    repo = Path(repo).resolve(strict=True)
+    commit = run(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
+    baseline = _ancestor_commit_for_tree(str(repo), commit, certified_tree)
+    if baseline is None:
+        return None
+    path = f"factory/tickets/{ticket}.md"
+    current_text = text_at(repo, commit, path)
+    if (
+        current_text is None
+        or one_field(current_text, "State") != "Done"
+        or blob_at(repo, commit, path) != blob_at(repo, baseline, path)
+    ):
+        return None
+    evidence_paths = (
+        f"factory/attestations/{ticket}/done.json",
+        f"factory/migrations/contract-1.3/{ticket}.json",
+        f"factory/migrations/contract-1.3-terminal-backfill/{ticket}.json",
+        f"factory/migrations/protected-merge-reconciliation/{ticket}.json",
+    )
+    if any(blob_at(repo, baseline, item) is not None for item in evidence_paths):
+        return None
+    return {
+        "basis": "certified-legacy-done",
+        "ticket": ticket,
+        "baseline_commit": baseline,
+        "ticket_blob": blob_at(repo, baseline, path),
+    }
