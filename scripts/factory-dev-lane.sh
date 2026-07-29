@@ -66,6 +66,19 @@ lane_tmp_parent() {
 }
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 sha256_text() { shasum -a 256 | awk '{print $1}'; }
+path_metadata() {
+  python3 - "$1" "${2:-owner-mode-links}" <<'PY'
+import os, stat, sys
+info = os.lstat(sys.argv[1])
+mode = f"{stat.S_IMODE(info.st_mode):o}"
+values = {
+    "mode": mode,
+    "owner-mode": f"{info.st_uid}:{mode}",
+    "owner-mode-links": f"{info.st_uid}:{mode}:{info.st_nlink}",
+}
+print(values[sys.argv[2]])
+PY
+}
 
 cursor_approval_hash() {
   local root="$1" version="$2" route_plan cursor session_home
@@ -152,7 +165,7 @@ subscription_ready() {
 product_cursor_enabled() {
   local root="$1" path="$root/runtime/product-cursor-fallback" value
   [[ -f "$path" && ! -L "$path" &&
-     "$(stat -f '%Su:%Lp:%l' "$path")" == "$(id -un):600:1" ]] ||
+     "$(path_metadata "$path")" == "$(id -u):600:1" ]] ||
     die "product Cursor fallback policy is missing or unsafe"
   value="$(cat "$path")"
   [[ "$value" == enabled || "$value" == disabled ]] ||
@@ -303,7 +316,7 @@ refresh_product_subscription_credentials() {
     die "subscription session home is unavailable"
   if [[ -f "$root/runtime/claude-token-source" &&
         ! -L "$root/runtime/claude-token-source" ]]; then
-    [[ "$(stat -f '%Su:%Lp:%l' "$root/runtime/claude-token-source")" == "$(id -un):600:1" ]] ||
+    [[ "$(path_metadata "$root/runtime/claude-token-source")" == "$(id -u):600:1" ]] ||
       die "Claude subscription token source record is unsafe"
     token_source="$(cat "$root/runtime/claude-token-source")"
     [[ "$token_source" == /* && "$token_source" != *$'\n'* ]] ||
@@ -1260,7 +1273,7 @@ EOF
 validate_product_checkpoint() {
   local checkpoint="$1" bundle="$2" base="$3"; shift 3
   [[ "$checkpoint" == /* && -f "$checkpoint" && ! -L "$checkpoint" &&
-     "$(stat -f '%Su:%Lp:%l' "$checkpoint")" == "$(id -un):600:1" ]] ||
+     "$(path_metadata "$checkpoint")" == "$(id -u):600:1" ]] ||
     die "product seed checkpoint must be an owner-only regular file"
   refuse_production_path "$checkpoint"
   python3 - "$checkpoint" "$(sha256_file "$bundle")" "$base" "$@" <<'PY' ||
@@ -1357,7 +1370,7 @@ PY
 product_checkpoint_base() {
   local checkpoint="$1"
   [[ "$checkpoint" == /* && -f "$checkpoint" && ! -L "$checkpoint" &&
-     "$(stat -f '%Su:%Lp:%l' "$checkpoint")" == "$(id -un):600:1" ]] ||
+     "$(path_metadata "$checkpoint")" == "$(id -u):600:1" ]] ||
     die "product seed checkpoint must be an owner-only regular file"
   refuse_production_path "$checkpoint"
   python3 - "$checkpoint" <<'PY' ||
@@ -1375,7 +1388,7 @@ product_publication_pr_view() {
   local repo="$1" pr="$2" fixture="${FACTORY_DEV_LANE_PR_VIEW_JSON:-}"
   if [[ "$TEST_MODE" -eq 1 && -n "$fixture" ]]; then
     [[ "$fixture" == /* && -f "$fixture" && ! -L "$fixture" &&
-       "$(stat -f '%Su:%Lp:%l' "$fixture")" == "$(id -un):600:1" ]] ||
+       "$(path_metadata "$fixture")" == "$(id -u):600:1" ]] ||
       die "publication PR fixture is unsafe"
     cat "$fixture"
   else
@@ -1524,7 +1537,7 @@ validate_product_publication_conflict_current() {
   local binding live repo pr
   [[ -e "$receipt" || -L "$receipt" ]] || return 0
   [[ -f "$receipt" && ! -L "$receipt" &&
-     "$(stat -f '%Su:%Lp:%l' "$receipt")" == "$(id -un):600:1" ]] ||
+     "$(path_metadata "$receipt")" == "$(id -u):600:1" ]] ||
     die "publication conflict receipt is unsafe"
   binding="$(python3 - "$receipt" <<'PY'
 import json, sys
@@ -1629,7 +1642,7 @@ seed_product_worktrees() {
   [[ "$bundle" == /* && -f "$bundle" && ! -L "$bundle" ]] ||
     die "product seed bundle must be an absolute regular file"
   refuse_production_path "$bundle"
-  [[ "$(stat -f '%Su:%Lp' "$bundle")" == "$(id -un):600" ]] ||
+  [[ "$(path_metadata "$bundle" owner-mode)" == "$(id -u):600" ]] ||
     die "product seed bundle must be owner-only"
   git -C "$root/product" bundle verify "$bundle" >/dev/null 2>&1 ||
     die "product seed bundle is invalid"
@@ -1912,13 +1925,13 @@ validate_product_seed_accounting() {
   [[ "$manifest" == /* && -f "$manifest" && ! -L "$manifest" ]] ||
     die "product seed accounting must be an absolute regular file"
   refuse_production_path "$manifest"
-  [[ "$(stat -f '%Su:%Lp:%l' "$manifest")" == "$(id -un):600:1" ]] || {
+  [[ "$(path_metadata "$manifest")" == "$(id -u):600:1" ]] || {
     die "product seed accounting must be owner-only"; return 1;
   }
   [[ "$bundle" == /* && -f "$bundle" && ! -L "$bundle" ]] ||
     die "product seed bundle must be an absolute regular file"
   refuse_production_path "$bundle"
-  [[ "$(stat -f '%Su:%Lp:%l' "$bundle")" == "$(id -un):600:1" ]] || {
+  [[ "$(path_metadata "$bundle")" == "$(id -u):600:1" ]] || {
     die "product seed bundle must be owner-only"; return 1;
   }
   if ! python3 - "$manifest" "$(sha256_file "$bundle")" "$base" "$@" <<'PY'
@@ -2076,12 +2089,12 @@ consume_product_seed_authorization() {
   local parent root digest nonce day marker lineage_id lineage_parent lineage_values
   local accounting_values expected_lineage lineage lock head checkpoint_digest accounting_parent
   [[ "$lineage_record" == /* && -f "$lineage_record" && ! -L "$lineage_record" &&
-     "$(stat -f '%Su:%Lp:%l' "$lineage_record")" == "$(id -un):600:1" ]] ||
+     "$(path_metadata "$lineage_record")" == "$(id -u):600:1" ]] ||
     die "product seed lineage must be an owner-only regular file"
   refuse_production_path "$lineage_record"
   parent="$(physical "$(dirname "$lineage_record")")"
   refuse_production_path "$parent"
-  [[ "$(stat -f '%Su:%Lp' "$parent")" == "$(id -un):700" ]] ||
+  [[ "$(path_metadata "$parent" owner-mode)" == "$(id -u):700" ]] ||
     die "product seed lineage parent must be owner-only"
   digest="$(sha256_file "$manifest")"
   [[ "$digest" == "$expected" ]] ||
@@ -2120,7 +2133,7 @@ PY
   root="$parent/.seed-accounting-lineages"
   if [[ ! -e "$root" ]]; then mkdir -m 700 "$root" 2>/dev/null || true; fi
   [[ -d "$root" && ! -L "$root" &&
-     "$(stat -f '%Su:%Lp' "$root")" == "$(id -un):700" ]] ||
+     "$(path_metadata "$root" owner-mode)" == "$(id -u):700" ]] ||
     die "product seed accounting lineage root is unsafe"
   lock="$root/$lineage_id.lock"
   mkdir -m 700 "$lock" 2>/dev/null ||
@@ -2138,17 +2151,17 @@ PY
       mkdir -m 700 "$lineage/checkpoints" || exit 1
     fi
     [[ -d "$lineage" && ! -L "$lineage" &&
-       "$(stat -f '%Su:%Lp' "$lineage")" == "$(id -un):700" &&
+       "$(path_metadata "$lineage" owner-mode)" == "$(id -u):700" &&
        -d "$lineage/nonces" && ! -L "$lineage/nonces" &&
-       "$(stat -f '%Su:%Lp' "$lineage/nonces")" == "$(id -un):700" &&
+       "$(path_metadata "$lineage/nonces" owner-mode)" == "$(id -u):700" &&
        -d "$lineage/checkpoints" && ! -L "$lineage/checkpoints" &&
-       "$(stat -f '%Su:%Lp' "$lineage/checkpoints")" == "$(id -un):700" ]] || exit 1
+       "$(path_metadata "$lineage/checkpoints" owner-mode)" == "$(id -u):700" ]] || exit 1
     head="$lineage/head"
     if [[ "$lineage_parent" == none ]]; then
       [[ ! -e "$head" ]] || exit 1
     else
       [[ -f "$head" && ! -L "$head" &&
-         "$(stat -f '%Su:%Lp:%l' "$head")" == "$(id -un):600:1" &&
+         "$(path_metadata "$head")" == "$(id -u):600:1" &&
          "$(sed -n '1p' "$head")" == "$lineage_parent" ]] || exit 1
     fi
     marker="$lineage/nonces/$nonce.used"
@@ -2192,21 +2205,21 @@ write_product_seed_lineage() {
   local manifest="$1" output="$2" parent_manifest="${3:-}"
   local artifact_dir digest lineage_id parent_digest=null parent_lineage
   [[ "$manifest" == /* && -f "$manifest" && ! -L "$manifest" &&
-     "$(stat -f '%Su:%Lp:%l' "$manifest")" == "$(id -un):600:1" ]] ||
+     "$(path_metadata "$manifest")" == "$(id -u):600:1" ]] ||
     die "product seed accounting must be an owner-only regular file"
   [[ "$output" == /* && ! -e "$output" && ! -L "$output" ]] ||
     die "product seed lineage output must be a new absolute path"
   refuse_production_path "$manifest"; refuse_production_path "$output"
   artifact_dir="$(physical "$(dirname "$output")")"
   [[ "$artifact_dir" == "$(physical "$(dirname "$manifest")")" &&
-     "$(stat -f '%Su:%Lp' "$artifact_dir")" == "$(id -un):700" ]] ||
+     "$(path_metadata "$artifact_dir" owner-mode)" == "$(id -u):700" ]] ||
     die "product seed lineage artifacts must share one owner-only directory"
   digest="$(sha256_file "$manifest")"
   lineage_id="$(product_seed_lineage_id "$manifest")" ||
     die "product seed accounting scope is malformed"
   if [[ -n "$parent_manifest" ]]; then
     [[ "$parent_manifest" == /* && -f "$parent_manifest" && ! -L "$parent_manifest" &&
-       "$(stat -f '%Su:%Lp:%l' "$parent_manifest")" == "$(id -un):600:1" &&
+       "$(path_metadata "$parent_manifest")" == "$(id -u):600:1" &&
        "$(physical "$(dirname "$parent_manifest")")" == "$artifact_dir" ]] ||
       die "parent seed accounting must be an owner-only sibling file"
     refuse_production_path "$parent_manifest"
@@ -3081,8 +3094,8 @@ product_resume_drained() {
   local container label state
   [[ -f "$root/runtime/product-approval.used" &&
      ! -L "$root/runtime/product-approval.used" &&
-     "$(stat -f '%Su:%Lp:%l' "$root/runtime/product-approval.used")" == \
-       "$(id -un):600:1" ]] || return 1
+     "$(path_metadata "$root/runtime/product-approval.used")" == \
+       "$(id -u):600:1" ]] || return 1
   python3 - "$root/runtime/product-approval.used" <<'PY' || return 1
 import re, sys
 value=dict(line.split("=",1) for line in open(sys.argv[1],encoding="utf-8").read().splitlines())
@@ -3093,8 +3106,8 @@ PY
   if [[ "$approval_ready" -eq 1 ]]; then
     [[ -f "$root/runtime/product-approval" &&
        ! -L "$root/runtime/product-approval" &&
-       "$(stat -f '%Su:%Lp:%l' "$root/runtime/product-approval")" == \
-         "$(id -un):600:1" ]] || return 1
+       "$(path_metadata "$root/runtime/product-approval")" == \
+         "$(id -u):600:1" ]] || return 1
   else
     [[ ! -e "$root/runtime/product-approval" ]] || return 1
   fi
@@ -3149,8 +3162,8 @@ validate_product_resume_basis() {
   local root="$1" approval_ready="${2:-0}" expected actual
   [[ -f "$root/runtime/product-resume.json" &&
      ! -L "$root/runtime/product-resume.json" &&
-     "$(stat -f '%Su:%Lp:%l' "$root/runtime/product-resume.json")" == \
-       "$(id -un):600:1" ]] || return 1
+     "$(path_metadata "$root/runtime/product-resume.json")" == \
+       "$(id -u):600:1" ]] || return 1
   expected="$(python3 - "$root/runtime/product-source.json" \
     "$root/runtime/product-resume.json" <<'PY'
 import hashlib, json, sys
@@ -4765,7 +4778,7 @@ validate_product_export_output() {
   esac
   parent="$(dirname "$output")"
   [[ -d "$parent" && ! -L "$parent" && "$(physical "$parent")" == "$parent" &&
-     "$(stat -f '%Su:%Lp' "$parent")" == "$(id -un):700" ]] ||
+     "$(path_metadata "$parent" owner-mode)" == "$(id -u):700" ]] ||
     die "product export output parent must be an owner-only physical directory"
 }
 
@@ -4924,7 +4937,7 @@ export_product_checkpoint_internal() {
   [[ "$output" == /* && ! -e "$output" ]] ||
     die "product checkpoint output must be a new absolute directory"
   refuse_production_path "$output"
-  [[ "$(stat -f '%Su:%Lp' "$(dirname "$output")")" == "$(id -un):700" ]] ||
+  [[ "$(path_metadata "$(dirname "$output")" owner-mode)" == "$(id -u):700" ]] ||
     die "product checkpoint parent must be owner-only"
   mkdir -m 700 "$output"
   trap '[[ "$cleanup" -eq 0 ]] || rm -rf "$output"' RETURN
