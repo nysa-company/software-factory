@@ -1603,3 +1603,10 @@ Category: System change
 Static shell assertions under `pipefail` do not use an early-exiting
 `grep -q` downstream of a potentially long producer. They consume the full
 stream and discard output so GNU and BSD pipeline behavior remains equivalent.
+
+## 2026-07-29 — Decision 126: Test fixtures use portable in-place edits
+
+Category: System change
+
+Development-lane fixtures use `sed -i.bak` plus explicit backup removal for
+in-place edits. No BSD-only `sed -i ''` invocation remains in the Factory.

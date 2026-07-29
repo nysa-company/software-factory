@@ -2058,6 +2058,23 @@ complete extracted function while discarding its output.
 Validation: focused static extraction and shell syntax checks run locally;
 protected GitHub CI owns the complete regression.
 
+## FI-20260729-091 — Operator-resume fixture retained BSD in-place syntax
+
+Status: Implemented; protected CI pending
+Area: protected CI portability
+Owner: Factory
+First seen: 2026-07-29, protected-main Factory 1.8 promotion
+Impact: Linux release verification reached operator-resolved Planner recovery
+but could not materialize the resumed state; macOS Release passed.
+Evidence: protected run `30423208926`, Linux release job `90484058519`,
+reports `sed: can't read s/^State: Blocked-Escalated$/State: Planning/`.
+Root cause: a later state-materialization fixture retained the BSD-only
+`sed -i ''` form after FI-087 repaired the earlier retry fixture.
+Smallest change: use the existing portable `sed -i.bak` pattern and remove its
+single backup; no state-machine behavior or assertion changes.
+Validation: focused operator-resume and shell syntax checks run locally;
+protected GitHub CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
