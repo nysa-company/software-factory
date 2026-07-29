@@ -289,9 +289,8 @@ def csv_bytes(rows):
     return output.getvalue().encode()
 
 
-def atomic_write(path, content):
+def atomic_write(path, content, staging):
     path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.parent / "runs"
     if not staging.is_dir() or staging.is_symlink():
         fail("runtime ledger staging root must be a real runs directory")
     descriptor, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=staging)
@@ -516,7 +515,7 @@ def main():
             sys.stdout.buffer.write(content)
         else:
             target = runtime or root / "factory" / "runtime-ledger.csv"
-            atomic_write(target, content)
+            atomic_write(target, content, runs or root / "factory" / "runs")
             print(target)
         return
 
