@@ -2249,6 +2249,30 @@ now validates the live canonical branches while PR #261 stays open. Focused
 regressions cover a noncanonical slice ref and a wrong authorized exact head;
 protected GitHub CI owns the complete regression.
 
+## FI-20260729-099 — Activation plan swallowed a lease refusal
+
+Status: Implemented; protected CI pending
+Area: release activation
+Owner: Factory
+First seen: 2026-07-29, protected run `30472453618`, Linux release job
+`90645861195` and macOS release job `90645861106`
+Impact: activation correctly refused a wrong authorized ticket head, but the
+read-only plan printed `PLAN OK` after the same validator rejected it.
+Evidence: both protected release jobs failed the exact
+`plan and activation reject the same wrong authorized remote head` assertion;
+the validator emitted
+`nonterminal ticket does not match its exact in-flight release authorization`
+before planning continued.
+Root cause: `plan_activation` runs inside a command substitution, where
+Bash 3 clears `errexit`. Its ticket-lease validator returned nonzero, but the
+following plan-tuple print replaced that status.
+Smallest change: explicitly return the validator status before emitting the
+plan tuple. Keep every validation rule, refusal, assertion, and timeout
+unchanged.
+Validation: shell syntax, the exact status-propagation boundary, and the
+maintained Nysa plan run locally; protected GitHub CI owns the complete
+regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

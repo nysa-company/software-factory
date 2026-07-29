@@ -2925,7 +2925,7 @@ plan_activation() {
   [[ ! -e "$CONSUMED_DIR/$(json_get "$receipt" receipt_id).json" ]] ||
     die "certification receipt has already been consumed"
   validate_ticket_leases "$product_top" "$sha" \
-    "$(json_get "$receipt" product_origin)" "$previous_product_tree"
+    "$(json_get "$receipt" product_origin)" "$previous_product_tree" || return
   printf '%s\t%s\t%s\t%s\n' "$receipt" "$generation" "$previous" "$product_top"
 }
 
