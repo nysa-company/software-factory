@@ -1595,3 +1595,11 @@ Category: System change
 Publication ordering tests persist the exact same `publication_ready_at` for
 tickets whose ticket-ID tie-break is under test. Production continues to order
 by priority, actual ready time, then ticket ID.
+
+## 2026-07-29 — Decision 125: Pipefail assertions consume producer output
+
+Category: System change
+
+Static shell assertions under `pipefail` do not use an early-exiting
+`grep -q` downstream of a potentially long producer. They consume the full
+stream and discard output so GNU and BSD pipeline behavior remains equivalent.
