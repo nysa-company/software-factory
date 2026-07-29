@@ -1501,3 +1501,12 @@ any frozen promotion candidate, focused local checks with the full regression
 left to protected GitHub CI, mode-aware improvement-log updates, and separate
 non-inheriting authorization for implementation, qualification, promotion,
 sealing, Relay cutover/rollback/recutover, and Nysa activation.
+
+## 2026-07-28 — Protected promotion CI caught a stale Contract 1.2 fixture
+
+Category: Context
+
+The first protected-main run for Factory 1.8 correctly refused a valid
+`models pin-batch` test executed through a Contract 1.2 release on both Linux
+and macOS. The release remains unsealed until a separate Contract 1.8 batch
+fixture passes protected GitHub CI; the launcher guard is unchanged.

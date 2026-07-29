@@ -721,22 +721,26 @@ SHA_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 SHA_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 SHA_V11="dddddddddddddddddddddddddddddddddddddddd"
 SHA_MODELS="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+SHA_MODELS_V18="9999999999999999999999999999999999999999"
 SHA_FALLBACK="ffffffffffffffffffffffffffffffffffffffff"
 RELEASE_A="$KITS_ROOT/releases/$SHA_A"
 RELEASE_B="$KITS_ROOT/releases/$SHA_B"
 RELEASE_V11="$KITS_ROOT/releases/$SHA_V11"
 RELEASE_MODELS="$KITS_ROOT/releases/$SHA_MODELS"
+RELEASE_MODELS_V18="$KITS_ROOT/releases/$SHA_MODELS_V18"
 RELEASE_FALLBACK="$KITS_ROOT/releases/$SHA_FALLBACK"
 mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
 create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner" "1.0.0"
 create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR" "1.1.0"
 create_test_release "$RELEASE_V11" "RELEASE-V11" "RUN planner" "1.1.0"
 create_test_release "$RELEASE_MODELS" "RELEASE-MODELS" "RUN planner" "1.2.0"
+create_test_release "$RELEASE_MODELS_V18" "RELEASE-MODELS-V18" "RUN planner" "1.8.0"
 create_test_release "$RELEASE_FALLBACK" "RELEASE-FALLBACK" "RUN planner" "1.6.0"
 TREE_A="$(tree_for_directory "$RELEASE_A")"
 TREE_B="$(tree_for_directory "$RELEASE_B")"
 TREE_V11="$(tree_for_directory "$RELEASE_V11")"
 TREE_MODELS="$(tree_for_directory "$RELEASE_MODELS")"
+TREE_MODELS_V18="$(tree_for_directory "$RELEASE_MODELS_V18")"
 TREE_FALLBACK="$(tree_for_directory "$RELEASE_FALLBACK")"
 printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 REGISTRY_SENTINEL="$TMP/registry-was-sourced"
@@ -1219,6 +1223,8 @@ assert_model_call disable disable --scope-type route --scope-id codex-gpt-5.6-so
   --reason credits_exhausted --ttl-seconds 60 --operator-id operator-1 --json
 assert_model_call enable enable --scope-type route --scope-id codex-gpt-5.6-sol --json
 
+printf '%s\n' "$SHA_MODELS_V18" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_MODELS_V18" "$TREE_MODELS_V18" "$RELEASE_MODELS_V18"
 PIN_HEAD_BEFORE="$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)"
 if ! run_launcher launchtest models pin-batch \
   --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
@@ -1226,7 +1232,7 @@ if ! run_launcher launchtest models pin-batch \
   cat "$TMP/models-pin.json" >&2
   fail "valid batch model pin invocation failed"
 fi
-python3 - "$TMP/models-pin.json" "$RUN_WORKTREE_PHYS" "$SHA_MODELS" <<'PY'
+python3 - "$TMP/models-pin.json" "$RUN_WORKTREE_PHYS" "$SHA_MODELS_V18" <<'PY'
 import json, pathlib, subprocess, sys
 path, workdir, kit_sha = sys.argv[1:]
 batch = json.load(open(path, encoding="utf-8"))

@@ -1804,6 +1804,26 @@ tests pass, including unknown semantic-path refusal, exact charge retention,
 pre-validation passport migration, exact remote-head matching, and no automatic
 force push. Protected GitHub CI retains the complete regression.
 
+## FI-20260728-078 — Contract 1.8 batch pin test used a Contract 1.2 release
+
+Status: Implemented; protected CI pending
+Area: release verification
+Owner: Factory
+First seen: 2026-07-28, protected-main Factory 1.8 promotion
+Impact: both Linux and macOS Hermes shards refused the nominally valid
+`models pin-batch` fixture, preventing the merged release from being sealed.
+Evidence: protected Factory run `30417416161`; jobs `90466865328` and
+`90466865310` report
+`factory-launch: batch model pinning requires contract 1.8.0`.
+Root cause: the Hermes contract test correctly retained a Contract 1.2 release
+for compatibility coverage but reused it after the valid pin invocation was
+upgraded to Contract 1.8-only `pin-batch`.
+Smallest change: retain the Contract 1.2 model-control coverage, add one
+Contract 1.8 model fixture, and switch the active release only at the batch-pin
+boundary.
+Validation: shell syntax and exact fixture/order assertions pass locally.
+Protected GitHub CI owns execution of the complete Hermes regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
