@@ -234,7 +234,7 @@ SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
 ENVELOPE_CONTROL="$KIT_DIR/scripts/envelope-control.py"
 SEQUENCER_ERROR=""
-PROVIDER_CONTRACT_VERSION=""
+PROVIDER_CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}}"
 unset TRANSITION_PROJECT
 readonly TRANSITION_PROJECT="${FACTORY_PROJECT:-}"
 
@@ -1263,7 +1263,6 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "$FACTORY_KIT_PIN_ERROR; no task was submitted" >&2
   exit 3
 fi
-PROVIDER_CONTRACT_VERSION="$FACTORY_CONTRACT_VERSION"
 if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
