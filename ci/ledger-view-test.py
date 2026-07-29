@@ -104,11 +104,13 @@ class LedgerViewTest(unittest.TestCase):
             ).stdout)
             replace(source, target)
 
+        target = Path(self.temp.name) / "override/runtime-ledger.csv"
         with mock.patch.object(LEDGER_VIEW.os, "replace", side_effect=inspect):
             LEDGER_VIEW.atomic_write(
-                self.root / "factory/runtime-ledger.csv", b"header\n"
+                target, b"header\n", self.root / "factory/runs"
             )
         self.assertEqual(observed, [""])
+        self.assertEqual(target.read_bytes(), b"header\n")
 
     def integrity_snapshot(self, check=True):
         command = [str(INTEGRITY_HELPER), "snapshot", str(self.root / "factory" / "runs")]

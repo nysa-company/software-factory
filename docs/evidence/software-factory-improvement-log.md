@@ -2215,8 +2215,11 @@ pre-rename boundary on macOS and Linux. A focused Linux mock-concurrency lane
 advanced past the original checkout-mutation boundary, then separately refused
 one manifest whose link count was unsafe before its disposable Colima VM wedged
 under memory pressure. No speculative second repair was made; protected GitHub
-CI owns the complete regression and determines whether that later signal is
-reproducible outside the disposable container.
+CI proved the release shard green and did not reproduce that later signal.
+Protected Factory shards then exposed the first exact follow-up boundary:
+valid external `FACTORY_LEDGER` targets have no sibling `runs/` directory.
+The writer now receives the already-authoritative runs root rather than deriving
+it from the output target.
 
 ## Maintenance rule
 
