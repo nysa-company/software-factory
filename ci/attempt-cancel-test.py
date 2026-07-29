@@ -195,9 +195,9 @@ class AttemptCancellationTest(unittest.TestCase):
                 IDENTITY.signal_group(identity, signal.SIGKILL)
 
     @unittest.skipUnless(
-        sys.platform == "darwin", "sandbox process probe is macOS-only"
+        sys.platform in {"darwin", "linux"}, "sandbox process probe is unsupported"
     )
-    def test_sandbox_start_identity_matches_host_and_foreground_timeout_group(self):
+    def test_sandbox_start_identity_is_stable_for_foreground_timeout_group(self):
         timeout = shutil.which("timeout")
         if timeout is None:
             self.skipTest("GNU timeout is unavailable")
@@ -226,7 +226,18 @@ class AttemptCancellationTest(unittest.TestCase):
             ],
             text=True,
         ).strip()
-        self.assertEqual(" ".join(observed.split()), table[process.pid].started)
+        if sys.platform == "linux":
+            repeated = subprocess.check_output(
+                [
+                    sys.executable, str(ROOT / "scripts/lib/sandbox-ps.py"),
+                    "-o", "lstart=", "-p", str(process.pid),
+                ],
+                text=True,
+            ).strip()
+            self.assertRegex(observed, r"^linux-start-[0-9]+$")
+            self.assertEqual(repeated, observed)
+        else:
+            self.assertEqual(" ".join(observed.split()), table[process.pid].started)
         self.manifest(process, table[process.pid].started, go="1")
         identity = IDENTITY.load_identity(self.runs, "run-1")
         self.assertGreaterEqual(len(identity.members), 2)

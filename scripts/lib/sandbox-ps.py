@@ -62,7 +62,29 @@ def process_start(info):
     )
 
 
+def linux_process_start(pid):
+    with open(f"/proc/{pid}/stat", encoding="utf-8") as stream:
+        tail = stream.read().rpartition(")")[2].split()
+    if len(tail) < 20 or not tail[19].isdigit():
+        raise OSError("Linux process record is malformed")
+    return f"linux-start-{tail[19]}"
+
+
 def process_table():
+    if sys.platform == "linux":
+        for pid in sorted(
+            int(name) for name in os.listdir("/proc") if name.isdigit()
+        ):
+            if pid <= 1:
+                continue
+            try:
+                pgid = os.getpgid(pid)
+                started = linux_process_start(pid)
+            except (OSError, ProcessLookupError, ValueError):
+                continue
+            if pgid > 1:
+                print(pid, pgid, started)
+        return
     libproc = load_libproc()
     needed = libproc.proc_listpids(1, 0, None, 0)
     if needed <= 0:
@@ -97,14 +119,20 @@ elif "-o" in sys.argv and "-p" in sys.argv:
     if output == "pgid=":
         print(os.getpgid(pid))
     elif output == "lstart=":
-        info = ProcBsdInfo()
-        libproc = load_libproc()
-        size = libproc.proc_pidinfo(
-            pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)
-        )
-        if size != ctypes.sizeof(info) or info.pid != pid:
-            raise SystemExit(1)
-        print(process_start(info))
+        if sys.platform == "linux":
+            try:
+                print(linux_process_start(pid))
+            except (OSError, ProcessLookupError, ValueError):
+                raise SystemExit(1)
+        else:
+            info = ProcBsdInfo()
+            libproc = load_libproc()
+            size = libproc.proc_pidinfo(
+                pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)
+            )
+            if size != ctypes.sizeof(info) or info.pid != pid:
+                raise SystemExit(1)
+            print(process_start(info))
     else:
         raise SystemExit(2)
 else:

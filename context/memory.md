@@ -1610,3 +1610,13 @@ Category: System change
 
 Development-lane fixtures use `sed -i.bak` plus explicit backup removal for
 in-place edits. No BSD-only `sed -i ''` invocation remains in the Factory.
+
+## 2026-07-29 — Decision 127: Restricted process identity is host-neutral
+
+Category: System change
+
+The restricted sandbox `ps` helper retains its narrow command surface and uses
+the host-native process source: macOS `libproc` or Linux `/proc`. Linux identity
+uses raw process-start ticks rather than wall-clock reconstruction, so clock
+adjustment cannot invalidate a live lock. Protected Linux mock lanes can bind
+launch and provider locks without weakening PID-reuse protection.
