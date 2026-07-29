@@ -348,6 +348,24 @@ class EffectiveTicketTests(unittest.TestCase):
             self.assertEqual(terminal.returncode, 0, terminal.stderr)
             self.assertIn("State: Done", terminal.stdout)
             subprocess.run(["git", "-C", repo, "switch", "-q", "main"], check=True)
+            closeout = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            for revision in (closeout, "HEAD"):
+                subprocess.run([
+                    "git", "-C", repo,
+                    "-c", "user.name=test", "-c", "user.email=test@example.com",
+                    "revert", "--no-edit", revision,
+                ], check=True, capture_output=True)
+            subprocess.run(["git", "-C", repo, "push", "-q", "origin", "main"], check=True)
+            subprocess.run(["git", "-C", repo, "fetch", "-q", "origin"], check=True)
+            terminal = subprocess.run([
+                sys.executable, str(ROOT / "scripts/lib/effective_ticket.py"),
+                "--factory-dir", str(repo / "factory"), "--ticket", "T-700",
+                "--terminal-main",
+            ], capture_output=True, text=True)
+            self.assertEqual(terminal.returncode, 0, terminal.stderr)
             ledger.write_text(
                 ledger.read_text() + "2026-07-18,T-701,run-2\n"
             )
