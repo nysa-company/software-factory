@@ -2075,6 +2075,28 @@ single backup; no state-machine behavior or assertion changes.
 Validation: focused operator-resume and shell syntax checks run locally;
 protected GitHub CI owns the complete regression.
 
+## FI-20260729-092 — Linux mock lanes lacked a process-identity probe
+
+Status: Implemented; protected CI pending
+Area: protected CI portability
+Owner: Factory
+First seen: 2026-07-29, protected-main Factory 1.8 promotion
+Impact: the Linux release shard reached the mock lifecycle but refused Planner
+before submission, leaving no role manifest.
+Evidence: protected run `30423761930`, Linux release job `90485699126`; the
+retained Linux reproduction contained an empty Planner claim and no run
+evidence.
+Root cause: the lane's restricted `ps` helper loaded macOS `libproc` on every
+platform, so Linux could not record the launcher's process-start identity.
+Smallest change: preserve the narrow helper interface and macOS implementation,
+and resolve Linux process groups plus opaque raw start ticks from `/proc`;
+never reconstruct a lock identity from an adjustable wall clock. Run the
+existing identity regression on Linux as well as macOS.
+Validation: shell syntax and the focused process-identity regression pass on
+Linux and macOS; a fresh focused Linux mock lane completed all six roles and
+reached deterministic `AWAIT-OPERATOR`. Protected GitHub CI owns the complete
+regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
