@@ -710,15 +710,119 @@ class Controller:
                     "--lease", claim["lease"],
                 )
                 raise
-            claim.update(receipt="", role="", status="claimed")
+            terminal = (
+                self.terminal_for_receipt(claim["ticket"], claim["receipt"])
+                if claim.get("receipt")
+                else None
+            )
+            contract_blocked = (
+                terminal is not None
+                and terminal.get("role_exit") == "role_exit_contract_blocked"
+                and terminal.get("exit_status") == "12"
+            )
+            if contract_blocked:
+                claim["status"] = "blocked"
+            else:
+                claim.update(receipt="", role="", status="claimed")
             self.save_claim(claim)
             self.event(
                 "upgraded_claim_recovered", claim["ticket"],
                 from_factory_sha=prior,
             )
 
+    def restore_contract_blocker(self, claim: dict[str, Any]) -> bool:
+        if (
+            claim["status"] != "blocked"
+            or claim.get("receipt")
+            or claim.get("role")
+            or self.active_run(claim["ticket"])
+        ):
+            return False
+        receipt_path = self.state / f"{claim['ticket']}.json"
+        passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+        if not receipt_path.exists() or not passport_path.exists():
+            return False
+        receipt = read(receipt_path)
+        passport = read(passport_path)
+        receipt_digest = receipt.get("receipt_sha256", "")
+        role = receipt.get("role", "")
+        charges = passport.get("charge_records")
+        completed = passport.get("completed_role_evidence")
+        if (
+            receipt.get("schema") != "nysa.software-factory.transition-receipt/v1"
+            or receipt.get("ticket") != claim["ticket"]
+            or receipt.get("branch") != claim["branch"]
+            or not receipt.get("consumed")
+            or not DIGEST.fullmatch(receipt_digest)
+            or role not in {"planner", "test-author", "builder"}
+            or passport.get("ticket") != claim["ticket"]
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+            or not isinstance(charges, list)
+            or not charges
+            or not isinstance(completed, list)
+        ):
+            return False
+        charge = charges[-1]
+        if (
+            not isinstance(charge, dict)
+            or charge.get("transition_receipt_sha256") != receipt_digest
+            or charge.get("factory_sha") != receipt.get("factory_sha")
+            or charge.get("contract_version") != receipt.get("contract_version")
+            or charge.get("role") != role
+            or charge.get("head_before") != receipt.get("head_sha")
+            or any(
+                isinstance(item, dict)
+                and item.get("transition_receipt_sha256") == receipt_digest
+                for item in completed
+            )
+        ):
+            return False
+        terminal = self.terminal_for_receipt(claim["ticket"], receipt_digest)
+        if (
+            terminal is None
+            or terminal.get("run_id") != charge.get("run_id")
+            or terminal.get("role_exit") != "role_exit_contract_blocked"
+            or terminal.get("exit_status") != "12"
+            or terminal.get("role") != role
+            or terminal.get("kit_sha") != receipt.get("factory_sha")
+        ):
+            return False
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", terminal["run_id"]
+        ):
+            return False
+        manifest = self.product / "factory/runs" / f"{terminal['run_id']}.meta"
+        if (
+            not manifest.is_file()
+            or manifest.is_symlink()
+            or hashlib.sha256(manifest.read_bytes()).hexdigest()
+            != charge.get("manifest_sha256")
+            or not self.remote_passport_valid(claim)
+        ):
+            return False
+        try:
+            self.renew(claim)
+        except ControllerError:
+            lease = self.json_call("claim", "--ticket", claim["ticket"])
+            if (
+                lease.get("schema_version") != 1
+                or lease.get("ticket") != claim["ticket"]
+                or not DIGEST.fullmatch(lease.get("lease_id", ""))
+            ):
+                raise ControllerError("restored contract blocker lease is invalid")
+            claim["lease"] = lease["lease_id"]
+        claim.update(receipt=receipt_digest, role=role, status="blocked")
+        self.save_claim(claim)
+        self.event(
+            "contract_blocker_claim_restored", claim["ticket"],
+            failed_run_id=terminal["run_id"],
+        )
+        return True
+
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
+            self.restore_contract_blocker(claim)
             if (
                 claim["status"] != "blocked"
                 or not claim.get("receipt")

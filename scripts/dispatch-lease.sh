@@ -176,6 +176,9 @@ PY
 import json, pathlib, stat, sys
 
 path, ticket, lease_id = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+if not path.exists() and not path.is_symlink():
+    print('{"absent":true,"ticket":%s}' % json.dumps(ticket))
+    raise SystemExit
 value = path.lstat()
 if not stat.S_ISREG(value.st_mode) or path.is_symlink():
     raise SystemExit("dispatcher lease is unsafe")

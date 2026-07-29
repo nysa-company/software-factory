@@ -184,6 +184,18 @@ else
 fi
 
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null
+ABSENT_RELEASE="$(
+  FACTORY_ROOT="$PRODUCT" "$LEASE" release \
+    --ticket "$FIRST_TICKET" --lease "$FIRST_ID"
+)"
+if [[ "$(
+  printf '%s\n' "$ABSENT_RELEASE" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("absent"))'
+)" == "True" ]]; then
+  pass "exact release is idempotent after the lease is already absent"
+else
+  fail "exact release is idempotent after the lease is already absent"
+fi
 RECLAIMED="$(FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-908)"
 RECLAIMED_ID="$(printf '%s\n' "$RECLAIMED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
 python3 - "$PRODUCT/factory/.dispatch-leases/$SECOND_TICKET.json" <<'PY'

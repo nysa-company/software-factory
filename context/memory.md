@@ -78,6 +78,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Explicit contract-repair stages for Planner, Spec-linter, Test-author, and
   Builder map only to their named role. Ambiguous or unsupported repair text
   remains non-runnable.
+- Cross-release contract repair accepts a historical consumed receipt only
+  through the current authenticated passport's ordered release history, exact
+  charge/manifest binding, current branch ancestry, and absence of successful
+  evidence for that receipt. Its current exact-ticket lease must also be live.
+  A successor controller may reconstruct fields cleared by an earlier upgrade
+  only from that same latest terminal boundary.
 - Portable Spec-lint evidence is compared semantically after normalizing only
   Markdown indentation; export and replay use the same exact marker grammar.
 - Selected-ticket publication does not require consuming the compatibility
@@ -1717,3 +1723,17 @@ only after terminal accounting. The outer Factory capture still redacts it
 before operator display. Canceled sibling logs remain isolated, and no passing
 receipt is issued. This preserves exact-boundary diagnosis without weakening
 phase isolation or exposing raw output through the Factory command.
+
+## 2026-07-29 — Decision 136: Contract repair survives a Factory cutover
+
+Category: System change
+
+A blocked Planner, Test-author, or Builder receipt remains historical evidence
+when its ticket moves to a successor release. The state machine accepts it only
+when the current HMAC-authenticated passport orders the old and new releases,
+binds the exact charge and terminal manifest, retains the old head in current
+ancestry, contains no successful evidence for that receipt, and a live
+exact-ticket lease belongs to the successor claim. The successor controller
+preserves those blocked fields or deterministically reconstructs fields cleared
+by an earlier controller from the latest exact checkpoint. No successful role
+is replayed and no historical charge is duplicated.
