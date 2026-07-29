@@ -1667,3 +1667,12 @@ existing ignored real `factory/runs/` directory before renaming it to
 `factory/runtime-ledger.csv`. The registered-checkout mutation sentinel
 therefore remains strict without treating launcher-owned atomic intermediates
 as provider mutations.
+
+## 2026-07-29 — Decision 132: Read-only activation planning propagates refusal
+
+Category: System change
+
+Activation planning runs inside a command substitution, where Bash 3 clears
+`errexit`. The plan function therefore explicitly returns any ticket-lease
+validation failure before emitting a plan tuple. Planning and activation keep
+the same fail-closed ticket, passport, protected-head, and release checks.
