@@ -130,6 +130,80 @@ class StateMachineTest(unittest.TestCase):
             result["receipt"],
         )
 
+    def test_contract_block_and_resume_require_exact_terminal_receipt(self) -> None:
+        self.args.lease = "d" * 64
+        issued = STATE.issue(self.args, "RUN planner")
+        self.args.receipt = issued["receipt_sha256"]
+        STATE.verify(self.args, consume=True)
+        manifest = self.product / "factory/runs/blocked.meta"
+        manifest.write_text(
+            "run_id=blocked\n"
+            "phase=completed\n"
+            "accounting_state=completed\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            "ticket=T-110\n"
+            "role=planner\n"
+            f"contract_version={self.args.contract_version}\n"
+            f"kit_sha={self.args.factory_sha}\n"
+            "exit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={issued['head_sha']}\n"
+            f"transition_receipt_sha256={self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        self.args.action = "block"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "task_submitted=1", "task_submitted=0"
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(STATE.StateError, "terminal evidence is invalid"):
+            STATE.block_transition(self.args)
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "task_submitted=0", "task_submitted=1"
+            ),
+            encoding="utf-8",
+        )
+
+        def block(_args, _state):
+            path = self.product / "factory/tickets/T-110.md"
+            path.write_text(
+                "# T-110\n\nState: Blocked-Escalated\n"
+                "Resume-State: Planning\n",
+                encoding="utf-8",
+            )
+
+        with (
+            mock.patch.object(STATE, "run_helper", return_value=""),
+            mock.patch.object(STATE, "transition", side_effect=block),
+        ):
+            result = STATE.block_transition(self.args)
+        self.assertEqual(result["status"], "blocked")
+
+        self.args.action = "resume"
+
+        def resume(*_args, **_kwargs):
+            path = self.product / "factory/tickets/T-110.md"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "State: Blocked-Escalated", "State: Planning"
+                ),
+                encoding="utf-8",
+            )
+            return ""
+
+        with (
+            mock.patch.object(STATE, "run_helper", side_effect=resume),
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.resume_transition(self.args)
+        self.assertEqual(result["status"], "ready")
+        migrate.assert_called_once_with(self.args)
+
     def test_runner_keeps_host_project_for_pre_go_receipt_check(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
         start = source.index("sequencer_allows_role() {")

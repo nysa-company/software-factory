@@ -328,7 +328,11 @@ directory, passport key, passports, claims, and cumulative provider ledger.
 After the ticket route migrates, a blocked claim may recover only when its
 authenticated passport names the prior release. The controller binds a fresh
 exact-ticket lease, migrates that passport in place, and returns the claim to
-deterministic reconciliation; same-release blockers remain blocked.
+deterministic reconciliation. A same-release contract blocker remains blocked
+until the consumed transition receipt, unique terminal role evidence, passport
+lineage, and exact Linear resume state agree. The state machine then
+materializes only that resume, migrates the passport, reacquires one
+exact-ticket lease, and reruns only the blocked role.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket

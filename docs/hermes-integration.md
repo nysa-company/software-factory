@@ -95,6 +95,10 @@ non-agent controller obtains a one-use `state-machine` receipt and supplies it
 unchanged to execution and ticket attestations. It runs provider-free
 preflight once on the Planner receipt after the state machine enters Planning;
 later roles retain their valid evidence and do not repeat kickoff preflight.
+Receipt-bound `block` and `resume` actions are controller-only: they move an
+authenticated contract blocker to `Blocked-Escalated`, wait for the exact
+Linear resume state, and reopen only that failed role without replaying
+successful evidence.
 
 Model policy is task-free and sealed:
 
