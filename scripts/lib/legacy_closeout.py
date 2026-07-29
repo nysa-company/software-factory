@@ -267,15 +267,19 @@ def _normal_terminal(repo, ticket, ref):
         repo, "log", "--format=%H", "--diff-filter=A",
         f"{done['closeout_parent']}..{ref}", "--", done_path,
     ).stdout.splitlines()
-    if len(additions) != 1:
+    closeouts = []
+    current_done_blob = blob_at(repo, ref, done_path)
+    for addition in additions:
+        addition = oid(addition, "normal closeout candidate")
+        topology = run(repo, "rev-list", "--parents", "-n", "1", addition).stdout.split()
+        if (
+            topology == [addition, done["closeout_parent"]]
+            and blob_at(repo, addition, done_path) == current_done_blob
+        ):
+            closeouts.append(addition)
+    if len(closeouts) != 1:
         raise ValidationError("normal Done attestation addition is ambiguous")
-    closeout = oid(additions[0], "normal closeout commit")
-    topology = run(repo, "rev-list", "--parents", "-n", "1", closeout).stdout.split()
-    if (
-        topology != [closeout, done["closeout_parent"]]
-        or blob_at(repo, closeout, done_path) != blob_at(repo, ref, done_path)
-    ):
-        raise ValidationError("normal Done attestation topology does not match")
+    closeout = closeouts[0]
     ledger_text = text_at(repo, closeout, "factory/ledger.csv")
     current_ledger_text = text_at(repo, ref, "factory/ledger.csv")
     if (
