@@ -291,7 +291,10 @@ def csv_bytes(rows):
 
 def atomic_write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    staging = path.parent / "runs"
+    if not staging.is_dir() or staging.is_symlink():
+        fail("runtime ledger staging root must be a real runs directory")
+    descriptor, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=staging)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)

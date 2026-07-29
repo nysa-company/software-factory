@@ -79,6 +79,37 @@ class LedgerViewTest(unittest.TestCase):
         with (self.root / "factory" / "runtime-ledger.csv").open() as handle:
             return list(csv.DictReader(handle))
 
+    def test_runtime_write_has_no_untracked_checkout_boundary(self):
+        (self.root / ".gitignore").write_text(
+            "factory/runtime-ledger.csv\nfactory/runs/\n"
+        )
+        git(self.root, "init", "-q", "-b", "main")
+        git(self.root, "config", "user.name", "Test")
+        git(self.root, "config", "user.email", "test@example.invalid")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-qm", "seed")
+        observed = []
+        replace = LEDGER_VIEW.os.replace
+
+        def inspect(source, target):
+            self.assertEqual(
+                Path(source).parent, self.root / "factory" / "runs"
+            )
+            observed.append(subprocess.run(
+                [
+                    "git", "-C", str(self.root), "status", "--porcelain",
+                    "--untracked-files=all",
+                ],
+                check=True, text=True, capture_output=True,
+            ).stdout)
+            replace(source, target)
+
+        with mock.patch.object(LEDGER_VIEW.os, "replace", side_effect=inspect):
+            LEDGER_VIEW.atomic_write(
+                self.root / "factory/runtime-ledger.csv", b"header\n"
+            )
+        self.assertEqual(observed, [""])
+
     def integrity_snapshot(self, check=True):
         command = [str(INTEGRITY_HELPER), "snapshot", str(self.root / "factory" / "runs")]
         return subprocess.run(

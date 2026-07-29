@@ -2189,6 +2189,35 @@ terminal refusal, exact block, operator wait, exact resume, and single-ticket
 reclaim; shell syntax and diff checks pass. Protected GitHub CI owns the
 complete regression.
 
+## FI-20260729-097 — Atomic runtime-ledger staging crossed the checkout guard
+
+Status: Implemented; protected CI pending
+Area: concurrent accounting
+Owner: Factory
+First seen: 2026-07-29, protected run `30461033308`, Linux release job
+`90606879576`
+Impact: four concurrent mock lifecycles reached Builder, then a role failed
+closed because two `.runtime-ledger.csv.*` files briefly appeared as untracked
+registered-checkout mutations.
+Evidence: the retained job logged the two exact paths and
+`role_exit_control_plane_mutation`; the retained Linux reproduction observed
+the same untracked path while pausing the atomic writer immediately before
+rename.
+Root cause: the derived runtime ledger was ignored, but `ledger-view.py`
+created its same-directory atomic temporary beside it, outside every ignored
+runtime path.
+Smallest change: stage the temporary inside the existing ignored real
+`factory/runs/` directory and atomically rename it to the sibling runtime
+ledger. Keep checkout mutation detection, assertions, timeouts, and ignore
+rules unchanged.
+Validation: the focused ledger test observes clean Git status at the exact
+pre-rename boundary on macOS and Linux. A focused Linux mock-concurrency lane
+advanced past the original checkout-mutation boundary, then separately refused
+one manifest whose link count was unsafe before its disposable Colima VM wedged
+under memory pressure. No speculative second repair was made; protected GitHub
+CI owns the complete regression and determines whether that later signal is
+reproducible outside the disposable container.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

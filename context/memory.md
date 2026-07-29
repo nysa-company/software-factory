@@ -1657,3 +1657,13 @@ terminal manifest agree. The controller releases its lease and waits for
 Linear to select the exact recorded resume state. The state machine then
 migrates the signed passport and reclaims only that ticket, preserving prior
 role evidence, charges, and sibling execution.
+
+## 2026-07-29 — Decision 131: Derived ledger staging stays inside runtime
+
+Category: System change
+
+Concurrent runtime-ledger refresh stages its atomic temporary inside the
+existing ignored real `factory/runs/` directory before renaming it to
+`factory/runtime-ledger.csv`. The registered-checkout mutation sentinel
+therefore remains strict without treating launcher-owned atomic intermediates
+as provider mutations.
