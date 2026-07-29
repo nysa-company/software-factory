@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Materialize Linear-owned fields or commit one legal factory-owned state move.
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 TICKET="" WORKDIR="" ACTION="" STATE="" ROLE=""
 CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}"
