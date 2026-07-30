@@ -2591,6 +2591,47 @@ GitHub CI owns the complete regression; live closure requires three concurrent
 Nysa resolvers to progress without another launch-lock error and T-094 to start
 only its preserved Test-author repair.
 
+## FI-20260730-109 — Live roles have no authenticated progress signal
+
+Status: Backlog
+Priority: P0
+Area: provider observability and deterministic recovery
+Owner: Factory
+First seen: Nysa generation 34 T-094 Test-author recovery
+Impact: T-094 reattached its execution cell and entered its preserved
+Test-author repair through the Cursor CLI Anthropic route, but after the
+45-minute soft interval the controller exposed neither authenticated progress
+nor a terminal event. The operator cannot distinguish productive slow work
+from a stalled provider session. Inspecting raw logs, probing readiness, or
+restarting the controller would risk false failure classification, replay, and
+duplicate charges.
+Evidence: authenticated controller event
+`1785416425984707000-c88520856d0d3fe9.json` records T-094's cell reattachment.
+The event stream then contains sibling dependency waits and lease recovery but
+no T-094 progress boundary. Contract 1.8 authenticates admission and terminal
+events but has no role-progress event or provider-attempt liveness receipt.
+This entry does not infer failure from quiet output.
+Root cause: the provider runtime streams role output into a private spool and
+publishes authenticated evidence only at terminalization. Controller state
+binds the attempt and lease but does not expose a signed, monotonic progress
+projection.
+Smallest change: emit a rate-limited authenticated progress heartbeat from the
+existing provider wrapper. Bind ticket, role, attempt, run, Factory SHA,
+application head, provider route, process identity, observed time, current
+tool phase when available, cumulative redacted output bytes, and a monotonic
+output/token delta. Never include role content or secrets. A soft-stall
+classification may alert or lower scheduling priority, but must not cancel,
+retry, replay, or charge again. Only the existing hard safety limit,
+authenticated provider exit, or operator cancellation may terminalize the
+attempt.
+Validation required: prove a producing mock emits monotonic signed progress;
+a silent healthy mock crosses the soft interval without cancellation; a
+stalled process reaches the existing hard limit exactly once; forged,
+reordered, cross-attempt, wrong-head, and wrong-Factory heartbeats fail closed;
+controller restart preserves the latest valid heartbeat without creating a
+second attempt; sibling tickets continue; and no heartbeat leaks output or
+credentials.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
