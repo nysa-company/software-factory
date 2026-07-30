@@ -1934,3 +1934,27 @@ validates and copies both session files into one disposable owner-only home,
 runs version, contract, authentication, and model checks only there, and
 removes it afterward. Present but unsafe or partial source state fails before
 Cursor is invoked; role-time credential checks remain unchanged.
+
+## 2026-07-30 — Decision 150: Real waits settle one controller invocation
+
+Category: Incident
+
+Generation 36 showed that a waiting ticket could be resubmitted after a short
+cooldown while a sibling worker kept the same one-shot alive. Repeated
+dependency and admission checks then reacquired and released leases without
+provider work. A ticket that returns waiting, blocked, budget, error,
+maintenance, or active is now settled for that invocation. External terminal
+evidence or the next launchd invocation is the wake boundary; live siblings
+and newly admitted tickets may still proceed concurrently.
+
+## 2026-07-30 — Decision 151: The repair record, not the latest receipt slot, is the checkpoint
+
+Category: Incident
+
+T-094 retained a valid authenticated Test-author repair after multiple
+dependency and release migrations, but a later transition had replaced the
+original consumed Builder receipt file. Controller recovery now validates the
+current remote passport and delegates the exact current repair stage to the
+deterministic state machine. Only a valid non-refusal reopens the claim, and
+the resolver-issued receipt is reused unchanged. Invalid repair or lineage
+evidence remains blocked and a newly acquired lease is released.

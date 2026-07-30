@@ -779,6 +779,127 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["role"], "")
         self.assertIn(("contract_blocker_recovered",), calls)
 
+    def test_recorded_repair_recovers_after_transition_receipt_was_replaced(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "",
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        repairs = self.state / "contract-repairs"
+        repairs.mkdir(mode=0o700)
+        CONTROL.write(repairs / "T-110.json", {"authenticated": "by-state-machine"})
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "claim":
+                return {
+                    "lease_id": "e" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            if args[0] == "state-machine":
+                return {
+                    "receipt": "f" * 64,
+                    "role": "test-author",
+                    "stage": "FIX test-author",
+                    "status": "ok",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.remote_passport_valid = lambda _claim: True
+        controller.event = lambda name, *_args, **kwargs: calls.append(
+            (name, kwargs)
+        )
+
+        controller.recover_repaired_failures([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "e" * 64)
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertIn(
+            (
+                "recorded_contract_repair_recovered",
+                {"stage": "FIX test-author"},
+            ),
+            calls,
+        )
+        self.assertIn(
+            (
+                "state-machine", "--ticket", "T-110", "--lease", "e" * 64,
+                "--workdir", str(cell), "--json",
+            ),
+            calls,
+        )
+
+    def test_invalid_recorded_repair_releases_new_lease_and_stays_blocked(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "",
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        repairs = self.state / "contract-repairs"
+        repairs.mkdir(mode=0o700)
+        CONTROL.write(repairs / "T-110.json", {"invalid": True})
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "claim":
+                return {
+                    "lease_id": "e" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            if args[0] == "state-machine":
+                raise CONTROL.ControllerError("repair record is invalid")
+            return {}
+
+        controller.json_call = json_call
+        controller.remote_passport_valid = lambda _claim: True
+        controller.event = lambda *_args, **_kwargs: None
+
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "repair record is invalid"
+        ):
+            controller.restore_recorded_contract_repair(claim)
+
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["lease"], "")
+        self.assertNotIn("lease_released", claim)
+        self.assertIn(
+            ("release", "--ticket", "T-110", "--lease", "e" * 64),
+            calls,
+        )
+
     def test_upgrade_reconstructs_cleared_contract_blocker_fields(
         self,
     ) -> None:
@@ -1571,6 +1692,58 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(calls, {"T-110": 1, "T-111": 1, "T-112": 1})
         self.assertEqual(peak, 3)
+
+    def test_waiting_ticket_stays_settled_while_sibling_worker_is_live(
+        self,
+    ) -> None:
+        import threading
+        import time
+
+        controller = CONTROL.Controller(self.args)
+        claims = []
+        for number, ticket in enumerate(("T-110", "T-111"), 1):
+            cell = self.root / f"cell-{number}"
+            route = cell / f"factory/route-plans/{ticket}.json"
+            route.parent.mkdir(parents=True)
+            route.write_text("{}\n", encoding="utf-8")
+            claims.append({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        controller.load_claims = lambda: claims
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_terminal_exports = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        first_waited = threading.Event()
+        calls = {"T-110": 0, "T-111": 0}
+
+        def reconcile(claim):
+            ticket = claim["ticket"]
+            calls[ticket] += 1
+            if ticket == "T-110":
+                first_waited.set()
+            else:
+                self.assertTrue(first_waited.wait(1))
+                time.sleep(0.1)
+            return {"status": "waiting", "ticket": ticket}
+
+        controller.reconcile_ticket = reconcile
+        with patch.object(CONTROL, "RECONCILE_INTERVAL_SECONDS", 0.02):
+            result = controller.reconcile()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(calls, {"T-110": 1, "T-111": 1})
 
     def test_scheduler_wakes_new_ticket_while_provider_future_is_live(self) -> None:
         import threading

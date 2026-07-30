@@ -827,7 +827,12 @@ class Controller:
                 raise ControllerError(
                     "reattached ticket passport validation failed"
                 )
-        except Exception:
+        except (
+            ControllerError,
+            json.JSONDecodeError,
+            OSError,
+            subprocess.SubprocessError,
+        ):
             with self.git_lock:
                 subprocess.run(
                     [
@@ -1338,8 +1343,63 @@ class Controller:
         )
         return True
 
+    def restore_recorded_contract_repair(self, claim: dict[str, Any]) -> bool:
+        if (
+            claim["status"] != "blocked"
+            or claim.get("receipt")
+            or claim.get("role")
+            or self.role_active(claim)
+        ):
+            return False
+        repair = self.state / "contract-repairs" / f"{claim['ticket']}.json"
+        if not repair.is_file() or repair.is_symlink():
+            return False
+        try:
+            if not self.remote_passport_valid(claim):
+                return False
+        except ControllerError:
+            return False
+        had_lease = (
+            claim.get("lease_released") is not True
+            and bool(DIGEST.fullmatch(claim.get("lease", "")))
+        )
+        self.ensure_lease(claim, "recorded-contract-repair")
+        try:
+            transition = self.json_call(
+                "state-machine", "--ticket", claim["ticket"],
+                "--lease", claim["lease"], "--workdir", claim["worktree"],
+                "--json",
+            )
+            stage = transition.get("stage", "")
+            if (
+                transition.get("status") != "ok"
+                or not isinstance(stage, str)
+                or not stage
+                or stage.startswith("REFUSE")
+            ):
+                raise ControllerError(
+                    "recorded contract repair did not resolve a safe stage"
+                )
+        except Exception:
+            if not had_lease and not self.role_active(claim):
+                self.release_ticket_lease(claim)
+                claim["lease"] = ""
+                claim.pop("lease_released", None)
+                self.save_claim(claim)
+            raise
+        claim.update(receipt="", role="", status="claimed")
+        self.save_claim(claim)
+        self.event(
+            "recorded_contract_repair_recovered",
+            claim["ticket"],
+            stage=stage,
+        )
+        return True
+
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
+            if self.restore_recorded_contract_repair(claim):
+                continue
             self.restore_contract_blocker(claim)
             if (
                 claim["status"] != "blocked"
@@ -2233,7 +2293,7 @@ class Controller:
             self.event("controller_recovered", tickets=recovered)
 
         results: dict[str, dict[str, str]] = {}
-        cooldown: dict[str, float] = {}
+        settled: set[str] = set()
         futures: dict[Future, dict[str, Any]] = {}
         worker_limit = min(4, self.capacity)
         executor = ThreadPoolExecutor(max_workers=worker_limit)
@@ -2279,7 +2339,9 @@ class Controller:
                 busy = {claim["ticket"] for claim in futures.values()}
                 idle = [
                     claim for claim in claims
-                    if claim["ticket"] not in busy and not self.role_active(claim)
+                    if claim["ticket"] not in busy
+                    and claim["ticket"] not in settled
+                    and not self.role_active(claim)
                 ]
                 self.recover_missing_passport_claims(claims)
                 self.recover_each(
@@ -2293,12 +2355,10 @@ class Controller:
                 )
                 # Existing pinned claims are scheduled before potentially slow
                 # admission or batch route preparation.
-                now = time.monotonic()
                 ready = [
                     claim for claim in idle
                     if self.runnable(claim)
                     and self.route_path(claim).exists()
-                    and now >= cooldown.get(claim["ticket"], 0)
                 ]
                 submit_ready(ready, claims)
                 busy.update(claim["ticket"] for claim in futures.values())
@@ -2317,17 +2377,15 @@ class Controller:
                 new_idle = [
                     claim for claim in claims
                     if claim["ticket"] not in busy
+                    and claim["ticket"] not in settled
                     and not self.role_active(claim)
                     and self.runnable(claim)
-                    and now >= cooldown.get(claim["ticket"], 0)
                 ]
                 pin_results = self.pin_routes(new_idle)
                 pin_waiting = {item["ticket"] for item in pin_results}
                 for item in pin_results:
                     results[item["ticket"]] = item
-                    cooldown[item["ticket"]] = (
-                        now + RECONCILE_INTERVAL_SECONDS
-                    )
+                    settled.add(item["ticket"])
                 submit_ready(
                     [
                         claim for claim in new_idle
@@ -2367,9 +2425,7 @@ class Controller:
                         "active", "blocked", "budget", "error", "maintenance",
                         "waiting",
                     }:
-                        cooldown[claim["ticket"]] = (
-                            time.monotonic() + RECONCILE_INTERVAL_SECONDS
-                        )
+                        settled.add(claim["ticket"])
         finally:
             executor.shutdown(wait=True)
         claims = self.load_claims()
