@@ -405,6 +405,52 @@ class TicketPassportTest(unittest.TestCase):
             ["a" * 40, "b" * 40],
         )
 
+    def test_terminal_export_accepts_exact_authenticated_release_migration(self) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        first = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = first["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal("run-1", "planner", first["receipt_sha256"], "a" * 40)
+        self.passport_args.receipt = first["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+
+        self.state_args.role = "spec-linter"
+        second = STATE.issue(self.state_args, "RUN spec-linter")
+        self.state_args.receipt = second["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "run-2", "spec-linter", second["receipt_sha256"], "a" * 40
+        )
+
+        route = self.product / "factory/route-plans/T-110.json"
+        route.write_text(
+            f'{{"kit_sha":"{"b" * 40}","ticket":"T-110"}}\n',
+            encoding="utf-8",
+        )
+        run("git", "add", str(route), cwd=self.product)
+        run("git", "commit", "-qm", "migrate release", cwd=self.product)
+        self.passport_args.factory_sha = "b" * 40
+        migrated = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(
+            migrated["parent_file_sha256"], second["passport_sha256"]
+        )
+
+        self.passport_args.receipt = second["receipt_sha256"]
+        passport = self.state_dir / "passports/T-110.json"
+        before = passport.read_bytes()
+        clean_route = route.read_text(encoding="utf-8")
+        route.write_text(clean_route + "dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(PASSPORT.PassportError, "clean execution cell"):
+            PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(passport.read_bytes(), before)
+        route.write_text(clean_route, encoding="utf-8")
+        exported = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(
+            [item["role"] for item in exported["completed_role_evidence"]],
+            ["planner", "spec-linter"],
+        )
+        self.assertEqual(exported["cumulative_charges_micro_usd"], 3_000_000)
+
     def test_protected_inflight_authorization_allows_exact_rewrite(self) -> None:
         secret = PASSPORT.key(self.state_dir)
         receipt = STATE.issue(self.state_args, "RUN planner")
