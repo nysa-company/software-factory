@@ -414,10 +414,14 @@ git_identity
 git init --bare -q "$CANONICAL"
 git init -q -b main "$KIT_REPO"
 git -C "$KIT_REPO" remote add origin "$CANONICAL"
-mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts"
+mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts" \
+  "$KIT_REPO/integrations/hermes/bin"
 mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
   "$KIT_REPO/scripts/"
+cp "$ROOT/integrations/hermes/bin/factory-launch" \
+  "$KIT_REPO/integrations/hermes/bin/factory-launch"
+chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/scripts/model-routing/catalog-v1.json" \
   "$ROOT/scripts/model-routing/profiles-v1.json" \
   "$KIT_REPO/scripts/model-routing/"
@@ -861,6 +865,18 @@ fi
 
 PRODUCT_ONE="$(make_product product-one)"
 set_pin "$PRODUCT_ONE" "$SHA_A"
+MISMATCHED_LAUNCHER="$TMP/mismatched-factory-launch"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$MISMATCHED_LAUNCHER"
+chmod +x "$MISMATCHED_LAUNCHER"
+export FACTORY_KIT_TEST_INSTALLED_LAUNCHER="$MISMATCHED_LAUNCHER"
+expect_failure "certification rejects an installed launcher from another release" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+unset FACTORY_KIT_TEST_INSTALLED_LAUNCHER
+if [[ "$LAST_OUTPUT" == *"installed factory-launch does not match the sealed candidate"* ]]; then
+  pass "launcher drift fails before product certification"
+else
+  fail "launcher drift reports its exact activation boundary" "$LAST_OUTPUT"
+fi
 printf '%s\n\n' "$SHA_A" > "$PRODUCT_ONE/factory/KIT_PIN"
 expect_failure "KIT_PIN rejects a blank physical line" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"

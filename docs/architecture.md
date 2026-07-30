@@ -202,6 +202,11 @@ release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-rea
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
+Certification and every later receipt validation require that installed trust
+root to be byte-identical to the candidate release's launcher. A release whose
+launcher changed must therefore be explicitly bootstrapped before
+certification; activation can never combine a new helper protocol with an old
+launcher parser.
 Contract `1.2.0` adds sealed `models`, ticket-state, and ledger controls;
 contract `1.3.0` composes them with evidence-bound ticket attestations.
 Contract `1.4.0` adds route-journal migration and operator-approved mid-ticket

@@ -2522,6 +2522,38 @@ completed-role preservation.
 Protected GitHub CI owns the complete regression; live T-093 recovery must add
 the existing Test-author evidence without another provider run.
 
+## FI-20260730-107 — Activation combined a new release with an old launcher
+
+Status: Implemented; protected CI and Nysa recutover pending
+Priority: P0
+Area: release activation and deterministic recovery
+Owner: Factory
+First seen: Nysa generation 32 recovery of T-094
+Impact: the sealed release issued the correct provider-free
+`dependency-refresh` receipt, but the stable launcher rejected that action.
+T-094 parked without a provider call or charge, while T-093 and T-100
+continued to wait on their declared dependencies.
+Evidence: active generation 32 named Factory
+`4d726fbaf9cbda8e9de112f991346c5d9eb4901a`; the installed launcher digest was
+`361bcd18708fca9fcd00d5748fa6786a1f9998e812a8c68cb10e5523c64d0f59`,
+while its sealed counterpart was
+`848eaf29f3d296e7f09d3ac471fdd9f46b161029190d0b384b4c56953f08d26e`.
+The authenticated T-094 transition remained unconsumed and the final
+state-machine independently resolved its preserved repair owner as
+`FIX test-author`.
+Root cause: release certification bound the kit tree, product tree, provider
+policy, and receipt, but omitted the separately installed trust-root launcher.
+Contract 1.8 evolved valid controller actions without forcing that executable
+to advance.
+Smallest change: require the installed launcher to be a safe executable whose
+bytes exactly equal the sealed candidate during certification and every later
+receipt validation. If they differ, drain work, retain the prior executable
+for rollback, and atomically bootstrap the sealed copy before certification.
+Validation: shell syntax plus the focused Factory-kit mismatch check run
+locally; protected GitHub CI owns the full regression. The successor Nysa
+cutover must reopen T-094 through authenticated release migration, consume the
+dependency-refresh receipt, and start only Test-author.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

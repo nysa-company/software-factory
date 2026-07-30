@@ -316,6 +316,26 @@ file_hash() {
   fi
 }
 
+verify_installed_launcher_binding() {
+  local release="$1" expected installed
+  expected="$release/integrations/hermes/bin/factory-launch"
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+    installed="${FACTORY_KIT_TEST_INSTALLED_LAUNCHER:-$expected}"
+  else
+    [[ ${FACTORY_KIT_TEST_INSTALLED_LAUNCHER+x} != x ]] ||
+      die "installed launcher test override is forbidden outside test mode"
+    installed="$HOME/.factory/bin/factory-launch"
+  fi
+  [[ -f "$expected" && ! -L "$expected" && -x "$expected" ]] ||
+    die "sealed release launcher is missing or unsafe"
+  [[ -f "$installed" && ! -L "$installed" && -x "$installed" ]] ||
+    die "installed factory-launch is missing or unsafe"
+  reject_symlink_path_components "$installed" ||
+    die "installed factory-launch path contains a symlink"
+  [[ "$(file_hash "$installed")" == "$(file_hash "$expected")" ]] ||
+    die "installed factory-launch does not match the sealed candidate"
+}
+
 verify_restrictive_regular_file() {
   python3 - "$1" <<'PY'
 import os, pathlib, stat, sys
@@ -2030,6 +2050,7 @@ validate_receipt_snapshot() {
   [[ "$(json_get "$receipt" kit_origin)" == "$manifest_origin" ]] ||
     die "receipt kit origin does not match trusted install manifest"
 
+  verify_installed_launcher_binding "$release"
   product_top="$(absolute_dir "$product")"
   [[ "$product_top" == "$(json_get "$receipt" product_path)" ]] ||
     die "receipt product path does not match"
@@ -2902,6 +2923,7 @@ cmd_certify() {
   manifest_values="$(verify_release_from_manifest "$sha")"
   kit_tree="$(printf '%s' "$manifest_values" | awk -F'\t' '{print $1}')"
   kit_origin="$(printf '%s' "$manifest_values" | awk -F'\t' '{print $2}')"
+  verify_installed_launcher_binding "$release"
   pin="$(strict_product_pin "$product_top")"
   [[ "$pin" == "$sha" ]] || die "product pin does not match candidate SHA"
   require_clean_product "$product_top"
