@@ -34,6 +34,20 @@ def command(*args, cwd=None, env=None, check=True):
     return result
 
 
+class LauncherContractTests(unittest.TestCase):
+    def test_launcher_binds_contract_version_to_ticket_attest_helper(self):
+        launcher = (
+            ROOT / "integrations/hermes/bin/factory-launch"
+        ).read_text(encoding="utf-8")
+        ticket_attest = launcher.split(
+            "\n  ticket-attest)\n", 1,
+        )[1].split("\n  project-ledger)\n", 1)[0]
+        self.assertIn(
+            '"FACTORY_CONTRACT_VERSION=$CONTRACT_VERSION"',
+            ticket_attest,
+        )
+
+
 class TicketAttestTests(unittest.TestCase):
     def setUp(self):
         self.temp = Path(tempfile.mkdtemp(prefix="ticket-attest-test."))
@@ -51,7 +65,7 @@ class TicketAttestTests(unittest.TestCase):
         (self.product / "factory/route-plans").mkdir()
         (self.product / "factory/PROJECT.env").write_text(
             "GH_REPO=acme/widget\nDONE_REQUIRED_CHECKS=ci,deploy-production\n"
-            "AUTO_MERGE_METHOD=squash\n"
+            "AUTO_MERGE_METHOD=squash\nTEST_PATHS=tests/\n"
         )
         (self.product / ".gitignore").write_text(
             "factory/runs/\nfactory/runtime-ledger.csv\nfactory/linear-map.json\n"
@@ -993,6 +1007,172 @@ else:
                 cwd=self.product, check=False,
             ).returncode,
             0,
+        )
+
+    def test_dependency_refresh_routes_regular_test_conflict_to_test_author(self):
+        command("git", "switch", "-q", "main", cwd=self.product)
+        test_path = self.product / "tests/dependency-conflict.test.ts"
+        test_path.parent.mkdir()
+        test_path.write_text("expect('base')\n", encoding="utf-8")
+        self.commit("add protected test baseline")
+        command("git", "push", "-q", "origin", "main", cwd=self.product)
+        command("git", "switch", "-q", "ticket/T-700", cwd=self.product)
+        command("git", "merge", "-q", "--no-edit", "main", cwd=self.product)
+
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(
+            ticket.read_text()
+            .replace("State: Review", "State: Building")
+            .replace("Priority: normal", "Priority: normal\nDepends-On: T-094")
+        )
+        test_path.write_text("expect('ticket contract')\n", encoding="utf-8")
+        self.commit("author ticket acceptance test")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        old_head = self.head()
+        old_blob = command(
+            "git", "rev-parse", f"{old_head}:tests/dependency-conflict.test.ts",
+            cwd=self.product,
+        ).stdout.strip()
+
+        updater = self.temp / "conflicting-test-main"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "tests/dependency-conflict.test.ts").write_text(
+            "expect('protected component contract')\n", encoding="utf-8",
+        )
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected test", cwd=updater,
+        )
+        protected = self.head_at(updater)
+        protected_blob = command(
+            "git", "rev-parse",
+            f"{protected}:tests/dependency-conflict.test.ts", cwd=updater,
+        ).stdout.strip()
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        transition = "f" * 64
+        self.env.update({
+            "FACTORY_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_TRANSITION_RECEIPT_SHA256": transition,
+            "FACTORY_TRANSITION_STAGE": (
+                "REFUSE dependency refresh required; "
+                f"dependencies=T-094; protected-main={protected}"
+            ),
+        })
+        args = argparse.Namespace(ticket="T-700")
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(
+                TICKET_ATTEST, "protected_dependency",
+                return_value={"basis": "normal", "ticket": "T-094"},
+            ),
+        ):
+            result = TICKET_ATTEST.dependency_refresh(
+                args, self.product, self.product, "ticket/", str(self.remote),
+            )
+
+        self.assertEqual(result["action"], "dependency-conflict-refresh")
+        receipt = result["attestation"]
+        self.assertEqual(receipt["schema"], "nysa.software-factory.dependency-refresh/v2")
+        self.assertEqual(receipt["repair_owner"], "test-author")
+        self.assertEqual(receipt["transition_receipt_sha256"], transition)
+        self.assertEqual(receipt["conflicts"], [{
+            "path": "tests/dependency-conflict.test.ts",
+            "base_blob": receipt["conflicts"][0]["base_blob"],
+            "base_mode": "100644",
+            "ticket_blob": old_blob,
+            "ticket_mode": "100644",
+            "protected_blob": protected_blob,
+            "protected_mode": "100644",
+        }])
+        self.assertEqual(test_path.read_text(), "expect('protected component contract')\n")
+        self.assertEqual(
+            command(
+                "git", "merge-base", "--is-ancestor", protected, "HEAD",
+                cwd=self.product, check=False,
+            ).returncode,
+            0,
+        )
+        merge = receipt["merge_head"]
+        self.assertEqual(
+            command(
+                "git", "rev-list", "--parents", "-n", "1", merge,
+                cwd=self.product,
+            ).stdout.split(),
+            [merge, old_head, protected],
+        )
+        receipt_path = (
+            self.product
+            / "factory/attestations/T-700/dependency-refresh.json"
+        )
+        with self.assertRaisesRegex(
+            TICKET_ATTEST.Refusal,
+            "dependency refresh receipt is malformed",
+        ):
+            TICKET_ATTEST.dependency_refresh_generation(
+                receipt_path, "T-999",
+            )
+
+    def test_dependency_refresh_restores_branch_for_non_test_conflict(self):
+        command("git", "switch", "-q", "main", cwd=self.product)
+        app_path = self.product / "src/conflict.ts"
+        app_path.parent.mkdir()
+        app_path.write_text("export const value = 'base';\n", encoding="utf-8")
+        self.commit("add application baseline")
+        command("git", "push", "-q", "origin", "main", cwd=self.product)
+        command("git", "switch", "-q", "ticket/T-700", cwd=self.product)
+        command("git", "merge", "-q", "--no-edit", "main", cwd=self.product)
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(
+            ticket.read_text()
+            .replace("State: Review", "State: Building")
+            .replace("Priority: normal", "Priority: normal\nDepends-On: T-094")
+        )
+        app_path.write_text("export const value = 'ticket';\n", encoding="utf-8")
+        self.commit("change ticket application")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        old_head = self.head()
+
+        updater = self.temp / "conflicting-application-main"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "src/conflict.ts").write_text(
+            "export const value = 'protected';\n", encoding="utf-8",
+        )
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected application", cwd=updater,
+        )
+        protected = self.head_at(updater)
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.env.update({
+            "FACTORY_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_TRANSITION_RECEIPT_SHA256": "f" * 64,
+            "FACTORY_TRANSITION_STAGE": (
+                "REFUSE dependency refresh required; "
+                f"dependencies=T-094; protected-main={protected}"
+            ),
+        })
+        args = argparse.Namespace(ticket="T-700")
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(
+                TICKET_ATTEST, "protected_dependency",
+                return_value={"basis": "normal", "ticket": "T-094"},
+            ),
+            self.assertRaisesRegex(
+                TICKET_ATTEST.Refusal, "not test-author-owned",
+            ),
+        ):
+            TICKET_ATTEST.dependency_refresh(
+                args, self.product, self.product, "ticket/", str(self.remote),
+            )
+        self.assertEqual(self.head(), old_head)
+        self.assertEqual(
+            command(
+                "git", "status", "--porcelain=v1", "-z", cwd=self.product,
+            ).stdout,
+            "",
         )
 
     def test_refresh_detects_pr_merge_race_after_push(self):

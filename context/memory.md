@@ -44,6 +44,18 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   Done; malformed terminal evidence cannot fall through to this path. The
   atomic commit may additionally contain only the exact same-target in-flight
   release authorization.
+- A resolved Contract 1.8 dependency refresh may recover only a regular
+  both-modified conflict wholly inside protected-main `TEST_PATHS`. The host
+  binds all three conflict blobs and the exact two-parent merge, retains the
+  protected test as the baseline, and the state machine issues one
+  HMAC-bound `FIX test-author` checkpoint. Earlier role evidence and charges
+  remain valid. Sibling merges may advance protected main while this exact
+  checkpoint runs; normal refresh absorbs that base afterward. Retirement
+  requires the consumed FIX receipt, exact repair head, authenticated
+  terminal passport, matching evidence/charge pair, and only regular
+  modifications to the listed tests or ticket log. Every application, mixed,
+  control, configuration, CI, contract, rename, add/delete, non-regular,
+  missing-receipt, or unknown conflict fails closed.
 - During Contract 1.8 qualification, the first terminal failed Cursor attempt
   retains the ticket claim, converts an initial v1 route plan into a
   same-release v2 journal when needed, and appends the existing same-family
@@ -1978,3 +1990,20 @@ Factory and a descendant of its head and ends at the current Factory, head,
 protected base, route plan, and passport parent. A legacy authorization,
 broken chain, missing, duplicate, or ambiguous proof may not retire a
 checkpoint.
+
+## 2026-07-30 — Decision 153: Protected test conflicts return only to Test-author
+
+Category: Incident
+
+Nysa T-094 exposed the remaining dependency-refresh recovery gap: protected
+main and the ticket both modified one regular protected test, so the safe merge
+refused and the controller parked the ticket even though ownership was
+mechanically unambiguous. Dependency refresh now records the exact base,
+ticket, and protected blobs, retains the protected test as the merge baseline,
+and creates one authenticated Test-author repair checkpoint. Earlier roles and
+charges remain valid. Sibling publication does not invalidate the signed
+historical repair, and a merged ticket closes before dependency refresh.
+Checkpoint retirement requires exact receipt/head/passport/evidence/charge
+bindings plus an allowlisted regular-file diff. Application, mixed-owner,
+control, contract, CI, configuration, rename, add/delete, non-regular,
+missing-receipt, unknown, or tampered conflicts continue to refuse.

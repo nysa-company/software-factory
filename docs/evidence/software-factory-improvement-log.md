@@ -2817,6 +2817,59 @@ passport, repair record, 425 run manifests, and route-migrated head
 `7f9314bed1e0a7bea1ac079a8864655ea9a977e1` resolved to Builder and archived
 the active record without replaying Test-author.
 
+## FI-20260730-114 — A protected test conflict had no deterministic owner
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: dependency refresh and exact-stage recovery
+Owner: Factory
+First seen: Nysa generation 39 T-094 recovery after protected main advanced
+Impact: the controller correctly refused an unsafe automatic merge and spent
+no provider budget, but converted one classifiable protected-test conflict
+into a generic blocked claim. T-100 and T-093 then remained at their declared
+dependency waits, so additional cells or provider capacity could not create
+progress.
+Evidence: authenticated controller event
+`1785443497967850000-6c347494cdde648c.json` records
+`protected dependency base conflicts with the ticket branch`. Exact
+`merge-tree` evidence names only
+`apps/web/tests/knowledge-index.test.tsx`; the base, ticket, and protected
+entries are regular mode `100644`, and protected
+`factory/PROJECT.env` assigns `apps/web/tests/` to Test-author. The merge
+aborted cleanly at ticket head
+`1883d896cc8419f0be8d2c7f4c8a2cb7c60e512d`; no new run manifest or charge
+was created.
+Root cause: provider-free dependency refresh had only two outcomes: clean
+merge or generic refusal. It did not authenticate conflict inputs, classify a
+single safe owner, or issue an exact repair stage.
+Smallest repair: extend the existing refresh transaction with a v2 receipt
+only for regular both-modified paths wholly under protected `TEST_PATHS`.
+Bind exact base/ticket/protected modes and blobs, protected project and delta,
+dependencies and terminal digests, old/protected heads and trees, transition
+receipt, merge topology, Factory, and contract. Retain the protected blobs as
+the safe merge baseline, migrate the passport, and let the state machine
+create one HMAC-bound `FIX test-author` checkpoint. Earlier successful roles
+do not satisfy this boundary and remain preserved. Sibling protected-main
+advancement does not interrupt the signed historical repair; normal refresh
+absorbs it afterward, while merged publication truth closes before another
+refresh. Retirement requires the exact consumed FIX receipt and head, the
+authenticated terminal passport, one matching completed/charge pair, and
+only regular modifications to the listed tests or ticket log. Every
+application, mixed, control, contract, CI, configuration, rename, add/delete,
+non-regular, missing-receipt, unknown, or tampered conflict restores or
+remains at the safe head and refuses.
+Validation: the affected attestation suite passed all 51 tests before the
+launcher-boundary assertion was added; the exact launcher, clean refresh,
+safe test-conflict, and unsafe application-conflict checks pass together. The
+state-machine suite passes 13 and the controller suite passes 45. A disposable
+mirror of the exact T-094 and protected-main heads produced one v2 receipt,
+one two-parent merge, one protected-baseline test blob, and the exact
+Test-author owner; the independent state validator accepted all receipt and
+topology bindings. Protected GitHub CI owns the complete regression. Live
+closure requires the successor to route T-094 to one Test-author run, then
+Builder, without replaying Planner or Spec-linter or charging an unchanged
+role.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

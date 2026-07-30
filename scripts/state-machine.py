@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import stat
 import subprocess
 import sys
@@ -28,6 +29,8 @@ from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E
 SCHEMA = "nysa.software-factory.state-machine/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.transition-receipt/v1"
 REPAIR_SCHEMA = "nysa.software-factory.contract-repair/v1"
+DEPENDENCY_CONFLICT_SCHEMA = "nysa.software-factory.dependency-refresh/v2"
+DEPENDENCY_CONFLICT_SOURCE = "dependency-conflict"
 PASSPORT_SCHEMA = "nysa.software-factory.ticket-passport/v1"
 PASSPORT_MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
 TICKET = re.compile(r"^T-[0-9]+$")
@@ -42,6 +45,15 @@ TARGET_STATE = {
     "builder": "Building",
     "reviewer": "Review",
     "narrator": "Review",
+}
+DEPENDENCY_CONFLICT_KEYS = {
+    "schema", "ticket", "generation", "dependencies", "dependency_terminals",
+    "old_head", "old_head_tree", "prior_base_head", "protected_head",
+    "protected_head_tree", "protected_project_blob", "protected_delta_sha256",
+    "test_paths", "test_paths_sha256", "conflicts", "repair_owner",
+    "resolution", "merge_head", "merge_head_tree", "preserved_state",
+    "transition_receipt_sha256", "factory_sha", "contract_version",
+    "refreshed_at",
 }
 
 
@@ -175,10 +187,7 @@ def signed_repair(value: dict[str, Any], secret: bytes) -> dict[str, Any]:
     return result
 
 
-def load_repair(args: argparse.Namespace, secret: bytes) -> dict[str, Any] | None:
-    path = repair_path(args)
-    if not path.exists() and not path.is_symlink():
-        return None
+def load_signed_repair(path: Path, secret: bytes) -> dict[str, Any]:
     info = path.lstat()
     if (
         path.is_symlink()
@@ -201,6 +210,13 @@ def load_repair(args: argparse.Namespace, secret: bytes) -> dict[str, Any] | Non
     value["authentication_sha256"] = authentication
     value["repair_sha256"] = repair_digest
     return value
+
+
+def load_repair(args: argparse.Namespace, secret: bytes) -> dict[str, Any] | None:
+    path = repair_path(args)
+    if not path.exists() and not path.is_symlink():
+        return None
+    return load_signed_repair(path, secret)
 
 
 def write_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -592,6 +608,543 @@ def operator_resume_role(
     return repair_role
 
 
+def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+
+def safe_test_paths(project: str) -> list[str]:
+    values = re.findall(r"(?m)^TEST_PATHS=(.*)$", project)
+    if len(values) != 1:
+        raise StateError("protected PROJECT.env TEST_PATHS is ambiguous")
+    try:
+        paths = " ".join(
+            shlex.split(values[0], comments=False, posix=True)
+        ).split()
+    except ValueError as error:
+        raise StateError("protected PROJECT.env TEST_PATHS is invalid") from error
+    safe = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
+    if (
+        not paths
+        or len(paths) != len(set(paths))
+        or any(
+            not safe.fullmatch(path.rstrip("/"))
+            or any(part in {"", ".", ".."} for part in path.rstrip("/").split("/"))
+            or path.rstrip("/") == "factory"
+            or path.rstrip("/").startswith("factory/")
+            for path in paths
+        )
+    ):
+        raise StateError("protected PROJECT.env TEST_PATHS is invalid")
+    normalized = [path.rstrip("/") for path in paths]
+    if any(
+        left == right
+        or left.startswith(right + "/")
+        or right.startswith(left + "/")
+        for index, left in enumerate(normalized)
+        for right in normalized[index + 1:]
+    ):
+        raise StateError("protected PROJECT.env TEST_PATHS overlaps")
+    return paths
+
+
+def tree_entry(workdir: Path, commit: str, path: str) -> tuple[str, str]:
+    raw = git(workdir, "ls-tree", commit, "--", path)
+    metadata, separator, observed = raw.partition("\t")
+    fields = metadata.split()
+    if (
+        not separator
+        or observed != path
+        or len(fields) != 3
+        or fields[1] != "blob"
+        or not re.fullmatch(r"[0-7]{6}", fields[0])
+        or not SHA.fullmatch(fields[2])
+    ):
+        raise StateError("dependency conflict tree entry is invalid")
+    return fields[0], fields[2]
+
+
+def dependency_conflict_receipt(
+    args: argparse.Namespace, *, require_current_base: bool = True,
+) -> tuple[dict[str, Any], str, str] | None:
+    relative = f"factory/attestations/{args.ticket}/dependency-refresh.json"
+    path = args.workdir / relative
+    if not path.exists() and not path.is_symlink():
+        return None
+    info = path.lstat()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_size > 1_000_000
+    ):
+        raise StateError("dependency conflict receipt is unsafe")
+    raw = path.read_bytes()
+    try:
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=unique_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise StateError("dependency conflict receipt is malformed") from error
+    if value.get("schema") != DEPENDENCY_CONFLICT_SCHEMA:
+        return None
+    generation = value.get("generation")
+    dependencies = value.get("dependencies")
+    conflicts = value.get("conflicts")
+    test_paths = value.get("test_paths")
+    if (
+        set(value) != DEPENDENCY_CONFLICT_KEYS
+        or value.get("ticket") != args.ticket
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+        or not isinstance(dependencies, list)
+        or not dependencies
+        or dependencies != list(declared_dependencies(args))
+        or len(dependencies) != len(set(dependencies))
+        or not isinstance(test_paths, list)
+        or safe_test_paths(
+            git(
+                args.workdir, "show",
+                f"{value.get('protected_head', '')}:factory/PROJECT.env",
+            )
+        ) != test_paths
+        or value.get("test_paths_sha256")
+        != hashlib.sha256(json.dumps(
+            test_paths, ensure_ascii=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        or value.get("repair_owner") != "test-author"
+        or value.get("resolution")
+        != "protected-baseline-before-test-author"
+        or value.get("preserved_state") != "Building"
+        or value.get("contract_version") != args.contract_version
+        or not isinstance(value.get("refreshed_at"), str)
+        or not re.fullmatch(
+            r"20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+            value["refreshed_at"],
+        )
+        or not isinstance(conflicts, list)
+        or not conflicts
+    ):
+        raise StateError("dependency conflict receipt is malformed")
+    sha_fields = (
+        "old_head", "old_head_tree", "prior_base_head", "protected_head",
+        "protected_head_tree", "protected_project_blob", "merge_head",
+        "merge_head_tree", "factory_sha",
+    )
+    digest_fields = (
+        "protected_delta_sha256", "test_paths_sha256",
+        "transition_receipt_sha256",
+    )
+    if (
+        any(not SHA.fullmatch(value.get(name, "")) for name in sha_fields)
+        or any(not DIGEST.fullmatch(value.get(name, "")) for name in digest_fields)
+    ):
+        raise StateError("dependency conflict receipt binding is invalid")
+    current_base = protected_base_sha(args)
+    base_check = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+            value["protected_head"], current_base,
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False, timeout=120,
+    )
+    if base_check.returncode not in {0, 1}:
+        raise StateError("dependency conflict protected-base check failed")
+    if (
+        (
+            value["protected_head"] != current_base
+            if require_current_base
+            else base_check.returncode != 0
+        )
+        or not branch_contains(args, value["protected_head"])
+        or git(
+            args.workdir, "rev-parse", f"{value['old_head']}^{{tree}}"
+        ) != value["old_head_tree"]
+        or git(
+            args.workdir, "rev-parse", f"{value['protected_head']}^{{tree}}"
+        ) != value["protected_head_tree"]
+        or git(
+            args.workdir, "rev-parse", f"{value['merge_head']}^{{tree}}"
+        ) != value["merge_head_tree"]
+        or tree_entry(
+            args.workdir, value["protected_head"], "factory/PROJECT.env",
+        )[1] != value["protected_project_blob"]
+    ):
+        raise StateError("dependency conflict receipt binding is invalid")
+    delta = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "diff", "--name-status", "-z",
+            value["prior_base_head"], value["protected_head"],
+        ],
+        capture_output=True, check=True, timeout=120,
+    ).stdout
+    if hashlib.sha256(delta).hexdigest() != value["protected_delta_sha256"]:
+        raise StateError("dependency conflict protected delta changed")
+    expected_conflict_keys = {
+        "path", "base_blob", "base_mode", "ticket_blob", "ticket_mode",
+        "protected_blob", "protected_mode",
+    }
+    observed_paths: list[str] = []
+    for item in conflicts:
+        path_value = item.get("path", "") if isinstance(item, dict) else ""
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected_conflict_keys
+            or not re.fullmatch(
+                r"[A-Za-z0-9._][A-Za-z0-9._/@+-]*", path_value,
+            )
+            or any(part in {"", ".", ".."} for part in path_value.split("/"))
+            or any(item.get(name) != "100644" for name in (
+                "base_mode", "ticket_mode", "protected_mode",
+            ))
+            or any(not SHA.fullmatch(item.get(name, "")) for name in (
+                "base_blob", "ticket_blob", "protected_blob",
+            ))
+            or not any(
+                path_value.startswith(prefix)
+                if prefix.endswith("/") else path_value == prefix
+                for prefix in test_paths
+            )
+            or tree_entry(
+                args.workdir, value["prior_base_head"], path_value,
+            ) != (item["base_mode"], item["base_blob"])
+            or tree_entry(
+                args.workdir, value["old_head"], path_value,
+            ) != (item["ticket_mode"], item["ticket_blob"])
+            or tree_entry(
+                args.workdir, value["protected_head"], path_value,
+            ) != (item["protected_mode"], item["protected_blob"])
+            or tree_entry(
+                args.workdir, value["merge_head"], path_value,
+            ) != (item["protected_mode"], item["protected_blob"])
+        ):
+            raise StateError("dependency conflict evidence is invalid")
+        observed_paths.append(path_value)
+    if observed_paths != sorted(observed_paths) or len(observed_paths) != len(
+        set(observed_paths)
+    ):
+        raise StateError("dependency conflict paths are ambiguous")
+    parents = git(
+        args.workdir, "rev-list", "--parents", "-n", "1",
+        value["merge_head"],
+    ).split()
+    if parents != [
+        value["merge_head"], value["old_head"], value["protected_head"],
+    ]:
+        raise StateError("dependency conflict merge topology is invalid")
+    receipt_commit = git(
+        args.workdir, "log", "-1", "--format=%H", "HEAD", "--", relative,
+    )
+    if (
+        not SHA.fullmatch(receipt_commit)
+        or git(args.workdir, "rev-parse", f"{receipt_commit}^")
+        != value["merge_head"]
+        or git(
+            args.workdir, "diff", "--name-only",
+            f"{value['merge_head']}..{receipt_commit}",
+        ).splitlines() != [relative]
+        or git(args.workdir, "rev-parse", f"{receipt_commit}:{relative}")
+        != git(args.workdir, "hash-object", str(path))
+    ):
+        raise StateError("dependency conflict receipt topology is invalid")
+    unchanged = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "diff", "--quiet",
+            receipt_commit, "HEAD", "--", relative,
+        ],
+        check=False, timeout=120,
+    )
+    if unchanged.returncode != 0:
+        raise StateError("dependency conflict receipt changed after creation")
+    terminals = value.get("dependency_terminals")
+    if (
+        not isinstance(terminals, list)
+        or len(terminals) != len(dependencies)
+    ):
+        raise StateError("dependency conflict terminal evidence is invalid")
+    for dependency, terminal in zip(dependencies, terminals):
+        try:
+            expected_terminal = protected_dependency(
+                args.factory_root, dependency, value["protected_head"],
+            )
+        except ValidationError as error:
+            raise StateError(
+                "dependency conflict terminal evidence changed"
+            ) from error
+        expected_digest = hashlib.sha256(json.dumps(
+            expected_terminal, ensure_ascii=True, sort_keys=True,
+            separators=(",", ":"),
+        ).encode()).hexdigest()
+        if terminal != {
+            "ticket": dependency,
+            "terminal_sha256": expected_digest,
+        }:
+            raise StateError("dependency conflict terminal evidence is invalid")
+    return value, hashlib.sha256(raw).hexdigest(), receipt_commit
+
+
+def validate_dependency_conflict_transition(
+    args: argparse.Namespace, receipt: dict[str, Any],
+) -> None:
+    transition = safe_receipt(args.state_dir / f"{args.ticket}.json")
+    expected_stage = (
+        "REFUSE dependency refresh required; "
+        f"dependencies={','.join(receipt['dependencies'])}; "
+        f"protected-main={receipt['protected_head']}"
+    )
+    if (
+        transition.get("receipt_sha256")
+        != receipt["transition_receipt_sha256"]
+        or transition.get("consumed") is not True
+        or transition.get("stage") != expected_stage
+        or transition.get("role") is not None
+        or transition.get("ticket") != args.ticket
+        or transition.get("project") != args.project
+        or transition.get("factory_sha") != receipt["factory_sha"]
+        or transition.get("contract_version") != receipt["contract_version"]
+        or transition.get("branch")
+        != git(args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD")
+        or transition.get("head_sha") != receipt["old_head"]
+        or transition.get("head_tree") != receipt["old_head_tree"]
+    ):
+        raise StateError("dependency conflict transition receipt is invalid")
+
+
+def dependency_conflict_migrated(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    receipt: dict[str, Any],
+    receipt_commit: str,
+) -> bool:
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    if receipt.get("factory_sha") == args.factory_sha:
+        return branch_contains(args, receipt_commit)
+    history = passport.get("factory_release_history")
+    migrations = passport.get("migration_history")
+    if not isinstance(history, list) or not isinstance(migrations, list):
+        return False
+    releases = [
+        item.get("factory_sha")
+        for item in history
+        if isinstance(item, dict)
+        and item.get("contract_version") == args.contract_version
+        and SHA.fullmatch(item.get("factory_sha", ""))
+    ]
+    if (
+        len(releases) != len(history)
+        or len(releases) != len(set(releases))
+        or receipt["factory_sha"] not in releases
+        or args.factory_sha not in releases
+        or releases.index(receipt["factory_sha"])
+        >= releases.index(args.factory_sha)
+    ):
+        return False
+    starts = []
+    for index, edge in enumerate(migrations):
+        if (
+            not isinstance(edge, dict)
+            or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+            or edge.get("from_factory_sha") != receipt["factory_sha"]
+            or edge.get("from_head_sha") != receipt_commit
+        ):
+            continue
+        suffix = migrations[index:]
+        if (
+            all(
+                isinstance(item, dict)
+                and item.get("schema") == PASSPORT_MIGRATION_SCHEMA
+                and all(
+                    SHA.fullmatch(item.get(name, ""))
+                    for name in (
+                        "from_factory_sha", "from_head_sha",
+                        "from_protected_base_sha", "to_factory_sha",
+                        "to_head_sha", "to_protected_base_sha",
+                    )
+                )
+                and all(
+                    DIGEST.fullmatch(item.get(name, ""))
+                    for name in (
+                        "from_passport_file_sha256",
+                        "from_passport_sha256", "from_route_plan_sha256",
+                        "to_route_plan_sha256",
+                    )
+                )
+                for item in suffix
+            )
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and suffix[-1].get("to_factory_sha") == args.factory_sha
+            and suffix[-1].get("to_head_sha") == current_head
+            and suffix[-1].get("to_protected_base_sha")
+            == passport.get("protected_base_sha")
+            and suffix[-1].get("to_route_plan_sha256")
+            == passport.get("route_plan_sha256")
+        ):
+            starts.append(index)
+    return len(starts) == 1
+
+
+def completed_dependency_conflict_records(
+    args: argparse.Namespace, secret: bytes,
+) -> list[dict[str, Any]]:
+    completed = repair_path(args).parent / "completed"
+    records = []
+    if not completed.exists() and not completed.is_symlink():
+        return records
+    info = completed.lstat()
+    if (
+        completed.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise StateError("completed contract repair directory is unsafe")
+    for item in sorted(completed.glob(f"{args.ticket}-*.json")):
+        record = load_signed_repair(item, secret)
+        if record.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE:
+            records.append(record)
+    return records
+
+
+def completed_dependency_conflict_repairs(
+    args: argparse.Namespace,
+    secret: bytes,
+    receipt_digest: str,
+    receipt_commit: str,
+) -> list[dict[str, Any]]:
+    matches = [
+        record for record in completed_dependency_conflict_records(args, secret)
+        if record.get("dependency_refresh_sha256") == receipt_digest
+        and record.get("dependency_refresh_commit") == receipt_commit
+    ]
+    if len(matches) > 1:
+        raise StateError("completed dependency conflict repair is ambiguous")
+    return matches
+
+
+def ensure_dependency_conflict_repair(args: argparse.Namespace) -> None:
+    receipt_path = (
+        args.workdir / "factory" / "attestations" / args.ticket
+        / "dependency-refresh.json"
+    )
+    completed_dir = args.state_dir / "contract-repairs" / "completed"
+    has_completed_candidate = False
+    if completed_dir.exists() or completed_dir.is_symlink():
+        info = completed_dir.lstat()
+        if (
+            completed_dir.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise StateError("completed contract repair directory is unsafe")
+        has_completed_candidate = any(
+            completed_dir.glob(f"{args.ticket}-*.json")
+        )
+    if not os.path.lexists(receipt_path) and not has_completed_candidate:
+        return
+    passport, secret = authenticated_passport(args)
+    found = dependency_conflict_receipt(args, require_current_base=False)
+    if found is None:
+        if (
+            completed_dependency_conflict_records(args, secret)
+            and not receipt_path.exists()
+            and not receipt_path.is_symlink()
+        ):
+            raise StateError(
+                "completed dependency conflict receipt was deleted"
+            )
+        return
+    receipt, receipt_digest, receipt_commit = found
+    if completed_dependency_conflict_repairs(
+        args, secret, receipt_digest, receipt_commit,
+    ):
+        return
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    if (
+        passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+    ):
+        migrate_passport(args)
+        passport, secret = authenticated_passport(args)
+    current_base = protected_base_sha(args)
+    passport_base = passport.get("protected_base_sha", "")
+    receipt_to_passport = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+            receipt["protected_head"], passport_base,
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False, timeout=120,
+    )
+    passport_to_current = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+            passport_base, current_base,
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False, timeout=120,
+    )
+    if (
+        passport.get("ticket") != args.ticket
+        or passport.get("branch")
+        != git(args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD")
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+        or not SHA.fullmatch(passport_base)
+        or receipt_to_passport.returncode != 0
+        or passport_to_current.returncode != 0
+        or not branch_contains(args, passport_base)
+        or not dependency_conflict_migrated(
+            args, passport, receipt, receipt_commit,
+        )
+    ):
+        raise StateError("dependency conflict passport is invalid")
+    path = repair_path(args)
+    active = load_repair(args, secret)
+    if active is not None:
+        if (
+            active.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE
+            and active.get("dependency_refresh_sha256") == receipt_digest
+            and active.get("dependency_refresh_commit") == receipt_commit
+        ):
+            return
+        raise StateError("dependency conflict repair conflicts with active repair")
+    validate_dependency_conflict_transition(args, receipt)
+    write_atomic(
+        path,
+        signed_repair({
+            "blocked_receipt": receipt["transition_receipt_sha256"],
+            "blocked_role": "dependency-refresh",
+            "branch": passport["branch"],
+            "dependency_refresh_commit": receipt_commit,
+            "dependency_refresh_sha256": receipt_digest,
+            "factory_sha": args.factory_sha,
+            "head_sha": current_head,
+            "head_tree": git(
+                args.workdir, "rev-parse", f"{current_head}^{{tree}}",
+            ),
+            "passport_sha256": passport["passport_sha256"],
+            "protected_base_sha": passport_base,
+            "repair_role": "test-author",
+            "repair_source": DEPENDENCY_CONFLICT_SOURCE,
+            "schema": REPAIR_SCHEMA,
+            "ticket": args.ticket,
+        }, secret),
+    )
+
+
 def migrated_contract_repair(
     args: argparse.Namespace,
     passport: dict[str, Any],
@@ -607,6 +1160,21 @@ def migrated_contract_repair(
     record_head = record.get("head_sha", "")
     record_passport = record.get("passport_sha256", "")
     current_head = git(args.workdir, "rev-parse", "HEAD")
+    migration_target_head = current_head
+    if record.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE:
+        try:
+            transition = safe_receipt(
+                args.state_dir / f"{args.ticket}.json"
+            )
+        except (FileNotFoundError, json.JSONDecodeError, OSError, StateError):
+            return False
+        if (
+            transition.get("factory_sha") == args.factory_sha
+            and transition.get("stage") == "FIX test-author"
+            and transition.get("role") == "test-author"
+            and SHA.fullmatch(transition.get("head_sha", ""))
+        ):
+            migration_target_head = transition["head_sha"]
     if (
         not isinstance(history, list)
         or not isinstance(migrations, list)
@@ -681,11 +1249,13 @@ def migrated_contract_repair(
                 for prior, following in zip(suffix, suffix[1:])
             )
             and suffix[-1]["to_factory_sha"] == args.factory_sha
-            and suffix[-1]["to_head_sha"] == current_head
+            and suffix[-1]["to_head_sha"] == migration_target_head
             and suffix[-1]["to_protected_base_sha"]
             == passport.get("protected_base_sha")
         ):
             starts.append(index)
+    if record.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE:
+        return len(starts) == 1
     blocked = [
         item for item in charges
         if isinstance(item, dict)
@@ -733,6 +1303,161 @@ def contract_repair_successes(
                 "manifest_sha256": hashlib.sha256(raw).hexdigest(),
             })
     return successes
+
+
+def dependency_conflict_successes(
+    args: argparse.Namespace,
+    record: dict[str, Any],
+    receipt: dict[str, Any],
+    successes: list[dict[str, str]],
+    passport: dict[str, Any],
+    migrated: bool,
+) -> list[dict[str, str]]:
+    try:
+        transition = safe_receipt(args.state_dir / f"{args.ticket}.json")
+    except (FileNotFoundError, json.JSONDecodeError, OSError, StateError):
+        if successes:
+            raise StateError(
+                "dependency conflict repair success lacks its FIX receipt"
+            ) from None
+        return []
+    candidates = [
+        item for item in successes
+        if item.get("transition_receipt_sha256")
+        == transition.get("receipt_sha256")
+    ]
+    if not candidates:
+        if successes and git(args.workdir, "rev-parse", "HEAD") != record["head_sha"]:
+            raise StateError(
+                "dependency conflict repair success used the wrong receipt"
+            )
+        return []
+    if len(candidates) != 1:
+        raise StateError("dependency conflict repair success is ambiguous")
+    success = candidates[0]
+    before = success.get("role_head_before", "")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    branch = git(
+        args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD",
+    )
+    if (
+        transition.get("consumed") is not True
+        or transition.get("ticket") != args.ticket
+        or transition.get("project") != args.project
+        or transition.get("branch") != branch
+        or transition.get("factory_sha") != args.factory_sha
+        or transition.get("contract_version") != args.contract_version
+        or transition.get("stage") != "FIX test-author"
+        or transition.get("role") != "test-author"
+        or transition.get("head_sha") != before
+        or (
+            before != record.get("head_sha")
+            and not (
+                record.get("factory_sha") != args.factory_sha
+                and migrated
+            )
+        )
+        or transition.get("head_tree")
+        != git(args.workdir, "rev-parse", f"{before}^{{tree}}")
+        or success.get("kit_sha") != args.factory_sha
+        or success.get("contract_version") != args.contract_version
+        or success.get("role_branch_before") != branch
+        or not isinstance(success.get("run_id"), str)
+        or not success.get("run_id")
+        or not DIGEST.fullmatch(success.get("manifest_sha256", ""))
+        or success.get("go_issued") != "1"
+        or success.get("task_submitted") != "1"
+        or success.get("accounting_state") != "completed"
+        or not branch_contains(args, before)
+        or current_head == before
+    ):
+        raise StateError("dependency conflict repair success is invalid")
+    completed = passport.get("completed_role_evidence")
+    charges = passport.get("charge_records")
+    expected = {
+        "contract_version": args.contract_version,
+        "factory_sha": args.factory_sha,
+        "head_before": before,
+        "manifest_sha256": success["manifest_sha256"],
+        "role": "test-author",
+        "run_id": success.get("run_id"),
+        "transition_receipt_sha256": transition["receipt_sha256"],
+    }
+    matching_completed = [
+        item for item in completed
+        if isinstance(item, dict)
+        and all(item.get(key) == value for key, value in expected.items())
+        and DIGEST.fullmatch(item.get("output_sha256", ""))
+    ] if isinstance(completed, list) else []
+    matching_charges = [
+        item for item in charges
+        if isinstance(item, dict)
+        and all(item.get(key) == value for key, value in expected.items())
+        and item.get("accounting_state") == "completed"
+        and isinstance(item.get("charge_micro_usd"), int)
+        and not isinstance(item.get("charge_micro_usd"), bool)
+        and item.get("charge_micro_usd", -1) >= 0
+    ] if isinstance(charges, list) else []
+    if (
+        passport.get("ticket") != args.ticket
+        or passport.get("branch") != branch
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+        or passport.get("current_stage") != "FIX test-author"
+        or passport.get("transition_receipt_sha256")
+        != transition["receipt_sha256"]
+        or len(matching_completed) != 1
+        or len(matching_charges) != 1
+    ):
+        raise StateError(
+            "dependency conflict repair passport evidence is invalid"
+        )
+    raw_status = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "diff", "--name-status",
+            "--no-renames", "-z", before, current_head,
+        ],
+        capture_output=True, check=True, timeout=120,
+    ).stdout.split(b"\0")
+    if raw_status and raw_status[-1] == b"":
+        raw_status.pop()
+    if not raw_status or len(raw_status) % 2:
+        raise StateError("dependency conflict repair diff is invalid")
+    changed = []
+    for index in range(0, len(raw_status), 2):
+        try:
+            status = raw_status[index].decode("ascii")
+            path = raw_status[index + 1].decode("ascii")
+        except UnicodeDecodeError as error:
+            raise StateError(
+                "dependency conflict repair diff is invalid"
+            ) from error
+        if status != "M":
+            raise StateError(
+                "dependency conflict repair changed an unauthorized path"
+            )
+        changed.append(path)
+    allowed = {
+        f"factory/tickets/{args.ticket}.md",
+        *(
+            item["path"]
+            for item in receipt["conflicts"]
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        ),
+    }
+    if (
+        not changed
+        or changed != sorted(changed)
+        or len(changed) != len(set(changed))
+        or set(changed) - allowed
+        or any(
+            tree_entry(args.workdir, before, path)[0] != "100644"
+            or tree_entry(args.workdir, current_head, path)[0] != "100644"
+            for path in changed
+        )
+    ):
+        raise StateError("dependency conflict repair changed an unauthorized path")
+    return candidates
 
 
 def completed_repair_after_lost_migration_history(
@@ -960,11 +1685,13 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
         return None, False
     owner = record.get("repair_role", "")
     head = record.get("head_sha", "")
+    source = record.get("repair_source")
     if any((
         record.get("schema") != REPAIR_SCHEMA,
         record.get("ticket") != args.ticket,
         record.get("branch") != passport.get("branch"),
         owner not in {"planner", "spec-linter", "test-author", "builder"},
+        source not in {None, DEPENDENCY_CONFLICT_SOURCE},
         not SHA.fullmatch(head),
         subprocess.run(
             ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor", head, "HEAD"],
@@ -973,14 +1700,62 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
         ).returncode != 0,
     )):
         raise StateError("contract repair record is invalid")
+    if source == DEPENDENCY_CONFLICT_SOURCE:
+        expected_keys = {
+            "authentication_sha256", "blocked_receipt", "blocked_role",
+            "branch", "dependency_refresh_commit",
+            "dependency_refresh_sha256", "factory_sha", "head_sha",
+            "head_tree", "passport_sha256", "protected_base_sha",
+            "repair_role", "repair_sha256", "repair_source", "schema",
+            "ticket",
+        }
+        found = dependency_conflict_receipt(
+            args, require_current_base=False,
+        )
+        if found is None:
+            raise StateError("dependency conflict repair receipt is missing")
+        conflict, conflict_digest, conflict_commit = found
+        protected_lineage = subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base",
+                "--is-ancestor", conflict["protected_head"],
+                record.get("protected_base_sha", ""),
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        )
+        if (
+            set(record) != expected_keys
+            or has_directive
+            or owner != "test-author"
+            or record.get("blocked_role") != "dependency-refresh"
+            or record.get("blocked_receipt")
+            != conflict.get("transition_receipt_sha256")
+            or record.get("dependency_refresh_sha256") != conflict_digest
+            or record.get("dependency_refresh_commit") != conflict_commit
+            or record.get("head_tree")
+            != git(
+                args.workdir, "rev-parse",
+                f"{record.get('head_sha', '')}^{{tree}}",
+            )
+            or not branch_contains(args, conflict_commit)
+            or protected_lineage.returncode != 0
+            or not DIGEST.fullmatch(record.get("passport_sha256", ""))
+        ):
+            raise StateError("dependency conflict repair record is invalid")
     successes = contract_repair_successes(args, owner, head)
-    if (
-        not migrated_contract_repair(args, passport, record)
-        and not completed_repair_after_lost_migration_history(
+    migrated = migrated_contract_repair(args, passport, record)
+    if not migrated and (
+        source == DEPENDENCY_CONFLICT_SOURCE
+        or not completed_repair_after_lost_migration_history(
             args, passport, record, successes
         )
     ):
         raise StateError("contract repair record is invalid")
+    if source == DEPENDENCY_CONFLICT_SOURCE:
+        successes = dependency_conflict_successes(
+            args, record, conflict, successes, passport, migrated,
+        )
     if len(successes) > 1:
         raise StateError("contract repair has duplicate successful evidence")
     if not successes:
@@ -1189,6 +1964,8 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
         )
     declared = declared_dependencies(args)
     dependencies = unresolved_dependencies(args, declared)
+    if not dependencies:
+        ensure_dependency_conflict_repair(args)
     repair_stage, repair_override = contract_repair_stage(args)
     if dependencies:
         stage = f"AWAIT_DEPENDENCY {','.join(dependencies)}"

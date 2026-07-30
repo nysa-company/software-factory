@@ -1929,6 +1929,17 @@ class Controller:
                     ),
                     "ticket": claim["ticket"],
                 }
+            if (
+                claim.get("publication_lease")
+                and self.ticket_merged(claim)
+            ):
+                self.release_publication(claim)
+                self.migrate_passport(claim, "merged")
+                self.closeout(claim)
+                return {
+                    "status": "progressed",
+                    "ticket": claim["ticket"],
+                }
             if not self.route_path(claim).exists():
                 raise ControllerError("ticket route was not batch pinned")
             if not self.refresh_dependency_tracking(claim):
@@ -2171,7 +2182,9 @@ class Controller:
                 attestation = value.get("attestation")
                 refreshed = value.get("head", "")
                 if (
-                    value.get("action") != "dependency-refresh"
+                    value.get("action") not in {
+                        "dependency-refresh", "dependency-conflict-refresh",
+                    }
                     or not isinstance(attestation, dict)
                     or attestation.get("old_head") != receipt_record["head_sha"]
                     or attestation.get("protected_head")
@@ -2190,11 +2203,29 @@ class Controller:
                     )
                 self.migrate_passport(claim, "validating")
                 self.event(
-                    "dependency_base_refreshed", claim["ticket"],
+                    (
+                        "dependency_conflict_routed"
+                        if value.get("action") == "dependency-conflict-refresh"
+                        else "dependency_base_refreshed"
+                    ),
+                    claim["ticket"],
                     dependencies=dependency_refresh[1],
                     old_head=receipt_record["head_sha"],
                     protected_main=dependency_refresh[2],
                     refreshed_head=refreshed,
+                    **(
+                        {
+                            "repair_owner": attestation.get("repair_owner"),
+                            "conflict_paths": [
+                                item.get("path")
+                                for item in attestation.get("conflicts", [])
+                                if isinstance(item, dict)
+                            ],
+                        }
+                        if value.get("action")
+                        == "dependency-conflict-refresh"
+                        else {}
+                    ),
                 )
                 return {"status": "progressed", "ticket": claim["ticket"]}
             if stage.startswith("REFUSE"):

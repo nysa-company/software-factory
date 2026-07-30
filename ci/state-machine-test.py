@@ -475,6 +475,392 @@ class StateMachineTest(unittest.TestCase):
         with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
             self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
 
+    def test_dependency_conflict_routes_exactly_one_new_test_author(self) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        prior_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        conflict_path = self.product / "tests/dependency-conflict.test.ts"
+        conflict_path.parent.mkdir()
+        conflict_path.write_text("protected baseline\n", encoding="utf-8")
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\nDepends-On: T-094\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), str(conflict_path), cwd=self.product)
+        run("git", "commit", "-qm", "bind dependency conflict receipt", cwd=self.product)
+        receipt_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport_body = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": receipt_head,
+            "protected_base_sha": prior_head,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(passport_body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(passport_body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        conflict = {
+            "conflicts": [{"path": "tests/dependency-conflict.test.ts"}],
+            "contract_version": self.args.contract_version,
+            "factory_sha": self.args.factory_sha,
+            "protected_head": prior_head,
+            "transition_receipt_sha256": "c" * 64,
+        }
+        conflict_digest = "d" * 64
+        found = (conflict, conflict_digest, receipt_head)
+        receipt_path = (
+            self.product
+            / "factory/attestations/T-110/dependency-refresh.json"
+        )
+        receipt_path.parent.mkdir(parents=True)
+        receipt_path.write_text("{}\n", encoding="utf-8")
+        # A still-valid earlier Test-author success must not satisfy the new
+        # protected-base repair boundary.
+        (self.product / "factory/runs/prior-test-author.meta").write_text(
+            "run_id=prior-test-author\nphase=completed\n"
+            "accounting_state=completed\nticket=T-110\nrole=test-author\n"
+            "exit_status=0\nrole_exit=ok\n"
+            f"role_head_before={prior_head}\n",
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(STATE, "migrate_passport"),
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(passport, secret),
+            ),
+            mock.patch.object(
+                STATE, "dependency_conflict_receipt", return_value=found,
+            ),
+            mock.patch.object(
+                STATE, "protected_base_sha", return_value=prior_head,
+            ),
+            mock.patch.object(
+                STATE, "validate_dependency_conflict_transition",
+            ) as validate,
+        ):
+            STATE.ensure_dependency_conflict_repair(self.args)
+        validate.assert_called_once_with(self.args, conflict)
+        record = STATE.load_repair(self.args, secret)
+        self.assertEqual(record["repair_source"], STATE.DEPENDENCY_CONFLICT_SOURCE)
+        self.assertEqual(record["repair_role"], "test-author")
+        self.assertEqual(record["head_sha"], receipt_head)
+        run(
+            "git", "switch", "-q", "-c", "protected-advanced", prior_head,
+            cwd=self.product,
+        )
+        (self.product / "sibling.txt").write_text(
+            "sibling merge\n", encoding="utf-8",
+        )
+        run("git", "add", "sibling.txt", cwd=self.product)
+        run("git", "commit", "-qm", "advance protected sibling", cwd=self.product)
+        advanced_base = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run("git", "switch", "-q", "ticket/T-110", cwd=self.product)
+        with (
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(passport, secret),
+            ),
+            mock.patch.object(
+                STATE, "dependency_conflict_receipt", return_value=found,
+            ),
+            mock.patch.object(
+                STATE, "protected_base_sha", return_value=advanced_base,
+            ),
+        ):
+            STATE.ensure_dependency_conflict_repair(self.args)
+        mismatched_body = {
+            key: value for key, value in record.items()
+            if key not in {"authentication_sha256", "repair_sha256"}
+        }
+        mismatched_body["dependency_refresh_sha256"] = "9" * 64
+        STATE.write_atomic(
+            STATE.repair_path(self.args),
+            STATE.signed_repair(mismatched_body, secret),
+        )
+        with (
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(passport, secret),
+            ),
+            mock.patch.object(
+                STATE, "dependency_conflict_receipt", return_value=found,
+            ),
+            mock.patch.object(
+                STATE, "protected_base_sha", return_value=prior_head,
+            ),
+            self.assertRaisesRegex(
+                STATE.StateError, "conflicts with active repair",
+            ),
+        ):
+            STATE.ensure_dependency_conflict_repair(self.args)
+        STATE.write_atomic(STATE.repair_path(self.args), record)
+        with (
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(passport, secret),
+            ),
+            mock.patch.object(
+                STATE, "dependency_conflict_receipt", return_value=found,
+            ),
+            mock.patch.object(
+                STATE, "protected_base_sha", return_value=prior_head,
+            ),
+        ):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args),
+                ("FIX test-author", True),
+            )
+
+        issued = STATE.issue(self.args, "FIX test-author")
+        self.args.receipt = issued["receipt_sha256"]
+        self.args.role = "test-author"
+        STATE.verify(self.args, consume=True)
+        record = STATE.load_repair(self.args, secret)
+        self.assertEqual(
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict, [{
+                    "transition_receipt_sha256": "0" * 64,
+                }], passport, False,
+            ),
+            [],
+        )
+
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "\nintervening log\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "intervening descendant", cwd=self.product)
+        descendant = run("git", "rev-parse", "HEAD", cwd=self.product)
+        with self.assertRaisesRegex(
+            STATE.StateError, "repair success is invalid",
+        ):
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict, [{
+                    "accounting_state": "completed",
+                    "contract_version": self.args.contract_version,
+                    "go_issued": "1",
+                    "kit_sha": self.args.factory_sha,
+                    "manifest_sha256": "1" * 64,
+                    "role_branch_before": "ticket/T-110",
+                    "role_head_before": descendant,
+                    "run_id": "descendant-before",
+                    "task_submitted": "1",
+                    "transition_receipt_sha256": self.args.receipt,
+                }], passport, False,
+            )
+        run("git", "reset", "--hard", issued["head_sha"], cwd=self.product)
+
+        unrelated = self.product / "src/unrelated.ts"
+        unrelated.parent.mkdir()
+        unrelated.write_text("unrelated\n", encoding="utf-8")
+        run("git", "add", str(unrelated), cwd=self.product)
+        run("git", "commit", "-qm", "unrelated repair output", cwd=self.product)
+        unrelated_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        unrelated_success = {
+            "accounting_state": "completed",
+            "contract_version": self.args.contract_version,
+            "go_issued": "1",
+            "kit_sha": self.args.factory_sha,
+            "manifest_sha256": "2" * 64,
+            "role_branch_before": "ticket/T-110",
+            "role_head_before": issued["head_sha"],
+            "run_id": "unrelated-output",
+            "task_submitted": "1",
+            "transition_receipt_sha256": self.args.receipt,
+        }
+        unrelated_evidence = {
+            "contract_version": self.args.contract_version,
+            "factory_sha": self.args.factory_sha,
+            "head_before": issued["head_sha"],
+            "manifest_sha256": "2" * 64,
+            "role": "test-author",
+            "run_id": "unrelated-output",
+            "transition_receipt_sha256": self.args.receipt,
+        }
+        unrelated_passport = {
+            **passport,
+            "charge_records": [{
+                **unrelated_evidence,
+                "accounting_state": "completed",
+                "charge_micro_usd": 1,
+            }],
+            "completed_role_evidence": [{
+                **unrelated_evidence,
+                "output_sha256": "3" * 64,
+            }],
+            "current_stage": "FIX test-author",
+            "head_sha": unrelated_head,
+            "transition_receipt_sha256": self.args.receipt,
+        }
+        with self.assertRaisesRegex(
+            STATE.StateError, "unauthorized path",
+        ):
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict,
+                [unrelated_success], unrelated_passport, False,
+            )
+        run("git", "reset", "--hard", issued["head_sha"], cwd=self.product)
+
+        run("git", "rm", "-q", str(conflict_path), cwd=self.product)
+        run("git", "commit", "-qm", "delete allowed conflict", cwd=self.product)
+        deleted_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        deleted_success = {
+            **unrelated_success,
+            "manifest_sha256": "4" * 64,
+            "run_id": "deleted-output",
+        }
+        deleted_evidence = {
+            **unrelated_evidence,
+            "manifest_sha256": "4" * 64,
+            "run_id": "deleted-output",
+        }
+        deleted_passport = {
+            **passport,
+            "charge_records": [{
+                **deleted_evidence,
+                "accounting_state": "completed",
+                "charge_micro_usd": 1,
+            }],
+            "completed_role_evidence": [{
+                **deleted_evidence,
+                "output_sha256": "5" * 64,
+            }],
+            "current_stage": "FIX test-author",
+            "head_sha": deleted_head,
+            "transition_receipt_sha256": self.args.receipt,
+        }
+        with self.assertRaisesRegex(
+            STATE.StateError, "unauthorized path",
+        ):
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict,
+                [deleted_success], deleted_passport, False,
+            )
+        run("git", "reset", "--hard", issued["head_sha"], cwd=self.product)
+
+        conflict_path.write_text("reconciled contract\n", encoding="utf-8")
+        run("git", "add", str(conflict_path), cwd=self.product)
+        run("git", "commit", "-qm", "reconcile protected test", cwd=self.product)
+        manifest = self.product / "factory/runs/conflict-test-author.meta"
+        manifest.write_text(
+            "run_id=conflict-test-author\nphase=completed\n"
+            "accounting_state=completed\nticket=T-110\nrole=test-author\n"
+            "go_issued=1\ntask_submitted=1\n"
+            f"contract_version={self.args.contract_version}\n"
+            f"kit_sha={self.args.factory_sha}\n"
+            "exit_status=0\nrole_exit=ok\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={issued['head_sha']}\n"
+            f"transition_receipt_sha256={self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        repaired_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        evidence = {
+            "contract_version": self.args.contract_version,
+            "factory_sha": self.args.factory_sha,
+            "head_before": issued["head_sha"],
+            "manifest_sha256": manifest_digest,
+            "role": "test-author",
+            "run_id": "conflict-test-author",
+            "transition_receipt_sha256": self.args.receipt,
+        }
+        terminal_passport = {
+            **passport,
+            "charge_records": [{
+                **evidence,
+                "accounting_state": "completed",
+                "charge_micro_usd": 1,
+            }],
+            "completed_role_evidence": [{
+                **evidence,
+                "output_sha256": "e" * 64,
+            }],
+            "current_stage": "FIX test-author",
+            "head_sha": repaired_head,
+            "transition_receipt_sha256": self.args.receipt,
+        }
+        with self.assertRaisesRegex(
+            STATE.StateError, "passport evidence is invalid",
+        ):
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict,
+                [{
+                    **dict(
+                        line.split("=", 1)
+                        for line in manifest.read_text(
+                            encoding="utf-8",
+                        ).splitlines()
+                    ),
+                    "manifest_sha256": manifest_digest,
+                }],
+                passport, False,
+            )
+        with (
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(terminal_passport, secret),
+            ),
+            mock.patch.object(
+                STATE, "dependency_conflict_receipt", return_value=found,
+            ),
+            mock.patch.object(
+                STATE, "protected_base_sha", return_value=prior_head,
+            ),
+            mock.patch.object(STATE, "resolve", return_value="RUN builder"),
+        ):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args), (None, False)
+            )
+        self.assertFalse(STATE.repair_path(self.args).exists())
+        receipt_path.unlink()
+        with (
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(terminal_passport, secret),
+            ),
+            self.assertRaisesRegex(
+                STATE.StateError, "receipt was deleted",
+            ),
+        ):
+            STATE.ensure_dependency_conflict_repair(self.args)
+        receipt_path.write_text("{}\n", encoding="utf-8")
+        with (
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(terminal_passport, secret),
+            ),
+            mock.patch.object(
+                STATE, "dependency_conflict_receipt", return_value=found,
+            ),
+            mock.patch.object(
+                STATE, "validate_dependency_conflict_transition",
+            ) as validate_again,
+            mock.patch.object(
+                STATE, "protected_base_sha",
+                side_effect=AssertionError(
+                    "completed repair revalidated current protected main"
+                ),
+            ),
+        ):
+            STATE.ensure_dependency_conflict_repair(self.args)
+        validate_again.assert_not_called()
+        migrate.assert_not_called()
+        self.assertFalse(STATE.repair_path(self.args).exists())
+
     def test_contract_repair_survives_dependency_wait_and_release_migration(
         self,
     ) -> None:

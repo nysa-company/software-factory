@@ -1967,6 +1967,7 @@ PY
       transition_receipt consume ||
         die "transition receipt consumption failed"
       HELPER_ENV+=(
+        "FACTORY_CONTRACT_VERSION=$CONTRACT_VERSION"
         "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
         "FACTORY_TRANSITION_STAGE=$TRANSITION_STAGE"
       )
