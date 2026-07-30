@@ -705,6 +705,182 @@ def migrated_contract_repair(
     )
 
 
+def contract_repair_successes(
+    args: argparse.Namespace, owner: str, head: str
+) -> list[dict[str, str]]:
+    successes = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        fields, raw = run_manifest(path)
+        before = fields.get("role_head_before", "")
+        if (
+            fields.get("ticket") == args.ticket
+            and fields.get("role") == owner
+            and fields.get("phase") == "completed"
+            and fields.get("exit_status") == "0"
+            and fields.get("role_exit") == "ok"
+            and SHA.fullmatch(before)
+            and subprocess.run(
+                [
+                    "git", "-C", str(args.workdir), "merge-base",
+                    "--is-ancestor", head, before,
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False, timeout=120,
+            ).returncode == 0
+        ):
+            successes.append({
+                **fields,
+                "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            })
+    return successes
+
+
+def completed_repair_after_lost_migration_history(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    record: dict[str, Any],
+    successes: list[dict[str, str]],
+) -> bool:
+    """Recognize the exact terminal export that dropped migration history.
+
+    Contract 1.8 exports before this repair rebuilt the passport without
+    carrying its authenticated migration history.  Recovery is safe only
+    after the already-authorized repair role completed: the consumed FIX
+    receipt binds the prior passport file, and the new authenticated passport
+    binds that receipt plus the exact immutable run evidence.
+    """
+    if "migration_history" in passport or len(successes) != 1:
+        return False
+    try:
+        transition = safe_receipt(args.state_dir / f"{args.ticket}.json")
+    except (FileNotFoundError, json.JSONDecodeError, OSError, StateError):
+        return False
+    success = successes[0]
+    completed = passport.get("completed_role_evidence")
+    charges = passport.get("charge_records")
+    history = passport.get("factory_release_history")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    if (
+        not isinstance(completed, list)
+        or not isinstance(charges, list)
+        or not isinstance(history, list)
+        or passport.get("ticket") != args.ticket
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+        or passport.get("current_stage")
+        != f"FIX {record.get('repair_role', '')}"
+        or passport.get("transition_receipt_sha256")
+        != transition.get("receipt_sha256")
+        or passport.get("parent_file_sha256")
+        != transition.get("passport_sha256")
+        or transition.get("consumed") is not True
+        or transition.get("ticket") != args.ticket
+        or transition.get("project") != args.project
+        or transition.get("branch") != passport.get("branch")
+        or transition.get("factory_sha") != args.factory_sha
+        or transition.get("role") != record.get("repair_role")
+        or transition.get("stage")
+        != f"FIX {record.get('repair_role', '')}"
+        or transition.get("head_sha") != success.get("role_head_before")
+        or success.get("transition_receipt_sha256")
+        != transition.get("receipt_sha256")
+        or success.get("kit_sha") != args.factory_sha
+        or subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+                success.get("role_head_before", ""), current_head,
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        ).returncode != 0
+    ):
+        return False
+    releases = [
+        item.get("factory_sha")
+        for item in history
+        if isinstance(item, dict)
+        and item.get("contract_version") == args.contract_version
+        and SHA.fullmatch(item.get("factory_sha", ""))
+    ]
+    if (
+        len(releases) != len(history)
+        or len(releases) != len(set(releases))
+        or record.get("factory_sha") not in releases
+        or args.factory_sha not in releases
+        or releases.index(record["factory_sha"]) >= releases.index(args.factory_sha)
+    ):
+        return False
+    matching_completed = [
+        item for item in completed
+        if isinstance(item, dict)
+        and item.get("role") == record.get("repair_role")
+        and item.get("run_id") == success.get("run_id")
+        and item.get("transition_receipt_sha256")
+        == transition.get("receipt_sha256")
+        and item.get("manifest_sha256") == success.get("manifest_sha256")
+        and item.get("factory_sha") == args.factory_sha
+        and item.get("head_before") == success.get("role_head_before")
+    ]
+    matching_charges = [
+        item for item in charges
+        if isinstance(item, dict)
+        and item.get("role") == record.get("repair_role")
+        and item.get("run_id") == success.get("run_id")
+        and item.get("transition_receipt_sha256")
+        == transition.get("receipt_sha256")
+        and item.get("manifest_sha256") == success.get("manifest_sha256")
+        and item.get("factory_sha") == args.factory_sha
+        and item.get("head_before") == success.get("role_head_before")
+    ]
+    blocked = [
+        item for item in charges
+        if isinstance(item, dict)
+        and item.get("transition_receipt_sha256")
+        == record.get("blocked_receipt")
+        and item.get("role") == record.get("blocked_role")
+    ]
+    return (
+        len(matching_completed) == 1
+        and len(matching_charges) == 1
+        and len(blocked) == 1
+        and not any(
+            isinstance(item, dict)
+            and item.get("transition_receipt_sha256")
+            == record.get("blocked_receipt")
+            for item in completed
+        )
+    )
+
+
+def retire_contract_repair(
+    args: argparse.Namespace, record: dict[str, Any]
+) -> None:
+    source = repair_path(args)
+    archive = source.parent / "completed"
+    archive.mkdir(mode=0o700, exist_ok=True)
+    info = archive.lstat()
+    if (
+        archive.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise StateError("completed contract repair directory is unsafe")
+    digest = record.get("repair_sha256", "")
+    if not DIGEST.fullmatch(digest):
+        raise StateError("contract repair record is invalid")
+    destination = archive / f"{args.ticket}-{digest}.json"
+    if destination.exists() or destination.is_symlink():
+        if (
+            destination.is_symlink()
+            or json.loads(destination.read_text(encoding="utf-8")) != record
+        ):
+            raise StateError("completed contract repair record conflicts")
+        source.unlink(missing_ok=True)
+        return
+    os.replace(source, destination)
+
+
 def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     text = (
         args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
@@ -724,7 +900,6 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     if any((
         record.get("schema") != REPAIR_SCHEMA,
         record.get("ticket") != args.ticket,
-        not migrated_contract_repair(args, passport, record),
         record.get("branch") != passport.get("branch"),
         owner not in {"planner", "spec-linter", "test-author", "builder"},
         not SHA.fullmatch(head),
@@ -735,31 +910,19 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
         ).returncode != 0,
     )):
         raise StateError("contract repair record is invalid")
-    successes = []
-    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
-        fields, _ = run_manifest(path)
-        before = fields.get("role_head_before", "")
-        if (
-            fields.get("ticket") == args.ticket
-            and fields.get("role") == owner
-            and fields.get("phase") == "completed"
-            and fields.get("exit_status") == "0"
-            and fields.get("role_exit") == "ok"
-            and SHA.fullmatch(before)
-            and subprocess.run(
-                [
-                    "git", "-C", str(args.workdir), "merge-base",
-                    "--is-ancestor", head, before,
-                ],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                check=False, timeout=120,
-            ).returncode == 0
-        ):
-            successes.append(fields.get("run_id", ""))
+    successes = contract_repair_successes(args, owner, head)
+    if (
+        not migrated_contract_repair(args, passport, record)
+        and not completed_repair_after_lost_migration_history(
+            args, passport, record, successes
+        )
+    ):
+        raise StateError("contract repair record is invalid")
     if len(successes) > 1:
         raise StateError("contract repair has duplicate successful evidence")
     if not successes:
         return f"FIX {owner}", True
+    retire_contract_repair(args, record)
     stage = resolve(args)
     role = stage_role(stage)
     order = {"Planning": 1, "Building": 2, "Review": 3}

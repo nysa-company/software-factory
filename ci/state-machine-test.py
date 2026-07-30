@@ -574,6 +574,118 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.contract_repair_stage(self.args)
 
+    def test_completed_repair_retires_after_terminal_export_lost_history(
+        self,
+    ) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        old_factory = "b" * 40
+        blocked_receipt = "d" * 64
+        parent_file = "f" * 64
+        receipt_body = {
+            "branch": "ticket/T-110",
+            "contract_version": self.args.contract_version,
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "passport_sha256": parent_file,
+            "project": self.args.project,
+            "role": "test-author",
+            "schema": STATE.RECEIPT_SCHEMA,
+            "stage": "FIX test-author",
+            "ticket": "T-110",
+        }
+        receipt_digest = hashlib.sha256(
+            STATE.canonical(receipt_body)
+        ).hexdigest()
+        receipt = {
+            **receipt_body,
+            "consumed": True,
+            "consumed_at_epoch": 1,
+            "receipt_sha256": receipt_digest,
+        }
+        STATE.write_atomic(self.state_dir / "T-110.json", receipt)
+        manifest = (
+            "run_id=repair\nphase=completed\naccounting_state=completed\n"
+            "ticket=T-110\nrole=test-author\nexit_status=0\nrole_exit=ok\n"
+            f"kit_sha={self.args.factory_sha}\n"
+            f"role_head_before={head}\n"
+            f"transition_receipt_sha256={receipt_digest}\n"
+        ).encode()
+        (self.product / "factory/runs/repair.meta").write_bytes(manifest)
+        manifest_digest = hashlib.sha256(manifest).hexdigest()
+        completed = {
+            "factory_sha": self.args.factory_sha,
+            "head_before": head,
+            "manifest_sha256": manifest_digest,
+            "role": "test-author",
+            "run_id": "repair",
+            "transition_receipt_sha256": receipt_digest,
+        }
+        body = {
+            "branch": "ticket/T-110",
+            "charge_records": [
+                {
+                    "role": "builder",
+                    "transition_receipt_sha256": blocked_receipt,
+                },
+                dict(completed),
+            ],
+            "completed_role_evidence": [dict(completed)],
+            "current_stage": "FIX test-author",
+            "factory_release_history": [
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": old_factory,
+                },
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": self.args.factory_sha,
+                },
+            ],
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "parent_file_sha256": parent_file,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+            "transition_receipt_sha256": receipt_digest,
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        record = STATE.signed_repair({
+            "blocked_receipt": blocked_receipt,
+            "blocked_role": "builder",
+            "branch": "ticket/T-110",
+            "factory_sha": old_factory,
+            "head_sha": head,
+            "head_tree": run(
+                "git", "rev-parse", "HEAD^{tree}", cwd=self.product
+            ),
+            "passport_sha256": "c" * 64,
+            "repair_role": "test-author",
+            "schema": STATE.REPAIR_SCHEMA,
+            "ticket": "T-110",
+        }, secret)
+        active = STATE.repair_path(self.args)
+        STATE.write_atomic(active, record)
+
+        with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
+            self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
+        self.assertFalse(active.exists())
+        archived = list((active.parent / "completed").glob("T-110-*.json"))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(json.loads(archived[0].read_text()), record)
+        self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
+
     def test_runner_keeps_host_project_for_pre_go_receipt_check(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
         start = source.index("sequencer_allows_role() {")
