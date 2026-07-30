@@ -1800,3 +1800,14 @@ Factory modules inside the sealed release, invalidating its authenticated tree
 after a successful transition. The entry point now disables bytecode writes
 before loading Factory modules. A sealed release must remain byte-for-byte
 stable throughout planning, receipt consumption, execution, and recovery.
+
+## 2026-07-29 — Decision 141: Budget accounting is independent of evidence reuse
+
+Category: Incident
+
+The Contract 1.8 budget reducer previously invoked complete passport evidence
+validation, so an orphaned or otherwise non-reusable successful role output
+could prevent spend calculation. Terminal accounting identities and charges
+are now reduced without reading role output. Passport export and lifecycle
+reuse still perform strict output validation, while every terminal charge
+continues to count toward the business budget.

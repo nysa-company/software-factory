@@ -22,6 +22,35 @@ SPEC.loader.exec_module(BUDGET)
 
 
 class BudgetStageTest(unittest.TestCase):
+    def test_terminal_charge_does_not_require_reusable_role_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            product = Path(temporary)
+            (product / "factory/runs").mkdir(parents=True)
+            (product / "factory/ENVELOPE.env").write_text(
+                "PER_RUN_BUDGET_USD=0.100000\n"
+                "PER_TICKET_BUDGET_USD=0.100000\n"
+                "PER_RUN_MAX_TURNS=20\n"
+                "PER_RUN_TIMEOUT_MIN=30\n"
+                "DAILY_CAP_USD=100.000000\n",
+                encoding="utf-8",
+            )
+            output = product / "factory/runs/orphan.out"
+            output.write_text("orphan reviewer output\n", encoding="utf-8")
+            (product / "factory/runs/orphan.meta").write_text(
+                "run_id=orphan\n"
+                "ticket=T-110\n"
+                "role=reviewer\n"
+                "accounting_state=completed\n"
+                "effective_cost=0.100000\n"
+                "exit_status=0\n"
+                "role_exit=ok\n"
+                f"output_sha256={hashlib.sha256(output.read_bytes()).hexdigest()}\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                BUDGET.resolve(ROOT, product, "T-110").startswith("AWAIT_BUDGET")
+            )
+
     def test_exact_exhaustion_waits_without_another_attempt(self):
         with tempfile.TemporaryDirectory() as temporary:
             product = Path(temporary)

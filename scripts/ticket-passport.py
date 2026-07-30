@@ -200,7 +200,9 @@ def micro_usd(value: dict[str, str]) -> int:
     return int(amount * 1_000_000)
 
 
-def run_evidence(factory: Path, ticket: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _run_evidence(
+    factory: Path, ticket: str, validate_outputs: bool
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     completed, charges = [], []
     runs = factory / "runs"
     if not runs.exists():
@@ -226,7 +228,11 @@ def run_evidence(factory: Path, ticket: str) -> tuple[list[dict[str, Any]], list
                 "transition_receipt_sha256"
             ),
         })
-        if value.get("exit_status") == "0" and value.get("role_exit") == "ok":
+        if (
+            validate_outputs
+            and value.get("exit_status") == "0"
+            and value.get("role_exit") == "ok"
+        ):
             output = path.with_suffix(".out")
             output_digest = role_output_digest(output)
             if value.get("output_sha256") != output_digest:
@@ -244,6 +250,16 @@ def run_evidence(factory: Path, ticket: str) -> tuple[list[dict[str, Any]], list
                 ),
             })
     return completed, charges
+
+
+def run_charges(factory: Path, ticket: str) -> list[dict[str, Any]]:
+    return _run_evidence(factory, ticket, False)[1]
+
+
+def run_evidence(
+    factory: Path, ticket: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    return _run_evidence(factory, ticket, True)
 
 
 def ticket_state(workdir: Path, ticket: str) -> str:
