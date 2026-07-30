@@ -355,6 +355,27 @@ partial, modified, auto-merged, bypassed, non-Backlog, or ambiguous evidence
 remains unresolved; any partial terminal chain fails before this compatibility
 path is considered. Runtime dependency checks use only the immutable receipt
 after its protected introduction and make no GitHub call.
+When a resolved dependency requires the ticket branch to absorb protected
+main, the provider-free refresh first attempts the exact non-force merge. A
+regular both-modified conflict wholly inside `TEST_PATHS` from the exact
+protected `factory/PROJECT.env` is the only automatically recoverable
+conflict class. The trusted host records every stage-1/2/3 mode and blob,
+retains the protected blob as the safe merge baseline, commits the exact
+two-parent merge and a direct-after-merge v2 receipt, migrates the passport,
+and has the deterministic state machine create an HMAC-bound
+`FIX test-author` checkpoint. Exactly one new Test-author run reconciles the
+frozen ticket contract against that protected baseline; earlier successful
+roles and charges remain immutable. A sibling merge may advance protected
+main while that checkpoint runs; the signed historical base remains valid and
+the normal dependency refresh absorbs the newer base afterward. Retirement
+requires the exact consumed FIX receipt, authenticated terminal passport,
+matching completed-role and charge records, and a diff containing only
+regular `100644` modifications to the listed tests or ticket log. The
+checkpoint is archived after that unique success. An already-merged
+publication closes before dependency refresh is considered. Application,
+mixed-owner, Factory-control, contract, CI, configuration, add/delete,
+rename, non-regular, unknown, missing-receipt, or tampered conflicts remain
+fail-closed.
 That atomic introduction may also contain the exact in-flight release
 authorization for the same target Factory SHA. No other migration,
 application, test, contract, or CI path is admitted.

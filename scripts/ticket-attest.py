@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -1539,6 +1540,150 @@ DEPENDENCY_REFRESH_KEYS = {
     "preserved_state", "refreshed_at",
 }
 
+DEPENDENCY_CONFLICT_REFRESH_KEYS = {
+    "schema", "ticket", "generation", "dependencies", "dependency_terminals",
+    "old_head", "old_head_tree", "prior_base_head", "protected_head",
+    "protected_head_tree", "protected_project_blob", "protected_delta_sha256",
+    "test_paths", "test_paths_sha256", "conflicts", "repair_owner",
+    "resolution", "merge_head", "merge_head_tree", "preserved_state",
+    "transition_receipt_sha256", "factory_sha", "contract_version",
+    "refreshed_at",
+}
+
+
+def safe_project_test_paths(workdir, protected_head):
+    raw = git(
+        workdir, "show", f"{protected_head}:factory/PROJECT.env",
+    ).stdout
+    values = re.findall(r"(?m)^TEST_PATHS=(.*)$", raw)
+    if len(values) != 1:
+        raise Refusal("protected PROJECT.env TEST_PATHS is ambiguous")
+    try:
+        paths = " ".join(
+            shlex.split(values[0], comments=False, posix=True)
+        ).split()
+    except ValueError as error:
+        raise Refusal("protected PROJECT.env TEST_PATHS is invalid") from error
+    safe = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
+    if (
+        not paths
+        or len(paths) != len(set(paths))
+        or any(
+            not safe.fullmatch(path.rstrip("/"))
+            or any(part in {"", ".", ".."} for part in path.rstrip("/").split("/"))
+            or path.rstrip("/") == "factory"
+            or path.rstrip("/").startswith("factory/")
+            for path in paths
+        )
+    ):
+        raise Refusal("protected PROJECT.env TEST_PATHS is invalid")
+    normalized = [path.rstrip("/") for path in paths]
+    if any(
+        left == right
+        or left.startswith(right + "/")
+        or right.startswith(left + "/")
+        for index, left in enumerate(normalized)
+        for right in normalized[index + 1:]
+    ):
+        raise Refusal("protected PROJECT.env TEST_PATHS overlaps")
+    return paths
+
+
+def path_is_test(path, test_paths):
+    return any(
+        path.startswith(prefix) if prefix.endswith("/") else path == prefix
+        for prefix in test_paths
+    )
+
+
+def conflict_index(workdir):
+    raw = git(workdir, "ls-files", "-u", "-z").stdout
+    entries = {}
+    for item in raw.split("\0"):
+        if not item:
+            continue
+        metadata, separator, path = item.partition("\t")
+        fields = metadata.split()
+        if (
+            not separator
+            or len(fields) != 3
+            or fields[2] not in {"1", "2", "3"}
+            or not re.fullmatch(r"[0-7]{6}", fields[0])
+            or not valid_oid(fields[1])
+            or not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._/@+-]*", path)
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+        ):
+            raise Refusal("dependency conflict index is unsafe")
+        stage = int(fields[2])
+        if stage in entries.setdefault(path, {}):
+            raise Refusal("dependency conflict index is ambiguous")
+        entries[path][stage] = {
+            "blob": fields[1],
+            "mode": fields[0],
+        }
+    unresolved = [
+        path for path in git(
+            workdir, "diff", "--name-only", "--diff-filter=U", "-z",
+        ).stdout.split("\0") if path
+    ]
+    if (
+        not unresolved
+        or unresolved != sorted(unresolved)
+        or len(unresolved) != len(set(unresolved))
+        or set(unresolved) != set(entries)
+    ):
+        raise Refusal("dependency conflict index is ambiguous")
+    conflicts = []
+    for path in unresolved:
+        stages = entries[path]
+        if set(stages) != {1, 2, 3} or any(
+            stages[stage]["mode"] != "100644" for stage in (1, 2, 3)
+        ):
+            raise Refusal("dependency conflict is not a regular both-modified file")
+        conflicts.append({
+            "path": path,
+            "base_blob": stages[1]["blob"],
+            "base_mode": stages[1]["mode"],
+            "ticket_blob": stages[2]["blob"],
+            "ticket_mode": stages[2]["mode"],
+            "protected_blob": stages[3]["blob"],
+            "protected_mode": stages[3]["mode"],
+        })
+    return conflicts
+
+
+def dependency_refresh_generation(receipt_path, ticket):
+    if not os.path.lexists(receipt_path):
+        return 1
+    if not safe_optional_attestation(receipt_path):
+        raise Refusal("dependency refresh receipt is unsafe")
+    try:
+        previous = json.loads(
+            receipt_path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise Refusal("dependency refresh receipt is malformed")
+    previous_generation = previous.get("generation")
+    keys = (
+        DEPENDENCY_REFRESH_KEYS
+        if previous.get("schema")
+        == "nysa.software-factory.dependency-refresh/v1"
+        else DEPENDENCY_CONFLICT_REFRESH_KEYS
+        if previous.get("schema")
+        == "nysa.software-factory.dependency-refresh/v2"
+        else set()
+    )
+    if (
+        set(previous) != keys
+        or previous.get("ticket") != ticket
+        or isinstance(previous_generation, bool)
+        or not isinstance(previous_generation, int)
+        or previous_generation < 1
+    ):
+        raise Refusal("dependency refresh receipt is malformed")
+    return previous_generation + 1
+
 
 def dependency_refresh(args, product, workdir, prefix, remote):
     stage = os.environ.get("FACTORY_TRANSITION_STAGE", "")
@@ -1628,39 +1773,160 @@ def dependency_refresh(args, product, workdir, prefix, remote):
         workdir, "rev-parse", f"{old_head}:{route_relative}"
     ).stdout.strip()
     receipt_path = attestation_dir / "dependency-refresh.json"
-    generation = 1
-    if os.path.lexists(receipt_path):
-        if not safe_optional_attestation(receipt_path):
-            raise Refusal("dependency refresh receipt is unsafe")
-        try:
-            previous = json.loads(
-                receipt_path.read_text(encoding="utf-8"),
-                object_pairs_hook=unique_json_object,
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-            raise Refusal("dependency refresh receipt is malformed")
-        previous_generation = previous.get("generation")
-        if (
-            set(previous) != DEPENDENCY_REFRESH_KEYS
-            or previous.get("schema")
-            != "nysa.software-factory.dependency-refresh/v1"
-            or previous.get("ticket") != args.ticket
-            or isinstance(previous_generation, bool)
-            or not isinstance(previous_generation, int)
-            or previous_generation < 1
-        ):
-            raise Refusal("dependency refresh receipt is malformed")
-        generation = previous_generation + 1
+    generation = dependency_refresh_generation(receipt_path, args.ticket)
     merged = git(
         workdir, "-c", "user.name=Software Factory", "-c",
         "user.email=factory@local", "merge", "--no-ff", "--no-edit",
         expected_base, check=False,
     )
     if merged.returncode:
-        git(workdir, "merge", "--abort", check=False)
-        if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
-            raise Refusal("dependency conflict could not restore the ticket head")
-        raise Refusal("protected dependency base conflicts with the ticket branch")
+        try:
+            conflicts = conflict_index(workdir)
+            test_paths = safe_project_test_paths(workdir, expected_base)
+            if (
+                state.lower() != "building"
+                or not all(
+                    path_is_test(item["path"], test_paths)
+                    for item in conflicts
+                )
+            ):
+                raise Refusal(
+                    "protected dependency conflict is not test-author-owned"
+                )
+            for item in conflicts:
+                git(workdir, "checkout", "--theirs", "--", item["path"])
+                git(workdir, "add", "--", item["path"])
+            if git(workdir, "ls-files", "-u", "-z").stdout:
+                raise Refusal("dependency conflict resolution left an unmerged path")
+            observed = git(
+                workdir, "ls-remote", "--heads", "--", remote,
+                "refs/heads/main",
+            ).stdout.split()
+            if observed != [expected_base, "refs/heads/main"]:
+                git(workdir, "merge", "--abort", check=False)
+                if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
+                    raise Refusal(
+                        "dependency conflict could not restore the ticket head"
+                    )
+                return {
+                    "action": "dependency-wait",
+                    "expected_protected_head": expected_base,
+                    "observed_protected_head": observed[0] if observed else None,
+                }
+            git(
+                workdir, "-c", "user.name=Software Factory", "-c",
+                "user.email=factory@local", "commit", "--no-edit",
+            )
+            merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+            parents = git(
+                workdir, "rev-list", "--parents", "-n", "1", merge_head
+            ).stdout.split()
+            if parents != [merge_head, old_head, expected_base]:
+                raise Refusal("dependency conflict resolution created an invalid merge")
+            for item in conflicts:
+                resolved_blob = git(
+                    workdir, "rev-parse", f"{merge_head}:{item['path']}"
+                ).stdout.strip()
+                if resolved_blob != item["protected_blob"]:
+                    raise Refusal(
+                        "dependency conflict did not retain the protected baseline"
+                    )
+            if (
+                git(
+                    workdir, "rev-parse",
+                    f"{merge_head}:factory/tickets/{args.ticket}.md",
+                ).stdout.strip() != ticket_blob
+                or git(
+                    workdir, "rev-parse", f"{merge_head}:{route_relative}"
+                ).stdout.strip() != route_blob
+                or any(os.path.lexists(path) for path in (bundle, approval))
+            ):
+                raise Refusal(
+                    "dependency conflict resolution changed ticket control evidence"
+                )
+            transition = os.environ.get(
+                "FACTORY_TRANSITION_RECEIPT_SHA256", ""
+            )
+            factory_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
+            contract_version = os.environ.get(
+                "FACTORY_CONTRACT_VERSION", ""
+            )
+            if (
+                not re.fullmatch(r"[0-9a-f]{64}", transition)
+                or not valid_oid(factory_sha)
+                or contract_version != "1.8.0"
+            ):
+                raise Refusal(
+                    "trusted dependency conflict evidence is unavailable"
+                )
+            project_blob = git(
+                workdir, "rev-parse",
+                f"{expected_base}:factory/PROJECT.env",
+            ).stdout.strip()
+            protected_delta = git(
+                workdir, "diff", "--name-status", "-z",
+                prior_base, expected_base,
+            ).stdout.encode()
+            receipt = {
+                "schema": "nysa.software-factory.dependency-refresh/v2",
+                "ticket": args.ticket,
+                "generation": generation,
+                "dependencies": dependencies,
+                "dependency_terminals": terminals,
+                "old_head": old_head,
+                "old_head_tree": git(
+                    workdir, "rev-parse", f"{old_head}^{{tree}}",
+                ).stdout.strip(),
+                "prior_base_head": prior_base,
+                "protected_head": expected_base,
+                "protected_head_tree": git(
+                    workdir, "rev-parse", f"{expected_base}^{{tree}}",
+                ).stdout.strip(),
+                "protected_project_blob": project_blob,
+                "protected_delta_sha256": hashlib.sha256(
+                    protected_delta
+                ).hexdigest(),
+                "test_paths": test_paths,
+                "test_paths_sha256": hashlib.sha256(json.dumps(
+                    test_paths, ensure_ascii=True, separators=(",", ":"),
+                ).encode()).hexdigest(),
+                "conflicts": conflicts,
+                "repair_owner": "test-author",
+                "resolution": "protected-baseline-before-test-author",
+                "merge_head": merge_head,
+                "merge_head_tree": git(
+                    workdir, "rev-parse", f"{merge_head}^{{tree}}",
+                ).stdout.strip(),
+                "preserved_state": state,
+                "transition_receipt_sha256": transition,
+                "factory_sha": factory_sha,
+                "contract_version": contract_version,
+                "refreshed_at": now(),
+            }
+            write_json(receipt_path, receipt)
+            result_head = commit_push(
+                product, workdir, remote, branch,
+                f"{args.ticket}: bind protected test conflict", [receipt_path],
+            )
+            return {
+                "action": "dependency-conflict-refresh",
+                "head": result_head,
+                "attestation": receipt,
+            }
+        except Refusal:
+            git(workdir, "merge", "--abort", check=False)
+            if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
+                git(workdir, "reset", "--hard", old_head, check=False)
+            if (
+                git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head
+                or git(
+                    workdir, "status", "--porcelain=v1", "-z",
+                ).stdout
+            ):
+                raise Refusal(
+                    "dependency conflict could not restore the ticket head"
+                ) from None
+            raise
     merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
     parents = git(
         workdir, "rev-list", "--parents", "-n", "1", merge_head

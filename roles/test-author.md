@@ -22,6 +22,14 @@ The reconciled Markdown ticket in Building with its acceptance criteria and froz
 - For that contract blocker, stop immediately. Commit the exact ambiguity to the ticket log with one standalone `ROLE-ESCALATE: CONTRACT-BLOCKED` line, then end your response with that same standalone line. A blocker discovered at any point supersedes normal completion; do not complete the tests after it.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
 - Commit all test and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
+- When the current branch contains an authenticated
+  `dependency-refresh/v2` receipt and the state machine assigns
+  `FIX test-author`, protected main is already the deliberate baseline for
+  every listed conflict. Reconcile the ticket's frozen contract against that
+  baseline using the receipt's exact old-head/test-blob evidence. Change only
+  the listed protected test paths and the ticket log; do not merge, rebase,
+  edit the receipt, restore an entire stale file blindly, or change
+  implementation/configuration files.
 
 ## Worked example (regression check)
 
@@ -29,6 +37,7 @@ For the receipt-row example: `test("approving t-001 creates a receipt row", ...)
 
 ## Changelog
 
+- v4: added exact-owner recovery for authenticated protected-base test conflicts.
 - v3: made the exact contract-blocker marker durable in the ticket log and terminal response.
 - v2: clarified the test-author's Building stage and reconciled field ownership.
 - v1: initial.

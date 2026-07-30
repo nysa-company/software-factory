@@ -2151,6 +2151,130 @@ class FactoryControllerTest(unittest.TestCase):
             )
         self.assertEqual(migrations, ["passport"])
 
+    def test_dependency_test_conflict_routes_without_generic_block(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        (cell / "factory/tickets").mkdir()
+        (cell / "factory/tickets/T-110.md").write_text(
+            "# T-110\n\nState: Building\nDepends-On: T-094\n",
+            encoding="utf-8",
+        )
+        old = "d" * 40
+        protected = "e" * 40
+        refreshed = "f" * 40
+        receipt = "b" * 64
+        stage = (
+            "REFUSE dependency refresh required; "
+            f"dependencies=T-094; protected-main={protected}"
+        )
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        CONTROL.write(self.state / "T-110.json", {
+            "head_sha": old,
+            "receipt_sha256": receipt,
+        })
+        migrations = []
+        events = []
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.withdraw_publication = lambda _claim: None
+        controller.migrate_passport = lambda *_args: migrations.append("passport")
+        controller.event = lambda name, *_args, **kwargs: events.append(
+            (name, kwargs)
+        )
+
+        def json_call(*arguments, **_kwargs):
+            if arguments[0] == "state-machine":
+                return {"receipt": receipt, "role": None, "stage": stage}
+            if arguments[0] == "ticket-attest":
+                return {
+                    "action": "dependency-conflict-refresh",
+                    "attestation": {
+                        "conflicts": [{"path": "tests/conflict.test.ts"}],
+                        "old_head": old,
+                        "protected_head": protected,
+                        "repair_owner": "test-author",
+                    },
+                    "head": refreshed,
+                }
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+
+        def run(command, **_kwargs):
+            if "rev-parse" in command:
+                return CONTROL.subprocess.CompletedProcess(
+                    command, 0, old + "\n", "",
+                )
+            if "merge-base" in command:
+                return CONTROL.subprocess.CompletedProcess(command, 0, "", "")
+            raise AssertionError(command)
+
+        with patch.object(CONTROL.subprocess, "run", side_effect=run):
+            self.assertEqual(
+                controller.reconcile_ticket(claim)["status"], "progressed"
+            )
+        self.assertEqual(migrations, ["passport"])
+        self.assertEqual(events[-1][0], "dependency_conflict_routed")
+        self.assertEqual(events[-1][1]["repair_owner"], "test-author")
+        self.assertEqual(
+            events[-1][1]["conflict_paths"], ["tests/conflict.test.ts"]
+        )
+        self.assertEqual(claim["status"], "claimed")
+
+    def test_merged_publication_closes_before_dependency_refresh(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "b" * 64,
+            "receipt": "c" * 64,
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        calls = []
+        controller.ensure_lease = lambda *_args: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.ticket_merged = lambda _claim: True
+        controller.release_publication = lambda _claim: calls.append(
+            "release"
+        )
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.closeout = lambda _claim: calls.append("closeout") or True
+        controller.refresh_dependency_tracking = lambda _claim: (
+            (_ for _ in ()).throw(
+                AssertionError("merged ticket refreshed dependencies")
+            )
+        )
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(
+                AssertionError("merged ticket entered state machine")
+            )
+        )
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "progressed", "ticket": "T-110"},
+        )
+        self.assertEqual(calls, ["release", "passport", "closeout"])
+
     def test_run_wrapper_renews_lease_before_provider_queue(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
         required = source.index(
