@@ -1835,3 +1835,15 @@ launcher already supplied the lock. Every development lane now creates a
 mode-0600 configuration lock inside its authenticated runtime root and passes
 that exact path to lane-contained provider work. Admission and configuration
 changes remain serialized without weakening policy-digest validation.
+
+## 2026-07-29 — Decision 144: Certification consumes concurrency JSON on stdin
+
+Category: Incident
+
+The first live Contract 1.8 certification at capacity four proved that its
+provider check returned valid ready JSON, but the evidence normalizer launched
+Python with a here-document that replaced the check-output pipe. The parser
+therefore read EOF and certification failed before product tests. The
+normalizer now runs as an inline Python command whose standard input remains
+the provider check output. It still validates `status=ready` and binds the
+exact Factory SHA and tree before any receipt can be issued.

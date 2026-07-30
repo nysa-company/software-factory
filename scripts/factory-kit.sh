@@ -1200,7 +1200,7 @@ PY
     --capacity "$capacity" check)" ||
     die "Contract 1.8 multi-ticket provider concurrency is not ready"
   PROVIDER_CONCURRENCY_EVIDENCE="$(printf '%s' "$output" |
-    python3 - "$sha" "$tree" <<'PY'
+    python3 -c '
 import json, sys
 sha, tree = sys.argv[1:]
 value = json.load(sys.stdin)
@@ -1213,7 +1213,7 @@ value.update({
     "schema": "nysa.software-factory.provider-concurrency-evidence/v1",
 })
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
-PY
+' "$sha" "$tree"
   )" || die "provider concurrency evidence is invalid"
 }
 
