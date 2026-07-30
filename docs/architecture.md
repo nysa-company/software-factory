@@ -381,6 +381,11 @@ precedes the visible coarse state, ordinary deterministic stages may catch up
 under that record without adding a general backward state transition. More
 than one successful owner run fails closed. Without the directive, the
 original blocked role remains the only valid owner.
+An unresolved dependency may temporarily replace the visible transition
+receipt without discarding that repair record. After the dependency and any
+Factory upgrade resolve, the named owner reopens only when the record's signed
+passport is the unique start of a contiguous authenticated v2 migration suffix
+and the original failed charge remains unique and unsuccessful.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket

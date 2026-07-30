@@ -475,6 +475,105 @@ class StateMachineTest(unittest.TestCase):
         with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
             self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
 
+    def test_contract_repair_survives_dependency_wait_and_release_migration(
+        self,
+    ) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        old_factory = "b" * 40
+        old_passport = "c" * 64
+        blocked_receipt = "d" * 64
+        old_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "\nDepends-On: T-092\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "wait for dependency", cwd=self.product)
+        current_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        body = {
+            "branch": "ticket/T-110",
+            "charge_records": [{
+                "role": "builder",
+                "transition_receipt_sha256": blocked_receipt,
+            }],
+            "completed_role_evidence": [],
+            "current_stage": "AWAIT_DEPENDENCY T-092",
+            "factory_release_history": [
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": old_factory,
+                },
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": self.args.factory_sha,
+                },
+            ],
+            "factory_sha": self.args.factory_sha,
+            "head_sha": current_head,
+            "migration_history": [{
+                "from_factory_sha": old_factory,
+                "from_head_sha": old_head,
+                "from_passport_file_sha256": "f" * 64,
+                "from_passport_sha256": old_passport,
+                "from_protected_base_sha": "1" * 40,
+                "from_route_plan_sha256": "2" * 64,
+                "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.args.factory_sha,
+                "to_head_sha": current_head,
+                "to_protected_base_sha": "3" * 40,
+                "to_route_plan_sha256": "4" * 64,
+            }],
+            "protected_base_sha": "3" * 40,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        record = STATE.signed_repair({
+            "blocked_receipt": blocked_receipt,
+            "blocked_role": "builder",
+            "branch": "ticket/T-110",
+            "factory_sha": old_factory,
+            "head_sha": old_head,
+            "head_tree": run(
+                "git", "rev-parse", f"{old_head}^{{tree}}", cwd=self.product
+            ),
+            "passport_sha256": old_passport,
+            "repair_role": "test-author",
+            "schema": STATE.REPAIR_SCHEMA,
+            "ticket": "T-110",
+        }, secret)
+        STATE.write_atomic(STATE.repair_path(self.args), record)
+        self.assertEqual(
+            STATE.contract_repair_stage(self.args), ("FIX test-author", True)
+        )
+
+        body["migration_history"][0]["from_passport_sha256"] = "e" * 64
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract repair record is invalid"
+        ):
+            STATE.contract_repair_stage(self.args)
+
     def test_runner_keeps_host_project_for_pre_go_receipt_check(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
         start = source.index("sequencer_allows_role() {")

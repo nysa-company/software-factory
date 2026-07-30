@@ -29,6 +29,7 @@ SCHEMA = "nysa.software-factory.state-machine/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.transition-receipt/v1"
 REPAIR_SCHEMA = "nysa.software-factory.contract-repair/v1"
 PASSPORT_SCHEMA = "nysa.software-factory.ticket-passport/v1"
+PASSPORT_MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -591,6 +592,119 @@ def operator_resume_role(
     return repair_role
 
 
+def migrated_contract_repair(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    record: dict[str, Any],
+) -> bool:
+    if record.get("factory_sha") == args.factory_sha:
+        return True
+    history = passport.get("factory_release_history")
+    migrations = passport.get("migration_history")
+    charges = passport.get("charge_records")
+    completed = passport.get("completed_role_evidence")
+    record_factory = record.get("factory_sha", "")
+    record_head = record.get("head_sha", "")
+    record_passport = record.get("passport_sha256", "")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    if (
+        not isinstance(history, list)
+        or not isinstance(migrations, list)
+        or not isinstance(charges, list)
+        or not isinstance(completed, list)
+        or not isinstance(record_passport, str)
+    ):
+        return False
+    releases = [
+        item.get("factory_sha")
+        for item in history
+        if isinstance(item, dict)
+        and item.get("contract_version") == args.contract_version
+        and isinstance(item.get("factory_sha"), str)
+        and SHA.fullmatch(item["factory_sha"])
+    ]
+    if (
+        len(releases) != len(history)
+        or len(releases) != len(set(releases))
+        or record_factory not in releases
+        or args.factory_sha not in releases
+        or releases.index(record_factory) >= releases.index(args.factory_sha)
+        or not isinstance(migrations, list)
+        or not isinstance(charges, list)
+        or not isinstance(completed, list)
+        or not DIGEST.fullmatch(record_passport)
+        or passport.get("ticket") != args.ticket
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+    ):
+        return False
+    starts = []
+    for index, edge in enumerate(migrations):
+        if (
+            not isinstance(edge, dict)
+            or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+            or edge.get("from_factory_sha") != record_factory
+            or edge.get("from_head_sha") != record_head
+            or edge.get("from_passport_sha256") != record_passport
+        ):
+            continue
+        suffix = migrations[index:]
+        if (
+            all(
+                isinstance(item, dict)
+                and item.get("schema") == PASSPORT_MIGRATION_SCHEMA
+                and all(
+                    isinstance(item.get(name), str)
+                    and SHA.fullmatch(item[name])
+                    for name in (
+                        "from_factory_sha", "from_head_sha",
+                        "from_protected_base_sha", "to_factory_sha",
+                        "to_head_sha", "to_protected_base_sha",
+                    )
+                )
+                and all(
+                    isinstance(item.get(name), str)
+                    and DIGEST.fullmatch(item[name])
+                    for name in (
+                        "from_passport_file_sha256",
+                        "from_passport_sha256", "from_route_plan_sha256",
+                        "to_route_plan_sha256",
+                    )
+                )
+                for item in suffix
+            )
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and suffix[-1]["to_factory_sha"] == args.factory_sha
+            and suffix[-1]["to_head_sha"] == current_head
+            and suffix[-1]["to_protected_base_sha"]
+            == passport.get("protected_base_sha")
+        ):
+            starts.append(index)
+    blocked = [
+        item for item in charges
+        if isinstance(item, dict)
+        and item.get("transition_receipt_sha256")
+        == record.get("blocked_receipt")
+        and item.get("role") == record.get("blocked_role")
+    ]
+    return (
+        len(starts) == 1
+        and len(blocked) == 1
+        and not any(
+            isinstance(item, dict)
+            and item.get("transition_receipt_sha256")
+            == record.get("blocked_receipt")
+            for item in completed
+        )
+    )
+
+
 def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     text = (
         args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
@@ -610,7 +724,7 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     if any((
         record.get("schema") != REPAIR_SCHEMA,
         record.get("ticket") != args.ticket,
-        record.get("factory_sha") != args.factory_sha,
+        not migrated_contract_repair(args, passport, record),
         record.get("branch") != passport.get("branch"),
         owner not in {"planner", "spec-linter", "test-author", "builder"},
         not SHA.fullmatch(head),
