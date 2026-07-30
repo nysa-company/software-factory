@@ -584,14 +584,15 @@ class StateMachineTest(unittest.TestCase):
         passports.mkdir(mode=0o700)
         head = run("git", "rev-parse", "HEAD", cwd=self.product)
         old_factory = "b" * 40
+        repair_factory = "c" * 40
         blocked_receipt = "d" * 64
         parent_file = "f" * 64
         receipt_body = {
             "branch": "ticket/T-110",
             "contract_version": self.args.contract_version,
-            "factory_sha": self.args.factory_sha,
+            "factory_sha": repair_factory,
             "head_sha": head,
-            "passport_sha256": parent_file,
+            "passport_sha256": "e" * 64,
             "project": self.args.project,
             "role": "test-author",
             "schema": STATE.RECEIPT_SCHEMA,
@@ -611,14 +612,14 @@ class StateMachineTest(unittest.TestCase):
         manifest = (
             "run_id=repair\nphase=completed\naccounting_state=completed\n"
             "ticket=T-110\nrole=test-author\nexit_status=0\nrole_exit=ok\n"
-            f"kit_sha={self.args.factory_sha}\n"
+            f"kit_sha={repair_factory}\n"
             f"role_head_before={head}\n"
             f"transition_receipt_sha256={receipt_digest}\n"
         ).encode()
         (self.product / "factory/runs/repair.meta").write_bytes(manifest)
         manifest_digest = hashlib.sha256(manifest).hexdigest()
         completed = {
-            "factory_sha": self.args.factory_sha,
+            "factory_sha": repair_factory,
             "head_before": head,
             "manifest_sha256": manifest_digest,
             "role": "test-author",
@@ -643,12 +644,32 @@ class StateMachineTest(unittest.TestCase):
                 },
                 {
                     "contract_version": self.args.contract_version,
+                    "factory_sha": repair_factory,
+                },
+                {
+                    "contract_version": self.args.contract_version,
                     "factory_sha": self.args.factory_sha,
                 },
             ],
             "factory_sha": self.args.factory_sha,
             "head_sha": head,
+            "migration_history": [{
+                "from_factory_sha": repair_factory,
+                "from_head_sha": head,
+                "from_passport_file_sha256": parent_file,
+                "from_passport_sha256": "9" * 64,
+                "from_protected_base_sha": "1" * 40,
+                "from_route_plan_sha256": "2" * 64,
+                "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.args.factory_sha,
+                "to_head_sha": head,
+                "to_protected_base_sha": "3" * 40,
+                "to_route_plan_sha256": "4" * 64,
+            }],
+            "parent_digest": "9" * 64,
             "parent_file_sha256": parent_file,
+            "protected_base_sha": "3" * 40,
+            "route_plan_sha256": "4" * 64,
             "schema": STATE.PASSPORT_SCHEMA,
             "ticket": "T-110",
             "transition_receipt_sha256": receipt_digest,
@@ -677,6 +698,21 @@ class StateMachineTest(unittest.TestCase):
         }, secret)
         active = STATE.repair_path(self.args)
         STATE.write_atomic(active, record)
+
+        tampered_body = {**body, "parent_digest": "8" * 64}
+        tampered = dict(tampered_body)
+        tampered["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(tampered_body), hashlib.sha256
+        ).hexdigest()
+        tampered["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(tampered)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", tampered)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract repair record is invalid"
+        ):
+            STATE.contract_repair_stage(self.args)
+        STATE.write_atomic(passports / "T-110.json", passport)
 
         with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
             self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))

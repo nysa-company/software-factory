@@ -2771,7 +2771,7 @@ a provider call or charge.
 
 ## FI-20260730-113 — A successful repair left its checkpoint active
 
-Status: Implemented; protected CI and live continuation pending
+Status: Successor amendment implemented; protected CI and live continuation pending
 Priority: P0
 Area: passport lineage and targeted-repair completion
 Owner: Factory
@@ -2801,12 +2801,21 @@ After exactly one successful repair-role manifest, archive the signed repair
 record so it cannot affect later stages. For the already-exported legacy case,
 allow retirement only when the consumed `FIX <owner>` receipt binds the prior
 passport file and the current authenticated passport binds the same unique
-manifest, charge, head, role, and receipt. Missing success, duplicate success,
-tampered lineage, unknown paths, or any other missing binding still refuses.
+manifest, charge, head, role, and receipt. If the completed export is then
+migrated before the next transition, accept only its contiguous authenticated
+v2 migration suffix: the suffix must begin at the repair Factory and a
+descendant of the repair head, end at the exact current Factory, head,
+protected base, route plan, and passport parent, and contain no legacy lineage
+authorization. Missing success, duplicate success, tampered lineage, broken
+suffixes, unknown paths, or any other missing binding still refuses.
 Validation: focused passport and state-machine regressions prove normal
 migration history persists, a legacy authorization remains one-use, the exact
-lost-history terminal proof retires one repair record, repeat resolution no
-longer sees it, and malformed or duplicated evidence remains fail closed.
+lost-history terminal proof and its one-edge v2 migration successor each retire
+one repair record, repeat resolution no longer sees it, and malformed or
+duplicated evidence remains fail closed. A disposable copy of the real T-094
+passport, repair record, 425 run manifests, and route-migrated head
+`7f9314bed1e0a7bea1ac079a8864655ea9a977e1` resolved to Builder and archived
+the active record without replaying Test-author.
 
 ## Maintenance rule
 
