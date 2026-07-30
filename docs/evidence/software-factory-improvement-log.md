@@ -2416,6 +2416,42 @@ live long-running process, bounded temporary-file size, unchanged
 cancellation/process-group drainage, conservative accounting, and no plaintext
 credential regression.
 
+## FI-20260729-104 — Strict dependency admission stranded legacy merged work
+
+Status: Implemented; protected CI and Nysa activation proof pending
+Priority: P0
+Area: deterministic readiness and release migration
+Owner: Factory
+First seen: 2026-07-29 pre-promotion audit of Nysa T-093/T-094/T-100
+Impact: the repaired pre-provider gate correctly rejected T-094 on T-092 and
+would later reject T-093 on T-040 forever. Both prerequisites have application
+work and successful protected checks on main, but their old Backlog ticket
+records predate authenticated terminal receipts. Replaying either ticket would
+waste roles and charges; accepting any matching commit or `factory/**` change
+would weaken the gate.
+Evidence: Nysa PR #181 merged T-040 at
+`a0e0a07a693667be614afe7560eefa2857d3f3a3`; PR #267 merged T-092 at
+`8984cd7bb5af776cfe0133d08b37e92f979a9fe5`. Protected main still records both
+tickets as Backlog and contains no normal, backfill, legacy-closeout, or
+protected-merge-reconciliation terminal receipt.
+Root cause: Contract 1.8 made authoritative terminal truth the only dependency
+predicate without a bounded migration shape for application work merged before
+that protocol.
+Smallest change: add a dependency-only fulfillment batch. One fresh manual
+operator authorization and atomic protected commit bind the repository,
+Backlog ticket blobs, exact PR heads/merge commits, required successful check
+identities, protected basis, and target Factory SHA while installing that SHA.
+The batch does not project Done. Partial or malformed terminal evidence,
+unknown paths, mutation/reintroduction, auto-merge, bypass, wrong basis, failed
+checks, or missing receipts fail closed.
+Validation: the focused dependency suite proves exact adoption, no Done
+projection, exact plan-hash application, immutable-history refusal, and
+terminal-evidence precedence. Focused state-machine, dispatch-plan, and
+ticket-attest suites prove the shared predicate blocks admission and preserves
+the provider-free dependency-refresh path. Protected GitHub CI owns the full
+registry; the exact T-040/T-092 Nysa batch remains gated on the successor
+Factory SHA and separate Nysa activation authorization.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

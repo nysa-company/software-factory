@@ -24,7 +24,11 @@ from effective_ticket import (  # noqa: E402
     operator_fields,
     ticket_branch_prefix,
 )
-from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
+from legacy_closeout import (  # noqa: E402
+    ValidationError,
+    protected_dependency,
+    protected_terminal,
+)
 
 
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
@@ -414,7 +418,7 @@ def candidates(
             unresolved = False
             for dependency in ticket_dependencies:
                 try:
-                    protected_terminal(factory.parent, dependency)
+                    protected_dependency(factory.parent, dependency)
                 except ValidationError:
                     unresolved = True
                     break

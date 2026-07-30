@@ -322,6 +322,17 @@ charge, publication, and merge evidence keeps its original Factory SHA inside
 each passport's authenticated release history. Ticket totals use only
 currently authenticated ticket-cap overrides, while the cohort remains within
 the fixed qualification budget.
+Dependency admission accepts ordinary protected terminal truth. A product
+upgrading from pre-Contract-1.8 history may instead adopt an already-merged
+Backlog dependency through one atomic dependency-fulfillment migration. The
+operator-approved batch binds the exact protected basis, product repository,
+merged PR heads and merge commits, required successful check identities,
+source ticket blobs, and target Factory SHA. It installs that SHA in the same
+protected commit without projecting the legacy ticket to Done. Missing,
+partial, modified, auto-merged, bypassed, non-Backlog, or ambiguous evidence
+remains unresolved; any partial terminal chain fails before this compatibility
+path is considered. Runtime dependency checks use only the immutable receipt
+after its protected introduction and make no GitHub call.
 The sealed qualification launcher binds its owner-only qualification root as
 the release environment for isolated subscription runtimes. That root carries
 the same trusted marker used by disposable development environments; provider

@@ -121,7 +121,7 @@ class StateMachineTest(unittest.TestCase):
         with (
             mock.patch.object(
                 STATE,
-                "protected_terminal",
+                "protected_dependency",
                 side_effect=STATE.ValidationError("not merged"),
             ),
             mock.patch.object(STATE, "contract_repair_stage", return_value=(None, False)),
@@ -154,7 +154,7 @@ class StateMachineTest(unittest.TestCase):
         run("git", "add", str(ticket), cwd=self.product)
         run("git", "commit", "-qm", "wait for dependency", cwd=self.product)
         with (
-            mock.patch.object(STATE, "protected_terminal", return_value={}),
+            mock.patch.object(STATE, "protected_dependency", return_value={}),
             mock.patch.object(
                 STATE, "contract_repair_stage", return_value=(None, False)
             ),

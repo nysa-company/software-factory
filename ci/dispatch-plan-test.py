@@ -229,7 +229,7 @@ class DispatchPlanTest(unittest.TestCase):
         ticket.write_text(ticket.read_text() + "Depends-On: T-300\n")
         with mock.patch.object(
             DISPATCH,
-            "protected_terminal",
+            "protected_dependency",
             side_effect=DISPATCH.ValidationError("not terminal"),
         ):
             selected = DISPATCH.candidates(

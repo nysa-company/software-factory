@@ -205,6 +205,12 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
       doctor, cover Cursor, Claude Code, and Codex at ticket capacity, and use
       distinct attempt-local homes; older and single-ticket products retain the
       product-level serialized provider lock
+- [ ] Every declared dependency has normal protected terminal evidence. A
+      pre-Contract-1.8 Backlog dependency whose application PR already merged
+      uses only an exact `scripts/dependency-fulfillment.py plan` preview and
+      matching `apply --approve-hash`; its manual, no-bypass control PR
+      atomically installs the target `KIT_PIN` and immutable fulfillment batch
+      without marking the legacy ticket Done
 - [ ] If a machine cap is configured, its global ledger is a regular non-symlink file in a real directory and a mutation drill fails closed without deleting ledger history
 - [ ] Activation/reconcile interruption and fail-closed kit rollback drilled; `MAINTENANCE` remains after rollback
 - [ ] Measured control-plane outage is within 5 minutes and full rollback RTO is within 30 minutes, or the factory remains in maintenance until the gap is resolved

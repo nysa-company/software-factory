@@ -20,7 +20,7 @@ import time
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
+from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 
 
@@ -361,7 +361,7 @@ def unresolved_dependencies(
     unresolved = []
     for dependency in dependencies:
         try:
-            protected_terminal(args.factory_root, dependency)
+            protected_dependency(args.factory_root, dependency)
         except ValidationError:
             unresolved.append(dependency)
     return tuple(unresolved)

@@ -965,7 +965,7 @@ else:
         with (
             patch.dict(os.environ, self.env, clear=True),
             patch.object(
-                TICKET_ATTEST, "protected_terminal",
+                TICKET_ATTEST, "protected_dependency",
                 return_value={"basis": "normal", "ticket": "T-094"},
             ),
             patch.object(

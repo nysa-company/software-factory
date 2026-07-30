@@ -36,6 +36,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 runs deterministic provider-free preflight once on the Planner
   receipt after entering Planning. Later roles resume from authenticated
   evidence without repeating kickoff preflight.
+- Contract 1.8 resolves every dependency before paid admission. A legacy
+  Backlog ticket whose protected application PR already merged may satisfy only
+  dependency readiness through one manual, no-bypass, atomic protected
+  fulfillment batch bound to the exact PR/check/basis/source-ticket evidence
+  and target Factory SHA. It is not terminal truth and never marks the ticket
+  Done; malformed terminal evidence cannot fall through to this path.
 - During Contract 1.8 qualification, the first terminal failed Cursor attempt
   retains the ticket claim, converts an initial v1 route plan into a
   same-release v2 journal when needed, and appends the existing same-family
@@ -1761,3 +1767,16 @@ private home/config/tmp root plus authentication copy. Doctor, certification,
 activation, and role pre-admission refuse missing or drifted state. Legacy
 serialization remains only for older contracts, explicit capacity one, and
 non-activated legacy routes.
+
+## 2026-07-29 — Decision 138: Legacy merged dependencies need explicit fulfillment
+
+Category: System change
+
+Strict pre-provider dependency gating exposed Nysa T-040 and T-092: their
+application PRs are on protected main, but their pre-Contract-1.8 Backlog
+tickets have no terminal receipt. A one-time dependency-only migration now
+binds their exact merged PRs, successful required checks, protected basis,
+source ticket blobs, operator authorization, and target Factory release in the
+same manual control commit. The receipt satisfies only dependency readiness;
+terminal projection, broad inference from Git history, and fallback around
+partial terminal evidence remain forbidden.

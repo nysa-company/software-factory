@@ -22,7 +22,7 @@ from refresh_semantics import (  # noqa: E402
     preserved_control_paths,
     retained_control_paths,
 )
-from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
+from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
 
 
 class Refusal(ValueError):
@@ -1603,7 +1603,7 @@ def dependency_refresh(args, product, workdir, prefix, remote):
     terminals = []
     for dependency in dependencies:
         try:
-            terminal = protected_terminal(product, dependency, expected_base)
+            terminal = protected_dependency(product, dependency, expected_base)
         except ValidationError as error:
             raise Refusal(
                 f"dependency terminal truth changed for {dependency}: {error}"
