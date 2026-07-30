@@ -2480,7 +2480,7 @@ closed.
 
 ## FI-20260730-106 — Release migration stranded a successful terminal role
 
-Status: Implemented; protected CI and live T-093 recovery pending
+Status: Repairing after live two-release canary failure
 Priority: P0
 Area: portable ticket passports
 Owner: Factory
@@ -2491,21 +2491,34 @@ terminal export stopped before adding that role to the passport. Replaying
 Test-author would waste a provider call and violate Contract 1.8 evidence
 reuse.
 Evidence: the consumed receipt bound passport file
-`999f688844c45fce00be2ba098f70ef0cf72eb04ecf835a84b759b498b56a5be`;
-the successor passport records that exact value as `parent_file_sha256` and
-its latest signed migration links the receipt's Factory/head to the current
-Factory/head.
+`999f688844c45fce00be2ba098f70ef0cf72eb04ecf835a84b759b498b56a5be`.
+The first repair accepted its immediate authenticated successor, but the live
+canary then crossed the contiguous signed release suffix
+`77c8661... -> 51f80d3... -> 8c86539...`; the final passport no longer carried
+the original file digest as its immediate `parent_file_sha256`.
 Root cause: passport export accepted only a receipt bound to the current
 passport file. Controller recovery intentionally migrates the passport before
 retrying an unexported terminal boundary, so the receipt instead binds the
 immediate authenticated parent.
-Smallest change: accept the receipt only when it matches the current
-passport's signed `parent_file_sha256` and the latest migration exactly links
-the receipt Factory/head to the current Factory/head. Do not walk arbitrary
-ancestors or relax branch, contract, ancestry, terminal evidence, or
-authentication checks.
-Validation: the focused passport suite proves the exact cross-release terminal
-export, cumulative charge uniqueness, and completed-role preservation.
+Smallest change: every new versioned migration edge retains the raw and
+embedded digests of the authenticated passport it consumed. A multi-edge
+suffix must start with the exact passport file named by the receipt and end at
+the exact current Factory/head/base. T-093's already-written legacy edges use
+one exact protected-main bridge binding its receipt, source passport, complete
+legacy-history digest, target Factory/head/base/route, and terminal manifest,
+output, charge, role, Factory, and contract. The new signed edge records the
+authorization commit/path/blob/digest, and export rereads it from protected
+ancestry. That commit must add only the mode-`100644` record, and export
+requires protected main to equal the signed lineage endpoint; later main
+movement needs another authenticated edge. Matching terminal evidence now also
+requires the receipt's exact Factory and contract. Do not walk arbitrary
+ancestors or relax branch, ancestry, authentication, or accounting checks.
+Validation: the focused passport suite proves zero-, one-, and two-edge
+terminal export, raw-parent and broken-chain refusal, wrong-Factory terminal
+refusal, exact protected legacy bridging, authorization-tamper and reuse
+refusal, mixed-change authorization refusal, post-migration base-advance
+refusal and explicit-edge recovery, cumulative charge uniqueness, and
+completed-role preservation.
 Protected GitHub CI owns the complete regression; live T-093 recovery must add
 the existing Test-author evidence without another provider run.
 
