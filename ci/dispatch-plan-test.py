@@ -3,15 +3,18 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -261,6 +264,58 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual({item["ticket"] for item in results}, {"T-100", "T-200"})
         self.assertEqual(len({item["lease_id"] for item in results}), 2)
 
+    def test_slow_candidate_resolution_does_not_hold_launch_lock(self):
+        entered = threading.Event()
+        proceed = threading.Event()
+        output = io.StringIO()
+        errors = []
+        original = DISPATCH.candidates
+
+        def delayed(*args, **kwargs):
+            entered.set()
+            if not proceed.wait(5):
+                raise AssertionError("candidate resolution was not released")
+            return original(*args, **kwargs)
+
+        def invoke():
+            try:
+                with (
+                    mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            str(HELPER),
+                            "--factory-root",
+                            str(self.product),
+                            "--worktree-root",
+                            str(self.worktrees),
+                            "claim",
+                        ],
+                    ),
+                    mock.patch.dict(
+                        os.environ,
+                        {"FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote)},
+                    ),
+                    redirect_stdout(output),
+                ):
+                    DISPATCH.main()
+            except BaseException as error:
+                errors.append(error)
+
+        with mock.patch.object(DISPATCH, "candidates", side_effect=delayed):
+            thread = threading.Thread(target=invoke)
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            launch_lock = self.product / "factory/.launch.lock"
+            launch_lock.mkdir(mode=0o700)
+            launch_lock.rmdir()
+            proceed.set()
+            thread.join(10)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(json.loads(output.getvalue())["status"], "CLAIMED")
+
     def test_ticket_identity_survives_cell_relocation(self):
         first = self.command("claim")
         old_cell = Path(first["worktree"])
@@ -347,7 +402,9 @@ class DispatchPlanTest(unittest.TestCase):
         value = self.command("claim", expected=2)
 
         self.assertIn("control state is invalid", value["error"])
-        self.assertEqual(list(self.worktrees.iterdir()), [])
+        self.assertFalse(
+            any(path.name.startswith("cell-") for path in self.worktrees.iterdir())
+        )
 
     def test_repeated_authorized_control_recovery_preserves_lineage(self):
         self.write_contract_18_qualification()

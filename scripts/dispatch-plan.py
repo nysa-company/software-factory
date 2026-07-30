@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -755,6 +756,33 @@ def lock(path: Path) -> None:
     raise DispatchError("dispatcher lock is busy")
 
 
+def admission_lock(path: Path) -> int:
+    descriptor = os.open(
+        path,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise DispatchError("admission lock is unsafe")
+        for _ in range(100):
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return descriptor
+            except BlockingIOError:
+                time.sleep(0.1)
+        raise DispatchError("admission lock is busy")
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--factory-root", required=True, type=Path)
@@ -766,6 +794,7 @@ def main() -> None:
     args = parser.parse_args()
     launch_lock = args.factory_root / "factory" / ".launch.lock"
     lease_lock = args.factory_root / "factory" / ".dispatch-leases.lock"
+    admission_descriptor = -1
     held_launch = held_lease = False
     created_worktree: Path | None = None
     created_branch = ""
@@ -809,14 +838,10 @@ def main() -> None:
             raise DispatchError("autonomous dispatch requires bounded concurrency")
         lease_dir = factory / ".dispatch-leases"
         if args.action == "claim":
-            lock(launch_lock)
-            held_launch = True
-            lock(lease_lock)
-            held_lease = True
-            if (factory / "KILL").exists() or (factory / "MAINTENANCE").exists():
-                raise DispatchError("factory control blocks dispatch")
-            lease_dir.mkdir(mode=0o700, exist_ok=True)
-            safe_directory(lease_dir, "dispatcher lease directory")
+            safe_directory(args.worktree_root, "worktree root", owner_only=True)
+            admission_descriptor = admission_lock(
+                args.worktree_root / ".dispatch-admission.lock"
+            )
         leased, lease_ids = lease_records(lease_dir)
         if len(leased) >= maximum:
             print(canonical({
@@ -843,6 +868,25 @@ def main() -> None:
                 "status": "SHADOW",
             }))
             return
+        lock(launch_lock)
+        held_launch = True
+        lock(lease_lock)
+        held_lease = True
+        if (factory / "KILL").exists() or (factory / "MAINTENANCE").exists():
+            raise DispatchError("factory control blocks dispatch")
+        if git(product, "status", "--porcelain=v1", "-z"):
+            raise DispatchError("registered product checkout changed during selection")
+        if fresh_mapping(factory / "linear-map.json", args.max_linear_age) != mapping:
+            raise DispatchError("Linear reconciliation changed during selection")
+        lease_dir.mkdir(mode=0o700, exist_ok=True)
+        safe_directory(lease_dir, "dispatcher lease directory")
+        current_leased, current_lease_ids = lease_records(lease_dir)
+        if (
+            len(current_leased) >= maximum
+            or ticket["ticket"] in current_leased
+            or ticket["ticket"] in active_tickets(factory)
+        ):
+            raise DispatchError("dispatcher capacity changed during selection")
         destination, created, branch_created, reset_head = prepare_worktree(
             product, args.worktree_root, ticket["ticket"],
             prefix, remote, reset_authorizations.get(ticket["ticket"], ""),
@@ -852,7 +896,10 @@ def main() -> None:
         if branch_created:
             created_branch = ticket_branch_prefix(factory) + ticket["ticket"]
         lease = create_lease(
-            lease_dir, ticket["ticket"], lease_ids, args.lease_ttl
+            lease_dir,
+            ticket["ticket"],
+            lease_ids | current_lease_ids,
+            args.lease_ttl,
         )
         lease_created = True
         print(
@@ -902,6 +949,8 @@ def main() -> None:
             lease_lock.rmdir()
         if held_launch:
             launch_lock.rmdir()
+        if admission_descriptor >= 0:
+            os.close(admission_descriptor)
 
 
 if __name__ == "__main__":

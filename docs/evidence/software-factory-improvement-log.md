@@ -2554,6 +2554,43 @@ locally; protected GitHub CI owns the full regression. The successor Nysa
 cutover must reopen T-094 through authenticated release migration, consume the
 dependency-refresh receipt, and start only Test-author.
 
+## FI-20260730-108 — Admission scans starved independent ticket launches
+
+Status: Implemented; protected CI and live Nysa proof pending
+Priority: P0
+Area: deterministic controller concurrency
+Owner: Factory
+First seen: Nysa generation 33 recovery of T-093/T-094/T-100
+Impact: T-094 and T-100 independently reached valid provider-free recovery
+boundaries, but their workers reported `launch lock stuck` while no provider
+call was active. Both released their dispatcher leases without a charge or
+evidence loss, yet repeated reconciliation could not reliably reach T-094's
+preserved Test-author repair.
+Evidence: authenticated controller events
+`1785413388672074000-6d8a659094e4d814.json` and
+`1785413466610939000-3a809c50e1072026.json` record the two failures. During
+both intervals the controller also ran `dispatch-plan --claim` with
+T-093/T-094/T-100 excluded, and `factory/.launch.lock` remained present while
+that admission process resolved candidates.
+Root cause: `dispatch-plan` acquired the product launch lock before evaluating
+the Linear candidate set and protected dependency truth. Those read-only,
+potentially remote checks ran concurrently with existing ticket resolvers, so
+an empty admission scan could exhaust the same lock window required for role
+launch and matching lease release.
+Smallest change: serialize only admission wakeups with a process-scoped
+owner-only `flock` in the generation-wide worktree coordinator. Resolve
+candidates and dependencies before the product launch lock, then fail closed
+unless the registered checkout, Linear map, control markers, capacity, and
+selected ticket remain valid under the launch and dispatcher-lease locks.
+The operating-system lock releases on process death and never becomes ticket
+state.
+Validation: the exact focused regression stalls candidate resolution and
+proves an independent launch-lock acquisition before allowing the claim to
+complete. All 16 dispatch-plan tests and 37 controller tests pass. Protected
+GitHub CI owns the complete regression; live closure requires three concurrent
+Nysa resolvers to progress without another launch-lock error and T-094 to start
+only its preserved Test-author repair.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
