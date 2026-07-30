@@ -28,9 +28,7 @@ CODEX_ADAPTER = ROOT / "scripts/adapters/codex.sh"
 
 class ProductionConcurrencyTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(
-            prefix="pc.", dir="/private/tmp"
-        )
+        self.temporary = tempfile.TemporaryDirectory(prefix="pc.", dir="/tmp")
         self.root = Path(self.temporary.name).resolve()
         os.chmod(self.root, 0o700)
         self.state = self.root / "state"
