@@ -2870,6 +2870,44 @@ closure requires the successor to route T-094 to one Test-author run, then
 Builder, without replaying Planner or Spec-linter or charging an unchanged
 role.
 
+## FI-20260730-115 — Conservative accounting hid a successful repair
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: exact-stage recovery and accounting
+Owner: Factory
+First seen: Nysa generation 40 T-094 Test-author repair
+Impact: Test-author completed the authenticated dependency-conflict repair,
+committed the exact allowed test and ticket-log changes, and exported unique
+role and charge evidence. The next reconciliation nevertheless parked the
+ticket with `dependency conflict repair success is invalid`, preventing
+Builder and all declared dependents from advancing.
+Evidence: run `1785452093-97960` exited zero with `role_exit=ok`, 92
+authenticated progress events, consumed FIX receipt
+`7d8eccd5652ee0d1c6b166fed8e1cdc89cccdb130552cc9652fcfbb90d7e8b7a`,
+and committed head `6fd39e6438ac823c56f911f1a7c45b238657d6bf`. Its Cursor CLI route cannot
+report actual cost, so the immutable manifest and passport conservatively
+charged the full reservation with `accounting_state=abandoned_conservative`,
+`cost_basis=conservative_reservation`, and equal effective and reserved cost.
+Root cause: ordinary terminal, passport, publication, and contract-block
+validation already recognize that fully bound conservative charge as
+accounted. The new dependency-conflict success validator alone required the
+literal state `completed` in both the manifest and passport charge.
+Smallest repair: use the existing fail-closed accounting rule at this one
+boundary. Accept `completed`, or accept `abandoned_conservative` only when the
+manifest binds conservative-reservation cost and exact equality between
+effective and reserved cost. Require the passport charge to carry the same
+accounting state and the same immutable manifest digest. Cancellation,
+launch-void, missing cost proof, unequal reservation, and every unknown state
+remain invalid.
+Validation: the exact dependency-conflict state-machine test now exercises a
+successful conservative Cursor charge and separately rejects a forged
+`cost_basis=actual` variant. A disposable clone of the real T-094 head,
+passport, repair checkpoint, transition receipt, and run manifest crossed the
+former error boundary and retired the repair; ordinary release/lease
+requirements then refused later resolution as expected. Protected GitHub CI
+owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

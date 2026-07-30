@@ -2007,3 +2007,18 @@ Checkpoint retirement requires exact receipt/head/passport/evidence/charge
 bindings plus an allowlisted regular-file diff. Application, mixed-owner,
 control, contract, CI, configuration, rename, add/delete, non-regular,
 missing-receipt, unknown, or tampered conflicts continue to refuse.
+
+## 2026-07-30 — Decision 154: Opaque successful repairs retain conservative accounting
+
+Category: Incident
+
+T-094 completed its exact protected-test repair through Cursor CLI, but that
+transport cannot report actual usage and therefore charged the full
+reservation as `abandoned_conservative`. The dependency-conflict validator
+alone rejected that valid terminal even though ordinary passport and
+publication paths already accept it. Exact-stage repair now recognizes either
+completed accounting or a conservative charge only when the immutable
+manifest proves `cost_basis=conservative_reservation` and equal effective and
+reserved cost, and the passport charge matches the same manifest and state.
+Cancellation, launch-void, missing or unequal cost proof, and unknown states
+remain fail closed.

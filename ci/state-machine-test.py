@@ -756,7 +756,10 @@ class StateMachineTest(unittest.TestCase):
         manifest = self.product / "factory/runs/conflict-test-author.meta"
         manifest.write_text(
             "run_id=conflict-test-author\nphase=completed\n"
-            "accounting_state=completed\nticket=T-110\nrole=test-author\n"
+            "accounting_state=abandoned_conservative\n"
+            "cost_basis=conservative_reservation\n"
+            "effective_cost=10.00\nreserved_usd=10.00\n"
+            "ticket=T-110\nrole=test-author\n"
             "go_issued=1\ntask_submitted=1\n"
             f"contract_version={self.args.contract_version}\n"
             f"kit_sha={self.args.factory_sha}\n"
@@ -781,7 +784,7 @@ class StateMachineTest(unittest.TestCase):
             **passport,
             "charge_records": [{
                 **evidence,
-                "accounting_state": "completed",
+                "accounting_state": "abandoned_conservative",
                 "charge_micro_usd": 1,
             }],
             "completed_role_evidence": [{
@@ -792,20 +795,28 @@ class StateMachineTest(unittest.TestCase):
             "head_sha": repaired_head,
             "transition_receipt_sha256": self.args.receipt,
         }
+        success = {
+            **dict(
+                line.split("=", 1)
+                for line in manifest.read_text(
+                    encoding="utf-8",
+                ).splitlines()
+            ),
+            "manifest_sha256": manifest_digest,
+        }
+        with self.assertRaisesRegex(
+            STATE.StateError, "repair success is invalid",
+        ):
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict,
+                [{**success, "cost_basis": "actual"}],
+                terminal_passport, False,
+            )
         with self.assertRaisesRegex(
             STATE.StateError, "passport evidence is invalid",
         ):
             STATE.dependency_conflict_successes(
-                self.args, record, conflict,
-                [{
-                    **dict(
-                        line.split("=", 1)
-                        for line in manifest.read_text(
-                            encoding="utf-8",
-                        ).splitlines()
-                    ),
-                    "manifest_sha256": manifest_digest,
-                }],
+                self.args, record, conflict, [success],
                 passport, False,
             )
         with (
