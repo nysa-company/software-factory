@@ -45,6 +45,7 @@ class TerminalBackfillTests(unittest.TestCase):
         self.bin.mkdir()
         command("git", "init", "-q", "-b", "main", self.repo)
         command("git", "init", "--bare", "-q", self.remote)
+        command("git", "-C", self.remote, "config", "receive.autogc", "false")
         command("git", "-C", self.repo, "remote", "add", "origin", self.remote)
         (self.repo / "factory/tickets").mkdir(parents=True)
         (self.repo / "factory/PROJECT.env").write_text(
