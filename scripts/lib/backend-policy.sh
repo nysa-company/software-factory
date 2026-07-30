@@ -164,12 +164,70 @@ else:
 PY
 }
 
+factory_prepare_cursor_probe_home() {
+  local source_home="$1" probe_home="$2"
+  mkdir -m 700 "$probe_home/.cursor" || return 1
+  python3 - "$source_home/.cursor" "$probe_home/.cursor" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+source_root, destination_root = map(pathlib.Path, sys.argv[1:])
+sources = [source_root / name for name in ("auth.json", "cli-config.json")]
+if not any(path.exists() or path.is_symlink() for path in sources):
+    raise SystemExit(0)
+if not all(path.exists() and not path.is_symlink() for path in sources):
+    raise SystemExit(1)
+
+for source in sources:
+    info = source.lstat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) & 0o077
+        or info.st_size > 1_000_000
+    ):
+        raise SystemExit(1)
+    source_fd = os.open(
+        source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        opened = os.fstat(source_fd)
+        if (
+            (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+        ):
+            raise SystemExit(1)
+        data = os.read(source_fd, 1_000_001)
+    finally:
+        os.close(source_fd)
+    if len(data) > 1_000_000:
+        raise SystemExit(1)
+    destination_fd = os.open(
+        destination_root / source.name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    with os.fdopen(destination_fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+PY
+}
+
 factory_probe_adapter() {
   local adapter="$1" explicit_model="${2:-}"
-  local installed installed_version help model expected_family actual_family
+  local installed installed_version="" help model expected_family actual_family
   local claude_bin secret_file minimal_path required_flag
-  local cursor_bin="${CURSOR_AGENT_BIN:-agent}" model_ready attempt
-  local cursor_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
+  local cursor_bin="${CURSOR_AGENT_BIN:-agent}" auth_ready model_ready attempt
+  local cursor_source_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
+  local cursor_home=""
   local probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-30}"
   PROBE_STATE="UNKNOWN"
   PROBE_REASON="unclassified"
@@ -319,56 +377,74 @@ factory_probe_adapter() {
       if ! command -v "$cursor_bin" >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
+      cursor_home="$(mktemp -d "${TMPDIR:-/tmp}/factory-cursor-probe.XXXXXX")" || {
+        PROBE_STATE="INVALID"; PROBE_REASON="probe_isolation_unavailable"; return 0
+      }
+      chmod 700 "$cursor_home"
+      if ! factory_prepare_cursor_probe_home \
+          "$cursor_source_home" "$cursor_home"; then
+        rm -rf "$cursor_home"
+        PROBE_STATE="INVALID"; PROBE_REASON="credential_invalid"; return 0
+      fi
       installed="$(HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
       PROBE_VERSION="$installed"
       if [[ -z "${CURSOR_AGENT_VERSION:-}" ]]; then
-        PROBE_STATE="INVALID"; PROBE_REASON="version_unapproved"; return 0
-      fi
-      installed_version="$(printf '%s\n' "$installed" | awk '{print $NF}')"
-      if [[ "$installed_version" != "$CURSOR_AGENT_VERSION" ]]; then
+        PROBE_STATE="INVALID"; PROBE_REASON="version_unapproved"
+      elif [[ "$(printf '%s\n' "$installed" | awk '{print $NF}')" != "$CURSOR_AGENT_VERSION" ]]; then
         if [[ -z "$installed" ]]; then
           PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"
         else
           PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"
         fi
-        return 0
+      else
+        installed_version="$CURSOR_AGENT_VERSION"
       fi
-      help="$(HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" --help 2>/dev/null || true)"
-      if [[ "$help" != *"--print"* ||
-            "$help" != *"--output-format"* ||
-            "$help" != *"--workspace"* ||
-            "$help" != *"--model"* ||
-            "$help" != *"--force"* ||
-            "$help" != *"--trust"* ]]; then
-        PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"; return 0
-      fi
-      auth_ready=0
-      for attempt in 1 2; do
-        if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
-             python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
-          auth_ready=1
-          break
+      if [[ -n "$installed_version" ]]; then
+        help="$(HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" --help 2>/dev/null || true)"
+        if [[ "$help" != *"--print"* ||
+              "$help" != *"--output-format"* ||
+              "$help" != *"--workspace"* ||
+              "$help" != *"--model"* ||
+              "$help" != *"--force"* ||
+              "$help" != *"--trust"* ]]; then
+          PROBE_STATE="INVALID"; PROBE_REASON="contract_mismatch"
         fi
-      done
-      if [[ "$auth_ready" != 1 ]]; then
-        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
-      model_ready=0
-      for attempt in 1 2; do
-        if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
-             awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
-          model_ready=1
-          break
+      if [[ -n "$installed_version" && "$PROBE_REASON" == "unclassified" ]]; then
+        auth_ready=0
+        for attempt in 1 2; do
+          if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" status --format json 2>/dev/null |
+               python3 "$FACTORY_POLICY_DIR/cursor-status.py" - >/dev/null 2>&1; then
+            auth_ready=1
+            break
+          fi
+        done
+        if [[ "$auth_ready" != 1 ]]; then
+          PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"
         fi
-      done
-      if [[ "$model_ready" != 1 ]]; then
-        PROBE_STATE="INVALID"; PROBE_REASON="model_unavailable"; return 0
       fi
-      PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$model" 2>/dev/null || true)"
-      if [[ -z "$PROBE_REPORTED_IDENTITY" ]]; then
-        PROBE_STATE="INVALID"; PROBE_REASON="model_not_allowlisted"; return 0
+      if [[ -n "$installed_version" && "$PROBE_REASON" == "unclassified" ]]; then
+        model_ready=0
+        for attempt in 1 2; do
+          if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
+               awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
+            model_ready=1
+            break
+          fi
+        done
+        if [[ "$model_ready" != 1 ]]; then
+          PROBE_STATE="INVALID"; PROBE_REASON="model_unavailable"
+        fi
       fi
-      PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
+      if [[ -n "$installed_version" && "$PROBE_REASON" == "unclassified" ]]; then
+        PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$model" 2>/dev/null || true)"
+        if [[ -z "$PROBE_REPORTED_IDENTITY" ]]; then
+          PROBE_STATE="INVALID"; PROBE_REASON="model_not_allowlisted"
+        else
+          PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
+        fi
+      fi
+      rm -rf "$cursor_home"
       ;;
     mock)
       PROBE_STATE="READY"; PROBE_REASON="test_override"; PROBE_VERSION="test"

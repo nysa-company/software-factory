@@ -24,6 +24,7 @@ DOCTOR = ROOT / "scripts/factory-doctor.sh"
 RUN_AGENT = ROOT / "scripts/run-agent.sh"
 CLI_RUNTIME = ROOT / "scripts/provider-cli-runtime.py"
 CODEX_ADAPTER = ROOT / "scripts/adapters/codex.sh"
+BACKEND_POLICY = ROOT / "scripts/lib/backend-policy.sh"
 
 
 class ProductionConcurrencyTest(unittest.TestCase):
@@ -353,6 +354,73 @@ done
             (self.home / ".cursor/cli-config.json").read_text(),
             '{"version":1}\n',
         )
+
+    def test_cursor_readiness_uses_disposable_home(self) -> None:
+        binary_root = self.root / "bin"
+        binary_root.mkdir()
+        trace = self.root / "cursor-homes"
+        agent = binary_root / "agent"
+        agent.write_text(
+            """#!/bin/bash
+set -eu
+mkdir -p "$HOME/.cursor"
+printf '{"rewritten":true}\\n' > "$HOME/.cursor/cli-config.json"
+chmod 644 "$HOME/.cursor/cli-config.json"
+printf '%s\\n' "$HOME" >> "$TRACE_FILE"
+case "${1:-}" in
+  --version) printf '%s\\n' 'agent 2026.07.test' ;;
+  --help) printf '%s\\n' '--print --output-format --workspace --model --force --trust' ;;
+  status) printf '%s\\n' '{"authenticated":true}' ;;
+  models) printf '%s\\n' 'gpt-5.6-sol-high' ;;
+  *) exit 2 ;;
+esac
+"""
+        )
+        agent.chmod(0o700)
+        environment = {
+            **os.environ,
+            "HOME": str(self.home),
+            "PATH": f"{binary_root}:{os.environ['PATH']}",
+            "TRACE_FILE": str(trace),
+            "FACTORY_CURSOR_FALLBACK_ENABLED": "1",
+            "CURSOR_AGENT_VERSION": "2026.07.test",
+            "CURSOR_OPENAI_MODEL": "gpt-5.6-sol-high",
+        }
+        command = (
+            f"source '{BACKEND_POLICY}'; "
+            "factory_probe_adapter cursor-openai; "
+            'printf "%s:%s\\n" "$PROBE_STATE" "$PROBE_REASON"'
+        )
+        result = subprocess.run(
+            ["/bin/bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=True,
+            env=environment,
+            timeout=30,
+        )
+        self.assertEqual(result.stdout, "READY:local_contract_ready\n")
+        source_config = self.home / ".cursor/cli-config.json"
+        self.assertEqual(source_config.read_text(), '{"version":1}\n')
+        self.assertEqual(stat.S_IMODE(source_config.stat().st_mode), 0o600)
+        probe_homes = trace.read_text().splitlines()
+        self.assertTrue(probe_homes)
+        self.assertEqual(len(set(probe_homes)), 1)
+        self.assertNotEqual(probe_homes[0], str(self.home))
+        self.assertFalse(Path(probe_homes[0]).exists())
+
+        source_config.chmod(0o644)
+        before = trace.read_text()
+        refused = subprocess.run(
+            ["/bin/bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=True,
+            env=environment,
+            timeout=30,
+        )
+        self.assertEqual(refused.stdout, "INVALID:credential_invalid\n")
+        self.assertEqual(trace.read_text(), before)
 
     def test_three_distinct_cli_routes_overlap_then_drain_independently(self) -> None:
         self.apply()

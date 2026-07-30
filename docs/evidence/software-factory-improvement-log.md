@@ -2649,6 +2649,46 @@ controller restart preserves the latest valid heartbeat without creating a
 second attempt; sibling tickets continue; and no heartbeat leaks output or
 credentials.
 
+## FI-20260730-110 — Cursor readiness invalidated its own credential source
+
+Status: Implemented; protected CI and live role proof pending
+Priority: P0
+Area: provider readiness and credential isolation
+Owner: Factory
+First seen: Nysa generation 35 in-flight route migration
+Impact: all four route migrations completed without a provider task, but
+Cursor's task-free readiness commands rewrote the source
+`~/.cursor/cli-config.json` from mode `0600` to `0644`. The next Cursor role
+would therefore fail the unchanged strict credential-copy boundary before GO,
+recreating the exact T-094 `cursor_credential_unsafe` failure and preventing
+useful ticket work.
+Evidence: the source file was mode `0600` immediately before migration;
+after four sealed `models migrate-plan`/`models migrate` checks it was `0644`,
+with no controller or provider task running. The focused production-boundary
+reproduction restored `0600`, ran the patched real Cursor readiness probe,
+and observed `READY:local_contract_ready`, unchanged source digest, and mode
+`0600` afterward.
+Root cause: `factory_probe_adapter` invoked Cursor `--version`, `--help`,
+`status`, and `models` with the credential source as `HOME`. Cursor legitimately
+rewrites its CLI configuration during those task-free commands. Later runtime
+preparation correctly rejected the now-world-readable source, so readiness
+made its own successful route impossible to launch.
+Smallest change: validate and copy both Cursor session files into one
+disposable mode-`0700` probe home using no-follow, owner, link-count, mode, and
+size checks. Run every command for that probe against only the copy, then
+delete it. Missing credentials still produce ordinary authentication
+unavailability; present but unsafe or partial source state fails closed before
+Cursor is invoked. The role-time credential guard and all security assertions
+remain unchanged.
+Validation: the focused regression uses a Cursor stub that deliberately
+rewrites its probe-local config to `0644`, proves the real source bytes and
+`0600` mode remain unchanged, proves the probe home is removed, and proves an
+unsafe source is refused before process invocation. The model-control suite,
+production-concurrency suite, shell syntax, and the real task-free Cursor
+boundary pass. Protected GitHub CI owns the complete regression. Live closure
+requires T-094 to cross GO/submission once and emit authenticated progress
+without another credential failure.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

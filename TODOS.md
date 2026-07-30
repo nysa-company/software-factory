@@ -29,6 +29,11 @@ leases with disjoint worktrees and serialized provider intervals. Prioritize:
   completed ticket it materializes without ambiguous ownership.
 
 - Add machine-readable certification progress and a `--watch` view with phase names, elapsed time, and the current deterministic gate.
+- Make Node product certification deterministic: bind the exact Node and npm
+  versions plus lockfile hash into the receipt, fail preflight before product
+  work when a dependency fetch is required but neither reviewed network nor an
+  exact cache is available, reuse downloads only under checksum-bound keys,
+  and run builds/tests with network denied after dependency preparation.
 - Add a maintenance-only accounting audit and conservative reconciliation command for legacy manifests, with quarantine evidence and no guessed cost reduction.
 - Add a trusted operator-approved lease-release route for tickets stopped in Review, without exposing or persisting opaque lease IDs.
 - Extend preflight with Git forge/API health, required local services, provider CLI authentication, and configured deployment-check readiness.
