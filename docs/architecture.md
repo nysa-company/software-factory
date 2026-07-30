@@ -347,6 +347,9 @@ partial, modified, auto-merged, bypassed, non-Backlog, or ambiguous evidence
 remains unresolved; any partial terminal chain fails before this compatibility
 path is considered. Runtime dependency checks use only the immutable receipt
 after its protected introduction and make no GitHub call.
+That atomic introduction may also contain the exact in-flight release
+authorization for the same target Factory SHA. No other migration,
+application, test, contract, or CI path is admitted.
 The sealed qualification launcher binds its owner-only qualification root as
 the release environment for isolated subscription runtimes. That root carries
 the same trusted marker used by disposable development environments; provider

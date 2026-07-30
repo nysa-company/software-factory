@@ -49,7 +49,7 @@ PR_KEYS = {
 TICKET_ID = re.compile(r"T-[0-9]+")
 
 
-def _migration_commit(repo, ref, basis, expected_paths):
+def _migration_commit(repo, ref, basis, expected_paths, optional_paths):
     additions = run(
         repo, "log", "--format=%H", "--diff-filter=A", ref, "--",
         f"{MIGRATION_DIR}/authorization.json",
@@ -65,7 +65,10 @@ def _migration_commit(repo, ref, basis, expected_paths):
             repo, "diff-tree", "--no-commit-id", "--name-only", "-r", migration
         ).stdout.splitlines()
     )
-    if parents != [basis] or paths != expected_paths:
+    if (
+        parents != [basis]
+        or paths not in (expected_paths, expected_paths | optional_paths)
+    ):
         raise ValidationError(
             "dependency fulfillment must have one atomic protected introduction"
         )
@@ -176,6 +179,10 @@ def _validate_documents(repo, ref, authorization, receipts):
         ref,
         basis["commit"],
         {*expected_files, "factory/KIT_PIN"},
+        {
+            "factory/migrations/inflight-release/"
+            f"{authorization['target_kit_sha']}.json"
+        },
     )
     if (
         text_at(repo, migration, "factory/KIT_PIN")

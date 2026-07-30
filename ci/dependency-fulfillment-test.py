@@ -144,7 +144,7 @@ class DependencyFulfillmentTest(unittest.TestCase):
             return {"statuses": []}
         raise AssertionError(endpoint)
 
-    def apply_and_commit(self):
+    def apply_and_commit(self, inflight_target=None):
         with mock.patch.object(CLI, "gh_json", side_effect=self.gh):
             plan = CLI.prepare(self.repo, self.request)
             previous = Path.cwd()
@@ -155,6 +155,13 @@ class DependencyFulfillmentTest(unittest.TestCase):
                 CLI.apply_plan(plan, plan["approval_sha256"])
             finally:
                 os.chdir(previous)
+        if inflight_target is not None:
+            path = (
+                self.repo
+                / f"factory/migrations/inflight-release/{inflight_target}.json"
+            )
+            path.parent.mkdir(parents=True)
+            path.write_text("{}\n", encoding="utf-8")
         run("git", "add", ".", cwd=self.repo)
         run("git", "commit", "-qm", "activate dependency fulfillment", cwd=self.repo)
         run(
@@ -234,6 +241,20 @@ class DependencyFulfillmentTest(unittest.TestCase):
             (self.repo / "factory/KIT_PIN").read_text(encoding="utf-8"),
             OLD_KIT + "\n",
         )
+
+    def test_same_target_inflight_authorization_may_share_atomic_commit(self):
+        self.apply_and_commit(NEW_KIT)
+        self.assertEqual(
+            protected_dependency(self.repo, "T-300")["target_kit_sha"],
+            NEW_KIT,
+        )
+
+    def test_other_inflight_authorization_cannot_share_atomic_commit(self):
+        self.apply_and_commit("c" * 40)
+        with self.assertRaisesRegex(
+            ValidationError, "one atomic protected introduction"
+        ):
+            protected_dependency(self.repo, "T-300")
 
 
 if __name__ == "__main__":

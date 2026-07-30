@@ -41,7 +41,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   dependency readiness through one manual, no-bypass, atomic protected
   fulfillment batch bound to the exact PR/check/basis/source-ticket evidence
   and target Factory SHA. It is not terminal truth and never marks the ticket
-  Done; malformed terminal evidence cannot fall through to this path.
+  Done; malformed terminal evidence cannot fall through to this path. The
+  atomic commit may additionally contain only the exact same-target in-flight
+  release authorization.
 - During Contract 1.8 qualification, the first terminal failed Cursor attempt
   retains the ticket claim, converts an initial v1 route plan into a
   same-release v2 journal when needed, and appends the existing same-family
@@ -1889,3 +1891,14 @@ accepts that immutable record only through one exact authenticated v2 passport
 migration suffix and the unique unsuccessful blocker charge. This resumes only
 Test-author without replaying Planner, Spec-linter, or Builder; broken or
 ambiguous lineage still refuses.
+
+## 2026-07-30 — Decision 147: Fulfillment and cutover controls may be atomic
+
+Category: Incident
+
+The protected T-040/T-092 dependency-fulfillment batch was introduced in the
+same manual control commit as its required in-flight release authorization, but
+the runtime validator expected only the pin and fulfillment files. It now
+accepts that one exact additional path only when its filename names the same
+target Factory SHA. Other Factory, application, test, contract, and CI paths
+remain outside the atomic allowlist.
