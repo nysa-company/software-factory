@@ -58,6 +58,10 @@ class ProtectedMergeReconciliationTests(unittest.TestCase):
         self.remote = root / "product.git"
         command("git", "init", "-q", "-b", "main", self.repo)
         command("git", "init", "--bare", "-q", self.remote)
+        command("git", "-C", self.repo, "config", "maintenance.auto", "false")
+        command("git", "-C", self.repo, "config", "gc.auto", "0")
+        command("git", "--git-dir", self.remote, "config", "maintenance.auto", "false")
+        command("git", "--git-dir", self.remote, "config", "gc.auto", "0")
         command("git", "-C", self.repo, "remote", "add", "origin", self.remote)
         self.cutoff = datetime.now(timezone.utc).replace(
             microsecond=0,
