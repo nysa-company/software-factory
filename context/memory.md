@@ -1790,3 +1790,13 @@ accepted: a `[[ ... ==` comparison split before its right operand. The shared
 release check now keeps both operands on one line. Stabilization continues to
 repair only the first exact protected-CI boundary with focused reproduction;
 the complete regression remains owned by a fresh protected-main run.
+
+## 2026-07-29 — Decision 140: Sealed entry points do not mutate their release
+
+Category: Incident
+
+Direct Linux execution of the deterministic state machine cached imported
+Factory modules inside the sealed release, invalidating its authenticated tree
+after a successful transition. The entry point now disables bytecode writes
+before loading Factory modules. A sealed release must remain byte-for-byte
+stable throughout planning, receipt consumption, execution, and recovery.
