@@ -2052,8 +2052,7 @@ validate_receipt_snapshot() {
     die "Hermes contract version drifted"
   require_provider_concurrency_ready \
     "$product_top" "$release" "$contract" "$sha" "$expected_tree"
-  [[ "$(json_get "$receipt" provider_concurrency_evidence)" ==
-     "$PROVIDER_CONCURRENCY_EVIDENCE" ]] ||
+  [[ "$(json_get "$receipt" provider_concurrency_evidence)" == "$PROVIDER_CONCURRENCY_EVIDENCE" ]] ||
     die "provider concurrency evidence drifted since certification"
   [[ "$(host_name)" == "$(json_get "$receipt" host)" ]] ||
     die "receipt was certified on a different host"
