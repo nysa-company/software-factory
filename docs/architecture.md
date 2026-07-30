@@ -675,7 +675,14 @@ Builder or Test-author run forces fresh review. The helper has no approval or
 merge authority.
 Under Contract 1.8, compatibility `dispatch-plan` performs deterministic
 admission only and cannot spawn a dispatcher. The release-owned controller is
-the sole caller that advances work through state-machine receipts.
+the sole caller that advances work through state-machine receipts. Concurrent
+admission wakeups serialize on a process-scoped lock in the generation-wide
+worktree coordinator, not the product launch lock. Candidate and dependency
+resolution therefore occurs before the product launch boundary. A selected
+claim then revalidates the clean registered checkout, unchanged Linear map,
+control markers, live capacity, and exact ticket identity while holding the
+launch and dispatcher-lease locks. Slow or empty admission scans cannot starve
+an independent role launch or lease release.
 
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
