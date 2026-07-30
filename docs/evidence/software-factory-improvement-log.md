@@ -2390,7 +2390,7 @@ between observation and fetch remains a nonterminal wait.
 
 ## FI-20260729-103 — Live provider stdout spool is bounded only at publication
 
-Status: Backlog
+Status: Implemented; protected-CI and live successor proof pending
 Priority: P1
 Area: provider output containment
 Owner: Factory
@@ -2608,23 +2608,40 @@ duplicate charges.
 Evidence: authenticated controller event
 `1785416425984707000-c88520856d0d3fe9.json` records T-094's cell reattachment.
 The event stream then contains sibling dependency waits and lease recovery but
-no T-094 progress boundary. Contract 1.8 authenticates admission and terminal
-events but has no role-progress event or provider-attempt liveness receipt.
-This entry does not infer failure from quiet output.
-Root cause: the provider runtime streams role output into a private spool and
-publishes authenticated evidence only at terminalization. Controller state
-binds the attempt and lease but does not expose a signed, monotonic progress
-projection.
-Smallest change: emit a rate-limited authenticated progress heartbeat from the
-existing provider wrapper. Bind ticket, role, attempt, run, Factory SHA,
-application head, provider route, process identity, observed time, current
-tool phase when available, cumulative redacted output bytes, and a monotonic
-output/token delta. Never include role content or secrets. A soft-stall
-classification may alert or lower scheduling priority, but must not cancel,
-retry, replay, or charge again. Only the existing hard safety limit,
-authenticated provider exit, or operator cancellation may terminalize the
-attempt.
-Validation required: prove a producing mock emits monotonic signed progress;
+no T-094 progress boundary. Inspection after the supported stop found more
+than 40 terminal manifests for the same Test-author transition receipt over
+roughly two hours. Every attempt was `launch_void`, `go_issued=0`,
+`task_submitted=0`, `turns=0`, `effective_cost=0`, and exit status 6. The
+private controller role log identified the exact pre-GO boundary as
+`Cursor subscription credential is unsafe`; metadata-only inspection found
+`~/.cursor/cli-config.json` at mode `0644`, while the immutable credential-copy
+guard correctly requires no group or world access. A prior successful
+Test-author role at commit `948869a4f2d91a0e58a0c0775ad0f097c5f33ace`
+remains in the authenticated passport and must not be replayed.
+Root cause: `factory-controller.py` omitted `launch_void` from terminal
+accounting. `finish_pending_run` therefore treated every valid zero-cost
+pre-GO terminal manifest as missing evidence, cleared the receipt, and
+immediately resolved the same repair again. Separately, the provider runtime
+already wrote a private, sequenced progress journal, but the controller did
+not project it into content-free lifecycle events.
+Smallest change implemented: recognize `launch_void` as terminal, coalesce
+only identical historical zero-cost/no-GO duplicates for recovery, block the
+same release after one pre-GO failure, and permit one exact-stage retry only
+when an upgraded Factory SHA is authenticated. The wrapper now records a
+typed redacted pre-GO reason. The controller emits digest-bound
+`attempt_started`, `attempt_bound`, `attempt_progress`, and
+`attempt_terminal` events from the existing progress journal. Events bind the
+ticket, role, receipt, run, route, Factory SHA, sequence, and journal digest;
+they never contain role output or credential data. Progress observation does
+not cancel or classify a quiet provider as failed.
+Focused validation now covers repeated `launch_void` refusal, one
+release-upgrade retry, monotonic/deduplicated content-free progress, controller
+restart behavior, sibling scheduling, and existing structured Cursor stream
+evidence. Protected GitHub CI remains responsible for the complete regression.
+Live successor proof must show T-094 records one start, one GO/submission,
+monotonic progress, and one terminal event without replaying its earlier
+successful Test-author role. The remaining validation is to prove a producing
+mock emits monotonic signed progress;
 a silent healthy mock crosses the soft interval without cancellation; a
 stalled process reaches the existing hard limit exactly once; forged,
 reordered, cross-attempt, wrong-head, and wrong-Factory heartbeats fail closed;
