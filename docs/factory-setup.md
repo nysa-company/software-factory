@@ -45,6 +45,9 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 ## Step 3 — Keys and secrets
 
 - Keep route/account and product-runtime credentials separate. Cursor uses a one-time local `agent login` (or `CURSOR_API_KEY` for unattended infrastructure); never put credentials in kit or product config.
+- Keep both Cursor session files owner-only. Task-free readiness copies them
+  into a disposable owner-only home before invoking Cursor, so CLI-generated
+  configuration rewrites cannot change the source files used by later roles.
 - Keep Kimi disabled. No live or billed pilot has run. Before any pilot, rotate its credential and address the residual same-UID token exposure with a credential broker or OS isolation.
 - Secrets live only in GitHub Actions secrets and the hosting platform. No `.env` in git, ever.
 

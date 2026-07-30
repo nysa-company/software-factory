@@ -1921,3 +1921,16 @@ byte-identical to the sealed candidate. A changed launcher is explicitly,
 atomically bootstrapped while work is drained and the prior executable remains
 the rollback artifact; activation never discovers protocol drift through a
 live ticket again.
+
+## 2026-07-30 — Decision 149: Cursor readiness never uses the source home
+
+Category: Incident
+
+Nysa generation 35 proved that Cursor's task-free readiness commands rewrite
+`cli-config.json`. Invoking them with the operator's source home changed an
+owner-only file to mode `0644`, after which the strict role-time credential
+copy correctly refused every Cursor role before GO. Cursor route readiness now
+validates and copies both session files into one disposable owner-only home,
+runs version, contract, authentication, and model checks only there, and
+removes it afterward. Present but unsafe or partial source state fails before
+Cursor is invoked; role-time credential checks remain unchanged.
