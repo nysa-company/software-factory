@@ -107,6 +107,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   evidence for that receipt. Its current exact-ticket lease must also be live.
   A successor controller may reconstruct fields cleared by an earlier upgrade
   only from that same latest terminal boundary.
+- A signed contract-repair owner survives an intervening dependency wait and
+  later Factory migration only when its bound passport uniquely begins a
+  contiguous authenticated v2 migration suffix ending at the current passport.
+  The original blocker charge must remain unique and absent from successful
+  evidence; otherwise the state machine fails closed.
 - Portable Spec-lint evidence is compared semantically after normalizing only
   Markdown indentation; export and replay use the same exact marker grammar.
 - Selected-ticket publication does not require consuming the compatibility
@@ -1872,3 +1877,15 @@ history, target identity, and terminal accounting are revalidated at export.
 Terminal Factory and contract must also equal the receipt. This preserves the
 successful role without replay while arbitrary ancestry and broad recovery
 bypasses remain rejected.
+
+## 2026-07-30 — Decision 146: Dependency waits preserve exact repair ownership
+
+Category: Incident
+
+Nysa T-094 had an authenticated Test-author repair owner, but its later
+dependency-wait receipt hid the original contract-block receipt and a Factory
+upgrade made the signed repair record appear stale. The state machine now
+accepts that immutable record only through one exact authenticated v2 passport
+migration suffix and the unique unsuccessful blocker charge. This resumes only
+Test-author without replaying Planner, Spec-linter, or Builder; broken or
+ambiguous lineage still refuses.
