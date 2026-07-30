@@ -95,6 +95,13 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   bash scripts/factory-kit.sh install --repo "$PWD" --sha "<full-sha>"
   ```
 
+- Before certification, compare the installed
+  `~/.factory/bin/factory-launch` with the sealed release copy. If they differ,
+  drain controller and provider work, retain the current launcher as the
+  rollback artifact, and atomically install the exact sealed executable.
+  Certification and activation now refuse any byte mismatch; never patch the
+  installed launcher independently.
+
 - Before certifying a Contract 1.8 product with
   `MAX_CONCURRENT_TICKETS` above one, enter maintenance and drain every role,
   lease, provider attempt, and legacy interval. Preview the credential-free

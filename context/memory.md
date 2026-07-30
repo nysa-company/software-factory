@@ -132,6 +132,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, and config-review enabled. `bash ci/test-all.sh` remains the unconditional full command; managed local readiness uses `bash ci/test-all.sh --changed-or-defer origin/main HEAD`.
 - Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in three Linux and three macOS shards.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
+- The stable installed launcher is part of that exact release tuple.
+  Certification and every receipt validation require its bytes to match the
+  sealed candidate; a changed launcher is bootstrapped only while controller
+  and provider work are drained, with the prior executable retained for
+  rollback.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - Product certification stages a checksum-verified pinned scanner into the disposable product copy before entering its network-denied sandbox, so managed secret scanning never depends on a prewarmed product cache or certification-time network access.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
@@ -1902,3 +1907,17 @@ the runtime validator expected only the pin and fulfillment files. It now
 accepts that one exact additional path only when its filename names the same
 target Factory SHA. Other Factory, application, test, contract, and CI paths
 remain outside the atomic allowlist.
+
+## 2026-07-30 — Decision 148: The launcher is part of the activation tuple
+
+Category: Incident
+
+Nysa generation 32 activated the sealed `4d726fb...` release while the stable
+installed launcher still had an older Contract 1.8 command parser. The release
+correctly issued a dependency-refresh receipt, but the old trust root rejected
+that action before consumption. No provider ran or charged. Certification and
+every receipt validation now require the installed launcher to be
+byte-identical to the sealed candidate. A changed launcher is explicitly,
+atomically bootstrapped while work is drained and the prior executable remains
+the rollback artifact; activation never discovers protocol drift through a
+live ticket again.

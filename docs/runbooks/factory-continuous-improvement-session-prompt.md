@@ -410,6 +410,11 @@ Confirm each against current code and evidence before proposing work:
     approval, waits for exact-approved-head checks, acquires a lease bound to
     that head, revalidates head/base/checks, and only then requests auto-merge.
     Release the lease on drift, wait, or repair.
+15. **Implemented—do not regress:** the installed `factory-launch` is part of
+    the exact release tuple. Certification and activation must reject a stable
+    launcher whose bytes differ from the sealed candidate; bootstrap it only
+    while provider/controller work is drained and retain the prior executable
+    for rollback.
 
 Do not fix all of these mechanically. Rank them by measured provider cost,
 wall-clock delay, sibling blocking, manual intervention, and trust risk. Choose
