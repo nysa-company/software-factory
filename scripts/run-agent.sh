@@ -233,6 +233,7 @@ RUN_START_ID=""
 MANIFEST=""
 MANIFEST_PHASE=""
 ROLE_EXIT_STATUS=""
+TERMINAL_REASON_CODE=""
 ROLE_HEAD_BEFORE=""
 ROLE_BRANCH_BEFORE=""
 ROLE_REMOTE_BEFORE=""
@@ -717,6 +718,7 @@ write_manifest() {
     echo "progress_events=$(meta_value "$PROGRESS_EVENTS")"
     echo "progress_journal_sha256=$(meta_value "$PROGRESS_JOURNAL_SHA256")"
     echo "timeout_kind=$(meta_value "$TIMEOUT_KIND")"
+    echo "terminal_reason_code=$(meta_value "$TERMINAL_REASON_CODE")"
     echo "cancellation_reason=$(meta_value "$CANCELLATION_REASON")"
     echo "cancellation_preview_hash=$(meta_value "$CANCELLATION_PREVIEW_HASH")"
     echo "updated_at=$(date -u +%FT%TZ)"
@@ -1096,6 +1098,7 @@ prepare_cli_runtime() {
   esac
   [[ -n "$runtime_state_root" &&
      "$CLI_ATTEMPT_ID" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    TERMINAL_REASON_CODE="provider_attempt_isolation_unavailable"
     echo "subscription CLI isolation requires an owner-local attempt root" >&2
     return 1
   }
@@ -1114,6 +1117,7 @@ prepare_cli_runtime() {
   chmod 700 "$base"
   CLI_RUNTIME_ROOT="$base/$CLI_ATTEMPT_ID"
   mkdir -m 700 "$CLI_RUNTIME_ROOT" || {
+    TERMINAL_REASON_CODE="provider_attempt_runtime_collision"
     echo "subscription CLI attempt runtime already exists" >&2
     return 1
   }
@@ -1130,12 +1134,14 @@ prepare_cli_runtime() {
   if [[ "$ADAPTER" == claude-code ]]; then
     local source="$HOME/.claude/.credentials.json"
     [[ -f "$source" && ! -L "$source" ]] || {
+      TERMINAL_REASON_CODE="claude_credential_unavailable"
       echo "Claude subscription credential is unavailable" >&2
       return 1
     }
     mkdir -m 700 "$CLI_RUNTIME_ROOT/config"
     copy_cli_credential "$source" \
       "$CLI_RUNTIME_ROOT/config/.credentials.json" || {
+        TERMINAL_REASON_CODE="claude_credential_unsafe"
         echo "Claude subscription credential is unsafe" >&2
         return 1
       }
@@ -1144,6 +1150,7 @@ prepare_cli_runtime() {
     if [[ -n "${FACTORY_CLAUDE_SETTINGS:-}" ]]; then
       copy_cli_credential "$FACTORY_CLAUDE_SETTINGS" \
         "$CLI_CLAUDE_SETTINGS" || {
+          TERMINAL_REASON_CODE="claude_settings_unsafe"
           echo "Claude settings are unsafe" >&2
           return 1
         }
@@ -1154,11 +1161,13 @@ prepare_cli_runtime() {
   elif [[ "$ADAPTER" == codex ]]; then
     local source="$HOME/.codex/auth.json"
     [[ -f "$source" && ! -L "$source" ]] || {
+      TERMINAL_REASON_CODE="codex_credential_unavailable"
       echo "Codex subscription credential is unavailable" >&2
       return 1
     }
     mkdir -m 700 "$CLI_PROVIDER_HOME/.codex"
     copy_cli_credential "$source" "$CLI_PROVIDER_HOME/.codex/auth.json" || {
+      TERMINAL_REASON_CODE="codex_credential_unsafe"
       echo "Codex subscription credential is unsafe" >&2
       return 1
     }
@@ -1167,6 +1176,7 @@ prepare_cli_runtime() {
     [[ -f "$cursor_source/auth.json" && ! -L "$cursor_source/auth.json" &&
        -f "$cursor_source/cli-config.json" &&
        ! -L "$cursor_source/cli-config.json" ]] || {
+      TERMINAL_REASON_CODE="cursor_credential_unavailable"
       echo "Cursor subscription credential is unavailable" >&2
       return 1
     }
@@ -1175,12 +1185,14 @@ prepare_cli_runtime() {
       "$CLI_PROVIDER_HOME/.cursor/auth.json" &&
       copy_cli_credential "$cursor_source/cli-config.json" \
         "$CLI_PROVIDER_HOME/.cursor/cli-config.json" || {
+          TERMINAL_REASON_CODE="cursor_credential_unsafe"
           echo "Cursor subscription credential is unsafe" >&2
           return 1
         }
     CLI_CURSOR_CONFIG_DIR="$CLI_PROVIDER_HOME/.cursor"
     CLI_CURSOR_DATA_DIR="$CLI_RUNTIME_ROOT/data"
     [[ "${#CLI_CURSOR_DATA_DIR}" -le 75 ]] || {
+      TERMINAL_REASON_CODE="cursor_attempt_path_too_long"
       echo "Cursor attempt data path is too long for isolated scratch" >&2
       return 1
     }

@@ -108,6 +108,194 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["receipt"], "")
         self.assertEqual(claim["status"], "claimed")
 
+    def test_launch_void_blocks_once_and_preserves_role_receipt(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        receipt = "b" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "c" * 64,
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "test-author",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        Path(claim["worktree"]).mkdir()
+        controller.save_claim(claim)
+        for number in (1, 2):
+            (self.product / f"factory/runs/void-{number}.meta").write_text(
+                f"run_id=void-{number}\n"
+                "phase=abandoned\n"
+                "ticket=T-110\n"
+                "role=test-author\n"
+                "accounting_state=launch_void\n"
+                "go_issued=0\n"
+                "task_submitted=0\n"
+                "effective_cost=0\n"
+                "cost_basis=launch_void\n"
+                "exit_status=6\n"
+                "role_exit=\n"
+                f"kit_sha={'a' * 40}\n"
+                f"role_head_before={'d' * 40}\n"
+                "terminal_reason_code=cursor_credential_unsafe\n"
+                f"terminal_at=2026-07-30T15:0{number}:00Z\n"
+                f"transition_receipt_sha256={receipt}\n",
+                encoding="utf-8",
+            )
+        calls = []
+        controller.json_call = lambda *args, **_kwargs: calls.append(args) or {}
+        controller.passport = lambda *_args: self.fail(
+            "pre-GO attempts must not replace successful-role passport evidence"
+        )
+
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], receipt)
+        self.assertEqual(claim["role"], "test-author")
+        self.assertTrue(claim["lease_released"])
+        self.assertEqual(calls, [
+            ("release", "--ticket", "T-110", "--lease", "c" * 64),
+        ])
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        terminal = next(
+            item for item in events if item["event"] == "attempt_terminal"
+        )
+        self.assertEqual(terminal["run_id"], "void-2")
+        self.assertEqual(terminal["duplicate_launch_void_count"], 2)
+        blocked = next(
+            item for item in events if item["event"] == "pre_go_failure_blocked"
+        )
+        self.assertEqual(blocked["reason"], "cursor_credential_unsafe")
+
+    def test_prior_release_launch_void_retries_stage_once(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        receipt = "b" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "c" * 64,
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "test-author",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        Path(claim["worktree"]).mkdir()
+        controller.save_claim(claim)
+        (self.product / "factory/runs/prior-void.meta").write_text(
+            "run_id=prior-void\n"
+            "phase=abandoned\n"
+            "ticket=T-110\n"
+            "role=test-author\n"
+            "accounting_state=launch_void\n"
+            "go_issued=0\n"
+            "task_submitted=0\n"
+            "effective_cost=0\n"
+            "cost_basis=launch_void\n"
+            "exit_status=6\n"
+            "role_exit=\n"
+            f"kit_sha={'e' * 40}\n"
+            f"role_head_before={'d' * 40}\n"
+            "terminal_reason_code=cursor_credential_unsafe\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        self.assertEqual(
+            sum(
+                item["event"] == "pre_go_failure_recovered_by_release_upgrade"
+                for item in events
+            ),
+            1,
+        )
+
+    def test_attempt_progress_is_content_free_and_monotonic(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        receipt = "b" * 64
+        claim = {
+            "receipt": receipt,
+            "role": "builder",
+            "ticket": "T-110",
+        }
+        (self.product / "factory/runs/live.meta").write_text(
+            "run_id=live\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            "adapter=cursor-anthropic\n"
+            "route_id=cursor-claude\n"
+            "provider_attempt_id=live-cli\n"
+            "accounting_state=reserved\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        progress = self.product / "factory/runs/live.progress.jsonl"
+        records = [
+            {
+                "event_sha256": "c" * 64,
+                "observed_monotonic_ns": 100,
+                "sequence": 1,
+                "subtype": "",
+                "type": "assistant",
+            },
+            {
+                "event_sha256": "d" * 64,
+                "observed_monotonic_ns": 200,
+                "sequence": 2,
+                "subtype": "completed",
+                "type": "tool_call",
+            },
+        ]
+        progress.write_text(json.dumps(records[0]) + "\n", encoding="utf-8")
+        progress.chmod(0o600)
+
+        controller.observe_attempt(claim)
+        controller.observe_attempt(claim)
+        with progress.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(records[1]) + "\n")
+        controller.observe_attempt(claim)
+        (self.product / "factory/runs/duplicate-live.meta").write_text(
+            (self.product / "factory/runs/live.meta").read_text(
+                encoding="utf-8"
+            ).replace("run_id=live\n", "run_id=duplicate-live\n"),
+            encoding="utf-8",
+        )
+        controller.observe_attempt_safely(claim)
+
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        self.assertEqual(
+            [item["event"] for item in events].count("attempt_bound"), 1
+        )
+        progress_events = [
+            item for item in events if item["event"] == "attempt_progress"
+        ]
+        self.assertEqual(
+            [item["progress_events"] for item in progress_events], [1, 2]
+        )
+        self.assertEqual(progress_events[-1]["latest_type"], "tool_call")
+        self.assertNotIn("output", progress_events[-1])
+        self.assertEqual(
+            [item["event"] for item in events].count(
+                "attempt_observation_invalid"
+            ),
+            1,
+        )
+
     def test_qualification_forces_real_restart_before_four_ticket_run(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 114)]
         (self.product / "factory/QUALIFICATION.json").write_text(
@@ -482,7 +670,10 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["receipt"], "")
         self.assertEqual(claim["role"], "")
         self.assertEqual(
-            calls, ["passport", "migrate", "role_output_rejected"]
+            calls, [
+                "attempt_terminal", "passport", "migrate",
+                "role_output_rejected",
+            ]
         )
 
     def test_contract_block_waits_for_exact_resume_then_reclaims(self) -> None:
@@ -758,7 +949,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                "migrate", "terminal_export_recovered",
+                "attempt_terminal", "migrate", "terminal_export_recovered",
                 "ticket-state", "migrate",
             ],
         )
@@ -798,7 +989,10 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "cancelled")
         self.assertEqual(
             calls,
-            ["passport", "leases-and-claim", "cell", "attempt_cancelled"],
+            [
+                "attempt_terminal", "passport", "leases-and-claim", "cell",
+                "attempt_cancelled",
+            ],
         )
 
     def test_complete_releases_claim(self) -> None:

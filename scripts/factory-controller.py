@@ -28,7 +28,8 @@ TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TERMINAL_ACCOUNTING = {
-    "completed", "abandoned_conservative", "cancelled", "cancelled_conservative",
+    "completed", "launch_void", "abandoned_conservative", "cancelled",
+    "cancelled_conservative",
 }
 RECONCILE_INTERVAL_SECONDS = 15
 
@@ -96,13 +97,97 @@ def write(path: Path, value: dict[str, Any]) -> None:
 
 
 def fields(path: Path) -> dict[str, str]:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o022
+            or info.st_size > 1_000_000
+        ):
+            raise ControllerError("run manifest is unsafe")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            lines = stream.read().splitlines()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in lines:
         name, separator, value = line.partition("=")
         if not separator or name in values:
             raise ControllerError("run manifest is malformed")
         values[name] = value
     return values
+
+
+def progress_summary(path: Path) -> dict[str, Any]:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 10_000_000
+        ):
+            raise ControllerError("attempt progress journal is unsafe")
+        chunks = []
+        remaining = 10_000_001
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if len(raw) > 10_000_000:
+        raise ControllerError("attempt progress journal is oversized")
+    sequence = 0
+    observed = -1
+    latest_type = ""
+    latest_subtype = ""
+    for line in raw.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ControllerError("attempt progress journal is malformed") from error
+        if (
+            not isinstance(record, dict)
+            or set(record) != {
+                "event_sha256", "observed_monotonic_ns", "sequence",
+                "subtype", "type",
+            }
+            or record.get("sequence") != sequence + 1
+            or not isinstance(record.get("observed_monotonic_ns"), int)
+            or isinstance(record.get("observed_monotonic_ns"), bool)
+            or record["observed_monotonic_ns"] <= observed
+            or not DIGEST.fullmatch(record.get("event_sha256", ""))
+            or record.get("type") not in {
+                "assistant", "result", "system", "tool_call",
+            }
+            or not isinstance(record.get("subtype"), str)
+            or len(record["subtype"]) > 64
+            or not re.fullmatch(r"[A-Za-z0-9._:-]*", record["subtype"])
+        ):
+            raise ControllerError("attempt progress journal is malformed")
+        sequence = record["sequence"]
+        observed = record["observed_monotonic_ns"]
+        latest_type = record["type"]
+        latest_subtype = record["subtype"]
+    return {
+        "journal_bytes": len(raw),
+        "journal_sha256": hashlib.sha256(raw).hexdigest(),
+        "latest_subtype": latest_subtype,
+        "latest_type": latest_type,
+        "observed_monotonic_ns": observed if sequence else None,
+        "progress_events": sequence,
+    }
 
 
 class Controller:
@@ -163,9 +248,7 @@ class Controller:
     def event(self, name: str, ticket: str = "", **details: Any) -> None:
         value = {
             "event": name,
-            "factory_sha": (
-                self.qualification["factory_sha"] if self.qualification else None
-            ),
+            "factory_sha": self.release_path.name,
             "observed_at_epoch_ns": time.time_ns(),
             "schema": EVENT_SCHEMA,
             "ticket": ticket or None,
@@ -772,8 +855,155 @@ class Controller:
             ):
                 matches.append(value)
         if len(matches) > 1:
-            raise ControllerError("receipt has ambiguous terminal run evidence")
+            launch_voids = all(
+                item.get("accounting_state") == "launch_void"
+                and item.get("go_issued") == "0"
+                and item.get("task_submitted") == "0"
+                and item.get("effective_cost") == "0"
+                and item.get("cost_basis") == "launch_void"
+                for item in matches
+            )
+            identity = {
+                (
+                    item.get("role"), item.get("role_head_before"),
+                    item.get("kit_sha"), item.get("terminal_reason_code", ""),
+                )
+                for item in matches
+            }
+            if not launch_voids or len(identity) != 1:
+                raise ControllerError("receipt has ambiguous terminal run evidence")
+            selected = dict(max(
+                matches,
+                key=lambda item: (
+                    item.get("terminal_at", ""), item.get("run_id", ""),
+                ),
+            ))
+            selected["duplicate_launch_void_count"] = str(len(matches))
+            return selected
         return matches[0] if matches else None
+
+    def attempt_manifest(self, claim: dict[str, Any]) -> dict[str, str] | None:
+        matches = []
+        for path in (self.product / "factory/runs").glob("*.meta"):
+            value = fields(path)
+            if (
+                value.get("ticket") == claim["ticket"]
+                and value.get("transition_receipt_sha256")
+                == claim.get("receipt")
+                and value.get("accounting_state") not in TERMINAL_ACCOUNTING
+            ):
+                matches.append(value)
+        if len(matches) > 1:
+            raise ControllerError("receipt has ambiguous active run evidence")
+        return matches[0] if matches else self.terminal_for_receipt(
+            claim["ticket"], claim["receipt"]
+        )
+
+    def observe_attempt(self, claim: dict[str, Any]) -> None:
+        attempt = self.attempt_manifest(claim)
+        if attempt is None:
+            return
+        run_id = attempt.get("run_id", "")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id):
+            raise ControllerError("attempt run identity is invalid")
+        bound = {
+            "adapter": attempt.get("adapter"),
+            "go_issued": attempt.get("go_issued"),
+            "head_sha": attempt.get("role_head_before"),
+            "kit_sha": attempt.get("kit_sha"),
+            "provider_attempt_id": attempt.get("provider_attempt_id"),
+            "role": claim.get("role"),
+            "route_id": attempt.get("route_id"),
+            "run_id": run_id,
+            "task_submitted": attempt.get("task_submitted"),
+            "transition_receipt_sha256": claim.get("receipt"),
+        }
+        marker = "attempt-bound-" + hashlib.sha256(run_id.encode()).hexdigest()
+        if self.marker(marker, {"schema": EVENT_SCHEMA, **bound}):
+            self.event("attempt_bound", claim["ticket"], **bound)
+        journal = self.product / "factory/runs" / f"{run_id}.progress.jsonl"
+        if not journal.exists():
+            return
+        try:
+            summary = progress_summary(journal)
+        except (ControllerError, OSError) as error:
+            invalid = "attempt-progress-invalid-" + hashlib.sha256(
+                run_id.encode()
+            ).hexdigest()
+            if self.marker(invalid, {
+                "run_id": run_id, "schema": EVENT_SCHEMA,
+            }):
+                self.event(
+                    "attempt_progress_invalid", claim["ticket"],
+                    error=str(error), run_id=run_id,
+                )
+            return
+        sequence = summary["progress_events"]
+        if not sequence:
+            return
+        progress = "attempt-progress-" + hashlib.sha256(
+            f"{run_id}:{sequence}".encode()
+        ).hexdigest()
+        if self.marker(progress, {
+            "progress_events": sequence, "run_id": run_id,
+            "schema": EVENT_SCHEMA,
+        }):
+            self.event(
+                "attempt_progress", claim["ticket"],
+                head_sha=attempt.get("role_head_before"),
+                provider_attempt_id=attempt.get("provider_attempt_id"),
+                role=claim.get("role"), route_id=attempt.get("route_id"),
+                run_id=run_id, transition_receipt_sha256=claim.get("receipt"),
+                **summary,
+            )
+
+    def observe_attempt_safely(self, claim: dict[str, Any]) -> None:
+        try:
+            self.observe_attempt(claim)
+        except (ControllerError, OSError) as error:
+            receipt = claim.get("receipt", "")
+            marker = "attempt-observation-invalid-" + hashlib.sha256(
+                f"{claim['ticket']}:{receipt}".encode()
+            ).hexdigest()
+            if self.marker(marker, {
+                "schema": EVENT_SCHEMA,
+                "ticket": claim["ticket"],
+                "transition_receipt_sha256": receipt,
+            }):
+                self.event(
+                    "attempt_observation_invalid", claim["ticket"],
+                    error=str(error), role=claim.get("role"),
+                    transition_receipt_sha256=receipt,
+                )
+
+    def emit_attempt_terminal(
+        self, claim: dict[str, Any], terminal: dict[str, str]
+    ) -> None:
+        run_id = terminal.get("run_id", "")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id):
+            raise ControllerError("terminal run identity is invalid")
+        duplicate_count = terminal.get("duplicate_launch_void_count", "1")
+        if not duplicate_count.isdigit() or not 1 <= int(duplicate_count) <= 10_000:
+            raise ControllerError("terminal duplicate count is invalid")
+        marker = "attempt-terminal-" + hashlib.sha256(run_id.encode()).hexdigest()
+        details = {
+            "accounting_state": terminal.get("accounting_state"),
+            "duplicate_launch_void_count": int(duplicate_count),
+            "exit_status": terminal.get("exit_status"),
+            "go_issued": terminal.get("go_issued"),
+            "head_sha": terminal.get("role_head_before"),
+            "provider_attempt_id": terminal.get("provider_attempt_id"),
+            "progress_events": terminal.get("progress_events"),
+            "role": claim.get("role"),
+            "role_exit": terminal.get("role_exit"),
+            "route_id": terminal.get("route_id"),
+            "run_id": run_id,
+            "task_submitted": terminal.get("task_submitted"),
+            "terminal_reason_code": terminal.get("terminal_reason_code", ""),
+            "transition_receipt_sha256": claim.get("receipt"),
+        }
+        if self.marker(marker, {"schema": EVENT_SCHEMA, **details}):
+            self.event("attempt_terminal", claim["ticket"], **details)
 
     def terminal_already_exported(
         self, claim: dict[str, Any], terminal: dict[str, str]
@@ -1270,12 +1500,41 @@ class Controller:
         if not claim.get("receipt"):
             return True
         if self.role_active(claim):
+            self.observe_attempt_safely(claim)
             return False
         terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
         if terminal is None:
             claim.update(receipt="", role="", status="claimed")
             self.save_claim(claim)
             return True
+        self.emit_attempt_terminal(claim, terminal)
+        if terminal.get("accounting_state") == "launch_void":
+            if (
+                SHA.fullmatch(terminal.get("kit_sha", ""))
+                and terminal["kit_sha"] != self.release_path.name
+            ):
+                prior = terminal["kit_sha"]
+                run_id = terminal.get("run_id")
+                claim.update(receipt="", role="", status="claimed")
+                self.save_claim(claim)
+                self.event(
+                    "pre_go_failure_recovered_by_release_upgrade",
+                    claim["ticket"], failed_run_id=run_id,
+                    from_factory_sha=prior,
+                )
+                return True
+            reason = terminal.get("terminal_reason_code", "")
+            if not re.fullmatch(r"[a-z0-9_]{0,64}", reason):
+                reason = "invalid_pre_go_reason"
+            claim["status"] = "blocked"
+            self.save_claim(claim)
+            self.release_ticket_lease(claim)
+            self.event(
+                "pre_go_failure_blocked", claim["ticket"],
+                failed_run_id=terminal.get("run_id"),
+                reason=reason or "pre_go_failure",
+            )
+            return False
         publication = (
             "validating"
             if claim["role"] in {"reviewer", "narrator"}
@@ -1571,6 +1830,10 @@ class Controller:
                 return
         claim.update(receipt=receipt, role=role, status="running")
         self.save_claim(claim)
+        self.event(
+            "attempt_started", claim["ticket"], role=role,
+            transition_receipt_sha256=receipt,
+        )
         task = f"Execute {role} for {claim['ticket']} from its frozen contract and repository state."
         if failed_checks:
             task += " Required GitHub checks failed: " + ", ".join(failed_checks)
@@ -1583,7 +1846,13 @@ class Controller:
         ]
         log_path = self.logs / f"{claim['ticket']}-{role}.log"
         with log_path.open("a", encoding="utf-8") as log:
-            subprocess.run(command, stdout=log, stderr=log, check=False)
+            process = subprocess.Popen(command, stdout=log, stderr=log)
+            while True:
+                try:
+                    process.wait(timeout=RECONCILE_INTERVAL_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    self.observe_attempt_safely(claim)
         self.finish_pending_run(claim)
 
     def reconcile_ticket(self, claim: dict[str, Any]) -> dict[str, str]:

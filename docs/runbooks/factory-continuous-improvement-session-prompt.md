@@ -415,6 +415,11 @@ Confirm each against current code and evidence before proposing work:
     launcher whose bytes differ from the sealed candidate; bootstrap it only
     while provider/controller work is drained and retain the prior executable
     for rollback.
+16. **P0 observed—open:** a live provider role has no authenticated progress
+    projection between admission and terminalization. Add rate-limited,
+    content-free, attempt-bound heartbeats with monotonic output/token deltas
+    and optional tool phase. A soft stall may alert but must never cancel,
+    replay, or double-charge; preserve the existing authenticated hard stop.
 
 Do not fix all of these mechanically. Rank them by measured provider cost,
 wall-clock delay, sibling blocking, manual intervention, and trust risk. Choose
