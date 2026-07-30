@@ -2478,6 +2478,37 @@ locally; protected GitHub CI owns the complete regression. The live Relay
 certification must then succeed on the sealed successor before this entry is
 closed.
 
+## FI-20260730-106 — Release migration stranded a successful terminal role
+
+Status: Implemented; protected CI and live T-093 recovery pending
+Priority: P0
+Area: portable ticket passports
+Owner: Factory
+First seen: Nysa generation 28 recovery of T-093
+Impact: T-093's successful Test-author output and charge were immutable, and
+its old head was an ancestor of the authenticated release-migration head, but
+terminal export stopped before adding that role to the passport. Replaying
+Test-author would waste a provider call and violate Contract 1.8 evidence
+reuse.
+Evidence: the consumed receipt bound passport file
+`999f688844c45fce00be2ba098f70ef0cf72eb04ecf835a84b759b498b56a5be`;
+the successor passport records that exact value as `parent_file_sha256` and
+its latest signed migration links the receipt's Factory/head to the current
+Factory/head.
+Root cause: passport export accepted only a receipt bound to the current
+passport file. Controller recovery intentionally migrates the passport before
+retrying an unexported terminal boundary, so the receipt instead binds the
+immediate authenticated parent.
+Smallest change: accept the receipt only when it matches the current
+passport's signed `parent_file_sha256` and the latest migration exactly links
+the receipt Factory/head to the current Factory/head. Do not walk arbitrary
+ancestors or relax branch, contract, ancestry, terminal evidence, or
+authentication checks.
+Validation: the focused passport suite proves the exact cross-release terminal
+export, cumulative charge uniqueness, and completed-role preservation.
+Protected GitHub CI owns the complete regression; live T-093 recovery must add
+the existing Test-author evidence without another provider run.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

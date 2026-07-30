@@ -73,6 +73,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   later Narrator must also belong to the receipt-bound old head; earlier
   discarded-lineage rows remain auditable but do not disqualify a later valid
   pair. Unknown and semantic changes still invalidate review.
+- Contract 1.8 passport export accepts a terminal receipt across exactly one
+  immediately authenticated passport migration only when the signed parent
+  file digest and the migration's old/new Factory and ticket heads match the
+  receipt and current clean cell. Arbitrary ancestors and unknown changes
+  remain outside ticket lineage.
 - Contract 1.8 publication queue membership follows the current deterministic
   transition rather than historical readiness. A ticket that is no longer
   merge-ready withdraws its stale queue record, while an active publication
@@ -1847,3 +1852,14 @@ therefore read EOF and certification failed before product tests. The
 normalizer now runs as an inline Python command whose standard input remains
 the provider check output. It still validates `status=ready` and binds the
 exact Factory SHA and tree before any receipt can be issued.
+
+## 2026-07-30 — Decision 145: Terminal export follows one authenticated migration edge
+
+Category: Incident
+
+Nysa T-093 finished Test-author before its authorized release migration, but
+the successor controller migrated its passport before exporting the terminal
+result. Export now accepts only the exact signed parent-file digest and latest
+old/new Factory/head migration edge. This preserves the successful role
+without replay while unknown, non-immediate, or unauthenticated lineage remains
+rejected.

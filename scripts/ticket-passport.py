@@ -571,6 +571,8 @@ def merge_records(
 def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     passports = safe_directory(args.state_dir / "passports", create=True)
     destination = passports / f"{args.ticket}.json"
+    if git(args.workdir, "status", "--porcelain=v1", "-z"):
+        raise PassportError("passport export requires a clean execution cell")
     previous: dict[str, Any] = {}
     parent_raw = None
     if destination.exists() or destination.is_symlink():
@@ -579,10 +581,31 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     current_identity = identity(args)
     old_head = consumed.get("head_sha", "")
     bound_passport = consumed.get("passport_sha256")
+    migrations = previous.get("migration_history", [])
+    latest_migration = (
+        migrations[-1]
+        if isinstance(migrations, list)
+        and migrations
+        and isinstance(migrations[-1], dict)
+        else {}
+    )
+    migrated_receipt = (
+        bound_passport == previous.get("parent_file_sha256")
+        and previous.get("factory_sha") == args.factory_sha
+        and previous.get("head_sha") == current_identity["head_sha"]
+        and latest_migration.get("from_factory_sha")
+        == consumed.get("factory_sha")
+        and latest_migration.get("from_head_sha") == old_head
+        and latest_migration.get("to_factory_sha") == args.factory_sha
+        and latest_migration.get("to_head_sha") == current_identity["head_sha"]
+    )
     if (
         consumed.get("ticket") != args.ticket
         or consumed.get("project") != args.project
-        or consumed.get("factory_sha") != args.factory_sha
+        or (
+            consumed.get("factory_sha") != args.factory_sha
+            and not migrated_receipt
+        )
         or consumed.get("contract_version") != args.contract_version
         or consumed.get("branch") != current_identity["branch"]
         or not SHA.fullmatch(old_head)
@@ -593,7 +616,7 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
             stderr=subprocess.DEVNULL,
             check=False,
         ).returncode != 0
-        or bound_passport != parent_raw
+        or (bound_passport != parent_raw and not migrated_receipt)
     ):
         raise PassportError("transition receipt is outside current ticket lineage")
     completed, charges = run_evidence(args.factory_root / "factory", args.ticket)
