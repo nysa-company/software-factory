@@ -1972,4 +1972,9 @@ the signed repair record. A legacy export that already consumed its migration
 history may reach that boundary only through the exact consumed `FIX` receipt,
 parent passport-file digest, authenticated completed-role evidence, immutable
 manifest, charge, head, Factory release history, and original blocker charge.
-No missing, duplicate, or ambiguous proof may retire a checkpoint.
+If that export is migrated before the next transition, the same completion may
+be recognized only through a contiguous v2 suffix that starts at the repair
+Factory and a descendant of its head and ends at the current Factory, head,
+protected base, route plan, and passport parent. A legacy authorization,
+broken chain, missing, duplicate, or ambiguous proof may not retire a
+checkpoint.

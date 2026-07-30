@@ -744,12 +744,12 @@ def completed_repair_after_lost_migration_history(
     """Recognize the exact terminal export that dropped migration history.
 
     Contract 1.8 exports before this repair rebuilt the passport without
-    carrying its authenticated migration history.  Recovery is safe only
-    after the already-authorized repair role completed: the consumed FIX
-    receipt binds the prior passport file, and the new authenticated passport
-    binds that receipt plus the exact immutable run evidence.
+    carrying a consumed legacy migration history. Recovery is safe only after
+    the already-authorized repair role completed: the consumed FIX receipt
+    binds the terminal evidence, and the current authenticated passport is
+    either that direct export or its contiguous v2 migration successor.
     """
-    if "migration_history" in passport or len(successes) != 1:
+    if len(successes) != 1:
         return False
     try:
         transition = safe_receipt(args.state_dir / f"{args.ticket}.json")
@@ -759,11 +759,73 @@ def completed_repair_after_lost_migration_history(
     completed = passport.get("completed_role_evidence")
     charges = passport.get("charge_records")
     history = passport.get("factory_release_history")
+    migrations = passport.get("migration_history")
     current_head = git(args.workdir, "rev-parse", "HEAD")
+    direct_export = (
+        "migration_history" not in passport
+        and passport.get("factory_sha") == transition.get("factory_sha")
+        and passport.get("parent_file_sha256")
+        == transition.get("passport_sha256")
+    )
+    migrated_export = (
+        isinstance(migrations, list)
+        and bool(migrations)
+        and all(
+            isinstance(item, dict)
+            and item.get("schema") == PASSPORT_MIGRATION_SCHEMA
+            and "lineage_authorization_sha256" not in item
+            and all(
+                SHA.fullmatch(item.get(name, ""))
+                for name in (
+                    "from_factory_sha", "from_head_sha",
+                    "from_protected_base_sha", "to_factory_sha",
+                    "to_head_sha", "to_protected_base_sha",
+                )
+            )
+            and all(
+                DIGEST.fullmatch(item.get(name, ""))
+                for name in (
+                    "from_passport_file_sha256",
+                    "from_passport_sha256", "from_route_plan_sha256",
+                    "to_route_plan_sha256",
+                )
+            )
+            for item in migrations
+        )
+        and all(
+            prior["to_factory_sha"] == following["from_factory_sha"]
+            and prior["to_head_sha"] == following["from_head_sha"]
+            and prior["to_protected_base_sha"]
+            == following["from_protected_base_sha"]
+            for prior, following in zip(migrations, migrations[1:])
+        )
+        and migrations[0].get("from_factory_sha")
+        == transition.get("factory_sha")
+        and subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+                success.get("role_head_before", ""),
+                migrations[0].get("from_head_sha", ""),
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        ).returncode == 0
+        and migrations[-1].get("to_factory_sha") == args.factory_sha
+        and migrations[-1].get("to_head_sha") == current_head
+        and migrations[-1].get("to_protected_base_sha")
+        == passport.get("protected_base_sha")
+        and migrations[-1].get("to_route_plan_sha256")
+        == passport.get("route_plan_sha256")
+        and migrations[-1].get("from_passport_file_sha256")
+        == passport.get("parent_file_sha256")
+        and migrations[-1].get("from_passport_sha256")
+        == passport.get("parent_digest")
+    )
     if (
         not isinstance(completed, list)
         or not isinstance(charges, list)
         or not isinstance(history, list)
+        or not (direct_export or migrated_export)
         or passport.get("ticket") != args.ticket
         or passport.get("factory_sha") != args.factory_sha
         or passport.get("head_sha") != current_head
@@ -771,20 +833,18 @@ def completed_repair_after_lost_migration_history(
         != f"FIX {record.get('repair_role', '')}"
         or passport.get("transition_receipt_sha256")
         != transition.get("receipt_sha256")
-        or passport.get("parent_file_sha256")
-        != transition.get("passport_sha256")
         or transition.get("consumed") is not True
         or transition.get("ticket") != args.ticket
         or transition.get("project") != args.project
         or transition.get("branch") != passport.get("branch")
-        or transition.get("factory_sha") != args.factory_sha
+        or not SHA.fullmatch(transition.get("factory_sha", ""))
         or transition.get("role") != record.get("repair_role")
         or transition.get("stage")
         != f"FIX {record.get('repair_role', '')}"
         or transition.get("head_sha") != success.get("role_head_before")
         or success.get("transition_receipt_sha256")
         != transition.get("receipt_sha256")
-        or success.get("kit_sha") != args.factory_sha
+        or success.get("kit_sha") != transition.get("factory_sha")
         or subprocess.run(
             [
                 "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
@@ -806,8 +866,11 @@ def completed_repair_after_lost_migration_history(
         len(releases) != len(history)
         or len(releases) != len(set(releases))
         or record.get("factory_sha") not in releases
+        or transition.get("factory_sha") not in releases
         or args.factory_sha not in releases
-        or releases.index(record["factory_sha"]) >= releases.index(args.factory_sha)
+        or releases.index(record["factory_sha"])
+        >= releases.index(transition["factory_sha"])
+        or releases.index(transition["factory_sha"]) > releases.index(args.factory_sha)
     ):
         return False
     matching_completed = [
@@ -818,7 +881,7 @@ def completed_repair_after_lost_migration_history(
         and item.get("transition_receipt_sha256")
         == transition.get("receipt_sha256")
         and item.get("manifest_sha256") == success.get("manifest_sha256")
-        and item.get("factory_sha") == args.factory_sha
+        and item.get("factory_sha") == transition.get("factory_sha")
         and item.get("head_before") == success.get("role_head_before")
     ]
     matching_charges = [
@@ -829,7 +892,7 @@ def completed_repair_after_lost_migration_history(
         and item.get("transition_receipt_sha256")
         == transition.get("receipt_sha256")
         and item.get("manifest_sha256") == success.get("manifest_sha256")
-        and item.get("factory_sha") == args.factory_sha
+        and item.get("factory_sha") == transition.get("factory_sha")
         and item.get("head_before") == success.get("role_head_before")
     ]
     blocked = [
