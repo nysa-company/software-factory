@@ -231,7 +231,9 @@ adapter/model/family/account tuple and canonical provider-policy digest; all
 limits remain policy-owned. Activation permits account capacity through four
 for Codex, native Claude, and Cursor when each attempt has an isolated
 owner-only home, configuration directory, temporary directory, and credential
-copy. Contract 1.6
+copy. The installed launcher anchors those attempt runtimes in owner-local,
+ticket- and execution-cell-neutral state; concurrent Codex, Claude Code, and
+Cursor processes never share writable CLI homes. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
 Its trusted ticket-state reconciliation binds a successful Reviewer's
@@ -589,11 +591,16 @@ requires the matching opaque record under
 the configured capacity is full. Stale records continue to consume capacity and
 are never reassigned automatically. This is the single coupled ticket-worktree
 and provider-call capacity setting. The product-level control lock still
-serializes native subscription, Cursor CLI, and every other legacy provider
-interval. Only an exact API route selected by the owner-only Contract 1.6
-activation file may use transactional isolated admission and bypass that lock;
-missing or invalid activation selects the legacy path or refuses, never an
-implicit isolated run.
+serializes older contracts, explicit single-ticket products, and every
+non-activated legacy provider interval. Contract 1.8 with capacity above one
+instead requires owner-only canonical subscription activation, policy,
+coordinator state, and per-attempt runtime roots covering every enabled Cursor,
+Claude Code, and Codex route. Doctor, certification, activation, and role
+pre-admission all refuse when that configuration is absent, incomplete,
+drifted, or below ticket capacity; they never silently serialize a multi-ticket
+release. Contract 1.6 and Contract 1.8 capacity one retain the fail-closed
+legacy path. Only an exact API route selected by the owner-only Contract 1.6
+activation file may use the API-isolated runtime.
 The legacy global ledger remains an additional serialization and accounting
 boundary when a machine cap is configured.
 Contract 1.6 workers have no network and never receive provider credentials or
@@ -635,6 +642,10 @@ the sole caller that advances work through state-machine receipts.
 Certification binds the candidate kit SHA/tree/origin, product path/origin/Git
 tree, pin and project-config hashes, contract, host, OS/architecture, checks,
 previous generation, and expiry. The default receipt lifetime is 24 hours.
+For a Contract 1.8 product whose ticket capacity exceeds one, certification
+and every receipt revalidation also require owner-local subscription
+concurrency to cover Cursor, Claude Code, and Codex at no less than that
+capacity.
 Activation reruns those bindings and refuses stale or drifted receipts.
 Installation and certification serialize the kit-suite evidence decision under
 the install lock. Certification may reuse an unexpired passing suite result for

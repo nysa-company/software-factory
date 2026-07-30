@@ -20,9 +20,12 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
   1.6 and 1.7 default to `4` and accept `1` through `6`; Contract 1.8 defaults
   to `4` and accepts `1` through `4`. Set a value above `1` only after a bounded
   concurrency pilot is approved. This is the one coupled worktree/provider
-  capacity setting. The retained product-level control lock serializes native
-  subscription, Cursor CLI, and every other legacy route. An API route may use
-  isolated parallel admission only after exact Contract 1.6 owner activation.
+  capacity setting. Contract 1.8 at capacity above one requires exact
+  owner-approved subscription concurrency for every enabled Cursor, Claude
+  Code, and Codex route; certification and activation refuse instead of
+  silently using the legacy provider lock. Older contracts and capacity one
+  retain the serialized path. An API route may use isolated parallel admission
+  only after exact Contract 1.6 owner activation.
 - Copy exactly three CI files (GitHub requires workflows and helpers to live in the repo they run on): `ci/test-immutability-check.sh` and `ci/lightweight-change.sh` → `.github/scripts/`, and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`. Set `TEST_PATHS` from `PROJECT.env` and review the helper's narrow inert-metadata allowlist for the product. Existing product repositories must receive template updates explicitly; kit updates do not rewrite instantiated CI.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. Optional `<ROLE>_PER_RUN_BUDGET_USD`, `<ROLE>_PER_RUN_MAX_TURNS`, and `<ROLE>_PER_RUN_TIMEOUT_MIN` keys override one role's attempt limits; normalize role hyphens to underscores, and omit a key to inherit its default. Money values are capped at $1,000,000 with six decimal places, turns at 1,000, and timeout at 1,440 minutes. The validator checks the two files agree. `ENVELOPE.env` and `~/.factory/global.env` are parsed as whitelisted data and must never contain shell commands or expansions.
 - Cursor interprets the selected timeout as a soft inactivity window and keeps
@@ -86,10 +89,44 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   files contain paths only, never credentials.
 - Keep the factory gateway and machine dashboard as separate LaunchAgents.
   Do not embed secret-bearing environment keys in either plist.
-- Install and certify the pinned release:
+- Install the pinned release:
 
   ```bash
   bash scripts/factory-kit.sh install --repo "$PWD" --sha "<full-sha>"
+  ```
+
+- Before certifying a Contract 1.8 product with
+  `MAX_CONCURRENT_TICKETS` above one, enter maintenance and drain every role,
+  lease, provider attempt, and legacy interval. Preview the credential-free
+  owner-local policy, review its exact routes and capacity, then apply only its
+  exact approval hash:
+
+  ```bash
+  FACTORY_KIT="$HOME/.factory/kits/releases/<full-sha>/scripts/factory-kit.sh"
+  PLAN="$(
+    bash "$FACTORY_KIT" provider-concurrency plan \
+      --sha "<full-sha>" --capacity 3
+  )"
+  APPROVAL="$(
+    printf '%s' "$PLAN" |
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["approval_sha256"])'
+  )"
+  bash "$FACTORY_KIT" provider-concurrency apply \
+    --sha "<full-sha>" --capacity 3 --approve-hash "$APPROVAL"
+  ```
+
+  Use the product's exact configured capacity in place of `3`. The apply is
+  fail-closed, initializes only owner-local policy/coordinator/runtime state,
+  and never copies a credential. Each admitted role later copies only its CLI
+  authentication into a mode-0600 attempt-local home and removes that home
+  after its process group drains. A policy change while provider work is
+  active is refused.
+- Certification records the exact policy digest, covered adapters and routes,
+  ticket capacity, sealed Factory SHA/tree, and owner-local runtime directory
+  identity. Activation and recutover recompute that evidence and refuse drift.
+- Certify the pinned release:
+
+  ```bash
   bash scripts/factory-kit.sh certify \
     --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
   ```
@@ -164,7 +201,10 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Metrics ledger file exists and the run wrapper writes to it
 - [ ] `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv` are ignored; preflight or the first normal Linear reconciliation creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree only after every active or ambiguous claim and `factory/runs/*.pid` record is reconciled
 - [ ] A duplicate ticket-and-role launch refuses an existing claim without creating a manifest, and malformed telemetry retains the full reservation
-- [ ] Provider intervals serialize under the product-level control lock, and any new or changed sibling manifest during an interval fails closed
+- [ ] Contract 1.8 multi-ticket products report provider concurrency ready in
+      doctor, cover Cursor, Claude Code, and Codex at ticket capacity, and use
+      distinct attempt-local homes; older and single-ticket products retain the
+      product-level serialized provider lock
 - [ ] If a machine cap is configured, its global ledger is a regular non-symlink file in a real directory and a mutation drill fails closed without deleting ledger history
 - [ ] Activation/reconcile interruption and fail-closed kit rollback drilled; `MAINTENANCE` remains after rollback
 - [ ] Measured control-plane outage is within 5 minutes and full rollback RTO is within 30 minutes, or the factory remains in maintenance until the gap is resolved

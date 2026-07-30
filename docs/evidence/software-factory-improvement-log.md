@@ -2310,6 +2310,112 @@ of T-094's actual signed passport, consumed receipt, five run manifests, branch
 history, and a fresh isolated exact lease resolves only to Builder. Protected
 GitHub CI owns the complete regression.
 
+## FI-20260729-101 — Production activation silently retained provider serialization
+
+Status: Implemented; protected CI pending
+Area: release activation and provider admission
+Owner: Factory
+First seen: 2026-07-29, Nysa Factory 1.8 activation and T-093/T-100
+Impact: three ticket cells and controller workers were available, but T-100
+waited while T-093 owned the sole legacy Cursor interval. The activated
+multi-ticket release therefore demonstrated ticket concurrency without
+provider-runtime concurrency.
+Evidence: the sealed launcher selected production paths
+`~/.factory/provider-policy.json` and `~/.factory/isolated-v1.enabled`, while
+the release workflow created neither and certification did not require them.
+Only qualification launchers exported `FACTORY_CLI_LANE_ROOT`; a production
+activation with manually supplied JSON would still fail before submission
+because `prepare_cli_runtime` required a development/qualification lane.
+Codex was excluded from that preparation and retained shared `HOME`.
+Root cause: qualification-owned provider preparation was never promoted into
+the installed release contract. The runtime still treated subscription
+isolation as lane state instead of owner-local attempt state, and absent
+activation silently selected the legacy lock even when Contract 1.8 declared
+multi-ticket capacity.
+Smallest change: add one approval-hash-bound owner-local provider configurator
+for the sealed route catalog; anchor every production attempt to a
+ticket/cell-neutral runtime root; isolate Codex authentication and writable
+state alongside the existing Claude and Cursor copies; and make doctor,
+certification, activation, and Contract 1.8 role pre-admission refuse missing,
+incomplete, drifted, or under-capacity configuration. Keep the legacy lock for
+older contracts, capacity one, and non-activated legacy routes.
+Validation: focused tests prove canonical owner-local configuration covers
+Cursor, Claude Code, and Codex, three distinct mock CLI routes reach submitted
+state during the same measured interval, then terminalize and remove their
+mode-0700 runtimes independently. Three same-Cursor-account reservations also
+admit, each adapter receives a distinct runtime with mode-0600 authentication
+copies, source authentication remains unchanged, and doctor fails until the
+exact multi-ticket configuration is ready. Certification records and
+activation revalidates the exact policy digest, ticket capacity, route and
+adapter coverage, Factory SHA/tree, and runtime-root identity. A real
+three-route provider overlap is still required after protected CI,
+installation, explicit owner apply, and activation; no readiness probe or live
+provider call was run during this repair.
+
+## FI-20260729-102 — Downstream dependency checked after paid admission
+
+Status: Implemented; protected CI and live proof pending
+Priority: P0
+Area: deterministic readiness and provider admission
+Owner: Factory
+First seen: T-100 Test-author admission while its `Depends-On: T-094`
+prerequisite was not merged
+Impact: a paid Test-author call ran for about 86 seconds before terminalizing
+as contract-blocked. This consumed provider budget and a concurrency slot for
+work that could not yet proceed.
+Evidence: controller preflight currently runs only before Planner. Contract
+1.8 ticket readiness validates decisions, protected-test conflicts, and
+fixture/authentication feasibility, but does not reduce `Depends-On` against
+authoritative protected-main ticket state. Dependency checks therefore occur
+after downstream provider admission.
+Root cause: dependency scheduling and ticket readiness do not share one
+provider-free admission boundary for every paid role.
+Smallest change: before reserving provider capacity or invoking any paid role,
+reduce declared dependencies against authoritative protected main. An
+unresolved dependency must transition deterministically to
+`AWAIT_DEPENDENCY`, with no provider reservation, call, replay, or charge.
+Re-evaluate only after a terminal dependency event or protected-main advance.
+Validation required: prove Planner, Test-author, Builder, and Reviewer cannot
+be admitted while a prerequisite is unresolved; prove sibling tickets
+continue; prove the ticket resumes at its exact stage after the prerequisite
+merges.
+Decision: the activation/concurrency repair exposed this as a direct paid-work
+admission defect, so the same candidate now checks protected dependency truth
+before every role. A resolved dependency whose protected merge is absent from
+the ticket branch takes a receipt-bound, no-provider `dependency-refresh`
+transition. That action requires no PR, preserves Planning/Building state,
+merges and pushes the exact protected SHA, records terminal-truth digests, and
+migrates the authenticated passport before the exact next role. Main movement
+between observation and fetch remains a nonterminal wait.
+
+## FI-20260729-103 — Live provider stdout spool is bounded only at publication
+
+Status: Backlog
+Priority: P1
+Area: provider output containment
+Owner: Factory
+First seen: 2026-07-29 concurrency activation audit
+Impact: final `.out` artifacts and every evidence consumer now share an exact
+8 MiB, mode-0600 streaming contract, but the anonymous unlinked spool may grow
+until the provider exits. A noisy provider can therefore create avoidable
+temporary disk pressure before bounded publication rejects the output.
+Evidence: `run-agent.sh` retains stdout on an unlinked descriptor during the
+provider interval, then streams it through `role_output.py`. The final
+publisher, passport reducer, and state-machine refuse oversized, linked,
+non-regular, non-owner, or non-0600 artifacts without loading them in memory.
+Root cause: the original spool optimized against symlink/path substitution but
+did not enforce the artifact-size contract during the live write.
+Smallest change: introduce a bounded streaming tee (or an equivalent
+descriptor-level byte counter) that preserves real-time redaction and provider
+drain semantics, stops retaining bytes after 8 MiB, and terminalizes with the
+same typed `role_exit_invalid_output` accounting result. Do not truncate into
+apparently successful evidence and do not kill a provider solely because its
+diagnostic output crossed the proof limit.
+Validation required: exact-boundary acceptance, one-byte-over refusal during a
+live long-running process, bounded temporary-file size, unchanged
+cancellation/process-group drainage, conservative accounting, and no plaintext
+credential regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

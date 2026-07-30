@@ -65,6 +65,8 @@ FACTORY_DIR="$REPO_ROOT/factory"
 BUDGET_DAY=""
 PROVIDER_WAIT_SECONDS=0
 DEVELOPMENT_LANE_ROOT=""
+CLI_RUNTIME_STATE_ROOT=""
+CLI_RUNTIME_LAYOUT=""
 if [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
       ( "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* ||
         "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-qualification.* ) &&
@@ -75,6 +77,44 @@ if [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
       DEVELOPMENT_LANE_ROOT="$(cd "$FACTORY_CLI_LANE_ROOT" && pwd -P)"
       ;;
   esac
+fi
+if [[ -n "${FACTORY_CLI_RUNTIME_ROOT:-}" ]]; then
+  # Legacy/serialized releases do not require this owner-local directory.
+  # Concurrent admission still refuses below unless the configured root exists
+  # and passes the complete safety check.
+  if [[ -d "${FACTORY_CLI_RUNTIME_ROOT:-}" &&
+        ! -L "${FACTORY_CLI_RUNTIME_ROOT:-}" ]]; then
+    CLI_RUNTIME_STATE_ROOT="$(python3 - "${FACTORY_CLI_RUNTIME_ROOT:-}" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    info = path.lstat()
+except (FileNotFoundError, OSError):
+    raise SystemExit(1)
+if (
+    not path.is_absolute()
+    or path.is_symlink()
+    or not stat.S_ISDIR(info.st_mode)
+    or path.resolve(strict=True) != path
+    or info.st_uid != os.geteuid()
+    or stat.S_IMODE(info.st_mode) & 0o077
+):
+    raise SystemExit(1)
+print(path)
+PY
+    )" || {
+      echo "subscription CLI runtime root is unsafe" >&2
+      exit 2
+    }
+    CLI_RUNTIME_LAYOUT="owner"
+  fi
+elif [[ -n "$DEVELOPMENT_LANE_ROOT" ]]; then
+  CLI_RUNTIME_STATE_ROOT="$DEVELOPMENT_LANE_ROOT"
+  CLI_RUNTIME_LAYOUT="lane"
 fi
 if [[ -n "${FACTORY_DEV_BUDGET_DAY:-}" ]]; then
   [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
@@ -113,7 +153,8 @@ if [[ -n "${FACTORY_DEV_PROVIDER_WAIT_SECONDS:-}" ]]; then
 fi
 unset FACTORY_DEV_BUDGET_DAY
 unset FACTORY_DEV_PROVIDER_WAIT_SECONDS
-readonly BUDGET_DAY PROVIDER_WAIT_SECONDS DEVELOPMENT_LANE_ROOT
+readonly BUDGET_DAY PROVIDER_WAIT_SECONDS DEVELOPMENT_LANE_ROOT \
+  CLI_RUNTIME_STATE_ROOT CLI_RUNTIME_LAYOUT
 
 # Direct callers may anchor FACTORY_ROOT inside a linked worktree. Runtime
 # accounting still belongs beside the same product path in the main checkout.
@@ -223,7 +264,10 @@ CLI_ATTEMPT_ACTIVE=0
 CLI_RUNTIME_ROOT=""
 CLI_PROVIDER_HOME=""
 CLI_PROVIDER_TMPDIR=""
+CLI_PROVIDER_CACHE_DIR=""
+CLI_PROVIDER_OUTPUT_DIR=""
 CLI_CLAUDE_CONFIG_DIR=""
+CLI_CLAUDE_SETTINGS=""
 CLI_CURSOR_CONFIG_DIR=""
 CLI_CURSOR_DATA_DIR=""
 PROVIDER_EXECUTION_MODE="legacy-serialized"
@@ -998,18 +1042,68 @@ print(attempts[0]["version"])
   CLI_ATTEMPT_ACTIVE=0
 }
 
+copy_cli_credential() {
+  python3 - "$1" "$2" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+source, destination = map(pathlib.Path, sys.argv[1:])
+info = source.lstat()
+if (
+    source.is_symlink()
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) & 0o077
+    or info.st_size > 1_000_000
+):
+    raise SystemExit(1)
+source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    opened = os.fstat(source_fd)
+    if (
+        (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+        or not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+    ):
+        raise SystemExit(1)
+    data = os.read(source_fd, 1_000_001)
+finally:
+    os.close(source_fd)
+if len(data) > 1_000_000:
+    raise SystemExit(1)
+destination_fd = os.open(
+    destination,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o600,
+)
+with os.fdopen(destination_fd, "wb") as stream:
+    stream.write(data)
+    stream.flush()
+    os.fsync(stream.fileno())
+PY
+}
+
 prepare_cli_runtime() {
+  local runtime_state_root="${CLI_RUNTIME_STATE_ROOT:-${DEVELOPMENT_LANE_ROOT:-}}"
+  local runtime_layout="${CLI_RUNTIME_LAYOUT:-lane}"
   [[ "$CLI_CONCURRENT_RUN" -eq 1 ]] || return 0
   case "$ADAPTER" in
-    claude-code|cursor-openai|cursor-anthropic) ;;
+    claude-code|codex|cursor-openai|cursor-anthropic) ;;
     *) return 0 ;;
   esac
-  [[ -n "$DEVELOPMENT_LANE_ROOT" && "$CLI_ATTEMPT_ID" =~ ^[A-Za-z0-9._-]+$ ]] || {
-    echo "subscription CLI isolation requires a valid development-lane attempt" >&2
+  [[ -n "$runtime_state_root" &&
+     "$CLI_ATTEMPT_ID" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "subscription CLI isolation requires an owner-local attempt root" >&2
     return 1
   }
-  local base="$DEVELOPMENT_LANE_ROOT/runtime/cli-attempts"
-  [[ "$ADAPTER" == cursor-* ]] && base="$DEVELOPMENT_LANE_ROOT/c"
+  local base="$runtime_state_root/attempts"
+  if [[ "$runtime_layout" == "lane" ]]; then
+    base="$runtime_state_root/runtime/cli-attempts"
+  fi
+  [[ "$ADAPTER" == cursor-* ]] && base="$runtime_state_root/c"
   mkdir -p "$base"
   chmod 700 "$base"
   CLI_RUNTIME_ROOT="$base/$CLI_ATTEMPT_ID"
@@ -1017,32 +1111,67 @@ prepare_cli_runtime() {
     echo "subscription CLI attempt runtime already exists" >&2
     return 1
   }
-  mkdir -m 700 "$CLI_RUNTIME_ROOT/home" "$CLI_RUNTIME_ROOT/tmp"
+  mkdir -m 700 \
+    "$CLI_RUNTIME_ROOT/cache" \
+    "$CLI_RUNTIME_ROOT/home" \
+    "$CLI_RUNTIME_ROOT/output" \
+    "$CLI_RUNTIME_ROOT/tmp"
   printf '%s\n' "$CLI_ATTEMPT_ID" >"$CLI_RUNTIME_ROOT/owner"
   CLI_PROVIDER_HOME="$CLI_RUNTIME_ROOT/home"
   CLI_PROVIDER_TMPDIR="$CLI_RUNTIME_ROOT/tmp"
+  CLI_PROVIDER_CACHE_DIR="$CLI_RUNTIME_ROOT/cache"
+  CLI_PROVIDER_OUTPUT_DIR="$CLI_RUNTIME_ROOT/output"
   if [[ "$ADAPTER" == claude-code ]]; then
     local source="$HOME/.claude/.credentials.json"
     [[ -f "$source" && ! -L "$source" ]] || {
-      echo "lane-local Claude subscription credential is unavailable" >&2
+      echo "Claude subscription credential is unavailable" >&2
       return 1
     }
     mkdir -m 700 "$CLI_RUNTIME_ROOT/config"
-    cp "$source" "$CLI_RUNTIME_ROOT/config/.credentials.json"
-    chmod 600 "$CLI_RUNTIME_ROOT/config/.credentials.json"
+    copy_cli_credential "$source" \
+      "$CLI_RUNTIME_ROOT/config/.credentials.json" || {
+        echo "Claude subscription credential is unsafe" >&2
+        return 1
+      }
     CLI_CLAUDE_CONFIG_DIR="$CLI_RUNTIME_ROOT/config"
+    CLI_CLAUDE_SETTINGS="$CLI_RUNTIME_ROOT/settings.json"
+    if [[ -n "${FACTORY_CLAUDE_SETTINGS:-}" ]]; then
+      copy_cli_credential "$FACTORY_CLAUDE_SETTINGS" \
+        "$CLI_CLAUDE_SETTINGS" || {
+          echo "Claude settings are unsafe" >&2
+          return 1
+        }
+    else
+      printf '%s\n' '{"sandbox":{"enabled":false}}' >"$CLI_CLAUDE_SETTINGS"
+      chmod 600 "$CLI_CLAUDE_SETTINGS"
+    fi
+  elif [[ "$ADAPTER" == codex ]]; then
+    local source="$HOME/.codex/auth.json"
+    [[ -f "$source" && ! -L "$source" ]] || {
+      echo "Codex subscription credential is unavailable" >&2
+      return 1
+    }
+    mkdir -m 700 "$CLI_PROVIDER_HOME/.codex"
+    copy_cli_credential "$source" "$CLI_PROVIDER_HOME/.codex/auth.json" || {
+      echo "Codex subscription credential is unsafe" >&2
+      return 1
+    }
   else
     local cursor_source="${FACTORY_CURSOR_SESSION_HOME:-$HOME}/.cursor"
     [[ -f "$cursor_source/auth.json" && ! -L "$cursor_source/auth.json" &&
        -f "$cursor_source/cli-config.json" &&
        ! -L "$cursor_source/cli-config.json" ]] || {
-      echo "lane-local Cursor subscription credential is unavailable" >&2
+      echo "Cursor subscription credential is unavailable" >&2
       return 1
     }
     mkdir -m 700 "$CLI_PROVIDER_HOME/.cursor" "$CLI_RUNTIME_ROOT/data"
-    cp "$cursor_source/auth.json" "$cursor_source/cli-config.json" \
-      "$CLI_PROVIDER_HOME/.cursor/"
-    chmod 600 "$CLI_PROVIDER_HOME/.cursor/"*.json
+    copy_cli_credential "$cursor_source/auth.json" \
+      "$CLI_PROVIDER_HOME/.cursor/auth.json" &&
+      copy_cli_credential "$cursor_source/cli-config.json" \
+        "$CLI_PROVIDER_HOME/.cursor/cli-config.json" || {
+          echo "Cursor subscription credential is unsafe" >&2
+          return 1
+        }
     CLI_CURSOR_CONFIG_DIR="$CLI_PROVIDER_HOME/.cursor"
     CLI_CURSOR_DATA_DIR="$CLI_RUNTIME_ROOT/data"
     [[ "${#CLI_CURSOR_DATA_DIR}" -le 75 ]] || {
@@ -1054,13 +1183,15 @@ prepare_cli_runtime() {
 }
 
 cleanup_cli_runtime() {
+  local runtime_state_root="${CLI_RUNTIME_STATE_ROOT:-${DEVELOPMENT_LANE_ROOT:-}}"
+  local runtime_layout="${CLI_RUNTIME_LAYOUT:-lane}"
   [[ -n "$CLI_RUNTIME_ROOT" ]] || return 0
   [[ "$RUN_GROUP_TERMINATED" -eq 1 ]] || {
-    echo "WARNING: retaining Claude CLI runtime because its process group survived" >&2
+    echo "WARNING: retaining subscription CLI runtime because its process group survived" >&2
     return 0
   }
-  python3 - "$CLI_RUNTIME_ROOT" "$DEVELOPMENT_LANE_ROOT" "$CLI_ATTEMPT_ID" \
-    "$ADAPTER" <<'PY'
+  python3 - "$CLI_RUNTIME_ROOT" "$runtime_state_root" "$CLI_ATTEMPT_ID" \
+    "$ADAPTER" "$runtime_layout" <<'PY'
 import os
 import pathlib
 import shutil
@@ -1070,7 +1201,12 @@ root = pathlib.Path(sys.argv[1])
 lane = pathlib.Path(sys.argv[2])
 attempt = sys.argv[3]
 adapter = sys.argv[4]
-expected_parent = lane / ("c" if adapter.startswith("cursor-") else "runtime/cli-attempts")
+layout = sys.argv[5]
+expected_parent = lane / (
+    "c" if adapter.startswith("cursor-")
+    else "runtime/cli-attempts" if layout == "lane"
+    else "attempts"
+)
 if (
     not root.is_absolute()
     or root.parent != expected_parent
@@ -1474,6 +1610,30 @@ fi
 if [[ "$ISOLATED_RUN" -eq 1 || "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   PARALLEL_PROVIDER_RUN=1
 fi
+if [[ "$PROVIDER_CONTRACT_VERSION" == "1.8.0" &&
+      "$ADAPTER" =~ ^(claude-code|codex|cursor-openai|cursor-anthropic)$ ]]; then
+  CONTRACT_CAPACITY="$(factory_dispatch_max_tickets \
+    "$REPO_ROOT" "$PROVIDER_CONTRACT_VERSION" 2>/dev/null)" || {
+      echo "ticket concurrency configuration is invalid; no task was submitted" >&2
+      exit 3
+    }
+  if [[ "$CONTRACT_CAPACITY" -gt 1 ]]; then
+    if [[ "${FACTORY_PROVIDER_POLICY:-}" != */provider-policy.json ]] ||
+       [[ "${FACTORY_PROVIDER_CONFIGURATION_LOCK:-}" != \
+          "$(dirname "$FACTORY_PROVIDER_POLICY")/provider-configuration.lock" ]] ||
+       ! python3 "$KIT_DIR/scripts/provider-concurrency-config.py" \
+         --release "$KIT_DIR" --root "$(dirname "$FACTORY_PROVIDER_POLICY")" \
+         --capacity "$CONTRACT_CAPACITY" check \
+         --activation "${FACTORY_PROVIDER_ACTIVATION:-}" >/dev/null; then
+      echo "Contract 1.8 multi-ticket provider concurrency is not ready; no task was submitted" >&2
+      exit 3
+    fi
+    if [[ "$CLI_CONCURRENT_RUN" -ne 1 ]]; then
+      echo "Contract 1.8 multi-ticket execution requires activated subscription CLI concurrency; no task was submitted" >&2
+      exit 3
+    fi
+  fi
+fi
 if [[ "$ISOLATED_RUN" -eq 1 ]]; then
   PROVIDER_EXECUTION_MODE="api-isolated-v1"
 elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
@@ -1611,6 +1771,12 @@ fi
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   CLI_ATTEMPT_ID="$RUN_ID-cli"
   CLI_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+  CLI_CONFIGURATION_LOCK_ARGS=()
+  if [[ -n "${FACTORY_PROVIDER_CONFIGURATION_LOCK:-}" ]]; then
+    CLI_CONFIGURATION_LOCK_ARGS=(
+      --configuration-lock "$FACTORY_PROVIDER_CONFIGURATION_LOCK"
+    )
+  fi
   CLI_ATTEMPT_ARGS=(
     --attempt-id "$CLI_ATTEMPT_ID" \
     --provider-family "$SELECTED_FAMILY" \
@@ -1626,6 +1792,7 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   CLI_RESERVATION_ARGS=(
     "${CLI_ATTEMPT_ARGS[@]}" \
     --policy "$FACTORY_PROVIDER_POLICY" \
+    "${CLI_CONFIGURATION_LOCK_ARGS[@]}" \
     --expected-policy-sha256 "$ACTIVATED_POLICY_HASH"
   )
   if [[ "$PROVIDER_WAIT_SECONDS" -gt 0 ]]; then
@@ -1646,6 +1813,7 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         --operation-id "$CLI_ATTEMPT_ID-wait-admit" \
         --attempt-id "$CLI_ATTEMPT_ID" --expected-version 1 \
         --policy "$FACTORY_PROVIDER_POLICY" \
+        "${CLI_CONFIGURATION_LOCK_ARGS[@]}" \
         --expected-policy-sha256 "$ACTIVATED_POLICY_HASH" \
         --wait-seconds "$PROVIDER_WAIT_SECONDS" \
         --cancel-path "$FACTORY_DIR/KILL" \
@@ -2042,6 +2210,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --coordinator "$KIT_DIR/scripts/provider-coordinator.py"
       --db "$FACTORY_PROVIDER_DB"
       --policy "$FACTORY_PROVIDER_POLICY"
+      "${CLI_CONFIGURATION_LOCK_ARGS[@]}"
       --attempt-id "$CLI_ATTEMPT_ID"
       --provider-family "$SELECTED_FAMILY"
       --account-route "$SELECTED_ACCOUNT_ROUTE_ID"
@@ -2055,6 +2224,9 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --pre-reserved
       -- /usr/bin/env -i
         "HOME=$CLI_PROVIDER_HOME" "PATH=$PATH" "TMPDIR=$CLI_PROVIDER_TMPDIR"
+        "XDG_CACHE_HOME=$CLI_PROVIDER_CACHE_DIR"
+        "npm_config_cache=$CLI_PROVIDER_CACHE_DIR/npm"
+        "FACTORY_ATTEMPT_OUTPUT_ROOT=$CLI_PROVIDER_OUTPUT_DIR"
         "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "LANG=${LANG:-C}"
         "CODEX_PINNED=${CODEX_PINNED:-}" "CLAUDE_CODE_PINNED=${CLAUDE_CODE_PINNED:-}"
         "CURSOR_AGENT_VERSION=${CURSOR_AGENT_VERSION:-}"
@@ -2066,10 +2238,10 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         "FACTORY_CURSOR_INTERNAL_SANDBOX=${FACTORY_CURSOR_INTERNAL_SANDBOX:-0}"
         "FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT=${FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT:-0}"
         "FACTORY_PROGRESS_JOURNAL=$FACTORY_PROGRESS_JOURNAL"
-        "FACTORY_CLI_INTERNAL_SANDBOX=${FACTORY_CLI_INTERNAL_SANDBOX:-0}"
+        "FACTORY_CLI_INTERNAL_SANDBOX=1"
         "FACTORY_TIMEOUT_FOREGROUND=1"
         "FACTORY_CLI_ATTEMPT_ID=$CLI_ATTEMPT_ID"
-        "FACTORY_CLAUDE_SETTINGS=${FACTORY_CLAUDE_SETTINGS:-}"
+        "FACTORY_CLAUDE_SETTINGS=$CLI_CLAUDE_SETTINGS"
         "CLAUDE_CONFIG_DIR=$CLI_CLAUDE_CONFIG_DIR"
         "CLAUDE_CODE_TMPDIR=$CLI_PROVIDER_TMPDIR"
         "FACTORY_ROLE=$ROLE"
@@ -2293,26 +2465,28 @@ RUN_GO_FILE=""
 RUN_GATE_FILE=""
 RUN_SUBMITTED_FILE=""
 exec 9>&-
-RESULT="$(cat <&8)"
+ROLE_OUTPUT_VALID=1
+if ! RUN_OUTPUT_SHA256="$(
+  python3 "$KIT_DIR/scripts/lib/role_output.py" publish \
+    "$RUNS_DIR/$RUN_ID.out" <&8
+)"; then
+  ROLE_OUTPUT_VALID=0
+  STATUS=11
+fi
 exec 8<&-
-printf '%s\n' "$RESULT" | \
-  python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUNS_DIR/$RUN_ID.out"
-RUN_OUTPUT_SHA256="$(python3 - "$RUNS_DIR/$RUN_ID.out" <<'PY'
-import hashlib
-import sys
-
-with open(sys.argv[1], "rb") as handle:
-    print(hashlib.sha256(handle.read()).hexdigest())
-PY
-)"
-ROLE_ESCALATION_PARSE="$(python3 - "$RUNS_DIR/$RUN_ID.out" \
-  "$PROVIDER_CONTRACT_VERSION" "$ROLE" <<'PY'
+emit_role_output() {
+  [[ "$ROLE_OUTPUT_VALID" -eq 1 ]] || return 0
+  cat "$RUNS_DIR/$RUN_ID.out"
+}
+if [[ "$ROLE_OUTPUT_VALID" -eq 1 ]]; then
+  ROLE_ESCALATION_PARSE="$(python3 - "$RUNS_DIR/$RUN_ID.out" \
+    "$PROVIDER_CONTRACT_VERSION" "$ROLE" <<'PY'
 import sys
 
 output, contract, role = sys.argv[1:]
-lines = open(output, encoding="utf-8", errors="replace").read().splitlines()
 candidates = [
-    line for line in lines
+    line.rstrip("\r\n")
+    for line in open(output, encoding="utf-8", errors="replace")
     if line.lstrip().upper().startswith("ROLE-ESCALATE:")
 ]
 if not candidates:
@@ -2326,7 +2500,10 @@ elif (
 else:
     print("invalid")
 PY
-)" || ROLE_ESCALATION_PARSE=invalid
+  )" || ROLE_ESCALATION_PARSE=invalid
+else
+  ROLE_ESCALATION_PARSE=none
+fi
 case "$ROLE_ESCALATION_PARSE" in
   none) ;;
   contract-blocked)
@@ -2354,6 +2531,10 @@ if [[ "$CONTROL_PLANE_MUTATION" -eq 1 ]]; then
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
 elif [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
   ROLE_EXIT_STATUS="cancelled"
+elif [[ "$ROLE_OUTPUT_VALID" -eq 0 ]]; then
+  ROLE_EXIT_STATUS="role_exit_invalid_output"
+  echo "role_exit_invalid_output: provider output exceeded or failed the bounded artifact contract" >&2
+  STATUS=11
 elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
@@ -2458,7 +2639,10 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   fi
 fi
 
-METRICS_LINE="$(printf '%s\n' "$RESULT" | tail -n1)"
+METRICS_LINE=""
+if [[ "$ROLE_OUTPUT_VALID" -eq 1 ]]; then
+  METRICS_LINE="$(tail -n1 "$RUNS_DIR/$RUN_ID.out")"
+fi
 TURNS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^turns=/) { sub(/^turns=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 COST="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_usd=/) { sub(/^cost_usd=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
 COST_BASIS="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^cost_basis=/) { sub(/^cost_basis=/, "", $i); print $i; exit } }' <<<"$METRICS_LINE")"
@@ -2531,7 +2715,7 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   if [[ "$RUN_GROUP_TERMINATED" -ne 1 ]]; then
     echo "role_exit_control_plane_mutation: CLI process group survived; reservation retained" >&2
     STATUS=11
-    printf '%s\n' "$RESULT"
+    emit_role_output
     exit "$STATUS"
   fi
   for _terminal_lock_try in $(seq 1 "$LOCK_ATTEMPTS"); do
@@ -2541,7 +2725,7 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   if [[ "$HELD_LAUNCH_LOCK" -ne 1 ]]; then
     echo "role_exit_control_plane_mutation: launch lock stuck before CLI terminalization" >&2
     STATUS=11
-    printf '%s\n' "$RESULT"
+    emit_role_output
     exit "$STATUS"
   fi
   CLI_TERMINAL_RESULT="failed"
@@ -2604,5 +2788,5 @@ if [[ "$HELD_PROVIDER_LOCK" -eq 1 && "$RETAIN_PROVIDER_LOCK" -eq 0 ]]; then
   }
 fi
 
-printf '%s\n' "$RESULT"
+emit_role_output
 exit "$STATUS"

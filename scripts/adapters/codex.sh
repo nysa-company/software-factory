@@ -33,11 +33,53 @@ case "$INSTALLED" in
   *"$PINNED_VERSION"*) : ;;
   *) echo "installed Codex does not match the approved version" >&2; exit 6 ;;
 esac
+if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
+  python3 - "${HOME:-}" "${TMPDIR:-}" "${FACTORY_CLI_ATTEMPT_ID:-}" <<'PY' || {
+import os
+import pathlib
+import stat
+import sys
+
+home, tmp = map(pathlib.Path, sys.argv[1:3])
+attempt = sys.argv[3]
+root = home.parent
+if (
+    not attempt
+    or root.name != attempt
+    or home != root / "home"
+    or tmp != root / "tmp"
+    or any(not path.is_absolute() or path.is_symlink() or not path.is_dir()
+           for path in (root, home, tmp, home / ".codex"))
+    or (root / "owner").is_symlink()
+    or (root / "owner").read_text(encoding="utf-8") != attempt + "\n"
+):
+    raise SystemExit(1)
+for path in (root, home, tmp, home / ".codex"):
+    info = path.stat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise SystemExit(1)
+credential = home / ".codex/auth.json"
+info = credential.lstat()
+if (
+    credential.is_symlink()
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) != 0o600
+):
+    raise SystemExit(1)
+PY
+    echo "Codex CLI attempt runtime is unsafe" >&2
+    exit 6
+  }
+fi
 
 FULL_TASK="$TASK"
-[[ -s "$PROMPT_FILE" ]] && FULL_TASK="$(cat "$PROMPT_FILE")
+if [[ -s "$PROMPT_FILE" ]]; then
+  FULL_TASK="$(cat "$PROMPT_FILE")
 
 $TASK"
+fi
 
 run_with_timeout() {
   if [[ "${FACTORY_TIMEOUT_FOREGROUND:-0}" == 1 ]]; then

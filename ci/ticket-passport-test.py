@@ -9,7 +9,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -28,6 +30,7 @@ def module(name: str, path: Path):
 
 STATE = module("state_machine", ROOT / "scripts/state-machine.py")
 PASSPORT = module("ticket_passport", ROOT / "scripts/ticket-passport.py")
+ROLE_OUTPUT = module("role_output", ROOT / "scripts/lib/role_output.py")
 
 
 def run(*command: str, cwd: Path) -> str:
@@ -105,10 +108,27 @@ class TicketPassportTest(unittest.TestCase):
         self.origin.stop()
         self.temporary.cleanup()
 
-    def terminal(self, run_id: str, role: str, receipt: str, factory_sha: str) -> None:
+    def terminal(
+        self,
+        run_id: str,
+        role: str,
+        receipt: str,
+        factory_sha: str,
+        content: bytes | None = None,
+    ) -> None:
         output_path = self.product / f"factory/runs/{run_id}.out"
-        output_path.write_text(f"{role} output\n", encoding="utf-8")
-        output = hashlib.sha256(output_path.read_bytes()).hexdigest()
+        published = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/lib/role_output.py"),
+                "publish",
+                str(output_path),
+            ],
+            input=content if content is not None else f"{role} output\n".encode(),
+            capture_output=True,
+            check=True,
+        )
+        output = published.stdout.decode().strip()
         (self.product / f"factory/runs/{run_id}.meta").write_text(
             f"run_id={run_id}\n"
             "phase=completed\n"
@@ -124,6 +144,223 @@ class TicketPassportTest(unittest.TestCase):
             f"transition_receipt_sha256={receipt}\n"
             f"output_sha256={output}\n",
             encoding="utf-8",
+        )
+
+    def test_role_output_uses_one_streaming_eight_mib_bound(self) -> None:
+        existing_size = 5_662_048
+        self.terminal(
+            "run-existing",
+            "planner",
+            "e" * 64,
+            "a" * 40,
+            b"x" * existing_size,
+        )
+        completed, charges = PASSPORT.run_evidence(
+            self.product / "factory", "T-110"
+        )
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(len(charges), 1)
+        self.assertEqual(
+            (self.product / "factory/runs/run-existing.out").stat().st_size,
+            existing_size,
+        )
+        existing = self.product / "factory/runs/run-existing.out"
+        os.chmod(existing, 0o644)
+        with self.assertRaisesRegex(ValueError, "unsafe role output"):
+            PASSPORT.run_evidence(self.product / "factory", "T-110")
+        os.chmod(existing, 0o600)
+
+        refused = self.product / "factory/runs/run-refused.out"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/lib/role_output.py"),
+                "publish",
+                str(refused),
+            ],
+            input=b"x" * (ROLE_OUTPUT.MAX_BYTES + 1),
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 8)
+        self.assertIn(b"ROLE_OUTPUT_INVALID", result.stderr)
+        self.assertEqual(
+            refused.read_text(encoding="utf-8"),
+            "ROLE_OUTPUT_INVALID: role output exceeds 8388608-byte limit\n",
+        )
+        self.assertEqual(
+            result.stdout.decode().strip(),
+            hashlib.sha256(refused.read_bytes()).hexdigest(),
+        )
+        symlink_target = self.root / "unrelated"
+        symlink_target.write_text("untouched\n", encoding="utf-8")
+        replacement = self.product / "factory/runs/replaced.out"
+        replacement.symlink_to(symlink_target)
+        replaced = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/lib/role_output.py"),
+                "publish",
+                str(replacement),
+            ],
+            input=b"wrapper output\n",
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(symlink_target.read_text(encoding="utf-8"), "untouched\n")
+        self.assertFalse(replacement.is_symlink())
+        self.assertEqual(replacement.read_bytes(), b"wrapper output\n")
+        self.assertEqual(
+            replaced.stdout.decode().strip(),
+            hashlib.sha256(replacement.read_bytes()).hexdigest(),
+        )
+
+        oversized = self.product / "factory/runs/run-existing.out"
+        oversized.write_bytes(b"x" * (ROLE_OUTPUT.MAX_BYTES + 1))
+        os.chmod(oversized, 0o600)
+        with self.assertRaisesRegex(ValueError, "8388608-byte limit"):
+            PASSPORT.run_evidence(self.product / "factory", "T-110")
+
+    def test_run_agent_terminalizes_oversized_role_output(self) -> None:
+        factory_sha = run("git", "rev-parse", "HEAD", cwd=ROOT)
+        release = self.root / "release"
+        shutil.copytree(ROOT / "scripts", release / "scripts")
+        (release / "integrations/hermes").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "integrations/hermes/contract.json",
+            release / "integrations/hermes/contract.json",
+        )
+        adapter = release / "scripts/adapters/mock.sh"
+        adapter.write_text(
+            "#!/usr/bin/env bash\n"
+            "python3 - <<'PY'\n"
+            "import sys\n"
+            "sys.stdout.buffer.write(b'x' * (8 * 1024 * 1024 + 1))\n"
+            "PY\n",
+            encoding="utf-8",
+        )
+        os.chmod(adapter, 0o755)
+        release_tree = run(
+            "bash",
+            "-c",
+            'source "$1"; factory_directory_tree "$2"',
+            "_",
+            str(ROOT / "scripts/lib/kit-pin.sh"),
+            str(release),
+            cwd=self.root,
+        )
+
+        (self.product / "factory/ENVELOPE.env").write_text(
+            "PER_RUN_BUDGET_USD=1.00\n"
+            "PER_TICKET_BUDGET_USD=20.00\n"
+            "PER_RUN_MAX_TURNS=5\n"
+            "PER_RUN_TIMEOUT_MIN=1\n"
+            "DAILY_CAP_USD=50.00\n",
+            encoding="utf-8",
+        )
+        (self.product / "factory/KIT_PIN").write_text(
+            factory_sha + "\n", encoding="utf-8"
+        )
+        (self.product / "factory/ledger.csv").write_text(
+            "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
+            "exit_status,run_id,provider_family,model_id,selection_reason,"
+            "cost_basis,adapter_version\n",
+            encoding="utf-8",
+        )
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            f"# T-110\n\nState: Ready\n\nKit-SHA: {factory_sha}\n",
+            encoding="utf-8",
+        )
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\n"
+            "factory/runtime-ledger.csv\n"
+            "factory/.active-runs/\n"
+            "factory/.launch.lock/\n"
+            "factory/.provider.lock/\n"
+            "factory/.ledger.lock/\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "oversized output fixture", cwd=self.product)
+        run(
+            "git",
+            "push",
+            "-qu",
+            "origin",
+            "HEAD:ticket/T-110",
+            cwd=self.product,
+        )
+
+        transition_state = STATE.safe_state_dir(self.root / "run-state")
+        transition_args = argparse.Namespace(
+            contract_version="1.8.0",
+            factory_root=self.product,
+            factory_sha=factory_sha,
+            kit_dir=release,
+            lease="",
+            project="output-test",
+            receipt="",
+            require_used=False,
+            role="planner",
+            state_dir=transition_state,
+            ticket="T-110",
+            workdir=self.product,
+        )
+        transition = STATE.issue(transition_args, "RUN planner")
+        transition_args.receipt = transition["receipt_sha256"]
+        STATE.verify(transition_args, consume=True)
+
+        environment = dict(os.environ)
+        environment.update({
+            "FACTORY_ADAPTER_OVERRIDE": "mock",
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+            "FACTORY_GLOBAL_ENV": str(self.root / "missing-global.env"),
+            "FACTORY_PROJECT": "output-test",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_PATH": str(release),
+            "FACTORY_RELEASE_SHA": factory_sha,
+            "FACTORY_RELEASE_TREE": release_tree,
+            "FACTORY_ROOT": str(self.product),
+            "FACTORY_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
+            "FACTORY_TRANSITION_RECEIPT_SHA256":
+                transition["receipt_sha256"],
+            "FACTORY_TRANSITION_STATE_DIR": str(transition_state),
+        })
+        result = subprocess.run(
+            [
+                str(release / "scripts/run-agent.sh"),
+                "--role",
+                "planner",
+                "--ticket",
+                "T-110",
+                "--",
+                "oversized output",
+            ],
+            cwd=self.product,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 11, result.stderr.decode())
+        self.assertIn(b"ROLE_OUTPUT_INVALID", result.stderr)
+        manifests = list((self.product / "factory/runs").glob("*.meta"))
+        self.assertEqual(len(manifests), 1)
+        fields = PASSPORT.manifest_fields(manifests[0])
+        self.assertEqual(fields["accounting_state"], "abandoned_conservative")
+        self.assertEqual(fields["effective_cost"], "1.00")
+        self.assertEqual(fields["exit_status"], "11")
+        self.assertEqual(fields["role_exit"], "role_exit_invalid_output")
+        output = manifests[0].with_suffix(".out")
+        self.assertEqual(
+            fields["output_sha256"],
+            hashlib.sha256(output.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            output.read_text(encoding="utf-8"),
+            "ROLE_OUTPUT_INVALID: role output exceeds 8388608-byte limit\n",
         )
 
     def test_passport_chains_receipts_without_replay_or_double_charge(self) -> None:
@@ -245,6 +482,7 @@ class TicketPassportTest(unittest.TestCase):
         STATE.verify(self.state_args, consume=True)
         output = self.product / "factory/runs/run-repair.out"
         output.write_text("repair output\n", encoding="utf-8")
+        os.chmod(output, 0o600)
         output_digest = hashlib.sha256(output.read_bytes()).hexdigest()
         (self.product / "factory/runs/run-repair.meta").write_text(
             "run_id=run-repair\n"

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Network-free trusted ticket attestation regressions."""
 
+import argparse
 import base64
 import json
 import hashlib
@@ -270,6 +271,7 @@ Merge-Policy: manual
     def write_state(self, **updates):
         value = {
             "duplicate": False, "wrong_head": False, "merge_fail": False,
+            "auto_merge_confirm": True,
             "auto_merge": True, "draft": True, "merged": False, "merge_sha": "b" * 40,
             "merge_state": "BLOCKED",
             "merge_on_second_open": False, "open_list_count": 0,
@@ -342,6 +344,8 @@ elif a[:2] == ["pr", "merge"]:
         print("auto-merge unavailable", file=sys.stderr); raise SystemExit(1)
     if not closeout and "--disable-auto" in a:
         s["auto_merge"] = False
+    elif not closeout:
+        s["auto_merge"] = s["auto_merge_confirm"]
     s["closeout_merge_argv" if closeout else "merge_argv"] = a
     Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
 elif a[:2] == ["pr", "ready"]:
@@ -374,12 +378,14 @@ else:
 """)
         path.chmod(0o755)
 
-    def attest(self, action):
-        return command(
+    def attest(self, action, *, attest_only=False):
+        arguments = [
             sys.executable, str(SCRIPT), "--ticket", "T-700",
             "--workdir", str(self.workdir), "--action", action,
-            env=self.env, check=False,
-        )
+        ]
+        if attest_only:
+            arguments.append("--attest-only")
+        return command(*arguments, env=self.env, check=False)
 
     def bundle(self):
         result = self.attest("bundle")
@@ -673,6 +679,28 @@ else:
         self.write_state()
         self.assertEqual(self.attest("approval").returncode, 0)
 
+    def test_approval_attestation_commits_h2_before_auto_merge(self):
+        self.bundle()
+        self.approval_overlay()
+        reviewed_head = self.head()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        attested_head = self.head()
+        self.assertNotEqual(attested_head, reviewed_head)
+        first = json.loads(phase_one.stdout)
+        self.assertEqual(first["action"], "approval-attested")
+        self.assertEqual(first["head"], attested_head)
+        self.assertFalse(first["auto_merge"])
+        self.assertFalse(json.loads(self.state.read_text())["auto_merge"])
+
+        phase_two = self.attest("approval")
+        self.assertEqual(phase_two.returncode, 0, phase_two.stderr)
+        second = json.loads(phase_two.stdout)
+        self.assertEqual(second["action"], "approval")
+        self.assertEqual(second["head"], attested_head)
+        self.assertTrue(second["auto_merge"])
+        self.assertTrue(json.loads(self.state.read_text())["auto_merge"])
+
     def test_approval_retry_rejects_tampered_receipt_or_later_head(self):
         self.bundle()
         self.approval_overlay()
@@ -701,7 +729,7 @@ else:
     def test_auto_merge_unconfirmed_is_refused(self):
         self.bundle()
         self.approval_overlay()
-        self.write_state(auto_merge=False)
+        self.write_state(auto_merge=False, auto_merge_confirm=False)
         self.assertIn("did not confirm", self.attest("approval").stderr)
 
     def test_refresh_retires_stale_approval_and_binds_exact_main_merge(self):
@@ -910,10 +938,12 @@ else:
         self.assertIn("attestation path is unsafe", self.attest("refresh").stderr)
         self.assertEqual(external.read_text(), "unchanged\n")
 
-    def test_refresh_allows_building_only_for_exact_topology_receipt(self):
+    def test_dependency_refresh_needs_no_pr_and_preserves_building_state(self):
         ticket = self.product / "factory/tickets/T-700.md"
         ticket.write_text(
-            ticket.read_text().replace("State: Review", "State: Building")
+            ticket.read_text()
+            .replace("State: Review", "State: Building")
+            .replace("Priority: normal", "Priority: normal\nDepends-On: T-094")
         )
         self.commit("record failed repair state")
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
@@ -925,16 +955,45 @@ else:
             "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
             "commit", "-qm", "advance protected main", cwd=updater,
         )
+        protected = self.head_at(updater)
         command("git", "push", "-q", "origin", "main", cwd=updater)
-        self.write_state()
-
-        self.assertIn("requires ticket State", self.attest("refresh").stderr)
         self.env["FACTORY_TRANSITION_STAGE"] = (
-            "REFUSE stale refresh receipt does not bind this branch history"
+            "REFUSE dependency refresh required; "
+            f"dependencies=T-094; protected-main={protected}"
         )
-        result = self.attest("refresh")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("State: Review", ticket.read_text())
+        args = argparse.Namespace(ticket="T-700")
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(
+                TICKET_ATTEST, "protected_terminal",
+                return_value={"basis": "normal", "ticket": "T-094"},
+            ),
+            patch.object(
+                TICKET_ATTEST, "gh",
+                side_effect=AssertionError("dependency refresh queried a PR"),
+            ),
+        ):
+            result = TICKET_ATTEST.dependency_refresh(
+                args, self.product, self.product, "ticket/", str(self.remote),
+            )
+        self.assertEqual(result["action"], "dependency-refresh")
+        self.assertIn("State: Building", ticket.read_text())
+        receipt = json.loads(
+            (
+                self.product
+                / "factory/attestations/T-700/dependency-refresh.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(receipt["protected_head"], protected)
+        self.assertEqual(receipt["preserved_state"], "Building")
+        self.assertEqual(receipt["dependencies"], ["T-094"])
+        self.assertEqual(
+            command(
+                "git", "merge-base", "--is-ancestor", protected, "HEAD",
+                cwd=self.product, check=False,
+            ).returncode,
+            0,
+        )
 
     def test_refresh_detects_pr_merge_race_after_push(self):
         updater = self.temp / "race-main-update"

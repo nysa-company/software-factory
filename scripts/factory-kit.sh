@@ -12,11 +12,12 @@ MANIFESTS_DIR="$KITS_ROOT/manifests"
 PROJECTS_DIR="$KITS_ROOT/projects"
 RECEIPTS_DIR="$KITS_ROOT/receipts"
 CONSUMED_DIR="$RECEIPTS_DIR/consumed"
+PROVIDER_STATE_ROOT="$(dirname "$KITS_ROOT")"
 CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
 INSTALL_MANIFEST_SCHEMA=1
 SUITE_EVIDENCE_SCHEMA=2
-CERTIFICATION_TOOL_VERSION=3
+CERTIFICATION_TOOL_VERSION=4
 # Bump whenever run_kit_checks_isolated command composition or semantics change.
 KIT_SUITE_DEFINITION="factory-kit-suite-v2"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
@@ -32,6 +33,7 @@ PREPARED_PRODUCT=""
 ISOLATED_HOME=""
 PRODUCT_CERTIFICATION_EVIDENCE=""
 PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
+PROVIDER_CONCURRENCY_EVIDENCE=""
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -185,6 +187,7 @@ Usage:
   $PROGRAM reconcile --project SLUG [--product PRODUCT_REPO]
   $PROGRAM rollback  --project SLUG [--product PRODUCT_REPO]
   $PROGRAM recover-lease --project SLUG --product PRODUCT_REPO --ticket T-NNN
+  $PROGRAM provider-concurrency ACTION --sha FULL_SHA --capacity 2..4 [--approve-hash HASH]
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -1168,6 +1171,83 @@ PY
   printf '%s\n' "$value"
 }
 
+require_provider_concurrency_ready() {
+  local product="$1" release="$2" contract="$3" sha="$4" tree="$5"
+  local capacity="" output
+  if [[ "$contract" == "1.8.0" ]]; then
+    capacity="$(factory_dispatch_max_tickets "$product" "$contract" 2>/dev/null)" ||
+      die "product ticket concurrency configuration is invalid"
+  fi
+  if [[ "$contract" != "1.8.0" || "$capacity" -le 1 ]]; then
+    PROVIDER_CONCURRENCY_EVIDENCE="$(python3 - "$contract" "$capacity" "$sha" "$tree" <<'PY'
+import json, sys
+contract, capacity, sha, tree = sys.argv[1:]
+print(json.dumps({
+    "capacity": int(capacity) if capacity else None,
+    "contract_version": contract,
+    "factory_sha": sha,
+    "factory_tree": tree,
+    "required": False,
+    "schema": "nysa.software-factory.provider-concurrency-evidence/v1",
+    "status": "not-required",
+}, sort_keys=True, separators=(",", ":")))
+PY
+)" || die "could not record provider concurrency evidence"
+    return 0
+  fi
+  output="$(python3 "$release/scripts/provider-concurrency-config.py" \
+    --release "$release" --root "$PROVIDER_STATE_ROOT" \
+    --capacity "$capacity" check)" ||
+    die "Contract 1.8 multi-ticket provider concurrency is not ready"
+  PROVIDER_CONCURRENCY_EVIDENCE="$(printf '%s' "$output" |
+    python3 - "$sha" "$tree" <<'PY'
+import json, sys
+sha, tree = sys.argv[1:]
+value = json.load(sys.stdin)
+if value.get("status") != "ready":
+    raise SystemExit(1)
+value.update({
+    "factory_sha": sha,
+    "factory_tree": tree,
+    "required": True,
+    "schema": "nysa.software-factory.provider-concurrency-evidence/v1",
+})
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+  )" || die "provider concurrency evidence is invalid"
+}
+
+cmd_provider_concurrency() {
+  local action="$1" sha="$2" capacity="$3" approval="$4"
+  local release
+  case "$action" in
+    plan|apply|check) ;;
+    *) die "provider-concurrency action must be plan, apply, or check" ;;
+  esac
+  validate_sha "$sha"
+  [[ "$capacity" =~ ^[2-4]$ ]] ||
+    die "provider concurrency capacity must be from 2 through 4"
+  [[ "$action" == "apply" || -z "$approval" ]] ||
+    die "--approve-hash is valid only for provider-concurrency apply"
+  [[ "$action" != "apply" || "$approval" =~ ^[0-9a-f]{64}$ ]] ||
+    die "provider-concurrency apply requires an exact approval hash"
+  validate_managed_roots
+  verify_release_from_manifest "$sha" >/dev/null
+  release="$RELEASES_DIR/$sha"
+  [[ -f "$release/scripts/provider-concurrency-config.py" &&
+     ! -L "$release/scripts/provider-concurrency-config.py" ]] ||
+    die "release does not support provider concurrency configuration"
+  if [[ "$action" == "apply" ]]; then
+    python3 "$release/scripts/provider-concurrency-config.py" \
+      --release "$release" --root "$PROVIDER_STATE_ROOT" \
+      --capacity "$capacity" apply --approve-hash "$approval"
+  else
+    python3 "$release/scripts/provider-concurrency-config.py" \
+      --release "$release" --root "$PROVIDER_STATE_ROOT" \
+      --capacity "$capacity" "$action"
+  fi
+}
+
 prepare_writable_release_copy() {
   local release="$1" workspace="$2"
   PREPARED_COPY="$workspace/release"
@@ -1970,6 +2050,11 @@ validate_receipt_snapshot() {
   contract="$(contract_version "$release")"
   [[ "$contract" == "$(json_get "$receipt" contract_version)" ]] ||
     die "Hermes contract version drifted"
+  require_provider_concurrency_ready \
+    "$product_top" "$release" "$contract" "$sha" "$expected_tree"
+  [[ "$(json_get "$receipt" provider_concurrency_evidence)" ==
+     "$PROVIDER_CONCURRENCY_EVIDENCE" ]] ||
+    die "provider concurrency evidence drifted since certification"
   [[ "$(host_name)" == "$(json_get "$receipt" host)" ]] ||
     die "receipt was certified on a different host"
   [[ "$(uname -s)" == "$(json_get "$receipt" os)" &&
@@ -2051,6 +2136,7 @@ PY
      "$(json_get "$receipt" checks.github_required)" == "pass" &&
      "$(json_get "$receipt" checks.repo_check)" == "pass" &&
      "$(json_get "$receipt" checks.secret_scan)" == "pass" &&
+     "$(json_get "$receipt" checks.provider_concurrency)" == "pass" &&
      "$(json_get "$receipt" checks.product_certification)" == "pass" ]] ||
     die "receipt is missing required passing checks"
 }
@@ -2823,6 +2909,8 @@ cmd_certify() {
   product_git_tree="$(product_tree "$product_top")"
   product_repo="$(product_origin "$product_top")"
   contract="$(contract_version "$release")"
+  require_provider_concurrency_ready \
+    "$product_top" "$release" "$contract" "$sha" "$kit_tree"
   workspace="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-certification.XXXXXX")"
   remember_temp "$workspace"
   mkdir "$workspace/home" "$workspace/tmp"
@@ -2909,6 +2997,7 @@ cmd_certify() {
     "$KIT_SUITE_DEFINITION" "$suite_reused" "$release" "$evidence_source" \
     "$PRODUCT_CERTIFICATION_EVIDENCE" \
     "$PRODUCT_CERTIFICATION_EVIDENCE_DIGEST" \
+    "$PROVIDER_CONCURRENCY_EVIDENCE" \
     <<'PY' | atomic_json_from_stdin "$receipt"
 import json, sys, time
 (slug, sha, kit_tree, kit_origin, product_path, product_origin, product_tree,
@@ -2916,7 +3005,8 @@ import json, sys, time
  created, expires, receipt_id, previous_generation, tool_version, evidence_id,
  evidence_digest, evidence_created, evidence_expires, evidence_ttl,
  suite_definition, suite_reused, release, evidence_source,
- product_evidence_path, product_evidence_digest) = sys.argv[1:]
+ product_evidence_path, product_evidence_digest,
+ provider_concurrency_evidence) = sys.argv[1:]
 product_evidence = {"mode": "legacy"}
 if product_evidence_path:
     with open(product_evidence_path, encoding="utf-8") as stream:
@@ -2970,12 +3060,14 @@ value = {
         "reused": suite_reused == "true",
         "verification_source": evidence_source,
     },
+    "provider_concurrency_evidence": json.loads(provider_concurrency_evidence),
     "product_certification_evidence": product_evidence,
     "checks": {
         "kit_suite": "pass",
         "github_required": "pass",
         "repo_check": "pass",
         "secret_scan": "pass",
+        "provider_concurrency": "pass",
         "product_certification": "pass",
         "release_tree": "pass",
         "product_tree": "pass",
@@ -3488,6 +3580,8 @@ PROJECT=""
 PRODUCT=""
 RECEIPT=""
 TICKET=""
+CAPACITY=""
+APPROVE_HASH=""
 JSON=0
 POSITIONALS=()
 
@@ -3500,6 +3594,8 @@ while [[ $# -gt 0 ]]; do
     --product|--product-repo) [[ $# -ge 2 ]] || die "$1 requires a value"; PRODUCT="$2"; shift 2 ;;
     --receipt) [[ $# -ge 2 ]] || die "$1 requires a value"; RECEIPT="$2"; shift 2 ;;
     --ticket) [[ $# -ge 2 ]] || die "$1 requires a value"; TICKET="$2"; shift 2 ;;
+    --capacity) [[ $# -ge 2 ]] || die "$1 requires a value"; CAPACITY="$2"; shift 2 ;;
+    --approve-hash) [[ $# -ge 2 ]] || die "$1 requires a value"; APPROVE_HASH="$2"; shift 2 ;;
     --json) JSON=1; shift ;;
     --help|-h) usage; exit 0 ;;
     --*) die "unknown option: $1" ;;
@@ -3565,6 +3661,14 @@ case "$COMMAND" in
     [[ -n "$TICKET" ]] || TICKET="${POSITIONALS[2]:-}"
     [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$TICKET" ]] || { usage >&2; exit 2; }
     cmd_recover_lease "$PROJECT" "$PRODUCT" "$TICKET"
+    ;;
+  provider-concurrency)
+    ACTION="${POSITIONALS[0]:-}"
+    [[ -n "$SHA" ]] || SHA="${POSITIONALS[1]:-}"
+    [[ -n "$CAPACITY" ]] || CAPACITY="${POSITIONALS[2]:-}"
+    [[ -n "$ACTION" && -n "$SHA" && -n "$CAPACITY" ]] ||
+      { usage >&2; exit 2; }
+    cmd_provider_concurrency "$ACTION" "$SHA" "$CAPACITY" "$APPROVE_HASH"
     ;;
   prune) die "automatic prune is intentionally not implemented" ;;
   *) usage >&2; die "unknown command: $COMMAND" ;;

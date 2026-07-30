@@ -553,6 +553,8 @@ PROVIDER_ACTIVE_ATTEMPTS=0
 PROVIDER_ACTIVE_TOKENS=0
 PROVIDER_UNKNOWN_WORKERS=0
 PROVIDER_LEGACY_INTERVALS=0
+PROVIDER_CONCURRENCY_REQUIRED=false
+PROVIDER_CONCURRENCY_READY=false
 if [[ ( "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ||
         "$CONTRACT_VERSION" == "1.8.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
@@ -677,6 +679,22 @@ PY
     PROVIDER_RUNTIME_STATUS="error"
   fi
 fi
+if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+      "$MAX_CONCURRENT_TICKETS" =~ ^[0-9]+$ &&
+      "$MAX_CONCURRENT_TICKETS" -gt 1 ]]; then
+  PROVIDER_CONCURRENCY_REQUIRED=true
+  if [[ -n "${FACTORY_PROVIDER_POLICY:-}" &&
+        "${FACTORY_PROVIDER_POLICY:-}" == */provider-policy.json ]] &&
+     "$PYTHON_BIN" -I -S "$KIT_DIR/scripts/provider-concurrency-config.py" \
+       --release "$KIT_DIR" \
+       --root "$(dirname "$FACTORY_PROVIDER_POLICY")" \
+       --capacity "$MAX_CONCURRENT_TICKETS" check \
+       --activation "${FACTORY_PROVIDER_ACTIVATION:-}" >/dev/null 2>&1; then
+    PROVIDER_CONCURRENCY_READY=true
+  else
+    PROVIDER_RUNTIME_STATUS="error"
+  fi
+fi
 
 OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
@@ -712,6 +730,7 @@ export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAS
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
 export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
+export PROVIDER_CONCURRENCY_REQUIRED PROVIDER_CONCURRENCY_READY
 export OVERALL_STATUS RUN_FILE
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
@@ -828,6 +847,8 @@ document = {
         "isolated_provider": {
             "status": os.environ["PROVIDER_RUNTIME_STATUS"],
             "activated": boolean("PROVIDER_ACTIVATED"),
+            "concurrency_required": boolean("PROVIDER_CONCURRENCY_REQUIRED"),
+            "concurrency_ready": boolean("PROVIDER_CONCURRENCY_READY"),
             "execution_mode": optional("PROVIDER_EXECUTION_MODE"),
             "active_attempts": number("PROVIDER_ACTIVE_ATTEMPTS"),
             "active_tokens": number("PROVIDER_ACTIVE_TOKENS"),
@@ -852,7 +873,7 @@ else
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
   done < "$CLI_FILE"
   echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
-  echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
+  echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown}"
   [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi

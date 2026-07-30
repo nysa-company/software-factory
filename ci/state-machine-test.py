@@ -108,8 +108,73 @@ class StateMachineTest(unittest.TestCase):
         self.assertIsNone(
             STATE.stage_role("AWAIT_BUDGET ticket budget exhausted")
         )
+        self.assertIsNone(STATE.stage_role("AWAIT_DEPENDENCY T-094"))
         with self.assertRaisesRegex(STATE.StateError, "unsupported transition"):
             STATE.stage_role("FIX builder-or-test-author")
+
+    def test_unmerged_dependency_waits_without_consuming_a_role_receipt(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\nDepends-On: T-094\n",
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(
+                STATE,
+                "protected_terminal",
+                side_effect=STATE.ValidationError("not merged"),
+            ),
+            mock.patch.object(STATE, "contract_repair_stage", return_value=(None, False)),
+            mock.patch.object(STATE, "resolve") as resolve,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.next_transition(self.args)
+        resolve.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+        self.assertEqual(result["stage"], "AWAIT_DEPENDENCY T-094")
+        self.assertIsNone(result["role"])
+        receipt = STATE.safe_receipt(self.state_dir / "T-110.json")
+        self.assertFalse(receipt["consumed"])
+
+    def test_resolved_dependency_requires_current_protected_base_before_role(self) -> None:
+        original = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run("git", "checkout", "-qb", "main", cwd=self.product)
+        (self.product / "dependency.txt").write_text("merged dependency\n")
+        run("git", "add", "dependency.txt", cwd=self.product)
+        run("git", "commit", "-qm", "merge dependency", cwd=self.product)
+        protected = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run("git", "update-ref", "refs/remotes/origin/main", protected, cwd=self.product)
+        run("git", "checkout", "-q", "ticket/T-110", cwd=self.product)
+        self.assertEqual(run("git", "rev-parse", "HEAD", cwd=self.product), original)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\nDepends-On: T-094\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "wait for dependency", cwd=self.product)
+        with (
+            mock.patch.object(STATE, "protected_terminal", return_value={}),
+            mock.patch.object(
+                STATE, "contract_repair_stage", return_value=(None, False)
+            ),
+            mock.patch.object(STATE, "resolve") as resolve,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.next_transition(self.args)
+        resolve.assert_not_called()
+        migrate.assert_not_called()
+        self.assertEqual(
+            result["stage"],
+            "REFUSE dependency refresh required; "
+            f"dependencies=T-094; protected-main={protected}",
+        )
+        self.assertIsNone(result["role"])
+        receipt = STATE.safe_receipt(self.state_dir / "T-110.json")
+        self.assertEqual(receipt["head_sha"], run(
+            "git", "rev-parse", "HEAD", cwd=self.product
+        ))
+        self.assertIn(protected, receipt["stage"])
 
     def test_exact_refusal_is_bound_to_a_transition_receipt(self) -> None:
         kit = self.root / "kit"

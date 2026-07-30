@@ -44,6 +44,7 @@ def main() -> int:
     parser.add_argument("--coordinator", required=True, type=Path)
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--policy", required=True, type=Path)
+    parser.add_argument("--configuration-lock", type=Path)
     parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--provider-family", required=True)
     parser.add_argument("--account-route", required=True)
@@ -63,6 +64,10 @@ def main() -> int:
 
     attempt = args.attempt_id
     if not args.pre_reserved:
+        lock_arguments = (
+            ["--configuration-lock", str(args.configuration_lock)]
+            if args.configuration_lock is not None else []
+        )
         reservation = coordinator(
             args,
             "reserve",
@@ -78,6 +83,7 @@ def main() -> int:
             "--ticket-cap-micro-usd", str(args.ticket_cap_micro_usd),
             "--machine-daily-cap-micro-usd", str(args.machine_cap_micro_usd),
             "--policy", str(args.policy),
+            *lock_arguments,
         )
         if reservation.get("admitted") is not True:
             coordinator(

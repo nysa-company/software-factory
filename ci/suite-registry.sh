@@ -11,6 +11,7 @@ suite_registry() {
   "$callback" provider-activation "isolated provider activation suite" python3 "$ROOT/ci/provider-activation-test.py"
   "$callback" provider-artifact-controller "provider artifact controller suite" python3 "$ROOT/ci/provider-artifact-controller-test.py"
   "$callback" provider-coordinator "provider coordinator concurrency suite" python3 "$ROOT/ci/provider-coordinator-test.py"
+  "$callback" provider-production-concurrency "production subscription concurrency suite" python3 "$ROOT/ci/provider-production-concurrency-test.py"
   "$callback" provider-credential-broker "provider credential broker security suite" python3 "$ROOT/ci/provider-credential-broker-test.py"
   "$callback" provider-recovery "provider recovery and rollback suite" python3 "$ROOT/ci/provider-recovery-test.py"
   "$callback" provider-runtime "transactional provider runtime suite" python3 "$ROOT/ci/provider-runtime-test.py"

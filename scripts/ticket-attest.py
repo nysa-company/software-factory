@@ -22,6 +22,7 @@ from refresh_semantics import (  # noqa: E402
     preserved_control_paths,
     retained_control_paths,
 )
+from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
 
 
 class Refusal(ValueError):
@@ -1532,6 +1533,182 @@ def refresh(args, product, workdir, repo, prefix, remote):
     return {"action": "refresh", "head": result_head, "attestation": receipt}
 
 
+DEPENDENCY_REFRESH_KEYS = {
+    "schema", "ticket", "generation", "dependencies", "dependency_terminals",
+    "old_head", "prior_base_head", "protected_head", "merge_head",
+    "preserved_state", "refreshed_at",
+}
+
+
+def dependency_refresh(args, product, workdir, prefix, remote):
+    stage = os.environ.get("FACTORY_TRANSITION_STAGE", "")
+    match = re.fullmatch(
+        r"REFUSE dependency refresh required; "
+        r"dependencies=(T-[0-9]+(?:,T-[0-9]+)*); "
+        r"protected-main=([0-9a-f]{40})",
+        stage,
+    )
+    if not match:
+        raise Refusal("dependency refresh requires an exact transition receipt")
+    dependencies = match[1].split(",")
+    expected_base = match[2]
+    branch = f"{prefix}{args.ticket}"
+    old_head = ensure_clean_branch(product, workdir, branch)
+    ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    text = ticket_path.read_text(encoding="utf-8")
+    state = field(text, "State")
+    if state.lower() not in {"planning", "building"}:
+        raise Refusal("dependency refresh is limited to prepublication ticket states")
+    declared = [item.strip() for item in field(text, "Depends-On").split(",")]
+    if declared != dependencies:
+        raise Refusal("dependency refresh does not match the ticket dependencies")
+    attestation_dir = workdir / "factory" / "attestations" / args.ticket
+    bundle = attestation_dir / "bundle.json"
+    approval = attestation_dir / "approval.json"
+    if any(os.path.lexists(path) for path in (bundle, approval)):
+        raise Refusal("prepublication dependency refresh found publication evidence")
+    configured = git(
+        product, "remote", "get-url", "--push", "--all", "origin"
+    ).stdout.splitlines()
+    if configured != [remote]:
+        raise Refusal("configured origin no longer matches the certified product origin")
+    observed = git(
+        workdir, "ls-remote", "--heads", "--", remote, "refs/heads/main"
+    ).stdout.split()
+    if (
+        len(observed) != 2
+        or not valid_oid(observed[0])
+        or observed[1] != "refs/heads/main"
+    ):
+        raise Refusal("certified protected main tip is missing or ambiguous")
+    if observed[0] != expected_base:
+        return {
+            "action": "dependency-wait",
+            "expected_protected_head": expected_base,
+            "observed_protected_head": observed[0],
+        }
+    git(workdir, "fetch", "--no-tags", "--", remote, "refs/heads/main")
+    fetched = git(workdir, "rev-parse", "FETCH_HEAD").stdout.strip()
+    if fetched != expected_base:
+        return {
+            "action": "dependency-wait",
+            "expected_protected_head": expected_base,
+            "observed_protected_head": fetched,
+        }
+    if not git(
+        workdir, "merge-base", "--is-ancestor", expected_base, old_head,
+        check=False,
+    ).returncode:
+        raise Refusal("ticket branch already contains the dependency base")
+    terminals = []
+    for dependency in dependencies:
+        try:
+            terminal = protected_terminal(product, dependency, expected_base)
+        except ValidationError as error:
+            raise Refusal(
+                f"dependency terminal truth changed for {dependency}: {error}"
+            )
+        terminals.append({
+            "ticket": dependency,
+            "terminal_sha256": hashlib.sha256(
+                json.dumps(
+                    terminal, ensure_ascii=True, sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        })
+    prior_base = git(workdir, "merge-base", old_head, expected_base).stdout.strip()
+    if not valid_oid(prior_base):
+        raise Refusal("dependency refresh prior base is invalid")
+    ticket_blob = git(
+        workdir, "rev-parse", f"{old_head}:factory/tickets/{args.ticket}.md"
+    ).stdout.strip()
+    route_relative = f"factory/route-plans/{args.ticket}.json"
+    route_blob = git(
+        workdir, "rev-parse", f"{old_head}:{route_relative}"
+    ).stdout.strip()
+    receipt_path = attestation_dir / "dependency-refresh.json"
+    generation = 1
+    if os.path.lexists(receipt_path):
+        if not safe_optional_attestation(receipt_path):
+            raise Refusal("dependency refresh receipt is unsafe")
+        try:
+            previous = json.loads(
+                receipt_path.read_text(encoding="utf-8"),
+                object_pairs_hook=unique_json_object,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise Refusal("dependency refresh receipt is malformed")
+        previous_generation = previous.get("generation")
+        if (
+            set(previous) != DEPENDENCY_REFRESH_KEYS
+            or previous.get("schema")
+            != "nysa.software-factory.dependency-refresh/v1"
+            or previous.get("ticket") != args.ticket
+            or isinstance(previous_generation, bool)
+            or not isinstance(previous_generation, int)
+            or previous_generation < 1
+        ):
+            raise Refusal("dependency refresh receipt is malformed")
+        generation = previous_generation + 1
+    merged = git(
+        workdir, "-c", "user.name=Software Factory", "-c",
+        "user.email=factory@local", "merge", "--no-ff", "--no-edit",
+        expected_base, check=False,
+    )
+    if merged.returncode:
+        git(workdir, "merge", "--abort", check=False)
+        if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
+            raise Refusal("dependency conflict could not restore the ticket head")
+        raise Refusal("protected dependency base conflicts with the ticket branch")
+    merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+    parents = git(
+        workdir, "rev-list", "--parents", "-n", "1", merge_head
+    ).stdout.split()
+    if parents != [merge_head, old_head, expected_base]:
+        raise Refusal("dependency refresh did not create the required merge")
+    if (
+        git(
+            workdir, "rev-parse",
+            f"{merge_head}:factory/tickets/{args.ticket}.md",
+        ).stdout.strip() != ticket_blob
+        or git(
+            workdir, "rev-parse", f"{merge_head}:{route_relative}"
+        ).stdout.strip() != route_blob
+        or any(os.path.lexists(path) for path in (bundle, approval))
+    ):
+        git(workdir, "reset", "--hard", old_head)
+        raise Refusal("dependency refresh changed ticket control evidence")
+    receipt = {
+        "schema": "nysa.software-factory.dependency-refresh/v1",
+        "ticket": args.ticket,
+        "generation": generation,
+        "dependencies": dependencies,
+        "dependency_terminals": terminals,
+        "old_head": old_head,
+        "prior_base_head": prior_base,
+        "protected_head": expected_base,
+        "merge_head": merge_head,
+        "preserved_state": state,
+        "refreshed_at": now(),
+    }
+    write_json(receipt_path, receipt)
+    result_head = commit_push(
+        product, workdir, remote, branch,
+        f"{args.ticket}: bind protected dependency base", [receipt_path],
+    )
+    if git(
+        workdir, "merge-base", "--is-ancestor", expected_base, result_head,
+        check=False,
+    ).returncode:
+        raise Refusal("dependency refresh result omitted protected main")
+    return {
+        "action": "dependency-refresh",
+        "head": result_head,
+        "attestation": receipt,
+    }
+
+
 def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     branch = f"{prefix}{args.ticket}"
     head = ensure_clean_branch(product, workdir, branch)
@@ -1608,6 +1785,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
 
 
 def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
+    attest_only = getattr(args, "attest_only", False)
     branch = f"{prefix}{args.ticket}"
     head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
@@ -1642,6 +1820,33 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     pr = exact_pr(repo, branch, "open")
     if pr.get("number") != bundle_att.get("pr_number") or pr.get("headRefOid") != head:
         raise Refusal("PR identity or head changed before approval")
+    if attest_only:
+        before = json.loads(gh(
+            "pr", "view", str(pr["number"]), "--repo", repo,
+            "--json", "number,headRefOid,autoMergeRequest,state",
+        ).stdout)
+        if (
+            before.get("number") != pr["number"]
+            or before.get("headRefOid") != head
+        ):
+            raise Refusal("PR head changed before approval attestation")
+        if before.get("autoMergeRequest"):
+            gh(
+                "pr", "merge", str(pr["number"]), "--repo", repo,
+                "--disable-auto",
+            )
+            disabled = json.loads(gh(
+                "pr", "view", str(pr["number"]), "--repo", repo,
+                "--json", "number,headRefOid,autoMergeRequest,state",
+            ).stdout)
+            if (
+                disabled.get("number") != pr["number"]
+                or disabled.get("headRefOid") != head
+                or disabled.get("autoMergeRequest")
+            ):
+                raise Refusal(
+                    "GitHub did not disable auto-merge before approval attestation"
+                )
     if existing_approval:
         approval_att = validate_approval_attestation(
             existing_approval, bundle_att, args.ticket, repo, branch, kit_sha,
@@ -1687,6 +1892,28 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
             approval_att, bundle_att, args.ticket, repo, branch, kit_sha,
             method, workdir, head,
         )
+    if attest_only:
+        current = exact_pr(repo, branch, "open")
+        view = json.loads(gh(
+            "pr", "view", str(current["number"]), "--repo", repo,
+            "--json", "number,headRefOid,autoMergeRequest,state",
+        ).stdout)
+        if (
+            current.get("number") != approval_att["pr_number"]
+            or current.get("headRefOid") != head
+            or view.get("number") != current["number"]
+            or view.get("headRefOid") != head
+            or view.get("autoMergeRequest")
+        ):
+            raise Refusal(
+                "approval attestation head is not protected from auto-merge"
+            )
+        return {
+            "action": "approval-attested",
+            "auto_merge": False,
+            "head": head,
+            "pr_number": current["number"],
+        }
     current = exact_pr(repo, branch, "open")
     if current.get("number") != approval_att["pr_number"] or current.get("headRefOid") != head:
         raise Refusal("PR head changed before auto-merge request")
@@ -1838,11 +2065,16 @@ def main():
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--workdir", required=True)
     parser.add_argument(
-        "--action", choices=("bundle", "approval", "refresh", "done"), required=True,
+        "--action",
+        choices=("bundle", "approval", "dependency-refresh", "refresh", "done"),
+        required=True,
     )
+    parser.add_argument("--attest-only", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
+    if args.attest_only and args.action != "approval":
+        parser.error("--attest-only requires --action approval")
     product = Path(os.environ["FACTORY_ROOT"]).resolve()
     workdir = Path(args.workdir).resolve()
     remote = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
@@ -1858,6 +2090,10 @@ def main():
         )
     elif args.action == "refresh":
         result = refresh(args, product, workdir, repo, prefix, remote)
+    elif args.action == "dependency-refresh":
+        result = dependency_refresh(
+            args, product, workdir, prefix, remote,
+        )
     else:
         result = done(
             args, product, workdir, repo, prefix, remote, checks, kit_sha, method,

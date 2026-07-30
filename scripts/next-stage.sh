@@ -441,7 +441,7 @@ if not (
     raise SystemExit(1)
 PY
     then
-      echo "AWAIT-OPERATOR approval attested; protected auto-merge request must be confirmed"
+      echo "AWAIT-MERGE approval attested; protected auto-merge request pending"
       exit 0
     fi
     APPROVAL_ATTESTATION="$CONTENT_ROOT/factory/attestations/$TICKET/approval.json"

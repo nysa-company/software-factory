@@ -80,9 +80,13 @@ Contract 1.6 defaults to four and permits up to six through
 `MAX_CONCURRENT_TICKETS`; each ticket keeps
 its own exact branch, linked worktree, opaque lease, and sequential role flow.
 Those leases may coexist. The setting is coupled worktree/provider capacity.
-The product-level control lock remains for native subscription, Cursor CLI, and
-every other legacy route; only an exact owner-activated Contract 1.6 API route
-may use isolated parallel admission.
+Contract 1.8 caps that value at four and, above one, requires the exact
+owner-approved provider policy and per-attempt runtime configuration to cover
+Cursor, Claude Code, and Codex before certification or activation. Missing
+configuration is a deterministic stop, not a silent serialized rollout. The
+product-level provider lock remains for older contracts, capacity one, and
+other legacy routes; only an exact owner-activated Contract 1.6 API route may
+use API-isolated parallel admission.
 
 ## Kit release lifecycle
 

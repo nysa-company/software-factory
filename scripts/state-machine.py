@@ -14,9 +14,14 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
+from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.state-machine/v1"
@@ -275,15 +280,23 @@ def ticket_evidence_digest(factory: Path, ticket: str) -> str:
                 values.get("ticket") == ticket
                 and values.get("accounting_state") not in {None, "", "reserved"}
             ):
-                selected.append((path.name, raw))
+                selected.append((path.name, hashlib.sha256(raw).digest()))
                 output = path.with_suffix(".out")
                 if output.is_file() and not output.is_symlink():
-                    selected.append((output.name, output.read_bytes()))
+                    try:
+                        output_digest = bytes.fromhex(
+                            role_output_sha256(output)
+                        )
+                    except (OSError, RoleOutputError, ValueError) as error:
+                        raise StateError(
+                            "run role output is unsafe"
+                        ) from error
+                    selected.append((output.name, output_digest))
     digest = hashlib.sha256()
-    for name, raw in selected:
+    for name, item_digest in selected:
         digest.update(name.encode())
         digest.update(b"\0")
-        digest.update(hashlib.sha256(raw).digest())
+        digest.update(item_digest)
     return digest.hexdigest()
 
 
@@ -292,7 +305,8 @@ def stage_role(stage: str) -> str | None:
     if action in {"RUN", "FIX"} and separator and ROLE.fullmatch(detail):
         return detail
     if action in {
-        "AWAIT-OPERATOR", "AWAIT-MERGE", "AWAIT_BUDGET", "COMPLETE", "REFUSE",
+        "AWAIT-OPERATOR", "AWAIT-MERGE", "AWAIT_BUDGET", "AWAIT_DEPENDENCY",
+        "COMPLETE", "REFUSE",
     }:
         return None
     raise StateError("state resolver returned an unsupported transition")
@@ -317,6 +331,65 @@ def ticket_field(workdir: Path, ticket: str, name: str) -> str:
 
 def current_state(workdir: Path, ticket: str) -> str:
     return ticket_field(workdir, ticket, "State")
+
+
+def declared_dependencies(args: argparse.Namespace) -> tuple[str, ...]:
+    text = (
+        args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    ).read_text(encoding="utf-8")
+    values = re.findall(r"^Depends-On:\s*(.*?)\s*$", text, re.I | re.M)
+    if len(values) > 1:
+        raise StateError("ticket Depends-On is ambiguous")
+    raw = values[0] if values else "none"
+    if raw.casefold() == "none":
+        return ()
+    dependencies = tuple(item.strip() for item in raw.split(","))
+    if (
+        not dependencies
+        or len(dependencies) != len(set(dependencies))
+        or args.ticket in dependencies
+        or any(not TICKET.fullmatch(item) for item in dependencies)
+    ):
+        raise StateError("ticket dependencies are invalid")
+    return dependencies
+
+
+def unresolved_dependencies(
+    args: argparse.Namespace, dependencies: tuple[str, ...] | None = None
+) -> tuple[str, ...]:
+    dependencies = dependencies or declared_dependencies(args)
+    unresolved = []
+    for dependency in dependencies:
+        try:
+            protected_terminal(args.factory_root, dependency)
+        except ValidationError:
+            unresolved.append(dependency)
+    return tuple(unresolved)
+
+
+def protected_base_sha(args: argparse.Namespace) -> str:
+    value = git(args.workdir, "rev-parse", "--verify", "origin/main^{commit}")
+    if not SHA.fullmatch(value):
+        raise StateError("protected main tracking ref is invalid")
+    return value
+
+
+def branch_contains(args: argparse.Namespace, commit: str) -> bool:
+    result = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+            commit, "HEAD",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if result.returncode not in {0, 1}:
+        raise StateError(
+            result.stderr.strip() or "protected-base ancestry check failed"
+        )
+    return result.returncode == 0
 
 
 def migrated_contract_block(
@@ -773,8 +846,23 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
             args, "ticket-state.sh", "--ticket", args.ticket,
             "--workdir", str(args.workdir), "--action", "materialize",
         )
+    declared = declared_dependencies(args)
+    dependencies = unresolved_dependencies(args, declared)
     repair_stage, repair_override = contract_repair_stage(args)
-    stage = repair_stage or resolve(args)
+    if dependencies:
+        stage = f"AWAIT_DEPENDENCY {','.join(dependencies)}"
+    elif declared:
+        base = protected_base_sha(args)
+        stage = (
+            repair_stage or resolve(args)
+            if branch_contains(args, base)
+            else (
+                "REFUSE dependency refresh required; "
+                f"dependencies={','.join(declared)}; protected-main={base}"
+            )
+        )
+    else:
+        stage = repair_stage or resolve(args)
     role = stage_role(stage)
     if role:
         current = current_state(args.workdir, args.ticket)

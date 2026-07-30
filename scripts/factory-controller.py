@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import fcntl
 import hashlib
 import json
@@ -30,6 +30,7 @@ DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TERMINAL_ACCOUNTING = {
     "completed", "abandoned_conservative", "cancelled", "cancelled_conservative",
 }
+RECONCILE_INTERVAL_SECONDS = 15
 
 
 class ControllerError(ValueError):
@@ -262,6 +263,19 @@ class Controller:
     def runnable(claim: dict[str, Any]) -> bool:
         return claim["status"] not in {"blocked", "budget"}
 
+    @staticmethod
+    def consumes_capacity(claim: dict[str, Any]) -> bool:
+        return (
+            claim["status"] in {"claimed", "running"}
+            and claim.get("parked") is not True
+            and claim.get("lease_released") is not True
+            and bool(DIGEST.fullmatch(claim.get("lease", "")))
+        )
+
+    @staticmethod
+    def parked(claim: dict[str, Any]) -> bool:
+        return claim.get("parked") is True
+
     def save_claim(self, claim: dict[str, Any]) -> None:
         write(self.claim_path(claim["ticket"]), claim)
 
@@ -273,8 +287,24 @@ class Controller:
                 value.get("schema") != CLAIM_SCHEMA
                 or path.name != f"{value.get('ticket')}.json"
                 or not TICKET.fullmatch(value.get("ticket", ""))
-                or not DIGEST.fullmatch(value.get("lease", ""))
+                or (
+                    not DIGEST.fullmatch(value.get("lease", ""))
+                    and not (
+                        value.get("lease") == ""
+                        and value.get("parked") is True
+                    )
+                )
                 or not Path(value.get("worktree", "")).is_absolute()
+                or (
+                    value.get("parked") not in {None, True}
+                    or (
+                        value.get("parked") is True
+                        and (
+                            Path(value["worktree"]).name != value["ticket"]
+                            or Path(value["worktree"]).parent.name != "parked"
+                        )
+                    )
+                )
                 or value.get("status") not in {
                     "claimed", "running", "waiting", "blocked", "budget",
                 }
@@ -322,13 +352,19 @@ class Controller:
             result.append(value)
         return result
 
-    def claim_new(self, existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def claim_new(
+        self, existing: list[dict[str, Any]], reserved_capacity: int = 0
+    ) -> list[dict[str, Any]]:
         claims = list(existing)
+        if not 0 <= reserved_capacity <= self.capacity:
+            raise ControllerError("reserved controller capacity is invalid")
         excluded = sorted(
             item["ticket"]
-            for item in claims if item["status"] in {"blocked", "budget"}
+            for item in claims if not self.consumes_capacity(item)
         )
-        while len([item for item in claims if self.runnable(item)]) < self.capacity:
+        while len(
+            [item for item in claims if self.consumes_capacity(item)]
+        ) + reserved_capacity < self.capacity:
             arguments = ["dispatch-plan", "--claim"]
             for ticket in excluded:
                 arguments.extend(["--exclude-ticket", ticket])
@@ -416,6 +452,11 @@ class Controller:
                 "ticket": ticket,
                 "worktree": worktrees[0],
             }
+            if (
+                Path(worktrees[0]).name == ticket
+                and Path(worktrees[0]).parent.name == "parked"
+            ):
+                claim["parked"] = True
             if not self.ticket_release_current(claim):
                 continue
             try:
@@ -522,9 +563,7 @@ class Controller:
 
     def block(self, claim: dict[str, Any], reason: str) -> None:
         self.withdraw_publication(claim)
-        self.json_call(
-            "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
-        )
+        self.release_ticket_lease(claim)
         claim["status"] = "blocked"
         self.save_claim(claim)
         self.event("ticket_blocked", claim["ticket"], reason=reason)
@@ -532,6 +571,195 @@ class Controller:
     def active_run(self, ticket: str) -> bool:
         active = self.product / "factory/.active-runs"
         return active.is_dir() and any(active.glob(f"{ticket}.*"))
+
+    def role_active(self, claim: dict[str, Any]) -> bool:
+        return self.active_run(claim["ticket"])
+
+    def release_ticket_lease(self, claim: dict[str, Any]) -> None:
+        if claim.get("lease_released") is True:
+            return
+        self.json_call(
+            "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
+        )
+        claim["lease_released"] = True
+        self.save_claim(claim)
+
+    def ensure_lease(self, claim: dict[str, Any], label: str) -> None:
+        if (
+            claim.get("lease_released") is not True
+            and DIGEST.fullmatch(claim.get("lease", ""))
+        ):
+            try:
+                self.renew(claim)
+                return
+            except ControllerError:
+                if self.role_active(claim):
+                    raise
+        lease = self.json_call("claim", "--ticket", claim["ticket"])
+        if (
+            lease.get("schema_version") != 1
+            or lease.get("ticket") != claim["ticket"]
+            or not DIGEST.fullmatch(lease.get("lease_id", ""))
+        ):
+            raise ControllerError(f"{label} lease is invalid")
+        claim["lease"] = lease["lease_id"]
+        claim.pop("lease_released", None)
+        self.save_claim(claim)
+        self.event(
+            "ticket_lease_recovered", claim["ticket"], recovery=label,
+        )
+
+    def park_claim(self, claim: dict[str, Any]) -> bool:
+        """Release a clean checkpointed ticket from a disposable cell."""
+        if self.role_active(claim):
+            return False
+        if self.parked(claim):
+            if claim["status"] in {"claimed", "running"}:
+                claim["status"] = "waiting"
+            if DIGEST.fullmatch(claim.get("lease", "")):
+                self.release_ticket_lease(claim)
+                claim["lease"] = ""
+                claim.pop("lease_released", None)
+                self.save_claim(claim)
+                self.event("parked_lease_released", claim["ticket"])
+            else:
+                self.save_claim(claim)
+            return True
+        source = Path(claim["worktree"])
+        if (
+            not re.fullmatch(r"cell-[1-6]", source.name)
+            or not source.is_dir()
+            or self.role_active(claim)
+        ):
+            return False
+        try:
+            clean = subprocess.run(
+                ["git", "-C", str(source), "status", "--porcelain=v1", "-z"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout == ""
+            branch = subprocess.run(
+                ["git", "-C", str(source), "symbolic-ref", "--short", "HEAD"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            if (
+                not clean
+                or branch != claim["branch"]
+                or not self.remote_passport_valid(claim)
+            ):
+                self.event(
+                    "cell_parking_deferred", claim["ticket"],
+                    reason="checkpoint_not_portable",
+                )
+                return False
+            root = safe_directory(source.parent)
+            parked_root = root / "parked"
+            if not parked_root.exists():
+                parked_root.mkdir(mode=0o700)
+            safe_directory(parked_root)
+            destination = parked_root / claim["ticket"]
+            if destination.exists() or destination.is_symlink():
+                raise ControllerError("parked ticket destination is occupied")
+            with self.git_lock:
+                subprocess.run(
+                    [
+                        "git", "-C", str(self.product), "worktree", "move",
+                        str(source), str(destination),
+                    ],
+                    check=True, timeout=120,
+                )
+            claim.update(parked=True, worktree=str(destination))
+            if claim["status"] in {"claimed", "running"}:
+                claim["status"] = "waiting"
+            self.save_claim(claim)
+            if DIGEST.fullmatch(claim.get("lease", "")):
+                self.release_ticket_lease(claim)
+                claim["lease"] = ""
+                claim.pop("lease_released", None)
+                self.save_claim(claim)
+            self.event(
+                "cell_parked", claim["ticket"], from_worktree=str(source),
+                parked_worktree=str(destination),
+            )
+            return True
+        except (
+            ControllerError,
+            OSError,
+            subprocess.SubprocessError,
+        ) as error:
+            self.event(
+                "cell_parking_deferred", claim["ticket"], reason=str(error),
+            )
+            return False
+
+    def ensure_execution_cell(self, claim: dict[str, Any]) -> None:
+        """Move a portable parked ticket into a free execution cell."""
+        if not self.parked(claim):
+            return
+        source = Path(claim["worktree"])
+        root = safe_directory(source.parent.parent)
+        if (
+            source.parent != root / "parked"
+            or source.name != claim["ticket"]
+            or not source.is_dir()
+            or not self.remote_passport_valid(claim)
+        ):
+            raise ControllerError("parked ticket checkpoint is not portable")
+        with self.git_lock:
+            output = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "worktree", "list",
+                    "--porcelain",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout
+            occupied = {
+                Path(line.partition(" ")[2]).resolve()
+                for line in output.splitlines()
+                if line.startswith("worktree ")
+            }
+            destination = next(
+                (
+                    root / f"cell-{number}"
+                    for number in range(1, 7)
+                    if root / f"cell-{number}" not in occupied
+                    and not (root / f"cell-{number}").exists()
+                    and not (root / f"cell-{number}").is_symlink()
+                ),
+                None,
+            )
+            if destination is None:
+                raise ControllerError("no disposable execution cell is available")
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "worktree", "move",
+                    str(source), str(destination),
+                ],
+                check=True, timeout=120,
+            )
+        claim.pop("parked", None)
+        claim["worktree"] = str(destination)
+        self.save_claim(claim)
+        try:
+            if not self.remote_passport_valid(claim):
+                raise ControllerError(
+                    "reattached ticket passport validation failed"
+                )
+        except Exception:
+            with self.git_lock:
+                subprocess.run(
+                    [
+                        "git", "-C", str(self.product), "worktree", "move",
+                        str(destination), str(source),
+                    ],
+                    check=True, timeout=120,
+                )
+            claim.update(parked=True, worktree=str(source))
+            self.save_claim(claim)
+            raise
+        self.event(
+            "cell_reattached", claim["ticket"], from_worktree=str(source),
+            to_worktree=str(destination),
+        )
 
     def terminal_for_receipt(self, ticket: str, receipt: str) -> dict[str, str] | None:
         matches = []
@@ -647,6 +875,65 @@ class Controller:
             f"{head}\trefs/heads/{branch}\n"
         )
 
+    def recover_terminal_exports(self, claims: list[dict[str, Any]]) -> None:
+        for claim in claims:
+            if (
+                claim["status"] not in {"blocked", "running"}
+                or not claim.get("receipt")
+                or not claim.get("role")
+                or self.role_active(claim)
+            ):
+                continue
+            terminal = self.terminal_for_receipt(
+                claim["ticket"], claim["receipt"]
+            )
+            if (
+                terminal is None
+                or terminal.get("exit_status") != "0"
+                or terminal.get("role_exit") != "ok"
+            ):
+                continue
+            self.ensure_lease(claim, "terminal-export")
+            publication = (
+                "validating"
+                if claim["role"] in {"reviewer", "narrator"}
+                else "none"
+            )
+            if self.terminal_already_exported(claim, terminal):
+                self.migrate_passport(claim, publication)
+            else:
+                self.passport(claim, publication)
+            claim["status"] = "running"
+            self.save_claim(claim)
+            self.event(
+                "terminal_export_retried", claim["ticket"],
+                run_id=terminal.get("run_id"),
+            )
+
+    def recover_each(
+        self,
+        claims: list[dict[str, Any]],
+        recovery: Any,
+        name: str,
+    ) -> None:
+        for claim in claims:
+            try:
+                recovery([claim])
+            except (
+                ControllerError,
+                json.JSONDecodeError,
+                OSError,
+                subprocess.SubprocessError,
+            ) as error:
+                claim["status"] = "blocked"
+                self.save_claim(claim)
+                self.event(
+                    "ticket_recovery_failed",
+                    claim["ticket"],
+                    error=str(error),
+                    recovery=name,
+                )
+
     def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             if claim["status"] != "blocked":
@@ -705,10 +992,7 @@ class Controller:
             try:
                 self.migrate_passport(claim, "preserve")
             except ControllerError:
-                self.json_call(
-                    "release", "--ticket", claim["ticket"],
-                    "--lease", claim["lease"],
-                )
+                self.release_ticket_lease(claim)
                 raise
             if (
                 not claim.get("receipt")
@@ -729,7 +1013,12 @@ class Controller:
                 and terminal.get("role_exit") == "role_exit_contract_blocked"
                 and terminal.get("exit_status") == "12"
             )
-            if contract_blocked:
+            successful_terminal = (
+                terminal is not None
+                and terminal.get("role_exit") == "ok"
+                and terminal.get("exit_status") == "0"
+            )
+            if contract_blocked or successful_terminal:
                 claim["status"] = "blocked"
             else:
                 claim.update(receipt="", role="", status="claimed")
@@ -744,7 +1033,7 @@ class Controller:
             claim["status"] != "blocked"
             or claim.get("receipt")
             or claim.get("role")
-            or self.active_run(claim["ticket"])
+            or self.role_active(claim)
         ):
             return False
         receipt_path = self.state / f"{claim['ticket']}.json"
@@ -810,17 +1099,7 @@ class Controller:
             or not self.remote_passport_valid(claim)
         ):
             return False
-        try:
-            self.renew(claim)
-        except ControllerError:
-            lease = self.json_call("claim", "--ticket", claim["ticket"])
-            if (
-                lease.get("schema_version") != 1
-                or lease.get("ticket") != claim["ticket"]
-                or not DIGEST.fullmatch(lease.get("lease_id", ""))
-            ):
-                raise ControllerError("restored contract blocker lease is invalid")
-            claim["lease"] = lease["lease_id"]
+        self.ensure_lease(claim, "restored-contract-blocker")
         claim.update(receipt=receipt_digest, role=role, status="blocked")
         self.save_claim(claim)
         self.event(
@@ -835,7 +1114,7 @@ class Controller:
             if (
                 claim["status"] != "blocked"
                 or not claim.get("receipt")
-                or self.active_run(claim["ticket"])
+                or self.role_active(claim)
             ):
                 continue
             terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
@@ -864,6 +1143,7 @@ class Controller:
             if not passport_path.exists():
                 continue
             if contract_blocked:
+                self.ensure_lease(claim, "contract-block-resume")
                 blocked = self.json_call(
                     "state-machine", "block", "--ticket", claim["ticket"],
                     "--lease", claim["lease"], "--receipt", claim["receipt"],
@@ -902,17 +1182,7 @@ class Controller:
                     continue
             if not valid_passport:
                 continue
-            try:
-                self.renew(claim)
-            except ControllerError:
-                lease = self.json_call("claim", "--ticket", claim["ticket"])
-                if (
-                    lease.get("schema_version") != 1
-                    or lease.get("ticket") != claim["ticket"]
-                    or not DIGEST.fullmatch(lease.get("lease_id", ""))
-                ):
-                    raise ControllerError("repaired push lease is invalid")
-                claim["lease"] = lease["lease_id"]
+            self.ensure_lease(claim, "repaired-role")
             failed_run = terminal.get("run_id", "")
             claim.update(receipt="", role="", status="claimed")
             self.save_claim(claim)
@@ -999,7 +1269,7 @@ class Controller:
     def finish_pending_run(self, claim: dict[str, Any]) -> bool:
         if not claim.get("receipt"):
             return True
-        if self.active_run(claim["ticket"]):
+        if self.role_active(claim):
             return False
         terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
         if terminal is None:
@@ -1074,9 +1344,7 @@ class Controller:
                     )
             claim["status"] = "blocked"
             self.save_claim(claim)
-            self.json_call(
-                "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
-            )
+            self.release_ticket_lease(claim)
             self.event("role_blocked", claim["ticket"], role=claim["role"])
             return False
         self.relocate_qualification_cell(claim)
@@ -1096,6 +1364,61 @@ class Controller:
             "ticket-pr", "--ticket", claim["ticket"], "--lease", claim["lease"],
             "--receipt", receipt, "--workdir", claim["worktree"], "--json",
         )
+
+    def refresh_dependency_tracking(self, claim: dict[str, Any]) -> bool:
+        path = (
+            Path(claim["worktree"])
+            / "factory" / "tickets" / f"{claim['ticket']}.md"
+        )
+        try:
+            ticket = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # State-machine remains the authoritative fail-closed ticket
+            # validator; focused controller callers may replace that boundary.
+            return True
+        values = re.findall(r"^Depends-On:\s*(.*?)\s*$", ticket, re.I | re.M)
+        if len(values) > 1:
+            raise ControllerError("ticket Depends-On is ambiguous")
+        if not values or values[0].casefold() == "none":
+            return True
+        with self.git_lock:
+            observed = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "ls-remote", "--heads",
+                    "origin", "refs/heads/main",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.split()
+            if (
+                len(observed) != 2
+                or not SHA.fullmatch(observed[0])
+                or observed[1] != "refs/heads/main"
+            ):
+                raise ControllerError(
+                    "protected main dependency observation is ambiguous"
+                )
+            subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "fetch", "--quiet",
+                    "--no-tags", "origin",
+                    "+refs/heads/main:refs/remotes/origin/main",
+                ],
+                check=True, timeout=120,
+            )
+            local = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "rev-parse",
+                    "--verify", "origin/main^{commit}",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            if local != observed[0]:
+                self.event(
+                    "dependency_tracking_moved", claim["ticket"],
+                    observed=observed[0], fetched=local,
+                )
+                return False
+        return True
 
     def retry_ci(
         self, claim: dict[str, Any], receipt: str, pr: dict[str, Any]
@@ -1235,6 +1558,7 @@ class Controller:
     def run_role(
         self, claim: dict[str, Any], role: str, receipt: str, failed_checks: list[str]
     ) -> None:
+        self.ensure_execution_cell(claim)
         if role == "planner":
             preflight = self.json_call(
                 "preflight", "--ticket", claim["ticket"], "--role", role,
@@ -1266,21 +1590,7 @@ class Controller:
         try:
             if (self.product / "factory/MAINTENANCE").exists():
                 return {"status": "maintenance", "ticket": claim["ticket"]}
-            try:
-                self.renew(claim)
-            except ControllerError:
-                if self.active_run(claim["ticket"]):
-                    raise
-                lease = self.json_call("claim", "--ticket", claim["ticket"])
-                if (
-                    lease.get("schema_version") != 1
-                    or lease.get("ticket") != claim["ticket"]
-                    or not DIGEST.fullmatch(lease.get("lease_id", ""))
-                ):
-                    raise ControllerError("recovered ticket lease is invalid")
-                claim["lease"] = lease["lease_id"]
-                self.save_claim(claim)
-                self.event("ticket_lease_recovered", claim["ticket"])
+            self.ensure_lease(claim, "reconciliation")
             if not self.finish_pending_run(claim):
                 return {
                     "status": (
@@ -1292,6 +1602,10 @@ class Controller:
                 }
             if not self.route_path(claim).exists():
                 raise ControllerError("ticket route was not batch pinned")
+            if not self.refresh_dependency_tracking(claim):
+                claim["status"] = "waiting"
+                self.save_claim(claim)
+                return {"status": "waiting", "ticket": claim["ticket"]}
             transition = self.json_call(
                 "state-machine", "--ticket", claim["ticket"],
                 "--lease", claim["lease"], "--workdir", claim["worktree"],
@@ -1344,7 +1658,7 @@ class Controller:
                 if pr.get("status") != "ready":
                     self.block(claim, "bundle-pr-gate")
                     return {"status": "blocked", "ticket": claim["ticket"]}
-                self.json_call(
+                attested = self.json_call(
                     "ticket-attest", "--ticket", claim["ticket"],
                     "--lease", claim["lease"], "--receipt", receipt,
                     "--workdir", claim["worktree"], "--action", "bundle", "--json",
@@ -1352,6 +1666,42 @@ class Controller:
                 self.migrate_passport(claim, "validating")
                 return {"status": "progressed", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT-OPERATOR Linear approval observed"):
+                if claim.get("publication_lease"):
+                    self.release_publication(claim)
+                pr = self.ticket_pr(claim, receipt)
+                if pr.get("status") == "failed" and self.retry_ci(
+                    claim, receipt, pr
+                ):
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if pr.get("status") != "ready":
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                attested = self.json_call(
+                    "ticket-attest", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--receipt", receipt,
+                    "--workdir", claim["worktree"], "--action", "approval",
+                    "--attest-only", "--json",
+                )
+                if (
+                    attested.get("action") != "approval-attested"
+                    or attested.get("auto_merge") is not False
+                    or not SHA.fullmatch(attested.get("head", ""))
+                    or attested["head"] == pr["head"]
+                    or attested.get("pr_number") != pr.get("pr_number")
+                ):
+                    raise ControllerError(
+                        "approval attestation did not materialize exact H2"
+                    )
+                self.migrate_passport(claim, "merge-pending")
+                self.event(
+                    "approval_attested_before_publication",
+                    claim["ticket"],
+                    approved_head=attested["head"],
+                    reviewed_head=pr["head"],
+                )
+                return {"status": "progressed", "ticket": claim["ticket"]}
+            if stage.startswith(
+                "AWAIT-MERGE approval attested; protected auto-merge request pending"
+            ):
                 pr = self.ticket_pr(claim, receipt)
                 if pr.get("status") == "failed" and self.retry_ci(
                     claim, receipt, pr
@@ -1361,13 +1711,37 @@ class Controller:
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 if not self.publication_ready(claim, receipt, pr["head"]):
                     return {"status": "waiting", "ticket": claim["ticket"]}
-                self.json_call(
+                approval = self.json_call(
                     "ticket-attest", "--ticket", claim["ticket"],
                     "--lease", claim["lease"], "--receipt", receipt,
-                    "--workdir", claim["worktree"], "--action", "approval", "--json",
+                    "--workdir", claim["worktree"], "--action", "approval",
+                    "--json",
                 )
+                if (
+                    approval.get("action") != "approval"
+                    or approval.get("auto_merge") is not True
+                    or approval.get("head") != pr["head"]
+                    or approval.get("pr_number") != pr.get("pr_number")
+                ):
+                    raise ControllerError(
+                        "protected auto-merge did not bind exact H2"
+                    )
                 self.migrate_passport(claim, "merge-pending")
+                self.event(
+                    "protected_auto_merge_requested",
+                    claim["ticket"],
+                    head_sha=pr["head"],
+                )
                 return {"status": "progressed", "ticket": claim["ticket"]}
+            if stage.startswith("AWAIT_DEPENDENCY"):
+                claim["status"] = "waiting"
+                self.save_claim(claim)
+                self.event(
+                    "dependency_wait",
+                    claim["ticket"],
+                    dependencies=stage.partition(" ")[2],
+                )
+                return {"status": "waiting", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT-OPERATOR"):
                 claim["status"] = "waiting"
                 self.save_claim(claim)
@@ -1375,9 +1749,7 @@ class Controller:
             if stage.startswith("AWAIT_BUDGET"):
                 if claim.get("publication_lease"):
                     self.release_publication(claim)
-                self.json_call(
-                    "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
-                )
+                self.release_ticket_lease(claim)
                 claim.update(
                     budget_sha256=self.envelope_digest(), receipt="",
                     role="", status="budget",
@@ -1433,6 +1805,69 @@ class Controller:
                         head_sha=value.get("head"),
                     )
                 return {"status": "progressed", "ticket": claim["ticket"]}
+            dependency_refresh = re.fullmatch(
+                r"REFUSE dependency refresh required; "
+                r"dependencies=(T-[0-9]+(?:,T-[0-9]+)*); "
+                r"protected-main=([0-9a-f]{40})",
+                stage,
+            )
+            if dependency_refresh:
+                receipt_record = read(self.state / f"{claim['ticket']}.json")
+                if (
+                    receipt_record.get("receipt_sha256") != receipt
+                    or receipt_record.get("head_sha")
+                    != subprocess.run(
+                        ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                        text=True, capture_output=True, check=True, timeout=120,
+                    ).stdout.strip()
+                ):
+                    raise ControllerError(
+                        "dependency refresh receipt does not bind the old head"
+                    )
+                value = self.json_call(
+                    "ticket-attest", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--receipt", receipt,
+                    "--workdir", claim["worktree"],
+                    "--action", "dependency-refresh", "--json",
+                )
+                if value.get("action") == "dependency-wait":
+                    claim["status"] = "waiting"
+                    self.save_claim(claim)
+                    self.event(
+                        "dependency_base_moved", claim["ticket"],
+                        expected=value.get("expected_protected_head"),
+                        observed=value.get("observed_protected_head"),
+                    )
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                attestation = value.get("attestation")
+                refreshed = value.get("head", "")
+                if (
+                    value.get("action") != "dependency-refresh"
+                    or not isinstance(attestation, dict)
+                    or attestation.get("old_head") != receipt_record["head_sha"]
+                    or attestation.get("protected_head")
+                    != dependency_refresh[2]
+                    or not SHA.fullmatch(refreshed)
+                    or subprocess.run(
+                        [
+                            "git", "-C", claim["worktree"], "merge-base",
+                            "--is-ancestor", dependency_refresh[2], refreshed,
+                        ],
+                        check=False, timeout=120,
+                    ).returncode != 0
+                ):
+                    raise ControllerError(
+                        "dependency refresh did not bind protected main"
+                    )
+                self.migrate_passport(claim, "validating")
+                self.event(
+                    "dependency_base_refreshed", claim["ticket"],
+                    dependencies=dependency_refresh[1],
+                    old_head=receipt_record["head_sha"],
+                    protected_main=dependency_refresh[2],
+                    refreshed_head=refreshed,
+                )
+                return {"status": "progressed", "ticket": claim["ticket"]}
             if stage.startswith("REFUSE"):
                 self.block(claim, "state-machine-refusal")
                 return {"status": "blocked", "ticket": claim["ticket"]}
@@ -1441,10 +1876,8 @@ class Controller:
             claim["status"] = "blocked"
             self.save_claim(claim)
             self.withdraw_publication(claim)
-            if not self.active_run(claim["ticket"]):
-                self.json_call(
-                    "release", "--ticket", claim["ticket"], "--lease", claim["lease"],
-                )
+            if not self.role_active(claim):
+                self.release_ticket_lease(claim)
             self.event("controller_error", claim["ticket"], error=str(error))
             return {"status": "error", "ticket": claim["ticket"], "error": str(error)}
 
@@ -1452,6 +1885,13 @@ class Controller:
         while True:
             result = self.reconcile_ticket(claim)
             if result.get("status") != "progressed":
+                if (
+                    result.get("status") in {
+                        "blocked", "budget", "error", "waiting",
+                    }
+                    and not self.role_active(claim)
+                ):
+                    self.park_claim(claim)
                 return result
 
     def reconcile(self) -> dict[str, Any]:
@@ -1463,8 +1903,15 @@ class Controller:
                     self.withdraw_publication(claim)
             existing = [claim for claim in existing if claim["ticket"] in tickets]
         self.recover_missing_passport_claims(existing)
-        self.recover_upgraded_claims(existing)
-        self.recover_repaired_failures(existing)
+        self.recover_each(
+            existing, self.recover_upgraded_claims, "release-upgrade",
+        )
+        self.recover_each(
+            existing, self.recover_terminal_exports, "terminal-export",
+        )
+        self.recover_each(
+            existing, self.recover_repaired_failures, "targeted-repair",
+        )
         self.event(
             "controller_started", recovered_tickets=sorted(
                 item["ticket"] for item in existing if self.runnable(item)
@@ -1515,17 +1962,160 @@ class Controller:
                 "tickets": recovered,
             })
             self.event("controller_recovered", tickets=recovered)
-        runnable = [item for item in claims if self.runnable(item)]
-        results = self.pin_routes(runnable)
-        waiting = {item["ticket"] for item in results}
-        ready = [item for item in runnable if item["ticket"] not in waiting]
-        with ThreadPoolExecutor(max_workers=min(4, len(ready) or 1)) as executor:
-            results.extend(executor.map(self.reconcile_ticket_until_wait, ready))
+
+        results: dict[str, dict[str, str]] = {}
+        cooldown: dict[str, float] = {}
+        futures: dict[Future, dict[str, Any]] = {}
+        worker_limit = min(4, self.capacity)
+        executor = ThreadPoolExecutor(max_workers=worker_limit)
+
+        def submit_ready(
+            candidates: list[dict[str, Any]],
+            all_claims: list[dict[str, Any]],
+        ) -> None:
+            available = worker_limit - len(futures)
+            reserved_live = sum(
+                not self.consumes_capacity(claim)
+                for claim in futures.values()
+            )
+            capacity_slots = max(
+                0,
+                self.capacity
+                - sum(self.consumes_capacity(claim) for claim in all_claims)
+                - reserved_live,
+            )
+            for claim in sorted(
+                candidates, key=lambda item: not self.consumes_capacity(item)
+            ):
+                if available <= 0:
+                    break
+                if not self.consumes_capacity(claim):
+                    if capacity_slots <= 0:
+                        continue
+                    capacity_slots -= 1
+                future = executor.submit(
+                    self.reconcile_ticket_until_wait, claim
+                )
+                futures[future] = claim
+                available -= 1
+
+        try:
+            while True:
+                claims = self.load_claims()
+                if self.qualification:
+                    tickets = set(self.qualification["tickets"])
+                    claims = [
+                        claim for claim in claims if claim["ticket"] in tickets
+                    ]
+                busy = {claim["ticket"] for claim in futures.values()}
+                idle = [
+                    claim for claim in claims
+                    if claim["ticket"] not in busy and not self.role_active(claim)
+                ]
+                self.recover_missing_passport_claims(claims)
+                self.recover_each(
+                    idle, self.recover_upgraded_claims, "release-upgrade",
+                )
+                self.recover_each(
+                    idle, self.recover_terminal_exports, "terminal-export",
+                )
+                self.recover_each(
+                    idle, self.recover_repaired_failures, "targeted-repair",
+                )
+                # Existing pinned claims are scheduled before potentially slow
+                # admission or batch route preparation.
+                now = time.monotonic()
+                ready = [
+                    claim for claim in idle
+                    if self.runnable(claim)
+                    and self.route_path(claim).exists()
+                    and now >= cooldown.get(claim["ticket"], 0)
+                ]
+                submit_ready(ready, claims)
+                busy.update(claim["ticket"] for claim in futures.values())
+                reserved_live = sum(
+                    not self.consumes_capacity(claim)
+                    for claim in futures.values()
+                )
+                try:
+                    claims = (
+                        self.claim_new(claims, reserved_live)
+                        if reserved_live
+                        else self.claim_new(claims)
+                    )
+                except ControllerError as error:
+                    self.event("admission_blocked", error=str(error))
+                new_idle = [
+                    claim for claim in claims
+                    if claim["ticket"] not in busy
+                    and not self.role_active(claim)
+                    and self.runnable(claim)
+                    and now >= cooldown.get(claim["ticket"], 0)
+                ]
+                pin_results = self.pin_routes(new_idle)
+                pin_waiting = {item["ticket"] for item in pin_results}
+                for item in pin_results:
+                    results[item["ticket"]] = item
+                    cooldown[item["ticket"]] = (
+                        now + RECONCILE_INTERVAL_SECONDS
+                    )
+                submit_ready(
+                    [
+                        claim for claim in new_idle
+                        if claim["ticket"] not in pin_waiting
+                        and claim["ticket"] not in busy
+                    ],
+                    claims,
+                )
+                if not futures:
+                    break
+                done, _ = wait(
+                    tuple(futures),
+                    timeout=RECONCILE_INTERVAL_SECONDS,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    continue
+                for future in done:
+                    claim = futures.pop(future)
+                    try:
+                        item = future.result()
+                    except Exception as error:
+                        claim["status"] = "blocked"
+                        self.save_claim(claim)
+                        self.event(
+                            "ticket_worker_failed",
+                            claim["ticket"],
+                            error=str(error),
+                        )
+                        item = {
+                            "error": str(error),
+                            "status": "error",
+                            "ticket": claim["ticket"],
+                        }
+                    results[claim["ticket"]] = item
+                    if item.get("status") in {
+                        "active", "blocked", "budget", "error", "maintenance",
+                        "waiting",
+                    }:
+                        cooldown[claim["ticket"]] = (
+                            time.monotonic() + RECONCILE_INTERVAL_SECONDS
+                        )
+        finally:
+            executor.shutdown(wait=True)
+        claims = self.load_claims()
+        ordered = [results[ticket] for ticket in sorted(results)]
         return {
-            "active": len(runnable),
-            "results": results,
+            "active": len(
+                [item for item in claims if self.consumes_capacity(item)]
+            ),
+            "results": ordered,
             "schema": SCHEMA,
-            "status": "ok" if all(item["status"] != "error" for item in results) else "error",
+            "status": (
+                "ok"
+                if all(item["status"] != "error" for item in ordered)
+                else "error"
+            ),
         }
 
 

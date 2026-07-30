@@ -79,6 +79,19 @@ an in-flight manifest or backdate an override.
 - Do: if the primary is unavailable before submission, let the pinned route probe refuse the run. After a terminal, fully accounted provider failure, use the sealed `models fallback-plan` flow below. If agents are scheduled, `scripts/kill-switch.sh` remains the safe stop.
 - Don't: manually swap families or relaunch. The fallback transaction preserves partial work, excludes the failed route, and rechecks contributor-family boundaries.
 
+## Production provider concurrency is not ready
+
+- Notice: Doctor, certification, activation, or a Contract 1.8 role refuses
+  because provider concurrency is absent, incomplete, or drifted.
+- Do: keep maintenance published and drain roles, leases, provider attempts,
+  and legacy intervals. Use the installed sealed release's
+  `scripts/factory-kit.sh provider-concurrency plan` command for that Factory
+  SHA and the product capacity, review its exact routes, then apply only the
+  returned approval hash. Re-run `check` and Doctor before certification.
+- Don't: handwrite `~/.factory/provider-policy.json`, copy qualification
+  configuration into production, reduce the ticket capacity to bypass the
+  gate, or replace the owner-local runtime directory after certification.
+
 ## Duplicate reviewer row
 
 - Notice: the launcher's `next-stage` route refuses because successful reviewer runs outnumber verdicts, and the extra row came from an overlapping duplicate rather than a real review round.
@@ -297,10 +310,11 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Do: keep contracts 1.0 through 1.5 at their default of one live ticket.
   Contract 1.6 defaults to four; contracts 1.1 through 1.5 permit an explicit
   capacity up to four, and Contract 1.6 permits up to six. One dispatcher holds no more than that many
-  matching leases. This is the coupled worktree/provider capacity. The retained
-  product-wide provider lock serializes native subscription, Cursor CLI, and
-  other legacy routes; only an exact owner-activated Contract 1.6 API route may
-  use isolated parallel admission.
+  matching leases. Contract 1.8 caps capacity at four. Above one, its
+  approval-hash-bound owner-local configuration must cover Cursor, Claude Code,
+  and Codex at that capacity before certification; doctor and role admission
+  then verify the same state. Older contracts, capacity one, and other legacy
+  routes retain the product-wide provider lock.
 - Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
   combine unrelated candidates into one unreviewed release, or overlap two
   activation/rollback operations.
@@ -359,8 +373,11 @@ same-UID token exposure remains until a broker or OS isolation is used.
    certification. A baseline diff is a separate product change, not migration
    drift.
 7. Verify Node 22 and any product certification dependency, including the
-   product's configured local PostgreSQL endpoint, then certify the exact
-   committed canonical product path and tree. Record the receipt ID and expiry.
+   product's configured local PostgreSQL endpoint. For Contract 1.8 capacity
+   above one, preview and apply the exact owner-local provider configuration
+   only after maintenance and complete provider/lease drain, as described in
+   `docs/factory-setup.md`. Then certify the exact committed canonical product
+   path and tree. Record the receipt ID and expiry.
 8. Complete the real-Hermes canary with a separate sandbox product and
    profile. Never copy the production `.env`, secrets, board mapping, registry,
    ledger, or LaunchAgent.
