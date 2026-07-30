@@ -19,6 +19,7 @@ import tempfile
 import time
 from typing import Any
 
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
