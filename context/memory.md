@@ -1780,3 +1780,13 @@ source ticket blobs, operator authorization, and target Factory release in the
 same manual control commit. The receipt satisfies only dependency readiness;
 terminal projection, broad inference from Git history, and fallback around
 partial terminal evidence remain forbidden.
+
+## 2026-07-29 — Decision 139: Release checks stay portable across protected runners
+
+Category: Incident
+
+Protected Linux CI found a Bash parse boundary that macOS system Bash had
+accepted: a `[[ ... ==` comparison split before its right operand. The shared
+release check now keeps both operands on one line. Stabilization continues to
+repair only the first exact protected-CI boundary with focused reproduction;
+the complete regression remains owned by a fresh protected-main run.
