@@ -1811,3 +1811,14 @@ could prevent spend calculation. Terminal accounting identities and charges
 are now reduced without reading role output. Passport export and lifecycle
 reuse still perform strict output validation, while every terminal charge
 continues to count toward the business budget.
+
+## 2026-07-29 — Decision 142: Cursor isolation names its lane and global roots
+
+Category: Incident
+
+Provider concurrency generalized attempt roots for activated products, but the
+development-lane invariant continued to require its short Cursor scratch path
+to be visibly anchored at `DEVELOPMENT_LANE_ROOT/c`. Runtime preparation now
+branches explicitly: disposable lanes use that path, while installed global
+coordination uses its authenticated owner-local runtime root. Both retain
+private home, configuration, data, cache, output, and temporary directories.

@@ -1103,7 +1103,13 @@ prepare_cli_runtime() {
   if [[ "$runtime_layout" == "lane" ]]; then
     base="$runtime_state_root/runtime/cli-attempts"
   fi
-  [[ "$ADAPTER" == cursor-* ]] && base="$runtime_state_root/c"
+  if [[ "$ADAPTER" == cursor-* ]]; then
+    if [[ "$runtime_layout" == "lane" ]]; then
+      base="$DEVELOPMENT_LANE_ROOT/c"
+    else
+      base="$runtime_state_root/c"
+    fi
+  fi
   mkdir -p "$base"
   chmod 700 "$base"
   CLI_RUNTIME_ROOT="$base/$CLI_ATTEMPT_ID"
