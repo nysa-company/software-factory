@@ -1340,6 +1340,11 @@ def dependency_conflict_successes(
     branch = git(
         args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD",
     )
+    accounted = success.get("accounting_state") == "completed" or (
+        success.get("accounting_state") == "abandoned_conservative"
+        and success.get("cost_basis") == "conservative_reservation"
+        and success.get("effective_cost") == success.get("reserved_usd")
+    )
     if (
         transition.get("consumed") is not True
         or transition.get("ticket") != args.ticket
@@ -1367,7 +1372,7 @@ def dependency_conflict_successes(
         or not DIGEST.fullmatch(success.get("manifest_sha256", ""))
         or success.get("go_issued") != "1"
         or success.get("task_submitted") != "1"
-        or success.get("accounting_state") != "completed"
+        or not accounted
         or not branch_contains(args, before)
         or current_head == before
     ):
@@ -1393,7 +1398,7 @@ def dependency_conflict_successes(
         item for item in charges
         if isinstance(item, dict)
         and all(item.get(key) == value for key, value in expected.items())
-        and item.get("accounting_state") == "completed"
+        and item.get("accounting_state") == success.get("accounting_state")
         and isinstance(item.get("charge_micro_usd"), int)
         and not isinstance(item.get("charge_micro_usd"), bool)
         and item.get("charge_micro_usd", -1) >= 0
