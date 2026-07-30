@@ -118,6 +118,7 @@ subscription_base_env() {
       FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
       FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
       FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
+      FACTORY_PROVIDER_CONFIGURATION_LOCK="$root/runtime/provider-configuration.lock" \
       FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
       FACTORY_CURSOR_SESSION_HOME="$root/session-home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
       FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT=2 \
@@ -593,6 +594,7 @@ validate_runtime_paths() {
     "$root/kit" "$root/product" "$root/origin.git" "$root/worktrees" \
     "$root/runtime" "$root/runtime/provider-state.sqlite3" \
     "$root/runtime/provider-policy.json" "$root/runtime/provider-attempts" \
+    "$root/runtime/provider-configuration.lock" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
     "$root/home" "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev-$(basename "$root")" \
     "$root/tmp"; do
@@ -863,6 +865,15 @@ create_lane() {
     "$root/runtime/model-state" "$root/runtime/provider-attempts" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
     "$root/tmp" "$root/worktrees"
+  python3 - "$root/runtime/provider-configuration.lock" <<'PY'
+import os, sys
+descriptor=os.open(
+    sys.argv[1],
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o600,
+)
+os.close(descriptor)
+PY
   python3 - "$root/marker.json" "$root" "$nonce" "$sha" "$tree" "$mode" \
     "$tmp_parent" <<'PY'
 import json, os, sys
@@ -2298,6 +2309,7 @@ lane_env() {
     FACTORY_MODEL_STATE_ROOT="$root/runtime/model-state" FACTORY_PROJECT="$project" \
     FACTORY_PROVIDER_DB="$root/runtime/provider-state.sqlite3" \
     FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
+    FACTORY_PROVIDER_CONFIGURATION_LOCK="$root/runtime/provider-configuration.lock" \
     FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
     FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
