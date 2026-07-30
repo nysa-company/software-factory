@@ -1822,3 +1822,16 @@ to be visibly anchored at `DEVELOPMENT_LANE_ROOT/c`. Runtime preparation now
 branches explicitly: disposable lanes use that path, while installed global
 coordination uses its authenticated owner-local runtime root. Both retain
 private home, configuration, data, cache, output, and temporary directories.
+
+## 2026-07-29 — Decision 143: Development lanes share the configuration lock
+
+Category: Incident
+
+Protected Linux release CI proved that the disposable development lane enabled
+digest-bound concurrent provider admission without exposing the owner-local
+configuration lock required by the coordinator. Four synthetic tickets
+therefore failed at their first role reservation even though the production
+launcher already supplied the lock. Every development lane now creates a
+mode-0600 configuration lock inside its authenticated runtime root and passes
+that exact path to lane-contained provider work. Admission and configuration
+changes remain serialized without weakening policy-digest validation.
