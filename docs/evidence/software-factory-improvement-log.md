@@ -2452,6 +2452,32 @@ the provider-free dependency-refresh path. Protected GitHub CI owns the full
 registry; the exact T-040/T-092 Nysa batch remains gated on the successor
 Factory SHA and separate Nysa activation authorization.
 
+## FI-20260729-105 — Certification discarded valid provider evidence
+
+Status: Implemented; protected CI and live recertification pending
+Priority: P0
+Area: release certification
+Owner: Factory
+First seen: Relay certification for Factory
+`3f64b9a23fb5deff019e2d3ea1e1c7988658d195`
+Impact: certification stopped before product tests even though the sealed
+capacity-four provider configuration independently reported `status=ready`.
+No receipt or product state changed, but release sealing could not progress.
+Evidence: `provider-concurrency apply` and `check` returned canonical ready
+JSON for policy
+`5d89d08654a135eb26847edb7b25f535ac315fabb27dbf04b307b8a6c04686a7`;
+the certification parser raised `JSONDecodeError` at byte zero.
+Root cause: `require_provider_concurrency_ready` piped the check result into
+`python3 -` while also supplying the Python program through a here-document.
+The here-document became standard input, so `json.load(sys.stdin)` saw EOF.
+Smallest change: run the same normalizer with `python3 -c`, leaving standard
+input attached to the provider check output. Preserve the exact ready-status,
+Factory-SHA, Factory-tree, policy, route, capacity, and runtime-root bindings.
+Validation: shell syntax and an exact ready-evidence normalization check run
+locally; protected GitHub CI owns the complete regression. The live Relay
+certification must then succeed on the sealed successor before this entry is
+closed.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
