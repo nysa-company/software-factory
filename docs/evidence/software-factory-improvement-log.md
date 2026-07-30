@@ -2689,6 +2689,86 @@ boundary pass. Protected GitHub CI owns the complete regression. Live closure
 requires T-094 to cross GO/submission once and emit authenticated progress
 without another credential failure.
 
+## FI-20260730-111 — A one-shot re-admitted tickets after a real wait
+
+Status: Repair in progress after the defect blocked T-094 recovery
+Priority: P0
+Area: deterministic controller scheduling and lease handoff
+Owner: Factory
+First seen: Nysa generation 36 recovery of T-093/T-094/T-100
+Impact: the controller correctly recovered cross-release passports, but after
+T-093 and T-100 returned real dependency waits it scheduled them again inside
+the same invocation. Their zero-provider lease acquire/release cycles competed
+with T-094's exact Test-author repair. T-094 then reached
+`ticket already has a dispatcher lease`, parked, and never opened a provider
+attempt. No provider task ran and no charge was created.
+Evidence: generation-36 authenticated events show
+`dependency_wait -> parked_lease_released` for T-093, repair-record recovery
+for T-094/T-100, repeated `ticket_lease_recovered`, and a T-094
+`controller_error` naming the existing lease. The controller process remained
+live for more than six minutes with all three claims at wait/blocked
+boundaries and three dispatcher lease records, instead of terminating its
+one-shot. Provider coordination reported zero active attempts and tokens.
+An unrelated admission scan also repeatedly reported that a candidate remote
+branch did not match its reset authorization; this must not keep already-owned
+tickets alive or block their exact stages.
+Root cause: the concurrent scheduler records a terminal worker result but uses
+only a short cooldown before considering the same `waiting` claim runnable
+again. A real wait is therefore treated as an internal polling interval rather
+than the terminal boundary of the current one-shot. The overlapping recovery,
+parking, and re-admission paths can then observe different generations of a
+claim and its lease record.
+Safest batched repair: maintain an invocation-local settled-ticket set.
+`waiting`, `blocked`, `budget`, `error`, and `maintenance` results must not be
+submitted again during that invocation; terminal run/watch events or the next
+launchd invocation provide the external wake. Make lease handoff one
+transactional controller action whose claim and lease record cannot diverge,
+and prove a failed unrelated admission cannot keep settled owned tickets
+cycling. Preserve concurrent live provider workers and sibling admission.
+Validation required before promotion: three waiting claims execute once and
+the one-shot exits; one live provider may continue while a newly visible
+sibling starts; an external terminal event launches a fresh one-shot; lease
+release/reclaim survives interruption at every write boundary; an unrelated
+reset-authorization refusal does not alter owned claims; no provider call,
+successful role, or charge is replayed.
+
+## FI-20260730-112 — A later receipt hid an authenticated contract repair
+
+Status: Repair in progress with FI-20260730-111
+Priority: P0
+Area: deterministic controller recovery
+Owner: Factory
+First seen: Nysa generation 36 recovery of T-094
+Impact: T-094 retained its authenticated Test-author repair record, complete
+passport lineage, original failed Builder charge, and clean current head, but
+the controller could not reopen it. A later deterministic wait/repair receipt
+had replaced the original consumed Builder receipt file. Recovery looked only
+at that mutable latest-receipt slot, left the claim blocked, and made no
+provider call.
+Evidence: the owner-only repair record binds the original Builder receipt and
+Test-author owner; the current passport authenticates the complete migration
+suffix to the exact current head and Factory; the parked cell is clean and
+matches the remote. Direct state-machine validation resolves `FIX test-author`.
+The controller claim nevertheless remains blocked because
+`restore_contract_blocker` requires the latest receipt file itself to still be
+the original consumed blocker.
+Root cause: recovery conflated the latest transition-receipt cache with the
+durable authenticated repair checkpoint. Replacing a transition receipt is
+normal across dependency waits and release migration, so the latest slot is
+not the repair authority.
+Safest batched repair: when a blocked receipt-free claim has a contract-repair
+record, validate the current remote passport and ask the deterministic state
+machine to resolve the exact current stage. Only a valid, non-refusal result
+may reopen the claim. The resolver authenticates the repair record, passport,
+failed charge, terminal manifest, ancestry, repair owner, and current head.
+The issued receipt is reused unchanged when the worker begins. On refusal,
+release only a newly acquired lease and keep the claim blocked.
+Validation required before promotion: reproduce a valid repair record whose
+original blocker receipt has been replaced by a later unconsumed receipt,
+recover only the named owner, and prove malformed record, broken passport,
+changed remote, ambiguous failure, and `REFUSE` keep the ticket blocked without
+a provider call or charge.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
