@@ -1958,3 +1958,18 @@ current remote passport and delegates the exact current repair stage to the
 deterministic state machine. Only a valid non-refusal reopens the claim, and
 the resolver-issued receipt is reused unchanged. Invalid repair or lineage
 evidence remains blocked and a newly acquired lease is released.
+
+## 2026-07-30 — Decision 152: A successful repair consumes its active checkpoint
+
+Category: Incident
+
+T-094 proved that recovering the correct repair role is insufficient if its
+signed repair record remains active after the role succeeds. Normal v2
+migration history now survives terminal passport export, while a history that
+contains a one-use lineage authorization remains intentionally consumed.
+After exactly one successful owner-role terminal, the state machine archives
+the signed repair record. A legacy export that already consumed its migration
+history may reach that boundary only through the exact consumed `FIX` receipt,
+parent passport-file digest, authenticated completed-role evidence, immutable
+manifest, charge, head, Factory release history, and original blocker charge.
+No missing, duplicate, or ambiguous proof may retire a checkpoint.

@@ -1116,6 +1116,14 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         "schema": SCHEMA,
         "transition_receipt_sha256": args.receipt,
     }
+    migrations = previous.get("migration_history", [])
+    if not isinstance(migrations, list):
+        raise PassportError("passport migration history is invalid")
+    if not any(
+        isinstance(item, dict) and "lineage_authorization_sha256" in item
+        for item in migrations
+    ):
+        value["migration_history"] = list(migrations)
     signed = authenticate(value, secret)
     write_atomic(destination, signed)
     return signed

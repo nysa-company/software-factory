@@ -2769,6 +2769,45 @@ recover only the named owner, and prove malformed record, broken passport,
 changed remote, ambiguous failure, and `REFUSE` keep the ticket blocked without
 a provider call or charge.
 
+## FI-20260730-113 — A successful repair left its checkpoint active
+
+Status: Implemented; protected CI and live continuation pending
+Priority: P0
+Area: passport lineage and targeted-repair completion
+Owner: Factory
+First seen: Nysa generation 37 after T-094 Test-author
+Impact: the upgraded controller recovered T-094's exact Test-author checkpoint
+and the role completed successfully with authenticated progress and terminal
+events. Its terminal passport then became the next blocker: ordinary export
+consumed a one-use legacy lineage authorization by intentionally omitting that
+migration history, while the still-active repair record required the omitted
+history on every later transition. The state machine rejected
+`contract repair record is invalid` instead of advancing to Builder. No role
+was replayed and the successful Test-author evidence and charge remained in
+the authenticated passport.
+Evidence: run `1785435281-45017` is the unique successful Test-author descendant
+of the signed repair head. Its consumed `FIX test-author` receipt binds the
+prior passport file, and the exported passport binds that receipt, exact run
+manifest, charge, head, Factory SHA, and parent file digest. The exported
+passport contains the complete successful-role evidence but no
+`migration_history`, matching the required one-use lineage-consumption rule.
+Root cause: repair records represented pending work but had no deterministic
+terminal consumption boundary. The resolver continued treating a completed
+repair as pending, and ordinary passport export also failed to carry normal
+v2-only migration history when no one-use authorization required its removal.
+Smallest repair: preserve normal v2 migration history across terminal export
+but continue omitting any history containing a consumed lineage authorization.
+After exactly one successful repair-role manifest, archive the signed repair
+record so it cannot affect later stages. For the already-exported legacy case,
+allow retirement only when the consumed `FIX <owner>` receipt binds the prior
+passport file and the current authenticated passport binds the same unique
+manifest, charge, head, role, and receipt. Missing success, duplicate success,
+tampered lineage, unknown paths, or any other missing binding still refuses.
+Validation: focused passport and state-machine regressions prove normal
+migration history persists, a legacy authorization remains one-use, the exact
+lost-history terminal proof retires one repair record, repeat resolution no
+longer sees it, and malformed or duplicated evidence remains fail closed.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

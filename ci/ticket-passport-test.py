@@ -402,6 +402,9 @@ class TicketPassportTest(unittest.TestCase):
         self.assertEqual(upgraded["cumulative_charges_micro_usd"], 3_000_000)
         self.assertEqual(len(upgraded["completed_role_evidence"]), 2)
         self.assertEqual(
+            upgraded["migration_history"], migrated["migration_history"]
+        )
+        self.assertEqual(
             [item["factory_sha"] for item in upgraded["factory_release_history"]],
             ["a" * 40, "b" * 40],
         )
