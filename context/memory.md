@@ -11,6 +11,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
   run concurrently behind one renewable per-product publication lease.
+- Contract 1.8 at ticket capacity above one requires an exact owner-approved
+  subscription provider policy and activation covering every enabled Cursor,
+  Claude Code, and Codex route at no less than ticket capacity. The installed
+  launcher gives every call a ticket- and execution-cell-neutral owner-local
+  home/config/tmp root with a private authentication copy. Doctor,
+  certification, activation, and role pre-admission refuse missing or drifted
+  configuration instead of silently selecting the legacy provider lock.
 - Contract 1.8 role execution retains the validated project in a non-exported
   host binding for every receipt recheck while keeping project model-state
   controls out of provider environments.
@@ -29,6 +36,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 1.8 runs deterministic provider-free preflight once on the Planner
   receipt after entering Planning. Later roles resume from authenticated
   evidence without repeating kickoff preflight.
+- Contract 1.8 resolves every dependency before paid admission. A legacy
+  Backlog ticket whose protected application PR already merged may satisfy only
+  dependency readiness through one manual, no-bypass, atomic protected
+  fulfillment batch bound to the exact PR/check/basis/source-ticket evidence
+  and target Factory SHA. It is not terminal truth and never marks the ticket
+  Done; malformed terminal evidence cannot fall through to this path.
 - During Contract 1.8 qualification, the first terminal failed Cursor attempt
   retains the ticket claim, converts an initial v1 route plan into a
   same-release v2 journal when needed, and appends the existing same-family
@@ -110,7 +123,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `cursor-balanced-v2`: it preserves `balanced-v2` models and effort levels while trying the matching Cursor route before native Codex/Claude CLI. Explicit active profiles and committed ticket route plans remain authoritative; `balanced-v2`, `legacy-balanced-v1`, and the earlier priority profiles remain available for compatibility.
 - Cursor adapters append a trusted execution requirement after role and task text so factory roles stay in the default agent execution mode instead of switching to Cursor Plan or Ask mode.
-- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Native subscription and Cursor CLI routes retain the legacy serialized path; invalid or disabled activation fails closed to that path.
+- Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Contract 1.8 multi-ticket subscription routes use exact owner-activated transactional admission; older contracts and capacity one retain legacy serialization.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
@@ -180,7 +193,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Imported checkpoint Spec-linter verdicts are an immutable prefix, not the complete future ticket history. Current-lane verdicts may extend that prefix only when the ordinary current-lane ledger count authenticates each addition.
 - Development product export projects only the latest successful Reviewer's non-`factory/` tree changes and rejects later product drift. Exact bundles retain detailed role/retry/audit history but are never applied to canonical product branches; the canonical mailbox deterministically emits one pure final-test commit before one pure implementation commit with the same reviewed application tree. Unsafe or empty strata fail closed, preventing lane controls, route pins, sibling tickets, and unreviewed Narrator metadata from escaping.
 - Development product export keeps `root/export` as its default and accepts a distinct new owner-only lane-local output for a later sibling. Every output is an atomic claim outside sensitive lane subtrees; existing, symlinked, outside, or failed targets cannot accumulate or overwrite artifacts.
-- Contract 1.7 adds owner-activated subscription-CLI concurrency through the existing transactional coordinator. Activation v2 binds the exact allowed CLI route tuple and canonical provider-policy digest and permits capacity four for Cursor, Codex, and native Claude. Every concurrent attempt receives an owner-only lane-local home, config, temporary directory, and credential copy removed only after process-group drain. Contract 1.6 accepts only API activation v1, and missing or invalid activation remains serialized. Budget and permanent denials remain immediate. Role instructions use worktree-relative database-environment paths, and a shared fail-closed sentinel rejects newly added absolute `nysa-sf-dev.*` paths before trusted-host push and at both passport boundaries.
+- Contract 1.7 adds owner-activated subscription-CLI concurrency through the existing transactional coordinator. Activation v2 binds the exact allowed CLI route tuple and canonical provider-policy digest and permits capacity four for Cursor, Codex, and native Claude. Every concurrent attempt receives an owner-only home, config, temporary directory, and credential copy removed only after process-group drain; production roots are lane- and ticket-neutral. Contract 1.6 accepts only API activation v1, and missing or invalid activation remains serialized. Contract 1.8 multi-ticket execution instead refuses missing activation. Budget and permanent denials remain immediate. Role instructions use worktree-relative database-environment paths, and a shared fail-closed sentinel rejects newly added absolute `nysa-sf-dev.*` paths before trusted-host push and at both passport boundaries.
 - A product ticket consumes only its own approval and never waits for unrelated global provider idleness. Reviewer reconciliation persists the normalized signed review as quoted ticket evidence; every named repair and rereview is bound to that latest detail instead of reconstructing or substituting another concern.
 - The PR-less development Narrator accepts backend-only N/A evidence and
   retains visual tickets with exact `Deferred — publication visual gate`
@@ -1742,3 +1755,28 @@ exact-ticket lease belongs to the successor claim. The successor controller
 preserves those blocked fields or deterministically reconstructs fields cleared
 by an earlier controller from the latest exact checkpoint. No successful role
 is replayed and no historical charge is duplicated.
+
+## 2026-07-29 — Decision 137: Multi-ticket activation requires provider concurrency
+
+Category: System change
+
+Contract 1.8 capacity above one is not ready when only ticket cells are
+concurrent. A canonical approval-hash-bound owner-local policy must cover
+Cursor, Claude Code, and Codex at ticket capacity, and every call uses a
+private home/config/tmp root plus authentication copy. Doctor, certification,
+activation, and role pre-admission refuse missing or drifted state. Legacy
+serialization remains only for older contracts, explicit capacity one, and
+non-activated legacy routes.
+
+## 2026-07-29 — Decision 138: Legacy merged dependencies need explicit fulfillment
+
+Category: System change
+
+Strict pre-provider dependency gating exposed Nysa T-040 and T-092: their
+application PRs are on protected main, but their pre-Contract-1.8 Backlog
+tickets have no terminal receipt. A one-time dependency-only migration now
+binds their exact merged PRs, successful required checks, protected basis,
+source ticket blobs, operator authorization, and target Factory release in the
+same manual control commit. The receipt satisfies only dependency readiness;
+terminal projection, broad inference from Git history, and fallback around
+partial terminal evidence remain forbidden.

@@ -24,7 +24,11 @@ from effective_ticket import (  # noqa: E402
     operator_fields,
     ticket_branch_prefix,
 )
-from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
+from legacy_closeout import (  # noqa: E402
+    ValidationError,
+    protected_dependency,
+    protected_terminal,
+)
 
 
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
@@ -405,13 +409,20 @@ def candidates(
             continue
         text = safe_file(path, f"ticket {path.stem}")
         ticket_dependencies = dependencies(text)
-        if (
-            qualification_state is not None
-            and any(
+        if qualification_state is not None:
+            unresolved = any(
                 item not in qualification_state["terminal"]
                 for item in ticket_dependencies
             )
-        ):
+        else:
+            unresolved = False
+            for dependency in ticket_dependencies:
+                try:
+                    protected_dependency(factory.parent, dependency)
+                except ValidationError:
+                    unresolved = True
+                    break
+        if unresolved:
             continue
         operator = operator_fields(mapping, path.stem)
         effective = apply_operator_fields(text, operator)

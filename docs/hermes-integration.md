@@ -151,9 +151,12 @@ provider interval. An exact Contract 1.6 API route may bypass it only through
 owner-only isolated-v1 activation. Contract 1.7 additionally admits exact
 Codex, Claude Code, and Cursor subscription CLI routes through canonical
 `cli-concurrent-v1` activation bound to the selected route and provider-policy
-SHA-256. Missing, malformed, or mismatched activation never enables parallel
-provider work. The initial policy caps Cursor at one concurrent process because
-its scratch root is account-global; limits are not duplicated in activation.
+SHA-256. Each process receives a distinct owner-local home, configuration,
+temporary directory, and authentication copy. Contract 1.8 at capacity above
+one refuses doctor, certification, activation, and role pre-admission unless
+the policy covers every enabled Cursor, Claude Code, and Codex route at no less
+than ticket capacity. Older contracts and capacity one keep the serialized
+provider lock; malformed policy never enables parallel work.
 
 Contract 1.8 caps controller capacity at four. Tickets are identified by
 product, ticket, branch, and authenticated passport; numbered cells are
@@ -376,6 +379,12 @@ CERTIFY_SCRIPT=factory/certify.sh
 
 Then certify:
 
+For a Contract 1.8 product with ticket capacity above one, first pause and
+drain the live product and apply the exact approval-hash-bound owner-local
+provider configuration described in [factory-setup.md](factory-setup.md).
+This occurs after installation because the sealed release owns the planner,
+and before certification because concurrency readiness is receipt-gated.
+
 ```bash
 bash "$KIT_REPO/scripts/factory-kit.sh" certify \
   --project "$PROJECT" \
@@ -413,7 +422,7 @@ expiry and every bound value. Product, pin, config, host, release, or contract
 drift requires recertification. Suite evidence also defaults to 86,400 seconds,
 may be changed with `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS`, and caps receipt
 expiry so product proof cannot outlive kit-suite proof. Receipt schema 2 and
-certification tool version 2 intentionally reject older incompatible receipts.
+certification tool version 4 intentionally reject older incompatible receipts.
 
 The implemented receipt does not yet bind live Hermes profile files,
 LaunchAgent hashes, or every CLI path/version. The real-Hermes canary and
@@ -421,7 +430,10 @@ cutover evidence cover those machine-specific surfaces.
 
 ## Plan and activate
 
-Candidate installation and certification do not interrupt the live factory.
+Candidate installation does not interrupt the live factory. Initial or changed
+multi-ticket provider activation requires the explicit maintenance/drain
+boundary above; unchanged exact owner-local configuration remains read-only
+during certification.
 Before cutover:
 
 1. Confirm the candidate passed required Linux and macOS CI.

@@ -584,7 +584,9 @@ if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE
     "FACTORY_PROVIDER_ARTIFACT_POLICY=$HOME/.factory/provider-artifact-policy.json"
     "FACTORY_PROVIDER_ATTEMPT_ROOT=$PROVIDER_STATE_ROOT/provider-attempts"
     "FACTORY_PROVIDER_APPLY_LOCK_ROOT=$PROVIDER_STATE_ROOT/provider-apply-locks"
+    "FACTORY_PROVIDER_CONFIGURATION_LOCK=$PROVIDER_STATE_ROOT/provider-configuration.lock"
     "FACTORY_PROVIDER_ACTIVATION=$PROVIDER_ACTIVATION_PATH"
+    "FACTORY_CLI_RUNTIME_ROOT=$PROVIDER_STATE_ROOT/cli-runtimes"
     "FACTORY_PROVIDER_BROKER_URL=https://127.0.0.1:8765"
     "FACTORY_PROVIDER_BROKER_CA=$HOME/.factory/provider-broker-ca.pem"
   )
@@ -1865,8 +1867,23 @@ PY
        "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
        "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "ticket-attest requires contract 1.3.0 or newer"
-    ATTEST_LEASE="" ATTEST_RECEIPT=""
-    if [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 9 &&
+    ATTEST_LEASE="" ATTEST_RECEIPT="" ATTEST_ONLY=0
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 10 &&
+          "$1" == "--ticket" && "$3" == "--receipt" &&
+          "$5" == "--workdir" && "$7" == "--action" &&
+          "$9" == "--attest-only" && "${10}" == "--json" ]]; then
+      ATTEST_RECEIPT="$4" ATTEST_WORKDIR="$6" ATTEST_ACTION="$8"
+      ATTEST_ONLY=1
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 12 &&
+            "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--receipt" && "$7" == "--workdir" &&
+            "$9" == "--action" && "${11}" == "--attest-only" &&
+            "${12}" == "--json" ]]; then
+      ATTEST_LEASE="$4" ATTEST_RECEIPT="$6"
+      ATTEST_WORKDIR="$8" ATTEST_ACTION="${10}"
+      ATTEST_ONLY=1
+      [[ "$ATTEST_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 9 &&
           "$1" == "--ticket" && "$3" == "--receipt" &&
           "$5" == "--workdir" && "$7" == "--action" && "$9" == "--json" ]]; then
       ATTEST_RECEIPT="$4" ATTEST_WORKDIR="$6" ATTEST_ACTION="$8"
@@ -1890,6 +1907,7 @@ PY
     ATTEST_TICKET="$2"
     [[ "$ATTEST_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
     [[ "$ATTEST_ACTION" == "bundle" || "$ATTEST_ACTION" == "approval" ||
+       "$ATTEST_ACTION" == "dependency-refresh" ||
        "$ATTEST_ACTION" == "refresh" || "$ATTEST_ACTION" == "done" ]] ||
       die "invalid ticket-attest action"
     if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" ]]; then
@@ -1928,12 +1946,22 @@ PY
             die "transition receipt does not authorize bundle attestation"
           ;;
         approval)
-          [[ "$TRANSITION_STAGE" == AWAIT-OPERATOR\ Linear\ approval\ observed* ]] ||
-            die "transition receipt does not authorize approval attestation"
+          if [[ "$ATTEST_ONLY" -eq 1 ]]; then
+            [[ "$TRANSITION_STAGE" == AWAIT-OPERATOR\ Linear\ approval\ observed* ]] ||
+              die "transition receipt does not authorize approval attestation"
+          else
+            [[ "$TRANSITION_STAGE" == AWAIT-MERGE\ approval\ attested* ]] ||
+              die "transition receipt does not authorize protected auto-merge"
+          fi
           ;;
         refresh)
-          [[ "$TRANSITION_STAGE" == REFUSE* || "$TRANSITION_STAGE" == AWAIT-* ]] ||
+          [[ "$TRANSITION_STAGE" != REFUSE\ dependency\ refresh\ required* &&
+             ( "$TRANSITION_STAGE" == REFUSE* || "$TRANSITION_STAGE" == AWAIT-* ) ]] ||
             die "transition receipt does not authorize refresh"
+          ;;
+        dependency-refresh)
+          [[ "$TRANSITION_STAGE" == REFUSE\ dependency\ refresh\ required* ]] ||
+            die "transition receipt does not authorize dependency refresh"
           ;;
       esac
       transition_receipt consume ||
@@ -1945,8 +1973,12 @@ PY
     fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
-    exec_selected_helper "$ATTEST_HELPER" \
-      --ticket "$ATTEST_TICKET" --workdir "$RESOLVED_WORKDIR" --action "$ATTEST_ACTION"
+    ATTEST_ARGS=(
+      --ticket "$ATTEST_TICKET" --workdir "$RESOLVED_WORKDIR"
+      --action "$ATTEST_ACTION"
+    )
+    [[ "$ATTEST_ONLY" -eq 0 ]] || ATTEST_ARGS+=(--attest-only)
+    exec_selected_helper "$ATTEST_HELPER" "${ATTEST_ARGS[@]}"
     ;;
   project-ledger)
     [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||

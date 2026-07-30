@@ -1174,7 +1174,8 @@ grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
   fail "overlong attempt-local Cursor runtime did not fail closed"
 (
   eval "$(sed -n \
-    '/^prepare_cli_runtime()/,/^}/p;
+    '/^copy_cli_credential()/,/^}/p;
+     /^prepare_cli_runtime()/,/^}/p;
      /^cleanup_cli_runtime()/,/^}/p' "$ROOT/scripts/run-agent.sh")"
   CLI_CONCURRENT_RUN=1
   ADAPTER=cursor-anthropic
@@ -1184,6 +1185,7 @@ grep -Fq 'Cursor CLI attempt runtime is unsafe' "$OUT" ||
   CLI_PROVIDER_HOME=""
   CLI_PROVIDER_TMPDIR=""
   CLI_CLAUDE_CONFIG_DIR=""
+  CLI_CLAUDE_SETTINGS=""
   CLI_CURSOR_CONFIG_DIR=""
   CLI_CURSOR_DATA_DIR=""
   RUN_GROUP_TERMINATED=1

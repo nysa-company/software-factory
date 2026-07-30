@@ -14,8 +14,12 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from role_output import RoleOutputError, sha256 as role_output_sha256
 
 
 SCHEMA = "nysa.software-factory.ticket-passport/v1"
@@ -35,6 +39,13 @@ INFLIGHT_STATES = {
 
 class PassportError(ValueError):
     pass
+
+
+def role_output_digest(path: Path) -> str:
+    try:
+        return role_output_sha256(path)
+    except (OSError, RoleOutputError) as error:
+        raise PassportError(str(error)) from None
 
 
 def canonical(value: Any) -> bytes:
@@ -217,7 +228,7 @@ def run_evidence(factory: Path, ticket: str) -> tuple[list[dict[str, Any]], list
         })
         if value.get("exit_status") == "0" and value.get("role_exit") == "ok":
             output = path.with_suffix(".out")
-            output_digest = hashlib.sha256(read_regular(output)).hexdigest()
+            output_digest = role_output_digest(output)
             if value.get("output_sha256") != output_digest:
                 raise PassportError("successful role output digest does not match")
             completed.append({
@@ -410,8 +421,7 @@ def failed_rewrite_manifest(
         and DIGEST.fullmatch(value.get("output_sha256", "")) is not None
         and output.is_file()
         and not output.is_symlink()
-        and hashlib.sha256(read_regular(output)).hexdigest()
-        == value["output_sha256"]
+        and role_output_digest(output) == value["output_sha256"]
     )
 
 

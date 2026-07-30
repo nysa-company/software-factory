@@ -746,6 +746,18 @@ def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     raise ValidationError("protected main lacks valid terminal evidence")
 
 
+def protected_dependency(repo, ticket, ref="refs/remotes/origin/main"):
+    """Accept terminal truth or one explicit dependency-only fulfillment."""
+    try:
+        return protected_terminal(repo, ticket, ref)
+    except ValidationError as error:
+        if str(error) != "protected main lacks valid terminal evidence":
+            raise
+    from dependency_fulfillment import dependency_fulfillment
+
+    return dependency_fulfillment(repo, ticket, ref)
+
+
 @lru_cache(maxsize=64)
 def _ancestor_commit_for_tree(repo, commit, tree):
     repo = Path(repo)

@@ -51,6 +51,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ROOT / "scripts/provider-activation.py",
             self.factory / "scripts/provider-activation.py",
         )
+        shutil.copy2(
+            ROOT / "scripts/provider-coordinator.py",
+            self.factory / "scripts/provider-coordinator.py",
+        )
         (self.factory / "scripts/model-routing/catalog-v1.json").write_text(
             json.dumps({
                 "routes": [{
@@ -135,6 +139,22 @@ class QualificationEnvironmentTest(unittest.TestCase):
             'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")',
             launcher_text,
         )
+        self.assertIn(
+            '"FACTORY_CLI_RUNTIME_ROOT=$PROVIDER_STATE_ROOT/cli-runtimes"',
+            launcher_text,
+        )
+        for relative in (
+            "provider/accounting",
+            "provider/cli-runtimes",
+            "provider/provider-apply-locks",
+            "provider/provider-attempts",
+        ):
+            path = self.root / relative
+            self.assertTrue(path.is_dir())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+        configuration_lock = self.root / "provider/provider-configuration.lock"
+        self.assertTrue(configuration_lock.is_file())
+        self.assertEqual(configuration_lock.stat().st_mode & 0o777, 0o600)
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError, "already exists",
         ):

@@ -224,6 +224,22 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertFalse((self.product / "factory/.dispatch-leases").exists())
         self.assertEqual(list(self.worktrees.iterdir()), [])
 
+    def test_nonqualification_dispatch_waits_for_protected_dependency(self):
+        ticket = self.product / "factory/tickets/T-200.md"
+        ticket.write_text(ticket.read_text() + "Depends-On: T-300\n")
+        with mock.patch.object(
+            DISPATCH,
+            "protected_dependency",
+            side_effect=DISPATCH.ValidationError("not terminal"),
+        ):
+            selected = DISPATCH.candidates(
+                self.product / "factory",
+                DISPATCH.load_mapping(self.mapping),
+                set(),
+            )
+        self.assertNotIn("T-200", {item["ticket"] for item in selected})
+        self.assertIn("T-100", {item["ticket"] for item in selected})
+
     def test_claim_prepares_exact_worktree_then_next_claim_is_distinct(self):
         first = self.command("claim")
         self.assertEqual(first["ticket"], "T-200")

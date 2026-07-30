@@ -165,8 +165,20 @@ def prepare_provider(release: Path, root: Path) -> str:
     policy, activation, policy_hash = provider_configuration(release)
     provider = root / "provider"
     provider.mkdir(mode=0o700)
-    for name in ("accounting", "provider-attempts", "provider-apply-locks"):
+    for name in (
+        "accounting",
+        "cli-runtimes",
+        "provider-attempts",
+        "provider-apply-locks",
+    ):
         (provider / name).mkdir(mode=0o700)
+    configuration_lock = provider / "provider-configuration.lock"
+    descriptor = os.open(
+        configuration_lock,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    os.close(descriptor)
     policy_path = provider / "provider-policy.json"
     activation_path = provider / "provider-activation.json"
     write(policy_path, policy)
@@ -178,6 +190,13 @@ def prepare_provider(release: Path, root: Path) -> str:
         "--policy", str(policy_path),
         "--contract-version", "1.8.0",
         "--status",
+    )
+    command(
+        "/usr/bin/python3",
+        str(release / "scripts/provider-coordinator.py"),
+        "--db",
+        str(provider / "accounting/state-v2.sqlite3"),
+        "status",
     )
     return policy_hash
 

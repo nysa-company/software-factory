@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -34,6 +35,30 @@ MAX_WAIT_SECONDS = 15 * 60
 
 class CoordinatorError(Exception):
     pass
+
+
+@contextmanager
+def configuration_guard(path_value):
+    if path_value is None:
+        yield
+        return
+    path = Path(path_value)
+    if not path.is_absolute():
+        raise CoordinatorError("provider configuration lock path must be absolute")
+    descriptor = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise CoordinatorError("provider configuration lock is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def canonical(value):
@@ -627,24 +652,34 @@ def prepare_command(connection, args):
 
 def admit_command(connection, args):
     attempt_id = validate_id(args.attempt_id, "attempt_id")
-    policy, policy_hash = load_policy(Path(args.policy))
-    now = now_value(args)
-    request = {
-        "attempt_id": attempt_id, "expected_version": args.expected_version,
-        "now": args.now, "policy_sha256": policy_hash,
-    }
-    return mutate(
-        connection, args.operation_id, "admit", request,
-        lambda: admit_mutation(
-            connection, attempt_id, args.expected_version, policy, policy_hash, now
-        ),
-    )
+    with configuration_guard(args.configuration_lock):
+        policy, policy_hash = load_policy(Path(args.policy))
+        now = now_value(args)
+        request = {
+            "attempt_id": attempt_id, "expected_version": args.expected_version,
+            "now": args.now, "policy_sha256": policy_hash,
+        }
+        return mutate(
+            connection, args.operation_id, "admit", request,
+            lambda: admit_mutation(
+                connection, attempt_id, args.expected_version, policy,
+                policy_hash, now,
+            ),
+        )
 
 
 def wait_admit_command(connection, args):
     attempt_id = validate_id(args.attempt_id, "attempt_id")
     validate_id(args.operation_id, "operation_id", operation=True)
-    policy, policy_hash = load_policy(Path(args.policy))
+    if (
+        args.expected_policy_sha256 is not None
+        and args.configuration_lock is None
+    ):
+        raise CoordinatorError(
+            "activated policy admission requires the configuration lock"
+        )
+    with configuration_guard(args.configuration_lock):
+        policy, policy_hash = load_policy(Path(args.policy))
     if (args.expected_policy_sha256 is not None and
             args.expected_policy_sha256 != policy_hash):
         raise CoordinatorError("provider policy does not match the activated digest")
@@ -663,83 +698,98 @@ def wait_admit_command(connection, args):
     }
     deadline = time.monotonic() + args.wait_seconds
     while True:
-        current_policy, current_hash = load_policy(Path(args.policy))
-        if current_hash != policy_hash:
-            raise CoordinatorError("provider policy changed during admission wait")
-        policy = current_policy
-        connection.execute("BEGIN IMMEDIATE")
-        try:
-            prior = connection.execute(
-                "SELECT command,request_sha256,result_json FROM operations "
-                "WHERE operation_id=?",
-                (args.operation_id,),
-            ).fetchone()
-            if prior is not None:
-                if (prior["command"] != "wait-admit" or
-                        prior["request_sha256"] != digest(request)):
-                    raise CoordinatorError(
-                        "operation_id was already used for a different request"
-                    )
-                result = json.loads(prior["result_json"])
-                connection.commit()
-                return result
-            result = admit_mutation(
-                connection, attempt_id, args.expected_version, policy,
-                policy_hash, int(time.time()),
-            )
-            transient = (
-                result["admitted"] is False
-                and result["denials"]
-                and all(item["limit"] == "max_concurrent"
-                        for item in result["denials"])
-            )
-            stopped = next(
-                (str(value) for value in cancel_paths
-                 if value.exists() or value.is_symlink()),
-                None,
-            )
-            timed_out = time.monotonic() >= deadline
-            if result["admitted"] or not transient or stopped or timed_out:
-                result["stopped_by"] = stopped
-                result["timed_out"] = timed_out and not stopped
-                result_json = canonical(result)
-                connection.execute(
-                    "INSERT INTO operations VALUES(?,?,?,?,?)",
-                    (
-                        args.operation_id, "wait-admit", digest(request),
-                        result_json, int(time.time()),
-                    ),
+        with configuration_guard(args.configuration_lock):
+            current_policy, current_hash = load_policy(Path(args.policy))
+            if current_hash != policy_hash:
+                raise CoordinatorError(
+                    "provider policy changed during admission wait"
                 )
+            policy = current_policy
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                prior = connection.execute(
+                    "SELECT command,request_sha256,result_json FROM operations "
+                    "WHERE operation_id=?",
+                    (args.operation_id,),
+                ).fetchone()
+                if prior is not None:
+                    if (prior["command"] != "wait-admit" or
+                            prior["request_sha256"] != digest(request)):
+                        raise CoordinatorError(
+                            "operation_id was already used for a different request"
+                        )
+                    result = json.loads(prior["result_json"])
+                    connection.commit()
+                    return result
+                result = admit_mutation(
+                    connection, attempt_id, args.expected_version, policy,
+                    policy_hash, int(time.time()),
+                )
+                transient = (
+                    result["admitted"] is False
+                    and result["denials"]
+                    and all(item["limit"] == "max_concurrent"
+                            for item in result["denials"])
+                )
+                stopped = next(
+                    (str(value) for value in cancel_paths
+                     if value.exists() or value.is_symlink()),
+                    None,
+                )
+                timed_out = time.monotonic() >= deadline
+                if result["admitted"] or not transient or stopped or timed_out:
+                    result["stopped_by"] = stopped
+                    result["timed_out"] = timed_out and not stopped
+                    result_json = canonical(result)
+                    connection.execute(
+                        "INSERT INTO operations VALUES(?,?,?,?,?)",
+                        (
+                            args.operation_id, "wait-admit", digest(request),
+                            result_json, int(time.time()),
+                        ),
+                    )
+                    connection.commit()
+                    return result
                 connection.commit()
-                return result
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
+            except Exception:
+                connection.rollback()
+                raise
         time.sleep(0.1)
 
 
 def reserve_command(connection, args):
     values = common_attempt_values(args)
-    policy, policy_hash = load_policy(Path(args.policy))
-    if (args.expected_policy_sha256 is not None and
-            args.expected_policy_sha256 != policy_hash):
-        raise CoordinatorError("provider policy does not match the activated digest")
-    now = now_value(args)
-    request = dict(
-        values, now=args.now, policy_sha256=policy_hash,
-        expected_policy_sha256=args.expected_policy_sha256,
-    )
-
-    def reserve():
-        prepared = prepare_mutation(connection, values, now)
-        if prepared["state"] != "prepared" or prepared["version"] != 1:
-            raise CoordinatorError("reserve replay requires the original prepared attempt")
-        return admit_mutation(
-            connection, values["attempt_id"], 1, policy, policy_hash, now
+    if (
+        args.expected_policy_sha256 is not None
+        and args.configuration_lock is None
+    ):
+        raise CoordinatorError(
+            "activated policy admission requires the configuration lock"
+        )
+    with configuration_guard(args.configuration_lock):
+        policy, policy_hash = load_policy(Path(args.policy))
+        if (args.expected_policy_sha256 is not None and
+                args.expected_policy_sha256 != policy_hash):
+            raise CoordinatorError(
+                "provider policy does not match the activated digest"
+            )
+        now = now_value(args)
+        request = dict(
+            values, now=args.now, policy_sha256=policy_hash,
+            expected_policy_sha256=args.expected_policy_sha256,
         )
 
-    return mutate(connection, args.operation_id, "reserve", request, reserve)
+        def reserve():
+            prepared = prepare_mutation(connection, values, now)
+            if prepared["state"] != "prepared" or prepared["version"] != 1:
+                raise CoordinatorError(
+                    "reserve replay requires the original prepared attempt"
+                )
+            return admit_mutation(
+                connection, values["attempt_id"], 1, policy, policy_hash, now
+            )
+
+        return mutate(connection, args.operation_id, "reserve", request, reserve)
 
 
 def transition_command(connection, args, target):
@@ -994,6 +1044,7 @@ def parser():
         )
     prepare.set_defaults(handler=prepare_command)
     reserve.add_argument("--policy", required=True)
+    reserve.add_argument("--configuration-lock")
     reserve.add_argument("--expected-policy-sha256")
     reserve.set_defaults(handler=reserve_command)
 
@@ -1001,12 +1052,14 @@ def parser():
     admit.add_argument("--attempt-id", required=True)
     admit.add_argument("--expected-version", required=True, type=int)
     admit.add_argument("--policy", required=True)
+    admit.add_argument("--configuration-lock")
     admit.set_defaults(handler=admit_command)
 
     wait_admit = mutation("wait-admit")
     wait_admit.add_argument("--attempt-id", required=True)
     wait_admit.add_argument("--expected-version", required=True, type=int)
     wait_admit.add_argument("--policy", required=True)
+    wait_admit.add_argument("--configuration-lock")
     wait_admit.add_argument("--expected-policy-sha256")
     wait_admit.add_argument("--wait-seconds", required=True, type=int)
     wait_admit.add_argument("--cancel-path", action="append", default=[])

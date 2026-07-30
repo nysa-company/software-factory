@@ -402,6 +402,7 @@ BYPASS_LEDGER_BEFORE="$(cksum "$TMP/bypass-ledger.csv")"
 
 KIT_SHA="$(git -C "$ROOT" rev-parse --verify HEAD)"
 printf '%s\n' "$KIT_SHA" > "$PRODUCT/factory/KIT_PIN"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=1' > "$PRODUCT/factory/PROJECT.env"
 touch "$PRODUCT/factory/MAINTENANCE"
 printf 'pid=%s\n' "$$" > "$PRODUCT/factory/runs/run-active.pid"
 PROVIDER_OWNER_TOKEN="00000000000000000000000000000000"
@@ -623,6 +624,8 @@ provider = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["isolated_pr
 assert provider == {
     "status": "ok",
     "activated": True,
+    "concurrency_required": False,
+    "concurrency_ready": False,
     "execution_mode": "cli-concurrent-v1",
     "active_attempts": 0,
     "active_tokens": 0,
@@ -2305,7 +2308,7 @@ assert commands["ticket-attest"]["arguments"] == [
     "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]",
     "[--receipt <lowercase-sha256> (required for Contract 1.8 non-done actions)]",
     "--workdir", "<absolute-worktree>",
-    "--action", "<bundle|approval|refresh|done>", "--json"
+    "--action", "<bundle|approval|dependency-refresh|refresh|done>", "--json"
 ]
 assert any("fresh review" in item and "stale bundle" in item
            for item in commands["ticket-attest"]["validation"])
@@ -2382,7 +2385,9 @@ assert provider_execution["subscription_cli"]["authority"] == \
 assert provider_execution["subscription_cli"]["allowed_adapters"] == [
     "codex", "claude-code", "cursor-openai", "cursor-anthropic",
 ]
-assert "Cursor at one" in provider_execution["subscription_cli"]["account_limits"]
+assert "ticket capacity" in provider_execution["subscription_cli"]["account_limits"]
+assert "~/.factory/cli-runtimes" in provider_execution["subscription_cli"]["runtime_root"]
+assert "policy digest" in provider_execution["subscription_cli"]["certification_binding"]
 assert commands["reorder-test-fixes"]["arguments"] == [
     "--ticket",
     "<T-NNN>",
@@ -2433,7 +2438,9 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROVIDER_ARTIFACT_POLICY": "fixed Contract 1.6 owner-local artifact policy",
     "FACTORY_PROVIDER_ATTEMPT_ROOT": "fixed Contract 1.6+ owner-local attempt directory",
     "FACTORY_PROVIDER_APPLY_LOCK_ROOT": "fixed Contract 1.6+ owner-local apply-lock directory",
+    "FACTORY_PROVIDER_CONFIGURATION_LOCK": "fixed Contract 1.8 owner-local provider-configuration lock",
     "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
+    "FACTORY_CLI_RUNTIME_ROOT": "fixed Contract 1.7+ owner-local per-attempt subscription CLI runtime directory",
     "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
     "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor",
 }
@@ -2459,7 +2466,9 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_PROVIDER_ARTIFACT_POLICY",
     "FACTORY_PROVIDER_ATTEMPT_ROOT",
     "FACTORY_PROVIDER_APPLY_LOCK_ROOT",
+    "FACTORY_PROVIDER_CONFIGURATION_LOCK",
     "FACTORY_PROVIDER_ACTIVATION",
+    "FACTORY_CLI_RUNTIME_ROOT",
     "FACTORY_PROVIDER_BROKER_URL",
     "FACTORY_PROVIDER_BROKER_CA",
     "GH_TOKEN",
@@ -2504,6 +2513,7 @@ for surface in [
     "scripts/provider-cli-runtime.py",
     "scripts/provider-credential-broker.py",
     "scripts/provider-activation.py",
+    "scripts/provider-concurrency-config.py",
     "scripts/provider-artifact-controller.py",
     "scripts/provider-executor.py",
     "scripts/provider-isolated-run.py",
@@ -2539,6 +2549,7 @@ launcher_text = open(
 assert "/private/tmp/nysa-sf-qualification" in launcher_text
 assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
 assert 'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")' in launcher_text
+assert '"FACTORY_CLI_RUNTIME_ROOT=$PROVIDER_STATE_ROOT/cli-runtimes"' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
 runner_text = open(
     os.path.join(root, "scripts", "run-agent.sh"), encoding="utf-8"

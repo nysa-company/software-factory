@@ -1177,7 +1177,11 @@ fi
 RECEIPT_STALE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 RECEIPT_STALE_ID="$(json_value "$RECEIPT_STALE" receipt_id)"
 if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
-      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "3" &&
+      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "4" &&
+      "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.status)" == "not-required" &&
+      "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_sha)" == "$SHA_A" &&
+      "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" &&
+      "$(json_value "$RECEIPT_STALE" checks.provider_concurrency)" == "pass" &&
       "$(json_value "$RECEIPT_STALE" product_certification_evidence.mode)" == "measured" &&
       -z "$(json_value "$RECEIPT_STALE" expected_previous_generation)" &&
       ! -e "$PRODUCT_ONE/factory/product-certification-marker" &&

@@ -15,6 +15,15 @@ helper output are not compatibility promises.
   wall-clock qualification expiry as a delivery stop.
 - Retains the generation-wide provider coordinator and budget ledger while
   allowing four ticket cells and four validating PRs.
+- Requires an explicit owner-approved, lane-neutral production concurrency
+  activation before certifying Contract 1.8 products with capacity above one;
+  Doctor and role admission fail closed when it is absent or incomplete.
+- Adds a sealed Factory-kit plan/apply/check command and binds certification
+  to the exact policy digest, capacity, routes, Factory tree, and runtime-root
+  identity so activation, rollback, and recutover detect configuration drift.
+- Gives Cursor, Claude Code, and Codex each an owner-only, per-attempt runtime
+  and credential copy so activated subscription routes can overlap without
+  sharing mutable CLI state.
 - Retains `dispatch-plan` for one release as a deterministic compatibility
   alias; it cannot spawn an agentic dispatcher.
 - Adds a sealed non-production release environment for live qualification of
