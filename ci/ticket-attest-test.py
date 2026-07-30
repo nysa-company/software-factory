@@ -59,6 +59,8 @@ class TicketAttestTests(unittest.TestCase):
         self.bin.mkdir()
         command("git", "init", "--bare", "-q", str(self.remote))
         command("git", "init", "-q", "-b", "main", cwd=self.product)
+        command("git", "config", "user.name", "test", cwd=self.product)
+        command("git", "config", "user.email", "test@example.com", cwd=self.product)
         command("git", "remote", "add", "origin", str(self.remote), cwd=self.product)
         (self.product / "factory/tickets").mkdir(parents=True)
         (self.product / "factory/runs").mkdir()
