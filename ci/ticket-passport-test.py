@@ -166,6 +166,9 @@ class TicketPassportTest(unittest.TestCase):
         )
         existing = self.product / "factory/runs/run-existing.out"
         os.chmod(existing, 0o644)
+        self.assertEqual(
+            len(PASSPORT.run_charges(self.product / "factory", "T-110")), 1
+        )
         with self.assertRaisesRegex(ValueError, "unsafe role output"):
             PASSPORT.run_evidence(self.product / "factory", "T-110")
         os.chmod(existing, 0o600)

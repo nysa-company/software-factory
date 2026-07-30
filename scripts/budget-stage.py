@@ -38,7 +38,7 @@ def resolve(kit: Path, product: Path, ticket: str) -> str:
     cap = int(Decimal(
         changes.get("PER_TICKET_BUDGET_USD", values["PER_TICKET_BUDGET_USD"])
     ) * 1_000_000)
-    _, charges = passport.run_evidence(product / "factory", ticket)
+    charges = passport.run_charges(product / "factory", ticket)
     spent = sum(item["charge_micro_usd"] for item in charges)
     return (
         f"AWAIT_BUDGET ticket budget exhausted ({spent}/{cap} micro-USD)"
