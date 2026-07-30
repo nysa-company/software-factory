@@ -133,6 +133,7 @@ class TicketPassportTest(unittest.TestCase):
             f"run_id={run_id}\n"
             "phase=completed\n"
             "accounting_state=completed\n"
+            "task_submitted=1\n"
             "effective_cost=1.500000\n"
             "exit_status=0\n"
             "ticket=T-110\n"
@@ -450,6 +451,219 @@ class TicketPassportTest(unittest.TestCase):
             ["planner", "spec-linter"],
         )
         self.assertEqual(exported["cumulative_charges_micro_usd"], 3_000_000)
+
+    def test_terminal_export_accepts_only_a_contiguous_migration_suffix(self) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        first = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = first["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal("run-1", "planner", first["receipt_sha256"], "a" * 40)
+        self.passport_args.receipt = first["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+
+        self.state_args.role = "spec-linter"
+        second = STATE.issue(self.state_args, "RUN spec-linter")
+        self.state_args.receipt = second["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "run-2", "spec-linter", second["receipt_sha256"], "a" * 40
+        )
+
+        route = self.product / "factory/route-plans/T-110.json"
+        for factory_sha in ("b" * 40, "c" * 40):
+            route.write_text(
+                json.dumps({"kit_sha": factory_sha, "ticket": "T-110"}) + "\n",
+                encoding="utf-8",
+            )
+            run("git", "add", str(route), cwd=self.product)
+            run("git", "commit", "-qm", f"migrate to {factory_sha[0]}", cwd=self.product)
+            self.passport_args.factory_sha = factory_sha
+            migrated = PASSPORT.migrate(self.passport_args, secret)
+
+        self.passport_args.receipt = second["receipt_sha256"]
+        passport = self.state_dir / "passports/T-110.json"
+        manifest = self.product / "factory/runs/run-2.meta"
+        terminal = manifest.read_text(encoding="utf-8")
+        manifest.write_text(
+            terminal.replace(f"kit_sha={'a' * 40}", f"kit_sha={'f' * 40}"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            PASSPORT.PassportError, "terminal role evidence is missing"
+        ):
+            PASSPORT.export(self.passport_args, secret)
+        manifest.write_text(terminal, encoding="utf-8")
+
+        protected = self.root / "protected-base-advance"
+        run("git", "clone", "-q", str(self.remote), str(protected), cwd=self.root)
+        run("git", "config", "user.name", "Test", cwd=protected)
+        run("git", "config", "user.email", "test@example.invalid", cwd=protected)
+        marker = protected / "factory/base-advance"
+        marker.write_text("new protected base\n", encoding="utf-8")
+        run("git", "add", str(marker), cwd=protected)
+        run("git", "commit", "-qm", "advance protected base", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.export(self.passport_args, secret)
+        migrated = PASSPORT.migrate(self.passport_args, secret)
+
+        unsigned = {
+            name: item for name, item in migrated.items()
+            if name not in {"authentication_sha256", "passport_sha256"}
+        }
+        unsigned["migration_history"] = [
+            dict(item) for item in unsigned["migration_history"]
+        ]
+        unsigned["migration_history"][0]["from_passport_file_sha256"] = "f" * 64
+        PASSPORT.write_atomic(passport, PASSPORT.authenticate(unsigned, secret))
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.export(self.passport_args, secret)
+
+        PASSPORT.write_atomic(passport, migrated)
+        exported = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(
+            [item["role"] for item in exported["completed_role_evidence"]],
+            ["planner", "spec-linter"],
+        )
+        self.assertEqual(exported["cumulative_charges_micro_usd"], 3_000_000)
+        self.assertEqual(len(exported["charge_records"]), 2)
+
+    def test_protected_authorization_bridges_one_exact_legacy_snapshot(self) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        first = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = first["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal("run-1", "planner", first["receipt_sha256"], "a" * 40)
+        self.passport_args.receipt = first["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+
+        self.state_args.role = "spec-linter"
+        second = STATE.issue(self.state_args, "RUN spec-linter")
+        self.state_args.receipt = second["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "run-2", "spec-linter", second["receipt_sha256"], "a" * 40
+        )
+        terminal = self.product / "factory/runs/run-2.meta"
+        terminal.write_text(
+            terminal.read_text(encoding="utf-8").replace(
+                "accounting_state=completed\n",
+                "accounting_state=abandoned_conservative\n"
+                "reserved_usd=1.500000\n"
+                "cost_basis=conservative_reservation\n",
+            ),
+            encoding="utf-8",
+        )
+
+        route = self.product / "factory/route-plans/T-110.json"
+        for factory_sha in ("b" * 40, "c" * 40):
+            route.write_text(
+                json.dumps({"kit_sha": factory_sha, "ticket": "T-110"}) + "\n",
+                encoding="utf-8",
+            )
+            run("git", "add", str(route), cwd=self.product)
+            run("git", "commit", "-qm", f"legacy migrate to {factory_sha[0]}", cwd=self.product)
+            self.passport_args.factory_sha = factory_sha
+            migrated = PASSPORT.migrate(self.passport_args, secret)
+
+        unsigned = {
+            name: item for name, item in migrated.items()
+            if name not in {"authentication_sha256", "passport_sha256"}
+        }
+        legacy_fields = {
+            "from_factory_sha", "from_head_sha", "from_protected_base_sha",
+            "to_factory_sha", "to_head_sha", "to_protected_base_sha",
+        }
+        unsigned["migration_history"] = [
+            {name: item[name] for name in legacy_fields}
+            for item in unsigned["migration_history"]
+        ]
+        legacy = PASSPORT.authenticate(unsigned, secret)
+        passport = self.state_dir / "passports/T-110.json"
+        PASSPORT.write_atomic(passport, legacy)
+
+        route.write_text(
+            json.dumps({"kit_sha": "d" * 40, "ticket": "T-110"}) + "\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(route), cwd=self.product)
+        run("git", "commit", "-qm", "target legacy bridge", cwd=self.product)
+        self.passport_args.factory_sha = "d" * 40
+        self.passport_args.receipt = second["receipt_sha256"]
+        authorization = PASSPORT.authorize_lineage(self.passport_args, secret)
+        self.assertEqual(
+            authorization["terminal"]["accounting_state"],
+            "abandoned_conservative",
+        )
+
+        protected = self.root / "protected-lineage"
+        run("git", "clone", "-q", str(self.remote), str(protected), cwd=self.root)
+        run("git", "config", "user.name", "Test", cwd=protected)
+        run("git", "config", "user.email", "test@example.invalid", cwd=protected)
+        relative = PASSPORT.lineage_authorization_path("d" * 40, "T-110")
+        path = protected / relative
+        path.parent.mkdir(parents=True)
+        path.write_bytes(PASSPORT.canonical(authorization))
+        application = protected / "factory/PROJECT.env"
+        application.write_text(
+            application.read_text(encoding="utf-8") + "UNRELATED_DRIFT=1\n",
+            encoding="utf-8",
+        )
+        run("git", "add", relative, str(application), cwd=protected)
+        run("git", "commit", "-qm", "mix authorization with application", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+        with self.assertRaisesRegex(
+            PASSPORT.PassportError, "lineage authorization is invalid"
+        ):
+            PASSPORT.migrate(self.passport_args, secret)
+
+        route.write_text(
+            json.dumps({"kit_sha": "e" * 40, "ticket": "T-110"}) + "\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(route), cwd=self.product)
+        run("git", "commit", "-qm", "retarget exact legacy bridge", cwd=self.product)
+        self.passport_args.factory_sha = "e" * 40
+        authorization = PASSPORT.authorize_lineage(self.passport_args, secret)
+        relative = PASSPORT.lineage_authorization_path("e" * 40, "T-110")
+        path = protected / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(PASSPORT.canonical(authorization))
+        run("git", "add", relative, cwd=protected)
+        run("git", "commit", "-qm", "authorize exact legacy bridge", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+        bridged = PASSPORT.migrate(self.passport_args, secret)
+        edge = bridged["migration_history"][-1]
+        self.assertRegex(
+            edge["lineage_authorization_sha256"], r"^[0-9a-f]{64}$"
+        )
+        tampered = {
+            name: item for name, item in bridged.items()
+            if name not in {"authentication_sha256", "passport_sha256"}
+        }
+        tampered["migration_history"] = [
+            dict(item) for item in tampered["migration_history"]
+        ]
+        tampered["migration_history"][-1][
+            "lineage_authorization_sha256"
+        ] = "e" * 64
+        PASSPORT.write_atomic(
+            passport, PASSPORT.authenticate(tampered, secret)
+        )
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.export(self.passport_args, secret)
+        PASSPORT.write_atomic(passport, bridged)
+        exported = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(
+            [item["role"] for item in exported["completed_role_evidence"]],
+            ["planner", "spec-linter"],
+        )
+        self.assertEqual(exported["cumulative_charges_micro_usd"], 3_000_000)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.export(self.passport_args, secret)
 
     def test_protected_inflight_authorization_allows_exact_rewrite(self) -> None:
         secret = PASSPORT.key(self.state_dir)

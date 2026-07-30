@@ -32,6 +32,8 @@ TERMINAL_ACCOUNTING = {
 }
 INFLIGHT_SCHEMA = "nysa.software-factory.inflight-release-authorization/v1"
 REWRITE_SCHEMA = "nysa.software-factory.ticket-rewrite-authorization/v1"
+MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
+LINEAGE_SCHEMA = "nysa.software-factory.ticket-passport-lineage-authorization/v1"
 INFLIGHT_STATES = {
     "Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved",
 }
@@ -568,6 +570,455 @@ def merge_records(
     return list(records.values())
 
 
+def terminal_authorization_evidence(
+    args: argparse.Namespace, consumed: dict[str, Any]
+) -> dict[str, Any] | None:
+    matches = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        fields = manifest_fields(path)
+        if (
+            fields.get("ticket") == args.ticket
+            and fields.get("transition_receipt_sha256")
+            == consumed.get("receipt_sha256")
+        ):
+            matches.append((path, fields))
+    if len(matches) != 1:
+        return None
+    path, fields = matches[0]
+    output = path.with_suffix(".out")
+    accounted = fields.get("accounting_state") == "completed" or (
+        fields.get("accounting_state") == "abandoned_conservative"
+        and fields.get("cost_basis") == "conservative_reservation"
+        and fields.get("effective_cost") == fields.get("reserved_usd")
+    )
+    if (
+        fields.get("phase") != "completed"
+        or not accounted
+        or fields.get("task_submitted") != "1"
+        or fields.get("exit_status") != "0"
+        or fields.get("role_exit") != "ok"
+        or not isinstance(fields.get("run_id"), str)
+        or not fields["run_id"]
+        or fields.get("role") != consumed.get("role")
+        or fields.get("role_head_before") != consumed.get("head_sha")
+        or fields.get("kit_sha") != consumed.get("factory_sha")
+        or fields.get("contract_version") != consumed.get("contract_version")
+        or not DIGEST.fullmatch(fields.get("output_sha256", ""))
+        or not output.is_file()
+        or output.is_symlink()
+        or role_output_digest(output) != fields["output_sha256"]
+    ):
+        return None
+    return {
+        "accounting_state": fields["accounting_state"],
+        "charge_micro_usd": micro_usd(fields),
+        "contract_version": fields["contract_version"],
+        "cost_basis": fields.get("cost_basis"),
+        "factory_sha": fields["kit_sha"],
+        "head_before": fields["role_head_before"],
+        "manifest_sha256": hashlib.sha256(read_regular(path)).hexdigest(),
+        "output_sha256": fields["output_sha256"],
+        "role": fields["role"],
+        "run_id": fields.get("run_id"),
+        "reserved_micro_usd": micro_usd({
+            "reserved_usd": fields.get("reserved_usd", "0")
+        }),
+    }
+
+
+def lineage_authorization_path(factory_sha: str, ticket: str) -> str:
+    return (
+        "factory/migrations/ticket-passport-lineage/"
+        f"{factory_sha}/{ticket}.json"
+    )
+
+
+def lineage_authorization_value(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    parent_raw: str,
+    current: dict[str, Any],
+    target_protected_parent: str,
+    target_route: str,
+    consumed: dict[str, Any],
+) -> dict[str, Any] | None:
+    terminal = terminal_authorization_evidence(args, consumed)
+    project = git(
+        args.factory_root,
+        "show",
+        f"{target_protected_parent}:factory/PROJECT.env",
+        check=False,
+    )
+    repository = project_value(project, "GH_REPO")
+    migrations = previous.get("migration_history")
+    if (
+        terminal is None
+        or not repository
+        or not isinstance(migrations, list)
+        or not migrations
+        or not DIGEST.fullmatch(parent_raw)
+        or not DIGEST.fullmatch(previous.get("passport_sha256", ""))
+        or not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
+        or not DIGEST.fullmatch(target_route)
+        or not SHA.fullmatch(target_protected_parent)
+    ):
+        return None
+    return {
+        "branch": current["branch"],
+        "contract_version": args.contract_version,
+        "product_origin_sha256": current["product_origin_sha256"],
+        "project": args.project,
+        "receipt": {
+            "factory_sha": consumed.get("factory_sha"),
+            "head_sha": consumed.get("head_sha"),
+            "parent_digest": consumed.get("parent_digest"),
+            "passport_file_sha256": consumed.get("passport_sha256"),
+            "receipt_sha256": consumed.get("receipt_sha256"),
+            "role": consumed.get("role"),
+            "stage": consumed.get("stage"),
+        },
+        "repository": repository,
+        "schema": LINEAGE_SCHEMA,
+        "source": {
+            "factory_sha": previous.get("factory_sha"),
+            "head_sha": previous.get("head_sha"),
+            "migration_history_sha256": hashlib.sha256(
+                canonical(migrations)
+            ).hexdigest(),
+            "passport_file_sha256": parent_raw,
+            "passport_sha256": previous.get("passport_sha256"),
+            "protected_base_sha": previous.get("protected_base_sha"),
+            "route_plan_sha256": previous.get("route_plan_sha256"),
+        },
+        "target": {
+            "factory_sha": args.factory_sha,
+            "head_sha": current["head_sha"],
+            "protected_base_parent_sha": target_protected_parent,
+            "route_plan_sha256": target_route,
+        },
+        "terminal": terminal,
+        "ticket": args.ticket,
+    }
+
+
+def lineage_authorization_metadata(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    parent_raw: str,
+    current: dict[str, Any],
+    protected: str,
+) -> dict[str, str]:
+    migrations = previous.get("migration_history", [])
+    if not isinstance(migrations, list) or not any(
+        not isinstance(item, dict) or item.get("schema") != MIGRATION_SCHEMA
+        for item in migrations
+    ):
+        return {}
+    relative = lineage_authorization_path(args.factory_sha, args.ticket)
+    raw = git(args.factory_root, "show", f"{protected}:{relative}", check=False)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw, object_pairs_hook=unique_object)
+        consumed = receipt(
+            args.state_dir, args.ticket,
+            value.get("receipt", {}).get("receipt_sha256", ""),
+        )
+    except (AttributeError, FileNotFoundError, json.JSONDecodeError, OSError,
+            PassportError, ValueError):
+        raise PassportError("passport lineage authorization is invalid") from None
+    parents = git(args.factory_root, "show", "-s", "--format=%P", protected).split()
+    changed = git(
+        args.factory_root, "diff-tree", "--no-commit-id", "--name-status",
+        "--no-renames", "-r", protected,
+    ).splitlines()
+    blob = git(args.factory_root, "rev-parse", f"{protected}:{relative}", check=False)
+    tree = git(args.factory_root, "ls-tree", protected, "--", relative).split()
+    expected = (
+        lineage_authorization_value(
+            args, previous, parent_raw, current, parents[0],
+            route_digest(args.workdir, args.ticket) or "", consumed,
+        )
+        if (
+            len(parents) == 1
+            and changed == [f"A\t{relative}"]
+            and len(tree) >= 4
+            and tree[:2] == ["100644", "blob"]
+        )
+        else None
+    )
+    if (
+        value != expected
+        or raw.encode() + b"\n" != canonical(value)
+        or not SHA.fullmatch(blob)
+    ):
+        raise PassportError("passport lineage authorization is invalid")
+    return {
+        "lineage_authorization_blob": blob,
+        "lineage_authorization_commit": protected,
+        "lineage_authorization_path": relative,
+        "lineage_authorization_sha256": hashlib.sha256(canonical(value)).hexdigest(),
+    }
+
+
+def valid_v2_migration(item: Any) -> bool:
+    sha_fields = {
+        "from_factory_sha", "from_head_sha", "from_protected_base_sha",
+        "to_factory_sha", "to_head_sha", "to_protected_base_sha",
+    }
+    digest_fields = {
+        "from_passport_file_sha256", "from_passport_sha256",
+        "from_route_plan_sha256", "to_route_plan_sha256",
+    }
+    required = sha_fields | digest_fields | {"schema"}
+    optional = {
+        "rewrite_authorization_sha256",
+        "lineage_authorization_blob",
+        "lineage_authorization_commit",
+        "lineage_authorization_path",
+        "lineage_authorization_sha256",
+    }
+    authorization = {
+        name for name in optional if name.startswith("lineage_authorization_")
+    }
+    present = set(item) & authorization if isinstance(item, dict) else set()
+    return (
+        isinstance(item, dict)
+        and required.issubset(item)
+        and set(item).issubset(required | optional)
+        and item.get("schema") == MIGRATION_SCHEMA
+        and all(
+            isinstance(item.get(name), str) and SHA.fullmatch(item[name])
+            for name in sha_fields
+        )
+        and all(
+            isinstance(item.get(name), str) and DIGEST.fullmatch(item[name])
+            for name in digest_fields
+        )
+        and (
+            "rewrite_authorization_sha256" not in item
+            or (
+                isinstance(item["rewrite_authorization_sha256"], str)
+                and DIGEST.fullmatch(item["rewrite_authorization_sha256"])
+            )
+        )
+        and (not present or present == authorization)
+        and (
+            not present
+            or (
+                isinstance(item["lineage_authorization_blob"], str)
+                and SHA.fullmatch(item["lineage_authorization_blob"])
+                and isinstance(item["lineage_authorization_commit"], str)
+                and SHA.fullmatch(item["lineage_authorization_commit"])
+                and isinstance(item["lineage_authorization_path"], str)
+                and re.fullmatch(
+                    r"factory/migrations/ticket-passport-lineage/"
+                    r"[0-9a-f]{40}/T-[0-9]+\.json",
+                    item["lineage_authorization_path"],
+                )
+                and isinstance(item["lineage_authorization_sha256"], str)
+                and DIGEST.fullmatch(item["lineage_authorization_sha256"])
+            )
+        )
+    )
+
+
+def valid_legacy_migration(item: Any) -> bool:
+    fields = {
+        "from_factory_sha", "from_head_sha", "from_protected_base_sha",
+        "to_factory_sha", "to_head_sha", "to_protected_base_sha",
+    }
+    return (
+        isinstance(item, dict)
+        and set(item).issubset(fields | {"rewrite_authorization_sha256"})
+        and fields.issubset(item)
+        and all(
+            isinstance(item.get(name), str) and SHA.fullmatch(item[name])
+            for name in fields
+        )
+        and (
+            "rewrite_authorization_sha256" not in item
+            or (
+                isinstance(item["rewrite_authorization_sha256"], str)
+                and DIGEST.fullmatch(item["rewrite_authorization_sha256"])
+            )
+        )
+    )
+
+
+def semantic_migration(item: Any) -> bool:
+    return valid_v2_migration(item) or valid_legacy_migration(item)
+
+
+def validate_legacy_lineage_authorization(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    consumed: dict[str, Any],
+    current: dict[str, Any],
+    migrations: list[dict[str, Any]],
+    authorization_index: int,
+) -> bool:
+    edge = migrations[authorization_index]
+    relative = lineage_authorization_path(
+        edge["to_factory_sha"], args.ticket
+    )
+    commit = edge.get("lineage_authorization_commit", "")
+    if (
+        edge.get("lineage_authorization_path") != relative
+        or edge.get("lineage_authorization_commit")
+        != edge.get("to_protected_base_sha")
+        or not SHA.fullmatch(commit)
+    ):
+        return False
+    protected = git(args.factory_root, "rev-parse", "origin/main")
+    if subprocess.run(
+        [
+            "git", "-C", str(args.factory_root), "merge-base",
+            "--is-ancestor", commit, protected,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=120,
+    ).returncode:
+        return False
+    raw = git(args.factory_root, "show", f"{commit}:{relative}", check=False)
+    blob = git(args.factory_root, "rev-parse", f"{commit}:{relative}", check=False)
+    try:
+        value = json.loads(raw, object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    parents = git(args.factory_root, "show", "-s", "--format=%P", commit).split()
+    changed = git(
+        args.factory_root, "diff-tree", "--no-commit-id", "--name-status",
+        "--no-renames", "-r", commit,
+    ).splitlines()
+    tree = git(args.factory_root, "ls-tree", commit, "--", relative).split()
+    if (
+        len(parents) != 1
+        or changed != [f"A\t{relative}"]
+        or len(tree) < 4
+        or tree[:2] != ["100644", "blob"]
+    ):
+        return False
+    source = {
+        "factory_sha": edge["from_factory_sha"],
+        "head_sha": edge["from_head_sha"],
+        "migration_history": migrations[:authorization_index],
+        "passport_sha256": edge["from_passport_sha256"],
+        "protected_base_sha": edge["from_protected_base_sha"],
+        "route_plan_sha256": edge["from_route_plan_sha256"],
+    }
+    target = {
+        "branch": current["branch"],
+        "head_sha": edge["to_head_sha"],
+        "product_origin_sha256": current["product_origin_sha256"],
+    }
+    authorization_args = argparse.Namespace(**vars(args))
+    authorization_args.factory_sha = edge["to_factory_sha"]
+    expected = lineage_authorization_value(
+        authorization_args,
+        source,
+        edge["from_passport_file_sha256"],
+        target,
+        parents[0],
+        edge["to_route_plan_sha256"],
+        consumed,
+    )
+    return (
+        value == expected
+        and raw.encode() + b"\n" == canonical(value)
+        and blob == edge.get("lineage_authorization_blob")
+        and hashlib.sha256(canonical(value)).hexdigest()
+        == edge.get("lineage_authorization_sha256")
+    )
+
+
+def migrated_receipt_lineage(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    consumed: dict[str, Any],
+    current: dict[str, Any],
+) -> bool:
+    migrations = previous.get("migration_history")
+    old_factory = consumed.get("factory_sha", "")
+    old_head = consumed.get("head_sha", "")
+    if (
+        not isinstance(migrations, list)
+        or not migrations
+        or not isinstance(old_factory, str)
+        or not SHA.fullmatch(old_factory)
+        or not isinstance(old_head, str)
+        or not SHA.fullmatch(old_head)
+        or previous.get("factory_sha") != args.factory_sha
+        or previous.get("head_sha") != current["head_sha"]
+        or not SHA.fullmatch(previous.get("protected_base_sha", ""))
+    ):
+        return False
+
+    starts = []
+    for index, migration in enumerate(migrations):
+        if (
+            not semantic_migration(migration)
+            or migration.get("from_factory_sha") != old_factory
+            or migration.get("from_head_sha") != old_head
+        ):
+            continue
+        suffix = migrations[index:]
+        if (
+            all(semantic_migration(item) for item in suffix)
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and suffix[-1]["to_factory_sha"] == args.factory_sha
+            and suffix[-1]["to_head_sha"] == current["head_sha"]
+            and suffix[-1]["to_protected_base_sha"]
+            == previous["protected_base_sha"]
+        ):
+            starts.append(index)
+    if len(starts) != 1:
+        return False
+
+    start = starts[0]
+    suffix = migrations[start:]
+    bound_passport = consumed.get("passport_sha256")
+    if (
+        all(valid_v2_migration(item) for item in suffix)
+        and isinstance(bound_passport, str)
+        and DIGEST.fullmatch(bound_passport)
+        and suffix[0]["from_passport_file_sha256"] == bound_passport
+    ):
+        return True
+
+    authorization_indexes = [
+        index for index, item in enumerate(migrations)
+        if isinstance(item, dict)
+        and "lineage_authorization_sha256" in item
+    ]
+    if len(authorization_indexes) != 1:
+        return False
+    authorization_index = authorization_indexes[0]
+    return (
+        start < authorization_index
+        and all(
+            valid_legacy_migration(item)
+            for item in migrations[start:authorization_index]
+        )
+        and all(
+            valid_v2_migration(item)
+            for item in migrations[authorization_index:]
+        )
+        and validate_legacy_lineage_authorization(
+            args, previous, consumed, current, migrations,
+            authorization_index,
+        )
+    )
+
+
 def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     passports = safe_directory(args.state_dir / "passports", create=True)
     destination = passports / f"{args.ticket}.json"
@@ -579,25 +1030,11 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         previous, parent_raw = load_passport(destination, secret)
     consumed = receipt(args.state_dir, args.ticket, args.receipt)
     current_identity = identity(args)
+    protected = git(args.factory_root, "rev-parse", "origin/main")
     old_head = consumed.get("head_sha", "")
     bound_passport = consumed.get("passport_sha256")
-    migrations = previous.get("migration_history", [])
-    latest_migration = (
-        migrations[-1]
-        if isinstance(migrations, list)
-        and migrations
-        and isinstance(migrations[-1], dict)
-        else {}
-    )
-    migrated_receipt = (
-        bound_passport == previous.get("parent_file_sha256")
-        and previous.get("factory_sha") == args.factory_sha
-        and previous.get("head_sha") == current_identity["head_sha"]
-        and latest_migration.get("from_factory_sha")
-        == consumed.get("factory_sha")
-        and latest_migration.get("from_head_sha") == old_head
-        and latest_migration.get("to_factory_sha") == args.factory_sha
-        and latest_migration.get("to_head_sha") == current_identity["head_sha"]
+    migrated_receipt = migrated_receipt_lineage(
+        args, previous, consumed, current_identity
     )
     if (
         consumed.get("ticket") != args.ticket
@@ -608,6 +1045,10 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         )
         or consumed.get("contract_version") != args.contract_version
         or consumed.get("branch") != current_identity["branch"]
+        or (
+            migrated_receipt
+            and previous.get("protected_base_sha") != protected
+        )
         or not SHA.fullmatch(old_head)
         or subprocess.run(
             ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
@@ -622,15 +1063,23 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     completed, charges = run_evidence(args.factory_root / "factory", args.ticket)
     completed = merge_records(previous.get("completed_role_evidence", []), completed)
     charges = merge_records(previous.get("charge_records", []), charges)
+    receipt_charges = [
+        item for item in charges
+        if item.get("transition_receipt_sha256") == args.receipt
+    ]
     matching = [
         item for item in charges
         if item.get("transition_receipt_sha256") == args.receipt
         and item.get("role") == consumed.get("role")
         and item.get("head_before") == old_head
+        and item.get("factory_sha") == consumed.get("factory_sha")
+        and item.get("contract_version") == consumed.get("contract_version")
     ]
-    if consumed.get("role") and len(matching) != 1:
+    if (
+        consumed.get("role")
+        and (len(receipt_charges) != 1 or len(matching) != 1)
+    ):
         raise PassportError("receipt-bound terminal role evidence is missing")
-    protected = git(args.factory_root, "rev-parse", "origin/main")
     history = list(previous.get("factory_release_history", []))
     release = {
         "contract_version": args.contract_version,
@@ -683,6 +1132,39 @@ def validate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         raise PassportError("passport validation requires a clean execution cell")
     if value.get("route_plan_sha256") != route_digest(args.workdir, args.ticket):
         raise PassportError("passport route plan changed")
+    return value
+
+
+def authorize_lineage(
+    args: argparse.Namespace, secret: bytes
+) -> dict[str, Any]:
+    passports = safe_directory(args.state_dir / "passports")
+    previous, parent_raw = load_passport(
+        passports / f"{args.ticket}.json", secret
+    )
+    if git(args.workdir, "status", "--porcelain=v1", "-z"):
+        raise PassportError("lineage authorization requires a clean execution cell")
+    current = identity(args)
+    protected = git(args.factory_root, "rev-parse", "origin/main")
+    consumed = receipt(args.state_dir, args.ticket, args.receipt)
+    value = lineage_authorization_value(
+        args,
+        previous,
+        parent_raw,
+        current,
+        protected,
+        route_digest(args.workdir, args.ticket) or "",
+        consumed,
+    )
+    if (
+        value is None
+        or not isinstance(previous.get("migration_history"), list)
+        or not any(
+            valid_legacy_migration(item)
+            for item in previous["migration_history"]
+        )
+    ):
+        raise PassportError("passport lineage authorization is unavailable")
     return value
 
 
@@ -759,11 +1241,21 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     migration = {
         "from_factory_sha": previous["factory_sha"],
         "from_head_sha": previous["head_sha"],
+        "from_passport_file_sha256": parent_raw,
+        "from_passport_sha256": previous["passport_sha256"],
         "from_protected_base_sha": previous["protected_base_sha"],
+        "from_route_plan_sha256": previous["route_plan_sha256"],
+        "schema": MIGRATION_SCHEMA,
         "to_factory_sha": args.factory_sha,
         "to_head_sha": current["head_sha"],
         "to_protected_base_sha": protected,
+        "to_route_plan_sha256": current_route,
     }
+    migration.update(
+        lineage_authorization_metadata(
+            args, previous, parent_raw, current, protected
+        )
+    )
     if rewrite_authorization is not None:
         migration["rewrite_authorization_sha256"] = rewrite_authorization
     evidence: dict[str, Any] = {}
@@ -817,7 +1309,9 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("export", "migrate", "validate"))
+    parser.add_argument(
+        "action", choices=("authorize-lineage", "export", "migrate", "validate")
+    )
     parser.add_argument("--factory-root", required=True, type=Path)
     parser.add_argument("--workdir", required=True, type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
@@ -840,25 +1334,34 @@ def main() -> None:
             not TICKET.fullmatch(args.ticket)
             or args.contract_version != "1.8.0"
             or not SHA.fullmatch(args.factory_sha)
-            or (args.action == "export" and not DIGEST.fullmatch(args.receipt))
+            or (
+                args.action in {"authorize-lineage", "export"}
+                and not DIGEST.fullmatch(args.receipt)
+            )
         ):
             raise PassportError("invalid passport arguments")
         args.factory_root = args.factory_root.resolve(strict=True)
         args.workdir = args.workdir.resolve(strict=True)
         args.state_dir = safe_directory(args.state_dir)
         secret = key(args.state_dir)
-        if args.action == "export":
+        if args.action == "authorize-lineage":
+            value = authorize_lineage(args, secret)
+        elif args.action == "export":
             value = export(args, secret)
         elif args.action == "migrate":
             value = migrate(args, secret)
         else:
             value = validate(args, secret)
-        print(json.dumps({
-            "passport": value["passport_sha256"],
-            "schema": SCHEMA,
-            "status": "ok",
-            "ticket": args.ticket,
-        }, sort_keys=True))
+        print(
+            canonical(value).decode().rstrip()
+            if args.action == "authorize-lineage"
+            else json.dumps({
+                "passport": value["passport_sha256"],
+                "schema": SCHEMA,
+                "status": "ok",
+                "ticket": args.ticket,
+            }, sort_keys=True)
+        )
     except (
         FileNotFoundError,
         json.JSONDecodeError,

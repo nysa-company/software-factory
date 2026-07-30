@@ -297,6 +297,20 @@ Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one
 renewable per-product publication lease serializes merge requests. A ticket
+whose terminal boundary spans one or more Factory migrations reuses that
+evidence only when one unique contiguous authenticated migration suffix links
+the receipt's Factory/head to the exact current Factory/head/base and the
+first versioned edge names the receipt-bound passport file digest. A pre-v2
+snapshot may cross exactly one new edge only through a one-file protected-main
+authorization that binds its receipt, source passport and complete legacy
+history, target identity, and terminal accounting evidence. The signed edge
+records that authorization's commit, path, blob, and digest; export rereads it
+and requires the protected-main snapshot to equal the signed lineage endpoint.
+Any later base first needs another authenticated migration edge. The
+authorization commit must add exactly its mode-`100644` record and change
+nothing else. Broken, ambiguous, unbound, reused, or broadly authorized
+lineage fails closed.
+A ticket
 withdraws its queue record whenever deterministic reconciliation no longer
 classifies it as merge-ready; an active lease still requires its exact
 capability-bound release. Each controller worker continues its ticket through
