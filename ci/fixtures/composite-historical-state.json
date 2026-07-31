@@ -1,0 +1,56 @@
+{
+  "schema": "nysa.software-factory.composite-historical-replay/v1",
+  "primary": {
+    "branch": "ticket/T-710",
+    "charged_attempts": [
+      ["planner", "blocked", "b85b85b85b85b85b85b85b85b85b85b85b85b85b"],
+      ["planner", "ok", "2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2"],
+      ["spec-linter", "ok", "2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2"],
+      ["test-author", "ok", "2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2"],
+      ["builder", "blocked", "2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2ec2"],
+      ["test-author", "ok", "88b88b88b88b88b88b88b88b88b88b88b88b88b8"],
+      ["test-author", "ok", "b37b37b37b37b37b37b37b37b37b37b37b37b37b"],
+      ["builder", "blocked", "d39d39d39d39d39d39d39d39d39d39d39d39d39d"],
+      ["test-author", "blocked", "f65f65f65f65f65f65f65f65f65f65f65f65f65f"],
+      ["test-author", "blocked", "f65f65f65f65f65f65f65f65f65f65f65f65f65f"],
+      ["test-author", "blocked", "f65f65f65f65f65f65f65f65f65f65f65f65f65f"],
+      ["planner", "ok", "2ef2ef2ef2ef2ef2ef2ef2ef2ef2ef2ef2ef2ef2e"],
+      ["builder", "blocked", "0bd2c79b8e2ef94eb5c3aa7740a1ff5ff1ff76d7"]
+    ],
+    "initial_migration_count": 31,
+    "initial_release_count": 24,
+    "initial_route_revision_count": 27,
+    "launch_void_count": 41,
+    "repair_owner": "test-author",
+    "ticket": "T-710"
+  },
+  "release": {
+    "source": "0bd2c79b8e2ef94eb5c3aa7740a1ff5ff1ff76d7",
+    "successor_a": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "successor_b": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "tickets": {
+    "dependents": ["T-711", "T-712"],
+    "dormant": "T-713",
+    "independent_sibling": "T-714"
+  },
+  "tamper_fields": [
+    "hmac",
+    "passport_parent",
+    "migration_edge",
+    "migration_gap",
+    "head",
+    "tree",
+    "route",
+    "base",
+    "receipt",
+    "charge_accounting",
+    "repair_directive_receipt",
+    "conflict_blob",
+    "conflict_path",
+    "conflict_mode",
+    "lease",
+    "approval_head",
+    "publication_queue"
+  ]
+}

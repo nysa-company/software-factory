@@ -14,9 +14,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - A resumed Contract 1.8 blocker may leave the failed receipt and role on its
   blocked controller claim after the state machine has created the signed
   owner-only repair. The controller reopens it only when both retained fields
-  exactly match that repair record; the state machine authenticates all
-  repair, passport, charge, terminal, and stage evidence before those claim
-  fields are cleared.
+  exactly match that repair record and the current remote passport is
+  authenticated. Recovery clears only those stale controller-cache fields;
+  ordinary reconciliation then invokes the state machine once to authenticate
+  repair, passport, charge, terminal, dependency, and stage evidence. Recovery
+  itself never resolves or substitutes a stage.
 - Contract 1.8 resolves each stage exactly once. Before scheduling after a
   release change, blocked, claimed, and waiting claims authenticate and migrate
   any prior-release passport. Maintenance appearing after stage resolution
