@@ -413,7 +413,12 @@ independently; an absent old lease may therefore be replaced without weakening
 receipt, terminal, passport, or current ownership checks. If an earlier
 controller cleared the blocked claim fields during that migration, the
 successor restores them only from the latest passport-bound charge and exact
-terminal receipt. An operator may
+terminal receipt. A same-release controller restart may also replace an
+expired exact-ticket lease after the block was materialized. Replaying that
+already-completed block is idempotent only when the authenticated passport
+binds the same receipt, charge, role stage, blocked state, resume target, and
+receipt-to-passport-to-current-head ancestry; otherwise the rotated lease
+cannot authorize the historical transition. An operator may
 append one exact repair-owner directive in the ticket file without changing
 any other path.
 The state machine authenticates that commit against passport lineage, persists

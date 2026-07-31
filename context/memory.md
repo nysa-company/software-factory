@@ -2068,3 +2068,19 @@ The state machine now retains its first deterministic resolution. The
 controller rechecks maintenance before PR or provider work, leaves that receipt
 unconsumed, parks the checkpoint, and releases its lease. Every other
 state-machine or execution failure remains fail closed.
+
+## 2026-07-30 — Decision 158: A materialized blocker survives lease rotation
+
+Category: Incident
+
+T-094 proved that a one-shot controller can restart after a contract blocker
+is already authenticated, charged, committed, and exported but before the
+operator repair begins. Its exact ticket lease may be replaced, while the
+historical receipt intentionally retains only the old lease digest. Initial
+block materialization still requires that historical lease. A later
+idempotent block validation may use the fresh lease only when the authenticated
+passport binds the same project, ticket, branch, Factory, contract, receipt,
+unique blocker charge, role stage, blocked state, exact resume target, and
+receipt-to-passport-to-current-head ancestry, with no successful evidence for
+the blocked receipt. Missing, tampered, ambiguous, unblocked, or unrelated
+evidence remains invalid.
