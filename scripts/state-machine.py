@@ -649,17 +649,6 @@ def operator_resume_role(
         return blocked_role
     repair_role = directives[0]
     directive = f"OPERATOR RESUME: {repair_role}"
-    commits = git(
-        args.workdir, "log", "--format=%H", f"-S{directive}", "--", relative
-    ).splitlines()
-    if len(commits) != 1 or not SHA.fullmatch(commits[0]):
-        raise StateError("contract repair operator directive is invalid")
-    commit = commits[0]
-    parent = git(args.workdir, "rev-parse", f"{commit}^")
-    before = git(args.workdir, "show", f"{parent}:{relative}") + "\n"
-    after = git(args.workdir, "show", f"{commit}:{relative}") + "\n"
-    expected = before.rstrip("\n") + f"\n\n{directive}\n"
-    changed = git(args.workdir, "diff", "--name-only", f"{parent}..{commit}").splitlines()
     known_heads = {prior_head}
     for migration in passport.get("migration_history", []):
         if isinstance(migration, dict):
@@ -668,17 +657,45 @@ def operator_resume_role(
                 for name in ("from_head_sha", "to_head_sha")
                 if SHA.fullmatch(migration.get(name, ""))
             )
+    commits = git(
+        args.workdir, "log", "--format=%H", f"-S{directive}", "--", relative
+    ).splitlines()
+    candidates: list[tuple[str, str]] = []
+    for candidate in commits:
+        if not SHA.fullmatch(candidate):
+            continue
+        ancestry = git(
+            args.workdir, "rev-list", "--parents", "-n", "1", candidate
+        ).split()
+        if (
+            len(ancestry) != 2
+            or ancestry[0] != candidate
+            or ancestry[1] not in known_heads
+            or subprocess.run(
+                [
+                    "git", "-C", str(args.workdir),
+                    "merge-base", "--is-ancestor", candidate, "HEAD",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=120,
+            ).returncode != 0
+        ):
+            continue
+        candidates.append((candidate, ancestry[1]))
+    if len(candidates) != 1:
+        raise StateError("contract repair operator directive is invalid")
+    commit, parent = candidates[0]
+    before = git(args.workdir, "show", f"{parent}:{relative}") + "\n"
+    after = git(args.workdir, "show", f"{commit}:{relative}") + "\n"
+    expected = before.rstrip("\n") + f"\n\n{directive}\n"
+    changed = git(args.workdir, "diff", "--name-only", f"{parent}..{commit}").splitlines()
     current_head = git(args.workdir, "rev-parse", "HEAD")
     if (
         len(directives) != 1
         or after != expected
         or changed != [relative]
-        or parent not in known_heads
-        or subprocess.run(
-            ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor", commit, "HEAD"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False, timeout=120,
-        ).returncode != 0
         or current_head not in {commit, prior_head}
     ):
         raise StateError("contract repair operator directive is invalid")

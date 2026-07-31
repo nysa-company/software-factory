@@ -2097,3 +2097,15 @@ branch, remote head, route journal, and state all match. Cutover preserves the
 blocked state and evidence; it does not resume the ticket. Backlog, Canceled,
 Done, unknown, partial, extra, and state-drifted entries remain invalid, and
 the ordinary maintenance, active-run, and lease drain barriers still apply.
+
+## 2026-07-30 — Decision 160: Repair directives are scoped by passport lineage
+
+Category: Incident
+
+A ticket may legitimately return to the same repair owner more than once.
+The active directive is the unique normal commit whose parent belongs to the
+current authenticated passport or its v2 migration history and whose commit
+remains in current branch ancestry. Older same-role directives outside that
+repair window remain immutable history and do not block recovery. Zero or
+multiple in-window commits, merge commits, malformed additions, multi-path
+changes, or unrelated head drift remain invalid.

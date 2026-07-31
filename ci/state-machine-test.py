@@ -582,6 +582,88 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.operator_resume_role(self.args, passport, "builder")
 
+    def test_operator_resume_uses_current_passport_repair_window(self) -> None:
+        path = self.product / "factory/tickets/T-110.md"
+        original = path.read_text(encoding="utf-8")
+        directive = "OPERATOR RESUME: test-author"
+
+        path.write_text(
+            original.rstrip("\n") + f"\n\n{directive}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "historical test repair", cwd=self.product)
+        path.write_text(original, encoding="utf-8")
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "finish historical test repair", cwd=self.product)
+
+        path.write_text(
+            original.rstrip("\n") + "\n\nBlocked-Receipt: current\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "materialize current blocker", cwd=self.product)
+        blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + f"\n\n{directive}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "authorize current test repair", cwd=self.product)
+
+        route = self.product / "factory/route-plans/T-110.json"
+        route.write_text(
+            '{"factory_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+            '"ticket":"T-110"}\n',
+            encoding="utf-8",
+        )
+        run("git", "add", str(route), cwd=self.product)
+        run("git", "commit", "-qm", "migrate current repair route", cwd=self.product)
+        migrated_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": migrated_head,
+            "migration_history": [{
+                "from_head_sha": blocked_head,
+                "to_head_sha": migrated_head,
+            }],
+            "ticket": "T-110",
+        }
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"),
+            "test-author",
+        )
+
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                f"\n\n{directive}\n", "\n", 1
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "withdraw current test repair", cwd=self.product)
+        withdrawn_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + f"\n\n{directive}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "duplicate current test repair", cwd=self.product)
+        duplicate_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport["head_sha"] = duplicate_head
+        passport["migration_history"].append({
+            "from_head_sha": withdrawn_head,
+            "to_head_sha": duplicate_head,
+        })
+        with self.assertRaisesRegex(
+            STATE.StateError, "operator directive is invalid"
+        ):
+            STATE.operator_resume_role(self.args, passport, "builder")
+
     def test_authenticated_contract_repair_is_one_success_boundary(self) -> None:
         secret = b"k" * 32
         (self.state_dir / "passport.key").write_bytes(secret)
