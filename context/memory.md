@@ -11,6 +11,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
   run concurrently behind one renewable per-product publication lease.
+- Contract 1.8 resolves each stage exactly once. Before scheduling after a
+  release change, blocked, claimed, and waiting claims authenticate and migrate
+  any prior-release passport. Maintenance appearing after stage resolution
+  but before submission leaves the receipt unconsumed, settles and parks the
+  clean claim, and releases its lease; it never creates a provider attempt,
+  charge, or successful-role replay.
 - Contract 1.8 at ticket capacity above one requires an exact owner-approved
   subscription provider policy and activation covering every enabled Cursor,
   Claude Code, and Codex route at no less than ticket capacity. The installed
@@ -2040,3 +2046,25 @@ base need not already be ticket ancestry solely to archive that completed
 checkpoint; ordinary provider-free dependency refresh remains the immediate
 next transition. Pending, ambiguous, broken, legacy-authorized, or
 unknown-path histories remain fail closed.
+
+## 2026-07-30 — Decision 156: Release recovery precedes waiting-ticket reconciliation
+
+Category: Incident
+
+T-100 proved that an authorized route cutover can leave a waiting claim with a
+prior-release passport even though it is not `blocked`. Upgrade recovery now
+normalizes blocked, claimed, and waiting claims before stage scheduling, but
+acts only on a signed prior-release passport or durable pending migration.
+Existing role evidence, charges, dependency waits, and specialist blockers
+remain unchanged.
+
+## 2026-07-30 — Decision 157: A stage is resolved once across maintenance
+
+Category: Incident
+
+T-094 was clean and provider-free when maintenance arrived between two
+`next-stage` calls, turning a safe pause into a permanently blocked claim.
+The state machine now retains its first deterministic resolution. The
+controller rechecks maintenance before PR or provider work, leaves that receipt
+unconsumed, parks the checkpoint, and releases its lease. Every other
+state-machine or execution failure remains fail closed.

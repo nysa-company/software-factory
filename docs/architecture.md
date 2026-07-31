@@ -254,6 +254,15 @@ watches terminal run evidence for an immediate wakeup. `state-machine` calls
 `next-stage` exactly once and issues a one-use receipt bound to the ticket
 head/tree, evidence, route, passport, Factory release, and certified origin.
 Roles consume that receipt unchanged and never select their next state.
+Before scheduling an existing blocked, claimed, or waiting ticket after a
+release change, the controller authenticates and migrates its stale passport
+and reacquires only that ticket's lease. A waiting ticket therefore cannot
+reach stage resolution with a route from the new release and a passport from
+the old release. If maintenance appears after stage resolution but before role
+submission, the controller records the unconsumed receipt, settles the ticket
+for that invocation, parks its clean checkpoint, and releases its lease. The
+next invocation issues an ordinary descendant receipt; no provider call,
+charge, or successful-role replay is created by the interruption.
 The role runner retains the validated project only in a non-exported host
 binding for its receipt rechecks; provider processes never inherit the
 project's model-state controls. Its trusted exact-head remote observation

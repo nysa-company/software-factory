@@ -198,6 +198,69 @@ class StateMachineTest(unittest.TestCase):
             result["receipt"],
         )
 
+    def test_role_stage_is_resolved_once_before_transition_receipt(self) -> None:
+        receipt = "b" * 64
+        with (
+            mock.patch.object(
+                STATE,
+                "current_state",
+                side_effect=["Planning", "Planning", "Building"],
+            ),
+            mock.patch.object(
+                STATE, "contract_repair_stage", return_value=(None, False)
+            ),
+            mock.patch.object(
+                STATE, "resolve", return_value="RUN builder"
+            ) as resolve,
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+            mock.patch.object(
+                STATE,
+                "issue",
+                return_value={"receipt_sha256": receipt},
+            ) as issue,
+        ):
+            result = STATE.next_transition(self.args)
+
+        resolve.assert_called_once_with(self.args)
+        transition.assert_called_once_with(self.args, "Building")
+        migrate.assert_called_once_with(self.args)
+        issue.assert_called_once_with(self.args, "RUN builder")
+        self.assertEqual(result["receipt"], receipt)
+        self.assertEqual(result["role"], "builder")
+        self.assertEqual(result["stage"], "RUN builder")
+
+    def test_completed_repair_stage_is_not_resolved_again(self) -> None:
+        receipt = "b" * 64
+        with (
+            mock.patch.object(
+                STATE,
+                "current_state",
+                side_effect=["Building", "Building"],
+            ),
+            mock.patch.object(
+                STATE,
+                "contract_repair_stage",
+                return_value=("RUN builder", False),
+            ),
+            mock.patch.object(STATE, "resolve") as resolve,
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+            mock.patch.object(
+                STATE,
+                "issue",
+                return_value={"receipt_sha256": receipt},
+            ),
+        ):
+            result = STATE.next_transition(self.args)
+
+        resolve.assert_not_called()
+        transition.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+        self.assertEqual(result["receipt"], receipt)
+        self.assertEqual(result["role"], "builder")
+        self.assertEqual(result["stage"], "RUN builder")
+
     def test_contract_block_and_resume_require_exact_terminal_receipt(self) -> None:
         self.args.lease = "d" * 64
         issued = STATE.issue(self.args, "RUN planner")
@@ -472,8 +535,15 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(
                 STATE.contract_repair_stage(self.args), ("RUN planner", True)
             )
-        with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
-            self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
+        STATE.write_atomic(STATE.repair_path(self.args), record)
+        with mock.patch.object(
+            STATE, "resolve", return_value="RUN builder"
+        ) as resolve:
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args),
+                ("RUN builder", False),
+            )
+        resolve.assert_called_once_with(self.args)
 
     def test_dependency_conflict_routes_exactly_one_new_test_author(self) -> None:
         secret = b"k" * 32
@@ -892,7 +962,8 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.ensure_dependency_conflict_repair(self.args)
             self.assertEqual(
-                STATE.contract_repair_stage(self.args), (None, False)
+                STATE.contract_repair_stage(self.args),
+                ("RUN builder", False),
             )
         self.assertFalse(STATE.repair_path(self.args).exists())
         receipt_path.unlink()
@@ -1171,7 +1242,10 @@ class StateMachineTest(unittest.TestCase):
         STATE.write_atomic(passports / "T-110.json", passport)
 
         with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
-            self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args),
+                ("RUN builder", False),
+            )
         self.assertFalse(active.exists())
         archived = list((active.parent / "completed").glob("T-110-*.json"))
         self.assertEqual(len(archived), 1)
