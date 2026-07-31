@@ -468,6 +468,72 @@ def migrated_contract_block(
     return passport, matches[0]
 
 
+def materialized_contract_block(
+    args: argparse.Namespace, receipt: dict[str, Any], role: str
+) -> bool:
+    try:
+        passport, _ = authenticated_passport(args)
+    except (OSError, ValueError, StateError):
+        return False
+    passport_head = passport.get("head_sha", "")
+    receipt_head = receipt.get("head_sha", "")
+    charges = passport.get("charge_records")
+    completed = passport.get("completed_role_evidence")
+    if (
+        passport.get("ticket") != args.ticket
+        or passport.get("branch") != receipt.get("branch")
+        or passport.get("project") != args.project
+        or passport.get("contract_version") != args.contract_version
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("current_state") != "Blocked-Escalated"
+        or passport.get("current_stage") != receipt.get("stage")
+        or passport.get("transition_receipt_sha256")
+        != receipt.get("receipt_sha256")
+        or not SHA.fullmatch(passport_head)
+        or not SHA.fullmatch(receipt_head)
+        or not isinstance(charges, list)
+        or not isinstance(completed, list)
+        or current_state(args.workdir, args.ticket) != "Blocked-Escalated"
+        or ticket_field(args.workdir, args.ticket, "Resume-State")
+        != TARGET_STATE[role]
+    ):
+        return False
+    matches = [
+        item for item in charges
+        if isinstance(item, dict)
+        and item.get("transition_receipt_sha256")
+        == receipt.get("receipt_sha256")
+        and item.get("factory_sha") == args.factory_sha
+        and item.get("contract_version") == args.contract_version
+        and item.get("role") == role
+        and item.get("head_before") == receipt_head
+    ]
+    if len(matches) != 1 or any(
+        isinstance(item, dict)
+        and item.get("transition_receipt_sha256")
+        == receipt.get("receipt_sha256")
+        for item in completed
+    ):
+        return False
+    for ancestor, descendant in (
+        (receipt_head, passport_head),
+        (passport_head, git(args.workdir, "rev-parse", "HEAD")),
+    ):
+        result = subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base",
+                "--is-ancestor", ancestor, descendant,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return False
+    return True
+
+
 def contract_blocked_receipt(args: argparse.Namespace) -> str:
     value = safe_receipt(args.state_dir / f"{args.ticket}.json")
     origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
@@ -476,6 +542,16 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
     passport, charge = migrated_contract_block(args, value)
     migrated = passport is not None
     if migrated and args.action == "block":
+        require_current_lease(args)
+    recovered_lease = (
+        args.action == "block"
+        and not migrated
+        and value.get("lease_sha256")
+        != hashlib.sha256(args.lease.encode()).hexdigest()
+        and role in CONTRACT_BLOCK_ROLES
+        and materialized_contract_block(args, value, role)
+    )
+    if recovered_lease:
         require_current_lease(args)
     if (
         not origin
@@ -497,6 +573,7 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
             and not migrated
             and value.get("lease_sha256")
             != hashlib.sha256(args.lease.encode()).hexdigest()
+            and not recovered_lease
         )
     ):
         raise StateError("contract blocker receipt is invalid")

@@ -3032,6 +3032,53 @@ resolves `RUN builder` through the repaired one-resolution path. Protected
 GitHub CI owns the complete regression; live closure requires T-094 to resume
 Builder from preserved evidence after the successor cutover.
 
+## FI-20260730-119 — Lease rotation rejected an already-materialized blocker
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: contract-blocker restart recovery
+Owner: Factory
+First seen: Nysa generation 43 T-094 Test-author resume
+Impact: T-094's Builder contract blocker had already been authenticated,
+charged, committed as `Blocked-Escalated`, exported into its signed passport,
+and parked without replay. After the one-shot controller restarted, normal
+lease recovery replaced the expired ticket lease. Recovery then retried the
+completed `block` transition using the new lease and emitted
+`contract blocker receipt is invalid` on every reconciliation. No provider
+call or additional charge occurred, but the exact Test-author repair could not
+start and T-093/T-100 remained in their declared dependency waits.
+Evidence: consumed Builder receipt
+`9b0e39dcfbb846af63cbefad61d4aa45fa08e4c616d8bc993db5f4cc8ee07b38`
+and run `1785465865-25540` produced blocked head `0532469...`, an authenticated
+passport with state `Blocked-Escalated`, cumulative charge $80, and the same
+receipt and role stage. The operator-only commit `2ef4e82...` appended exactly
+`OPERATOR RESUME: test-author`; Linear already exposed the recorded Building
+resume state. Authenticated controller events then showed lease recovery
+followed by repeated receipt rejection before any role attempt.
+Root cause: initial block materialization is correctly authorized by the
+receipt's exact lease. The controller restart correctly acquires a fresh
+ticket lease, but its recovery path calls `block` again before `resume`.
+Same-release receipt validation treated that idempotent replay as a new block
+and required the historical lease, whose raw value is intentionally not
+recoverable from its stored digest.
+Smallest repair: keep the historical lease mandatory for the initial block.
+After lease rotation, permit only the already-materialized block to be
+revalidated when the authenticated passport binds the exact project, ticket,
+branch, Factory, contract, receipt, unique blocker charge, role stage,
+`Blocked-Escalated` state, exact resume target, and
+receipt-head → passport-head → current-head ancestry, with no successful role
+evidence for the blocked receipt. Any missing, tampered, ambiguous, unblocked,
+or unrelated evidence still rejects the new lease.
+Validation: a focused state-machine regression creates a consumed Planner
+blocker, materializes the blocked commit and authenticated passport, rotates
+the lease, and proves exact idempotent validation succeeds. Changing only the
+authenticated passport state back to Planning is rejected. A read-only run of
+the candidate validator against T-094's exact parked worktree, live
+authenticated passport, blocker receipt, and rotated current lease crosses the
+former boundary and returns the historical Builder owner. Protected GitHub CI
+owns the complete regression; live closure requires the successor to
+authenticate T-094's existing block and start exactly one Test-author repair.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
