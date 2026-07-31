@@ -450,8 +450,15 @@ terminal manifest, one completed-role record, and one charge all bind that
 same receipt, role input, Factory release, run, output digest, and current
 descendant head. The terminal passport must name the exact input-passport file
 digest carried by the receipt, and the charge must contain a canonical
-nonnegative micro-USD amount. Missing or duplicate evidence remains fail
-closed and never causes the successful role to be replayed.
+nonnegative micro-USD amount. If that terminal passport is itself migrated
+before the repair is retired, one unique second v2 suffix may bridge its
+descendant output head to the current Factory. The first post-success edge
+must preserve the pre-success Factory, protected base, and route identity; the
+suffix must remain contiguous through the exact current Factory, head, base,
+and route, and its final source-passport digests must equal the current
+passport's parent digests. Missing, duplicate, disconnected, or altered
+evidence remains fail closed and never causes the successful role to be
+replayed.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket
