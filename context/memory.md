@@ -2152,3 +2152,14 @@ Planning and blocked before submission. The installed launcher now passes the
 stage returned by exact receipt verification into its empty helper
 environment. Preflight accepts a later coarse state only for the exact
 verified `FIX planner` stage; normal Planner work still requires Planning.
+
+## 2026-07-30 — Decision 164: Repeated sealed-release checks use immutable fixtures
+
+Category: Incident
+
+The first protected Linux run of the Planner-repair regression showed that its
+copied release was writable even though the test treated it as sealed. A first
+preflight could therefore add platform-specific Python bytecode and make the
+second provenance check fail correctly. Repeated release invocations now use a
+read-only fixture matching installation; the separate forged-tree, physical
+drift, partial provenance, and Git-metadata refusal cases remain unchanged.
