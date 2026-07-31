@@ -2109,3 +2109,18 @@ remains in current branch ancestry. Older same-role directives outside that
 repair window remain immutable history and do not block recovery. Zero or
 multiple in-window commits, merge commits, malformed additions, multi-path
 changes, or unrelated head drift remain invalid.
+
+## 2026-07-30 — Decision 161: Repeated blockers hand off through one authenticated lifecycle
+
+Category: Incident
+
+A later contract blocker may belong to an earlier role than the ticket's
+visible coarse state. The operator replaces the one active repair-owner
+directive in an exact ticket-only commit bound to the authenticated passport
+window. The coarse state does not move backward; the signed repair record
+authorizes only the earlier owner, and deterministic stages catch up after its
+success. A completed signed repair authenticates the still-visible directive
+as historical. Missing, mismatched, tampered, multi-directive, multi-path,
+merge, or unrelated histories remain invalid. Every repair in this family
+must be tested as a full sequence through the first normal downstream stage,
+not only as isolated transition boundaries.

@@ -418,22 +418,25 @@ expired exact-ticket lease after the block was materialized. Replaying that
 already-completed block is idempotent only when the authenticated passport
 binds the same receipt, charge, role stage, blocked state, resume target, and
 receipt-to-passport-to-current-head ancestry; otherwise the rotated lease
-cannot authorize the historical transition. An operator may
-append one exact repair-owner directive in the ticket file without changing
-any other path.
+cannot authorize the historical transition. An operator may append the first
+exact repair-owner directive, or replace the one visible directive when a
+later blocker belongs to a different owner, without changing any other path.
 The state machine selects the one directive commit whose single parent is an
 authenticated head in the current passport or its v2 migration history and
 whose commit remains in current branch ancestry. Older same-role directives
 whose parents are outside that authenticated repair window remain historical
 evidence and do not collide with the current repair. Zero or multiple
-in-window directive commits, merge commits, malformed additions, multi-path
-changes, or unrelated head drift fail closed. The state machine persists an
-HMAC-bound repair record for the unique commit and runs only the named owner.
-If the owner
-precedes the visible coarse state, ordinary deterministic stages may catch up
-under that record without adding a general backward state transition. More
-than one successful owner run fails closed. Without the directive, the
-original blocked role remains the only valid owner.
+in-window directive commits, more than one visible directive, merge commits,
+malformed additions or replacements, multi-path changes, or unrelated head
+drift fail closed. The state machine persists an HMAC-bound repair record for
+the unique commit and runs only the named owner. If the owner precedes the
+visible coarse state, that state remains unchanged while the authenticated
+repair receipt runs the earlier role; ordinary deterministic stages then catch
+up without adding a general backward state transition. After catch-up, the
+signed completed-repair archive authenticates the still-visible historical
+directive so it cannot be mistaken for a new repair. More than one successful
+owner run fails closed. Without the directive, the original blocked role
+remains the only valid owner.
 An unresolved dependency may temporarily replace the visible transition
 receipt without discarding that repair record. After the dependency and any
 Factory upgrade resolve, the named owner reopens only when the record's signed

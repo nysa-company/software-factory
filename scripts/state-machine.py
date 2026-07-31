@@ -219,6 +219,45 @@ def load_repair(args: argparse.Namespace, secret: bytes) -> dict[str, Any] | Non
     return load_signed_repair(path, secret)
 
 
+def completed_repair_matches_directive(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    secret: bytes,
+    role: str,
+) -> bool:
+    directory = repair_path(args).parent / "completed"
+    if not directory.exists() and not directory.is_symlink():
+        return False
+    info = directory.lstat()
+    if (
+        directory.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise StateError("completed contract repair directory is unsafe")
+    matched = False
+    for path in sorted(directory.glob(f"{args.ticket}-*.json")):
+        record = load_signed_repair(path, secret)
+        digest = record.get("repair_sha256", "")
+        if path.name != f"{args.ticket}-{digest}.json":
+            raise StateError("completed contract repair record conflicts")
+        if (
+            record.get("schema") != REPAIR_SCHEMA
+            or record.get("ticket") != args.ticket
+            or record.get("branch") != passport.get("branch")
+            or record.get("repair_role")
+            not in {"planner", "spec-linter", "test-author", "builder"}
+            or not SHA.fullmatch(record.get("head_sha", ""))
+        ):
+            raise StateError("completed contract repair record is invalid")
+        if record["repair_role"] != role:
+            continue
+        if branch_contains(args, record["head_sha"]):
+            matched = True
+    return matched
+
+
 def write_atomic(path: Path, value: dict[str, Any]) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -689,7 +728,23 @@ def operator_resume_role(
     commit, parent = candidates[0]
     before = git(args.workdir, "show", f"{parent}:{relative}") + "\n"
     after = git(args.workdir, "show", f"{commit}:{relative}") + "\n"
-    expected = before.rstrip("\n") + f"\n\n{directive}\n"
+    prior_directives = re.findall(
+        r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
+        before,
+        re.M,
+    )
+    if not prior_directives:
+        expected = before.rstrip("\n") + f"\n\n{directive}\n"
+    elif len(prior_directives) == 1 and prior_directives[0] != repair_role:
+        expected = re.sub(
+            r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
+            directive,
+            before,
+            count=1,
+            flags=re.M,
+        )
+    else:
+        raise StateError("contract repair operator directive is invalid")
     changed = git(args.workdir, "diff", "--name-only", f"{parent}..{commit}").splitlines()
     current_head = git(args.workdir, "rev-parse", "HEAD")
     if (
@@ -1935,7 +1990,20 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     record = load_repair(args, secret)
     if record is None:
         if has_directive:
-            raise StateError("operator resume lacks authenticated contract repair state")
+            directives = re.findall(
+                r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
+                text,
+                re.M,
+            )
+            if (
+                len(directives) != 1
+                or not completed_repair_matches_directive(
+                    args, passport, secret, directives[0]
+                )
+            ):
+                raise StateError(
+                    "operator resume lacks authenticated contract repair state"
+                )
         return None, False
     owner = record.get("repair_role", "")
     head = record.get("head_sha", "")
@@ -2325,16 +2393,20 @@ def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
         status = "waiting"
     elif state == target:
         repair_target = TARGET_STATE[repair_role]
-        while state != repair_target:
-            if state == "Planning" and repair_target == "Building":
-                transition(args, "Building")
-            elif state == "Building" and repair_target == "Review":
-                transition(args, "Review")
-            elif state == "Review" and repair_target == "Building":
-                transition(args, "Building")
-            else:
-                raise StateError("contract repair cannot enter its owning state")
-            state = current_state(args.workdir, args.ticket)
+        order = {"Planning": 1, "Building": 2, "Review": 3}
+        if order[repair_target] >= order[state]:
+            while state != repair_target:
+                if state == "Planning" and repair_target == "Building":
+                    transition(args, "Building")
+                elif state == "Building" and repair_target == "Review":
+                    transition(args, "Review")
+                elif state == "Review" and repair_target == "Building":
+                    transition(args, "Building")
+                else:
+                    raise StateError(
+                        "contract repair cannot enter its owning state"
+                    )
+                state = current_state(args.workdir, args.ticket)
         migrate_passport(args)
         passport, secret = authenticated_passport(args)
         head = git(args.workdir, "rev-parse", "HEAD")

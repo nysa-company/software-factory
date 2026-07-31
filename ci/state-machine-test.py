@@ -582,6 +582,45 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.operator_resume_role(self.args, passport, "builder")
 
+    def test_operator_resume_replaces_one_prior_owner_exactly(self) -> None:
+        path = self.product / "factory/tickets/T-110.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOPERATOR RESUME: test-author\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "authorize prior test repair", cwd=self.product)
+        blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": blocked_head,
+            "ticket": "T-110",
+        }
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "OPERATOR RESUME: test-author",
+                "OPERATOR RESUME: planner",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "route contract repair to planner", cwd=self.product)
+
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "test-author"),
+            "planner",
+        )
+
+        (self.product / "unexpected").write_text("drift\n", encoding="utf-8")
+        run("git", "add", "unexpected", cwd=self.product)
+        run("git", "commit", "-qm", "add unrelated drift", cwd=self.product)
+        with self.assertRaisesRegex(
+            STATE.StateError, "operator directive is invalid"
+        ):
+            STATE.operator_resume_role(self.args, passport, "test-author")
+
     def test_operator_resume_uses_current_passport_repair_window(self) -> None:
         path = self.product / "factory/tickets/T-110.md"
         original = path.read_text(encoding="utf-8")
@@ -663,6 +702,189 @@ class StateMachineTest(unittest.TestCase):
             STATE.StateError, "operator directive is invalid"
         ):
             STATE.operator_resume_role(self.args, passport, "builder")
+
+    def test_backward_contract_repair_keeps_coarse_state_and_runs_owner(
+        self,
+    ) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\nResume-State: Building\n",
+            encoding="utf-8",
+        )
+        head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "passport_sha256": "e" * 64,
+            "ticket": "T-110",
+        }
+        self.args.receipt = "b" * 64
+        with (
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="test-author"
+            ),
+            mock.patch.object(
+                STATE,
+                "authenticated_passport",
+                return_value=(passport, b"k" * 32),
+            ),
+            mock.patch.object(
+                STATE, "operator_resume_role", return_value="planner"
+            ),
+            mock.patch.object(STATE, "current_state", return_value="Building"),
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.resume_transition(self.args)
+
+        transition.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["repair_role"], "planner")
+        self.assertEqual(
+            STATE.load_repair(self.args, b"k" * 32)["repair_role"],
+            "planner",
+        )
+
+    def test_completed_repair_authenticates_visible_historical_directive(
+        self,
+    ) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOPERATOR RESUME: planner\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "preserve consumed planner directive", cwd=self.product)
+        head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        body = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        completed = STATE.repair_path(self.args).parent / "completed"
+        completed.mkdir(mode=0o700)
+        record = STATE.signed_repair({
+            "blocked_receipt": "b" * 64,
+            "blocked_role": "test-author",
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": head,
+            "head_tree": run(
+                "git", "rev-parse", "HEAD^{tree}", cwd=self.product
+            ),
+            "passport_sha256": passport["passport_sha256"],
+            "repair_role": "planner",
+            "schema": STATE.REPAIR_SCHEMA,
+            "ticket": "T-110",
+        }, secret)
+        STATE.write_atomic(
+            completed / f"T-110-{record['repair_sha256']}.json",
+            record,
+        )
+
+        self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
+
+    def test_repeated_blocker_hands_back_to_earlier_owner_then_continues(
+        self,
+    ) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\nResume-State: Building\n\n"
+            "OPERATOR RESUME: test-author\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "materialize repeated test-author blocker", cwd=self.product)
+        blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        body = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": blocked_head,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "OPERATOR RESUME: test-author",
+                "OPERATOR RESUME: planner",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "route repeated blocker to planner", cwd=self.product)
+        planner_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        self.args.action = "resume"
+        self.args.receipt = "b" * 64
+        with (
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="test-author"
+            ),
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.resume_transition(self.args)
+        transition.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+        self.assertEqual(result["repair_role"], "planner")
+        self.assertEqual(
+            STATE.contract_repair_stage(self.args),
+            ("FIX planner", True),
+        )
+
+        (self.product / "factory/runs/planner-repair.meta").write_text(
+            "run_id=planner-repair\n"
+            "phase=completed\n"
+            "accounting_state=completed\n"
+            "ticket=T-110\n"
+            "role=planner\n"
+            "exit_status=0\n"
+            "role_exit=ok\n"
+            f"role_head_before={planner_head}\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            STATE, "resolve", return_value="RUN spec-linter"
+        ):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args),
+                ("RUN spec-linter", True),
+            )
+        self.assertEqual(
+            STATE.contract_repair_stage(self.args),
+            (None, False),
+        )
 
     def test_authenticated_contract_repair_is_one_success_boundary(self) -> None:
         secret = b"k" * 32
