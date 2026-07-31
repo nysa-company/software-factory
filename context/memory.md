@@ -2084,3 +2084,16 @@ unique blocker charge, role stage, blocked state, exact resume target, and
 receipt-to-passport-to-current-head ancestry, with no successful evidence for
 the blocked receipt. Missing, tampered, ambiguous, unblocked, or unrelated
 evidence remains invalid.
+
+## 2026-07-30 — Decision 159: In-flight cutover preserves blocked tickets
+
+Category: Incident
+
+A Factory defect may require a successor while a ticket is correctly
+`Blocked-Escalated`. Protected in-flight authorization and passport migration
+now accept that exact state alongside the existing nonterminal set, provided
+the repository, protected authorization, source/target Factory, ticket,
+branch, remote head, route journal, and state all match. Cutover preserves the
+blocked state and evidence; it does not resume the ticket. Backlog, Canceled,
+Done, unknown, partial, extra, and state-drifted entries remain invalid, and
+the ordinary maintenance, active-run, and lease drain barriers still apply.

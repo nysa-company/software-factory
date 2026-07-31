@@ -36,6 +36,7 @@ MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
 LINEAGE_SCHEMA = "nysa.software-factory.ticket-passport-lineage-authorization/v1"
 INFLIGHT_STATES = {
     "Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved",
+    "Blocked-Escalated",
 }
 
 

@@ -669,6 +669,15 @@ class TicketPassportTest(unittest.TestCase):
             PASSPORT.export(self.passport_args, secret)
 
     def test_protected_inflight_authorization_allows_exact_rewrite(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "State: Planning", "State: Blocked-Escalated"
+            ) + "\nResume-State: Planning\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "materialize blocked ticket", cwd=self.product)
         secret = PASSPORT.key(self.state_dir)
         receipt = STATE.issue(self.state_args, "RUN planner")
         self.state_args.receipt = receipt["receipt_sha256"]
@@ -705,7 +714,7 @@ class TicketPassportTest(unittest.TestCase):
                 "tickets": [{
                     "branch": "ticket/T-110",
                     "head": rewritten,
-                    "state": "Planning",
+                    "state": "Blocked-Escalated",
                     "ticket": "T-110",
                 }],
             }, sort_keys=True) + "\n",
@@ -720,6 +729,7 @@ class TicketPassportTest(unittest.TestCase):
         self.assertEqual(migrated["head_sha"], rewritten)
         self.assertEqual(migrated["parent_digest"], previous["passport_sha256"])
         self.assertEqual(migrated["factory_sha"], "b" * 40)
+        self.assertEqual(migrated["current_state"], "Blocked-Escalated")
 
     def test_protected_same_release_test_rewrite_is_exact_and_charged(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"

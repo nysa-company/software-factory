@@ -555,12 +555,14 @@ v1 schema binds the product `repository`, one `source_kit_sha`, the exact
 `target_kit_sha`, and a sorted nonempty `tickets` list whose entries contain
 only `ticket`, exact ticket `branch`, remote `head`, and current `state`.
 Activation accepts only Ready, Planning, Building, Review, Awaiting Approval,
-or Approved remote ticket heads that match every authorized field, and refuses
-an unused or extra entry. Every exact head must also contain either a v1 ticket
-route plan or a v2 route journal whose ticket and Kit-SHA match the
-authorization and whose complete history passes the candidate's migration
-validator. The normal maintenance, zero-active-run, and zero-dispatcher-lease
-barriers still apply.
+Approved, or Blocked-Escalated remote ticket heads that match every authorized
+field, and refuses an unused or extra entry. Blocked-Escalated is admitted only
+as the exact preserved ticket state; activation and route migration do not
+resume it or reinterpret its evidence. Every exact head must also contain
+either a v1 ticket route plan or a v2 route journal whose ticket and Kit-SHA
+match the authorization and whose complete history passes the candidate's
+migration validator. The normal maintenance, zero-active-run, and
+zero-dispatcher-lease barriers still apply.
 Qualification upgrades bind liveness to the non-overlapping controller lock
 and active-run markers. A terminal orphaned `running` claim remains portable
 state for the successor controller rather than an upgrade deadlock.

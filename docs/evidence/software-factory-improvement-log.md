@@ -3079,6 +3079,46 @@ former boundary and returns the historical Builder owner. Protected GitHub CI
 owns the complete regression; live closure requires the successor to
 authenticate T-094's existing block and start exactly one Test-author repair.
 
+## FI-20260730-120 — Activation excluded preserved blocked tickets
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: in-flight release cutover
+Owner: Factory
+First seen: Nysa generation 43 successor activation
+Impact: Factory `25c73e3...` installed successfully after all protected
+release checks passed, but its exact in-flight authorization could not name
+T-094 because the ticket was correctly committed as `Blocked-Escalated`.
+Omitting T-094 would make the authorization partial, and changing its state
+before migration would invalidate the authenticated blocker passport that the
+successor was built to recover. No product certification, activation, route
+migration, provider call, or additional charge occurred.
+Evidence: protected remote ticket heads were T-093 Building, T-094
+Blocked-Escalated, T-096 Planning, and T-100 Building. The activation
+validator accepted Ready, Planning, Building, Review, Awaiting Approval, and
+Approved, while the passport's protected in-flight rewrite validator repeated
+the same closed set. Controller recovery, development-lane export, and blocker
+resume already treat Blocked-Escalated as a preserved nonterminal checkpoint.
+Root cause: the protected cutover schema was introduced before blocked-ticket
+upgrade recovery and its duplicated state allowlists were not extended when
+that recovery became a supported invariant. The activation boundary and the
+subsequent passport migration therefore disagreed with the controller.
+Smallest repair: admit only the exact canonical `Blocked-Escalated` value in
+both in-flight validators. Preserve it byte-for-byte through activation and
+route/passport migration; do not use cutover as a resume action. Existing
+exact repository, protected-main authorization, source/target Factory, branch,
+head, state, route journal, maintenance, active-run, and dispatcher-lease
+checks remain mandatory. Backlog, Canceled, Done, unknown, partial, extra, or
+state-drifted entries remain invalid.
+Validation: the focused passport test now migrates one authenticated blocked
+passport through an exact protected authorization. The protected release test
+uses a blocked remote ticket with `Resume-State: Planning`, proves activation
+accepts its exact tuple, then proves the sealed route migration preserves
+Blocked-Escalated rather than resuming it. Protected GitHub CI owns the full
+activation/install regression. Live closure requires the successor to migrate
+T-094 while it remains blocked, then let the deterministic state machine
+consume the already-present operator resume separately.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
