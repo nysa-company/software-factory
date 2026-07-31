@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import importlib.util
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import json
 
 
@@ -54,6 +57,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "scripts/provider-coordinator.py",
             self.factory / "scripts/provider-coordinator.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/ticket-passport.py",
+            self.factory / "scripts/ticket-passport.py",
+        )
+        (self.factory / "scripts/lib").mkdir()
+        shutil.copy2(
+            ROOT / "scripts/lib/role_output.py",
+            self.factory / "scripts/lib/role_output.py",
         )
         (self.factory / "scripts/model-routing/catalog-v1.json").write_text(
             json.dumps({
@@ -177,6 +189,96 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 ))
         finally:
             shutil.rmtree(root)
+
+    def test_takeover_reuses_authenticated_live_state_without_copying_it(self) -> None:
+        source_sha = "b" * 40
+        tickets = ["T-094", "T-100", "T-093"]
+        (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": self.sha,
+            "generation": 1,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "source_factory_sha": source_sha,
+            "target_done": 3,
+            "tickets": tickets,
+        }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        run(self.product, "git", "add", "factory/QUALIFICATION.json")
+        run(self.product, "git", "commit", "-qm", "authorize qualification")
+
+        account = (self.workspace / "account").resolve()
+        provider = account / ".factory"
+        kits = provider / "kits"
+        source = kits / "projects/relay"
+        state = source / "controller"
+        passports = state / "passports"
+        for path in (
+            provider, kits, kits / "projects", source, state, passports,
+            provider / "accounting", provider / "cli-runtimes",
+            provider / "provider-attempts", provider / "provider-apply-locks",
+        ):
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.chmod(0o700)
+        ENVIRONMENT.write(source / "active.json", {
+            "contract_version": "1.8.0",
+            "kit_sha": source_sha,
+            "kit_tree": "c" * 40,
+            "product_path": str(self.product.resolve()),
+            "project": "relay",
+        })
+        secret = b"p" * 32
+        key = state / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        for ticket in tickets:
+            body = {
+                "factory_sha": source_sha,
+                "project": "relay",
+                "schema": "nysa.software-factory.ticket-passport/v1",
+                "ticket": ticket,
+            }
+            authenticated = dict(body)
+            authenticated["authentication_sha256"] = hmac.new(
+                secret, ENVIRONMENT.canonical(body), hashlib.sha256
+            ).hexdigest()
+            authenticated["passport_sha256"] = hashlib.sha256(
+                ENVIRONMENT.canonical(authenticated)
+            ).hexdigest()
+            path = passports / f"{ticket}.json"
+            path.write_bytes(ENVIRONMENT.canonical(authenticated))
+            path.chmod(0o600)
+        policy, activation, _ = ENVIRONMENT.provider_configuration(self.factory)
+        ENVIRONMENT.write(provider / "provider-policy.json", policy)
+        ENVIRONMENT.write(provider / "isolated-v1.enabled", activation)
+        configuration_lock = provider / "provider-configuration.lock"
+        configuration_lock.touch(mode=0o600)
+        configuration_lock.chmod(0o600)
+        run(
+            provider,
+            "/usr/bin/python3", str(self.factory / "scripts/provider-coordinator.py"),
+            "--db", str(provider / "accounting/state-v2.sqlite3"), "status",
+        )
+
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            product_root=self.product,
+            project="relay",
+            root=self.root,
+            takeover_project="relay",
+        )
+        with mock.patch.object(Path, "home", return_value=account):
+            value = ENVIRONMENT.prepare(args)
+
+        active = json.loads((self.root / "projects/relay/active.json").read_text())
+        self.assertEqual(value["qualification_mode"], "takeover")
+        self.assertEqual(active["qualification_mode"], "takeover")
+        self.assertEqual(active["takeover_kits_root"], str(kits))
+        self.assertFalse((self.root / "provider").exists())
+        self.assertFalse((self.root / "projects/relay/controller").exists())
 
     def test_upgrades_release_without_replacing_controller_state(self) -> None:
         args = argparse.Namespace(

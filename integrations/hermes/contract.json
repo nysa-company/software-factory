@@ -96,7 +96,7 @@
           "--json"
         ],
         "output_schema": "nysa.software-factory.qualification-report/v1",
-        "authority": "immutable exact reduction of authenticated passports, run charges, controller concurrency history, protected checks, and GitHub merge truth"
+        "authority": "immutable exact reduction of an acyclic three-ticket ordered cohort or four-ticket concurrent cohort across authenticated passports, source-to-candidate migration, cumulative and candidate-only charges, controller history, protected checks, and GitHub merge truth"
       },
       "dispatch-plan": {
         "minimum_contract_version": "1.6.0",

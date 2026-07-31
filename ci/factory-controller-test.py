@@ -364,10 +364,13 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_three_ticket_qualification_parks_an_excluded_claim(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8"
+        )
         (self.product / "factory/QUALIFICATION.json").write_text(
             json.dumps({
                 "budget_usd": "100.000000",
-                "capacity": 4,
+                "capacity": 3,
                 "contract_version": "1.8.0",
                 "factory_sha": "a" * 40,
                 "generation": 2,
@@ -412,6 +415,32 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(seen, tickets)
         self.assertEqual(withdrawn, ["T-113"])
         self.assertTrue(controller.claim_path("T-113").exists())
+
+    def test_three_ticket_successor_qualification_accepts_live_envelope(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 113)]
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8"
+        )
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "300.000000",
+                "capacity": 3,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 1,
+                "mode": "successor",
+                "per_run_budget_usd": "10.000000",
+                "per_ticket_budget_usd": "100.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "source_factory_sha": "b" * 40,
+                "target_done": 3,
+                "tickets": tickets,
+            }),
+            encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        self.assertEqual(controller.qualification["mode"], "successor")
+        self.assertEqual(controller.qualification["tickets"], tickets)
 
     def test_preflight_runs_once_before_planner_only(self) -> None:
         controller = CONTROL.Controller(self.args)

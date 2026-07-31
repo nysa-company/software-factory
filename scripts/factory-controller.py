@@ -216,6 +216,7 @@ class Controller:
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("schema") != QUALIFICATION_SCHEMA:
             return None
+        successor = value.get("mode") == "successor"
         tickets = value.get("tickets")
         target_done = value.get("target_done")
         if (
@@ -223,14 +224,33 @@ class Controller:
                 "budget_usd", "capacity", "contract_version", "factory_sha",
                 "generation", "per_run_budget_usd", "per_ticket_budget_usd",
                 "schema", "target_done", "tickets",
-            }
+            } | ({"mode", "source_factory_sha"} if successor else set())
             or value.get("contract_version") != "1.8.0"
-            or value.get("capacity") != 4
-            or target_done not in {3, 4}
+            or value.get("capacity") not in (3, 4)
+            or value.get("capacity") != self.capacity
+            or target_done not in (3, 4)
+            or target_done > value.get("capacity")
             or value.get("factory_sha") != self.release_path.name
-            or value.get("budget_usd") != "100.000000"
-            or value.get("per_ticket_budget_usd") != "25.000000"
-            or value.get("per_run_budget_usd") != "2.000000"
+            or (
+                successor
+                and (
+                    target_done != 3
+                    or value.get("capacity") != 3
+                    or not SHA.fullmatch(value.get("source_factory_sha", ""))
+                    or value["source_factory_sha"] == self.release_path.name
+                    or value.get("budget_usd") != "300.000000"
+                    or value.get("per_ticket_budget_usd") != "100.000000"
+                    or value.get("per_run_budget_usd") != "10.000000"
+                )
+            )
+            or (
+                not successor
+                and (
+                    value.get("budget_usd") != "100.000000"
+                    or value.get("per_ticket_budget_usd") != "25.000000"
+                    or value.get("per_run_budget_usd") != "2.000000"
+                )
+            )
             or not isinstance(value.get("generation"), int)
             or isinstance(value.get("generation"), bool)
             or value["generation"] < 1

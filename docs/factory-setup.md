@@ -80,12 +80,15 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
 - Pre-promotion live qualification uses the owner-only sealed environment
   prepared by `scripts/qualification-environment.py`; it does not replace the
   installed launcher or production activation record. Its generated marker
-  and launcher-supplied root binding are required for isolated subscription
-  provider attempts; never construct that environment by hand. The preparer
+  and launcher-supplied root binding are required for subscription provider
+  attempts; never construct that environment by hand. Use
+  `--takeover-project <project>` only for a protected production-successor
+  manifest after unloading and draining the installed controller. That mode
+  validates and reuses canonical authenticated passports and provider
+  accounting under their existing lock rather than copying them. The preparer
   also fails before admission when the chosen root is too long for Cursor's
-  isolated attempt scratch. After a proven candidate defect, use its
-  `--upgrade` mode only after the product pin advances and all provider actions
-  drain; it preserves the authenticated controller/passport state in place.
+  isolated attempt scratch. `--upgrade` is limited to a fresh isolated
+  qualification; a takeover binds one frozen candidate.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry

@@ -120,15 +120,46 @@ def verify(
     tickets = manifest.get("tickets")
     factory_sha = manifest.get("factory_sha")
     target_done = manifest.get("target_done")
+    successor = manifest.get("mode") == "successor"
+    source_factory_sha = manifest.get("source_factory_sha")
+    manifest_keys = {
+        "budget_usd", "capacity", "contract_version", "factory_sha",
+        "generation", "per_run_budget_usd", "per_ticket_budget_usd",
+        "schema", "target_done", "tickets",
+    } | ({"mode", "source_factory_sha"} if successor else set())
     if (
-        manifest.get("schema") != MANIFEST_SCHEMA
+        set(manifest) != manifest_keys
+        or manifest.get("schema") != MANIFEST_SCHEMA
         or manifest.get("contract_version") != "1.8.0"
-        or manifest.get("capacity") != 4
-        or target_done not in {3, 4}
-        or manifest.get("budget_usd") != "100.000000"
-        or manifest.get("per_ticket_budget_usd") != "25.000000"
-        or manifest.get("per_run_budget_usd") != "2.000000"
+        or manifest.get("capacity") not in (3, 4)
+        or target_done not in (3, 4)
+        or target_done > manifest.get("capacity")
+        or (
+            successor
+            and (
+                target_done != 3
+                or manifest.get("capacity") != 3
+                or not SHA.fullmatch(source_factory_sha or "")
+                or source_factory_sha == factory_sha
+                or manifest.get("budget_usd") != "300.000000"
+                or manifest.get("per_ticket_budget_usd") != "100.000000"
+                or manifest.get("per_run_budget_usd") != "10.000000"
+            )
+        )
+        or (
+            not successor
+            and (
+                "mode" in manifest
+                or "source_factory_sha" in manifest
+                or manifest.get("budget_usd") != "100.000000"
+                or manifest.get("per_ticket_budget_usd") != "25.000000"
+                or manifest.get("per_run_budget_usd") != "2.000000"
+            )
+        )
         or not SHA.fullmatch(factory_sha or "")
+        or not isinstance(manifest.get("generation"), int)
+        or isinstance(manifest.get("generation"), bool)
+        or manifest["generation"] < 1
         or not isinstance(tickets, list)
         or len(tickets) != target_done
         or len(set(tickets)) != target_done
@@ -149,11 +180,14 @@ def verify(
     manifest_digests: set[str] = set()
     ticket_reports = []
     total = 0
+    qualification_total = 0
+    per_run_cap = int(Decimal(manifest["per_run_budget_usd"]) * 1_000_000)
     for ticket in tickets:
         passport = passports[ticket]
         charges = passport.get("charge_records")
         completed = passport.get("completed_role_evidence")
         history = passport.get("factory_release_history")
+        migrations = passport.get("migration_history")
         history_shas = {
             item.get("factory_sha") for item in history or []
             if isinstance(item, dict)
@@ -168,15 +202,25 @@ def verify(
             or not isinstance(history, list)
             or len(history_shas) != len(history)
             or factory_sha not in history_shas
+            or (successor and source_factory_sha not in history_shas)
             or not isinstance(charges, list)
             or not isinstance(completed, list)
+            or (successor and not isinstance(migrations, list))
         ):
             raise QualificationError(f"{ticket} passport is not terminal")
+        if successor and not any(
+            isinstance(item, dict)
+            and item.get("schema") == "nysa.software-factory.ticket-passport-migration/v2"
+            and item.get("from_factory_sha") == source_factory_sha
+            and item.get("to_factory_sha") == factory_sha
+            for item in migrations
+        ):
+            raise QualificationError(f"{ticket} successor migration is missing")
         if (
             any(
                 not isinstance(item.get("charge_micro_usd"), int)
                 or item["charge_micro_usd"] < 0
-                or item["charge_micro_usd"] > 2_000_000
+                or item["charge_micro_usd"] > per_run_cap
                 or item.get("factory_sha") not in history_shas
                 or item.get("contract_version") != "1.8.0"
                 or not DIGEST.fullmatch(item.get("manifest_sha256", ""))
@@ -185,9 +229,13 @@ def verify(
         ):
             raise QualificationError(f"{ticket} charges do not match the envelope")
         charge = sum(item["charge_micro_usd"] for item in charges)
+        qualification_charge = sum(
+            item["charge_micro_usd"]
+            for item in charges if item.get("factory_sha") == factory_sha
+        )
         if (
             charge != passport.get("cumulative_charges_micro_usd")
-            or charge > ticket_caps[ticket]
+            or qualification_charge > ticket_caps[ticket]
         ):
             raise QualificationError(f"{ticket} charges do not match the envelope")
         for item in charges:
@@ -233,15 +281,18 @@ def verify(
         ):
             raise QualificationError(f"{ticket} protected merge truth does not match")
         total += charge
+        qualification_total += qualification_charge
         ticket_reports.append({
             "charge_micro_usd": charge,
+            "qualification_charge_micro_usd": qualification_charge,
             "merge_commit": merge,
             "pr_head": pr["headRefOid"],
             "pr_number": pr["number"],
             "roles": len(completed),
             "ticket": ticket,
         })
-    if total > 100_000_000:
+    qualification_budget = int(Decimal(manifest["budget_usd"]) * 1_000_000)
+    if qualification_total > qualification_budget:
         raise QualificationError("qualification exceeded its total budget")
 
     common_history = set.intersection(*[
@@ -253,7 +304,8 @@ def verify(
     ])
     relevant = [
         item for item in events
-        if item.get("factory_sha") in common_history
+        if item.get("factory_sha") == factory_sha
+        or (not successor and item.get("factory_sha") in common_history)
     ]
     current = [
         item["observed_at_epoch_ns"]
@@ -277,13 +329,19 @@ def verify(
     )
     if (
         not isinstance(boundary_tickets, list)
-        or len(boundary_tickets) != 4
-        or len(set(boundary_tickets)) != 4
+        or len(boundary_tickets) not in (
+            {target_done} if successor else {target_done, 4}
+        )
+        or len(set(boundary_tickets)) != len(boundary_tickets)
         or not set(tickets).issubset(boundary_tickets)
         or len(recoveries) != 1
         or recoveries[0].get("tickets") != boundary_tickets
         or len(relocations) != 1
         or relocations[0].get("ticket") not in boundary_tickets
+        or (
+            len(boundary_tickets) == target_done
+            and relocations[0].get("ticket") not in tickets
+        )
         or {
             item.get("ticket") for item in matching("ticket_complete")
             if item.get("ticket") in tickets
@@ -310,7 +368,7 @@ def verify(
         raise QualificationError("publication serialization proof is incomplete")
     created = [iso(pull_requests[ticket]["createdAt"]) for ticket in tickets]
     merged = [iso(pull_requests[ticket]["mergedAt"]) for ticket in tickets]
-    if max(created) > min(merged):
+    if target_done == 4 and max(created) > min(merged):
         raise QualificationError("target PRs did not validate concurrently")
     return {
         "factory_sha": factory_sha,
@@ -318,6 +376,7 @@ def verify(
         "status": "green",
         "tickets": ticket_reports,
         "total_charge_micro_usd": total,
+        "qualification_charge_micro_usd": qualification_total,
     }
 
 
@@ -333,6 +392,11 @@ def effective_ticket_caps(
     spec.loader.exec_module(module)
     try:
         base = Decimal(manifest["per_ticket_budget_usd"])
+        if manifest.get("mode") == "successor":
+            return {
+                ticket: int(base * 1_000_000)
+                for ticket in manifest["tickets"]
+            }
         state = module.read_runtime_state(product)
         day = datetime.now(timezone.utc).date().isoformat()
         result = {}

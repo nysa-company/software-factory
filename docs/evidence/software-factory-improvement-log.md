@@ -3387,7 +3387,7 @@ without another Planner call.
 
 ## FI-20260731-127 — Separate regressions missed the composite historical state
 
-Status: Shared-path repair and successor-only submission recovery implemented; sealed Contract 1.8 qualification passed; protected CI and live closure pending
+Status: Shared-path repair and successor-only submission recovery implemented; sealed launcher smoke passed; ordered three-ticket qualification, protected CI, and live closure pending
 Priority: P0
 Area: controller recovery and aggregate historical-state verification
 Owner: Factory
@@ -3460,9 +3460,23 @@ typed reason and retains the bounded diagnostic-output digest for new
 occurrences, while only the exact legacy blank-reason/empty-output shape remains
 readable. The composite replay adds this conservative charge before successor
 B, refuses same-release replay, preserves sibling state, and resumes Reviewer
-only after the successor migration. Production parity is proven in the sealed
-Contract 1.8 qualification environment; the separate development product lane
-is used only for shared runner/provider and Nysa application compatibility.
+only after the successor migration. The sealed launcher smoke proved exact
+production code and contract selection but did not authorize or execute the
+Nysa cohort. The attempted promotion stopped before installation, product
+certification, or activation, and its automatic full-main run was cancelled.
+The shared qualification contract now admits an acyclic T-094, T-100, T-093
+cohort at capacity three, requires protected external dependencies, and reduces
+that exact restart, relocation, protected publication, and Done lifecycle
+without making a four-ticket concurrency claim. Full Factory CI and every
+production release transaction remain downstream of a green sealed reducer;
+the separate development product lane remains limited to shared
+runner/provider and application compatibility. Production-successor
+qualification reuses the canonical drained controller passports, route state,
+provider accounting, and reconciliation lock instead of copying or re-signing
+them. Its reducer requires the source-to-candidate migration, validates all
+historical charge identities, and caps/reports only the candidate's additional
+spend. This closes the state-split that would otherwise make a fresh sandbox
+green while leaving the real T-094/T-100/T-093 passports unproved.
 
 ## Maintenance rule
 

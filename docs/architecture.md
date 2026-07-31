@@ -342,17 +342,29 @@ refusals—an old merge no longer in branch history, or a receipt commit no
 longer directly after its merge—route through the same receipt-bound
 protected-base refresh. `Building` is admitted only when the trusted launcher
 supplies one of those exact stages; the refresh performs the ordinary sealed
-reset and never treats stale evidence as valid. The
-qualification reducer reconciles passports, manifests, controller events,
-protected checks, PR heads, merge commits, and protected main. Its closeout
-target is three or four tickets at capacity four. An excluded claim remains
-parked and untouched except that startup withdraws any lease-free publication
-queue record that could block selected tickets; the reducer still requires the
-authenticated four-ticket restart and relocation proof. Historical role,
-charge, publication, and merge evidence keeps its original Factory SHA inside
-each passport's authenticated release history. Ticket totals use only
-currently authenticated ticket-cap overrides, while the cohort remains within
-the fixed qualification budget.
+reset and never treats stale evidence as valid. The qualification reducer
+reconciles passports, manifests, controller events, protected checks, PR heads,
+merge commits, and protected main. A qualification may close either an
+explicitly ordered three-ticket cohort at capacity three or four independent
+tickets at capacity four. Tracked dependencies must form an acyclic graph and
+every dependency outside the cohort must already have protected terminal
+evidence. The three-ticket form proves the exact selected restart, relocation,
+lifecycle, and serialized publication but makes no PR-concurrency claim; the
+four-ticket form additionally requires overlapping PR validation. An earlier
+fresh three-ticket qualification may retain its authenticated four-ticket
+restart boundary; a production-successor cohort requires the exact selected
+three-ticket boundary. An excluded claim remains parked and untouched except that
+startup withdraws any lease-free publication queue record that could block
+selected tickets. Historical role, charge, publication, and merge evidence
+keeps its original Factory SHA inside each passport's authenticated release
+history. A fresh cohort retains the $2 run, $25 ticket, and $100 cohort
+envelope. A production successor binds the installed source Factory SHA,
+reuses canonical controller passports and provider accounting in place, and
+limits only new candidate spend to $10 per run, $100 per ticket, and $300 for
+the cohort. Its reducer requires an authenticated source-to-candidate passport
+migration, validates historical and candidate charges for duplication, and
+reports cumulative and candidate-only totals separately. It never copies or
+re-signs live passports.
 Dependency admission accepts ordinary protected terminal truth. A product
 upgrading from pre-Contract-1.8 history may instead adopt an already-merged
 Backlog dependency through one atomic dependency-fulfillment migration. The
@@ -394,8 +406,19 @@ the same trusted marker used by disposable development environments; provider
 attempts therefore retain per-attempt homes without depending on a ticket's
 cell path. Environment preparation also rejects a root whose worst-case Cursor
 attempt data path would exceed the adapter's isolated-scratch limit.
-If a proven Factory defect requires a successor during qualification, the
-same preparer upgrades that root only while reconciliation and provider work
+For a production-successor qualification, preparation additionally requires
+the canonical product path, the selected tickets' authenticated source
+passports, a drained controller, and the current production provider
+activation. The sealed launcher keeps its candidate release and disposable
+worktrees under the qualification root while resolving controller state,
+route state, and provider accounting to the canonical owner-only roots. The
+installed and sealed launchers therefore contend on the same reconciliation
+lock; once protected product main names the candidate pin, the installed old
+launcher also fails closed on that pin. This is one authoritative ticket
+history, not copied sandbox state. A takeover admits one frozen candidate; a
+semantic change requires a new qualification root and source binding.
+If a proven Factory defect requires a successor during an isolated fresh
+qualification, the same preparer upgrades that root only while reconciliation and provider work
 are drained. It seals the successor, verifies unchanged provider policy,
 atomically advances the activation record, and preserves the controller
 directory, passport key, passports, claims, and cumulative provider ledger.

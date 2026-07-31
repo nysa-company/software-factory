@@ -95,13 +95,21 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   a protected-main exact-head authorization. The old branch must contain only
   canonical pin/Planning controls and an unchanged ticket contract; recovery
   preserves history through a non-force protected-main merge.
-- Contract 1.8 qualification closes three or four target tickets at capacity
-  four with $100 total, authenticated ticket-cap overrides, and $2 per run.
-  Excluded claims remain parked. Its immutable reducer requires passport-bound
-  Factory history, no duplicate successful role/head or charge, the original
-  four-ticket restart and relocation proof, a frozen final candidate,
-  concurrent PR validation, protected checks, exact merged heads, and
-  protected-main Done.
+- Contract 1.8 qualification closes an acyclic ordered three-ticket cohort at
+  capacity three or four independent tickets at capacity four with $100 total,
+  authenticated ticket-cap overrides, and $2 per run. External dependencies
+  require protected terminal evidence and excluded claims remain parked. Both
+  forms require passport-bound Factory history, no duplicate successful
+  role/head or charge, exact restart and relocation, a frozen final candidate,
+  protected checks, exact merged heads, and protected-main Done. Only the
+  four-ticket form claims concurrent PR validation; an earlier fresh
+  three-ticket run may retain its authenticated four-ticket boundary.
+- Contract 1.8 production-successor qualification binds the installed source
+  Factory SHA and reuses canonical controller passports, route state, provider
+  accounting, and reconciliation lock in place. It does not copy or re-sign
+  live state. The reducer preserves cumulative history while capping and
+  reporting new candidate spend at $10 per run, $100 per ticket, and $300 for
+  the three-ticket cohort. Takeover permits one frozen candidate.
 - A deterministic `REFUSE` receipt never migrates the ticket passport. The
   controller first blocks the claim, then owns authenticated cross-release
   passport migration and the durable pre-route pending marker on its next
@@ -2232,3 +2240,23 @@ only the original empty-reason shape additionally requires empty output. The
 sealed Contract 1.8 qualification
 environment—not the local-only development scheduler—is the production-parity
 pre-promotion proof for this recovery.
+
+## 2026-07-31 — Decision 168: Ordered three-ticket qualification precedes promotion
+
+Category: System change
+
+The sealed Contract 1.8 environment, not a launcher smoke or the development
+scheduler, must complete the explicitly authorized T-094, T-100, and T-093
+qualification cohort before final Factory CI, installation, product
+certification, or activation. The controller already accepted a three-ticket
+target, but dispatch still required four independent tickets and the reducer
+still required a four-ticket restart plus concurrent PR creation. Contract 1.8
+now validates an acyclic three-ticket graph at product capacity three, requires
+protected terminal truth for dependencies outside that graph, reduces the
+exact three-ticket restart/relocation/publication lifecycle, and reserves the
+PR-concurrency assertion for a four-ticket qualification. The sealed takeover
+uses the canonical Nysa passports and provider ledger under the shared lock,
+so qualification completes the real preserved lifecycles instead of fresh
+copies. Full Factory CI, installation, Nysa certification, promotion, and
+activation remain downstream of the green reducer. T-096 remains outside the
+cohort and dormant.

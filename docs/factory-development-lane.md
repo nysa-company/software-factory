@@ -18,6 +18,13 @@ environment for every changed production-only boundary and bind its sealed SHA
 and tree to the same candidate used here. Do not copy or reimplement the
 production controller inside this lane.
 
+Keep both tools: the development lane is the fast disposable debugger, while
+the qualification environment is the release gate. For a successor that must
+finish preserved production tickets before promotion, qualification takeover
+uses the canonical drained controller passports and provider accounting in
+place under the shared lock. A fresh development product or copied
+qualification state cannot substitute for that proof.
+
 ## Mock lifecycle
 
 From a clean, committed Software Factory checkout:

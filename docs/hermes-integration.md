@@ -162,18 +162,26 @@ Contract 1.8 caps controller capacity at four. Tickets are identified by
 product, ticket, branch, and authenticated passport; numbered cells are
 disposable worktrees. A 15-second non-overlapping LaunchAgent and terminal-run
 watch call `reconcile`. Four PRs may validate concurrently while one renewable
-publication lease serializes merge requests. `qualification --json` writes an
-immutable green report only when all four passports, charges, restart and
-relocation events, protected checks, PR heads, merge commits, and protected
-main attestations match.
+publication lease serializes merge requests. `qualification --json` accepts
+either an acyclic ordered three-ticket cohort at capacity three or four
+independent tickets at capacity four. Both forms require exact passports,
+charges, restart and relocation events, protected checks, PR heads, merge
+commits, and protected-main attestations. Only the four-ticket form asserts
+overlapping PR validation.
 
 Before promotion, `scripts/qualification-environment.py` may materialize the
 exact clean candidate as a read-only release under an owner-only
 `/private/tmp/nysa-sf-qualification.*` root. Its launcher derives that root
-from its sealed path, isolates controller and worktree state, and retains the
-account's real credential boundary while registering only the qualification
-product clone. It does not install or activate the candidate in the production
-kit registry.
+from its sealed path and retains the account's real credential boundary. The
+default fresh mode isolates controller, provider, and worktree state. An
+explicit `--takeover-project <project>` production-successor mode instead
+requires the canonical product, drained installed controller, current provider
+activation, source Factory binding, and authenticated selected-ticket
+passports. It reuses the canonical controller and provider state in place
+under the same reconciliation lock while keeping the sealed candidate and
+disposable worktrees isolated. It neither copies passports nor installs or
+activates the candidate in the production kit registry. The successor reducer
+caps candidate-only spend while retaining and validating cumulative history.
 
 A repeated pre-provider qualification may retain remote ticket branches from
 the prior candidate. `factory/qualification/preprovider-branch-resets.json`
