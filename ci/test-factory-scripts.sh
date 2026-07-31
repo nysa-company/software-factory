@@ -1894,7 +1894,9 @@ if [[ "$GO_WRITE_STATUS" -eq 125 ]] &&
    grep -q '^go_issued=1$' "$GO_WRITE_META" &&
    grep -q '^task_submitted=0$' "$GO_WRITE_META" &&
    grep -q '^accounting_state=abandoned_conservative$' "$GO_WRITE_META" &&
-   grep -q '^effective_cost=1.00$' "$GO_WRITE_META"; then
+   grep -q '^effective_cost=1.00$' "$GO_WRITE_META" &&
+   grep -q '^terminal_reason_code=adapter_submission_unconfirmed$' \
+     "$GO_WRITE_META"; then
   pass "GO attempt stays charged when marker persistence keeps gate closed"
 else
   fail "GO attempt stays charged when marker persistence keeps gate closed" \

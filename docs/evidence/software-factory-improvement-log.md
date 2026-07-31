@@ -3387,7 +3387,7 @@ without another Planner call.
 
 ## FI-20260731-127 — Separate regressions missed the composite historical state
 
-Status: Shared-path repair and composite replay implemented; protected CI and live closure pending
+Status: Shared-path repair and successor-only submission recovery implemented; sealed Contract 1.8 qualification passed; protected CI and live closure pending
 Priority: P0
 Area: controller recovery and aggregate historical-state verification
 Owner: Factory
@@ -3441,6 +3441,28 @@ head, and publication queue; every mutation fails before a provider call and
 leaves the sibling unchanged. Protected GitHub CI, sealed install,
 certification, activation, rollback, recutover, and live T-094 → T-100 → T-093
 closure remain required before this item can close.
+
+Post-activation evidence extended the same aggregate root. T-094 crossed the
+repaired dependency-refresh and exact Test-author stage once, but run
+`1785516585-60814` exited 125 after durable GO and before the submission marker.
+Its immutable manifest records `task_submitted=0`, empty output, zero progress,
+and one exact $10 conservative charge; the provider process, reservation, and
+lease all drained. The current release correctly retained a blocked claim, but
+had no authenticated way to distinguish a safe successor retry from blind
+same-release replay.
+
+The shared recovery now accepts only that complete terminal shape after an
+actual Factory release change and only when the signed passport contains its
+charge exactly once. The same release, a submitted task, different exit or
+reason, progress, invalid output digest, unequal reservation, missing export,
+or repeated failure under the successor remains blocked. The runner emits a
+typed reason and retains the bounded diagnostic-output digest for new
+occurrences, while only the exact legacy blank-reason/empty-output shape remains
+readable. The composite replay adds this conservative charge before successor
+B, refuses same-release replay, preserves sibling state, and resumes Reviewer
+only after the successor migration. Production parity is proven in the sealed
+Contract 1.8 qualification environment; the separate development product lane
+is used only for shared runner/provider and Nysa application compatibility.
 
 ## Maintenance rule
 

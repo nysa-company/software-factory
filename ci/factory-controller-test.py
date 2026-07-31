@@ -1396,6 +1396,17 @@ class FactoryControllerTest(unittest.TestCase):
             })
             passport["cumulative_charges_micro_usd"] += charge["amount"]
 
+        def append_failure(role: str, label: str) -> None:
+            passport = state["passport"]
+            passport["charges"].append({
+                "amount": 10_000_000,
+                "factory_sha": passport["factory_sha"],
+                "receipt": state["receipt"]["digest"],
+                "role": role,
+                "run_id": f"replay-{label}",
+            })
+            passport["cumulative_charges_micro_usd"] += 10_000_000
+
         seal(state)
         validate(state)
         self.assertEqual(len(state["passport"]["charges"]), 13)
@@ -1654,11 +1665,41 @@ class FactoryControllerTest(unittest.TestCase):
         validate(state)
         trace.append("repair-b-completed-on-successor-a")
 
+        new_receipt("reviewer-submission-unconfirmed")
+        append_failure("reviewer", "reviewer-submission-unconfirmed")
+        failed_submission_factory = state["passport"]["factory_sha"]
+        failed_submission_receipt = state["receipt"]["digest"]
+        seal(state)
+        validate(state)
+        self.assertEqual(failed_submission_factory, successor_a)
+        self.assertEqual(
+            sum(
+                item["receipt"] == failed_submission_receipt
+                for item in state["passport"]["charges"]
+            ),
+            1,
+        )
+        self.assertFalse(any(
+            item["receipt"] == failed_submission_receipt
+            for item in state["passport"]["completed"]
+        ))
+        trace.extend([
+            "post-go-submission-unconfirmed-charged",
+            "same-release-submission-replay-refused",
+        ])
+
         passport_migration(
             "successor-b", factory_sha=successor_b, route_change=True
         )
+        self.assertNotEqual(
+            state["passport"]["factory_sha"], failed_submission_factory
+        )
         self.assertEqual(state["tickets"][sibling], sibling_snapshot)
-        trace.extend(["successor-b-route-passport-migration", "second-restart-no-replay"])
+        trace.extend([
+            "successor-b-route-passport-migration",
+            "successor-release-submission-recovered",
+            "second-restart-no-replay",
+        ])
 
         state["publication"].update(queue=[primary["ticket"]], state="validating")
         trace.append("publication-returned-to-queue-tail")
@@ -1688,7 +1729,7 @@ class FactoryControllerTest(unittest.TestCase):
         final_successes = len(state["passport"]["completed"])
         final_charges = len(state["passport"]["charges"])
         self.assertEqual(final_successes, 11)
-        self.assertEqual(final_charges, 18)
+        self.assertEqual(final_charges, 19)
         self.assertEqual(
             len([call for call in provider_calls if call[0] == primary["ticket"]]),
             5,
@@ -2550,6 +2591,115 @@ class FactoryControllerTest(unittest.TestCase):
                 ("push_failure_recovered",),
             ],
         )
+
+    def test_submission_failure_retries_only_after_release_upgrade(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-submission"
+        cell.mkdir()
+        receipt = "b" * 64
+        run_id = "submission-unconfirmed"
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "c" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "test-author",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        passport = {
+            "charge_records": [{
+                "role": "test-author",
+                "run_id": run_id,
+                "transition_receipt_sha256": receipt,
+            }],
+            "completed_role_evidence": [],
+            "transition_receipt_sha256": receipt,
+        }
+        CONTROL.write(passports / "T-110.json", passport)
+        manifest = self.product / f"factory/runs/{run_id}.meta"
+
+        def write_manifest(
+            kit_sha: str, *, reason: str = "", output: str | None = None
+        ) -> None:
+            output = output or hashlib.sha256(b"").hexdigest()
+            manifest.write_text(
+                f"run_id={run_id}\n"
+                "phase=completed\n"
+                "ticket=T-110\n"
+                "role=test-author\n"
+                "accounting_state=abandoned_conservative\n"
+                "reserved_usd=10.00\n"
+                "go_issued=1\n"
+                "task_submitted=0\n"
+                "turns=0\n"
+                "effective_cost=10.00\n"
+                "exit_status=125\n"
+                "cost_basis=conservative_reservation\n"
+                f"kit_sha={kit_sha}\n"
+                "role_exit=provider_failed\n"
+                f"terminal_reason_code={reason}\n"
+                f"output_sha256={output}\n"
+                "progress_events=\n"
+                f"transition_receipt_sha256={receipt}\n",
+                encoding="utf-8",
+            )
+
+        events = []
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.remote_passport_valid = lambda _claim: True
+        controller.ensure_lease = lambda _claim, _label: None
+        controller.event = (
+            lambda name, *_args, **details: events.append((name, details))
+        )
+
+        write_manifest(self.release.name)
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(events, [])
+
+        write_manifest(
+            "e" * 40,
+            reason="adapter_submission_unconfirmed",
+            output=hashlib.sha256(b"wrapper diagnostic\n").hexdigest(),
+        )
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(
+            events[0][0],
+            "submission_failure_recovered_by_release_upgrade",
+        )
+
+        write_manifest("e" * 40)
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(
+            events,
+            [(
+                "submission_failure_recovered_by_release_upgrade",
+                {"failed_run_id": run_id},
+            )],
+        )
+        self.assertEqual(
+            CONTROL.read(passports / "T-110.json")["charge_records"],
+            passport["charge_records"],
+        )
+
+        claim.update(receipt=receipt, role="test-author", status="blocked")
+        events.clear()
+        write_manifest("e" * 40, reason="unrelated_failure")
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(events, [])
 
     def test_exact_refresh_topology_refusal_runs_attested_refresh(self) -> None:
         controller = CONTROL.Controller(self.args)

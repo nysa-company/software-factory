@@ -2,6 +2,22 @@
 
 Use this macOS-only lane to exercise a committed Software Factory branch against a disposable synthetic product or an explicitly isolated product-source worktree before the normal release process. It does not install, register, certify, or activate a kit. Real lanes use an owner-only root directly under `/private/tmp` so Cursor's bounded attempt-local paths remain below its macOS path limits; the trusted test harness keeps its caller-provided temporary parent.
 
+## Choose the right pre-promotion environment
+
+The development lane and the Contract 1.8 qualification environment are not
+interchangeable:
+
+| Need | Use | What it proves |
+| --- | --- | --- |
+| Fast mock concurrency, credential canaries, or isolated application work | This development lane | The exact committed runner, adapters, provider runtime, and product code work under isolated local controls. |
+| Production controller, passport, receipt, recovery, and release-upgrade behavior | `scripts/qualification-environment.py` | The exact sealed candidate runs through the production Contract 1.8 engine without production installation or certification. |
+
+Development product scheduling is intentionally local-only and is not evidence
+for production orchestration. Before promotion, use the qualification
+environment for every changed production-only boundary and bind its sealed SHA
+and tree to the same candidate used here. Do not copy or reimplement the
+production controller inside this lane.
+
 ## Mock lifecycle
 
 From a clean, committed Software Factory checkout:

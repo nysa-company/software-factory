@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,6 +63,33 @@ def terminate_remaining_members() -> None:
             pass
 
 
+def persist_submission(path: Path, child_pid: int) -> None:
+    descriptor = -1
+    temporary = None
+    try:
+        descriptor, name = tempfile.mkstemp(
+            prefix=f".{path.name}.", dir=path.parent
+        )
+        temporary = Path(name)
+        os.fchmod(descriptor, 0o600)
+        os.write(descriptor, f"pid={child_pid}\n".encode())
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, path)
+        temporary = None
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     if len(sys.argv) < 8:
         raise SystemExit(
@@ -96,23 +124,7 @@ def main() -> int:
         print(f"could not start adapter: {error}", file=sys.stderr)
         return 126
     try:
-        submitted_tmp = submitted_path.with_name(
-            f"{submitted_path.name}.{os.getpid()}.tmp"
-        )
-        descriptor = os.open(
-            submitted_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-        )
-        try:
-            os.write(descriptor, f"pid={child.pid}\n".encode())
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        os.replace(submitted_tmp, submitted_path)
-        directory = os.open(submitted_path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        persist_submission(submitted_path, child.pid)
     except OSError as error:
         print(f"could not persist adapter submission: {error}", file=sys.stderr)
         child.terminate()
@@ -122,10 +134,6 @@ def main() -> int:
             child.kill()
             child.wait()
         terminate_remaining_members()
-        try:
-            submitted_tmp.unlink()
-        except (NameError, FileNotFoundError):
-            pass
         return 125
     return_code = child.wait()
     terminate_remaining_members()

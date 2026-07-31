@@ -2,6 +2,11 @@
 """Focused checks for the pre-submission process-group gate."""
 
 import importlib.util
+import os
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -56,6 +61,50 @@ class ReadinessGateTests(unittest.TestCase):
                 ):
                     MODULE.wait_for_gate(late_gate)
         self.assertEqual(late_gate.calls, 0)
+
+    def test_submission_marker_ignores_a_stale_pid_named_temporary(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            submitted = root / ".run.submitted"
+            stale = submitted.with_name(
+                f"{submitted.name}.{os.getpid()}.tmp"
+            )
+            stale.write_text("stale\n", encoding="utf-8")
+
+            MODULE.persist_submission(submitted, 12345)
+
+            self.assertEqual(submitted.read_text(encoding="utf-8"), "pid=12345\n")
+            self.assertEqual(submitted.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(stale.read_text(encoding="utf-8"), "stale\n")
+
+    def test_published_submission_does_not_interrupt_the_child(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ready = root / "ready"
+            gate = root / "gate"
+            submitted = root / "submitted"
+            completed = root / "completed"
+            process = subprocess.Popen([
+                sys.executable,
+                str(ROOT / "scripts/lib/run-in-process-group.py"),
+                str(ready), str(gate), str(submitted),
+                str(root / "kill"), str(root / "maintenance"),
+                str(root / "cancel"), sys.executable, "-c",
+                "import pathlib,sys,time; time.sleep(.05); "
+                "pathlib.Path(sys.argv[1]).write_text('done\\n')",
+                str(completed),
+            ])
+            for _ in range(500):
+                if ready.is_file():
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.01)
+            self.assertTrue(ready.is_file())
+            gate.touch()
+            self.assertEqual(process.wait(timeout=10), 0)
+            self.assertRegex(submitted.read_text(encoding="utf-8"), r"^pid=\d+\n$")
+            self.assertEqual(completed.read_text(encoding="utf-8"), "done\n")
 
 
 if __name__ == "__main__":
