@@ -1368,13 +1368,20 @@ class Controller:
     def restore_recorded_contract_repair(self, claim: dict[str, Any]) -> bool:
         if (
             claim["status"] != "blocked"
-            or claim.get("receipt")
-            or claim.get("role")
             or self.role_active(claim)
         ):
             return False
         repair = self.state / "contract-repairs" / f"{claim['ticket']}.json"
         if not repair.is_file() or repair.is_symlink():
+            return False
+        recorded = read(repair)
+        if (
+            (claim.get("receipt") or claim.get("role"))
+            and (
+                claim.get("receipt") != recorded.get("blocked_receipt")
+                or claim.get("role") != recorded.get("blocked_role")
+            )
+        ):
             return False
         try:
             if not self.remote_passport_valid(claim):

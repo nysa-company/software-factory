@@ -11,6 +11,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
   run concurrently behind one renewable per-product publication lease.
+- A resumed Contract 1.8 blocker may leave the failed receipt and role on its
+  blocked controller claim after the state machine has created the signed
+  owner-only repair. The controller reopens it only when both retained fields
+  exactly match that repair record; the state machine authenticates all
+  repair, passport, charge, terminal, and stage evidence before those claim
+  fields are cleared.
 - Contract 1.8 resolves each stage exactly once. Before scheduling after a
   release change, blocked, claimed, and waiting claims authenticate and migrate
   any prior-release passport. Maintenance appearing after stage resolution
@@ -2187,3 +2193,15 @@ segment begins at the authenticated descendant output. The two segments must
 share the same boundary Factory, protected base, and route; the second must end
 at the exact current Factory/head/base/route and bind the current passport's
 parent digests. Disconnected or ambiguous segments fail closed.
+
+## 2026-07-31 — Decision 166: A resumed repair consumes its retained blocked claim
+
+Category: Incident
+
+T-094 proved that an authenticated state-machine resume can create the exact
+owner-only repair while the controller claim still retains the failed role and
+receipt. Recorded-repair recovery now accepts that topology only when both
+claim fields exactly match the signed record's blocker identity; the state
+machine validates the complete repair and resolves its safe stage before the
+controller clears them. Empty-field recovery remains supported, while partial,
+mismatched, active, unauthenticated, or refusing repairs stay blocked.
