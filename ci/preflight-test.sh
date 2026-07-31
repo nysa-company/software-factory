@@ -209,6 +209,7 @@ run_sealed_preflight() {
     FACTORY_RELEASE_CONTRACT_VERSION="$KIT_CONTRACT_VERSION" \
     FACTORY_CURSOR_FALLBACK_ENABLED=0 \
     FACTORY_TEST_PROBE_TRACE="${6:-}" \
+    FACTORY_VERIFIED_TRANSITION_STAGE="${7:-}" \
     bash "$release/scripts/preflight.sh" "${helper_args[@]}" 2>&1
 }
 
@@ -871,6 +872,37 @@ if [[ "$READINESS_PREFLIGHT_STATUS" -eq 0 &&
 else
   echo "FAIL: contract 1.8 planner preflight repeated provider readiness"
   echo "$READINESS_PREFLIGHT_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+sed 's/^State: Planning$/State: Building/' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+git -C "$READINESS" add factory/tickets/T-110.md
+git -C "$READINESS" commit -qm "preserve coarse state for planner repair"
+git -C "$READINESS" push -q origin main
+PLANNER_REPAIR_STATUS=0
+PLANNER_REPAIR_OUT="$(run_sealed_preflight "$READINESS" T-110 \
+  "$READINESS_RELEASE" "$READINESS_TREE" planner "" "FIX planner")" ||
+  PLANNER_REPAIR_STATUS=$?
+if [[ "$PLANNER_REPAIR_STATUS" -eq 0 &&
+      "$PLANNER_REPAIR_OUT" == *"State: Building is authorized by the verified FIX planner transition"* &&
+      "$PLANNER_REPAIR_OUT" == *"PREFLIGHT PASS"* ]]; then
+  echo "PASS: authenticated FIX planner preflight preserves the coarse state"
+else
+  echo "FAIL: authenticated FIX planner preflight rejected the coarse state"
+  echo "$PLANNER_REPAIR_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+STALE_PLANNER_STATUS=0
+STALE_PLANNER_OUT="$(run_sealed_preflight "$READINESS" T-110 \
+  "$READINESS_RELEASE" "$READINESS_TREE" planner "" "RUN planner")" ||
+  STALE_PLANNER_STATUS=$?
+if [[ "$STALE_PLANNER_STATUS" -ne 0 &&
+      "$STALE_PLANNER_OUT" == *"FAIL: ticket not Planning (State: Building)"* ]]; then
+  echo "PASS: non-repair Planner preflight still rejects the coarse state"
+else
+  echo "FAIL: non-repair Planner preflight accepted the coarse state"
+  echo "$STALE_PLANNER_OUT"
   FAILURES=$((FAILURES + 1))
 fi
 sed 's/Product-Decisions: frozen/Product-Decisions: unresolved/' \

@@ -3248,6 +3248,40 @@ unrelated changes, and unbound receipts remain refused. Protected GitHub CI
 owns the complete regression; live closure requires T-094 to remain
 provider-idle until that exact decision is committed and ingested.
 
+## FI-20260730-124 — Preflight rejected the authenticated earlier repair owner
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: exact-stage repair admission
+Owner: Factory
+First seen: Nysa generation 46 T-094 Planner repair
+Impact: the deterministic state machine authenticated the exact Planner repair,
+refreshed the protected base without a provider call, and reattached T-094 to
+an execution cell. Preflight then parked the ticket before submission because
+its visible coarse state remained Building. T-093 and T-100 stayed in their
+declared dependency waits; no provider call or new charge occurred.
+Evidence: transition receipt
+`c0769645f48418542ac2698a00148ac10754d9608df2e55c463995d7d807ae70`
+is head-, passport-, lease-, role-, and Factory-bound to `FIX planner`.
+The exact preflight returned readiness, route, budget, repository, and Linear
+passes followed by `FAIL: ticket not Planning (State: Building)`. The
+controller emitted authenticated `ticket_blocked` reason `preflight` and
+parked the clean cell.
+Root cause: repeated-blocker recovery was tested through state-machine stage
+selection but not through the next admission boundary. Preflight recomputed
+Planner eligibility solely from the visible state instead of consuming the
+stage already returned by authenticated receipt verification.
+Smallest repair: the installed launcher's empty helper environment carries the
+exact verified transition stage into preflight. Normal `RUN planner` continues
+to require Planning. Only exact `FIX planner` bypasses that duplicate state
+comparison; readiness, receipt, lease, route, budget, repository, initiative,
+and provider admission checks remain unchanged.
+Validation: the focused preflight regression proves a Building ticket passes
+only with verified `FIX planner`, while the same ticket with `RUN planner`
+still fails. Shell syntax, the focused state-machine suite, and an exact live
+T-094 preflight remain required; protected GitHub CI owns the complete
+regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

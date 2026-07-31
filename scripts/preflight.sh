@@ -301,16 +301,32 @@ else
   fi
 fi
 
-# (e) ticket is in the exact kickoff state and belongs to a known initiative
+# (e) ticket is in the exact kickoff state, or the verified transition receipt
+# authorizes an earlier repair owner beneath the visible coarse state. The
+# installed launcher constructs FACTORY_VERIFIED_TRANSITION_STAGE only from
+# state-machine receipt verification inside its empty helper environment.
 EXPECTED_STATE="Ready"
 if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
       "$ROLE" == "planner" ]]; then
   EXPECTED_STATE="Planning"
 fi
+STATE_ACCEPTED=0
 if [[ ! -f "$TICKET_FILE" ]]; then
   fail "ticket file missing: $TICKET_FILE"
 elif grep -qE "^State: $EXPECTED_STATE$" "$TICKET_FILE"; then
   pass "ticket $TICKET is $EXPECTED_STATE"
+  STATE_ACCEPTED=1
+elif [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
+        "$ROLE" == "planner" &&
+        "${FACTORY_VERIFIED_TRANSITION_STAGE:-}" == "FIX planner" ]]; then
+  STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
+  pass "ticket $TICKET $STATE is authorized by the verified FIX planner transition"
+  STATE_ACCEPTED=1
+else
+  STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
+  fail "ticket not $EXPECTED_STATE ($STATE)"
+fi
+if [[ "$STATE_ACCEPTED" -eq 1 ]]; then
   INITIATIVE="$(sed -n 's/^Initiative:[[:space:]]*//p' "$TICKET_FILE" | head -n1)"
   if [[ -z "$INITIATIVE" ]]; then
     fail "ticket has no Initiative field"
@@ -319,9 +335,6 @@ elif grep -qE "^State: $EXPECTED_STATE$" "$TICKET_FILE"; then
   else
     pass "ticket belongs to initiative $INITIATIVE"
   fi
-else
-  STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
-  fail "ticket not $EXPECTED_STATE ($STATE)"
 fi
 
 LINEAR_MAP="$FACTORY_DIR/linear-map.json"

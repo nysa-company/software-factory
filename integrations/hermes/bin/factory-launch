@@ -1774,9 +1774,15 @@ PY
     if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
       transition_receipt verify "$PREFLIGHT_ROLE" ||
         die "transition receipt verification failed"
+      if [[ "$TRANSITION_STAGE" != "RUN $PREFLIGHT_ROLE" &&
+            "$TRANSITION_STAGE" != "FIX $PREFLIGHT_ROLE" &&
+            "$TRANSITION_STAGE" != "FIX builder-or-test-author" ]]; then
+        die "transition receipt returned an invalid preflight stage"
+      fi
       HELPER_ENV+=(
         "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
         "FACTORY_TRANSITION_STATE_DIR=$CONTROLLER_STATE_DIR"
+        "FACTORY_VERIFIED_TRANSITION_STAGE=$TRANSITION_STAGE"
       )
     fi
     PREFLIGHT_ARGS=(--ticket "$TICKET")

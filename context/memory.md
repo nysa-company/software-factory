@@ -17,6 +17,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   but before submission leaves the receipt unconsumed, settles and parks the
   clean claim, and releases its lease; it never creates a provider attempt,
   charge, or successful-role replay.
+- Contract 1.8 preflight consumes the already-verified transition stage. Normal
+  Planner work still requires the visible Planning state; an authenticated
+  `FIX planner` receipt may run beneath a later coarse state without mutating
+  that state backward or recomputing repair ownership.
 - Contract 1.8 at ticket capacity above one requires an exact owner-approved
   subscription provider policy and activation covering every enabled Cursor,
   Claude Code, and Codex route at no less than ticket capacity. The installed
@@ -2136,3 +2140,15 @@ The pair is replaced for every later blocker, even when the role is unchanged.
 Missing, stale, partial, duplicate, mismatched, multi-path, merge, or unrelated
 decisions fail closed before a provider call. A completed repair remains
 historical only through its signed matching role-and-receipt archive.
+
+## 2026-07-30 — Decision 163: Preflight consumes the verified repair stage
+
+Category: Incident
+
+T-094 proved that deterministic repair ownership can precede the ticket's
+visible coarse state: the state machine authorized `FIX planner` while the
+ticket correctly remained Building, but preflight independently required
+Planning and blocked before submission. The installed launcher now passes the
+stage returned by exact receipt verification into its empty helper
+environment. Preflight accepts a later coarse state only for the exact
+verified `FIX planner` stage; normal Planner work still requires Planning.
