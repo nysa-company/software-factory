@@ -224,6 +224,7 @@ def completed_repair_matches_directive(
     passport: dict[str, Any],
     secret: bytes,
     role: str,
+    receipt: str,
 ) -> bool:
     directory = repair_path(args).parent / "completed"
     if not directory.exists() and not directory.is_symlink():
@@ -251,7 +252,10 @@ def completed_repair_matches_directive(
             or not SHA.fullmatch(record.get("head_sha", ""))
         ):
             raise StateError("completed contract repair record is invalid")
-        if record["repair_role"] != role:
+        if (
+            record["repair_role"] != role
+            or record.get("blocked_receipt") != receipt
+        ):
             continue
         if branch_contains(args, record["head_sha"]):
             matched = True
@@ -682,12 +686,19 @@ def operator_resume_role(
         r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
         current, re.M,
     )
-    if not directives:
-        if git(args.workdir, "rev-parse", "HEAD") != prior_head:
-            raise StateError("contract repair changed without an operator directive")
-        return blocked_role
+    receipt_directives = re.findall(
+        r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
+        current,
+        re.M,
+    )
+    if (
+        len(directives) != 1
+        or receipt_directives != [args.receipt]
+    ):
+        raise StateError("contract repair requires a receipt-bound operator directive")
     repair_role = directives[0]
     directive = f"OPERATOR RESUME: {repair_role}"
+    receipt_directive = f"OPERATOR RESUME RECEIPT: {args.receipt}"
     known_heads = {prior_head}
     for migration in passport.get("migration_history", []):
         if isinstance(migration, dict):
@@ -697,7 +708,12 @@ def operator_resume_role(
                 if SHA.fullmatch(migration.get(name, ""))
             )
     commits = git(
-        args.workdir, "log", "--format=%H", f"-S{directive}", "--", relative
+        args.workdir,
+        "log",
+        "--format=%H",
+        f"-S{receipt_directive}",
+        "--",
+        relative,
     ).splitlines()
     candidates: list[tuple[str, str]] = []
     for candidate in commits:
@@ -733,13 +749,28 @@ def operator_resume_role(
         before,
         re.M,
     )
-    if not prior_directives:
-        expected = before.rstrip("\n") + f"\n\n{directive}\n"
-    elif len(prior_directives) == 1 and prior_directives[0] != repair_role:
+    prior_receipts = re.findall(
+        r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
+        before,
+        re.M,
+    )
+    if not prior_directives and not prior_receipts:
+        expected = (
+            before.rstrip("\n")
+            + f"\n\n{directive}\n{receipt_directive}\n"
+        )
+    elif len(prior_directives) == 1 and len(prior_receipts) == 1:
         expected = re.sub(
             r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
             directive,
             before,
+            count=1,
+            flags=re.M,
+        )
+        expected = re.sub(
+            r"^OPERATOR RESUME RECEIPT: [0-9a-f]{64}$",
+            receipt_directive,
+            expected,
             count=1,
             flags=re.M,
         )
@@ -1982,7 +2013,9 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     text = (
         args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
     ).read_text(encoding="utf-8")
-    has_directive = bool(re.search(r"^OPERATOR RESUME:", text, re.M))
+    has_directive = bool(
+        re.search(r"^OPERATOR RESUME(?::| RECEIPT:)", text, re.M)
+    )
     path = args.state_dir / "contract-repairs" / f"{args.ticket}.json"
     if not has_directive and not path.exists() and not path.is_symlink():
         return None, False
@@ -1995,10 +2028,16 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
                 text,
                 re.M,
             )
+            receipts = re.findall(
+                r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
+                text,
+                re.M,
+            )
             if (
                 len(directives) != 1
+                or len(receipts) != 1
                 or not completed_repair_matches_directive(
-                    args, passport, secret, directives[0]
+                    args, passport, secret, directives[0], receipts[0]
                 )
             ):
                 raise StateError(

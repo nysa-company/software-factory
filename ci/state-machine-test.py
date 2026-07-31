@@ -554,6 +554,7 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(STATE.contract_blocked_receipt(self.args), "planner")
 
     def test_operator_resume_names_exact_repair_owner_only(self) -> None:
+        self.args.receipt = "b" * 64
         head = run("git", "rev-parse", "HEAD", cwd=self.product)
         passport = {
             "branch": "ticket/T-110",
@@ -564,7 +565,8 @@ class StateMachineTest(unittest.TestCase):
         path = self.product / "factory/tickets/T-110.md"
         path.write_text(
             path.read_text(encoding="utf-8")
-            + "\nOPERATOR RESUME: test-author\n",
+            + "\nOPERATOR RESUME: test-author\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
             encoding="utf-8",
         )
         run("git", "add", str(path), cwd=self.product)
@@ -583,10 +585,13 @@ class StateMachineTest(unittest.TestCase):
             STATE.operator_resume_role(self.args, passport, "builder")
 
     def test_operator_resume_replaces_one_prior_owner_exactly(self) -> None:
+        prior_receipt = "a" * 64
+        self.args.receipt = "b" * 64
         path = self.product / "factory/tickets/T-110.md"
         path.write_text(
             path.read_text(encoding="utf-8").rstrip("\n")
-            + "\n\nOPERATOR RESUME: test-author\n",
+            + "\n\nOPERATOR RESUME: test-author\n"
+            + f"OPERATOR RESUME RECEIPT: {prior_receipt}\n",
             encoding="utf-8",
         )
         run("git", "add", str(path), cwd=self.product)
@@ -599,10 +604,9 @@ class StateMachineTest(unittest.TestCase):
             "ticket": "T-110",
         }
         path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "OPERATOR RESUME: test-author",
-                "OPERATOR RESUME: planner",
-            ),
+            path.read_text(encoding="utf-8")
+            .replace("OPERATOR RESUME: test-author", "OPERATOR RESUME: planner")
+            .replace(prior_receipt, self.args.receipt),
             encoding="utf-8",
         )
         run("git", "add", str(path), cwd=self.product)
@@ -622,12 +626,19 @@ class StateMachineTest(unittest.TestCase):
             STATE.operator_resume_role(self.args, passport, "test-author")
 
     def test_operator_resume_uses_current_passport_repair_window(self) -> None:
+        historical_receipt = "a" * 64
+        self.args.receipt = "b" * 64
         path = self.product / "factory/tickets/T-110.md"
         original = path.read_text(encoding="utf-8")
         directive = "OPERATOR RESUME: test-author"
+        receipt_directive = (
+            f"OPERATOR RESUME RECEIPT: {self.args.receipt}"
+        )
 
         path.write_text(
-            original.rstrip("\n") + f"\n\n{directive}\n",
+            original.rstrip("\n")
+            + f"\n\n{directive}\n"
+            + f"OPERATOR RESUME RECEIPT: {historical_receipt}\n",
             encoding="utf-8",
         )
         run("git", "add", str(path), cwd=self.product)
@@ -646,7 +657,7 @@ class StateMachineTest(unittest.TestCase):
 
         path.write_text(
             path.read_text(encoding="utf-8").rstrip("\n")
-            + f"\n\n{directive}\n",
+            + f"\n\n{directive}\n{receipt_directive}\n",
             encoding="utf-8",
         )
         run("git", "add", str(path), cwd=self.product)
@@ -678,7 +689,7 @@ class StateMachineTest(unittest.TestCase):
 
         path.write_text(
             path.read_text(encoding="utf-8").replace(
-                f"\n\n{directive}\n", "\n", 1
+                f"\n\n{directive}\n{receipt_directive}\n", "\n", 1
             ),
             encoding="utf-8",
         )
@@ -687,7 +698,7 @@ class StateMachineTest(unittest.TestCase):
         withdrawn_head = run("git", "rev-parse", "HEAD", cwd=self.product)
         path.write_text(
             path.read_text(encoding="utf-8").rstrip("\n")
-            + f"\n\n{directive}\n",
+            + f"\n\n{directive}\n{receipt_directive}\n",
             encoding="utf-8",
         )
         run("git", "add", str(path), cwd=self.product)
@@ -750,13 +761,15 @@ class StateMachineTest(unittest.TestCase):
     def test_completed_repair_authenticates_visible_historical_directive(
         self,
     ) -> None:
+        self.args.receipt = "b" * 64
         secret = b"k" * 32
         (self.state_dir / "passport.key").write_bytes(secret)
         os.chmod(self.state_dir / "passport.key", 0o600)
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
             ticket.read_text(encoding="utf-8").rstrip("\n")
-            + "\n\nOPERATOR RESUME: planner\n",
+            + "\n\nOPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
             encoding="utf-8",
         )
         run("git", "add", str(ticket), cwd=self.product)
@@ -782,7 +795,7 @@ class StateMachineTest(unittest.TestCase):
         completed = STATE.repair_path(self.args).parent / "completed"
         completed.mkdir(mode=0o700)
         record = STATE.signed_repair({
-            "blocked_receipt": "b" * 64,
+            "blocked_receipt": self.args.receipt,
             "blocked_role": "test-author",
             "branch": "ticket/T-110",
             "factory_sha": self.args.factory_sha,
@@ -805,13 +818,16 @@ class StateMachineTest(unittest.TestCase):
     def test_repeated_blocker_hands_back_to_earlier_owner_then_continues(
         self,
     ) -> None:
+        prior_receipt = "a" * 64
+        self.args.receipt = "b" * 64
         secret = b"k" * 32
         (self.state_dir / "passport.key").write_bytes(secret)
         os.chmod(self.state_dir / "passport.key", 0o600)
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
             "# T-110\n\nState: Building\nResume-State: Building\n\n"
-            "OPERATOR RESUME: test-author\n",
+            "OPERATOR RESUME: test-author\n"
+            f"OPERATOR RESUME RECEIPT: {prior_receipt}\n",
             encoding="utf-8",
         )
         run("git", "add", str(ticket), cwd=self.product)
@@ -835,18 +851,21 @@ class StateMachineTest(unittest.TestCase):
         ).hexdigest()
         STATE.write_atomic(passports / "T-110.json", passport)
 
+        with self.assertRaisesRegex(
+            STATE.StateError, "receipt-bound operator directive"
+        ):
+            STATE.operator_resume_role(self.args, passport, "test-author")
+
         ticket.write_text(
-            ticket.read_text(encoding="utf-8").replace(
-                "OPERATOR RESUME: test-author",
-                "OPERATOR RESUME: planner",
-            ),
+            ticket.read_text(encoding="utf-8")
+            .replace("OPERATOR RESUME: test-author", "OPERATOR RESUME: planner")
+            .replace(prior_receipt, self.args.receipt),
             encoding="utf-8",
         )
         run("git", "add", str(ticket), cwd=self.product)
         run("git", "commit", "-qm", "route repeated blocker to planner", cwd=self.product)
         planner_head = run("git", "rev-parse", "HEAD", cwd=self.product)
         self.args.action = "resume"
-        self.args.receipt = "b" * 64
         with (
             mock.patch.object(
                 STATE, "contract_blocked_receipt", return_value="test-author"
