@@ -179,7 +179,7 @@ requires a clean control-only linked worktree of the canonical product,
 drained installed controller, current provider
 activation, source Factory binding, and authenticated selected-ticket
 passports. The linked worktree is based on exact protected main and needs no
-standalone setup pull request. Its ignored operator-map path is bound to the
+standalone setup pull request. Its sealed helper environment binds the
 canonical live Linear map. It reuses the canonical controller and provider
 state in place under the same reconciliation lock while keeping the sealed
 candidate and disposable worktrees isolated. It neither copies passports nor

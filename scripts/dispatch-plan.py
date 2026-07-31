@@ -849,7 +849,12 @@ def main() -> None:
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout is dirty")
         git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
-        mapping = fresh_mapping(factory / "linear-map.json", args.max_linear_age)
+        mapping_path = Path(os.environ.get(
+            "FACTORY_OPERATOR_MAP", factory / "linear-map.json"
+        ))
+        if not mapping_path.is_absolute():
+            raise DispatchError("Linear operator map path is invalid")
+        mapping = fresh_mapping(mapping_path, args.max_linear_age)
         maximum = capacity(factory)
         qualification_state = qualification(product, factory, maximum)
         prefix = ticket_branch_prefix(factory)
@@ -911,7 +916,7 @@ def main() -> None:
             raise DispatchError("factory control blocks dispatch")
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout changed during selection")
-        if fresh_mapping(factory / "linear-map.json", args.max_linear_age) != mapping:
+        if fresh_mapping(mapping_path, args.max_linear_age) != mapping:
             raise DispatchError("Linear reconciliation changed during selection")
         lease_dir.mkdir(mode=0o700, exist_ok=True)
         safe_directory(lease_dir, "dispatcher lease directory")

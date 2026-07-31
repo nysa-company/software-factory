@@ -487,7 +487,7 @@ LINEAR_AGE=""
 LINEAR_LAST_ERROR=""
 LINEAR_MAP=""
 if [[ -n "$FACTORY_DIR" ]]; then
-  LINEAR_MAP="$FACTORY_DIR/linear-map.json"
+  LINEAR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
 fi
 if [[ -n "$LINEAR_MAP" && -f "$LINEAR_MAP" ]]; then
   LINEAR_DATA="$("$PYTHON_BIN" - "$LINEAR_MAP" "$LINEAR_FRESH_SECONDS" <<'PY'

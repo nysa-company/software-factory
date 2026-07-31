@@ -168,6 +168,27 @@ class TicketAttestTests(unittest.TestCase):
         self.assertEqual(result.stdout, passed.stdout)
         self.assertEqual(call.call_count, 2)
 
+    def test_overlay_consumption_uses_launcher_bound_operator_map(self):
+        external = self.temp / "operator-map.json"
+        operator = {
+            "approval": "Linear",
+            "initiative": "I-1",
+            "priority": "normal",
+            "state": "Approved",
+        }
+        external.write_text(json.dumps({
+            "tickets": {"T-700": {"operator": operator}},
+        }))
+        version = hashlib.sha256(json.dumps(
+            operator, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        with patch.dict(os.environ, {"FACTORY_OPERATOR_MAP": str(external)}):
+            TICKET_ATTEST.consume_overlay(self.product, "T-700", version)
+        self.assertNotIn(
+            "operator", json.loads(external.read_text())["tickets"]["T-700"]
+        )
+        self.assertFalse((self.product / "factory/linear-map.json").exists())
+
     def tearDown(self):
         shutil.rmtree(self.temp)
 

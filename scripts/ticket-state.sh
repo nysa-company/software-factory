@@ -40,7 +40,7 @@ unset FACTORY_TRUSTED_PRODUCT_ORIGIN
 readonly FACTORY_TRUSTED_PRODUCT_ORIGIN="${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}"
 unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
 PRODUCT_ROOT="${FACTORY_ROOT:-$WORKDIR}"
-MAP="$PRODUCT_ROOT/factory/linear-map.json"
+MAP="${FACTORY_OPERATOR_MAP:-$PRODUCT_ROOT/factory/linear-map.json}"
 TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "ticket file missing from worktree" >&2; exit 1; }
 WORKTREE_STATUS="$(git -C "$WORKDIR" status --porcelain --untracked-files=all \

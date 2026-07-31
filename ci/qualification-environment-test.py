@@ -310,11 +310,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(active["qualification_mode"], "takeover")
         self.assertEqual(active["takeover_kits_root"], str(kits))
         self.assertEqual(active["operator_map_path"], str(operator_map.resolve()))
-        self.assertTrue((self.product / "factory/linear-map.json").is_symlink())
-        self.assertEqual(
-            os.readlink(self.product / "factory/linear-map.json"),
-            str(operator_map.resolve()),
-        )
+        self.assertFalse((self.product / "factory/linear-map.json").exists())
         self.assertFalse((self.root / "provider").exists())
         self.assertFalse((self.root / "projects/relay/controller").exists())
 

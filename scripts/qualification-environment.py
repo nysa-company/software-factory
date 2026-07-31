@@ -288,20 +288,9 @@ def validate_takeover_product(
             )
 
 
-def bind_operator_map(source_product: Path, product: Path) -> str:
+def operator_map(source_product: Path) -> str:
     source = source_product / "factory/linear-map.json"
     read(source)
-    relative = "factory/linear-map.json"
-    try:
-        command("git", "-C", str(product), "check-ignore", "--quiet", relative)
-    except EnvironmentError as error:
-        raise EnvironmentError("qualification operator map path is not ignored") from error
-    target = product / relative
-    if os.path.lexists(target):
-        if not target.is_symlink() or os.readlink(target) != str(source):
-            raise EnvironmentError("qualification operator map binding is invalid")
-    else:
-        os.symlink(source, target)
     return str(source)
 
 
@@ -361,7 +350,7 @@ def takeover_source(
         raise EnvironmentError("takeover source activation does not match the manifest")
     source_product = Path(source_product_path).resolve(strict=True)
     validate_takeover_product(source_product, product, active, manifest)
-    operator_map_path = bind_operator_map(source_product, product)
+    operator_map_path = operator_map(source_product)
     lock = os.open(
         state / "reconcile.lock",
         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),

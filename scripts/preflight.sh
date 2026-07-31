@@ -21,6 +21,7 @@ done
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
+OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
 CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/runtime-ledger.csv}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
@@ -70,7 +71,7 @@ if [[ -f "$TICKET_SOURCE" ]]; then
   EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
   trap 'rm -f "$EFFECTIVE_TICKET"' EXIT
   if python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
-    --ticket-file "$TICKET_SOURCE" --operator-map "$FACTORY_DIR/linear-map.json" \
+    --ticket-file "$TICKET_SOURCE" --operator-map "$OPERATOR_MAP" \
     --ticket "$TICKET" > "$EFFECTIVE_TICKET"; then
     TICKET_FILE="$EFFECTIVE_TICKET"
   else
@@ -337,7 +338,7 @@ if [[ "$STATE_ACCEPTED" -eq 1 ]]; then
   fi
 fi
 
-LINEAR_MAP="$FACTORY_DIR/linear-map.json"
+LINEAR_MAP="$OPERATOR_MAP"
 if [[ -f "$LINEAR_MAP" ]] && grep -q '"last_success_at":[[:space:]]*"[^"]' "$LINEAR_MAP"; then
   pass "Linear reconciliation has a recorded successful pull"
 else

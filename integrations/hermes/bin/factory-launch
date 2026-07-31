@@ -408,9 +408,6 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
     [[ -n "$TAKEOVER_OPERATOR_MAP" ]] ||
       die "qualification takeover operator map is invalid"
     require_managed_file "$TAKEOVER_OPERATOR_MAP" "qualification takeover operator map"
-    [[ -L "$PRODUCT_ROOT/factory/linear-map.json" &&
-       "$(readlink "$PRODUCT_ROOT/factory/linear-map.json")" == "$TAKEOVER_OPERATOR_MAP" ]] ||
-      die "qualification takeover operator map binding is invalid"
   else
     [[ -z "$TAKEOVER_KITS_ROOT$TAKEOVER_OPERATOR_MAP" ]] ||
       die "isolated qualification names takeover state"
@@ -636,6 +633,9 @@ HELPER_ENV=(
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
   "FACTORY_RELEASE_CONTRACT_VERSION=$ACTIVE_CONTRACT"
 )
+if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+  HELPER_ENV+=("FACTORY_OPERATOR_MAP=$TAKEOVER_OPERATOR_MAP")
+fi
 if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE_CONTRACT" == "1.8.0" ]]; then
   HELPER_ENV+=(
     "FACTORY_PROVIDER_DB=$PROVIDER_STATE_ROOT/accounting/state-v2.sqlite3"

@@ -215,7 +215,13 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "commit", "-qm", "authorize pre-provider reset", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
 
-    def command(self, action, expected=0):
+    def command(self, action, expected=0, operator_map=None):
+        environment = {
+            **os.environ,
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+        }
+        if operator_map is not None:
+            environment["FACTORY_OPERATOR_MAP"] = str(operator_map)
         result = subprocess.run(
             [
                 sys.executable, str(HELPER),
@@ -226,7 +232,7 @@ class DispatchPlanTest(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
-            env={**os.environ, "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote)},
+            env=environment,
             timeout=30,
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
@@ -238,6 +244,14 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["status"], "SHADOW")
         self.assertFalse((self.product / "factory/.dispatch-leases").exists())
         self.assertEqual(list(self.worktrees.iterdir()), [])
+
+    def test_shadow_uses_launcher_bound_operator_map(self):
+        external = self.root / "operator-map.json"
+        external.write_bytes(self.mapping.read_bytes())
+        self.mapping.write_text("{}\n")
+        value = self.command("shadow", operator_map=external)
+        self.assertEqual(value["ticket"], "T-200")
+        self.assertEqual(value["status"], "SHADOW")
 
     def test_nonqualification_dispatch_waits_for_protected_dependency(self):
         ticket = self.product / "factory/tickets/T-200.md"

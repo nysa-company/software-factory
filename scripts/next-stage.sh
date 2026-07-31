@@ -46,6 +46,7 @@ source "$KIT_DIR/scripts/lib/kit-pin.sh"
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
+OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
 CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 if ! factory_validate_runtime_overrides; then
   echo "REFUSE $FACTORY_RUNTIME_OVERRIDE_ERROR"
@@ -113,7 +114,7 @@ else
   : > "$COMMITTED_TICKET_FILE"
 fi
 python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
-  --ticket-file "$SOURCE_TICKET_FILE" --operator-map "$FACTORY_DIR/linear-map.json" \
+  --ticket-file "$SOURCE_TICKET_FILE" --operator-map "$OPERATOR_MAP" \
   --ticket "$TICKET" > "$EFFECTIVE_TICKET" || {
     echo "REFUSE effective ticket state could not be resolved"
     exit 1
@@ -425,7 +426,7 @@ if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
     exit 0
   fi
   if [[ "$COMMITTED_STATE" == "approved" ]]; then
-    if python3 - "$FACTORY_DIR/linear-map.json" "$TICKET" <<'PY'
+    if python3 - "$OPERATOR_MAP" "$TICKET" <<'PY'
 import json
 import sys
 try:

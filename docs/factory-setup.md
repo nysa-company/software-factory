@@ -86,7 +86,7 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   manifest after unloading and draining the installed controller. That mode
   accepts a clean local-only linked product worktree based on exact protected
   main, with only the candidate pin, successor manifest, and selected-ticket
-  dependency edits. Its ignored operator-map path must bind the canonical live
+  dependency edits. Its sealed helper environment binds the canonical live
   Linear map. It validates and reuses canonical authenticated passports
   and provider accounting under their existing lock rather than copying them.
   The preparer also fails before admission when the chosen root is too long for Cursor's

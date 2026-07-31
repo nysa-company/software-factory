@@ -1233,8 +1233,17 @@ def commit_push(product, workdir, remote, branch, message, paths):
     return push_head(product, workdir, remote, branch, head)
 
 
+def operator_map_path(product):
+    path = Path(os.environ.get(
+        "FACTORY_OPERATOR_MAP", product / "factory/linear-map.json"
+    ))
+    if not path.is_absolute():
+        raise Refusal("operator map path is invalid")
+    return path
+
+
 def consume_overlay(product, ticket, expected_version):
-    path = product / "factory" / "linear-map.json"
+    path = operator_map_path(product)
     if not path.is_file():
         return
     data = json.loads(path.read_text())
@@ -1257,7 +1266,7 @@ def consume_overlay(product, ticket, expected_version):
 
 
 def stale_approval_overlay_version(product, ticket):
-    path = product / "factory" / "linear-map.json"
+    path = operator_map_path(product)
     if not path.is_file():
         return None
     operator = json.loads(path.read_text()).get("tickets", {}).get(ticket, {}).get("operator")
@@ -1277,7 +1286,7 @@ def stale_approval_overlay_version(product, ticket):
 
 
 def consume_stale_approval_overlay(product, ticket, expected_version):
-    path = product / "factory" / "linear-map.json"
+    path = operator_map_path(product)
     data = json.loads(path.read_text())
     operator = data.get("tickets", {}).get(ticket, {}).get("operator") or {}
     actual = stale_approval_overlay_version(product, ticket)
@@ -2064,7 +2073,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     )
     if git(workdir, "hash-object", str(bundle_path)).stdout.strip() != bundle_att.get("bundle_blob"):
         raise Refusal("evidence bundle changed after attestation")
-    mapping = json.loads((product / "factory" / "linear-map.json").read_text())
+    mapping = json.loads(operator_map_path(product).read_text())
     operator = mapping.get("tickets", {}).get(args.ticket, {}).get("operator") or {}
     existing_approval = json.loads(approval_path.read_text()) if approval_path.exists() else None
     exact_overlay = (
