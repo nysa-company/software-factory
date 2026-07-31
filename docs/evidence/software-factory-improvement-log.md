@@ -3509,6 +3509,19 @@ that final candidate's additional spend. Focused environment and reducer
 tests cover the two-edge path and reject a disconnected edge. A new sealed
 root and the ordered live cohort remain required.
 
+The next sealed occurrence reached the correctly selected T-094 Builder, whose
+Cursor route returned HTTP 503 after GO with zero turns and a conservative $10
+terminal charge. The qualification-only automatic fallback failed before a
+handoff because it read the qualification control worktree's stale ignored
+`runtime-ledger.csv`; ticket execution had materialized accounting through the
+ticket worktree's canonical Git root. The shared fallback evidence boundary
+now invokes the existing ledger reducer over tracked durable rows plus
+authoritative run manifests and hashes that exact effective CSV. A focused
+regression leaves a deliberately stale runtime view in place and still accepts
+only the unique latest terminal manifest; model-fallback, ledger-view, and
+controller suites pass. Re-sealing, the automatic same-role fallback, the
+ordered cohort, protected CI, and final release transactions remain required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

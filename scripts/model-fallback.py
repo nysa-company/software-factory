@@ -2,7 +2,6 @@
 """Preview or apply one operator-approved mid-ticket model fallback."""
 
 import argparse
-import csv
 import dataclasses
 import datetime as dt
 import hashlib
@@ -36,6 +35,7 @@ def load_module(name, path):
 
 MANAGER = load_module("model_manager", ROOT / "scripts/model-manager.py")
 ROUTER = load_module("model_router_fallback", ROOT / "scripts/model-router.py")
+LEDGER = load_module("ledger_view_fallback", ROOT / "scripts/ledger-view.py")
 ROLE_ORDER = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
 PRODUCER_BOUNDARY = {"planner": "P", "test-author": "T", "builder": "B"}
 REASONS = frozenset((
@@ -161,12 +161,13 @@ def load_evidence(factory_root, ticket, failed_run):
         raise FallbackError("cancelled run lacks an eligible fallback reason")
     if (runs / f"{failed_run}.pid").exists():
         raise FallbackError("failed run still has a process record")
-    ledger_path = factory_root / "factory/runtime-ledger.csv"
-    if ledger_path.is_symlink() or not ledger_path.is_file():
-        raise FallbackError("effective runtime ledger is missing or unsafe")
-    ledger_raw = ledger_path.read_bytes()
-    with ledger_path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
+    try:
+        rows = LEDGER.effective_rows(factory_root)
+        ledger_raw = LEDGER.csv_bytes(rows)
+    except (OSError, ValueError) as error:
+        raise FallbackError(
+            "effective accounting evidence is missing or unsafe"
+        ) from error
     ticket_rows = [row for row in rows if row.get("ticket") == ticket and row.get("run_id")]
     matching = [row for row in ticket_rows if row["run_id"] == failed_run]
     if len(matching) != 1 or not ticket_rows or ticket_rows[-1]["run_id"] != failed_run:

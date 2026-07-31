@@ -148,6 +148,12 @@ completed roles remain immutable and contributor-family history constrains
 every remaining role. See [model-routing.md](model-routing.md) for the exact
 default routes and fallback rules.
 
+Fallback approval and qualification fallback reduce effective accounting from
+the tracked durable ledger and owner-only terminal manifests on every check.
+They do not trust `runtime-ledger.csv`, because that file is an ignored output
+view and linked production/qualification worktrees may materialize different
+copies without changing the underlying accounting evidence.
+
 ```bash
 # ~/.factory/global.env — no credentials in this file
 export FACTORY_CURSOR_FALLBACK_ENABLED=0

@@ -90,6 +90,11 @@ Contract 1.4 fallback:
    partial work, appends a route-journal revision, commits and pushes the
    handoff, then consumes the approval.
 
+Fallback accounting is reduced directly from committed durable rows plus the
+authoritative terminal manifests. The ignored runtime ledger is only a
+materialized view, so a stale copy in a linked qualification worktree cannot
+hide the latest failed attempt or authorize a different one.
+
 The usual default-profile result is Cursor → same-family native CLI:
 
 - failed Cursor GPT route → Codex route;

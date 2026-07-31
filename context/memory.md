@@ -289,6 +289,19 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
+## 2026-07-31 — Decision 171: Fallback reduces authoritative accounting
+
+Category: Incident
+
+The sealed takeover's first successor Builder attempt ended in a terminal
+Cursor HTTP 503. Automatic fallback then read the qualification control
+worktree's stale ignored runtime ledger even though the ticket worktree had
+already written the authoritative terminal manifest through its canonical Git
+accounting root. Fallback validation now reuses the ledger reducer over
+committed durable rows plus terminal manifests and hashes that exact effective
+view. Runtime ledgers remain output-only caches and cannot hide, invent, or
+reorder the latest failed attempt.
+
 ## 2026-07-31 — Decision 170: Successor qualification is multi-candidate
 
 Category: Incident
