@@ -3240,10 +3240,13 @@ Validation: the end-to-end repeated-blocker regression begins with a valid
 historical Test-author decision for receipt A and a new Test-author blocker
 receipt B; it proves the stale pair cannot resume, then replaces the pair with
 Planner plus receipt B, runs only Planner beneath Building, continues to
-Spec-linter, and recognizes the archived exact pair. All 21 focused
-state-machine tests pass. Protected GitHub CI owns the complete regression;
-live closure requires T-094 to remain provider-idle until its new
-Planner/`848baf2a...` decision is committed and ingested.
+Spec-linter, and recognizes the archived exact pair. All 22 focused
+state-machine tests pass. A separate compatibility regression upgrades the
+single legacy role-only directive already present on T-094 into the exact
+Planner/`848baf2a...` pair in one ticket-only commit; partial directives,
+unrelated changes, and unbound receipts remain refused. Protected GitHub CI
+owns the complete regression; live closure requires T-094 to remain
+provider-idle until that exact decision is committed and ingested.
 
 ## Maintenance rule
 

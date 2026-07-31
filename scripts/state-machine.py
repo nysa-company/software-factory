@@ -759,6 +759,14 @@ def operator_resume_role(
             before.rstrip("\n")
             + f"\n\n{directive}\n{receipt_directive}\n"
         )
+    elif len(prior_directives) == 1 and not prior_receipts:
+        expected = re.sub(
+            r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
+            f"{directive}\n{receipt_directive}",
+            before,
+            count=1,
+            flags=re.M,
+        )
     elif len(prior_directives) == 1 and len(prior_receipts) == 1:
         expected = re.sub(
             r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",

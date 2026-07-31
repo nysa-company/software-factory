@@ -625,6 +625,54 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.operator_resume_role(self.args, passport, "test-author")
 
+    def test_operator_resume_upgrades_one_legacy_owner_exactly(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOPERATOR RESUME: test-author\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "preserve legacy repair owner", cwd=self.product)
+        blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": blocked_head,
+            "ticket": "T-110",
+        }
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "OPERATOR RESUME: test-author",
+                "OPERATOR RESUME: planner\n"
+                f"OPERATOR RESUME RECEIPT: {self.args.receipt}",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run(
+            "git", "commit", "-qm", "bind legacy repair to current receipt",
+            cwd=self.product,
+        )
+
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "test-author"),
+            "planner",
+        )
+
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nUnrelated: drift\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "add unrelated directive drift", cwd=self.product)
+        passport["head_sha"] = run("git", "rev-parse", "HEAD", cwd=self.product)
+        with self.assertRaisesRegex(
+            STATE.StateError, "operator directive is invalid"
+        ):
+            STATE.operator_resume_role(self.args, passport, "test-author")
+
     def test_operator_resume_uses_current_passport_repair_window(self) -> None:
         historical_receipt = "a" * 64
         self.args.receipt = "b" * 64
