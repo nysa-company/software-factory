@@ -1743,16 +1743,18 @@ pathlib.Path(output).write_text(
     json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n"
 )
 PY
-sed 's/^State: Planning$/State: Ready/' \
+sed 's/^State: Planning$/State: Blocked-Escalated/' \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" > \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp"
 mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
-commit_all "$LEASE_BRANCH_WORKTREE" "add Ready migratable v2 in-flight ticket"
+printf '%s\n' 'Resume-State: Planning' >> \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
+commit_all "$LEASE_BRANCH_WORKTREE" "add blocked migratable v2 in-flight ticket"
 git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
 INFLIGHT_HEAD="$(git -C "$LEASE_BRANCH_WORKTREE" rev-parse HEAD)"
 write_inflight_authorization \
-  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Ready
+  "$PRODUCT_ONE" "$SHA_A" "$SHA_B" T-006 "$INFLIGHT_HEAD" Blocked-Escalated
 commit_all "$PRODUCT_ONE" "authorize exact in-flight ticket head"
 push_main "$PRODUCT_ONE"
 expect_success "authorized historical-identity v2 in-flight tuple certifies" \
@@ -1806,9 +1808,12 @@ mv "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.tmp" \
   "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md"
 commit_all "$LEASE_BRANCH_WORKTREE" "simulate sealed ticket route migration"
 git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
-grep -q '^State: Ready$' "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" &&
-  pass "in-flight migration preserves Ready state" ||
-  fail "in-flight migration preserves Ready state"
+grep -q '^State: Blocked-Escalated$' \
+  "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" &&
+  grep -q '^Resume-State: Planning$' \
+    "$LEASE_BRANCH_WORKTREE/factory/tickets/T-006.md" &&
+  pass "in-flight migration preserves blocked state" ||
+  fail "in-flight migration preserves blocked state"
 python3 - "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$SHA_B" <<'PY' &&
 import json, sys
 value = json.load(open(sys.argv[1]))

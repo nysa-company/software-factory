@@ -2386,7 +2386,10 @@ def load_inflight_authorization():
         raise SystemExit("in-flight release authorization kit binding is invalid")
     entries = {}
     ordered = []
-    allowed_states = {"Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved"}
+    allowed_states = {
+        "Ready", "Planning", "Building", "Review", "Awaiting Approval",
+        "Approved", "Blocked-Escalated",
+    }
     for item in value["tickets"]:
         if not isinstance(item, dict) or set(item) != {"ticket", "branch", "head", "state"}:
             raise SystemExit("in-flight release authorization ticket entry is malformed")
