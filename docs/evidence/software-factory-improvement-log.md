@@ -3387,7 +3387,7 @@ without another Planner call.
 
 ## FI-20260731-127 — Separate regressions missed the composite historical state
 
-Status: Shared-path repair and successor-only submission recovery implemented; qualification, protected CI, and live closure pending
+Status: Shared-path repair and successor-only submission recovery implemented; sealed Contract 1.8 qualification passed; protected CI and live closure pending
 Priority: P0
 Area: controller recovery and aggregate historical-state verification
 Owner: Factory
