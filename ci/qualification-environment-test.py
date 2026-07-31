@@ -200,7 +200,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         (self.product / "factory/KIT_PIN").write_text(
             source_sha + "\n", encoding="utf-8",
         )
-        run(self.product, "git", "add", "factory/KIT_PIN")
+        (self.product / ".gitignore").write_text(
+            "factory/linear-map.json\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", "factory/KIT_PIN", ".gitignore")
         run(self.product, "git", "commit", "-qm", "protected source")
         protected_sha = run(self.product, "git", "rev-parse", "HEAD")
         protected_tree = run(self.product, "git", "rev-parse", "HEAD^{tree}")
@@ -213,6 +216,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.product, "git", "worktree", "add", "-q", "--detach",
             str(source_product), protected_sha,
         )
+        operator_map = source_product / "factory/linear-map.json"
+        ENVIRONMENT.write(operator_map, {"last_success_at": "2026-07-31T12:00:00Z"})
         (self.product / "factory/KIT_PIN").write_text(
             self.sha + "\n", encoding="utf-8",
         )
@@ -304,6 +309,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(value["qualification_mode"], "takeover")
         self.assertEqual(active["qualification_mode"], "takeover")
         self.assertEqual(active["takeover_kits_root"], str(kits))
+        self.assertEqual(active["operator_map_path"], str(operator_map.resolve()))
+        self.assertTrue((self.product / "factory/linear-map.json").is_symlink())
+        self.assertEqual(
+            os.readlink(self.product / "factory/linear-map.json"),
+            str(operator_map.resolve()),
+        )
         self.assertFalse((self.root / "provider").exists())
         self.assertFalse((self.root / "projects/relay/controller").exists())
 

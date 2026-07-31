@@ -288,6 +288,23 @@ def validate_takeover_product(
             )
 
 
+def bind_operator_map(source_product: Path, product: Path) -> str:
+    source = source_product / "factory/linear-map.json"
+    read(source)
+    relative = "factory/linear-map.json"
+    try:
+        command("git", "-C", str(product), "check-ignore", "--quiet", relative)
+    except EnvironmentError as error:
+        raise EnvironmentError("qualification operator map path is not ignored") from error
+    target = product / relative
+    if os.path.lexists(target):
+        if not target.is_symlink() or os.readlink(target) != str(source):
+            raise EnvironmentError("qualification operator map binding is invalid")
+    else:
+        os.symlink(source, target)
+    return str(source)
+
+
 def takeover_source(
     factory: Path, product: Path, project: str, source_project: str | None,
 ) -> dict[str, str] | None:
@@ -344,6 +361,7 @@ def takeover_source(
         raise EnvironmentError("takeover source activation does not match the manifest")
     source_product = Path(source_product_path).resolve(strict=True)
     validate_takeover_product(source_product, product, active, manifest)
+    operator_map_path = bind_operator_map(source_product, product)
     lock = os.open(
         state / "reconcile.lock",
         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -419,6 +437,7 @@ def takeover_source(
         raise EnvironmentError("takeover provider state is not drained")
     return {
         "mode": "takeover",
+        "operator_map_path": operator_map_path,
         "provider_policy_sha256": policy_hash,
         "takeover_kits_root": str(kits),
     }
@@ -562,6 +581,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "status": "pass",
     }
     if takeover:
+        receipt_value["operator_map_path"] = takeover["operator_map_path"]
         receipt_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
     receipt_value["receipt_id"] = receipt_id
@@ -580,6 +600,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "release_path": str(release),
     }
     if takeover:
+        active_value["operator_map_path"] = takeover["operator_map_path"]
         active_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     write(active, active_value)
     registry = profile_projects / f"{args.project}.env"

@@ -412,7 +412,9 @@ the selected tickets' authenticated source passports, a drained controller,
 and the current production provider activation. The worktree must be based on
 exact protected main and may differ only by the candidate pin, successor
 manifest, and dependency lines of selected tickets; this local authority does
-not require a setup pull request. The sealed launcher keeps its candidate
+not require a setup pull request. Its ignored operator-map path is bound to the
+canonical live Linear map and revalidated on every launch, so ticket-state
+logic consumes the same approval overlay as production. The sealed launcher keeps its candidate
 release and disposable worktrees under the qualification root while resolving
 controller state, route state, and provider accounting to the canonical owner-only roots. The
 installed and sealed launchers therefore contend on the same reconciliation
