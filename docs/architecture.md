@@ -438,6 +438,13 @@ role; ordinary deterministic stages then catch up without adding a general
 backward state transition. After catch-up, the signed completed-repair archive
 authenticates the still-visible role-and-receipt pair so it cannot be mistaken
 for a new repair. More than one successful owner run fails closed.
+After an authenticated resume creates that repair record, the controller may
+observe either a receipt-free blocked claim or the unchanged failed-role
+receipt and role left by the terminal blocker. The latter is eligible only
+when both fields exactly match the repair record's blocked receipt and role.
+The deterministic state machine then authenticates the signed repair and
+resolves its owner before the controller clears those stale claim fields.
+Mismatched, partial, unauthenticated, or active-role claims remain blocked.
 An unresolved dependency may temporarily replace the visible transition
 receipt without discarding that repair record. After the dependency and any
 Factory upgrade resolve, the named owner reopens only when the record's signed

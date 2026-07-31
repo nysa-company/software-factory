@@ -2734,7 +2734,7 @@ successful role, or charge is replayed.
 
 ## FI-20260730-112 — A later receipt hid an authenticated contract repair
 
-Status: Repair in progress with FI-20260730-111
+Status: Successor amendment implemented; protected CI and live continuation pending
 Priority: P0
 Area: deterministic controller recovery
 Owner: Factory
@@ -2768,6 +2768,26 @@ original blocker receipt has been replaced by a later unconsumed receipt,
 recover only the named owner, and prove malformed record, broken passport,
 changed remote, ambiguous failure, and `REFUSE` keep the ticket blocked without
 a provider call or charge.
+
+2026-07-31 successor occurrence: T-094's authenticated Builder blocker was
+resumed to its exact Test-author owner under Factory `0bd2c79...`. The state
+machine materialized Building, migrated the passport, and persisted the signed
+repair, but the controller claim correctly still named the failed Builder
+receipt and role. `restore_recorded_contract_repair` accepted only claims whose
+receipt and role were already empty, so it skipped the valid repair. The
+fallback then attempted to materialize the already-resumed blocker again and
+failed with `contract blocker receipt is invalid` on every one-shot. No
+provider call or additional charge occurred after the resume.
+
+Successor amendment: a blocked inactive claim with a repair record is admitted
+to recorded-repair recovery when its receipt and role are both empty, or when
+they exactly equal the repair record's blocked receipt and role. The state
+machine remains the authentication authority for the repair, passport,
+terminal evidence, charge, ancestry, owner, and current stage before the
+controller clears the stale claim fields. Partial or mismatched fields remain
+blocked without calling the state machine. Focused controller coverage proves
+the real retained-field topology routes only `FIX test-author` and that a
+receipt mismatch makes no recovery call.
 
 ## FI-20260730-113 — A successful repair left its checkpoint active
 

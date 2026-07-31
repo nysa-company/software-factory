@@ -847,6 +847,112 @@ class FactoryControllerTest(unittest.TestCase):
             calls,
         )
 
+    def test_recorded_repair_recovers_claim_left_at_blocked_terminal(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        blocked_receipt = "d" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": blocked_receipt,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        repairs = self.state / "contract-repairs"
+        repairs.mkdir(mode=0o700)
+        CONTROL.write(repairs / "T-110.json", {
+            "blocked_receipt": blocked_receipt,
+            "blocked_role": "builder",
+            "repair_role": "test-author",
+        })
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "state-machine":
+                return {
+                    "receipt": "f" * 64,
+                    "role": "test-author",
+                    "stage": "FIX test-author",
+                    "status": "ok",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.remote_passport_valid = lambda _claim: True
+        controller.event = lambda name, *_args, **kwargs: calls.append(
+            (name, kwargs)
+        )
+
+        controller.recover_repaired_failures([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "a" * 64)
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertIn(
+            (
+                "recorded_contract_repair_recovered",
+                {"stage": "FIX test-author"},
+            ),
+            calls,
+        )
+        self.assertIn(
+            (
+                "state-machine", "--ticket", "T-110", "--lease", "a" * 64,
+                "--workdir", str(cell), "--json",
+            ),
+            calls,
+        )
+        self.assertNotIn(
+            ("state-machine", "block"),
+            [call[:2] for call in calls if isinstance(call, tuple)],
+        )
+
+    def test_recorded_repair_refuses_mismatched_blocked_claim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "d" * 64,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        repairs = self.state / "contract-repairs"
+        repairs.mkdir(mode=0o700)
+        CONTROL.write(repairs / "T-110.json", {
+            "blocked_receipt": "e" * 64,
+            "blocked_role": "builder",
+            "repair_role": "test-author",
+        })
+        calls = []
+        controller.json_call = lambda *args, **_kwargs: calls.append(args)
+        controller.remote_passport_valid = lambda _claim: True
+
+        self.assertFalse(controller.restore_recorded_contract_repair(claim))
+
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], "d" * 64)
+        self.assertEqual(claim["role"], "builder")
+        self.assertEqual(calls, [])
+
     def test_invalid_recorded_repair_releases_new_lease_and_stays_blocked(
         self,
     ) -> None:
