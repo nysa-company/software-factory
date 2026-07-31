@@ -2908,6 +2908,57 @@ former error boundary and retired the repair; ordinary release/lease
 requirements then refused later resolution as expected. Protected GitHub CI
 owns the complete regression.
 
+## FI-20260730-116 — Release migration hid a completed repair boundary
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: portable checkpoints and release migration
+Owner: Factory
+First seen: Nysa generation 41 T-094 recovery
+Impact: T-094's exact Test-author repair had already succeeded and committed
+head `6fd39e6438ac823c56f911f1a7c45b238657d6bf`. The subsequent Factory and
+route migration advanced the ticket to
+`508c29be2ee88a3356da9281a5dccb00f0f4fc81`. Recovery rejected
+`dependency conflict passport is invalid` before the completion validator
+could archive the checkpoint. No provider call or duplicate charge occurred,
+but T-094 and its declared dependents remained unable to advance.
+Evidence: the authenticated passport contains one unique successful
+Test-author manifest and charge bound to consumed FIX receipt
+`7d8eccd5652ee0d1c6b166fed8e1cdc89cccdb130552cc9652fcfbb90d7e8b7a`.
+Its v2 migration suffix begins at completed repair head `6fd39e6...`, preserves
+the historical b375 Factory evidence, and ends at the exact c013 Factory,
+route-plan digest, protected base, passport parent, and current head. The
+signed active repair record still names the earlier pre-role head
+`b979651...`, as it must. Protected main advanced through only the reviewed
+Factory-control activation, so it was not yet an ancestor of the ticket branch;
+ordinary dependency refresh is the next required operation.
+Root cause: the pending-checkpoint validator required a migration suffix to
+start at the pre-role repair head. After a successful role, the authenticated
+suffix correctly starts at the role's terminal export head instead. The later
+repair-output validator also diffed the pre-role head against the post-route
+migration head, incorrectly treating the route journal as Test-author output.
+Finally, the pre-resolution guard required the new protected base to already
+be branch ancestry even though completed-checkpoint retirement must happen
+before ordinary dependency refresh.
+Smallest repair: recognize one completed checkpoint bridge only when the
+consumed FIX receipt, original Factory, role head, manifest, conservative or
+actual charge, authenticated completed-role evidence, allowed repair diff, and
+one unique contiguous v2 suffix all agree. Validate Test-author mutations only
+through the suffix's terminal export head; retain historical Factory identity
+for the evidence. Permit a non-ancestor protected base only for that fully
+completed bridge and perform no provider work; the next deterministic
+transition remains provider-free dependency refresh. Pending repairs,
+ambiguous successes, legacy lineage authorizations, broken parents, unknown
+paths, or incomplete suffixes remain invalid.
+Validation: all 13 focused state-machine tests pass. The exact regression now
+includes a successful repair followed by a release migration, route-journal
+change, and non-ancestor protected-control base, plus a broken passport-parent
+negative case. A disposable clone of the real T-094 branch, passport, signed
+repair, transition receipt, and run manifests archived the repair without
+replay and resolved to the exact dependency-refresh refusal for protected main
+`a3e5548c5b76a62981162be15282444da25b599a`. Protected GitHub CI owns the
+complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
