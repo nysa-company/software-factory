@@ -5,6 +5,7 @@ import base64
 import datetime as dt
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -147,7 +148,7 @@ class FallbackTest(unittest.TestCase):
         self.temp.cleanup()
 
     def command(
-        self, action, *extra, check=True, reason="credits_exhausted"
+        self, action, *extra, check=True, reason="credits_exhausted", environment=None
     ):
         result = subprocess.run(
             [
@@ -164,6 +165,7 @@ class FallbackTest(unittest.TestCase):
             ],
             text=True,
             capture_output=True,
+            env={**os.environ, **(environment or {})},
         )
         if result.returncode and check:
             self.fail(result.stderr)
@@ -270,6 +272,41 @@ class FallbackTest(unittest.TestCase):
         recovered = self.command("qualification-apply")
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
+
+    def test_qualification_apply_uses_sealed_local_successor_manifest(self):
+        protected = self.repo / "factory/QUALIFICATION.json"
+        value = json.loads(protected.read_text())
+        value["factory_sha"] = "f" * 40
+        protected.write_text(json.dumps(value))
+        git(self.repo, "add", "factory/QUALIFICATION.json")
+        git(self.repo, "commit", "-m", "unauthorized protected manifest")
+        git(
+            self.repo, "update-ref", "refs/remotes/origin/main",
+            git(self.repo, "rev-parse", "HEAD"),
+        )
+        git(self.repo, "reset", "--hard", self.head)
+        (self.repo / "src/app.txt").write_text("partial handoff\n")
+
+        qualification = self.product / "factory/QUALIFICATION.json"
+        qualification.write_text(json.dumps({
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "mode": "successor",
+            "schema": "nysa.software-factory.qualification/v2",
+            "source_factory_sha": "b" * 40,
+            "tickets": ["T-1"],
+        }))
+        git(self.product, "init", "-q", "-b", "main")
+        git(self.product, "config", "user.name", "Test")
+        git(self.product, "config", "user.email", "test@example.test")
+        git(self.product, "add", "factory/QUALIFICATION.json")
+        git(self.product, "commit", "-m", "local qualification authority")
+
+        applied = self.command("qualification-apply", environment={
+            "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_ROOT": str(self.product),
+        })
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
 
     def test_qualification_apply_migrates_initial_v1_plan(self):
         path = self.repo / "factory/route-plans/T-1.json"

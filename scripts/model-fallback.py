@@ -539,9 +539,26 @@ def qualification_apply(args):
             )
     if attempts != 1:
         raise FallbackError("qualification fallback is allowed only after the first role attempt")
-    raw = git(
-        Path(args.workdir), "show", "refs/remotes/origin/main:factory/QUALIFICATION.json"
-    )
+    manifest_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST")
+    if manifest_path:
+        product = Path(os.environ.get("FACTORY_ROOT", ""))
+        expected = product / "factory/QUALIFICATION.json"
+        try:
+            if (
+                not product.is_absolute()
+                or Path(manifest_path).resolve(strict=True)
+                != expected.resolve(strict=True)
+                or expected.is_symlink()
+            ):
+                raise FallbackError("sealed qualification manifest path is invalid")
+        except OSError as error:
+            raise FallbackError("sealed qualification manifest path is invalid") from error
+        raw = git(product, "show", "HEAD:factory/QUALIFICATION.json")
+    else:
+        raw = git(
+            Path(args.workdir), "show",
+            "refs/remotes/origin/main:factory/QUALIFICATION.json",
+        )
     try:
         qualification = json.loads(raw)
     except json.JSONDecodeError as error:
@@ -557,6 +574,12 @@ def qualification_apply(args):
         or qualification["generation"] < 1
     ):
         raise FallbackError("protected qualification manifest does not authorize fallback")
+    if manifest_path and (
+        qualification.get("schema") != "nysa.software-factory.qualification/v2"
+        or qualification.get("mode") != "successor"
+        or not re.fullmatch(r"[0-9a-f]{40}", qualification.get("source_factory_sha", ""))
+    ):
+        raise FallbackError("sealed successor manifest does not authorize fallback")
     approval = {
         "approval_hash": result["approval_hash"],
         "generation": qualification["generation"],

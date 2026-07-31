@@ -407,11 +407,14 @@ attempts therefore retain per-attempt homes without depending on a ticket's
 cell path. Environment preparation also rejects a root whose worst-case Cursor
 attempt data path would exceed the adapter's isolated-scratch limit.
 For a production-successor qualification, preparation additionally requires
-the canonical product path, the selected tickets' authenticated source
-passports, a drained controller, and the current production provider
-activation. The sealed launcher keeps its candidate release and disposable
-worktrees under the qualification root while resolving controller state,
-route state, and provider accounting to the canonical owner-only roots. The
+a clean linked qualification worktree of the canonical product repository,
+the selected tickets' authenticated source passports, a drained controller,
+and the current production provider activation. The worktree must be based on
+exact protected main and may differ only by the candidate pin, successor
+manifest, and dependency lines of selected tickets; this local authority does
+not require a setup pull request. The sealed launcher keeps its candidate
+release and disposable worktrees under the qualification root while resolving
+controller state, route state, and provider accounting to the canonical owner-only roots. The
 installed and sealed launchers therefore contend on the same reconciliation
 lock; once protected product main names the candidate pin, the installed old
 launcher also fails closed on that pin. This is one authoritative ticket

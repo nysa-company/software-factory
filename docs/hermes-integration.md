@@ -175,12 +175,14 @@ exact clean candidate as a read-only release under an owner-only
 from its sealed path and retains the account's real credential boundary. The
 default fresh mode isolates controller, provider, and worktree state. An
 explicit `--takeover-project <project>` production-successor mode instead
-requires the canonical product, drained installed controller, current provider
+requires a clean control-only linked worktree of the canonical product,
+drained installed controller, current provider
 activation, source Factory binding, and authenticated selected-ticket
-passports. It reuses the canonical controller and provider state in place
-under the same reconciliation lock while keeping the sealed candidate and
-disposable worktrees isolated. It neither copies passports nor installs or
-activates the candidate in the production kit registry. The successor reducer
+passports. The linked worktree is based on exact protected main and needs no
+standalone setup pull request. It reuses the canonical controller and provider
+state in place under the same reconciliation lock while keeping the sealed
+candidate and disposable worktrees isolated. It neither copies passports nor
+installs or activates the candidate in the production kit registry. The successor reducer
 caps candidate-only spend while retaining and validating cumulative history.
 
 A repeated pre-provider qualification may retain remote ticket branches from

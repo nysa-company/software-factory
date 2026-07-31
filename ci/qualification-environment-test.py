@@ -152,6 +152,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             launcher_text,
         )
         self.assertIn(
+            '"FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"',
+            launcher_text,
+        )
+        self.assertIn(
             '"FACTORY_CLI_RUNTIME_ROOT=$PROVIDER_STATE_ROOT/cli-runtimes"',
             launcher_text,
         )
@@ -193,6 +197,25 @@ class QualificationEnvironmentTest(unittest.TestCase):
     def test_takeover_reuses_authenticated_live_state_without_copying_it(self) -> None:
         source_sha = "b" * 40
         tickets = ["T-094", "T-100", "T-093"]
+        (self.product / "factory/KIT_PIN").write_text(
+            source_sha + "\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", "factory/KIT_PIN")
+        run(self.product, "git", "commit", "-qm", "protected source")
+        protected_sha = run(self.product, "git", "rev-parse", "HEAD")
+        protected_tree = run(self.product, "git", "rev-parse", "HEAD^{tree}")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            protected_sha,
+        )
+        source_product = self.workspace / "source-product"
+        run(
+            self.product, "git", "worktree", "add", "-q", "--detach",
+            str(source_product), protected_sha,
+        )
+        (self.product / "factory/KIT_PIN").write_text(
+            self.sha + "\n", encoding="utf-8",
+        )
         (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
             "budget_usd": "300.000000",
             "capacity": 3,
@@ -207,7 +230,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "target_done": 3,
             "tickets": tickets,
         }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-        run(self.product, "git", "add", "factory/QUALIFICATION.json")
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json",
+        )
         run(self.product, "git", "commit", "-qm", "authorize qualification")
 
         account = (self.workspace / "account").resolve()
@@ -227,7 +253,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "contract_version": "1.8.0",
             "kit_sha": source_sha,
             "kit_tree": "c" * 40,
-            "product_path": str(self.product.resolve()),
+            "product_path": str(source_product.resolve()),
+            "product_tree": protected_tree,
             "project": "relay",
         })
         secret = b"p" * 32
@@ -279,6 +306,36 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(active["takeover_kits_root"], str(kits))
         self.assertFalse((self.root / "provider").exists())
         self.assertFalse((self.root / "projects/relay/controller").exists())
+
+        unrelated = self.workspace / "unrelated-product"
+        shutil.copytree(self.product, unrelated, ignore=shutil.ignore_patterns(".git"))
+        run(unrelated, "git", "init", "-q", "-b", "main")
+        run(unrelated, "git", "config", "user.name", "Test")
+        run(unrelated, "git", "config", "user.email", "test@example.invalid")
+        run(unrelated, "git", "remote", "add", "origin", "git@example.invalid")
+        run(unrelated, "git", "add", ".")
+        run(unrelated, "git", "commit", "-qm", "unrelated")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "not a linked canonical worktree",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                unrelated,
+                {"product_tree": protected_tree},
+                {"tickets": tickets},
+            )
+        (self.product / "application.txt").write_text("not control data\n")
+        run(self.product, "git", "add", "application.txt")
+        run(self.product, "git", "commit", "-qm", "change product code")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "changes non-control product files",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                self.product,
+                {"product_tree": protected_tree},
+                {"tickets": tickets},
+            )
 
     def test_upgrades_release_without_replacing_controller_state(self) -> None:
         args = argparse.Namespace(

@@ -496,6 +496,19 @@ EXPECTED_RELEASE="$(cd "$EXPECTED_RELEASE" 2>/dev/null && pwd -P)" ||
   die "active release escapes its exact physical release location"
 [[ "$ACTIVE_PRODUCT_PATH" == "$PRODUCT_ROOT" ]] ||
   die "active product path does not match the registry"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  QUALIFICATION_PRODUCT_TREE="$(git -C "$PRODUCT_ROOT" \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+    -c credential.helper= -c diff.external= rev-parse 'HEAD^{tree}' 2>/dev/null)" ||
+    die "qualification product tree cannot be resolved"
+  [[ "$QUALIFICATION_PRODUCT_TREE" == "$ACTIVE_PRODUCT_TREE" ]] ||
+    die "qualification product no longer matches its sealed tree"
+  [[ -z "$(git -C "$PRODUCT_ROOT" \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+    -c credential.helper= -c diff.external= status --porcelain \
+    --untracked-files=all 2>/dev/null)" ]] ||
+    die "qualification product is no longer clean"
+fi
 [[ ! -e "$RELEASE_PATH/.git" ]] ||
   die "active release contains unexpected Git metadata"
 
@@ -629,6 +642,11 @@ if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE
 fi
 if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
   HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")
+  if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+    HELPER_ENV+=(
+      "FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"
+    )
+  fi
 fi
 if [[ -n "$PROFILE_GH_TOKEN" ]]; then
   HELPER_ENV+=("GH_TOKEN=$PROFILE_GH_TOKEN")
