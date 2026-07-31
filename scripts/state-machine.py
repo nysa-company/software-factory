@@ -1480,6 +1480,7 @@ def migrated_contract_repair(
     args: argparse.Namespace,
     passport: dict[str, Any],
     record: dict[str, Any],
+    success: dict[str, str] | None = None,
 ) -> bool:
     if record.get("factory_sha") == args.factory_sha:
         return True
@@ -1492,6 +1493,15 @@ def migrated_contract_repair(
     record_passport = record.get("passport_sha256", "")
     current_head = git(args.workdir, "rev-parse", "HEAD")
     migration_target_head = current_head
+    if success is not None:
+        if (
+            record.get("repair_source") is not None
+            or not completed_migrated_contract_repair(
+                args, passport, record, success,
+            )
+        ):
+            return False
+        migration_target_head = success["role_head_before"]
     if record.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE:
         try:
             transition = safe_receipt(
@@ -1601,6 +1611,129 @@ def migrated_contract_repair(
     ]
     return (
         len(starts) == 1
+        and len(blocked) == 1
+        and not any(
+            isinstance(item, dict)
+            and item.get("transition_receipt_sha256")
+            == record.get("blocked_receipt")
+            for item in completed
+        )
+    )
+
+
+def completed_migrated_contract_repair(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    record: dict[str, Any],
+    success: dict[str, str],
+) -> bool:
+    """Bind one migrated repair success to its exact role input and passport."""
+    try:
+        transition = safe_receipt(args.state_dir / f"{args.ticket}.json")
+    except (FileNotFoundError, json.JSONDecodeError, OSError, StateError):
+        return False
+    completed = passport.get("completed_role_evidence")
+    charges = passport.get("charge_records")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    before = success.get("role_head_before", "")
+    branch = git(
+        args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD",
+    )
+    owner = record.get("repair_role", "")
+    stage = f"FIX {owner}"
+    origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
+    origin_digest = (
+        hashlib.sha256(origin.encode()).hexdigest() if origin else ""
+    )
+    accounted = success.get("accounting_state") == "completed" or (
+        success.get("accounting_state") == "abandoned_conservative"
+        and success.get("cost_basis") == "conservative_reservation"
+        and success.get("effective_cost") == success.get("reserved_usd")
+    )
+    if (
+        not isinstance(completed, list)
+        or not isinstance(charges, list)
+        or not SHA.fullmatch(before)
+        or before == current_head
+        or passport.get("ticket") != args.ticket
+        or passport.get("project") != args.project
+        or passport.get("contract_version") != args.contract_version
+        or passport.get("product_origin_sha256") != origin_digest
+        or passport.get("branch") != branch
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+        or not DIGEST.fullmatch(transition.get("passport_sha256", ""))
+        or passport.get("parent_file_sha256")
+        != transition.get("passport_sha256")
+        or passport.get("current_stage") != stage
+        or passport.get("transition_receipt_sha256")
+        != transition.get("receipt_sha256")
+        or transition.get("consumed") is not True
+        or transition.get("ticket") != args.ticket
+        or transition.get("project") != args.project
+        or transition.get("branch") != branch
+        or transition.get("factory_sha") != args.factory_sha
+        or transition.get("contract_version") != args.contract_version
+        or transition.get("product_origin_sha256") != origin_digest
+        or transition.get("role") != owner
+        or transition.get("stage") != stage
+        or transition.get("head_sha") != before
+        or transition.get("head_tree")
+        != git(args.workdir, "rev-parse", f"{before}^{{tree}}")
+        or success.get("transition_receipt_sha256")
+        != transition.get("receipt_sha256")
+        or success.get("kit_sha") != args.factory_sha
+        or success.get("contract_version") != args.contract_version
+        or success.get("role_branch_before") != branch
+        or not isinstance(success.get("run_id"), str)
+        or not success.get("run_id")
+        or not DIGEST.fullmatch(success.get("manifest_sha256", ""))
+        or not DIGEST.fullmatch(success.get("output_sha256", ""))
+        or success.get("go_issued") != "1"
+        or success.get("task_submitted") != "1"
+        or not accounted
+        or not branch_contains(args, before)
+    ):
+        return False
+    matching_completed = [
+        item for item in completed
+        if isinstance(item, dict)
+        and item.get("contract_version") == args.contract_version
+        and item.get("factory_sha") == args.factory_sha
+        and item.get("head_before") == before
+        and item.get("manifest_sha256") == success["manifest_sha256"]
+        and item.get("output_sha256") == success["output_sha256"]
+        and item.get("role") == owner
+        and item.get("run_id") == success["run_id"]
+        and item.get("transition_receipt_sha256")
+        == transition["receipt_sha256"]
+    ]
+    matching_charges = [
+        item for item in charges
+        if isinstance(item, dict)
+        and isinstance(item.get("charge_micro_usd"), int)
+        and not isinstance(item.get("charge_micro_usd"), bool)
+        and item["charge_micro_usd"] >= 0
+        and item.get("accounting_state") == success.get("accounting_state")
+        and item.get("contract_version") == args.contract_version
+        and item.get("factory_sha") == args.factory_sha
+        and item.get("head_before") == before
+        and item.get("manifest_sha256") == success["manifest_sha256"]
+        and item.get("role") == owner
+        and item.get("run_id") == success["run_id"]
+        and item.get("transition_receipt_sha256")
+        == transition["receipt_sha256"]
+    ]
+    blocked = [
+        item for item in charges
+        if isinstance(item, dict)
+        and item.get("transition_receipt_sha256")
+        == record.get("blocked_receipt")
+        and item.get("role") == record.get("blocked_role")
+    ]
+    return (
+        len(matching_completed) == 1
+        and len(matching_charges) == 1
         and len(blocked) == 1
         and not any(
             isinstance(item, dict)
@@ -2113,7 +2246,14 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
         ):
             raise StateError("dependency conflict repair record is invalid")
     successes = contract_repair_successes(args, owner, head)
-    migrated = migrated_contract_repair(args, passport, record)
+    if source is None and len(successes) > 1:
+        raise StateError("contract repair has duplicate successful evidence")
+    migrated = migrated_contract_repair(
+        args,
+        passport,
+        record,
+        successes[0] if source is None and successes else None,
+    )
     if not migrated and (
         source == DEPENDENCY_CONFLICT_SOURCE
         or not completed_repair_after_lost_migration_history(
