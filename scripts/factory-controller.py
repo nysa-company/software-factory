@@ -1171,7 +1171,7 @@ class Controller:
 
     def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
-            if claim["status"] != "blocked":
+            if claim["status"] not in {"blocked", "claimed", "waiting"}:
                 continue
             path = self.state / "passports" / f"{claim['ticket']}.json"
             if not path.exists():
@@ -1183,7 +1183,17 @@ class Controller:
                 f"passport-route-migration-pending-{claim['ticket']}-"
                 f"{self.release_path.name}"
             )
-            if prior == self.release_path.name and not self.marker(pending):
+            completed = (
+                f"passport-route-migration-complete-{claim['ticket']}-"
+                f"{self.release_path.name}"
+            )
+            if (
+                prior == self.release_path.name
+                and (
+                    not self.marker(pending)
+                    or self.marker(completed)
+                )
+            ):
                 continue
             if not self.ticket_release_current(claim):
                 if prior != self.release_path.name:
@@ -1198,6 +1208,8 @@ class Controller:
                             "passport_migrated_awaiting_route", claim["ticket"],
                             from_factory_sha=prior,
                         )
+                claim["status"] = "blocked"
+                self.save_claim(claim)
                 marker = (
                     f"route-migration-required-{claim['ticket']}-"
                     f"{self.release_path.name}"
@@ -1237,6 +1249,11 @@ class Controller:
                     "upgraded_claim_recovered", claim["ticket"],
                     from_factory_sha=prior,
                 )
+                self.marker(completed, {
+                    "factory_sha": self.release_path.name,
+                    "schema": EVENT_SCHEMA,
+                    "ticket": claim["ticket"],
+                })
                 continue
             terminal = (
                 self.terminal_for_receipt(claim["ticket"], claim["receipt"])
@@ -1262,6 +1279,11 @@ class Controller:
                 "upgraded_claim_recovered", claim["ticket"],
                 from_factory_sha=prior,
             )
+            self.marker(completed, {
+                "factory_sha": self.release_path.name,
+                "schema": EVENT_SCHEMA,
+                "ticket": claim["ticket"],
+            })
 
     def restore_contract_blocker(self, claim: dict[str, Any]) -> bool:
         if (
@@ -1954,6 +1976,59 @@ class Controller:
             stage = transition.get("stage", "")
             receipt = transition.get("receipt", "")
             role = transition.get("role")
+            if (self.product / "factory/MAINTENANCE").exists():
+                runnable_stage = (
+                    re.fullmatch(
+                        r"(?:RUN|FIX) "
+                        r"(planner|spec-linter|test-author|builder|"
+                        r"reviewer|narrator)",
+                        stage,
+                    )
+                    if isinstance(stage, str)
+                    else None
+                )
+                non_role_stage = (
+                    isinstance(stage, str)
+                    and (
+                        stage.startswith("AWAIT-OPERATOR ")
+                        or stage.startswith("AWAIT_DEPENDENCY ")
+                        or stage.startswith("AWAIT_BUDGET ")
+                        or stage.startswith("COMPLETE ")
+                        or stage.startswith("REFUSE ")
+                        or stage.startswith((
+                            "AWAIT-MERGE approval attested; "
+                            "protected auto-merge request pending",
+                            "AWAIT-MERGE protected auto-merge requested",
+                            "AWAIT-MERGE closeout auto-merge pending",
+                        ))
+                    )
+                )
+                expected_role = (
+                    runnable_stage[1] if runnable_stage else None
+                )
+                if (
+                    not isinstance(stage, str)
+                    or not stage
+                    or not DIGEST.fullmatch(receipt)
+                    or transition.get("schema")
+                    != "nysa.software-factory.state-machine/v1"
+                    or transition.get("status") != "ok"
+                    or transition.get("ticket") != claim["ticket"]
+                    or transition.get("action") != stage.partition(" ")[0]
+                    or transition.get("detail")
+                    != (stage.partition(" ")[2] or None)
+                    or not (runnable_stage or non_role_stage)
+                    or role != expected_role
+                ):
+                    raise ControllerError(
+                        "maintenance boundary has invalid transition evidence"
+                    )
+                self.event(
+                    "stage_resolution_paused",
+                    claim["ticket"],
+                    transition_receipt_sha256=receipt,
+                )
+                return {"status": "maintenance", "ticket": claim["ticket"]}
             if not (
                 stage.startswith("AWAIT-OPERATOR Linear approval observed")
                 or stage.startswith("AWAIT-MERGE protected auto-merge requested")
@@ -2247,7 +2322,7 @@ class Controller:
             if result.get("status") != "progressed":
                 if (
                     result.get("status") in {
-                        "blocked", "budget", "error", "waiting",
+                        "blocked", "budget", "error", "maintenance", "waiting",
                     }
                     and not self.role_active(claim)
                 ):

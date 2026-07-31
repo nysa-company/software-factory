@@ -1929,7 +1929,7 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
         and order[TARGET_STATE[role]] < order[current_state(args.workdir, args.ticket)]
     ):
         return stage, True
-    return None, False
+    return stage, False
 
 
 def core(
@@ -2132,7 +2132,11 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
     elif declared:
         base = protected_base_sha(args)
         stage = (
-            repair_stage or resolve(args)
+            (
+                repair_stage
+                if repair_stage is not None
+                else resolve(args)
+            )
             if branch_contains(args, base)
             else (
                 "REFUSE dependency refresh required; "
@@ -2140,7 +2144,11 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
     else:
-        stage = repair_stage or resolve(args)
+        stage = (
+            repair_stage
+            if repair_stage is not None
+            else resolve(args)
+        )
     role = stage_role(stage)
     if role:
         current = current_state(args.workdir, args.ticket)
@@ -2160,8 +2168,6 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
                         f"state machine cannot enter {target} from {current}"
                     )
                 current = current_state(args.workdir, args.ticket)
-        if (not repair_override or stage.startswith("RUN ")) and resolve(args) != stage:
-            raise StateError("transition changed the resolved stage")
     if not stage.startswith("REFUSE "):
         migrate_passport(args)
     receipt = issue(args, stage)

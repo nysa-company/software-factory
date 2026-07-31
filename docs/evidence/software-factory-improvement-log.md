@@ -2959,6 +2959,79 @@ replay and resolved to the exact dependency-refresh refusal for protected main
 `a3e5548c5b76a62981162be15282444da25b599a`. Protected GitHub CI owns the
 complete regression.
 
+## FI-20260730-117 — Waiting claims skipped release recovery
+
+Status: Repair implemented; protected CI and live continuation pending
+Priority: P0
+Area: release cutover and deterministic controller recovery
+Owner: Factory
+First seen: Nysa generation 42 T-100 recovery
+Impact: T-100's route migration advanced its clean branch to
+`196a45a020e7cfb047c1841f96cde91328a3c02a` under Factory
+`8e2fb1f051a18e454deb35f49ff195dfccfb5940`, while its authenticated passport
+still named the prior Factory and head. The first controller invocation tried
+to interpret the repair record against that split identity and emitted
+`contract repair record is invalid`. It made no provider call or charge. A
+later invocation recovered the same passport and reached the correct
+`AWAIT_DEPENDENCY T-094` state without replay.
+Root cause: release recovery considered only claims whose coarse controller
+status was `blocked`. A dependency-wait checkpoint can be just as stale after
+an authorized cutover, but `waiting` and clean `claimed` claims went directly
+to ordinary reconciliation.
+Smallest repair: before any runnable scheduling, apply the existing
+authenticated release-recovery transaction to `blocked`, `waiting`, and
+`claimed` claims. It still acts only when the signed passport names a prior
+release or a durable route-migration marker exists; same-release claims are
+unchanged. Recovery reacquires only the exact ticket lease, preserves every
+completed role and charge, and keeps contract-blocked or successful-terminal
+boundaries blocked for their existing specialist recovery.
+Validation: a focused controller regression starts with a released waiting
+lease, prior-release route, and prior-release passport; proves the passport
+migrates while the claim stays blocked; then advances the route and proves
+exact-ticket reclaim happens before reconciliation. The complete 48-test
+controller suite passes. Live closure requires the successor cutover to
+recover T-100 on its first controller invocation and return directly to its
+dependency wait without a provider attempt.
+
+## FI-20260730-118 — Maintenance raced a second stage resolution
+
+Status: Repair implemented; protected CI and live continuation pending
+Priority: P0
+Area: deterministic state-machine and controller drain
+Owner: Factory
+First seen: Nysa generation 42 T-094 maintenance drain
+Impact: T-094 completed a provider-free dependency refresh at head
+`821d11e75e583633b6132952af614798a6f4d950`. Maintenance was published after
+the state machine resolved its next role but before it finished. A second
+`next-stage` call observed the new maintenance marker, differed from the
+already resolved role, and raised `transition changed the resolved stage`.
+The controller converted the clean, receipt-free, role-free claim to
+`blocked`. No provider process, active run, or new charge existed, but no
+ordinary recovery path could reopen that claim.
+Root cause: execution recomputed a transition already owned by `next-stage`,
+contradicting the Contract 1.8 single-resolution rule. The controller also did
+not include `maintenance` among the terminal results that park a clean claim
+and release its dispatcher lease.
+Smallest repair: resolve the stage exactly once, complete the state-machine
+receipt transaction, then recheck maintenance in the controller before any
+PR or provider action. If maintenance appeared, record
+`stage_resolution_paused`, leave the receipt unconsumed, settle and park the
+ticket, and release its lease. The next invocation chains an ordinary new
+receipt from the abandoned one. Ambiguous state-machine, passport,
+publication, or provider errors remain fail closed.
+Validation: one state-machine regression proves a role stage calls
+`next-stage` once while binding the resulting role and receipt. A completed
+repair returns that already-resolved normal stage to its caller instead of
+hiding another lookup. One controller regression publishes maintenance inside
+that exact boundary and proves no role runner is called and the lease drains;
+malformed transition evidence at the same boundary still blocks. The complete
+focused suites pass 15
+state-machine and 48 controller tests. A disposable copy of the exact
+T-094 head, passport, repair archive, run history, protected base, and lease
+resolves `RUN builder` through the repaired one-resolution path. Protected
+GitHub CI owns the complete regression; live closure requires T-094 to resume
+Builder from preserved evidence after the successor cutover.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
