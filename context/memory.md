@@ -2163,3 +2163,21 @@ preflight could therefore add platform-specific Python bytecode and make the
 second provenance check fail correctly. Repeated release invocations now use a
 read-only fixture matching installation; the separate forged-tree, physical
 drift, partial provenance, and Git-metadata refusal cases remain unchanged.
+
+## 2026-07-31 — Decision 165: Migrated repair lineage ends at the role input
+
+Category: Incident
+
+A successful repair role advances the ticket from its authenticated input head
+to a new output head; immutable migration history must not be rewritten to
+pretend that the migration itself created the role output. For an active repair
+that originated under an earlier Factory, its unique contiguous migration
+suffix therefore ends at the consumed FIX receipt's role-input head. The
+current authenticated passport may bind a descendant output head only when one
+terminal manifest, one completed-role record, and one accounting record match
+the exact receipt, role, run, Factory, input head, and output digest, while the
+terminal passport names the receipt-bound input-passport file, the charge has a
+canonical nonnegative micro-USD amount, and the original blocked charge remains
+unique and unsuccessful. Any missing, ambiguous, unrelated, or duplicate
+evidence fails closed. A valid successful role is never replayed merely to make
+migration history end at its output.

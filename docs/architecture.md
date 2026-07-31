@@ -443,6 +443,15 @@ receipt without discarding that repair record. After the dependency and any
 Factory upgrade resolve, the named owner reopens only when the record's signed
 passport is the unique start of a contiguous authenticated v2 migration suffix
 and the original failed charge remains unique and unsuccessful.
+If that migrated owner then succeeds, the suffix ends at the consumed repair
+receipt's role-input head rather than the new role-output head. The state
+machine accepts the advance only when the current authenticated passport, one
+terminal manifest, one completed-role record, and one charge all bind that
+same receipt, role input, Factory release, run, output digest, and current
+descendant head. The terminal passport must name the exact input-passport file
+digest carried by the receipt, and the charge must contain a canonical
+nonnegative micro-USD amount. Missing or duplicate evidence remains fail
+closed and never causes the successful role to be replayed.
 When a zero-provider qualification attempt leaves only canonical pin and state
 commits on a now-divergent remote ticket branch, a protected-main reset
 authorization may bind its exact head. Admission validates that no ticket

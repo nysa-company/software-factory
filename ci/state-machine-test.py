@@ -1504,6 +1504,7 @@ class StateMachineTest(unittest.TestCase):
                 "transition_receipt_sha256": blocked_receipt,
             }],
             "completed_role_evidence": [],
+            "contract_version": self.args.contract_version,
             "current_stage": "AWAIT_DEPENDENCY T-092",
             "factory_release_history": [
                 {
@@ -1531,6 +1532,10 @@ class StateMachineTest(unittest.TestCase):
                 "to_route_plan_sha256": "4" * 64,
             }],
             "protected_base_sha": "3" * 40,
+            "product_origin_sha256": hashlib.sha256(
+                b"test-origin"
+            ).hexdigest(),
+            "project": self.args.project,
             "schema": STATE.PASSPORT_SCHEMA,
             "ticket": "T-110",
         }
@@ -1574,6 +1579,162 @@ class StateMachineTest(unittest.TestCase):
             STATE.StateError, "contract repair record is invalid"
         ):
             STATE.contract_repair_stage(self.args)
+
+        body["migration_history"][0]["from_passport_sha256"] = old_passport
+        receipt_body = {
+            "branch": "ticket/T-110",
+            "contract_version": self.args.contract_version,
+            "factory_sha": self.args.factory_sha,
+            "head_sha": current_head,
+            "head_tree": run(
+                "git", "rev-parse", f"{current_head}^{{tree}}", cwd=self.product
+            ),
+            "passport_sha256": "9" * 64,
+            "product_origin_sha256": hashlib.sha256(
+                b"test-origin"
+            ).hexdigest(),
+            "project": self.args.project,
+            "role": "test-author",
+            "schema": STATE.RECEIPT_SCHEMA,
+            "stage": "FIX test-author",
+            "ticket": "T-110",
+        }
+        receipt_digest = hashlib.sha256(
+            STATE.canonical(receipt_body)
+        ).hexdigest()
+        STATE.write_atomic(
+            self.state_dir / "T-110.json",
+            {
+                **receipt_body,
+                "consumed": True,
+                "consumed_at_epoch": 1,
+                "receipt_sha256": receipt_digest,
+            },
+        )
+        output_digest = "5" * 64
+        manifest = (
+            "run_id=migrated-repair\nphase=completed\n"
+            "accounting_state=completed\n"
+            f"contract_version={self.args.contract_version}\n"
+            "ticket=T-110\nrole=test-author\nexit_status=0\nrole_exit=ok\n"
+            f"kit_sha={self.args.factory_sha}\n"
+            f"role_head_before={current_head}\n"
+            "role_branch_before=ticket/T-110\n"
+            f"transition_receipt_sha256={receipt_digest}\n"
+            f"output_sha256={output_digest}\n"
+            "go_issued=1\ntask_submitted=1\n"
+        ).encode()
+        (self.product / "factory/runs/migrated-repair.meta").write_bytes(
+            manifest
+        )
+        manifest_digest = hashlib.sha256(manifest).hexdigest()
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "\nRepair result: contract clarified.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "complete migrated repair", cwd=self.product)
+        output_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        completed = {
+            "contract_version": self.args.contract_version,
+            "factory_sha": self.args.factory_sha,
+            "head_before": current_head,
+            "manifest_sha256": manifest_digest,
+            "output_sha256": output_digest,
+            "role": "test-author",
+            "run_id": "migrated-repair",
+            "transition_receipt_sha256": receipt_digest,
+        }
+        body.update({
+            "charge_records": [
+                {
+                    "role": "builder",
+                    "transition_receipt_sha256": blocked_receipt,
+                },
+                {
+                    **completed,
+                    "accounting_state": "completed",
+                    "charge_micro_usd": 1,
+                },
+            ],
+            "completed_role_evidence": [dict(completed)],
+            "current_stage": "FIX test-author",
+            "head_sha": output_head,
+            "parent_file_sha256": receipt_body["passport_sha256"],
+            "transition_receipt_sha256": receipt_digest,
+        })
+        wrong_parent_body = {
+            **body,
+            "parent_file_sha256": "8" * 64,
+        }
+        wrong_parent = dict(wrong_parent_body)
+        wrong_parent["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(wrong_parent_body), hashlib.sha256
+        ).hexdigest()
+        wrong_parent["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(wrong_parent)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", wrong_parent)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract repair record is invalid"
+        ):
+            STATE.contract_repair_stage(self.args)
+
+        missing_charge_body = {
+            **body,
+            "charge_records": body["charge_records"][:1],
+        }
+        missing_charge = dict(missing_charge_body)
+        missing_charge["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(missing_charge_body), hashlib.sha256
+        ).hexdigest()
+        missing_charge["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(missing_charge)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", missing_charge)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract repair record is invalid"
+        ):
+            STATE.contract_repair_stage(self.args)
+
+        invalid_charge_body = {
+            **body,
+            "charge_records": [
+                body["charge_records"][0],
+                {
+                    **body["charge_records"][1],
+                    "charge_micro_usd": True,
+                },
+            ],
+        }
+        invalid_charge = dict(invalid_charge_body)
+        invalid_charge["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(invalid_charge_body), hashlib.sha256
+        ).hexdigest()
+        invalid_charge["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(invalid_charge)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", invalid_charge)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract repair record is invalid"
+        ):
+            STATE.contract_repair_stage(self.args)
+
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args),
+                ("RUN builder", False),
+            )
+        self.assertFalse(STATE.repair_path(self.args).exists())
 
     def test_completed_repair_retires_after_terminal_export_lost_history(
         self,

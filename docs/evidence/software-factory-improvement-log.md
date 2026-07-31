@@ -3307,6 +3307,52 @@ provenance assertion unchanged.
 Validation: shell syntax and the focused preflight suite must pass on Linux;
 protected GitHub CI owns the complete regression.
 
+## FI-20260731-126 — A successful migrated repair invalidated its own lineage
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: exact-stage repair and passport migration
+Owner: Factory
+First seen: Nysa generation 47 T-094 Planner repair
+Impact: T-094 completed its authorized Planner repair successfully and
+committed contract v3, but the next deterministic transition rejected the
+still-valid repair record. The controller parked T-094, while dependent T-100
+and T-093 remained safely waiting. No successful role was replayed and no
+sibling provider call was launched, but all three tickets stopped advancing.
+Evidence: consumed `FIX planner` receipt
+`b1912d7410fa13ec7a888cb24d674f78279c7fc2b5b3d255e7fb0afadecc82a0`
+binds Factory `2ef229720d70cf9be0bc3c6e4903d14585495bd0` and role-input
+head `ee91c3338b50188aff7a8c37ab6dcb2cca1ce42d`. Run
+`1785490307-75649` terminalized `role_exit=ok` and advanced the authenticated
+passport and branch to `065477d1fef538e4656d033cec6fa08d48dc8728`.
+The passport contains exactly one matching completed-role record and one
+matching conservative charge. The signed repair's contiguous v2 migration
+suffix correctly ends at the role-input head. The next state-machine call
+emitted `contract repair record is invalid`. Factory issue #174 preserves the
+full immutable evidence.
+Repeated Linear `unsafe_state` admission noise observed during the live call is
+tracked separately in Factory issue #175; it did not alter the active claim.
+Root cause: migrated repair validation required the migration suffix to end at
+the current branch head. That invariant is correct before execution but
+becomes false when the authorized repair role succeeds and creates its output
+commit. The terminal passport advances to the output head, while migration
+history correctly remains an immutable record ending at the role input.
+Smallest repair: when exactly one migrated repair success exists, validate the
+migration suffix against that success's role-input head. Separately require
+the consumed FIX receipt, role and branch, exact Factory release, authenticated
+current passport, descendant output head, terminal manifest, output digest,
+completed-role evidence, receipt-bound input-passport digest, canonical
+nonnegative charge, successful accounting record, and original failed charge
+to match uniquely. The ordinary pre-run migration rule and
+dependency-conflict repair path are unchanged.
+Validation: the focused state-machine regression now proves a valid migrated
+repair can advance its head and retire the signed repair without replay. It
+also proves that changing the input-passport link or removing/malforming the
+matching success charge remains fail closed.
+All 22 focused state-machine tests pass. Protected GitHub CI owns the complete
+regression; live closure requires T-094 to continue to its next deterministic
+stage without another Planner call.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
