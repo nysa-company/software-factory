@@ -81,8 +81,10 @@ only through the trusted attestation route.
 
 Spec-lint failure stays in Planning. Review changes return to Building. A
 broken preview returns to Building. Any active stage may enter
-Blocked-Escalated; an operator may resume it at the stage named by
-`Resume-State:` in the ticket.
+Blocked-Escalated. A contract blocker resumes only when the operator's Linear
+move matches `Resume-State:` and the ticket contains one exact repair-role
+directive paired with the current blocked transition-receipt digest. A stale
+role, receipt, or prior Linear move grants nothing.
 
 The team intentionally archives Linear's default `Todo` and `In Progress`
 states plus the former Spec Lint, Test Authoring, and Evidence micro-states.

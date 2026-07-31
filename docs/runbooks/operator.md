@@ -533,7 +533,14 @@ These run in your interactive session — never inside the loop. The factory's o
 - Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
 - Contract 1.2 stops in Review. Under contract 1.3, wait for trusted bundle attestation to create Awaiting Approval, then make the one business decision by moving it to Approved in Linear. Do not click a separate GitHub approval or bypass protection; the trusted approval attestation requests auto-merge. Done appears only after the protected closeout commit merges.
-- Resume an escalated ticket by setting `Resume-State:` locally to the agreed stage, then move the Linear issue out of Blocked-Escalated to that same stage. Mismatched or otherwise illegal transitions are rejected and reported in sync health.
+- Resume an escalated contract blocker by committing exactly
+  `OPERATOR RESUME: <role>` and
+  `OPERATOR RESUME RECEIPT: <current-blocked-receipt-sha256>` to its ticket
+  file, replacing the one prior pair when present and changing no other path.
+  Then move the Linear issue out of Blocked-Escalated to the ticket's
+  `Resume-State:`. A missing, stale, mismatched, partial, or otherwise illegal
+  decision is rejected and reported in sync health; an earlier decision never
+  authorizes a later blocker.
 
 ## The general rule
 

@@ -3205,6 +3205,46 @@ tests pass. Protected GitHub CI owns the complete regression; live closure
 requires T-094 to perform this same handoff without replaying its earlier
 successful role evidence.
 
+## FI-20260730-123 — A stale resume decision relaunched the same blocker twice
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: exact-stage repair recovery
+Owner: Factory
+First seen: Nysa generation 45 T-094 Test-author recovery
+Impact: after Test-author had already proved the frozen criterion-8
+contradiction, the controller launched the same role twice more instead of
+waiting for a new operator decision. T-094 gained no test or contract
+resolution, T-093 and T-100 remained parked, and conservative accounting added
+$20 across two redundant calls.
+Evidence: runs `1785478242-61245` and `1785478871-78303` each terminalized
+with exit 12, `role_exit_contract_blocked`, 30 and 33 authenticated progress
+events, and distinct consumed receipts `a2e37f02...` and `848baf2a...`.
+Ticket commits `954355a0...` and `edb45131...` only re-confirm the same
+criterion-8 contradiction. No new ruling or contract version appeared.
+`contract_blocker_recovered` events show the controller immediately treated
+each new blocker as resumable.
+Root cause: repair authorization named only a role. The old visible
+`OPERATOR RESUME: test-author` line remained in branch history/current text,
+and Linear still exposed the earlier Building resume. Passport ancestry proved
+the line was authentic but did not prove it authorized the latest blocked
+receipt, so every later blocker could reuse the same decision.
+Smallest repair: require exactly one adjacent role-and-receipt directive pair.
+The receipt digest must equal the current consumed blocker receipt, and the
+unique ticket-only directive commit must remain bound to the authenticated
+passport window. A later blocker therefore requires replacement with its new
+receipt even when the owner is unchanged. No directive now defaults to no
+resume. Completed signed repair history recognizes only the matching role and
+blocked receipt.
+Validation: the end-to-end repeated-blocker regression begins with a valid
+historical Test-author decision for receipt A and a new Test-author blocker
+receipt B; it proves the stale pair cannot resume, then replaces the pair with
+Planner plus receipt B, runs only Planner beneath Building, continues to
+Spec-linter, and recognizes the archived exact pair. All 21 focused
+state-machine tests pass. Protected GitHub CI owns the complete regression;
+live closure requires T-094 to remain provider-idle until its new
+Planner/`848baf2a...` decision is committed and ingested.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

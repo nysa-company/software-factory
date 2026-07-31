@@ -2124,3 +2124,15 @@ as historical. Missing, mismatched, tampered, multi-directive, multi-path,
 merge, or unrelated histories remain invalid. Every repair in this family
 must be tested as a full sequence through the first normal downstream stage,
 not only as isolated transition boundaries.
+
+## 2026-07-30 — Decision 162: Every resume decision is bound to one blocked receipt
+
+Category: Incident
+
+A role-only directive and a prior Linear move must never authorize a later
+contract blocker. Every resume requires one exact ticket-only commit containing
+the chosen role and the current consumed blocked transition-receipt digest.
+The pair is replaced for every later blocker, even when the role is unchanged.
+Missing, stale, partial, duplicate, mismatched, multi-path, merge, or unrelated
+decisions fail closed before a provider call. A completed repair remains
+historical only through its signed matching role-and-receipt archive.
