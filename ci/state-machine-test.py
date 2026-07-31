@@ -819,19 +819,78 @@ class StateMachineTest(unittest.TestCase):
                 self.args, record, conflict, [success],
                 passport, False,
             )
+        old_factory = self.args.factory_sha
+        route = self.product / "factory/route-plans/T-110.json"
+        route.write_text(
+            '{"kit_sha":"migrated","ticket":"T-110"}\n',
+            encoding="utf-8",
+        )
+        run("git", "add", str(route), cwd=self.product)
+        run("git", "commit", "-qm", "migrate repaired ticket route", cwd=self.product)
+        migrated_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        new_factory = "f" * 40
+        migrated_passport = {
+            **terminal_passport,
+            "factory_release_history": [
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": old_factory,
+                },
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": new_factory,
+                },
+            ],
+            "factory_sha": new_factory,
+            "head_sha": migrated_head,
+            "migration_history": [{
+                "from_factory_sha": old_factory,
+                "from_head_sha": repaired_head,
+                "from_passport_file_sha256": "1" * 64,
+                "from_passport_sha256": "2" * 64,
+                "from_protected_base_sha": prior_head,
+                "from_route_plan_sha256": "3" * 64,
+                "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": new_factory,
+                "to_head_sha": migrated_head,
+                "to_protected_base_sha": advanced_base,
+                "to_route_plan_sha256": "4" * 64,
+            }],
+            "parent_digest": "2" * 64,
+            "parent_file_sha256": "1" * 64,
+            "protected_base_sha": advanced_base,
+            "route_plan_sha256": "4" * 64,
+        }
+        self.args.factory_sha = new_factory
+        self.assertEqual(
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict, [success],
+                migrated_passport, True,
+            ),
+            [success],
+        )
+        with self.assertRaisesRegex(
+            STATE.StateError, "repair success is invalid",
+        ):
+            STATE.dependency_conflict_successes(
+                self.args, record, conflict, [success],
+                {**migrated_passport, "parent_digest": "9" * 64},
+                True,
+            )
         with (
             mock.patch.object(
                 STATE, "authenticated_passport",
-                return_value=(terminal_passport, secret),
+                return_value=(migrated_passport, secret),
             ),
             mock.patch.object(
                 STATE, "dependency_conflict_receipt", return_value=found,
             ),
             mock.patch.object(
-                STATE, "protected_base_sha", return_value=prior_head,
+                STATE, "protected_base_sha", return_value=advanced_base,
             ),
             mock.patch.object(STATE, "resolve", return_value="RUN builder"),
         ):
+            STATE.ensure_dependency_conflict_repair(self.args)
             self.assertEqual(
                 STATE.contract_repair_stage(self.args), (None, False)
             )

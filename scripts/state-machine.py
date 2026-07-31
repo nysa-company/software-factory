@@ -1033,6 +1033,132 @@ def completed_dependency_conflict_repairs(
     return matches
 
 
+def completed_dependency_conflict_migration_head(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    record: dict[str, Any],
+) -> str | None:
+    if record.get("repair_source") != DEPENDENCY_CONFLICT_SOURCE:
+        return None
+    successes = contract_repair_successes(
+        args, record.get("repair_role", ""), record.get("head_sha", ""),
+    )
+    if len(successes) != 1:
+        return None
+    try:
+        transition = safe_receipt(args.state_dir / f"{args.ticket}.json")
+    except (FileNotFoundError, json.JSONDecodeError, OSError, StateError):
+        return None
+    success = successes[0]
+    before = success.get("role_head_before", "")
+    history = passport.get("factory_release_history")
+    migrations = passport.get("migration_history")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    if (
+        not isinstance(history, list)
+        or not isinstance(migrations, list)
+        or transition.get("consumed") is not True
+        or transition.get("ticket") != args.ticket
+        or transition.get("project") != args.project
+        or transition.get("branch") != passport.get("branch")
+        or transition.get("contract_version") != args.contract_version
+        or transition.get("stage") != "FIX test-author"
+        or transition.get("role") != "test-author"
+        or transition.get("factory_sha") != record.get("factory_sha")
+        or transition.get("head_sha") != record.get("head_sha")
+        or before != record.get("head_sha")
+        or success.get("kit_sha") != transition.get("factory_sha")
+        or success.get("contract_version") != args.contract_version
+        or success.get("transition_receipt_sha256")
+        != transition.get("receipt_sha256")
+        or passport.get("ticket") != args.ticket
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+    ):
+        return None
+    releases = [
+        item.get("factory_sha")
+        for item in history
+        if isinstance(item, dict)
+        and item.get("contract_version") == args.contract_version
+        and SHA.fullmatch(item.get("factory_sha", ""))
+    ]
+    if (
+        len(releases) != len(history)
+        or len(releases) != len(set(releases))
+        or transition.get("factory_sha") not in releases
+        or args.factory_sha not in releases
+        or releases.index(transition["factory_sha"])
+        > releases.index(args.factory_sha)
+    ):
+        return None
+    starts = []
+    for index, edge in enumerate(migrations):
+        terminal_head = (
+            edge.get("from_head_sha", "") if isinstance(edge, dict) else ""
+        )
+        if (
+            not isinstance(edge, dict)
+            or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+            or edge.get("from_factory_sha") != success.get("kit_sha")
+            or not SHA.fullmatch(terminal_head)
+            or terminal_head == before
+            or subprocess.run(
+                [
+                    "git", "-C", str(args.workdir), "merge-base",
+                    "--is-ancestor", before, terminal_head,
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False, timeout=120,
+            ).returncode != 0
+        ):
+            continue
+        suffix = migrations[index:]
+        if (
+            all(
+                isinstance(item, dict)
+                and item.get("schema") == PASSPORT_MIGRATION_SCHEMA
+                and "lineage_authorization_sha256" not in item
+                and all(
+                    SHA.fullmatch(item.get(name, ""))
+                    for name in (
+                        "from_factory_sha", "from_head_sha",
+                        "from_protected_base_sha", "to_factory_sha",
+                        "to_head_sha", "to_protected_base_sha",
+                    )
+                )
+                and all(
+                    DIGEST.fullmatch(item.get(name, ""))
+                    for name in (
+                        "from_passport_file_sha256",
+                        "from_passport_sha256", "from_route_plan_sha256",
+                        "to_route_plan_sha256",
+                    )
+                )
+                for item in suffix
+            )
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and suffix[-1].get("to_factory_sha") == args.factory_sha
+            and suffix[-1].get("to_head_sha") == current_head
+            and suffix[-1].get("to_protected_base_sha")
+            == passport.get("protected_base_sha")
+            and suffix[-1].get("to_route_plan_sha256")
+            == passport.get("route_plan_sha256")
+            and suffix[-1].get("from_passport_file_sha256")
+            == passport.get("parent_file_sha256")
+            and suffix[-1].get("from_passport_sha256")
+            == passport.get("parent_digest")
+        ):
+            starts.append(terminal_head)
+    return starts[0] if len(starts) == 1 else None
+
+
 def ensure_dependency_conflict_repair(args: argparse.Namespace) -> None:
     receipt_path = (
         args.workdir / "factory" / "attestations" / args.ticket
@@ -1096,6 +1222,22 @@ def ensure_dependency_conflict_repair(args: argparse.Namespace) -> None:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         check=False, timeout=120,
     )
+    active = load_repair(args, secret)
+    active_matches = (
+        active is not None
+        and active.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE
+        and active.get("dependency_refresh_sha256") == receipt_digest
+        and active.get("dependency_refresh_commit") == receipt_commit
+    )
+    active_migrated = (
+        active_matches and migrated_contract_repair(args, passport, active)
+    )
+    active_completed_migrated = (
+        active_matches
+        and completed_dependency_conflict_migration_head(
+            args, passport, active,
+        ) is not None
+    )
     if (
         passport.get("ticket") != args.ticket
         or passport.get("branch")
@@ -1105,20 +1247,21 @@ def ensure_dependency_conflict_repair(args: argparse.Namespace) -> None:
         or not SHA.fullmatch(passport_base)
         or receipt_to_passport.returncode != 0
         or passport_to_current.returncode != 0
-        or not branch_contains(args, passport_base)
-        or not dependency_conflict_migrated(
-            args, passport, receipt, receipt_commit,
+        or (
+            not active_completed_migrated
+            and not branch_contains(args, passport_base)
+        )
+        or (
+            not active_migrated
+            and not dependency_conflict_migrated(
+                args, passport, receipt, receipt_commit,
+            )
         )
     ):
         raise StateError("dependency conflict passport is invalid")
     path = repair_path(args)
-    active = load_repair(args, secret)
     if active is not None:
-        if (
-            active.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE
-            and active.get("dependency_refresh_sha256") == receipt_digest
-            and active.get("dependency_refresh_commit") == receipt_commit
-        ):
+        if active_matches and active_migrated:
             return
         raise StateError("dependency conflict repair conflicts with active repair")
     validate_dependency_conflict_transition(args, receipt)
@@ -1255,7 +1398,12 @@ def migrated_contract_repair(
         ):
             starts.append(index)
     if record.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE:
-        return len(starts) == 1
+        return (
+            len(starts) == 1
+            or completed_dependency_conflict_migration_head(
+                args, passport, record,
+            ) is not None
+        )
     blocked = [
         item for item in charges
         if isinstance(item, dict)
@@ -1337,6 +1485,10 @@ def dependency_conflict_successes(
     success = candidates[0]
     before = success.get("role_head_before", "")
     current_head = git(args.workdir, "rev-parse", "HEAD")
+    migrated_repair_head = completed_dependency_conflict_migration_head(
+        args, passport, record,
+    ) if migrated else None
+    repair_head = migrated_repair_head or current_head
     branch = git(
         args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD",
     )
@@ -1350,7 +1502,7 @@ def dependency_conflict_successes(
         or transition.get("ticket") != args.ticket
         or transition.get("project") != args.project
         or transition.get("branch") != branch
-        or transition.get("factory_sha") != args.factory_sha
+        or transition.get("factory_sha") != success.get("kit_sha")
         or transition.get("contract_version") != args.contract_version
         or transition.get("stage") != "FIX test-author"
         or transition.get("role") != "test-author"
@@ -1364,7 +1516,10 @@ def dependency_conflict_successes(
         )
         or transition.get("head_tree")
         != git(args.workdir, "rev-parse", f"{before}^{{tree}}")
-        or success.get("kit_sha") != args.factory_sha
+        or (
+            success.get("kit_sha") != args.factory_sha
+            and migrated_repair_head is None
+        )
         or success.get("contract_version") != args.contract_version
         or success.get("role_branch_before") != branch
         or not isinstance(success.get("run_id"), str)
@@ -1374,14 +1529,14 @@ def dependency_conflict_successes(
         or success.get("task_submitted") != "1"
         or not accounted
         or not branch_contains(args, before)
-        or current_head == before
+        or repair_head == before
     ):
         raise StateError("dependency conflict repair success is invalid")
     completed = passport.get("completed_role_evidence")
     charges = passport.get("charge_records")
     expected = {
         "contract_version": args.contract_version,
-        "factory_sha": args.factory_sha,
+        "factory_sha": success.get("kit_sha"),
         "head_before": before,
         "manifest_sha256": success["manifest_sha256"],
         "role": "test-author",
@@ -1420,7 +1575,7 @@ def dependency_conflict_successes(
     raw_status = subprocess.run(
         [
             "git", "-C", str(args.workdir), "diff", "--name-status",
-            "--no-renames", "-z", before, current_head,
+            "--no-renames", "-z", before, repair_head,
         ],
         capture_output=True, check=True, timeout=120,
     ).stdout.split(b"\0")
@@ -1457,7 +1612,7 @@ def dependency_conflict_successes(
         or set(changed) - allowed
         or any(
             tree_entry(args.workdir, before, path)[0] != "100644"
-            or tree_entry(args.workdir, current_head, path)[0] != "100644"
+            or tree_entry(args.workdir, repair_head, path)[0] != "100644"
             for path in changed
         )
     ):

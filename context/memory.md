@@ -2022,3 +2022,21 @@ manifest proves `cost_basis=conservative_reservation` and equal effective and
 reserved cost, and the passport charge matches the same manifest and state.
 Cancellation, launch-void, missing or unequal cost proof, and unknown states
 remain fail closed.
+
+## 2026-07-30 — Decision 155: Completed repair migration starts at the terminal export
+
+Category: Incident
+
+T-094 completed its protected-test repair before the next Factory cutover.
+The signed checkpoint correctly retained the pre-role head, while the
+authenticated migration suffix correctly began at the later terminal export
+head. Recovery now bridges those boundaries only through the exact consumed
+FIX receipt, unique successful manifest and charge, authenticated role
+evidence, allowlisted repair diff, and one contiguous v2 suffix ending at the
+current Factory, head, protected base, route plan, and passport parent.
+Test-author output is validated only through the terminal export, so a later
+route journal is not misclassified as role output. A reviewed protected-control
+base need not already be ticket ancestry solely to archive that completed
+checkpoint; ordinary provider-free dependency refresh remains the immediate
+next transition. Pending, ambiguous, broken, legacy-authorized, or
+unknown-path histories remain fail closed.
