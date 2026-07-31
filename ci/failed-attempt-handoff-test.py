@@ -248,6 +248,20 @@ class HandoffTest(unittest.TestCase):
         with self.assertRaisesRegex(HandoffError, "submodules"):
             self.preview()
 
+    def test_ignored_dependency_symlink_is_outside_the_handoff_snapshot(self):
+        (self.repo / ".gitignore").write_text("node_modules/\n")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore dependencies")
+        git(self.repo, "push", "-q", "origin", "main")
+        self.head = git(self.repo, "rev-parse", "HEAD")
+        dependencies = self.repo / "node_modules"
+        dependencies.mkdir()
+        (dependencies / "workspace-package").symlink_to("../src")
+        (self.repo / "src/kept.txt").write_text("handoff\n")
+
+        preview = self.preview()
+        self.assertEqual([item.path for item in preview.entries], ["src/kept.txt"])
+
     def test_build_uses_raw_blobs_temporary_index_and_no_hooks_or_filters(self):
         sentinel = self.base / "unsafe-ran"
         hooks = self.base / "hooks"

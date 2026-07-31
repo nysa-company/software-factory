@@ -289,6 +289,18 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
+## 2026-07-31 — Decision 172: Handoffs exclude Git-ignored dependencies
+
+Category: Incident
+
+After authoritative accounting admitted the qualification fallback, the
+handoff scanner rejected pnpm's ordinary ignored
+`node_modules/@nysa/web` workspace symlink. Handoff snapshots now cover the Git
+tree, index, and non-ignored untracked paths, while their filesystem hazard
+walk prunes only exact paths reported by Git's active excludes. Tracked and
+non-ignored symlinks, hardlinks, special files, nested repositories, and unsafe
+parents remain fail closed.
+
 ## 2026-07-31 — Decision 171: Fallback reduces authoritative accounting
 
 Category: Incident

@@ -154,6 +154,11 @@ They do not trust `runtime-ledger.csv`, because that file is an ignored output
 view and linked production/qualification worktrees may materialize different
 copies without changing the underlying accounting evidence.
 
+Failed-attempt handoff snapshots cover the Git tree, index, and non-ignored
+untracked files. Git-ignored dependency/build trees are outside that snapshot;
+every tracked or non-ignored symlink, hardlink, special file, nested repository,
+unsafe mode, or unsafe parent path remains forbidden.
+
 ```bash
 # ~/.factory/global.env — no credentials in this file
 export FACTORY_CURSOR_FALLBACK_ENABLED=0

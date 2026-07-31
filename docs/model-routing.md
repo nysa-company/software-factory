@@ -95,6 +95,11 @@ authoritative terminal manifests. The ignored runtime ledger is only a
 materialized view, so a stale copy in a linked qualification worktree cannot
 hide the latest failed attempt or authorize a different one.
 
+The handoff snapshot follows Git's tracked and non-ignored worktree boundary.
+Ignored dependency/build directories such as `node_modules/` are not role
+output and are excluded; tracked or non-ignored symlinks, special files,
+nested repositories, hardlinks, and unsafe parent paths still fail closed.
+
 The usual default-profile result is Cursor → same-family native CLI:
 
 - failed Cursor GPT route → Codex route;

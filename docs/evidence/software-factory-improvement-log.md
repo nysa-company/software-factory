@@ -3522,6 +3522,17 @@ only the unique latest terminal manifest; model-fallback, ledger-view, and
 controller suites pass. Re-sealing, the automatic same-role fallback, the
 ordered cohort, protected CI, and final release transactions remain required.
 
+That live automatic fallback next rejected the product's ordinary ignored pnpm
+workspace symlink at `node_modules/@nysa/web`. The snapshot already derived
+commit candidates from the tree, index, and Git's non-ignored untracked set,
+but its separate hazard walk traversed ignored dependency/build state too. The
+shared handoff now asks sanitized Git for exact ignored paths and prunes only
+those paths from the hazard walk. Candidate reads still use no-follow
+descriptors, and focused tests retain rejection of tracked or non-ignored
+symlinks, hardlinks, FIFOs, nested repositories, and submodules while proving
+an ignored dependency symlink is absent from the snapshot. A successor seal
+and live fallback replay remain required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
