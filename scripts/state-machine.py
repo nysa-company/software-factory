@@ -1476,6 +1476,97 @@ def ensure_dependency_conflict_repair(args: argparse.Namespace) -> None:
     )
 
 
+def completed_repair_migration_split(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    success: dict[str, str],
+    transition: dict[str, Any],
+) -> int | None:
+    """Locate a trusted migration suffix created after one repair success."""
+    migrations = passport.get("migration_history")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    before = success.get("role_head_before", "")
+    if (
+        not isinstance(migrations, list)
+        or not SHA.fullmatch(before)
+        or success.get("kit_sha") != transition.get("factory_sha")
+    ):
+        return None
+    if (
+        passport.get("factory_sha") == transition.get("factory_sha")
+        and passport.get("head_sha") == current_head
+        and passport.get("parent_file_sha256")
+        == transition.get("passport_sha256")
+    ):
+        return len(migrations)
+    candidates = []
+    for index, edge in enumerate(migrations):
+        if (
+            not isinstance(edge, dict)
+            or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+            or edge.get("from_factory_sha") != transition.get("factory_sha")
+            or edge.get("from_head_sha") == before
+            or subprocess.run(
+                [
+                    "git", "-C", str(args.workdir), "merge-base",
+                    "--is-ancestor", before, edge.get("from_head_sha", ""),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=120,
+            ).returncode != 0
+        ):
+            continue
+        suffix = migrations[index:]
+        if (
+            all(
+                isinstance(item, dict)
+                and item.get("schema") == PASSPORT_MIGRATION_SCHEMA
+                and all(
+                    isinstance(item.get(name), str)
+                    and SHA.fullmatch(item[name])
+                    for name in (
+                        "from_factory_sha", "from_head_sha",
+                        "from_protected_base_sha", "to_factory_sha",
+                        "to_head_sha", "to_protected_base_sha",
+                    )
+                )
+                and all(
+                    isinstance(item.get(name), str)
+                    and DIGEST.fullmatch(item[name])
+                    for name in (
+                        "from_passport_file_sha256",
+                        "from_passport_sha256", "from_route_plan_sha256",
+                        "to_route_plan_sha256",
+                    )
+                )
+                for item in suffix
+            )
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and suffix[-1]["to_factory_sha"] == args.factory_sha
+            and suffix[-1]["to_head_sha"] == current_head
+            and suffix[-1]["to_protected_base_sha"]
+            == passport.get("protected_base_sha")
+            and suffix[-1]["to_route_plan_sha256"]
+            == passport.get("route_plan_sha256")
+            and suffix[-1]["from_passport_file_sha256"]
+            == passport.get("parent_file_sha256")
+            and suffix[-1]["from_passport_sha256"]
+            == passport.get("parent_digest")
+        ):
+            candidates.append(index)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def migrated_contract_repair(
     args: argparse.Namespace,
     passport: dict[str, Any],
@@ -1493,6 +1584,10 @@ def migrated_contract_repair(
     record_passport = record.get("passport_sha256", "")
     current_head = git(args.workdir, "rev-parse", "HEAD")
     migration_target_head = current_head
+    migration_target_factory = args.factory_sha
+    migration_target_base = passport.get("protected_base_sha")
+    migration_target_route = passport.get("route_plan_sha256")
+    migration_limit = len(migrations) if isinstance(migrations, list) else 0
     if success is not None:
         if (
             record.get("repair_source") is not None
@@ -1501,7 +1596,27 @@ def migrated_contract_repair(
             )
         ):
             return False
+        try:
+            transition = safe_receipt(
+                args.state_dir / f"{args.ticket}.json"
+            )
+        except (FileNotFoundError, json.JSONDecodeError, OSError, StateError):
+            return False
+        split = completed_repair_migration_split(
+            args, passport, success, transition,
+        )
+        if split is None:
+            return False
+        migration_limit = split
         migration_target_head = success["role_head_before"]
+        migration_target_factory = transition.get("factory_sha")
+        if split < len(migrations):
+            migration_target_base = migrations[split].get(
+                "from_protected_base_sha"
+            )
+            migration_target_route = migrations[split].get(
+                "from_route_plan_sha256"
+            )
     if record.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE:
         try:
             transition = safe_receipt(
@@ -1557,9 +1672,10 @@ def migrated_contract_repair(
             or edge.get("from_passport_sha256") != record_passport
         ):
             continue
-        suffix = migrations[index:]
+        suffix = migrations[index:migration_limit]
         if (
-            all(
+            suffix
+            and all(
                 isinstance(item, dict)
                 and item.get("schema") == PASSPORT_MIGRATION_SCHEMA
                 and all(
@@ -1587,12 +1703,15 @@ def migrated_contract_repair(
                 and prior["to_head_sha"] == following["from_head_sha"]
                 and prior["to_protected_base_sha"]
                 == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
                 for prior, following in zip(suffix, suffix[1:])
             )
-            and suffix[-1]["to_factory_sha"] == args.factory_sha
+            and suffix[-1]["to_factory_sha"] == migration_target_factory
             and suffix[-1]["to_head_sha"] == migration_target_head
             and suffix[-1]["to_protected_base_sha"]
-            == passport.get("protected_base_sha")
+            == migration_target_base
+            and suffix[-1]["to_route_plan_sha256"] == migration_target_route
         ):
             starts.append(index)
     if record.get("repair_source") == DEPENDENCY_CONFLICT_SOURCE:
@@ -1650,6 +1769,9 @@ def completed_migrated_contract_repair(
         and success.get("cost_basis") == "conservative_reservation"
         and success.get("effective_cost") == success.get("reserved_usd")
     )
+    migration_split = completed_repair_migration_split(
+        args, passport, success, transition,
+    )
     if (
         not isinstance(completed, list)
         or not isinstance(charges, list)
@@ -1663,8 +1785,7 @@ def completed_migrated_contract_repair(
         or passport.get("factory_sha") != args.factory_sha
         or passport.get("head_sha") != current_head
         or not DIGEST.fullmatch(transition.get("passport_sha256", ""))
-        or passport.get("parent_file_sha256")
-        != transition.get("passport_sha256")
+        or migration_split is None
         or passport.get("current_stage") != stage
         or passport.get("transition_receipt_sha256")
         != transition.get("receipt_sha256")
@@ -1672,7 +1793,7 @@ def completed_migrated_contract_repair(
         or transition.get("ticket") != args.ticket
         or transition.get("project") != args.project
         or transition.get("branch") != branch
-        or transition.get("factory_sha") != args.factory_sha
+        or not SHA.fullmatch(transition.get("factory_sha", ""))
         or transition.get("contract_version") != args.contract_version
         or transition.get("product_origin_sha256") != origin_digest
         or transition.get("role") != owner
@@ -1682,7 +1803,7 @@ def completed_migrated_contract_repair(
         != git(args.workdir, "rev-parse", f"{before}^{{tree}}")
         or success.get("transition_receipt_sha256")
         != transition.get("receipt_sha256")
-        or success.get("kit_sha") != args.factory_sha
+        or success.get("kit_sha") != transition.get("factory_sha")
         or success.get("contract_version") != args.contract_version
         or success.get("role_branch_before") != branch
         or not isinstance(success.get("run_id"), str)
@@ -1699,7 +1820,7 @@ def completed_migrated_contract_repair(
         item for item in completed
         if isinstance(item, dict)
         and item.get("contract_version") == args.contract_version
-        and item.get("factory_sha") == args.factory_sha
+        and item.get("factory_sha") == transition.get("factory_sha")
         and item.get("head_before") == before
         and item.get("manifest_sha256") == success["manifest_sha256"]
         and item.get("output_sha256") == success["output_sha256"]
@@ -1716,7 +1837,7 @@ def completed_migrated_contract_repair(
         and item["charge_micro_usd"] >= 0
         and item.get("accounting_state") == success.get("accounting_state")
         and item.get("contract_version") == args.contract_version
-        and item.get("factory_sha") == args.factory_sha
+        and item.get("factory_sha") == transition.get("factory_sha")
         and item.get("head_before") == before
         and item.get("manifest_sha256") == success["manifest_sha256"]
         and item.get("role") == owner

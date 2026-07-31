@@ -1536,6 +1536,7 @@ class StateMachineTest(unittest.TestCase):
                 b"test-origin"
             ).hexdigest(),
             "project": self.args.project,
+            "route_plan_sha256": "4" * 64,
             "schema": STATE.PASSPORT_SCHEMA,
             "ticket": "T-110",
         }
@@ -1729,6 +1730,132 @@ class StateMachineTest(unittest.TestCase):
             STATE.canonical(passport)
         ).hexdigest()
         STATE.write_atomic(passports / "T-110.json", passport)
+        with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args),
+                ("RUN builder", False),
+            )
+        self.assertFalse(STATE.repair_path(self.args).exists())
+
+        # A Factory/route upgrade after the successful role must retain the
+        # same terminal evidence without requiring the role to run again.
+        STATE.write_atomic(STATE.repair_path(self.args), record)
+        terminal_file_digest = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "\nMigration marker: successor Factory.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "migrate completed repair", cwd=self.product)
+        migrated_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        successor_factory = "9" * 40
+        migration = {
+            "from_factory_sha": self.args.factory_sha,
+            "from_head_sha": output_head,
+            "from_passport_file_sha256": terminal_file_digest,
+            "from_passport_sha256": passport["passport_sha256"],
+            "from_protected_base_sha": body["protected_base_sha"],
+            "from_route_plan_sha256": body["route_plan_sha256"],
+            "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": successor_factory,
+            "to_head_sha": migrated_head,
+            "to_protected_base_sha": "6" * 40,
+            "to_route_plan_sha256": "7" * 64,
+        }
+        migrated_body = {
+            **body,
+            "factory_release_history": [
+                *body["factory_release_history"],
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": successor_factory,
+                },
+            ],
+            "factory_sha": successor_factory,
+            "head_sha": migrated_head,
+            "migration_history": [
+                *body["migration_history"],
+                migration,
+            ],
+            "parent_digest": passport["passport_sha256"],
+            "parent_file_sha256": terminal_file_digest,
+            "protected_base_sha": migration["to_protected_base_sha"],
+            "route_plan_sha256": migration["to_route_plan_sha256"],
+        }
+        self.args.factory_sha = successor_factory
+
+        wrong_bridge_body = {
+            **migrated_body,
+            "migration_history": [
+                *body["migration_history"],
+                {
+                    **migration,
+                    "from_head_sha": current_head,
+                },
+            ],
+        }
+        wrong_bridge = dict(wrong_bridge_body)
+        wrong_bridge["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(wrong_bridge_body), hashlib.sha256
+        ).hexdigest()
+        wrong_bridge["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(wrong_bridge)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", wrong_bridge)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract repair record is invalid"
+        ):
+            STATE.contract_repair_stage(self.args)
+
+        wrong_route_body = {
+            **migrated_body,
+            "migration_history": [
+                *body["migration_history"],
+                {
+                    **migration,
+                    "from_route_plan_sha256": "8" * 64,
+                },
+            ],
+        }
+        wrong_route = dict(wrong_route_body)
+        wrong_route["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(wrong_route_body), hashlib.sha256
+        ).hexdigest()
+        wrong_route["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(wrong_route)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", wrong_route)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract repair record is invalid"
+        ):
+            STATE.contract_repair_stage(self.args)
+
+        migrated_passport = dict(migrated_body)
+        migrated_passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(migrated_body), hashlib.sha256
+        ).hexdigest()
+        migrated_passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(migrated_passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", migrated_passport)
+        successes = STATE.contract_repair_successes(
+            self.args, "test-author", old_head,
+        )
+        self.assertEqual(len(successes), 1)
+        migrated_loaded, _ = STATE.authenticated_passport(self.args)
+        transition = STATE.safe_receipt(self.state_dir / "T-110.json")
+        self.assertIsNotNone(STATE.completed_repair_migration_split(
+            self.args, migrated_loaded, successes[0], transition,
+        ))
+        self.assertTrue(STATE.completed_migrated_contract_repair(
+            self.args, migrated_loaded, record, successes[0],
+        ))
+        self.assertTrue(STATE.migrated_contract_repair(
+            self.args, migrated_loaded, record, successes[0],
+        ))
         with mock.patch.object(STATE, "resolve", return_value="RUN builder"):
             self.assertEqual(
                 STATE.contract_repair_stage(self.args),

@@ -2180,4 +2180,10 @@ terminal passport names the receipt-bound input-passport file, the charge has a
 canonical nonnegative micro-USD amount, and the original blocked charge remains
 unique and unsuccessful. Any missing, ambiguous, unrelated, or duplicate
 evidence fails closed. A valid successful role is never replayed merely to make
-migration history end at its output.
+migration history end at its output. If release activation migrates that
+terminal success passport before repair retirement, the original migration
+segment still ends at the role-input head and one separately contiguous v2
+segment begins at the authenticated descendant output. The two segments must
+share the same boundary Factory, protected base, and route; the second must end
+at the exact current Factory/head/base/route and bind the current passport's
+parent digests. Disconnected or ambiguous segments fail closed.

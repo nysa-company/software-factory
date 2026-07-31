@@ -3336,22 +3336,34 @@ Root cause: migrated repair validation required the migration suffix to end at
 the current branch head. That invariant is correct before execution but
 becomes false when the authorized repair role succeeds and creates its output
 commit. The terminal passport advances to the output head, while migration
-history correctly remains an immutable record ending at the role input.
+history correctly remains an immutable record ending at the role input. A
+pre-resume audit after promotion found the same incomplete invariant at the
+next unavoidable boundary: migrating that terminal success passport to the
+new Factory appends a second lineage segment whose source is the role-output
+head. Treating both segments as one contiguous chain would reject valid
+evidence after activation even though no role, receipt, or charge changed.
 Smallest repair: when exactly one migrated repair success exists, validate the
 migration suffix against that success's role-input head. Separately require
 the consumed FIX receipt, role and branch, exact Factory release, authenticated
 current passport, descendant output head, terminal manifest, output digest,
 completed-role evidence, receipt-bound input-passport digest, canonical
 nonnegative charge, successful accounting record, and original failed charge
-to match uniquely. The ordinary pre-run migration rule and
-dependency-conflict repair path are unchanged.
+to match uniquely. If the terminal passport is subsequently migrated, accept
+exactly one separate contiguous v2 suffix beginning at its strict descendant
+output head and ending at the current Factory/head/base/route. Bind the gap by
+requiring the pre-success endpoint and post-success source to retain the same
+Factory, protected-base, and route identities, and bind the final edge to the
+current passport's parent file and semantic digests. The ordinary pre-run
+migration rule and dependency-conflict repair path are unchanged.
 Validation: the focused state-machine regression now proves a valid migrated
-repair can advance its head and retire the signed repair without replay. It
-also proves that changing the input-passport link or removing/malforming the
-matching success charge remains fail closed.
-All 22 focused state-machine tests pass. Protected GitHub CI owns the complete
-regression; live closure requires T-094 to continue to its next deterministic
-stage without another Planner call.
+repair can advance its head, cross one successor Factory migration, and retire
+the signed repair without replay. It also proves that changing the
+input-passport link, substituting the role-input head for the authenticated
+post-success source, or removing/malforming the matching success charge remains
+fail closed. The focused state-machine suite must pass before publication;
+protected GitHub CI owns the complete regression. Live closure requires T-094
+to cross the installed successor and continue to its next deterministic stage
+without another Planner call.
 
 ## Maintenance rule
 
