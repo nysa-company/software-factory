@@ -3158,6 +3158,53 @@ parent in the current authenticated repair window. Protected GitHub CI owns
 the complete regression; live closure requires generation 44's successor to
 resume exactly Test-author without replaying earlier roles.
 
+## FI-20260730-122 — Repeated blocker could not hand recovery to an earlier owner
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: exact-stage repair recovery
+Owner: Factory
+First seen: Nysa generation 45 T-094 Test-author recovery
+Impact: T-094's bounded Test-author repair terminalized with 25 authenticated
+progress events and proved a contradiction in frozen contract version 2.
+The ticket was correctly parked as `Blocked-Escalated`, but the supported
+resume path could name only the already-visible Test-author directive and
+could not move the repair owner back to Planner. T-093 and T-100 remained in
+dependency waits, leaving all three tickets provider-idle.
+Evidence: terminal run `1785477349-40736` is uniquely bound to transition
+receipt `1f9a6694...`, exit 12, `role_exit_contract_blocked`, and conservative
+accounting. Ticket head `78928664...` records that no standards-compliant DOM
+can satisfy both the frozen descendant `Meeting` text and the ancestor's exact
+copy without that text. Its authenticated passport says `FIX test-author`,
+while `Resume-State: Building` is the coarse state mandated for a Test-author
+blocker. The state machine's repair loop had no legal `Building → Planning`
+case, and its exact-append grammar could not replace the single active
+Test-author directive with Planner.
+Root cause: the earlier repair was validated as separate boundaries—directive
+lineage, repair-owner selection, and one successful repair—but never as a
+complete repeated-blocker lifecycle. The implementation described earlier
+owners catching up beneath the coarse state, yet `resume_transition` still
+required the coarse state to equal the repair owner's state. It also treated
+the one visible directive as append-only and treated that immutable directive
+as an error after the signed repair record was archived.
+Smallest repair: allow the one visible repair-owner directive to be replaced
+exactly in a normal ticket-only commit whose parent is in the authenticated
+passport window. When the selected owner precedes the coarse state, keep the
+coarse state unchanged and persist the HMAC-bound repair record for the exact
+earlier role. After the repair succeeds, accept the visible directive as
+historical only when a safe signed completed record for that role and branch
+is in current head ancestry. Missing, mismatched, tampered, multi-directive,
+multi-path, merge, or unrelated histories remain fail closed.
+Validation: the focused state-machine suite now contains one end-to-end
+regression for the exact failure family: Test-author blocks in Building, the
+operator replaces its active directive with Planner, resume performs no
+general backward state transition, only Planner is returned, its success
+continues to Spec-linter, and the archived signed repair makes the historical
+directive inert on the next reconciliation. All 21 focused state-machine
+tests pass. Protected GitHub CI owns the complete regression; live closure
+requires T-094 to perform this same handoff without replaying its earlier
+successful role evidence.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
