@@ -3282,6 +3282,31 @@ still fails. Shell syntax, the focused state-machine suite, and an exact live
 T-094 preflight remain required; protected GitHub CI owns the complete
 regression.
 
+## FI-20260730-125 — Repeated preflight used a writable sealed-release fixture
+
+Status: Repair implemented; protected CI pending
+Priority: P0
+Area: release verification
+Owner: Factory
+First seen: Factory protected-main run `30614711253`
+Impact: the Linux Hermes shard rejected the second Planner-repair preflight
+before the successor Factory could be sealed. Other protected shards continued
+independently; no product state, provider call, or charge changed.
+Evidence: Linux job `91105190009` passed the first sealed preflight, then both
+new repeated calls failed at `physical release tree does not match trusted
+release provenance`. The same focused suite passed on macOS. The fixture was a
+writable copy, unlike an installed sealed release.
+Root cause: the new regression correctly reused one release across multiple
+preflights but did not apply the installation boundary's read-only mode.
+Release-local Python imports could add Linux bytecode after the first tree
+digest, and the second validation correctly detected that physical drift.
+Smallest repair: make only the repeated Planner-repair release fixture
+read-only after its tree digest is computed. Keep the independent writable
+fixture used to prove intentional physical-drift refusal and every existing
+provenance assertion unchanged.
+Validation: shell syntax and the focused preflight suite must pass on Linux;
+protected GitHub CI owns the complete regression.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

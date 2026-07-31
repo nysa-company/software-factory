@@ -17,7 +17,10 @@ STUB_BIN="$TMP/bin"
 TEST_HOME="$TMP/home"
 FAILURES=0
 
-cleanup() { rm -rf "$TMP"; }
+cleanup() {
+  [[ ! -d "$TMP" ]] || chmod -R u+w "$TMP"
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 mkdir -p "$STUB_BIN" "$TEST_HOME/.claude"
@@ -817,6 +820,10 @@ READINESS_TREE="$(bash -c '
   source "$1"
   factory_directory_tree "$2"
 ' _ "$KIT_DIR/scripts/lib/kit-pin.sh" "$READINESS_RELEASE")"
+# This fixture is invoked repeatedly below. Match the installed sealed-release
+# boundary so a helper cannot create platform-specific bytecode between
+# provenance checks.
+chmod -R a-w "$READINESS_RELEASE"
 READINESS_ROUTE_DIR="$READINESS/factory/route-plans"
 READINESS_MODEL_STATE="$TMP/readiness-model-state"
 mkdir -p "$READINESS_ROUTE_DIR" "$READINESS_MODEL_STATE/relay"
