@@ -148,7 +148,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
             'PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"', launcher_text
         )
         self.assertIn(
-            'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")',
+            '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"',
+            launcher_text,
+        )
+        self.assertIn(
+            '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"',
             launcher_text,
         )
         self.assertIn(

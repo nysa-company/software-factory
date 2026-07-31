@@ -185,6 +185,7 @@ run_preflight() {
       --projected) env_args+=(PROJECTED_TICKET_USD="$2"); shift 2;;
       --probe-trace) env_args+=(FACTORY_TEST_PROBE_TRACE="$2"); shift 2;;
       --adapter-override) env_args+=(FACTORY_ADAPTER_OVERRIDE="$2"); shift 2;;
+      --qualification-tree) env_args+=(FACTORY_QUALIFICATION_PRODUCT_TREE="$2"); shift 2;;
       --timezone) env_args+=(TZ="$2"); shift 2;;
       --role) role="$2"; shift 2;;
       --lease) lease="$2"; shift 2;;
@@ -643,6 +644,29 @@ write_ready_ticket "$DIRTY" "T-005"
 init_git_repo "$DIRTY"
 echo "dirty" > "$DIRTY/untracked.txt"
 assert_preflight "dirty clone fail" 1 "FAIL: working tree not clean" "$DIRTY" "T-005"
+
+# A sealed qualification product carries an intentional control commit beyond
+# origin/main. The launcher-bound exact tree replaces only the production
+# branch/up-to-date assertion; cleanliness and exact identity stay required.
+QUALIFICATION="$TMP/qualification"
+mkdir -p "$QUALIFICATION"
+write_envelope "$QUALIFICATION"
+write_ready_ticket "$QUALIFICATION" "T-105"
+init_git_repo "$QUALIFICATION"
+git -C "$QUALIFICATION" switch -c local/qualification >/dev/null
+printf '%s\n' qualification > "$QUALIFICATION/factory/QUALIFICATION.json"
+git -C "$QUALIFICATION" add factory/QUALIFICATION.json
+git -C "$QUALIFICATION" commit -qm "add qualification control"
+QUALIFICATION_TREE="$(git -C "$QUALIFICATION" rev-parse HEAD^{tree})"
+assert_preflight "unbound qualification branch fails production preflight" 1 \
+  "FAIL: not on main branch" "$QUALIFICATION" "T-105"
+assert_preflight "sealed qualification tree passes preflight" 0 \
+  "PASS: repo is clean and matches sealed qualification product tree" \
+  "$QUALIFICATION" "T-105" --qualification-tree "$QUALIFICATION_TREE"
+assert_preflight "wrong sealed qualification tree fails" 1 \
+  "FAIL: product tree does not match sealed qualification environment" \
+  "$QUALIFICATION" "T-105" \
+  --qualification-tree 0000000000000000000000000000000000000000
 
 # --- missing ticket fail ---
 NOTICKET="$TMP/noticket"

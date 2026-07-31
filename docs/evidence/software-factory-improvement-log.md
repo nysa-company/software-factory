@@ -3533,6 +3533,20 @@ symlinks, hardlinks, FIFOs, nested repositories, and submodules while proving
 an ignored dependency symlink is absent from the snapshot. A successor seal
 and live fallback replay remain required.
 
+The next T-094 occurrence reached the exact authenticated `FIX planner`
+transition but stopped before GO. All role-specific checks passed; preflight
+rejected the clean qualification control branch solely because it was named
+`local/qualification-6fe56bb` rather than `main`. That branch carries the
+required local qualification authority and cannot also equal protected product
+main, so the production branch assertion made the sealed lane behaviorally
+incomplete. The launcher now supplies the exact product tree already validated
+against its owner-only qualification activation record, and preflight accepts
+only a clean checkout matching that tree. Production and every unbound call
+still fetch and require clean current `main`. Focused tests prove the unbound
+branch fails, the sealed exact tree passes, and a forged tree fails. A successor
+seal, the pending Planner repair, ordered cohort, protected CI, and final release
+transactions remain required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -289,6 +289,18 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Log
 
+## 2026-07-31 — Decision 173: Qualification preflight binds the sealed product tree
+
+Category: Incident
+
+The production preflight requires a clean checkout on current `main`. A sealed
+production-successor qualification intentionally adds one local control commit,
+so applying that branch rule there blocked an authenticated Planner repair
+before GO. The qualification launcher now passes the exact product tree already
+authenticated by its owner-only activation record. Preflight accepts only a
+clean checkout with that tree; ordinary and unbound invocations still require
+current `main`.
+
 ## 2026-07-31 — Decision 172: Handoffs exclude Git-ignored dependencies
 
 Category: Incident

@@ -277,9 +277,22 @@ else
   pass "no machine-level daily cap configured"
 fi
 
-# (d) repo clone on main, clean, up to date with origin/main
+# (d) production uses a clean, current main checkout. A sealed qualification
+# launcher instead supplies the already-validated product tree bound by its
+# owner-only active record; qualification control commits intentionally do not
+# equal origin/main.
 if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   fail "not a git repository: $REPO_ROOT"
+elif [[ -n "${FACTORY_QUALIFICATION_PRODUCT_TREE:-}" ]]; then
+  if [[ ! "$FACTORY_QUALIFICATION_PRODUCT_TREE" =~ ^[0-9a-f]{40}$ ]]; then
+    fail "sealed qualification product tree is invalid"
+  elif [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+    fail "working tree not clean"
+  elif [[ "$(git -C "$REPO_ROOT" rev-parse HEAD^{tree})" != "$FACTORY_QUALIFICATION_PRODUCT_TREE" ]]; then
+    fail "product tree does not match sealed qualification environment"
+  else
+    pass "repo is clean and matches sealed qualification product tree"
+  fi
 else
   git -C "$REPO_ROOT" fetch origin >/dev/null 2>&1 || fail "git fetch origin failed"
   BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
