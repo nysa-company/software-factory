@@ -419,7 +419,8 @@ cell path. Environment preparation also rejects a root whose worst-case Cursor
 attempt data path would exceed the adapter's isolated-scratch limit.
 For a production-successor qualification, preparation additionally requires
 a clean linked qualification worktree of the canonical product repository,
-the selected tickets' authenticated source passports, a drained controller,
+the selected tickets' authenticated passports with an exact release-history
+suffix rooted at the installed source, a drained controller,
 and the current production provider activation. The worktree must be based on
 exact protected main and may differ only by the candidate pin, successor
 manifest, and dependency lines of selected tickets; this local authority does
@@ -431,8 +432,11 @@ controller state, route state, and provider accounting to the canonical owner-on
 installed and sealed launchers therefore contend on the same reconciliation
 lock; once protected product main names the candidate pin, the installed old
 launcher also fails closed on that pin. This is one authoritative ticket
-history, not copied sandbox state. A takeover admits one frozen candidate; a
-semantic change requires a new qualification root and source binding.
+history, not copied sandbox state. A takeover admits one frozen candidate. If
+that candidate exposes a semantic defect after authenticating its migrations,
+the replacement uses a new qualification root while retaining the installed
+production source in the manifest; preparation and final reduction require the
+unique contiguous v2 release suffix through every intermediate candidate.
 If a proven Factory defect requires a successor during an isolated fresh
 qualification, the same preparer upgrades that root only while reconciliation and provider work
 are drained. It seals the successor, verifies unchanged provider policy,

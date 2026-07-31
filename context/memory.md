@@ -116,7 +116,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   accounting, and reconciliation lock in place. It does not copy or re-sign
   live state. The reducer preserves cumulative history while capping and
   reporting new candidate spend at $10 per run, $100 per ticket, and $300 for
-  the three-ticket cohort. Takeover permits one frozen candidate.
+  the three-ticket cohort. Each takeover permits one frozen candidate; a
+  replacement root accepts only a unique contiguous authenticated v2 release
+  suffix from the unchanged installed source through any prior qualification
+  candidate to the new final candidate.
 - A deterministic `REFUSE` receipt never migrates the ticket passport. The
   controller first blocks the claim, then owns authenticated cross-release
   passport migration and the durable pre-route pending marker on its next
@@ -285,6 +288,17 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Cursor Reviewer reconciliation normalizes only exact, matching background-check callback restatements, including the bold `REQUEST CHANGES — FIX-OWNER` form. Missing summaries, conflicting owners or verdicts, and multiple verdict-bearing assistants still fail closed.
 
 ## Log
+
+## 2026-07-31 — Decision 170: Successor qualification is multi-candidate
+
+Category: Incident
+
+The first replacement takeover failed because canonical passports correctly
+named the prior qualification candidate while production remained on the
+manifest source. Preparation and reduction now validate the ordered release
+history plus one contiguous v2 cross-release suffix from the installed source
+through intermediate qualification candidates; they neither rewrite history
+nor require a false direct source-to-final edge.
 
 ## 2026-07-31 — Decision 169: Passport evidence is sequencer history
 

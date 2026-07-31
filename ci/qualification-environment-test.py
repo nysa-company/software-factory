@@ -196,6 +196,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
 
     def test_takeover_reuses_authenticated_live_state_without_copying_it(self) -> None:
         source_sha = "b" * 40
+        intermediate_sha = "d" * 40
         tickets = ["T-094", "T-100", "T-093"]
         (self.product / "factory/KIT_PIN").write_text(
             source_sha + "\n", encoding="utf-8",
@@ -268,7 +269,27 @@ class QualificationEnvironmentTest(unittest.TestCase):
         key.chmod(0o600)
         for ticket in tickets:
             body = {
-                "factory_sha": source_sha,
+                "factory_release_history": [{
+                    "contract_version": "1.8.0",
+                    "factory_sha": source_sha,
+                }, {
+                    "contract_version": "1.8.0",
+                    "factory_sha": intermediate_sha,
+                }],
+                "factory_sha": intermediate_sha,
+                "migration_history": [{
+                    "from_factory_sha": source_sha,
+                    "from_head_sha": "1" * 40,
+                    "from_passport_file_sha256": "2" * 64,
+                    "from_passport_sha256": "3" * 64,
+                    "from_protected_base_sha": "4" * 40,
+                    "from_route_plan_sha256": "5" * 64,
+                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                    "to_factory_sha": intermediate_sha,
+                    "to_head_sha": "6" * 40,
+                    "to_protected_base_sha": "7" * 40,
+                    "to_route_plan_sha256": "8" * 64,
+                }],
                 "project": "relay",
                 "schema": "nysa.software-factory.ticket-passport/v1",
                 "ticket": ticket,

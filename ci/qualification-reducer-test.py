@@ -144,14 +144,23 @@ class QualificationReducerTest(unittest.TestCase):
         events[:] = [item for item in events if item.get("ticket") != removed]
 
         prior = "b" * 40
+        intermediate = "c" * 40
         manifest["source_factory_sha"] = prior
         for passport in passports.values():
             passport["factory_release_history"].insert(0, {
                 "contract_version": "1.8.0",
                 "factory_sha": prior,
             })
+            passport["factory_release_history"].insert(1, {
+                "contract_version": "1.8.0",
+                "factory_sha": intermediate,
+            })
             passport["migration_history"] = [{
                 "from_factory_sha": prior,
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "to_factory_sha": intermediate,
+            }, {
+                "from_factory_sha": intermediate,
                 "schema": "nysa.software-factory.ticket-passport-migration/v2",
                 "to_factory_sha": manifest["factory_sha"],
             }]
@@ -177,6 +186,13 @@ class QualificationReducerTest(unittest.TestCase):
         report = REDUCER.verify(*evidence)
         self.assertEqual(report["status"], "green")
         self.assertEqual(report["qualification_charge_micro_usd"], 38_000_000)
+
+        passports[ticket]["migration_history"][1]["from_factory_sha"] = "d" * 40
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "successor migration is missing"
+        ):
+            REDUCER.verify(*evidence)
+        passports[ticket]["migration_history"][1]["from_factory_sha"] = intermediate
 
         caps[ticket] = 25_000_000
         with self.assertRaisesRegex(

@@ -14,7 +14,12 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 from typing import Any
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from release_lineage import successor_release_lineage  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-report/v1"
@@ -208,12 +213,8 @@ def verify(
             or (successor and not isinstance(migrations, list))
         ):
             raise QualificationError(f"{ticket} passport is not terminal")
-        if successor and not any(
-            isinstance(item, dict)
-            and item.get("schema") == "nysa.software-factory.ticket-passport-migration/v2"
-            and item.get("from_factory_sha") == source_factory_sha
-            and item.get("to_factory_sha") == factory_sha
-            for item in migrations
+        if successor and not successor_release_lineage(
+            history, migrations, source_factory_sha, factory_sha
         ):
             raise QualificationError(f"{ticket} successor migration is missing")
         if (

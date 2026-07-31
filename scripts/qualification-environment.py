@@ -14,9 +14,14 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from typing import Any
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from release_lineage import successor_release_lineage  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
@@ -381,8 +386,14 @@ def takeover_source(
             )
             if (
                 value.get("ticket") != ticket
-                or value.get("factory_sha") != manifest["source_factory_sha"]
                 or value.get("project") != project
+                or not successor_release_lineage(
+                    value.get("factory_release_history"),
+                    value.get("migration_history"),
+                    manifest["source_factory_sha"],
+                    value.get("factory_sha", ""),
+                    passport.valid_v2_migration,
+                )
             ):
                 raise EnvironmentError("takeover passport does not match the source")
     except (AttributeError, OSError, ValueError) as error:

@@ -3495,6 +3495,20 @@ scheduling without rewriting the accounting ledger or relabelling its Factory
 SHA. A successor candidate, a replay of this exact parked boundary, the full
 ordered cohort, protected CI, and final release transactions remain required.
 
+Re-sealing that successor exposed the paired qualification-side assumption:
+the takeover preparer and final reducer required each current passport, or one
+direct migration edge, to name the still-installed production source. The
+first candidate had already authenticated a production-to-candidate edge, so
+the passports correctly named that intermediate release while production was
+unchanged. The shared successor model now validates ordered, unique release
+history and one contiguous v2 cross-release suffix from the manifest's
+installed source through intermediate qualification candidates. Preparation
+accepts the authenticated current endpoint; the reducer requires that same
+suffix to terminate at the frozen final candidate and continues to count only
+that final candidate's additional spend. Focused environment and reducer
+tests cover the two-edge path and reject a disconnected edge. A new sealed
+root and the ordered live cohort remain required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
