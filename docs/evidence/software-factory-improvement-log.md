@@ -3119,6 +3119,45 @@ activation/install regression. Live closure requires the successor to migrate
 T-094 while it remains blocked, then let the deterministic state machine
 consume the already-present operator resume separately.
 
+## FI-20260730-121 — Historical same-role directives blocked a current repair
+
+Status: Repair implemented; protected CI and live T-094 proof pending
+Priority: P0
+Area: exact-stage repair recovery
+Owner: Factory
+First seen: Nysa generation 44 T-094 Test-author resume
+Impact: T-094 migrated successfully to Factory `d82fde3...`, but deterministic
+recovery rejected its current Test-author directive before any provider call.
+T-093 and T-100 remained in dependency waits, so all three tickets made no
+product progress despite preserved passports and available capacity.
+Evidence: the current directive commit `2ef4e82...` has authenticated blocked
+parent `0532469...` and is followed by exact route-migration head `7067d96...`.
+The ticket history also contains older same-role additions `a79c64a...` and
+`b8b9cb9...`; their parents are outside the current passport repair window.
+Generation 44 emitted only authenticated `ticket_recovery_failed` events with
+`contract repair operator directive is invalid`; it launched no provider call
+and added no charge.
+Root cause: `operator_resume_role` searched the entire ticket history for the
+directive text and required exactly one `git log -S` result. A legitimate
+second repair owned by the same role therefore became permanently
+unrecoverable even though passport lineage identified the current repair
+unambiguously.
+Smallest repair: select only the unique normal directive commit whose parent
+is an authenticated current-passport or v2 migration head and whose commit is
+current branch ancestry. Preserve the existing exact append, single-ticket-
+file diff, one visible directive, and current-head checks. Historical
+same-role directives outside that window no longer collide; zero, multiple,
+merge, malformed, multi-path, or drifted in-window candidates still fail
+closed.
+Validation: a focused state-machine regression creates a completed historical
+Test-author directive, a new authenticated blocker, the same current
+Test-author directive, and a later route migration. It proves only the current
+repair resolves, then adds a second in-window candidate and proves ambiguity
+is rejected. The exact live T-094 history confirms only `2ef4e82...` has a
+parent in the current authenticated repair window. Protected GitHub CI owns
+the complete regression; live closure requires generation 44's successor to
+resume exactly Test-author without replaying earlier roles.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

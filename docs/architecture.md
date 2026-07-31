@@ -421,8 +421,15 @@ receipt-to-passport-to-current-head ancestry; otherwise the rotated lease
 cannot authorize the historical transition. An operator may
 append one exact repair-owner directive in the ticket file without changing
 any other path.
-The state machine authenticates that commit against passport lineage, persists
-an HMAC-bound repair record, and runs only the named owner. If the owner
+The state machine selects the one directive commit whose single parent is an
+authenticated head in the current passport or its v2 migration history and
+whose commit remains in current branch ancestry. Older same-role directives
+whose parents are outside that authenticated repair window remain historical
+evidence and do not collide with the current repair. Zero or multiple
+in-window directive commits, merge commits, malformed additions, multi-path
+changes, or unrelated head drift fail closed. The state machine persists an
+HMAC-bound repair record for the unique commit and runs only the named owner.
+If the owner
 precedes the visible coarse state, ordinary deterministic stages may catch up
 under that record without adding a general backward state transition. More
 than one successful owner run fails closed. Without the directive, the
