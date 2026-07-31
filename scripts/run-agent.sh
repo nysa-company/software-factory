@@ -2457,6 +2457,10 @@ else
   fi
 fi
 fi
+if [[ "$GO_ISSUED" -eq 1 && "$TASK_SUBMITTED" -eq 0 &&
+      "$STATUS" -eq 125 && -z "$TERMINAL_REASON_CODE" ]]; then
+  TERMINAL_REASON_CODE="adapter_submission_unconfirmed"
+fi
 if [[ -z "$CANCELLATION_REASON" &&
       ( -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ) ]]; then
   if ! load_cancellation_request; then

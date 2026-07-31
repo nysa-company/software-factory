@@ -25,6 +25,14 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   but before submission leaves the receipt unconsumed, settles and parks the
   clean claim, and releases its lease; it never creates a provider attempt,
   charge, or successful-role replay.
+- A durable-GO exit 125 with no submission marker, progress, or usable
+  telemetry keeps the full conservative reservation and remains blocked under
+  the same release. Only a successor release may clear that exact receipt after
+  the signed remote passport proves its charge was exported once; a repeat
+  under the successor blocks again. New runs record
+  `adapter_submission_unconfirmed` and a bounded diagnostic-output digest,
+  while only the exact earlier blank-reason/empty-output shape remains readable
+  during upgrade.
 - Contract 1.8 preflight consumes the already-verified transition stage. Normal
   Planner work still requires the visible Planning state; an authenticated
   `FIX planner` receipt may run beneath a later coarse state without mutating
@@ -207,7 +215,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Protected-merge reconciliation is a separate migration-only complete-batch adoption path for already-merged product changes whose old evidence cannot be refreshed safely. Its generated authorization, exact receipts, Done/Migration projections, target pin, and companions are bound atomically by one manual protected product merge. The reconciliation evidence and terminal projections remain immutable afterward; later authorized releases may evolve `KIT_PIN` and companion paths without invalidating that historical proof.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
 - The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
-- Factory development may use the macOS-only disposable lane against an exact clean commit, a synthetic product, and a local Git remote. Mock mode is network-denied under outer Seatbelt and must finish below 15 minutes; real Cursor uses the authenticated CLI session, Cursor's explicit internal sandbox, and a one-use executable/session-bound approval because the current CLI cannot authenticate inside nested Seatbelt. Only Cursor subprocesses receive the session home, and Cursor's hardcoded temporary root is redirected into the lane for each invocation. Lane artifacts have no release receipts or activation records, and the production release contract is unchanged.
+- Factory development may use the macOS-only disposable lane against an exact clean commit, a synthetic product, and a local Git remote. Mock mode is network-denied under outer Seatbelt and must finish below 15 minutes; real Cursor uses the authenticated CLI session, Cursor's explicit internal sandbox, and a one-use executable/session-bound approval because the current CLI cannot authenticate inside nested Seatbelt. Only Cursor subprocesses receive the session home, and Cursor's hardcoded temporary root is redirected into the lane for each invocation. Lane artifacts have no release receipts or activation records, and its local product scheduler is not production-orchestration evidence. The sealed Contract 1.8 qualification environment is the pre-promotion proof for the exact production launcher, controller, passport, recovery, and release-upgrade paths.
 - A legacy serialized development Cursor lane may reclaim its hardcoded temporary bridge only when it is an empty owner-owned directory tree with no group/other write permission and all subscription providers are idle. Files, symlinks, content, unsafe ownership or modes, and active providers refuse; the replacement remains an atomic lane-target symlink with exact-owner cleanup. Contract 1.7 product Cursor attempts use isolated owner-only home, configuration, data, temporary, and credential roots, so unrelated legacy bridge state does not affect their admission.
 - Subscription and product development lanes copy CLI session files once, then bind readiness, version evidence, approval hashes, and role execution to the same sanitized lane-local session environment and working directory. Ambient authentication variables, caller working directories, and external Cursor session state cannot satisfy readiness; unavailable copied authentication stops before approval consumption, lease claim, reservation, or task submission.
 - Development-lane subscription readiness retries three times with a one-second delay between misses. This absorbs short lane-local CLI session transitions while preserving the same fail-closed pre-approval boundary.
@@ -2207,3 +2215,20 @@ claim fields exactly match the signed record's blocker identity; the state
 machine validates the complete repair and resolves its safe stage before the
 controller clears them. Empty-field recovery remains supported, while partial,
 mismatched, active, unauthenticated, or refusing repairs stay blocked.
+
+## 2026-07-31 — Decision 167: Unconfirmed submission retries only across a release
+
+Category: Incident
+
+T-094 proved that a process-group wrapper can cross durable GO yet fail before
+publishing its adapter-submission marker. The exact exit-125, zero-output,
+zero-progress terminal keeps its full conservative charge and stays blocked
+under the same Factory. A successor may reopen only after the signed remote
+passport proves that charge exactly once; any repeated successor failure stays
+blocked. Collision-resistant temporary marker creation narrows the original
+failure surface, and new manifests record
+`adapter_submission_unconfirmed` with their bounded diagnostic-output digest;
+only the original empty-reason shape additionally requires empty output. The
+sealed Contract 1.8 qualification
+environment—not the local-only development scheduler—is the production-parity
+pre-promotion proof for this recovery.

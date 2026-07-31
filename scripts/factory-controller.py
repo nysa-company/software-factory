@@ -1423,13 +1423,44 @@ class Controller:
                 and terminal.get("role_exit") == "role_exit_contract_blocked"
                 and terminal.get("exit_status") == "12"
             )
+            submission_unconfirmed = (
+                terminal is not None
+                and terminal.get("phase") == "completed"
+                and terminal.get("accounting_state") == "abandoned_conservative"
+                and terminal.get("go_issued") == "1"
+                and terminal.get("task_submitted") == "0"
+                and terminal.get("exit_status") == "125"
+                and terminal.get("role_exit") == "provider_failed"
+                and (
+                    terminal.get("terminal_reason_code", "")
+                    == "adapter_submission_unconfirmed"
+                    and DIGEST.fullmatch(terminal.get("output_sha256", ""))
+                    or terminal.get("terminal_reason_code", "") == ""
+                    and terminal.get("output_sha256")
+                    == hashlib.sha256(b"").hexdigest()
+                )
+                and terminal.get("turns") == "0"
+                and not terminal.get("progress_events")
+                and terminal.get("cost_basis") == "conservative_reservation"
+                and terminal.get("effective_cost")
+                == terminal.get("reserved_usd")
+                and SHA.fullmatch(terminal.get("kit_sha", ""))
+                and terminal["kit_sha"] != self.release_path.name
+            )
             if not (
                 push_failure or interrupted_before_submission or contract_blocked
+                or submission_unconfirmed
             ):
                 continue
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if not passport_path.exists():
                 continue
+            if submission_unconfirmed:
+                try:
+                    if not self.terminal_already_exported(claim, terminal):
+                        continue
+                except ControllerError:
+                    continue
             if contract_blocked:
                 self.ensure_lease(claim, "contract-block-resume")
                 blocked = self.json_call(
@@ -1481,7 +1512,11 @@ class Controller:
                     else (
                         "contract_blocker_recovered"
                         if contract_blocked
-                        else "interrupted_role_recovered"
+                        else (
+                            "submission_failure_recovered_by_release_upgrade"
+                            if submission_unconfirmed
+                            else "interrupted_role_recovered"
+                        )
                     )
                 ),
                 claim["ticket"],

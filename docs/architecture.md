@@ -499,6 +499,17 @@ attempt for that ticket and role is refused as no progress instead of replayed.
 An exit 143 before task submission reopens only that interrupted role, and only
 after the current signed passport, clean cell, branch, and remote head agree
 exactly; every submitted or differently terminated interruption stays blocked.
+An exit 125 after durable GO but before a durable submission marker retains the
+full conservative reservation and remains blocked under the same Factory
+release. A successor release may reopen only that zero-progress terminal after
+the signed passport proves the charge was exported exactly once and the clean
+remote passport still agrees. New terminals name the typed
+`adapter_submission_unconfirmed` reason and retain a bounded output digest for
+diagnosis; the exact legacy empty-output, empty-reason shape remains readable
+for upgrade recovery. A repeated failure under the successor stays blocked, so
+release recovery cannot become a same-release retry loop. Submission markers
+use collision-resistant owner-only temporary files before atomic publication
+and directory synchronization.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
