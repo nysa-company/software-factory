@@ -442,9 +442,14 @@ After an authenticated resume creates that repair record, the controller may
 observe either a receipt-free blocked claim or the unchanged failed-role
 receipt and role left by the terminal blocker. The latter is eligible only
 when both fields exactly match the repair record's blocked receipt and role.
-The deterministic state machine then authenticates the signed repair and
-resolves its owner before the controller clears those stale claim fields.
-Mismatched, partial, unauthenticated, or active-role claims remain blocked.
+The controller authenticates the current remote passport and exact cached
+blocked-receipt identity before clearing those stale claim fields. It does not
+resolve a stage during recovery. Ordinary reconciliation then makes the one
+authoritative state-machine call for the transition attempt; that call
+authenticates the signed repair and selects its owner or a higher-priority
+dependency transition. Mismatched, partial, unauthenticated, or active-role
+claims remain blocked, and invalid repair evidence fails before a provider
+call.
 An unresolved dependency may temporarily replace the visible transition
 receipt without discarding that repair record. After the dependency and any
 Factory upgrade resolve, the named owner reopens only when the record's signed

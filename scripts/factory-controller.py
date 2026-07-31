@@ -1388,41 +1388,10 @@ class Controller:
                 return False
         except ControllerError:
             return False
-        had_lease = (
-            claim.get("lease_released") is not True
-            and bool(DIGEST.fullmatch(claim.get("lease", "")))
-        )
         self.ensure_lease(claim, "recorded-contract-repair")
-        try:
-            transition = self.json_call(
-                "state-machine", "--ticket", claim["ticket"],
-                "--lease", claim["lease"], "--workdir", claim["worktree"],
-                "--json",
-            )
-            stage = transition.get("stage", "")
-            if (
-                transition.get("status") != "ok"
-                or not isinstance(stage, str)
-                or not stage
-                or stage.startswith("REFUSE")
-            ):
-                raise ControllerError(
-                    "recorded contract repair did not resolve a safe stage"
-                )
-        except Exception:
-            if not had_lease and not self.role_active(claim):
-                self.release_ticket_lease(claim)
-                claim["lease"] = ""
-                claim.pop("lease_released", None)
-                self.save_claim(claim)
-            raise
         claim.update(receipt="", role="", status="claimed")
         self.save_claim(claim)
-        self.event(
-            "recorded_contract_repair_recovered",
-            claim["ticket"],
-            stage=stage,
-        )
+        self.event("recorded_contract_repair_prepared", claim["ticket"])
         return True
 
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:

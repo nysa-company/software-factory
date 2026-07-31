@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
+import hmac
 import importlib.util
 import json
 import os
 from pathlib import Path
 import plistlib
+import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +26,20 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 CONTROL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROL)
+
+STATE_SPEC = importlib.util.spec_from_file_location(
+    "state_machine_for_controller_test", ROOT / "scripts/state-machine.py"
+)
+assert STATE_SPEC and STATE_SPEC.loader
+STATE = importlib.util.module_from_spec(STATE_SPEC)
+STATE_SPEC.loader.exec_module(STATE)
+
+ATTEST_SPEC = importlib.util.spec_from_file_location(
+    "ticket_attest_for_controller_test", ROOT / "scripts/ticket-attest.py"
+)
+assert ATTEST_SPEC and ATTEST_SPEC.loader
+ATTEST = importlib.util.module_from_spec(ATTEST_SPEC)
+ATTEST_SPEC.loader.exec_module(ATTEST)
 
 
 class FactoryControllerTest(unittest.TestCase):
@@ -811,13 +830,6 @@ class FactoryControllerTest(unittest.TestCase):
                     "schema_version": 1,
                     "ticket": "T-110",
                 }
-            if args[0] == "state-machine":
-                return {
-                    "receipt": "f" * 64,
-                    "role": "test-author",
-                    "stage": "FIX test-author",
-                    "status": "ok",
-                }
             return {}
 
         controller.json_call = json_call
@@ -834,18 +846,12 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["role"], "")
         self.assertIn(
             (
-                "recorded_contract_repair_recovered",
-                {"stage": "FIX test-author"},
+                "recorded_contract_repair_prepared",
+                {},
             ),
             calls,
         )
-        self.assertIn(
-            (
-                "state-machine", "--ticket", "T-110", "--lease", "e" * 64,
-                "--workdir", str(cell), "--json",
-            ),
-            calls,
-        )
+        self.assertFalse(any(call[0] == "state-machine" for call in calls))
 
     def test_recorded_repair_recovers_claim_left_at_blocked_terminal(
         self,
@@ -878,13 +884,6 @@ class FactoryControllerTest(unittest.TestCase):
 
         def json_call(*args, **_kwargs):
             calls.append(args)
-            if args[0] == "state-machine":
-                return {
-                    "receipt": "f" * 64,
-                    "role": "test-author",
-                    "stage": "FIX test-author",
-                    "status": "ok",
-                }
             return {}
 
         controller.json_call = json_call
@@ -901,22 +900,12 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["role"], "")
         self.assertIn(
             (
-                "recorded_contract_repair_recovered",
-                {"stage": "FIX test-author"},
+                "recorded_contract_repair_prepared",
+                {},
             ),
             calls,
         )
-        self.assertIn(
-            (
-                "state-machine", "--ticket", "T-110", "--lease", "a" * 64,
-                "--workdir", str(cell), "--json",
-            ),
-            calls,
-        )
-        self.assertNotIn(
-            ("state-machine", "block"),
-            [call[:2] for call in calls if isinstance(call, tuple)],
-        )
+        self.assertFalse(any(call[0] == "state-machine" for call in calls))
 
     def test_recorded_repair_refuses_mismatched_blocked_claim(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -953,7 +942,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["role"], "builder")
         self.assertEqual(calls, [])
 
-    def test_invalid_recorded_repair_releases_new_lease_and_stays_blocked(
+    def test_invalid_recorded_repair_fails_in_the_single_ordinary_resolution(
         self,
     ) -> None:
         controller = CONTROL.Controller(self.args)
@@ -987,24 +976,805 @@ class FactoryControllerTest(unittest.TestCase):
                 }
             if args[0] == "state-machine":
                 raise CONTROL.ControllerError("repair record is invalid")
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
             return {}
 
         controller.json_call = json_call
         controller.remote_passport_valid = lambda _claim: True
         controller.event = lambda *_args, **_kwargs: None
 
-        with self.assertRaisesRegex(
-            CONTROL.ControllerError, "repair record is invalid"
-        ):
-            controller.restore_recorded_contract_repair(claim)
+        self.assertTrue(controller.restore_recorded_contract_repair(claim))
 
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "e" * 64)
+        self.assertFalse(any(call[0] == "state-machine" for call in calls))
+
+        (cell / "factory/route-plans").mkdir(parents=True)
+        (cell / "factory/route-plans/T-110.json").write_text(
+            '{"ticket":"T-110"}\n', encoding="utf-8"
+        )
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.ticket_merged = lambda _claim: False
+        controller.run_role = lambda *_args: self.fail(
+            "invalid repair evidence reached a provider role"
+        )
+
+        result = controller.reconcile_ticket(claim)
+
+        self.assertEqual(result["status"], "error")
         self.assertEqual(claim["status"], "blocked")
-        self.assertEqual(claim["lease"], "")
-        self.assertNotIn("lease_released", claim)
+        self.assertTrue(claim["lease_released"])
+        self.assertEqual(
+            len([call for call in calls if call[0] == "state-machine"]), 1
+        )
         self.assertIn(
             ("release", "--ticket", "T-110", "--lease", "e" * 64),
             calls,
         )
+
+    def test_composite_historical_state_replay(self) -> None:
+        fixture_path = ROOT / "ci/fixtures/composite-historical-state.json"
+        fixture_raw = fixture_path.read_bytes()
+        fixture = json.loads(fixture_raw)
+        key = hashlib.sha256(b"sanitized-composite-replay-key").digest()
+        primary = fixture["primary"]
+        source = fixture["release"]["source"]
+        successor_a = fixture["release"]["successor_a"]
+        successor_b = fixture["release"]["successor_b"]
+
+        def digest(value) -> str:
+            return hashlib.sha256(STATE.canonical(value)).hexdigest()
+
+        def oid(label: str) -> str:
+            return hashlib.sha256(label.encode()).hexdigest()[:40]
+
+        def require(condition: bool, message: str) -> None:
+            if not condition:
+                raise ValueError(message)
+
+        charges = []
+        completed = []
+        for number, (role, result, factory_sha) in enumerate(
+            primary["charged_attempts"], 1
+        ):
+            run_id = f"historical-{number:02d}"
+            receipt = digest(["receipt", run_id])
+            charge = {
+                "amount": 10_000_000,
+                "factory_sha": factory_sha,
+                "receipt": receipt,
+                "role": role,
+                "run_id": run_id,
+            }
+            charges.append(charge)
+            if result == "ok":
+                completed.append({
+                    **charge,
+                    "output": digest(["output", run_id]),
+                })
+
+        initial_head = oid("historical-ticket-head")
+        initial_tree = oid("historical-ticket-tree")
+        route_revisions = []
+        route_parent = None
+        for number in range(primary["initial_route_revision_count"]):
+            body = {"factory_sha": source, "kind": "historical", "number": number}
+            revision_hash = ATTEST.route_revision_hash(number, route_parent, body)
+            route_revisions.append({
+                "body": body,
+                "parent_hash": route_parent,
+                "revision": number,
+                "revision_hash": revision_hash,
+            })
+            route_parent = revision_hash
+
+        migrations = []
+        migration_parent = None
+        for number in range(primary["initial_migration_count"]):
+            body = {
+                "from_factory_sha": source,
+                "from_head_sha": initial_head,
+                "to_factory_sha": source,
+                "to_head_sha": initial_head,
+            }
+            edge_hash = digest({
+                "body": body,
+                "parent_hash": migration_parent,
+                "revision": number,
+            })
+            migrations.append({
+                **body,
+                "edge_hash": edge_hash,
+                "parent_hash": migration_parent,
+                "revision": number,
+            })
+            migration_parent = edge_hash
+
+        charged_factories = list(dict.fromkeys(
+            item["factory_sha"] for item in charges
+        ))
+        release_history = [
+            *charged_factories,
+            *[
+                oid(f"historical-release-{number}")
+                for number in range(
+                    primary["initial_release_count"] - len(charged_factories) - 1
+                )
+            ],
+            source,
+        ]
+        blocker_receipt = charges[-1]["receipt"]
+        lease = digest("initial-lease")
+        state = {
+            "activation": {"active_factory_sha": source, "history": [source]},
+            "claim": {
+                "branch": primary["branch"],
+                "cell": "/sealed/cells/primary",
+                "head_sha": initial_head,
+                "lease": lease,
+                "passport_sha256": "",
+                "parked": True,
+                "status": "blocked",
+                "ticket": primary["ticket"],
+                "transition_receipt": blocker_receipt,
+            },
+            "conflict": {
+                "blob": digest("protected-test-blob"),
+                "mode": "100644",
+                "path": "tests/dependency.test.ts",
+                "repair_owner": "test-author",
+            },
+            "passport": {
+                "base_sha": oid("protected-main-before-dependency"),
+                "branch": primary["branch"],
+                "charges": charges,
+                "completed": completed,
+                "cumulative_charges_micro_usd": 130_000_000,
+                "factory_sha": source,
+                "factory_release_history": release_history,
+                "head_sha": initial_head,
+                "migration_history": migrations,
+                "parent_digest": migration_parent,
+                "publication_state": "none",
+                "route_revision_hash": route_parent,
+                "ticket": primary["ticket"],
+                "tree_sha": initial_tree,
+            },
+            "publication": {
+                "approval_head": None,
+                "merge_lease": None,
+                "queue": [],
+                "reviewed_head": None,
+                "state": "none",
+                "tested_head": None,
+            },
+            "receipt": {
+                "base_sha": oid("protected-main-before-dependency"),
+                "digest": blocker_receipt,
+                "factory_sha": source,
+                "head_sha": initial_head,
+                "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
+                "route_revision_hash": route_parent,
+                "tree_sha": initial_tree,
+            },
+            "receipt_history": [],
+            "repair": {
+                "blocked_receipt": blocker_receipt,
+                "directive_receipt": blocker_receipt,
+                "owner": primary["repair_owner"],
+                "status": "pending",
+            },
+            "route": {"revisions": route_revisions},
+            "tickets": {
+                primary["ticket"]: {"provider": False, "publication": False},
+                fixture["tickets"]["dependents"][0]: {
+                    "dependency": primary["ticket"], "parked": True,
+                    "provider": False, "publication": False, "status": "waiting",
+                },
+                fixture["tickets"]["dependents"][1]: {
+                    "dependency": primary["ticket"], "parked": True,
+                    "provider": False, "publication": False, "status": "waiting",
+                },
+                fixture["tickets"]["dormant"]: {
+                    "provider": False, "publication": False, "status": "backlog",
+                },
+                fixture["tickets"]["independent_sibling"]: {
+                    "charges": [], "completed": [], "provider": True,
+                    "publication": False, "status": "running",
+                },
+            },
+        }
+        expected_conflict = copy.deepcopy(state["conflict"])
+
+        def seal(value: dict) -> None:
+            passport = value["passport"]
+            value["claim"]["passport_sha256"] = digest(passport)
+            unsigned = {
+                name: item for name, item in value.items()
+                if name != "authentication_sha256"
+            }
+            value["authentication_sha256"] = hmac.new(
+                key, STATE.canonical(unsigned), hashlib.sha256
+            ).hexdigest()
+
+        def validate(value: dict) -> None:
+            unsigned = {
+                name: item for name, item in value.items()
+                if name != "authentication_sha256"
+            }
+            require(
+                hmac.compare_digest(
+                    value.get("authentication_sha256", ""),
+                    hmac.new(key, STATE.canonical(unsigned), hashlib.sha256).hexdigest(),
+                ),
+                "aggregate HMAC mismatch",
+            )
+            passport = value["passport"]
+            claim = value["claim"]
+            receipt = value["receipt"]
+            route = value["route"]["revisions"]
+            parent = None
+            for number, revision in enumerate(route):
+                require(revision["revision"] == number, "route revision gap")
+                require(revision["parent_hash"] == parent, "route parent mismatch")
+                require(
+                    revision["revision_hash"] == ATTEST.route_revision_hash(
+                        number, parent, revision["body"]
+                    ),
+                    "route revision hash mismatch",
+                )
+                parent = revision["revision_hash"]
+            require(parent == passport["route_revision_hash"], "route tip mismatch")
+            migration_parent = None
+            for number, edge in enumerate(passport["migration_history"]):
+                body = {
+                    name: edge[name] for name in (
+                        "from_factory_sha", "from_head_sha",
+                        "to_factory_sha", "to_head_sha",
+                    )
+                }
+                require(edge["revision"] == number, "passport migration gap")
+                require(edge["parent_hash"] == migration_parent, "migration parent mismatch")
+                require(
+                    edge["edge_hash"] == digest({
+                        "body": body,
+                        "parent_hash": migration_parent,
+                        "revision": number,
+                    }),
+                    "passport migration edge mismatch",
+                )
+                migration_parent = edge["edge_hash"]
+            require(passport["parent_digest"] == migration_parent, "passport parent mismatch")
+            require(claim["passport_sha256"] == digest(passport), "claim passport mismatch")
+            require(claim["ticket"] == passport["ticket"], "ticket identity mismatch")
+            require(claim["branch"] == passport["branch"], "branch identity mismatch")
+            require(claim["head_sha"] == passport["head_sha"] == receipt["head_sha"], "head mismatch")
+            require(passport["tree_sha"] == receipt["tree_sha"], "tree mismatch")
+            require(passport["base_sha"] == receipt["base_sha"], "base mismatch")
+            require(
+                passport["route_revision_hash"] == receipt["route_revision_hash"],
+                "receipt route mismatch",
+            )
+            require(claim["transition_receipt"] == receipt["digest"], "receipt mismatch")
+            require(
+                receipt["lease_sha256"] == hashlib.sha256(
+                    claim["lease"].encode()
+                ).hexdigest(),
+                "lease mismatch",
+            )
+            require(
+                passport["factory_sha"] == receipt["factory_sha"]
+                == value["activation"]["active_factory_sha"],
+                "active Factory mismatch",
+            )
+            require(
+                passport["factory_release_history"][-1] == passport["factory_sha"],
+                "release history tip mismatch",
+            )
+            require(
+                all(
+                    charge["factory_sha"] in passport["factory_release_history"]
+                    for charge in passport["charges"]
+                ),
+                "historical charge Factory changed",
+            )
+            run_ids = [item["run_id"] for item in passport["charges"]]
+            receipts = [item["receipt"] for item in passport["charges"]]
+            outputs = [item["output"] for item in passport["completed"]]
+            require(len(run_ids) == len(set(run_ids)), "duplicate charge run")
+            require(len(receipts) == len(set(receipts)), "duplicate charged receipt")
+            require(len(outputs) == len(set(outputs)), "duplicate role output")
+            require(
+                passport["cumulative_charges_micro_usd"]
+                == sum(item["amount"] for item in passport["charges"]),
+                "charge accounting mismatch",
+            )
+            require(
+                {item["run_id"] for item in passport["completed"]}
+                <= set(run_ids),
+                "successful role lacks a charge",
+            )
+            require(
+                value["repair"]["directive_receipt"]
+                == value["repair"]["blocked_receipt"],
+                "repair directive receipt mismatch",
+            )
+            require(value["conflict"] == expected_conflict, "unsafe conflict evidence")
+            publication = value["publication"]
+            if publication["state"] == "merged":
+                require(publication["queue"] == [], "publication queue not drained")
+                require(
+                    publication["reviewed_head"] == publication["tested_head"]
+                    == publication["approval_head"] == passport["head_sha"],
+                    "publication head mismatch",
+                )
+
+        def new_receipt(label: str) -> None:
+            state["receipt_history"].append(copy.deepcopy(state["receipt"]))
+            state["receipt"] = {
+                "base_sha": state["passport"]["base_sha"],
+                "digest": digest(["transition", label, len(state["receipt_history"])]),
+                "factory_sha": state["passport"]["factory_sha"],
+                "head_sha": state["passport"]["head_sha"],
+                "lease_sha256": hashlib.sha256(
+                    state["claim"]["lease"].encode()
+                ).hexdigest(),
+                "route_revision_hash": state["passport"]["route_revision_hash"],
+                "tree_sha": state["passport"]["tree_sha"],
+            }
+            state["claim"]["transition_receipt"] = state["receipt"]["digest"]
+
+        def passport_migration(
+            label: str, *, factory_sha: str | None = None,
+            head_sha: str | None = None, tree_sha: str | None = None,
+            route_change: bool = False,
+        ) -> None:
+            passport = state["passport"]
+            old_factory = passport["factory_sha"]
+            old_head = passport["head_sha"]
+            target_factory = factory_sha or old_factory
+            target_head = head_sha or old_head
+            if route_change:
+                number = len(state["route"]["revisions"])
+                parent = state["route"]["revisions"][-1]["revision_hash"]
+                body = {
+                    "kind": "release-migration",
+                    "old_factory_sha": old_factory,
+                    "new_factory_sha": target_factory,
+                }
+                revision_hash = ATTEST.route_revision_hash(number, parent, body)
+                state["route"]["revisions"].append({
+                    "body": body, "parent_hash": parent,
+                    "revision": number, "revision_hash": revision_hash,
+                })
+                passport["route_revision_hash"] = revision_hash
+            number = len(passport["migration_history"])
+            parent = passport["migration_history"][-1]["edge_hash"]
+            body = {
+                "from_factory_sha": old_factory,
+                "from_head_sha": old_head,
+                "to_factory_sha": target_factory,
+                "to_head_sha": target_head,
+            }
+            edge_hash = digest({
+                "body": body, "parent_hash": parent, "revision": number,
+            })
+            passport["migration_history"].append({
+                **body, "edge_hash": edge_hash, "parent_hash": parent,
+                "revision": number,
+            })
+            passport.update(
+                factory_sha=target_factory,
+                head_sha=target_head,
+                parent_digest=edge_hash,
+                tree_sha=tree_sha or passport["tree_sha"],
+            )
+            state["claim"]["head_sha"] = target_head
+            if target_factory != old_factory:
+                passport["factory_release_history"].append(target_factory)
+                state["activation"]["active_factory_sha"] = target_factory
+                state["activation"]["history"].append(target_factory)
+            new_receipt(label)
+            seal(state)
+            validate(state)
+
+        def append_success(role: str, label: str) -> None:
+            passport = state["passport"]
+            run_id = f"replay-{label}"
+            charge = {
+                "amount": 10_000_000,
+                "factory_sha": passport["factory_sha"],
+                "receipt": state["receipt"]["digest"],
+                "role": role,
+                "run_id": run_id,
+            }
+            passport["charges"].append(charge)
+            passport["completed"].append({
+                **charge, "output": digest(["output", run_id]),
+            })
+            passport["cumulative_charges_micro_usd"] += charge["amount"]
+
+        seal(state)
+        validate(state)
+        self.assertEqual(len(state["passport"]["charges"]), 13)
+        self.assertEqual(len(state["passport"]["completed"]), 6)
+        self.assertEqual(
+            state["passport"]["cumulative_charges_micro_usd"], 130_000_000
+        )
+        self.assertEqual(len(state["route"]["revisions"]), 27)
+        self.assertEqual(len(state["passport"]["migration_history"]), 31)
+        self.assertEqual(len(state["passport"]["factory_release_history"]), 24)
+
+        trace = ["historical-passport-validated", "builder-blocked-and-parked"]
+        provider_calls = []
+        settled = {primary["ticket"]}
+        launch_voids = {
+            f"launch-void-{number:02d}"
+            for number in range(primary["launch_void_count"])
+        }
+        terminalized = set()
+        terminalized.update(launch_voids)
+        terminalized.update(launch_voids)
+        self.assertEqual(len(terminalized), 41)
+        self.assertFalse(CONTROL.Controller.consumes_capacity({
+            "lease": lease, "parked": True, "status": "blocked",
+        }))
+        self.assertIn(primary["ticket"], settled)
+        trace.extend(["launch-void-terminalized-once", "invocation-settled"])
+
+        sibling = fixture["tickets"]["independent_sibling"]
+        provider_calls.append((sibling, "builder"))
+        state["tickets"][sibling]["provider"] = False
+        state["tickets"][sibling]["status"] = "validating"
+        state["tickets"][sibling]["charges"].append("sibling-builder-run")
+        state["tickets"][sibling]["completed"].append("sibling-builder-run")
+        sibling_snapshot = copy.deepcopy(state["tickets"][sibling])
+        trace.append("independent-sibling-progressed")
+
+        accepted_resumes = set()
+        resume_key = (state["repair"]["owner"], state["repair"]["blocked_receipt"])
+        accepted_resumes.add(resume_key)
+        self.assertIn(resume_key, accepted_resumes)
+        self.assertFalse(resume_key not in accepted_resumes)
+        trace.append("exact-resume-one-use")
+        new_receipt("repair-a")
+        provider_calls.append((primary["ticket"], "test-author"))
+        append_success("test-author", "repair-a")
+        state["repair"]["status"] = "completed"
+        seal(state)
+        validate(state)
+        trace.append("repair-a-completed-and-archived")
+
+        blocker_a = copy.deepcopy(state["repair"])
+        planner_blocker = digest("planner-blocker")
+        state["repair"] = {
+            "blocked_receipt": planner_blocker,
+            "directive_receipt": planner_blocker,
+            "owner": "planner",
+            "status": "pending",
+        }
+        self.assertNotEqual(blocker_a["blocked_receipt"], planner_blocker)
+        self.assertTrue("FIX planner".startswith("FIX "))
+        self.assertFalse("RUN planner".startswith("FIX "))
+        new_receipt("planner-repair")
+        provider_calls.append((primary["ticket"], "planner"))
+        append_success("planner", "repair-planner")
+        state["repair"]["status"] = "completed"
+        seal(state)
+        validate(state)
+        trace.append("planner-repair-preflight-and-strict-output")
+
+        current_blocker = digest("current-builder-blocker")
+        state["repair"] = {
+            "blocked_receipt": current_blocker,
+            "directive_receipt": current_blocker,
+            "owner": "test-author",
+            "status": "pending",
+        }
+        passport_migration(
+            "successor-a", factory_sha=successor_a, route_change=True
+        )
+        self.assertEqual(state["repair"]["owner"], "test-author")
+        self.assertEqual(state["tickets"][sibling], sibling_snapshot)
+        trace.extend(["successor-a-route-passport-migration", "controller-restart-no-replay"])
+
+        old_identity = (state["claim"]["ticket"], state["claim"]["branch"])
+        state["claim"]["cell"] = "/sealed/cells/rotated-primary"
+        state["claim"]["lease"] = digest("rotated-lease")
+        state["receipt"]["lease_sha256"] = hashlib.sha256(
+            state["claim"]["lease"].encode()
+        ).hexdigest()
+        seal(state)
+        validate(state)
+        self.assertEqual(
+            old_identity, (state["claim"]["ticket"], state["claim"]["branch"])
+        )
+        trace.append("cell-and-lease-rotated")
+
+        state_machine_calls = 0
+        paused_receipt = state["receipt"]["digest"]
+        state_machine_calls += 1
+        maintenance = True
+        if maintenance:
+            trace.append("stage-resolution-paused")
+        self.assertEqual(state_machine_calls, 1)
+        self.assertEqual(state["receipt"]["digest"], paused_receipt)
+        trace.extend(["drain-refused-active-boundary", "stale-claim-refused"])
+
+        cell = self.root / "composite-cell"
+        (cell / "factory/tickets").mkdir(parents=True)
+        (cell / "factory/route-plans").mkdir()
+        (cell / "factory/runs").mkdir()
+        (cell / "factory/tickets/T-710.md").write_text(
+            "# T-710\n\nState: Building\nDepends-On: T-092\n",
+            encoding="utf-8",
+        )
+        (cell / "factory/route-plans/T-710.json").write_text(
+            '{"ticket":"T-710"}\n', encoding="utf-8"
+        )
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(cell), *arguments], text=True,
+                capture_output=True, check=True,
+            ).stdout.strip()
+
+        git("init", "-q", "-b", "ticket/T-710")
+        git("config", "user.name", "Composite Replay")
+        git("config", "user.email", "replay@example.invalid")
+        git("add", ".")
+        git("commit", "-qm", "historical ticket checkpoint")
+        git("checkout", "-qb", "main")
+        (cell / "dependency.txt").write_text("T-092 merged\n", encoding="utf-8")
+        git("add", "dependency.txt")
+        git("commit", "-qm", "merge T-092")
+        protected_head = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/main", protected_head)
+        git("checkout", "-q", "ticket/T-710")
+
+        state_args = argparse.Namespace(
+            contract_version="1.8.0",
+            factory_root=cell,
+            factory_sha=successor_a,
+            kit_dir=ROOT,
+            lease=state["claim"]["lease"],
+            project="replay",
+            receipt="",
+            require_used=False,
+            role="",
+            state_dir=self.state,
+            ticket="T-710",
+            workdir=cell,
+        )
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-710",
+            "lease": state["claim"]["lease"],
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": current_blocker,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-710",
+            "worktree": str(cell),
+        }
+        repairs = self.state / "contract-repairs"
+        repairs.mkdir(mode=0o700, exist_ok=True)
+        CONTROL.write(repairs / "T-710.json", {
+            "blocked_receipt": current_blocker,
+            "blocked_role": "builder",
+            "repair_role": "test-author",
+        })
+        events = []
+        transition_attempt_calls = []
+        controller.remote_passport_valid = lambda _claim: True
+        controller.ensure_lease = lambda _claim, _label: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.ticket_merged = lambda _claim: False
+        controller.migrate_passport = lambda _claim, _state: None
+        controller.event = lambda name, *_args, **_kwargs: events.append(name)
+
+        def controller_json_call(*arguments, **_kwargs):
+            if arguments[0] == "state-machine":
+                transition_attempt_calls.append(arguments)
+                return STATE.next_transition(state_args)
+            if arguments[:2] == ("ticket-attest", "--ticket"):
+                old_head = git("rev-parse", "HEAD")
+                git("merge", "-q", "--no-edit", "origin/main")
+                return {
+                    "action": "dependency-refresh",
+                    "attestation": {
+                        "old_head": old_head,
+                        "protected_head": protected_head,
+                    },
+                    "head": git("rev-parse", "HEAD"),
+                }
+            if arguments[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            raise AssertionError(f"unexpected helper call: {arguments}")
+
+        controller.json_call = controller_json_call
+        role_receipts = []
+
+        def run_role(_claim, role, receipt, _failed_checks):
+            state_args.receipt = receipt
+            state_args.role = role
+            STATE.verify(state_args, consume=True)
+            role_receipts.append((role, receipt))
+
+        controller.run_role = run_role
+        with (
+            patch.dict(
+                os.environ,
+                {"FACTORY_CERTIFIED_PRODUCT_ORIGIN": "sanitized-replay-origin"},
+            ),
+            patch.object(STATE, "protected_dependency", return_value={}),
+            patch.object(STATE, "ensure_dependency_conflict_repair"),
+            patch.object(
+                STATE, "contract_repair_stage",
+                return_value=("FIX test-author", True),
+            ),
+            patch.object(STATE, "migrate_passport"),
+        ):
+            calls_before_restore = len(transition_attempt_calls)
+            self.assertTrue(controller.restore_recorded_contract_repair(claim))
+            self.assertEqual(len(transition_attempt_calls), calls_before_restore)
+            first = controller.reconcile_ticket(claim)
+            self.assertEqual(first["status"], "progressed")
+            self.assertEqual(len(transition_attempt_calls), 1)
+            self.assertIn("dependency_base_refreshed", events)
+            self.assertEqual(role_receipts, [])
+            second = controller.reconcile_ticket(claim)
+            self.assertEqual(second["status"], "progressed")
+            self.assertEqual(len(transition_attempt_calls), 2)
+            self.assertEqual(role_receipts[0][0], "test-author")
+        trace.extend([
+            "recorded-repair-prepared-without-resolution",
+            "protected-dependency-refresh-provider-free",
+            "repair-owner-resolved-next-attempt",
+        ])
+
+        refreshed_head = git("rev-parse", "HEAD")
+        refreshed_tree = git("rev-parse", "HEAD^{tree}")
+        state["passport"]["base_sha"] = protected_head
+        state["receipt"]["base_sha"] = protected_head
+        passport_migration(
+            "dependency-refresh", head_sha=refreshed_head,
+            tree_sha=refreshed_tree,
+        )
+        provider_calls.append((primary["ticket"], "test-author"))
+        append_success("test-author", "repair-b")
+        state["repair"]["status"] = "completed"
+        seal(state)
+        validate(state)
+        trace.append("repair-b-completed-on-successor-a")
+
+        passport_migration(
+            "successor-b", factory_sha=successor_b, route_change=True
+        )
+        self.assertEqual(state["tickets"][sibling], sibling_snapshot)
+        trace.extend(["successor-b-route-passport-migration", "second-restart-no-replay"])
+
+        state["publication"].update(queue=[primary["ticket"]], state="validating")
+        trace.append("publication-returned-to-queue-tail")
+        for role in ("reviewer", "narrator"):
+            new_receipt(f"fresh-{role}")
+            provider_calls.append((primary["ticket"], role))
+            append_success(role, f"fresh-{role}")
+        publication_head = state["passport"]["head_sha"]
+        state["publication"].update(
+            approval_head=publication_head,
+            merge_lease=digest("short-product-merge-lease"),
+            queue=[],
+            reviewed_head=publication_head,
+            state="merged",
+            tested_head=publication_head,
+        )
+        state["passport"]["publication_state"] = "merged"
+        state["tickets"][primary["ticket"]].update(
+            provider=False, publication=False, status="done"
+        )
+        for ticket in fixture["tickets"]["dependents"]:
+            state["tickets"][ticket]["status"] = "ready"
+        seal(state)
+        validate(state)
+        trace.append("reviewer-narrator-publication-done")
+
+        final_successes = len(state["passport"]["completed"])
+        final_charges = len(state["passport"]["charges"])
+        self.assertEqual(final_successes, 11)
+        self.assertEqual(final_charges, 18)
+        self.assertEqual(
+            len([call for call in provider_calls if call[0] == primary["ticket"]]),
+            5,
+        )
+        self.assertEqual(
+            len([call for call in provider_calls if call[0] == sibling]), 1
+        )
+        self.assertEqual(state["tickets"][fixture["tickets"]["dormant"]]["status"], "backlog")
+        self.assertEqual(len(state["route"]["revisions"]), 29)
+        self.assertEqual(len(state["passport"]["migration_history"]), 34)
+        self.assertEqual(len(state["passport"]["factory_release_history"]), 26)
+        self.assertEqual(fixture_path.read_bytes(), fixture_raw)
+
+        final = copy.deepcopy(state)
+        sibling_final = copy.deepcopy(final["tickets"][sibling])
+        providers_before_matrix = list(provider_calls)
+
+        def resign(value: dict) -> None:
+            value["claim"]["passport_sha256"] = digest(value["passport"])
+            unsigned = {
+                name: item for name, item in value.items()
+                if name != "authentication_sha256"
+            }
+            value["authentication_sha256"] = hmac.new(
+                key, STATE.canonical(unsigned), hashlib.sha256
+            ).hexdigest()
+
+        def tamper(value: dict, field: str) -> None:
+            if field == "hmac":
+                value["authentication_sha256"] = "0" * 64
+                return
+            if field == "passport_parent":
+                value["passport"]["parent_digest"] = "0" * 64
+            elif field == "migration_edge":
+                value["passport"]["migration_history"][-1]["to_factory_sha"] = source
+            elif field == "migration_gap":
+                value["passport"]["migration_history"][-1]["revision"] += 1
+            elif field == "head":
+                value["claim"]["head_sha"] = oid("tampered-head")
+            elif field == "tree":
+                value["receipt"]["tree_sha"] = oid("tampered-tree")
+            elif field == "route":
+                value["passport"]["route_revision_hash"] = "0" * 64
+            elif field == "base":
+                value["receipt"]["base_sha"] = oid("tampered-base")
+            elif field == "receipt":
+                value["claim"]["transition_receipt"] = "0" * 64
+            elif field == "charge_accounting":
+                value["passport"]["cumulative_charges_micro_usd"] += 1
+            elif field == "repair_directive_receipt":
+                value["repair"]["directive_receipt"] = "0" * 64
+            elif field == "conflict_blob":
+                value["conflict"]["blob"] = "0" * 64
+            elif field == "conflict_path":
+                value["conflict"]["path"] = "apps/api/src/app.ts"
+            elif field == "conflict_mode":
+                value["conflict"]["mode"] = "120000"
+            elif field == "lease":
+                value["receipt"]["lease_sha256"] = "0" * 64
+            elif field == "approval_head":
+                value["publication"]["approval_head"] = oid("unreviewed-head")
+            elif field == "publication_queue":
+                value["publication"]["queue"] = [sibling]
+            else:
+                raise AssertionError(field)
+            resign(value)
+
+        self.assertEqual(set(fixture["tamper_fields"]), {
+            "hmac", "passport_parent", "migration_edge", "migration_gap",
+            "head", "tree", "route", "base", "receipt",
+            "charge_accounting", "repair_directive_receipt", "conflict_blob",
+            "conflict_path", "conflict_mode", "lease", "approval_head",
+            "publication_queue",
+        })
+        for field in fixture["tamper_fields"]:
+            altered = copy.deepcopy(final)
+            tamper(altered, field)
+            with self.subTest(tamper=field):
+                with self.assertRaises(ValueError):
+                    validate(altered)
+                self.assertEqual(altered["tickets"][sibling], sibling_final)
+                self.assertEqual(provider_calls, providers_before_matrix)
+
+        self.assertEqual(len(trace), len(set(trace)))
+        self.assertIn("protected-dependency-refresh-provider-free", trace)
+        self.assertIn("reviewer-narrator-publication-done", trace)
 
     def test_upgrade_reconstructs_cleared_contract_blocker_fields(
         self,

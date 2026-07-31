@@ -3385,6 +3385,63 @@ protected GitHub CI owns the complete regression. Live closure requires T-094
 to cross the installed successor and continue to its next deterministic stage
 without another Planner call.
 
+## FI-20260731-127 — Separate regressions missed the composite historical state
+
+Status: Shared-path repair and composite replay implemented; protected CI and live closure pending
+Priority: P0
+Area: controller recovery and aggregate historical-state verification
+Owner: Factory
+First seen: Nysa generation 50 T-094 dependency refresh
+Impact: 27 distinct Factory releases were activated across generations 24–50
+in 43 hours, 27 minutes, 3 seconds while 47 Factory PRs merged across 46 hours,
+10 minutes, 43 seconds. Narrow protected checks generally passed, but resuming
+T-093, T-094, or T-100 against accumulated passports, repairs, receipts,
+routes, charges, and protected-base history exposed the next untested
+relationship. T-094 reached generation 50 with 13 conservative charges, 6
+successful-role records, 41 zero-cost pre-GO terminals, 31 passport migration
+edges, 27 route revisions, and 24 release-history entries, yet remained
+provider-idle and unpublished. T-093 and T-100 remained safely waiting and
+T-096 remained dormant.
+Evidence: generation 50's sole resolver issued the exact provider-free
+`REFUSE dependency refresh required` receipt because T-092 was merged but its
+protected-main head was not an ancestor of T-094's ticket branch. Before
+ordinary reconciliation could consume that branch, controller reclaim called
+the state machine a second time from
+`restore_recorded_contract_repair`, treated the valid dependency-refresh
+refusal as an unsafe repair stage, and emitted repeated recovery failures. No
+provider call, successful-role replay, publication lease, or additional charge
+occurred. The controller and installed launcher paths contain no Nysa Agents
+plugin edge for this lifecycle.
+Root cause: recorded-repair recovery was a second transition resolver. It
+authenticated a passport, called `next-stage`, interpreted its result, and
+then ordinary reconciliation called `next-stage` again. This violated the
+one-resolution-per-transition rule and inverted the normative priority of a
+provider-free dependency refresh over a still-valid repair. The broader
+program tested FI-106 through FI-126 relationships separately instead of
+reducing their historical aggregate before each release, so the real tickets
+became the integration harness.
+Smallest repair: recorded-repair recovery authenticates only the current
+remote passport and the exact retained blocker receipt/role, reacquires its
+lease, clears stale claim-cache fields, and emits a prepared event. It does
+not inspect, accept, or reject a stage. Ordinary reconciliation remains the
+single transition resolver and consumes the resulting dependency-refresh,
+repair, wait, publication, or completion branch. Invalid signed repair
+evidence therefore still fails closed inside the state machine before a
+provider call.
+Validation: one sanitized immutable scenario replays the T-094-shaped 13/6/41
+accounting checksum, 27-revision route, 31-edge passport, two successor
+migrations, controller restarts, cell and lease rotation, exact repair-owner
+hand-offs, dependency refresh before repair, maintenance pause, sibling
+progress, Reviewer/Narrator publication, and terminal reduction. Its critical
+boundary invokes the real controller and state-machine helpers and asserts one
+state-machine call per transition attempt. A one-field-at-a-time matrix covers
+HMAC, passport parent, migration edge/gap, head, tree, route, base, receipt,
+charge, repair directive, safe-test conflict blob/path/mode, lease, approval
+head, and publication queue; every mutation fails before a provider call and
+leaves the sibling unchanged. Protected GitHub CI, sealed install,
+certification, activation, rollback, recutover, and live T-094 → T-100 → T-093
+closure remain required before this item can close.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
