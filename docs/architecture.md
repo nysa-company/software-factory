@@ -314,6 +314,17 @@ Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one
 renewable per-product publication lease serializes merge requests. A ticket
+with an authenticated current passport sequences from that passport's ordered
+completed-role evidence, not from only the manifests still present under the
+current release's product checkout. The state machine validates the passport's
+ticket, branch, head, route, release, and HMAC before passing an owner-only
+ephemeral role sequence to its single `next-stage` invocation. The ignored
+runtime ledger remains accounting truth and remains the sequencing source for
+a new ticket that has no passport. This prevents release migration or
+qualification takeover from replaying an already preserved Planner,
+Spec-linter, or other successful role merely because its historical manifest
+is no longer present in the current checkout.
+A ticket
 whose terminal boundary spans one or more Factory migrations reuses that
 evidence only when one unique contiguous authenticated migration suffix links
 the receipt's Factory/head to the exact current Factory/head/base and the

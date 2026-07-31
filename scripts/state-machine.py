@@ -29,6 +29,7 @@ from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E
 SCHEMA = "nysa.software-factory.state-machine/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.transition-receipt/v1"
 REPAIR_SCHEMA = "nysa.software-factory.contract-repair/v1"
+ROLE_EVIDENCE_SCHEMA = "nysa.software-factory.completed-role-sequence/v1"
 DEPENDENCY_CONFLICT_SCHEMA = "nysa.software-factory.dependency-refresh/v2"
 DEPENDENCY_CONFLICT_SOURCE = "dependency-conflict"
 PASSPORT_SCHEMA = "nysa.software-factory.ticket-passport/v1"
@@ -2513,16 +2514,23 @@ def verify(args: argparse.Namespace, *, consume: bool) -> dict[str, Any]:
 def run_helper(
     args: argparse.Namespace, script: str, *arguments: str,
     allow_refusal: bool = False,
+    extra_environment: dict[str, str] | None = None,
 ) -> str:
+    environment = {
+        **os.environ,
+        "FACTORY_ROOT": str(args.factory_root),
+        "FACTORY_TRANSITION_STATE_DIR": str(args.state_dir),
+        "FACTORY_RELEASE_SHA": args.factory_sha,
+    }
+    # This is an internal state-machine-to-resolver capability. Never accept
+    # a caller-supplied path in place of authenticated passport evidence.
+    environment.pop("FACTORY_AUTHENTICATED_ROLE_EVIDENCE", None)
+    if extra_environment:
+        environment.update(extra_environment)
     result = subprocess.run(
         ["/bin/bash", str(args.kit_dir / "scripts" / script), *arguments],
         cwd=args.workdir,
-        env={
-            **os.environ,
-            "FACTORY_ROOT": str(args.factory_root),
-            "FACTORY_TRANSITION_STATE_DIR": str(args.state_dir),
-            "FACTORY_RELEASE_SHA": args.factory_sha,
-        },
+        env=environment,
         text=True,
         capture_output=True,
         check=False,
@@ -2541,12 +2549,96 @@ def run_helper(
     return result.stdout.strip()
 
 
+def authenticated_role_evidence(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    path = args.state_dir / "passports" / f"{args.ticket}.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    passport, _ = authenticated_passport(args)
+    workdir = args.workdir.resolve(strict=True)
+    route = workdir / "factory" / "route-plans" / f"{args.ticket}.json"
+    branch = git(workdir, "symbolic-ref", "--quiet", "--short", "HEAD")
+    head = git(workdir, "rev-parse", "HEAD")
+    route_digest = (
+        hashlib.sha256(route.read_bytes()).hexdigest()
+        if route.is_file() and not route.is_symlink()
+        else None
+    )
+    completed = passport.get("completed_role_evidence")
+    if (
+        passport.get("ticket") != args.ticket
+        or passport.get("project") != args.project
+        or passport.get("contract_version") != args.contract_version
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("branch") != branch
+        or passport.get("head_sha") != head
+        or passport.get("route_plan_sha256") != route_digest
+        or not isinstance(completed, list)
+    ):
+        raise StateError("passport role evidence is outside current ticket identity")
+    expected = {
+        "contract_version", "factory_sha", "head_before", "manifest_sha256",
+        "output_sha256", "role", "run_id", "transition_receipt_sha256",
+    }
+    run_ids: set[str] = set()
+    receipts: set[str] = set()
+    for item in completed:
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected
+            or item.get("contract_version") != args.contract_version
+            or not SHA.fullmatch(item.get("factory_sha", ""))
+            or not SHA.fullmatch(item.get("head_before", ""))
+            or not DIGEST.fullmatch(item.get("manifest_sha256", ""))
+            or not DIGEST.fullmatch(item.get("output_sha256", ""))
+            or not ROLE.fullmatch(item.get("role", ""))
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", item.get("run_id", ""))
+            or not DIGEST.fullmatch(item.get("transition_receipt_sha256", ""))
+            or item["run_id"] in run_ids
+            or item["transition_receipt_sha256"] in receipts
+        ):
+            raise StateError("passport completed-role evidence is invalid")
+        run_ids.add(item["run_id"])
+        receipts.add(item["transition_receipt_sha256"])
+    return passport, completed
+
+
 def resolve(args: argparse.Namespace) -> str:
     command = ["--ticket", args.ticket]
     if args.lease:
         command.extend(["--lease", args.lease])
     command.extend(["--workdir", str(args.workdir)])
-    output = run_helper(args, "next-stage.sh", *command, allow_refusal=True)
+    evidence = authenticated_role_evidence(args)
+    evidence_path: Path | None = None
+    try:
+        extra_environment = None
+        if evidence is not None:
+            passport, completed = evidence
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".role-evidence-{args.ticket}.", dir=args.state_dir,
+            )
+            evidence_path = Path(temporary)
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(canonical({
+                    "passport_sha256": passport["passport_sha256"],
+                    "records": completed,
+                    "schema": ROLE_EVIDENCE_SCHEMA,
+                    "ticket": args.ticket,
+                }))
+                stream.flush()
+                os.fsync(stream.fileno())
+            extra_environment = {
+                "FACTORY_AUTHENTICATED_ROLE_EVIDENCE": str(evidence_path),
+            }
+        output = run_helper(
+            args, "next-stage.sh", *command, allow_refusal=True,
+            extra_environment=extra_environment,
+        )
+    finally:
+        if evidence_path is not None:
+            evidence_path.unlink(missing_ok=True)
     return next((line.strip() for line in output.splitlines() if line.strip()), "")
 
 

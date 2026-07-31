@@ -3478,6 +3478,23 @@ historical charge identities, and caps/reports only the candidate's additional
 spend. This closes the state-split that would otherwise make a fresh sandbox
 green while leaving the real T-094/T-100/T-093 passports unproved.
 
+The first sealed takeover occurrence exposed one more relationship in this
+same aggregate root before promotion. T-094's authenticated passport retained
+seven successful roles, including two Planner runs, one Spec-linter run, and
+four Test-author runs. After the candidate Test-author repair succeeded, the
+current product runtime ledger contained only that newest run. `next-stage`
+therefore counted Planner as zero, returned ordinary `RUN planner` beneath the
+coarse Building state, and planner preflight correctly refused. The controller
+parked T-094; T-100 and T-093 stayed dependency-waiting; no sibling provider
+or publication authority was admitted. The shared resolver now validates the
+current passport HMAC plus ticket/branch/head/route/release identity and gives
+the sole `next-stage` call its ordered completed-role sequence through an
+owner-only ephemeral capability. New tickets without passports retain the
+ordinary ledger path. This preserves historical successful-role identity for
+scheduling without rewriting the accounting ledger or relabelling its Factory
+SHA. A successor candidate, a replay of this exact parked boundary, the full
+ordered cohort, protected CI, and final release transactions remain required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

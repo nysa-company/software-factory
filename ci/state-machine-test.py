@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -229,6 +230,98 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(result["receipt"], receipt)
         self.assertEqual(result["role"], "builder")
         self.assertEqual(result["stage"], "RUN builder")
+
+    def test_resolver_receives_authenticated_passport_role_sequence(self) -> None:
+        release = self.root / ("b" * 40)
+        shutil.copytree(ROOT / "scripts", release / "scripts")
+        (release / "integrations/hermes").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "integrations/hermes/contract.json",
+            release / "integrations/hermes/contract.json",
+        )
+        release_tree = run(
+            "/bin/bash", "-c",
+            'source "$1"; factory_directory_tree "$2"',
+            "_", str(release / "scripts/lib/kit-pin.sh"), str(release),
+            cwd=self.root,
+        )
+        self.args.factory_sha = release.name
+        self.args.kit_dir = release
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            f"# T-110\n\nState: Building\nKit-SHA: {release.name}\n",
+            encoding="utf-8",
+        )
+        (self.product / "factory/KIT_PIN").write_text(
+            f"{release.name}\n", encoding="utf-8"
+        )
+        (self.product / "factory/ENVELOPE.env").write_text(
+            "PER_RUN_BUDGET_USD=2.00\n"
+            "PER_TICKET_BUDGET_USD=25.00\n"
+            "PER_RUN_MAX_TURNS=5\n"
+            "PER_RUN_TIMEOUT_MIN=1\n"
+            "DAILY_CAP_USD=100.00\n",
+            encoding="utf-8",
+        )
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text(
+            "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
+            "exit_status,run_id,provider_family,model_id,selection_reason,"
+            "cost_basis,adapter_version\n",
+            encoding="utf-8",
+        )
+        durable_ledger = self.product / "factory/ledger.csv"
+        shutil.copy2(ledger, durable_ledger)
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare building boundary", cwd=self.product)
+
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        route = self.product / "factory/route-plans/T-110.json"
+        records = []
+        for index, role in enumerate(("planner", "spec-linter", "test-author"), 1):
+            records.append({
+                "contract_version": "1.8.0",
+                "factory_sha": str(index) * 40,
+                "head_before": run("git", "rev-parse", "HEAD", cwd=self.product),
+                "manifest_sha256": str(index) * 64,
+                "output_sha256": str(index + 3) * 64,
+                "role": role,
+                "run_id": f"historical-{index}",
+                "transition_receipt_sha256": str(index + 6) * 64,
+            })
+        body = {
+            "branch": "ticket/T-110",
+            "completed_role_evidence": records,
+            "contract_version": "1.8.0",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "project": "relay",
+            "route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        signed = dict(body)
+        signed["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        signed["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(signed)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", signed)
+
+        with mock.patch.dict(os.environ, {
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_PATH": str(release),
+            "FACTORY_RELEASE_TREE": release_tree,
+            "FACTORY_LEDGER": str(ledger),
+            "FACTORY_DURABLE_LEDGER": str(durable_ledger),
+        }):
+            self.assertEqual(STATE.resolve(self.args), "RUN builder")
+        self.assertEqual(list(self.state_dir.glob(".role-evidence-*")), [])
 
     def test_completed_repair_stage_is_not_resolved_again(self) -> None:
         receipt = "b" * 64

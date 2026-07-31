@@ -86,6 +86,7 @@ canonical_factory_file() {
 
 LEDGER="${FACTORY_LEDGER:-$(canonical_factory_file "$REPO_ROOT" runtime-ledger.csv)}"
 DURABLE_LEDGER="${FACTORY_DURABLE_LEDGER:-$(canonical_factory_file "$REPO_ROOT" ledger.csv)}"
+ROLE_EVIDENCE="${FACTORY_AUTHENTICATED_ROLE_EVIDENCE:-}"
 TICKETS_DIR="$CONTENT_ROOT/factory/tickets"
 
 TICKET_FILE="$TICKETS_DIR/$TICKET.md"
@@ -121,6 +122,74 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
   }
 TICKET_FILE="$EFFECTIVE_TICKET"
 CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-1.2.0}}"
+if [[ -n "$ROLE_EVIDENCE" ]]; then
+  [[ "$CONTRACT_VERSION" == "1.8.0" ]] || {
+    echo "REFUSE authenticated role evidence requires contract 1.8"
+    exit 1
+  }
+  python3 - "$ROLE_EVIDENCE" "$TICKET" <<'PY' || {
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+info = path.lstat()
+if (
+    not path.is_absolute()
+    or path.is_symlink()
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) != 0o600
+    or info.st_size > 5_000_000
+):
+    raise SystemExit(1)
+value = json.loads(path.read_text(encoding="utf-8"))
+sha = re.compile(r"[0-9a-f]{40}")
+digest = re.compile(r"[0-9a-f]{64}")
+run_id = re.compile(r"[A-Za-z0-9._-]{1,200}")
+roles = {"planner", "spec-linter", "test-author", "builder", "reviewer", "narrator"}
+expected = {
+    "contract_version", "factory_sha", "head_before", "manifest_sha256",
+    "output_sha256", "role", "run_id", "transition_receipt_sha256",
+}
+records = value.get("records")
+if (
+    set(value) != {"passport_sha256", "records", "schema", "ticket"}
+    or value.get("schema") != "nysa.software-factory.completed-role-sequence/v1"
+    or value.get("ticket") != sys.argv[2]
+    or not digest.fullmatch(value.get("passport_sha256", ""))
+    or not isinstance(records, list)
+):
+    raise SystemExit(1)
+seen_runs = set()
+seen_receipts = set()
+for item in records:
+    if (
+        not isinstance(item, dict)
+        or set(item) != expected
+        or item.get("contract_version") != "1.8.0"
+        or not sha.fullmatch(item.get("factory_sha", ""))
+        or not sha.fullmatch(item.get("head_before", ""))
+        or not digest.fullmatch(item.get("manifest_sha256", ""))
+        or not digest.fullmatch(item.get("output_sha256", ""))
+        or item.get("role") not in roles
+        or not run_id.fullmatch(item.get("run_id", ""))
+        or not digest.fullmatch(item.get("transition_receipt_sha256", ""))
+        or item["run_id"] in seen_runs
+        or item["transition_receipt_sha256"] in seen_receipts
+    ):
+        raise SystemExit(1)
+    seen_runs.add(item["run_id"])
+    seen_receipts.add(item["transition_receipt_sha256"])
+PY
+    echo "REFUSE authenticated passport role evidence is invalid"
+    exit 1
+  }
+fi
 if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
    { grep -qiE '^State:[[:space:]]*(Awaiting Approval|Approved)[[:space:]]*$' "$TICKET_FILE" ||
      grep -qiE '^Operator-Approval:' "$TICKET_FILE"; }; then
@@ -508,7 +577,20 @@ fi
 
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
 # (cat the ledger defensively: a missing ledger means zero runs, not an error.)
-count_ok() { { cat "$LEDGER" 2>/dev/null || true; } | awk -F, -v t="$TICKET" -v r="$1" 'NR>1 && $3==t && $4==r && $9=="0"' | wc -l | tr -d ' '; }
+count_ok() {
+  if [[ -n "$ROLE_EVIDENCE" ]]; then
+    python3 - "$ROLE_EVIDENCE" "$1" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(sum(item["role"] == sys.argv[2] for item in value["records"]))
+PY
+  else
+    { cat "$LEDGER" 2>/dev/null || true; } |
+      awk -F, -v t="$TICKET" -v r="$1" \
+        'NR>1 && $3==t && $4==r && $9=="0"' |
+      wc -l | tr -d ' '
+  fi
+}
 count_authorization() { # role semantic-round
   grep -ciE "^[[:space:]]*OPERATOR AUTHORIZATION:[[:space:]]*$1 round[[:space:]]*$2[[:space:]]*$" "$TICKET_FILE" || true
 }
@@ -734,6 +816,26 @@ if [[ "$REVIEWER_RUNS" -lt "$VERDICTS" ]]; then
 fi
 
 refresh_manifest_rows() { # role raw-baseline ignored-reviewer-ordinals
+  if [[ -n "$ROLE_EVIDENCE" ]]; then
+    python3 - "$ROLE_EVIDENCE" "$1" "$2" "$3" <<'PY'
+import json
+import sys
+
+path, role, baseline, ignored = sys.argv[1:]
+baseline = int(baseline)
+ignored = {int(item) for item in ignored.split(",") if item}
+value = json.load(open(path, encoding="utf-8"))
+ordinal = 0
+for index, item in enumerate(value["records"], 1):
+    if item["role"] != role:
+        continue
+    ordinal += 1
+    if ordinal <= baseline or (role == "reviewer" and ordinal in ignored):
+        continue
+    print(f"{index}|{item['head_before']}")
+PY
+    return
+  fi
   python3 - "$LEDGER" "$FACTORY_DIR/runs" "$TICKET" "$1" "$2" "$3" <<'PY'
 import csv
 import os
@@ -878,8 +980,35 @@ fi
 
 # A Builder or Test-author run after the latest non-void Reviewer invalidates
 # that review, including after a protected-base evidence refresh.
-FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
-  -v imported_reviewers="$CHECKPOINT_R" '
+if [[ -n "$ROLE_EVIDENCE" ]]; then
+  FIX_AFTER="$(python3 - "$ROLE_EVIDENCE" "$VOID_RUNS" "$CHECKPOINT_R" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+voids = {int(item) for item in sys.argv[2].split(",") if item}
+reviewer_run = int(sys.argv[3])
+last_reviewer = reviewer_run > 0
+builder = test_author = builder_after_test = False
+for item in value["records"]:
+    role = item["role"]
+    if role == "reviewer":
+        reviewer_run += 1
+        if reviewer_run not in voids:
+            last_reviewer = True
+            builder = test_author = builder_after_test = False
+    elif role == "builder" and last_reviewer:
+        builder = True
+        if test_author:
+            builder_after_test = True
+    elif role == "test-author" and last_reviewer:
+        test_author = True
+print(f"{int(builder)}|{int(test_author)}|{int(builder_after_test)}")
+PY
+)"
+else
+  FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
+    -v imported_reviewers="$CHECKPOINT_R" '
   BEGIN {
     voids="," void_list ","
     reviewer_run=imported_reviewers
@@ -899,6 +1028,7 @@ FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
     else if ($4=="test-author" && last_r>0) test_author=1
   }
   END { print builder+0 "|" test_author+0 "|" builder_after_test+0 }' "$LEDGER")"
+fi
 IFS='|' read -r FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST <<<"$FIX_AFTER"
 
 LATEST_VERDICT=""

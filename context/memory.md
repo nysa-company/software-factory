@@ -25,6 +25,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   but before submission leaves the receipt unconsumed, settles and parks the
   clean claim, and releases its lease; it never creates a provider attempt,
   charge, or successful-role replay.
+- Contract 1.8 sequences a ticket with a current authenticated passport from
+  that passport's ordered completed-role evidence. The state machine validates
+  the exact ticket, branch, head, route, release, and HMAC before passing an
+  owner-only ephemeral sequence to its single `next-stage` call. The runtime
+  ledger remains the sequencing source only before a ticket has a passport;
+  release migration or qualification takeover cannot erase successful roles
+  from scheduling while retaining them in authenticated history.
 - A durable-GO exit 125 with no submission marker, progress, or usable
   telemetry keeps the full conservative reservation and remains blocked under
   the same release. Only a successor release may clear that exact receipt after
@@ -278,6 +285,18 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Cursor Reviewer reconciliation normalizes only exact, matching background-check callback restatements, including the bold `REQUEST CHANGES — FIX-OWNER` form. Missing summaries, conflicting owners or verdicts, and multiple verdict-bearing assistants still fail closed.
 
 ## Log
+
+## 2026-07-31 — Decision 169: Passport evidence is sequencer history
+
+Category: Incident
+
+The first ordered production-successor qualification preserved all seven
+successful T-094 role records in its authenticated passport but the current
+runtime ledger contained only the newest Test-author repair. The sequencer
+therefore selected ordinary Planner beneath Building and preflight refused.
+Contract 1.8 now gives the sole `next-stage` invocation the authenticated
+passport's ordered completed-role sequence through a private ephemeral file;
+new tickets without passports continue to sequence from the runtime ledger.
 
 - 2026-07-29: Recorded a deferred Cursor Bugbot feedback integration plan
   under `docs/plans/`. It proposes a bounded exact-head read-only audit that
