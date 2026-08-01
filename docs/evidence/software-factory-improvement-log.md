@@ -3547,6 +3547,36 @@ branch fails, the sealed exact tree passes, and a forged tree fails. A successor
 seal, the pending Planner repair, ordered cohort, protected CI, and final release
 transactions remain required.
 
+That successor advanced T-094 through the repaired Planner, Test-author, and
+Builder stages, proving real state-machine progress, but Builder run
+`1785537237-15335` replaced the authenticated input ancestry after GO. Its
+terminal bound receipt
+`6a5eadff77082ca4b3a8dd4b62fcc64f1ab22fde9cf6ec44c8f4786a52a074e4`,
+input `be0d9d10e6b299f86cd7b93e8762f7ce9a8d3cb6`, Factory
+`fef0bea4f1d933df689b96aac7a31cfb918ae232`, one submitted task, and one full
+$10 conservative charge. Output
+`741a55a400795a93e8d1dd275104779ca45c16e6` had unrelated parent
+`459b9cbcb24443a14dcbaa294ee3343fb61a5031`; the trusted non-force push refused
+and the remote stayed at the input. The runner had no typed pre-push ancestry
+check, left the cell on the output, and passport export then failed because the
+remote/input lineage no longer matched the local cell. The output is preserved
+at `refs/factory/failed-role/T-094/1785537237-15335`, and the cell was restored
+exactly to the input before any further controller call.
+
+The shared runner now rejects non-Test-author ancestry loss before publication,
+creates that collision-checked diagnostic ref, restores the exact input with
+compare-and-swap ref updates plus `git restore`, and revalidates the clean cell
+and unchanged remote. The typed `role_exit_history_rewritten` terminal can be
+reclaimed only by a successor Factory after the exact signed passport proves
+one matching charge, no matching completion, and the terminal's input head.
+Same-release replay and every malformed topology stay blocked. Builder's role
+contract now explicitly forbids rebases, resets, amends, and other input-history
+rewrites; the existing protected Test-author rewrite lifecycle is untouched.
+Focused runner and controller suites prove quarantine/restoration, conservative
+accounting, same-release refusal, successor-only recovery, and unchanged
+Test-author behavior. A new sealed successor and live T-094 Builder retry remain
+required before the ordered cohort can continue.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -203,7 +203,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Cursor adapters append a trusted execution requirement after role and task text so factory roles stay in the default agent execution mode instead of switching to Cursor Plan or Ask mode.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Contract 1.8 multi-ticket subscription routes use exact owner-activated transactional admission; older contracts and capacity one retain legacy serialization.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
-- Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly; the trusted wrapper non-force pushes and verifies them, while Reviewer must leave Git unchanged.
+- Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly and retain the role-input commit as an ancestor; the trusted wrapper quarantines a non-Test-author rewrite, restores the authenticated input without touching the remote, and otherwise non-force pushes and verifies output. Reviewer must leave Git unchanged, and Test-author ancestry repair remains separately operator-authorized.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection, which refuses every active or ambiguous claim and `factory/runs/*.pid` record.
 - Backward-compatible ledger reduction collapses a legacy durable reservation followed by its identity-matching terminal row; every other conflicting duplicate run ID fails closed.
@@ -2330,3 +2330,20 @@ so qualification completes the real preserved lifecycles instead of fresh
 copies. Full Factory CI, installation, Nysa certification, promotion, and
 activation remain downstream of the green reducer. T-096 remains outside the
 cohort and dormant.
+
+## 2026-07-31 — Decision 169: Untrusted role history is quarantined before publication
+
+Category: Incident
+
+T-094's sealed Builder completed its application change but replaced the
+authenticated role-input ancestry. The non-force push correctly refused, yet
+the old runner left the cell on the unrelated output head and could not export
+the failed charge into the input-bound passport. Non-Test-author mutating roles
+must now retain their input as an ancestor. A clean rewrite is preserved under
+an exact run-specific diagnostic ref, while the trusted wrapper restores the
+branch, index, and worktree to the unchanged input and verifies that the remote
+never moved. The typed terminal keeps its full conservative charge and cannot
+replay under the same Factory. Only a successor may reopen it, and only after
+the signed remote passport proves the input head, unique failed charge, receipt,
+role, and absence of completed-role evidence. The protected Test-author rewrite
+authorization remains unchanged and no path force-pushes.

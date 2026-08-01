@@ -2730,6 +2730,97 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(events, [])
 
+    def test_history_rewrite_retries_only_after_release_upgrade(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-history-rewrite"
+        cell.mkdir()
+        receipt = "b" * 64
+        input_head = "c" * 40
+        run_id = "history-rewritten"
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "d" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(
+            passports / "T-110.json",
+            {
+                "branch": claim["branch"],
+                "charge_records": [{
+                    "role": "builder",
+                    "run_id": run_id,
+                    "transition_receipt_sha256": receipt,
+                }],
+                "completed_role_evidence": [],
+                "head_sha": input_head,
+                "transition_receipt_sha256": receipt,
+            },
+        )
+        manifest = self.product / f"factory/runs/{run_id}.meta"
+
+        def write_manifest(kit_sha: str) -> None:
+            manifest.write_text(
+                f"run_id={run_id}\n"
+                "phase=completed\n"
+                "ticket=T-110\n"
+                "role=builder\n"
+                "accounting_state=abandoned_conservative\n"
+                "reserved_usd=10.00\n"
+                "go_issued=1\n"
+                "task_submitted=1\n"
+                "effective_cost=10.00\n"
+                "exit_status=11\n"
+                "cost_basis=conservative_reservation\n"
+                f"kit_sha={kit_sha}\n"
+                "role_exit=role_exit_history_rewritten\n"
+                f"role_head_before={input_head}\n"
+                f"transition_receipt_sha256={receipt}\n",
+                encoding="utf-8",
+            )
+
+        events = []
+        leases = []
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.remote_passport_valid = lambda _claim: True
+        controller.ensure_lease = lambda _claim, label: leases.append(label)
+        controller.event = (
+            lambda name, *_args, **details: events.append((name, details))
+        )
+
+        write_manifest(self.release.name)
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(events, [])
+        self.assertEqual(leases, [])
+
+        predecessor = "e" * 40
+        if predecessor == self.release.name:
+            predecessor = "f" * 40
+        write_manifest(predecessor)
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(leases, ["repaired-role"])
+        self.assertEqual(
+            events,
+            [(
+                "history_rewrite_recovered_by_release_upgrade",
+                {"failed_run_id": run_id},
+            )],
+        )
+
     def test_exact_refresh_topology_refusal_runs_attested_refresh(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

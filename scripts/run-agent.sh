@@ -923,6 +923,49 @@ role_remote_head() {
   return 1
 }
 
+quarantine_rewritten_role_history() {
+  local diagnostic_ref="refs/factory/failed-role/$TICKET/$RUN_ID"
+  local existing="" current_branch current_head remote_head
+  [[ "$ROLE" != "test-author" && "$ROLE" != "reviewer" ]] || return 1
+  [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  current_branch="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  current_head="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    rev-parse HEAD 2>/dev/null || true)"
+  remote_head="$(role_remote_head || true)"
+  [[ "$current_branch" == "$ROLE_BRANCH_BEFORE" &&
+     "$current_head" == "$ROLE_HEAD_AFTER" &&
+     "$remote_head" == "$ROLE_REMOTE_BEFORE" &&
+     -z "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       status --porcelain --untracked-files=all)" ]] || return 1
+  if "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" show-ref --verify --quiet \
+      "$diagnostic_ref"; then
+    existing="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+      rev-parse "$diagnostic_ref" 2>/dev/null || true)"
+    [[ "$existing" == "$ROLE_HEAD_AFTER" ]] || return 1
+  else
+    "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" update-ref \
+      "$diagnostic_ref" "$ROLE_HEAD_AFTER" \
+      0000000000000000000000000000000000000000 || return 1
+  fi
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" update-ref \
+    "refs/heads/$ROLE_BRANCH_BEFORE" "$ROLE_HEAD_BEFORE" \
+    "$ROLE_HEAD_AFTER" || return 1
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" restore \
+    --source="$ROLE_HEAD_BEFORE" --staged --worktree -- . || return 1
+  [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == \
+       "$ROLE_BRANCH_BEFORE" &&
+     "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       rev-parse HEAD 2>/dev/null || true)" == "$ROLE_HEAD_BEFORE" &&
+     "$(role_remote_head || true)" == "$ROLE_REMOTE_BEFORE" &&
+     -z "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       status --porcelain --untracked-files=all)" &&
+     "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       rev-parse "$diagnostic_ref" 2>/dev/null || true)" == \
+       "$ROLE_HEAD_AFTER" ]]
+}
+
 ticket_evidence_snapshot() {
   python3 - "$1" <<'PY'
 import json
@@ -2621,6 +2664,14 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
          ! python3 "$KIT_DIR/scripts/lib/lane-path-sentinel.py" \
            "$WORKDIR" "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER"; then
       ROLE_EXIT_STATUS="role_exit_lane_path_leak"
+    elif [[ "$ROLE" != "test-author" && "$ROLE" != "reviewer" ]] &&
+         ! "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" merge-base --is-ancestor \
+           "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER"; then
+      if quarantine_rewritten_role_history; then
+        ROLE_EXIT_STATUS="role_exit_history_rewritten"
+      else
+        ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+      fi
     elif [[ "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     else
@@ -2715,6 +2766,11 @@ elif [[ "$GO_ISSUED" -eq 0 ]]; then
   TURNS="0"
   COST_BASIS="launch_void"
   FINAL_ACCOUNTING_STATE="launch_void"
+elif [[ "$ROLE_EXIT_STATUS" == "role_exit_history_rewritten" ]]; then
+  COST="$RESERVED_USD"
+  TURNS="${TURNS:-0}"
+  COST_BASIS="conservative_reservation"
+  FINAL_ACCOUNTING_STATE="abandoned_conservative"
 elif [[ -z "$COST" ]]; then
   echo "WARNING: run cost unparsable — ledger keeps conservative reservation of \$$RESERVED_USD for this run. Reconcile with the provider console." >&2
   COST="$RESERVED_USD"

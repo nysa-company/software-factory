@@ -1430,6 +1430,30 @@ class Controller:
                 terminal is not None
                 and terminal.get("role_exit") == "role_exit_push_failed"
             )
+            history_rewrite = (
+                terminal is not None
+                and terminal.get("phase") == "completed"
+                and terminal.get("accounting_state") == "abandoned_conservative"
+                and terminal.get("go_issued") == "1"
+                and terminal.get("task_submitted") == "1"
+                and terminal.get("exit_status") == "11"
+                and terminal.get("role_exit") == "role_exit_history_rewritten"
+                and terminal.get("role") == claim.get("role")
+                and claim.get("role") in {
+                    "planner", "spec-linter", "builder", "narrator",
+                }
+                and terminal.get("cost_basis") == "conservative_reservation"
+                and re.fullmatch(
+                    r"(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,18})?",
+                    terminal.get("reserved_usd", ""),
+                )
+                and int(terminal["reserved_usd"].replace(".", "")) > 0
+                and terminal.get("effective_cost")
+                == terminal.get("reserved_usd")
+                and SHA.fullmatch(terminal.get("role_head_before", ""))
+                and SHA.fullmatch(terminal.get("kit_sha", ""))
+                and terminal["kit_sha"] != self.release_path.name
+            )
             interrupted_before_submission = (
                 terminal is not None
                 and terminal.get("phase") == "abandoned"
@@ -1469,17 +1493,37 @@ class Controller:
             )
             if not (
                 push_failure or interrupted_before_submission or contract_blocked
-                or submission_unconfirmed
+                or submission_unconfirmed or history_rewrite
             ):
                 continue
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if not passport_path.exists():
                 continue
-            if submission_unconfirmed:
+            if submission_unconfirmed or history_rewrite:
                 try:
                     if not self.terminal_already_exported(claim, terminal):
                         continue
                 except ControllerError:
+                    continue
+            if history_rewrite:
+                try:
+                    passport = read(passport_path)
+                except (ControllerError, json.JSONDecodeError, OSError):
+                    continue
+                expected = (
+                    terminal.get("run_id"), claim.get("role"), claim.get("receipt"),
+                )
+                completed = [
+                    (
+                        item.get("run_id"), item.get("role"),
+                        item.get("transition_receipt_sha256"),
+                    )
+                    for item in passport.get("completed_role_evidence", [])
+                ]
+                if (
+                    passport.get("head_sha") != terminal.get("role_head_before")
+                    or completed.count(expected) != 0
+                ):
                     continue
             if contract_blocked:
                 self.ensure_lease(claim, "contract-block-resume")
@@ -1535,7 +1579,11 @@ class Controller:
                         else (
                             "submission_failure_recovered_by_release_upgrade"
                             if submission_unconfirmed
-                            else "interrupted_role_recovered"
+                            else (
+                                "history_rewrite_recovered_by_release_upgrade"
+                                if history_rewrite
+                                else "interrupted_role_recovered"
+                            )
                         )
                     )
                 ),

@@ -1,4 +1,4 @@
-Version: 4
+Version: 5
 
 # Role: Builder
 
@@ -23,6 +23,7 @@ Implementation commits on the ticket branch, after the test commits, ending with
 - Your PR description lists: what changed, files touched, any flagged concerns. Plain language — the operator may read it.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
 - Commit all implementation and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
+- Append commits only. Never rebase, reset, amend, force-update, or otherwise rewrite commits that existed when the role began. If prior history appears wrong, stop and flag it on the ticket.
 
 ## Worked example (regression check)
 
@@ -30,6 +31,7 @@ For the receipt-row ticket: commits add the `GET /api/receipts` handler, the sto
 
 ## Changelog
 
+- v5: forbids rewriting the authenticated role-input history.
 - v4: made the exact contract-blocker marker durable in the ticket log and terminal response.
 - v3: clarified Building stage and reconciled field ownership.
 - v2: fix rounds require a stated root cause on the ticket before any fix commit (adapted from gstack /investigate's "no fixes without root cause" rule).

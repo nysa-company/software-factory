@@ -568,6 +568,19 @@ for upgrade recovery. A repeated failure under the successor stays blocked, so
 release recovery cannot become a same-release retry loop. Submission markers
 use collision-resistant owner-only temporary files before atomic publication
 and directory synchronization.
+Every successful mutating role except Test-author must retain its authenticated
+role-input commit as an ancestor. The trusted wrapper checks that invariant
+before reading the remote for publication or attempting a push. If a clean
+provider output rewrites that history, the wrapper preserves the exact output
+under `refs/factory/failed-role/<ticket>/<run-id>`, restores the local ticket
+branch, index, and worktree to the unchanged authenticated input, revalidates
+the unchanged remote, and records `role_exit_history_rewritten` with the full
+conservative charge. The same Factory keeps that receipt blocked. A successor
+may retry only when the remote passport still binds the role-input head, the
+failed charge was exported exactly once with no completed-role evidence, and
+every terminal field matches the typed post-GO failure. Test-author's separate
+operator-authorized protected rewrite flow remains the sole ancestry-rewrite
+exception; the controller never force-pushes either path.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
