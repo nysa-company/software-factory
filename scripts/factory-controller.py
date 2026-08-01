@@ -2176,6 +2176,7 @@ class Controller:
                 "state-machine", "--ticket", claim["ticket"],
                 "--lease", claim["lease"], "--workdir", claim["worktree"],
                 "--json",
+                timeout=None,
             )
             stage = transition.get("stage", "")
             receipt = transition.get("receipt", "")

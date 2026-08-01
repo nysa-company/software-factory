@@ -717,6 +717,59 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(len(model_calls), 1)
         self.assertIsNone(model_calls[0][1]["timeout"])
 
+    def test_state_machine_relies_on_its_bounded_helpers_not_an_outer_timeout(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        calls = []
+
+        def json_call(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args[0] == "state-machine":
+                return {
+                    "receipt": "b" * 64,
+                    "role": "builder",
+                    "stage": "FIX builder",
+                }
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            raise AssertionError(args)
+
+        controller.json_call = json_call
+        controller.ensure_lease = lambda *_args: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.run_role = lambda *_args: None
+
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "progressed", "ticket": "T-110"},
+        )
+        state_machine_calls = [
+            (args, kwargs)
+            for args, kwargs in calls
+            if args[0] == "state-machine"
+        ]
+        self.assertEqual(len(state_machine_calls), 1)
+        self.assertIn("timeout", state_machine_calls[0][1])
+        self.assertIsNone(state_machine_calls[0][1]["timeout"])
+
     def test_concurrent_tickets_share_one_batch_readiness_probe(self) -> None:
         controller = CONTROL.Controller(self.args)
         claims = []

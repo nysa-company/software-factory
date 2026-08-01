@@ -359,6 +359,47 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(result["role"], "builder")
         self.assertEqual(result["stage"], "RUN builder")
 
+    def test_replay_after_committed_role_transition_preserves_narrator_evidence(
+        self,
+    ) -> None:
+        receipt = "b" * 64
+        evidence = self.product / "factory/tickets/T-110-evidence/narrator.txt"
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text(
+            "NOT APPROVABLE: deployed preview is broken\n", encoding="utf-8"
+        )
+        before = evidence.read_bytes()
+        with (
+            mock.patch.object(
+                STATE,
+                "current_state",
+                side_effect=["Building", "Building"],
+            ),
+            mock.patch.object(
+                STATE, "contract_repair_stage", return_value=(None, False)
+            ),
+            mock.patch.object(
+                STATE, "resolve", return_value="FIX builder"
+            ) as resolve,
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+            mock.patch.object(
+                STATE,
+                "issue",
+                return_value={"receipt_sha256": receipt},
+            ) as issue,
+        ):
+            result = STATE.next_transition(self.args)
+
+        resolve.assert_called_once_with(self.args)
+        transition.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+        issue.assert_called_once_with(self.args, "FIX builder")
+        self.assertEqual(evidence.read_bytes(), before)
+        self.assertEqual(result["receipt"], receipt)
+        self.assertEqual(result["role"], "builder")
+        self.assertEqual(result["stage"], "FIX builder")
+
     def test_contract_block_and_resume_require_exact_terminal_receipt(self) -> None:
         self.args.lease = "d" * 64
         issued = STATE.issue(self.args, "RUN planner")

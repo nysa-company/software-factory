@@ -320,6 +320,10 @@ ambiguous, or malformed supersession lineage refuses reduction.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.
+State-machine reconciliation likewise relies on its individually bounded
+resolver, ticket-state, passport, and Git operations. The controller does not
+apply a second aggregate timeout that could terminate the parent after a
+ticket-state transition has already been committed.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.

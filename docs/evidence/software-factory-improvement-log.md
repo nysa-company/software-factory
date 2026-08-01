@@ -4039,6 +4039,20 @@ rerun is allowed against the unchanged preview. The separate product preview
 pairing defect routes directly to Builder before a new deployed-head proof;
 only malformed Narrator output consumes the bounded Narrator correction.
 
+Fourth follow-on occurrence: candidate `d7a420f4` correctly resolved T-094's
+preserved explicit `NOT APPROVABLE:` bundle to `FIX builder`, then spent more
+than 300 seconds reducing authenticated history and materializing the ticket
+state. The nested `ticket-state.sh` completed and pushed the exact
+`Review -> Building` transition, but the controller's generic 300-second outer
+timeout killed the state-machine parent before passport migration and receipt
+issuance. The controller failed closed, released the lease, and launched no
+provider, while the ticket branch remained clean at `Building`. The smallest
+repair removes only this redundant aggregate timeout; resolver, ticket-state,
+passport, and Git subprocess bounds remain unchanged. Focused regressions bind
+the controller call to those inner bounds and prove replay from the already
+committed `Building` state issues `FIX builder` without repeating the state
+transition or changing the preserved Narrator evidence.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

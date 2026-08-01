@@ -2567,3 +2567,15 @@ Every newly proven Factory edge case must add the smallest deterministic
 regression that reproduces its original boundary before the repair is accepted.
 The regression remains in the focused suite so incident evidence accumulates
 into durable coverage instead of being discarded after the immediate fix.
+
+## 2026-08-01 — Decision 187: State-machine helpers own their time bounds
+
+Category: Incident
+
+State-machine reconciliation may compose several independently bounded
+resolver, ticket-state, passport, and Git operations. The controller must not
+wrap that composition in a shorter aggregate timeout: a nested ticket-state
+operation can commit and push before the parent returns, making an outer kill
+look like failure after durable success. Replay authenticates the resulting
+branch and resumes from its exact materialized state; it must not repeat the
+transition or discard prior role evidence.
