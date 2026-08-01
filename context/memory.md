@@ -2384,3 +2384,15 @@ recovered markers are therefore keyed by the exact candidate SHA and must
 contain exactly that Factory SHA, the controller-event schema, and the sorted
 authorized qualification tickets. Legacy markers are ignored, while a
 malformed marker for the current candidate fails closed.
+
+## 2026-07-31 — Decision 175: Failed recovery clears only passported charges
+
+Category: Incident
+
+A valid remote passport authenticates ticket head and lineage but does not by
+itself prove that the failed attempt being recovered is charged. Before
+clearing a legacy push-failure or pre-submission-interruption receipt, the
+controller requires its exact terminal export in the current passport. If it
+is absent, the existing preserving passport migration must add it and the
+controller must revalidate it. Claim clearance, remote validation, and lease
+acquisition remain separate gates.

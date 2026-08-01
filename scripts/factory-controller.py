@@ -1513,7 +1513,16 @@ class Controller:
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if not passport_path.exists():
                 continue
-            if submission_unconfirmed or history_rewrite:
+            if push_failure or interrupted_before_submission:
+                try:
+                    if not self.terminal_already_exported(claim, terminal):
+                        self.migrate_passport(claim, "preserve")
+                except ControllerError:
+                    continue
+            if (
+                push_failure or interrupted_before_submission
+                or submission_unconfirmed or history_rewrite
+            ):
                 try:
                     if not self.terminal_already_exported(claim, terminal):
                         continue

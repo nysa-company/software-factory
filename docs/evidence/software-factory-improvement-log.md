@@ -3640,6 +3640,45 @@ the current candidate's exact boundary and recovery markers. All 55 controller
 tests pass. Live successor replay and final qualification reduction remain
 required before closure.
 
+## FI-20260731-129 — Clean remote validation skipped failed-charge export
+
+Status: Shared-path repair implemented and focused controller suite green;
+successor seal, live charge export, ordered cohort, protected CI, and final
+release transactions pending
+Priority: P0
+Area: failed-role recovery and passport accounting
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`134976c10030c20de20a08bbe34c656112d13751`
+Impact: T-094's exact legacy Builder push failure emitted
+`push_failure_recovered` and cleared its claim receipt, but the authenticated
+passport remained at 22 charges and did not contain run
+`1785537237-15335`'s full conservative charge. The controller was stopped
+before a provider submission, so the branch and cumulative provider ledger did
+not advance, but ordinary scheduling could have resumed without carrying the
+failed attempt in the ticket passport.
+Evidence: the immutable terminal retained receipt
+`6a5eadff77082ca4b3a8dd4b62fcc64f1ab22fde9cf6ec44c8f4786a52a074e4`;
+the post-recovery claim had empty role and receipt, while the passport's last
+charge was the earlier Test-author run and its charge count remained 22.
+Root cause: the legacy push-failure path invoked preserving passport migration
+only when remote-passport validation raised an error. History quarantine had
+restored the exact input and remote topology, so validation succeeded even
+though it proves head identity, not failed-charge inclusion. The same gap
+applied to a pre-submission interruption.
+Smallest repair: before either recovery can clear its claim, the controller
+checks the exact terminal export. If absent, it runs the existing preserving
+passport migration and requires the export to validate afterward. Remote
+passport validation and fresh lease acquisition remain separate downstream
+gates.
+Validation: the focused recovery regression starts with a valid remote
+passport that lacks each failed charge, proves one preserving migration occurs
+for both push failure and pre-submission interruption, and permits claim
+clearance only after the terminal export check changes to true. The authorized
+rewrite regression still proves the independent stale-head migration. All 55
+controller tests pass. Live restoration from the immutable T-094 manifest and
+one successor replay remain required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

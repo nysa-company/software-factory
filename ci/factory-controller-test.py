@@ -2558,6 +2558,19 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.json_call = json_call
         controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        exported = set()
+        controller.terminal_already_exported = lambda _claim, terminal: (
+            terminal["run_id"] in exported
+        )
+
+        def migrate(_claim, _state):
+            terminal = controller.terminal_for_receipt(
+                claim["ticket"], claim["receipt"],
+            )
+            exported.add(terminal["run_id"])
+            calls.append(("passport", "migrate"))
+
+        controller.migrate_passport = migrate
         remote = CONTROL.subprocess.CompletedProcess(
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
@@ -2570,7 +2583,8 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             [call[0] for call in calls],
             [
-                "passport", "renew", "claim", "ticket_lease_recovered",
+                "passport", "passport", "renew", "claim",
+                "ticket_lease_recovered",
                 "push_failure_recovered",
             ],
         )
@@ -2598,7 +2612,8 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             [call[0] for call in calls],
             [
-                "passport", "renew", "claim", "ticket_lease_recovered",
+                "passport", "passport", "renew", "claim",
+                "ticket_lease_recovered",
                 "interrupted_role_recovered",
             ],
         )
@@ -2687,6 +2702,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.json_call = json_call
         controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        controller.terminal_already_exported = lambda *_args: True
         remote = CONTROL.subprocess.CompletedProcess(
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
