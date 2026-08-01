@@ -2347,3 +2347,16 @@ replay under the same Factory. Only a successor may reopen it, and only after
 the signed remote passport proves the input head, unique failed charge, receipt,
 role, and absence of completed-role evidence. The protected Test-author rewrite
 authorization remains unchanged and no path force-pushes.
+
+## 2026-07-31 — Decision 170: A successor lease retires the prior release marker
+
+Category: Incident
+
+The first `bb05660` reconciliation migrated all three qualification passports
+without a provider call, then T-094 failed ordinary scheduling because upgrade
+recovery stored a fresh dispatcher lease beside the old lease's
+`lease_released=true` cache flag. `ensure_lease` therefore skipped renewal and
+attempted a duplicate claim, which correctly refused. Successful successor
+renewal or reacquisition now removes that stale marker in the same claim write.
+The exact recovered lease is reused; duplicate leases are still forbidden, and
+failure still releases and parks the ticket.

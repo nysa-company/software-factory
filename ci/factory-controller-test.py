@@ -2119,6 +2119,7 @@ class FactoryControllerTest(unittest.TestCase):
         claim = {
             "branch": "ticket/T-110",
             "lease": "a" * 64,
+            "lease_released": True,
             "priority": "normal",
             "publication_lease": "",
             "receipt": "",
@@ -2180,10 +2181,15 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_upgraded_claims([claim])
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["lease"], "c" * 64)
+        self.assertNotIn("lease_released", claim)
         self.assertEqual(
             [call[0] for call in calls],
             ["passport", "passport", "renew", "claim", "passport"],
         )
+        calls.clear()
+        controller.renew = lambda _claim: calls.append(("renew-existing",))
+        controller.ensure_lease(claim, "reconciliation")
+        self.assertEqual(calls, [("renew-existing",)])
 
     def test_factory_upgrade_recovers_waiting_claim_before_reconciliation(
         self,

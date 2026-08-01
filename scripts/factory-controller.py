@@ -1255,7 +1255,8 @@ class Controller:
                 ):
                     raise ControllerError("upgraded ticket lease is invalid")
                 claim["lease"] = lease["lease_id"]
-                self.save_claim(claim)
+            claim.pop("lease_released", None)
+            self.save_claim(claim)
             try:
                 self.migrate_passport(claim, "preserve")
             except ControllerError:

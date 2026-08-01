@@ -3577,6 +3577,21 @@ accounting, same-release refusal, successor-only recovery, and unchanged
 Test-author behavior. A new sealed successor and live T-094 Builder retry remain
 required before the ordered cohort can continue.
 
+The next sealed successor migrated the exact revision-33 routes and passports
+for T-094, T-100, and T-093 to Factory
+`bb05660edeafb19ea67e0ea56afd60de53fdba02` without a provider call. T-094 then
+stopped at ordinary scheduling with `ticket already has a dispatcher lease`.
+Upgrade recovery had correctly reacquired one fresh lease after the old lease
+was released, but saved it beside the prior claim's `lease_released=true`
+marker. The next `ensure_lease` treated the fresh lease as released, attempted
+a second claim, and the lease helper correctly refused. The controller released
+and parked T-094; T-100 and T-093 returned to dependency waiting, and no new run
+or charge was created. Recovery now clears the stale released marker whenever
+the successor renews or reacquires the exact lease. A focused controller
+regression starts with that historical flag, crosses the two-phase route
+migration, and proves ordinary scheduling receives one reusable lease. Another
+sealed successor remains required before the Builder retry.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

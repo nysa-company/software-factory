@@ -690,6 +690,10 @@ state for the successor controller rather than an upgrade deadlock.
 Upgrade recovery keeps the claim blocked while it first authenticates the
 current clean head into the successor passport. This pre-route boundary lets an
 exact protected rewrite authorization bind the unchanged old route digest.
+When the successor reacquires a dispatcher lease, it clears the prior lease's
+released marker in the same durable claim update; the recovered lease is then
+renewed by ordinary scheduling rather than mistaken for an already-released
+lease and claimed a second time.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.
