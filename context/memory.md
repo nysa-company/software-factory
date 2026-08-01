@@ -2397,3 +2397,15 @@ is absent, the existing receipt-bound passport export must add it and the
 controller must revalidate it. An authorized head mismatch migrates first and
 then retries that same export. Claim clearance, remote validation, and lease
 acquisition remain separate gates.
+
+## 2026-07-31 — Decision 176: Successor budgets are frozen-candidate scoped
+
+Category: Incident
+
+Production-successor qualification retains every historical charge in the
+authenticated passport, but its runtime and final qualification allowance
+count only charges whose Factory SHA equals the frozen candidate. Earlier
+candidate spend cannot exhaust the new candidate's cap. The runtime helper
+must authenticate the exact successor manifest and launcher Factory SHA before
+using that basis. A budget wait may reopen only across such a successor release
+migration; same-release and ordinary production budget waits remain closed.

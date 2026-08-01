@@ -450,8 +450,13 @@ launcher also fails closed on that pin. This is one authoritative ticket
 history, not copied sandbox state. The mandatory controller restart boundary
 and its recovered proof are keyed by the frozen candidate SHA and validate the
 exact qualification ticket set; a marker from an earlier candidate cannot
-satisfy either boundary. A takeover admits one frozen candidate. If
-that candidate exposes a semantic defect after authenticating its migrations,
+satisfy either boundary. Successor runtime ticket budgets count only terminal
+charges whose Factory SHA matches that frozen candidate, exactly like the final
+reducer; authenticated earlier-candidate charges remain in cumulative passport
+accounting but cannot consume the new candidate's allowance. A cross-release
+successor may reopen that prior candidate's budget wait, while same-release and
+ordinary production budget waits remain closed. A takeover admits one frozen
+candidate. If that candidate exposes a semantic defect after authenticating its migrations,
 the replacement uses a new qualification root while retaining the installed
 production source in the manifest; preparation and final reduction require the
 unique contiguous v2 release suffix through every intermediate candidate.

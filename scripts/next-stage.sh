@@ -543,7 +543,7 @@ if [[ -z "${FACTORY_LEDGER:-}" ]] &&
 fi
 if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
   BUDGET_STAGE="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
-    "$REPO_ROOT" "$TICKET")" || {
+    "$REPO_ROOT" "$TICKET" "$FACTORY_RELEASE_SHA")" || {
       echo "REFUSE ticket budget could not be reduced"
       exit 1
     }

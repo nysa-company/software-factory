@@ -2271,6 +2271,68 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.read(passport_path)["factory_sha"], self.release.name
         )
 
+    def test_successor_upgrade_reopens_candidate_scoped_budget(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "mode": "successor", "tickets": ["T-110"],
+        }
+        cell = self.root / "parked/T-110"
+        cell.mkdir(parents=True)
+        claim = {
+            "branch": "ticket/T-110",
+            "budget_sha256": "b" * 64,
+            "lease": "",
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "budget",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        passport_path = passports / "T-110.json"
+        CONTROL.write(passport_path, {"factory_sha": "b" * 40})
+
+        def json_call(*args, **_kwargs):
+            if args[0] == "claim":
+                return {
+                    "lease_id": "c" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            raise CONTROL.ControllerError("prior lease is unavailable")
+
+        def migrate(_claim, _publication):
+            CONTROL.write(
+                passport_path, {"factory_sha": self.release.name},
+            )
+
+        controller.json_call = json_call
+        controller.ticket_release_current = lambda _claim: True
+        controller.migrate_passport = migrate
+        controller.event = lambda *_args, **_kwargs: None
+
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "c" * 64)
+        self.assertNotIn("budget_sha256", claim)
+        claim.update(status="budget", budget_sha256="d" * 64)
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(claim["status"], "budget")
+        self.assertEqual(claim["budget_sha256"], "d" * 64)
+        controller.qualification = None
+        CONTROL.write(passport_path, {"factory_sha": "b" * 40})
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(claim["status"], "budget")
+        self.assertEqual(
+            CONTROL.read(passport_path)["factory_sha"], "b" * 40,
+        )
+
     def test_factory_upgrade_recovers_waiting_claim_before_reconciliation(
         self,
     ) -> None:

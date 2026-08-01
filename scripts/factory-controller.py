@@ -1214,7 +1214,15 @@ class Controller:
 
     def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
-            if claim["status"] not in {"blocked", "claimed", "waiting"}:
+            successor_budget = (
+                claim["status"] == "budget"
+                and self.qualification is not None
+                and self.qualification.get("mode") == "successor"
+            )
+            if (
+                claim["status"] not in {"blocked", "claimed", "waiting"}
+                and not successor_budget
+            ):
                 continue
             path = self.state / "passports" / f"{claim['ticket']}.json"
             if not path.exists():
@@ -1308,6 +1316,7 @@ class Controller:
                 claim["status"] = "blocked"
             else:
                 claim.update(receipt="", role="", status="claimed")
+                claim.pop("budget_sha256", None)
             self.save_claim(claim)
             self.event(
                 "upgraded_claim_recovered", claim["ticket"],

@@ -3679,6 +3679,49 @@ rewrite regression proves failed export, stale-head migration, and successful
 bound re-export in that order. All 55 controller tests pass. Live restoration
 from the immutable T-094 manifest and one successor replay remain required.
 
+## FI-20260731-130 — Successor runtime budget counted earlier candidates
+
+Status: Shared-path repair implemented and focused budget/controller suites
+green; successor seal, live Reviewer continuation, ordered cohort, protected
+CI, and final release transactions pending
+Priority: P0
+Area: successor qualification runtime budget and controller recovery
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`4101a4a3f86097e5dca7ebd58444c2327a0cf091`
+Impact: T-094 successfully completed and pushed Builder run
+`1785549789-96973`, advanced to `4e1dc4c1151831ccee5687b47c109711edbe6a16`,
+and exported its 24th charge plus 10th completed role. Before Reviewer, runtime
+budget admission returned `AWAIT_BUDGET` at exactly 100,000,000/100,000,000
+micro-USD and parked the ticket. Only 10,000,000 micro-USD belonged to the
+frozen candidate; the other 90,000,000 came from prior qualification
+candidates. T-100 and T-093 remained dependency-waiting, all leases drained,
+and no Reviewer provider call started.
+Evidence: the final qualification reducer already computes candidate spend by
+including only charge records whose `factory_sha` equals the manifest's frozen
+candidate. `budget-stage.py` instead summed every immutable run manifest for
+the ticket, so iterative successor qualification used cumulative candidate
+history against a candidate-only cap.
+Root cause: successor preparation and reduction defined a candidate-scoped
+budget, but runtime stage resolution reused ordinary production's lifetime
+ticket sum. A resulting budget claim also reopened only when the envelope file
+changed, even though a new frozen successor SHA changes the authenticated
+budget basis without changing that envelope.
+Smallest repair: the runtime budget helper accepts the launcher-authenticated
+Factory SHA, strictly validates the exact successor qualification manifest,
+uses its fixed $100 cap, and sums only current-candidate charges. Ordinary and
+fresh qualification behavior retains the existing envelope/override reducer.
+The controller may reopen a `budget` claim only across an authenticated
+successor release migration, removes the obsolete envelope digest after that
+migration, and never reopens a same-release or ordinary production budget wait.
+Validation: the focused budget test creates $100 of historical charges plus
+$10 under the current candidate, proves admission remains available, reaches
+the stop only when current-candidate charges equal $100, and rejects a Factory
+SHA mismatch. The controller regression proves cross-release successor reopen,
+same-release refusal, and ordinary-production refusal. The budget suite's 3
+tests and controller suite's 56 tests pass. Live Reviewer continuation remains
+required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
