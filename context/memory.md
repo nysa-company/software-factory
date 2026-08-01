@@ -2468,3 +2468,6 @@ partial implementation and accounting without requiring manual cleanup or
 replaying earlier roles. Its Builder boundary accepts only the current ticket's
 required root-cause log as an exception to the Factory-control ban; sibling
 tickets, tests, route journals, and other Factory controls remain forbidden.
+The first-attempt limit counts submitted GO attempts only for the failed run's
+exact frozen candidate; preserved attempts from predecessor candidates remain
+accounted but do not disable the successor's fallback.

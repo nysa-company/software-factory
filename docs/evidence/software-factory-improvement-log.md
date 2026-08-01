@@ -3826,7 +3826,10 @@ The cell contains only modified product implementation and ticket-log paths,
 while the controller emitted `factory-launch: ticket worktree must be clean`
 before `fallback-auto` could run. A direct retry through that sealed helper
 then failed without mutation because the Builder boundary rejected its own
-required `factory/tickets/T-094.md` root-cause log.
+required `factory/tickets/T-094.md` root-cause log. The corrected successor
+accepted that boundary, then refused because its first-attempt guard counted
+all nine historical T-094 Builder runs rather than the sole submitted Builder
+attempt under candidate `202b6c07`.
 Root cause: Builder v5 required “all tests green locally,” which encouraged a
 repository-wide suite despite qualification's ticket-scoped iteration policy.
 Independently, `finish_pending_run` exported every terminal passport before
@@ -3839,16 +3842,20 @@ the existing idempotent fallback before passport export and then migrates the
 failed charge onto the clean fallback head. The handoff boundary permits the
 current ticket log as the sole Builder exception to `factory/**`; sibling
 tickets, tests, route journals, and other controls remain forbidden. All other
-terminal ordering is unchanged.
+terminal ordering is unchanged. The automatic fallback's one-attempt guard now
+counts only submitted GO attempts for the exact failed candidate; historical
+attempts remain immutable accounting evidence but do not consume that
+candidate's retry boundary.
 Validation: all 56 focused controller tests pass, including the assertion that
 no eager passport export occurs and that `fallback-auto` precedes preserving
 migration. The Builder contract check proves v6 contains the full-suite ban and
 no longer contains the v5 all-tests requirement. Changed-scope CI passed its
 targeted `ci-scope`, immutability, and artifact-policy selection while deferring
 broad suites to required protected CI; repository and secret checks are green.
-The focused fallback, handoff, approval, and model-control suites pass all 28
-tests, including current-ticket acceptance and sibling-ticket rejection. Live
-successor recovery remains required.
+The focused fallback, handoff, approval, and model-control suites pass all 29
+tests, including current-ticket acceptance, sibling-ticket rejection, and a
+historical predecessor attempt that does not consume the current candidate's
+fallback. Live successor recovery remains required.
 
 ## Maintenance rule
 

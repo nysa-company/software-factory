@@ -579,7 +579,9 @@ tickets, tests, or Factory controls, it runs before terminal passport export;
 the resulting clean exact head then receives the failed charge through
 preserving passport migration.
 It is idempotent across controller restart. A second task-submitted
-attempt for that ticket and role is refused as no progress instead of replayed.
+attempt for that ticket, role, and frozen candidate is refused as no progress
+instead of replayed; preserved attempts from predecessor candidates do not
+consume the successor's one fallback boundary.
 An exit 143 before task submission reopens only that interrupted role, and only
 after the current signed passport, clean cell, branch, and remote head agree
 exactly; every submitted or differently terminated interruption stays blocked.

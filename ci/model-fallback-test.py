@@ -289,6 +289,25 @@ class FallbackTest(unittest.TestCase):
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
 
+    def test_qualification_attempt_limit_is_candidate_scoped(self):
+        current = self.product / "factory/runs/run-failed-1.meta"
+        historical = self.product / "factory/runs/run-000-historical.meta"
+        historical.write_text(
+            current.read_text()
+            .replace("run_id=run-failed-1", "run_id=run-000-historical")
+            .replace("kit_sha=" + "a" * 40, "kit_sha=" + "f" * 40)
+            .replace(
+                "started_at=2026-",
+                "started_at=2025-",
+            )
+            .replace(
+                "terminal_at=2026-",
+                "terminal_at=2025-",
+            )
+        )
+        applied = self.command("qualification-apply")
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+
     def test_fallback_reduces_authoritative_accounting_not_runtime_view(self):
         preview = self.command("preview")
         self.assertEqual(preview["failed_run_id"], "run-failed-1")

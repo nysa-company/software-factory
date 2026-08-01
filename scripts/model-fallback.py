@@ -536,7 +536,9 @@ def qualification_apply(args):
             attempts += (
                 value.get("ticket") == args.ticket
                 and value.get("role") == failed["role"]
+                and value.get("kit_sha") == failed["kit_sha"]
                 and value.get("go_issued") == "1"
+                and value.get("task_submitted") == "1"
             )
     if attempts != 1:
         raise FallbackError("qualification fallback is allowed only after the first role attempt")
