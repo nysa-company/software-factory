@@ -4052,6 +4052,10 @@ passport, and Git subprocess bounds remain unchanged. Focused regressions bind
 the controller call to those inner bounds and prove replay from the already
 committed `Building` state issues `FIX builder` without repeating the state
 transition or changing the preserved Narrator evidence.
+A 48-case mocked role/state matrix now enumerates all six roles under both
+`RUN` and `FIX` from Ready, Planning, Building, and Review. It verifies every
+exact multi-hop, same-state, repair, and forbidden-backward edge in seconds
+before live role execution.
 
 ## Maintenance rule
 

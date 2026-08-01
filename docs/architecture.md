@@ -324,6 +324,10 @@ State-machine reconciliation likewise relies on its individually bounded
 resolver, ticket-state, passport, and Git operations. The controller does not
 apply a second aggregate timeout that could terminate the parent after a
 ticket-state transition has already been committed.
+The focused deterministic suite enumerates every `RUN` and `FIX` role from
+every lifecycle state with mocked role work. It asserts the exact forward or
+repair path and the forbidden backward edges in seconds, before a sealed lane
+spends time on a real provider task.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.

@@ -400,6 +400,82 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(result["role"], "builder")
         self.assertEqual(result["stage"], "FIX builder")
 
+    def test_mock_role_transition_matrix_covers_every_lifecycle_state(self) -> None:
+        targets = {
+            "planner": "Planning",
+            "spec-linter": "Planning",
+            "test-author": "Building",
+            "builder": "Building",
+            "reviewer": "Review",
+            "narrator": "Review",
+        }
+        paths = {
+            ("Ready", "Planning"): ["Planning"],
+            ("Ready", "Building"): ["Planning", "Building"],
+            ("Ready", "Review"): ["Planning", "Building", "Review"],
+            ("Planning", "Planning"): [],
+            ("Planning", "Building"): ["Building"],
+            ("Planning", "Review"): ["Building", "Review"],
+            ("Building", "Building"): [],
+            ("Building", "Review"): ["Review"],
+            ("Review", "Building"): ["Building"],
+            ("Review", "Review"): [],
+        }
+        receipt = "b" * 64
+
+        for action in ("RUN", "FIX"):
+            for role, target in targets.items():
+                for current in ("Ready", "Planning", "Building", "Review"):
+                    expected = paths.get((current, target))
+                    with self.subTest(
+                        action=action, role=role, current=current, target=target
+                    ):
+                        states = [current, current, *(expected or [])]
+                        with (
+                            mock.patch.object(
+                                STATE, "current_state", side_effect=states
+                            ),
+                            mock.patch.object(
+                                STATE,
+                                "contract_repair_stage",
+                                return_value=(None, False),
+                            ),
+                            mock.patch.object(
+                                STATE,
+                                "resolve",
+                                return_value=f"{action} {role}",
+                            ),
+                            mock.patch.object(STATE, "transition") as transition,
+                            mock.patch.object(STATE, "migrate_passport") as migrate,
+                            mock.patch.object(
+                                STATE,
+                                "issue",
+                                return_value={"receipt_sha256": receipt},
+                            ) as issue,
+                        ):
+                            if expected is None:
+                                with self.assertRaisesRegex(
+                                    STATE.StateError,
+                                    f"state machine cannot enter {target} from {current}",
+                                ):
+                                    STATE.next_transition(self.args)
+                                migrate.assert_not_called()
+                                issue.assert_not_called()
+                            else:
+                                result = STATE.next_transition(self.args)
+                                self.assertEqual(
+                                    [call.args[1] for call in transition.call_args_list],
+                                    expected,
+                                )
+                                migrate.assert_called_once_with(self.args)
+                                issue.assert_called_once_with(
+                                    self.args, f"{action} {role}"
+                                )
+                                self.assertEqual(result["role"], role)
+                                self.assertEqual(
+                                    result["stage"], f"{action} {role}"
+                                )
+
     def test_contract_block_and_resume_require_exact_terminal_receipt(self) -> None:
         self.args.lease = "d" * 64
         issued = STATE.issue(self.args, "RUN planner")

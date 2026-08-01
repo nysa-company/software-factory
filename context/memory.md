@@ -2579,3 +2579,15 @@ operation can commit and push before the parent returns, making an outer kill
 look like failure after durable success. Replay authenticates the resulting
 branch and resumes from its exact materialized state; it must not repeat the
 transition or discard prior role evidence.
+
+## 2026-08-01 — Decision 188: Exhaust the cheap role/state matrix first
+
+Category: Process
+
+Before resuming an expensive sealed provider role after a Factory repair, run
+the deterministic role/state matrix. It covers every `RUN` and `FIX` role from
+Ready, Planning, Building, and Review, including exact multi-hop transitions,
+the Review-to-Building repair edge, no-op same-state replay, and forbidden
+backward transitions. Role work is mocked; the real typed state-machine logic
+remains under test. Known interruption, restart, accounting, dependency, and
+publication faults remain covered by the focused controller composite replay.
