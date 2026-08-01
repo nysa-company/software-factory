@@ -683,9 +683,15 @@ automatic helper push is bound to the exact product
 origin in the active generation's owner-only certification receipt; mutable
 Git remote configuration cannot redirect it.
 Contract 1.3 adds only the dedicated `ticket-attest` route. `bundle` binds the
-latest successful Reviewer and Narrator runs, reviewed SHA, unchanged
-post-review ticket/bundle paths, bundle Git blob, and the unique exact open PR,
-then records Awaiting Approval. `approval` consumes only a newer exact Linear
+latest successful Reviewer and Narrator runs, reviewed SHA, post-review
+ticket/bundle controls, bundle Git blob, and the unique exact open PR, then
+records Awaiting Approval. Ticket-PR and bundle attestation share one
+fail-closed Narrator-evidence classifier: only bounded ordinary PNG blobs under
+the current ticket's evidence directory are admitted, additions and updates
+must be referenced by the current bundle, and deletions must have been
+referenced by the reviewed bundle. The classifier validates the complete PNG
+chunk stream and refuses unreferenced, nested, sibling, executable, malformed,
+or excessive evidence. `approval` consumes only a newer exact Linear
 Awaiting Approval → Approved overlay, commits the approval attestation, and
 requests normal protected GitHub auto-merge for that exact PR head. `done`
 requires the exact merged commit on authoritative `origin/main`, all configured

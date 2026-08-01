@@ -16,6 +16,13 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
+from narrator_evidence import (  # noqa: E402
+    MAX_NARRATOR_EVIDENCE_BYTES,
+    MAX_NARRATOR_EVIDENCE_FILES,
+    PNG_END,
+    PNG_SIGNATURE,
+    trusted_narrator_evidence_paths,
+)
 from runtime_paths import canonical_factory_file  # noqa: E402
 from refresh_semantics import (  # noqa: E402
     ClassificationError,
@@ -24,10 +31,6 @@ from refresh_semantics import (  # noqa: E402
 )
 
 SCHEMA = "nysa.software-factory.ticket-pr/v1"
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-PNG_END = b"\x00\x00\x00\x00IEND\xaeB\x60\x82"
-MAX_NARRATOR_EVIDENCE_FILES = 32
-MAX_NARRATOR_EVIDENCE_BYTES = 2_000_000
 REFRESH_RECEIPT_KEYS = {
     "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
     "prior_reviewer_runs", "prior_approve_verdicts",
@@ -234,76 +237,6 @@ def preserved_refresh_metadata(
         relative,
         *retained_control_paths(workdir, head, receipt["base_head"], changed),
     }
-
-
-def bundle_png_paths(workdir: Path, commit: str, ticket: str) -> set[str]:
-    bundle = f"factory/tickets/{ticket}-bundle.md"
-    result = subprocess.run(
-        ["git", "-C", str(workdir), "show", f"{commit}:{bundle}"],
-        text=True, capture_output=True, check=False,
-    )
-    if result.returncode:
-        return set()
-    target = re.compile(
-        rf"!\[[^\]\r\n]*\]\("
-        rf"({re.escape(ticket)}-evidence/[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}\.png)"
-        rf"(?:[ \t]+[\"'][^\"')\r\n]*[\"'])?\)"
-    )
-    return {
-        f"factory/tickets/{match.group(1)}"
-        for match in target.finditer(result.stdout)
-    }
-
-
-def png_blob(workdir: Path, entry: str, path: str) -> bytes | None:
-    match = re.fullmatch(
-        rf"100644 blob ([0-9a-f]{{40}})\t{re.escape(path)}", entry,
-    )
-    if not match:
-        return None
-    oid = match.group(1)
-    raw_size = git(workdir, "cat-file", "-s", oid)
-    if not raw_size.isdigit():
-        return None
-    size = int(raw_size)
-    if size < len(PNG_SIGNATURE) + len(PNG_END) or size > MAX_NARRATOR_EVIDENCE_BYTES:
-        return None
-    result = subprocess.run(
-        ["git", "-C", str(workdir), "cat-file", "blob", oid],
-        capture_output=True, check=False,
-    )
-    if (
-        result.returncode
-        or len(result.stdout) != size
-        or not result.stdout.startswith(PNG_SIGNATURE)
-        or not result.stdout.endswith(PNG_END)
-    ):
-        return None
-    return result.stdout
-
-
-def trusted_narrator_evidence_paths(
-    workdir: Path, ticket: str, reviewed: str, head: str, changed: set[str],
-) -> set[str]:
-    prefix = f"factory/tickets/{ticket}-evidence/"
-    candidates = {path for path in changed if path.startswith(prefix)}
-    if not candidates or len(candidates) > MAX_NARRATOR_EVIDENCE_FILES:
-        return set()
-    prior_references = bundle_png_paths(workdir, reviewed, ticket)
-    current_references = bundle_png_paths(workdir, head, ticket)
-    trusted = set()
-    for path in candidates:
-        current_entry = git(workdir, "ls-tree", head, "--", path)
-        if current_entry:
-            blob = png_blob(workdir, current_entry, path)
-            if path in current_references and blob is not None:
-                trusted.add(path)
-            continue
-        prior_entry = git(workdir, "ls-tree", reviewed, "--", path)
-        blob = png_blob(workdir, prior_entry, path) if prior_entry else None
-        if path in prior_references and blob is not None:
-            trusted.add(path)
-    return trusted
 
 
 def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str) -> None:

@@ -19,6 +19,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ticket-attest.py"
 KIT_SHA = "a" * 40
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 SPEC = importlib.util.spec_from_file_location("ticket_attest", SCRIPT)
 TICKET_ATTEST = importlib.util.module_from_spec(SPEC)
@@ -444,6 +448,34 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
+    def prepare_post_review_evidence(self, *, unreferenced=False):
+        bundle = self.product / "factory/tickets/T-700-bundle.md"
+        evidence = self.product / "factory/tickets/T-700-evidence"
+        evidence.mkdir()
+        (evidence / "old.png").write_bytes(PNG)
+        bundle.write_text(
+            bundle.read_text().replace(
+                "## Screenshots\nNo visual change.\n",
+                "## Screenshots\n![Old](T-700-evidence/old.png)\n",
+            )
+        )
+        self.commit("record prior narrator evidence")
+        self.reviewed = self.head()
+        self.write_runs()
+
+        (evidence / "old.png").unlink()
+        (evidence / "current.png").write_bytes(PNG)
+        bundle.write_text(
+            bundle.read_text().replace(
+                "![Old](T-700-evidence/old.png)",
+                "![Current](T-700-evidence/current.png)",
+            )
+        )
+        if unreferenced:
+            (evidence / "orphan.png").write_bytes(PNG)
+        self.commit("refresh narrator evidence")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+
     def approval_overlay(self, stale=False):
         stamp = "2020-01-01T00:00:00Z" if stale else "2099-01-01T00:00:00Z"
         (self.product / "factory/linear-map.json").write_text(json.dumps({
@@ -478,6 +510,16 @@ else:
             "reviewer-1,anthropic,mock,pinned_route_plan,conservative_reservation,1",
         ))
         self.bundle()
+
+    def test_bundle_accepts_referenced_current_ticket_png_evidence(self):
+        self.prepare_post_review_evidence()
+        self.bundle()
+
+    def test_bundle_refuses_unreferenced_narrator_evidence(self):
+        self.prepare_post_review_evidence(unreferenced=True)
+        result = self.attest("bundle")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("changed after", result.stderr)
 
     def test_bundle_refuses_changed_merge_policy(self):
         ticket = self.product / "factory/tickets/T-700.md"

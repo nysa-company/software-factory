@@ -4166,8 +4166,8 @@ shell syntax, Python compilation, and diff-integrity checks are green.
 
 ## FI-20260801-138 — Narrator screenshots were misclassified as implementation drift
 
-Status: Focused regression and exact live-history validation green; sealed
-successor recovery pending
+Status: Ticket-PR live recovery green; downstream attestation follow-up is
+FI-20260801-139
 Priority: P0
 Area: post-review publication lineage
 Owner: Factory
@@ -4200,8 +4200,40 @@ the exact referenced add/delete set succeeds and that unreferenced, fake-PNG,
 oversized, excess-count, symlink, and sibling-ticket variants fail before
 GitHub access. The repaired validator also accepts the immutable live T-094
 `2ef3aa6` history directly.
-Live closure requires the sealed successor to attest that preserved bundle
-without launching Narrator again.
+Live closure reached the repaired ticket-PR boundary without launching
+Narrator again. The next independent bundle-attestation validator exposed the
+same missing classification and is tracked separately below.
+
+## FI-20260801-139 — Bundle attestation diverged from ticket-PR evidence lineage
+
+Status: Focused regressions green; sealed successor recovery pending
+Priority: P0
+Area: post-review bundle attestation
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`1580fa978525fe31f0dc482e54e00da603661721`
+Impact: T-094 crossed the repaired ticket-PR boundary at route head
+`1096355e271c4fa9355d9e66e7e6e3b9528dde8a` without replaying Narrator, but
+the immediately following `ticket-attest --action bundle` rejected the same
+lineage as `product or code changed after the reviewed SHA`. T-100 and T-093
+remained in dependency wait and all claims were safely released.
+Finding: ticket-PR and bundle attestation independently maintained their
+post-review allowlists. The first validator admitted exact referenced Narrator
+PNGs, while the second still admitted only ticket, bundle, route, and refresh
+metadata. A signature/footer-only PNG check also admitted structurally invalid
+chunk data.
+Smallest repair: move Narrator raster classification into one shared helper
+used by both validators. Validate ordinary Git mode, exact current-ticket flat
+paths and references, per-file and aggregate bounds, the complete PNG chunk
+stream and CRCs, unique IHDR/IEND, at least one IDAT, and valid IHDR fields.
+Edge coverage: ticket-PR now covers valid add/delete, in-place replacement,
+and the exact 32-file boundary plus unreferenced additions and deletions,
+bad signatures, forged signature/footer with invalid chunks, oversized and
+excess sets, symlinks, executable blobs, nested paths, and sibling-ticket
+paths. Bundle attestation separately proves the live add/delete shape succeeds
+and an unreferenced file still refuses.
+Live closure requires a sealed successor to create the T-094 bundle
+attestation and reach Awaiting Approval without another Reviewer or Narrator.
 
 ## Maintenance rule
 

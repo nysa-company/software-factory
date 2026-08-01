@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "ticket-pr.py"
@@ -39,6 +41,18 @@ PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+
+
+def png_with_text(value):
+    payload = f"case\0{value}".encode()
+    kind = b"tEXt"
+    chunk = (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+    )
+    return PNG[:-12] + chunk + PNG[-12:]
 
 
 class TicketPrTest(unittest.TestCase):
@@ -361,18 +375,30 @@ else:
         evidence = self.product / "factory/tickets/T-100-evidence"
         evidence.mkdir()
         (evidence / "old.png").write_bytes(PNG)
+        if mode == "unreferenced-deletion":
+            (evidence / "orphan-old.png").write_bytes(PNG)
         bundle.write_text("![Old](T-100-evidence/old.png)\n")
         self.commit_and_push("record prior narrator evidence")
         self.prepare_narrator()
 
-        (evidence / "old.png").unlink()
-        current = evidence / "current.png"
-        current.write_bytes(PNG)
-        bundle.write_text("![Current](T-100-evidence/current.png)\n")
+        if mode == "in-place":
+            current = evidence / "old.png"
+            current.write_bytes(png_with_text("updated"))
+        else:
+            (evidence / "old.png").unlink()
+            current = evidence / "current.png"
+            current.write_bytes(PNG)
+            bundle.write_text("![Current](T-100-evidence/current.png)\n")
         if mode == "unreferenced":
             (evidence / "orphan.png").write_bytes(PNG)
+        elif mode == "unreferenced-deletion":
+            (evidence / "orphan-old.png").unlink()
         elif mode == "fake":
             current.write_bytes(b"not-a-png" * 8)
+        elif mode == "fake-boundaries":
+            current.write_bytes(
+                TICKET_PR.PNG_SIGNATURE + b"not-png-chunks" + TICKET_PR.PNG_END
+            )
         elif mode == "oversized":
             current.write_bytes(
                 TICKET_PR.PNG_SIGNATURE
@@ -386,6 +412,23 @@ else:
                 path.write_bytes(PNG)
                 lines.append(f"![Extra {index}](T-100-evidence/{path.name})\n")
             bundle.write_text("".join(lines))
+        elif mode == "limit":
+            lines = [bundle.read_text()]
+            for index in range(TICKET_PR.MAX_NARRATOR_EVIDENCE_FILES - 2):
+                path = evidence / f"extra-{index}.png"
+                path.write_bytes(PNG)
+                lines.append(f"![Extra {index}](T-100-evidence/{path.name})\n")
+            bundle.write_text("".join(lines))
+        elif mode == "executable":
+            current.chmod(0o755)
+        elif mode == "nested":
+            nested = evidence / "nested"
+            nested.mkdir()
+            (nested / "current.png").write_bytes(PNG)
+            bundle.write_text(
+                bundle.read_text()
+                + "![Nested](T-100-evidence/nested/current.png)\n"
+            )
         elif mode == "symlink":
             current.unlink()
             current.symlink_to("../T-100-bundle.md")
@@ -397,7 +440,7 @@ else:
                 bundle.read_text()
                 + "![Sibling](T-999-evidence/sibling.png)\n"
             )
-        elif mode != "valid":
+        elif mode not in {"valid", "in-place", "unreferenced-deletion"}:
             raise ValueError(mode)
         self.commit_and_push("refresh narrator evidence")
 
@@ -500,6 +543,16 @@ else:
         self.assertEqual(ready["boundary"], "publication")
         self.assertEqual(ready["status"], "ready")
 
+    def test_publication_accepts_referenced_in_place_png_update(self):
+        self.prepare_post_review_evidence("in-place")
+        ready = self.publication_command()
+        self.assertEqual(ready["status"], "ready")
+
+    def test_publication_accepts_exact_narrator_evidence_file_limit(self):
+        self.prepare_post_review_evidence("limit")
+        ready = self.publication_command()
+        self.assertEqual(ready["status"], "ready")
+
     def test_publication_rejects_unreferenced_narrator_evidence(self):
         self.prepare_post_review_evidence("unreferenced")
         refused = self.publication_command(expected=2)
@@ -508,6 +561,18 @@ else:
 
     def test_publication_rejects_fake_png_narrator_evidence(self):
         self.prepare_post_review_evidence("fake")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_fake_png_with_valid_boundaries(self):
+        self.prepare_post_review_evidence("fake-boundaries")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_unreferenced_evidence_deletion(self):
+        self.prepare_post_review_evidence("unreferenced-deletion")
         refused = self.publication_command(expected=2)
         self.assertIn("implementation changed", refused["error"])
         self.assertFalse(self.trace.exists())
@@ -526,6 +591,18 @@ else:
 
     def test_publication_rejects_symlinked_narrator_evidence(self):
         self.prepare_post_review_evidence("symlink")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_executable_narrator_evidence(self):
+        self.prepare_post_review_evidence("executable")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_nested_narrator_evidence(self):
+        self.prepare_post_review_evidence("nested")
         refused = self.publication_command(expected=2)
         self.assertIn("implementation changed", refused["error"])
         self.assertFalse(self.trace.exists())

@@ -23,6 +23,7 @@ from refresh_semantics import (  # noqa: E402
     preserved_control_paths,
     retained_control_paths,
 )
+from narrator_evidence import trusted_narrator_evidence_paths  # noqa: E402
 from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
 from runtime_paths import canonical_factory_file  # noqa: E402
 
@@ -2023,6 +2024,11 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         f"factory/tickets/{args.ticket}-bundle.md",
     }
     changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").stdout.splitlines())
+    allowed.update(
+        trusted_narrator_evidence_paths(
+            workdir, args.ticket, reviewed, head, changed,
+        )
+    )
     if preserved_base:
         allowed.add(f"factory/attestations/{args.ticket}/refresh.json")
         allowed.update(retained_control_paths(workdir, head, preserved_base, changed))

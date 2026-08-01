@@ -140,6 +140,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   later Narrator must also belong to the receipt-bound old head; earlier
   discarded-lineage rows remain auditable but do not disqualify a later valid
   pair. Unknown and semantic changes still invalidate review.
+- Ticket-PR publication and bundle attestation use one shared fail-closed
+  classifier for post-review Narrator screenshots. It admits at most 32
+  current-ticket regular PNG blobs of at most 2 MB whose complete chunk stream
+  is valid and whose paths are referenced by the current bundle (or by the
+  reviewed bundle for deletions). Unreferenced, nested, sibling, executable,
+  malformed, and excessive evidence remains implementation drift at both
+  boundaries.
 - Contract 1.8 evidence bundles are scoped to the latest effective, non-void
   Reviewer generation. Only successful Narrators after that Reviewer may
   decide the bundle boundary: an unchanged generation preserves an explicit
@@ -2634,3 +2641,15 @@ Git blob with valid PNG boundaries. Unreferenced files, sibling-ticket paths,
 symlinks, disguised content, and application paths remain implementation drift.
 The successful Narrator output is preserved and attested at its exact branch
 head; this boundary never authorizes a Reviewer or Narrator replay.
+
+## 2026-08-01 — Decision 192: Publication validators share Narrator evidence classification
+
+Category: Trust boundary
+
+Ticket-PR readiness and bundle attestation must classify post-review Narrator
+evidence through the same helper. The helper validates the complete PNG chunk
+stream and CRCs, exact IHDR/IDAT/IEND structure, ordinary Git mode, current
+ticket path and bundle reference, 2 MB per-file limit, and 32-file aggregate
+limit. A new acceptance or refusal rule therefore changes both publication
+boundaries together, while focused integration tests retain each boundary's
+call-site behavior.
