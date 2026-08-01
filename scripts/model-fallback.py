@@ -366,23 +366,57 @@ def recover_applied(args, approval):
         head = git(repo, "rev-parse", "HEAD").decode().strip()
         committed = git(repo, "show", f"HEAD:{relative}")
         journal = json.loads(committed)
-        revision = journal["revisions"][-1]
-        body = revision["body"]
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         return None
-    if (
-        body.get("kind") != "fallback"
-        or body.get("approval_receipt") != approval
-        or body.get("reason") != args.reason
-    ):
+    catalog, routes, _profiles, profile_map = load_policy_files(
+        args.catalog, args.profiles
+    )
+    MANAGER.validate_journal(
+        journal, catalog, routes, profile_map, allow_historical_active=True
+    )
+    matches = [
+        (index, revision)
+        for index, revision in enumerate(journal["revisions"])
+        if revision["body"].get("kind") == "fallback"
+        and revision["body"].get("approval_receipt") == approval
+        and revision["body"].get("reason") == args.reason
+    ]
+    if not matches:
         return None
+    if len(matches) != 1:
+        raise FallbackError("existing fallback approval is ambiguous")
+    index, revision = matches[0]
+    body = revision["body"]
+    suffix = journal["revisions"][index + 1:]
+    if any(item["body"].get("kind") != "release-migration" for item in suffix):
+        raise FallbackError("existing fallback has a non-migration suffix")
     _failed, failed_raw, _ledger, _manifests = load_evidence(
         Path(args.factory_root), args.ticket, args.failed_run
     )
     if body.get("failed_manifest_digest") != digest(failed_raw):
         raise FallbackError("existing fallback revision references different failed evidence")
-    message = git(repo, "show", "-s", "--format=%B", "HEAD").decode()
-    if f"Model-Route-Revision: {revision['revision_hash']}" not in message:
+    marker = f"Model-Route-Revision: {revision['revision_hash']}"
+    fallback_kit = (
+        suffix[0]["body"]["old_kit_sha"] if suffix else journal["kit_sha"]
+    )
+    handoff_commits = []
+    for commit in git(
+        repo, "log", "--format=%H", "HEAD", "--", relative
+    ).decode().splitlines():
+        if marker not in git(repo, "show", "-s", "--format=%B", commit).decode():
+            continue
+        try:
+            candidate = json.loads(git(repo, "show", f"{commit}:{relative}"))
+        except (FallbackError, json.JSONDecodeError):
+            continue
+        if (
+            candidate.get("schema") == journal["schema"]
+            and candidate.get("ticket") == journal["ticket"]
+            and candidate.get("kit_sha") == fallback_kit
+            and candidate.get("revisions") == journal["revisions"][:index + 1]
+        ):
+            handoff_commits.append(commit)
+    if len(handoff_commits) != 1:
         raise FallbackError("existing fallback journal is not committed by its handoff")
     descriptor, temporary_index = tempfile.mkstemp(prefix=".fallback-index.")
     os.close(descriptor)
@@ -428,22 +462,22 @@ def recover(args):
     try:
         committed = git(repo, "show", f"HEAD:{relative}")
         journal = json.loads(committed)
-        approval = journal["revisions"][-1]["body"]["approval_receipt"]
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         return {
             "recovered": False,
             "schema": "ticket-model-fallback-recovery/v1",
         }
-    if not isinstance(approval, dict):
-        raise FallbackError("committed fallback approval receipt is malformed")
-    result = recover_applied(args, approval)
-    if result is None:
-        return {
-            "recovered": False,
-            "schema": "ticket-model-fallback-recovery/v1",
-        }
-    result["approval_receipt"] = approval
-    return result
+    for revision in reversed(journal.get("revisions", [])):
+        approval = revision.get("body", {}).get("approval_receipt")
+        if isinstance(approval, dict):
+            result = recover_applied(args, approval)
+            if result is not None:
+                result["approval_receipt"] = approval
+                return result
+    return {
+        "recovered": False,
+        "schema": "ticket-model-fallback-recovery/v1",
+    }
 
 
 def apply_result(args, approval, result):
@@ -507,13 +541,14 @@ def qualification_apply(args):
                 f"HEAD:factory/route-plans/{args.ticket}.json",
             )
         )
-        approval = journal["revisions"][-1]["body"]["approval_receipt"]
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
-        approval = None
-    if isinstance(approval, dict):
-        recovered = recover_applied(args, approval)
-        if recovered is not None:
-            return recovered
+        journal = {}
+    for revision in reversed(journal.get("revisions", [])):
+        approval = revision.get("body", {}).get("approval_receipt")
+        if isinstance(approval, dict):
+            recovered = recover_applied(args, approval)
+            if recovered is not None:
+                return recovered
     result = calculate(
         args, secrets.token_hex(16),
         migrate_legacy=True,

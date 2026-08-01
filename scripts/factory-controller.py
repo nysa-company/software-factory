@@ -1313,7 +1313,15 @@ class Controller:
                 else None
             )
             if terminal is not None:
-                claim["status"] = "blocked"
+                claim["status"] = (
+                    "running"
+                    if (
+                        self.qualification
+                        and terminal.get("role_exit") == "provider_failed"
+                        and terminal.get("route_id", "").startswith("cursor-")
+                    )
+                    else "blocked"
+                )
             else:
                 claim.update(receipt="", role="", status="claimed")
                 claim.pop("budget_sha256", None)

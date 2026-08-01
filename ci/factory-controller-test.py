@@ -2278,6 +2278,60 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.read(passport_path)["factory_sha"], self.release.name
         )
 
+    def test_successor_upgrade_reopens_qualification_cursor_failure(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "mode": "successor", "tickets": ["T-110"],
+        }
+        old_factory = "b" * 40
+        receipt = "c" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "d" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-provider-upgrade"),
+        }
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        passport_path = passports / "T-110.json"
+        CONTROL.write(passport_path, {"factory_sha": old_factory})
+        (self.product / "factory/runs/provider-failure.meta").write_text(
+            "run_id=provider-failure\n"
+            "phase=completed\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            "route_id=cursor-gpt\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=124\n"
+            "role_exit=provider_failed\n"
+            f"kit_sha={old_factory}\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+
+        def migrate(_claim, _publication):
+            passport = CONTROL.read(passport_path)
+            passport["factory_sha"] = self.release.name
+            CONTROL.write(passport_path, passport)
+
+        controller.ticket_release_current = lambda _claim: True
+        controller.renew = lambda _claim: None
+        controller.migrate_passport = migrate
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.event = lambda *_args, **_kwargs: None
+
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "running")
+        self.assertEqual(claim["receipt"], receipt)
+        self.assertEqual(claim["role"], "builder")
+
     def test_successor_upgrade_reopens_candidate_scoped_budget(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.qualification = {

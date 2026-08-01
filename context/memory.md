@@ -2475,3 +2475,7 @@ A sealed successor may checkpoint the latest exact failed candidate before
 route migration: the failure remains bound to its old journal SHA, while the
 local successor manifest must bind the executing sealed release. The resulting
 clean handoff head is then eligible for ordinary route and passport migration.
+Recovery remains valid after that migration only when the journal suffix is
+entirely release migrations and one unique ancestor commit binds the exact
+fallback revision trailer. The upgraded claim becomes runnable with its receipt
+intact so terminal accounting finishes before the role resumes.

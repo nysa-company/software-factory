@@ -365,6 +365,33 @@ class FallbackTest(unittest.TestCase):
         })
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
 
+        route = self.repo / "factory/route-plans/T-1.json"
+        journal = json.loads(route.read_text())
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        migrated = MANAGER.migrate_v2_journal(
+            journal,
+            applied["commit_sha"],
+            "f" * 40,
+            "2026-07-18T12:02:00Z",
+            catalog,
+            routes,
+            profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(migrated) + "\n")
+        ticket = self.repo / "factory/tickets/T-1.md"
+        ticket.write_text(ticket.read_text().replace("a" * 40, "f" * 40))
+        git(self.repo, "add", "factory/route-plans/T-1.json", "factory/tickets/T-1.md")
+        git(self.repo, "commit", "-m", "migrate fallback route")
+        git(self.repo, "push", "origin", "ticket/T-1")
+
+        recovered = self.command("qualification-apply", environment={
+            "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_RELEASE_SHA": "f" * 40,
+            "FACTORY_ROOT": str(self.product),
+        })
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["commit_sha"], git(self.repo, "rev-parse", "HEAD"))
+
     def test_qualification_apply_migrates_initial_v1_plan(self):
         path = self.repo / "factory/route-plans/T-1.json"
         journal = json.loads(path.read_text())

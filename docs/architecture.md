@@ -588,6 +588,12 @@ successor qualification manifest must bind the executing release SHA. The
 handoff makes the cell clean before the ordinary release-migration revision;
 an unsealed, non-successor, differently headed, or differently routed recovery
 still fails closed.
+If that release-migration revision already follows the handoff when the
+controller restarts, recovery validates the complete journal, requires the
+exact fallback revision and a suffix containing only release migrations, and
+finds the unique ancestor commit carrying the fallback revision trailer. The
+successor reopens that terminal receipt as running so the ordinary finish path
+exports its charge exactly once before resuming the role.
 An exit 143 before task submission reopens only that interrupted role, and only
 after the current signed passport, clean cell, branch, and remote head agree
 exactly; every submitted or differently terminated interruption stays blocked.
