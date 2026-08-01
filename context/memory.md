@@ -2409,3 +2409,17 @@ candidate spend cannot exhaust the new candidate's cap. The runtime helper
 must authenticate the exact successor manifest and launcher Factory SHA before
 using that basis. A budget wait may reopen only across such a successor release
 migration; same-release and ordinary production budget waits remain closed.
+
+## 2026-07-31 — Decision 177: Tests-first ownership is frozen-contract scoped
+
+Category: Incident
+
+A higher numbered append-only frozen contract legitimately reopens
+Test-author ownership without invalidating successful Planner or earlier role
+evidence. Test immutability therefore resets only when one commit changes one
+canonical ticket file, adds exactly one higher numbered `Frozen contract`
+heading, and adds its matching `Freeze result — PASS`. Prose, incomplete or
+removed markers, same/older versions, and mixed commits do not reset the gate.
+Within each epoch, every test commit still precedes implementation. Never use
+the reorder helper across merge-rich or authenticated role-input history; an
+identical final tree does not preserve the exact role heads or sequencing.

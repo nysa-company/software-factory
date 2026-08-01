@@ -3722,6 +3722,47 @@ same-release refusal, and ordinary-production refusal. The budget suite's 3
 tests and controller suite's 56 tests pass. Live Reviewer continuation remains
 required.
 
+## FI-20260731-131 — Test immutability ignored frozen-contract epochs
+
+Status: Shared-path repair implemented and focused gate/reorder suite green;
+successor seal, instantiated Nysa gate proof, ordered cohort, protected CI, and
+final release transactions pending
+Priority: P0
+Area: product test immutability and authenticated repair history
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`5953b185dbe11d38d2c9828d4af26d552213532a`
+Impact: T-094 preserved and pushed its v4 Builder result, entered Review, and
+completed Reviewer run `1785553142-55592`. Required `ci` and
+`test-immutability` checks failed because v3 implementation commit `7b66d7ff`
+precedes v4 Test-author commit `be0d9d10`. Reviewer correctly requested a
+Builder fix; Builder run `1785553918-73363` proved that an append-only role
+cannot reorder authenticated input history and recorded the blocker. A second
+Reviewer admission was interrupted before submission and terminalized with
+zero progress, preventing a duplicate paid review loop. T-100 and T-093
+remained dependency-waiting.
+Evidence: contract v4 was frozen append-only in Planner commit `a44d58ec`,
+then its protected tests landed in `be0d9d10`, followed by the exact v4
+implementation correction `4e1dc4c1`. The existing gate carried one global
+`SEEN_IMPL` bit across superseded contracts. The reorder helper could make the
+final tree identical only by changing the exact input heads of later Planner,
+Test-author, Builder, and Reviewer evidence, so history rewriting was rejected.
+Root cause: tests-first ownership had no mechanical contract-epoch boundary.
+A legitimate newer frozen contract reopened Test-author semantically, while
+the gate continued treating every earlier implementation commit as current.
+Smallest repair: a commit that changes exactly one canonical ticket file, adds
+exactly one higher numbered `Frozen contract` heading, and adds its matching
+`Freeze result — PASS` begins a new tests-first epoch. Removed, repeated,
+older, mixed, prose-only, or incomplete markers do not reset the gate. The
+reorder helper shares the same classifier and refuses a required rewrite when
+merge history remains.
+Validation: the focused suite passes nine scenarios including valid v1→v2
+epoch reopening; incomplete, repeated, removed, mixed, and noncanonical-marker
+refusals; same-contract reordering; conflict abort; dirty-tree refusal; and
+exact bookkeeping exemptions. Gate and helper agree on every marker case. The
+updated gate passes the real synchronized T-094, T-100, and T-093 histories;
+the T-094 helper reports `NOTHING-TO-DO` without changing its head or tree.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

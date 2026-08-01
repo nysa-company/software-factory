@@ -292,8 +292,18 @@ same-UID token exposure remains until a broker or OS isolation is used.
 
 ## Test commit order before operator review
 
-- Notice: reviewer approved but CI fails the test-immutability gate because test commits came after implementation.
-- Do: ensure `scripts/reorder-test-fixes.sh` is present (branch `kit/reorder-test-fixes` in the kit repo). The dispatcher runs it at AWAIT-OPERATOR before opening the PR. If the script is missing, merge or cherry-pick it from that branch first.
+- Notice: a newly frozen numbered contract may legitimately reopen
+  Test-author ownership after implementation under the superseded contract.
+- Do: update the instantiated product gate from the certified Factory template
+  and verify the exact contract-freeze commit starts one new epoch. Preserve
+  the append-only role-input history; do not reorder across Planner,
+  Test-author, Builder, or Reviewer evidence.
+- Notice: within one unchanged contract epoch, reviewer-requested test commits
+  after implementation still fail the test-immutability gate.
+- Do: ensure `scripts/reorder-test-fixes.sh` is present. Use it only on a
+  linear same-contract tail before publication and only when its final tree is
+  byte-identical; a merge-rich or already authenticated role history is an
+  escalation, not force-push authority.
 - Don't: waive the immutability gate or ask the builder to edit tests post-implementation.
 
 ## Parallel kit work while production is running

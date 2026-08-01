@@ -8,8 +8,9 @@
 #   mixing both fails: that is a builder bundling test edits with code.
 #
 #   Rule 2 — order: every test commit must precede every implementation
-#   commit on the branch. Tests are authored first and frozen; any test
-#   change after implementation started fails the gate.
+#   commit in its frozen-contract epoch. A later, append-only numbered frozen
+#   contract reopens Test-author ownership; prose or an incomplete marker does
+#   not. Within each epoch, tests remain frozen once implementation starts.
 #
 # A builder pushing a late test-only commit is caught by Rule 2. The reviewer
 # additionally verifies session/PR provenance of the test commits.
@@ -32,6 +33,35 @@ EXEMPT_PATHS="${EXEMPT_PATHS:-factory/ conformance/factory/ .gitignore context/m
 FAIL=0
 SEEN_IMPL=0
 
+contract_epoch_reset() { # commit -> 0 only for one append-only frozen contract
+  local commit="$1" files ticket diff versions passes version pass prior_max
+  files="$(git diff-tree --no-commit-id --name-only -r "$commit")"
+  [[ "$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] ||
+    return 1
+  ticket="$files"
+  [[ "$ticket" =~ ^(factory|conformance/factory)/tickets/T-[^/]+\.md$ ]] ||
+    return 1
+  diff="$(git diff --no-ext-diff --unified=0 "$commit^" "$commit" -- "$ticket")" ||
+    return 1
+  versions="$(printf '%s\n' "$diff" | sed -n \
+    's/^+## Frozen contract — version \([1-9][0-9]*\)$/\1/p')"
+  passes="$(printf '%s\n' "$diff" | sed -n \
+    's/^+- \*\*Freeze result — PASS\.\*\* Contract version \([1-9][0-9]*\) is frozen\.$/\1/p')"
+  [[ "$(printf '%s\n' "$versions" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 &&
+     "$(printf '%s\n' "$passes" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] ||
+    return 1
+  version="$versions"; pass="$passes"
+  [[ "$version" == "$pass" ]] || return 1
+  if printf '%s\n' "$diff" | grep -Eq \
+      '^-(## Frozen contract — version [1-9][0-9]*|- \*\*Freeze result — PASS\.\*\* Contract version [1-9][0-9]* is frozen\.)$'; then
+    return 1
+  fi
+  prior_max="$(git show "$commit^:$ticket" 2>/dev/null | sed -n \
+    's/^## Frozen contract — version \([1-9][0-9]*\)$/\1/p' | sort -n | tail -1)"
+  prior_max="${prior_max:-0}"
+  [[ "$version" -gt "$prior_max" ]]
+}
+
 is_exempt() { # path -> 0 if under any exempt prefix
   local f="$1" p
   for p in $EXEMPT_PATHS; do
@@ -47,6 +77,9 @@ is_exempt() { # path -> 0 if under any exempt prefix
 # oldest → newest, so ordering can be checked in one pass
 for COMMIT in $(git rev-list --reverse "$BASE_REF"..HEAD); do
   MSG="$(git log -1 --format=%s "$COMMIT")"
+  if contract_epoch_reset "$COMMIT"; then
+    SEEN_IMPL=0
+  fi
   ALL_FILES=""
   while IFS= read -r F; do
     [[ -z "$F" ]] && continue

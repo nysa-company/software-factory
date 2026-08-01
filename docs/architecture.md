@@ -216,6 +216,12 @@ release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-rea
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
+The product test-immutability gate treats one append-only higher numbered
+frozen contract plus its exact PASS marker as a new tests-first epoch. That
+keeps authenticated role-input history append-only when Planner legitimately
+reopens Test-author ownership. Same-contract late tests may use the reorder
+helper only on a linear unpublished tail; merge-rich or authenticated history
+must not be rewritten.
 Certification and every later receipt validation require that installed trust
 root to be byte-identical to the candidate release's launcher. A release whose
 launcher changed must therefore be explicitly bootstrapped before
