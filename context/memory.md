@@ -2372,3 +2372,15 @@ claim cache. A release migration now retains any receipt with a unique terminal
 manifest and leaves it blocked for the next exact recovery pass. Success goes to
 terminal export, recognized failure goes to its typed recovery, and unknown
 failure stays blocked. Only a receipt with no terminal evidence may be cleared.
+
+## 2026-07-31 — Decision 174: Qualification restart proof is candidate-scoped
+
+Category: Incident
+
+Canonical takeover state can retain restart markers from earlier qualification
+candidates. A marker's existence cannot prove that the currently sealed
+Factory crossed its mandatory controller restart. Restart-boundary and
+recovered markers are therefore keyed by the exact candidate SHA and must
+contain exactly that Factory SHA, the controller-event schema, and the sorted
+authorized qualification tickets. Legacy markers are ignored, while a
+malformed marker for the current candidate fails closed.

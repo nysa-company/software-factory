@@ -3606,6 +3606,40 @@ proves a migrated history-rewrite failure keeps its receipt and role for the
 successor recovery pass. The one legacy claim whose cache was cleared is
 restored from its exact immutable manifest before the next sealed successor.
 
+## FI-20260731-128 — Qualification restart proof was not candidate-scoped
+
+Status: Shared-path repair implemented and focused controller suite green;
+successor seal, live restart proof, ordered cohort, protected CI, and final
+release transactions pending
+Priority: P0
+Area: sealed qualification restart recovery
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`134976c10030c20de20a08bbe34c656112d13751`
+Impact: after all three revision-35 routes and passports named the candidate,
+the controller found `qualification-restart-boundary.json` and
+`qualification-recovered.json` from Factory `5f32510` in canonical takeover
+state. It treated existence alone as current proof and could have entered the
+cohort without demonstrating the required restart under `134976c`. The
+controller was stopped before any provider submission; the three branches,
+passports, charges, and production installation remained unchanged.
+Evidence: both legacy markers authenticated Factory `5f32510` and the exact
+three tickets while the sealed activation and qualification manifest bound
+Factory `134976c`. No candidate-scoped restart or recovered marker existed.
+Root cause: qualification markers had fixed filenames and reads checked only
+filesystem existence. Their contents were never compared with the active
+release or authorized ticket set.
+Smallest repair: restart-boundary and recovered markers now include the exact
+candidate SHA in their filename and validate an exact value containing the
+current Factory SHA, event schema, and sorted qualification ticket set. Legacy
+markers are ignored; a malformed current-candidate marker fails closed.
+Validation: the controller regression preloads both valid-looking legacy
+markers from another release, proves the current candidate still returns
+`restart_required`, and proves the second invocation writes and consumes only
+the current candidate's exact boundary and recovery markers. All 55 controller
+tests pass. Live successor replay and final qualification reduction remain
+required before closure.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

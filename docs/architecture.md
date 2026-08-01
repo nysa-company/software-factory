@@ -447,7 +447,10 @@ controller state, route state, and provider accounting to the canonical owner-on
 installed and sealed launchers therefore contend on the same reconciliation
 lock; once protected product main names the candidate pin, the installed old
 launcher also fails closed on that pin. This is one authoritative ticket
-history, not copied sandbox state. A takeover admits one frozen candidate. If
+history, not copied sandbox state. The mandatory controller restart boundary
+and its recovered proof are keyed by the frozen candidate SHA and validate the
+exact qualification ticket set; a marker from an earlier candidate cannot
+satisfy either boundary. A takeover admits one frozen candidate. If
 that candidate exposes a semantic defect after authenticating its migrations,
 the replacement uses a new qualification root while retaining the installed
 production source in the manifest; preparation and final reduction require the

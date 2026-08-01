@@ -308,6 +308,29 @@ class Controller:
             os.fsync(stream.fileno())
         return True
 
+    def qualification_marker(self, name: str, create: bool = False) -> bool:
+        if self.qualification is None:
+            raise ControllerError("qualification marker requires qualification")
+        expected = {
+            "factory_sha": self.release_path.name,
+            "schema": EVENT_SCHEMA,
+            "tickets": sorted(self.qualification["tickets"]),
+        }
+        scoped = f"{name}-{self.release_path.name}"
+        path = self.state / f"{scoped}.json"
+        if not path.exists():
+            if not create:
+                return False
+            if self.marker(scoped, expected):
+                return True
+        try:
+            value = read(path)
+        except (json.JSONDecodeError, OSError) as error:
+            raise ControllerError("qualification marker is invalid") from error
+        if value != expected:
+            raise ControllerError("qualification marker is invalid")
+        return True
+
     def read_capacity(self) -> int:
         values = re.findall(
             r"^(?:export\s+)?MAX_CONCURRENT_TICKETS\s*=\s*['\"]?([0-9]+)['\"]?\s*$",
@@ -2427,17 +2450,18 @@ class Controller:
         except ControllerError as error:
             self.event("admission_blocked", error=str(error))
             claims = existing
-        if self.qualification and not self.marker("qualification-restart-boundary"):
+        if (
+            self.qualification
+            and not self.qualification_marker("qualification-restart-boundary")
+        ):
             active = sorted(
                 item["ticket"] for item in claims if self.runnable(item)
             )
             target = self.qualification["target_done"]
             if len(active) == target:
-                self.marker("qualification-restart-boundary", {
-                    "factory_sha": self.qualification["factory_sha"],
-                    "schema": EVENT_SCHEMA,
-                    "tickets": active,
-                })
+                self.qualification_marker(
+                    "qualification-restart-boundary", create=True,
+                )
                 self.event("restart_boundary", tickets=active)
                 return {
                     "active": target,
@@ -2453,19 +2477,15 @@ class Controller:
             }
         if (
             self.qualification
-            and not self.marker("qualification-recovered")
-            and self.marker("qualification-restart-boundary")
+            and not self.qualification_marker("qualification-recovered")
+            and self.qualification_marker("qualification-restart-boundary")
         ):
             recovered = sorted(
                 item["ticket"] for item in existing if self.runnable(item)
             )
             if recovered != sorted(self.qualification["tickets"]):
                 raise ControllerError("qualification restart did not recover every target ticket")
-            self.marker("qualification-recovered", {
-                "factory_sha": self.qualification["factory_sha"],
-                "schema": EVENT_SCHEMA,
-                "tickets": recovered,
-            })
+            self.qualification_marker("qualification-recovered", create=True)
             self.event("controller_recovered", tickets=recovered)
 
         results: dict[str, dict[str, str]] = {}

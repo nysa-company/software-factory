@@ -332,6 +332,17 @@ class FactoryControllerTest(unittest.TestCase):
             }),
             encoding="utf-8",
         )
+        stale = {
+            "factory_sha": "b" * 40,
+            "schema": CONTROL.EVENT_SCHEMA,
+            "tickets": tickets,
+        }
+        for name in (
+            "qualification-restart-boundary", "qualification-recovered",
+        ):
+            (self.state / f"{name}.json").write_text(
+                json.dumps(stale), encoding="utf-8",
+            )
         first = CONTROL.Controller(self.args)
         values = []
         for number, ticket in enumerate(tickets, 1):
@@ -347,6 +358,17 @@ class FactoryControllerTest(unittest.TestCase):
             })
         first.json_call = lambda *_args, **_kwargs: values.pop(0)
         self.assertEqual(first.reconcile()["status"], "restart_required")
+        current_boundary = self.state / (
+            f"qualification-restart-boundary-{'a' * 40}.json"
+        )
+        self.assertEqual(
+            json.loads(current_boundary.read_text(encoding="utf-8")),
+            {
+                "factory_sha": "a" * 40,
+                "schema": CONTROL.EVENT_SCHEMA,
+                "tickets": tickets,
+            },
+        )
 
         second = CONTROL.Controller(self.args)
         second.pin_routes = lambda _claims: []
@@ -361,6 +383,9 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertIn("restart_boundary", {item["event"] for item in events})
         self.assertIn("controller_recovered", {item["event"] for item in events})
+        self.assertTrue(
+            (self.state / f"qualification-recovered-{'a' * 40}.json").is_file()
+        )
 
     def test_three_ticket_qualification_parks_an_excluded_claim(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]
