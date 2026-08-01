@@ -328,6 +328,15 @@ The focused deterministic suite enumerates every `RUN` and `FIX` role from
 every lifecycle state with mocked role work. It asserts the exact forward or
 repair path and the forbidden backward edges in seconds, before a sealed lane
 spends time on a real provider task.
+Before interpreting any transition, the controller validates the complete
+state-machine envelope: schema, status, ticket, action, detail, receipt digest,
+typed stage, and exact stage-to-role mapping. Any mutation blocks and releases
+the lease before provider or publication work.
+Linear reconciliation retries only rate limits and transient server responses
+(`429`, `500`, `502`, `503`, and `504`) at the HTTP boundary, at most twice.
+`Retry-After` is clamped to 0 through 30 seconds; missing or malformed values
+use bounded exponential backoff. Semantic GraphQL errors remain fail-closed for
+the next reconciliation cycle.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.

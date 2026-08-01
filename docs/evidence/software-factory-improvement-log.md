@@ -4057,6 +4057,33 @@ A 48-case mocked role/state matrix now enumerates all six roles under both
 exact multi-hop, same-state, repair, and forbidden-backward edge in seconds
 before live role execution.
 
+The broader focused fault pass also exposed a test-harness boundary: the real
+oversized-output terminalization regression completes in about 24 seconds when
+isolated but exceeded its 30-second caller timeout under parallel suite load.
+The production output limit, hashing, conservative accounting, and cleanup are
+unchanged. Only the regression harness timeout is raised to 90 seconds so the
+same multi-megabyte fail-closed proof remains reliable under bounded parallel
+execution.
+
+Static cross-layer review found that ordinary reconciliation trusted the
+state-machine's decoded JSON fields independently, while only the maintenance
+boundary checked their semantic agreement. A syntactically valid but mutated
+schema, ticket, action, detail, receipt, stage, or role could therefore reach a
+provider or publication helper. The controller now applies the complete typed
+envelope check before any side effect in every mode. A ten-mutation matrix
+proves each mismatch blocks and releases the lease before provider or
+publication execution; all 64 focused controller tests remain green.
+
+The mocked Linear pass covered 42 cases after adding transient transport
+faults. The client previously retried only `429`; a transient `503` deferred
+the whole sync cycle, while a malformed `Retry-After` raised during error
+handling. It now retries only typed transient statuses (`429`, `500`, `502`,
+`503`, `504`) within the existing three-attempt bound and clamps delay to
+0–30 seconds, using exponential fallback for missing or malformed headers.
+Mocked `503`, malformed, negative, and extreme delay cases pass alongside
+illegal-state restoration, full pagination, duplicate refusal, lock
+contention, failed writes, approval ingestion, and repeated-cycle idempotence.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

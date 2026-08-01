@@ -953,6 +953,54 @@ class LinearSyncTest(unittest.TestCase):
             self.assertEqual(LINEAR.gql("key", "{ ok }"), {"ok": True})
         self.assertEqual(request.call_count, 2)
 
+    def test_graphql_retries_transient_server_failure(self):
+        unavailable = urllib.error.HTTPError(
+            LINEAR.API_URL,
+            503,
+            "service unavailable",
+            {},
+            None,
+        )
+        with (
+            patch.object(
+                LINEAR.urllib.request,
+                "urlopen",
+                side_effect=[unavailable, FakeResponse()],
+            ) as request,
+            patch.object(LINEAR.time, "sleep") as sleep,
+        ):
+            self.assertEqual(LINEAR.gql("key", "{ ok }"), {"ok": True})
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_graphql_uses_bounded_backoff_for_malformed_retry_after(self):
+        for value, expected in (
+            ("not-a-number", 1),
+            ("-20", 0),
+            ("999999", 30),
+        ):
+            with self.subTest(retry_after=value):
+                limited = urllib.error.HTTPError(
+                    LINEAR.API_URL,
+                    429,
+                    "rate limited",
+                    {"Retry-After": value},
+                    None,
+                )
+                with (
+                    patch.object(
+                        LINEAR.urllib.request,
+                        "urlopen",
+                        side_effect=[limited, FakeResponse()],
+                    ) as request,
+                    patch.object(LINEAR.time, "sleep") as sleep,
+                ):
+                    self.assertEqual(
+                        LINEAR.gql("key", "{ ok }"), {"ok": True}
+                    )
+                self.assertEqual(request.call_count, 2)
+                sleep.assert_called_once_with(expected)
+
 
 def replace_state(text, state):
     return LINEAR.replace_field(text, "State", state)

@@ -182,9 +182,14 @@ def gql(key, query, variables=None):
                 raise RuntimeError(f"GraphQL errors: {data['errors']}")
             return data["data"]
         except urllib.error.HTTPError as error:
-            if error.code == 429 and attempt < 2:
-                wait = int(error.headers.get("Retry-After", "10"))
-                log(f"rate limited, backing off {wait}s")
+            if error.code in {429, 500, 502, 503, 504} and attempt < 2:
+                raw_wait = error.headers.get("Retry-After")
+                try:
+                    wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
+                except (TypeError, ValueError):
+                    wait = 2 ** attempt
+                wait = min(max(wait, 0), 30)
+                log(f"Linear HTTP {error.code}, backing off {wait}s")
                 time.sleep(wait)
                 continue
             detail = error.read().decode(errors="replace")

@@ -2591,3 +2591,25 @@ the Review-to-Building repair edge, no-op same-state replay, and forbidden
 backward transitions. Role work is mocked; the real typed state-machine logic
 remains under test. Known interruption, restart, accounting, dependency, and
 publication faults remain covered by the focused controller composite replay.
+
+## 2026-08-01 — Decision 189: Validate transition envelopes before side effects
+
+Category: Trust boundary
+
+The controller must authenticate the semantic shape of every state-machine
+result before provider, GitHub, Railway, attestation, or publication work. The
+schema, status, ticket, action, detail, receipt digest, typed stage, and exact
+stage-to-role mapping must all agree. A malformed or mismatched envelope blocks
+and releases the ticket lease; maintenance and ordinary reconciliation use the
+same validation rule.
+
+## 2026-08-01 — Decision 190: Linear transport retries are typed and bounded
+
+Category: Reliability
+
+The Linear synchronizer may retry `429`, `500`, `502`, `503`, and `504`
+responses within one cycle, with no more than three total attempts. A valid
+`Retry-After` is clamped to 0–30 seconds; a missing or malformed value uses
+bounded exponential backoff. GraphQL semantic errors, malformed responses, and
+other HTTP failures remain fail-closed and are retried only by the next normal
+sync cycle. Repeated successful cycles must remain idempotent.

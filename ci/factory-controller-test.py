@@ -42,6 +42,21 @@ ATTEST = importlib.util.module_from_spec(ATTEST_SPEC)
 ATTEST_SPEC.loader.exec_module(ATTEST)
 
 
+def state_transition(
+    stage: str, receipt: str = "b" * 64, ticket: str = "T-110"
+) -> dict:
+    return {
+        "action": stage.partition(" ")[0],
+        "detail": stage.partition(" ")[2] or None,
+        "receipt": receipt,
+        "role": STATE.stage_role(stage),
+        "schema": "nysa.software-factory.state-machine/v1",
+        "stage": stage,
+        "status": "ok",
+        "ticket": ticket,
+    }
+
+
 class FactoryControllerTest(unittest.TestCase):
     def test_launch_agent_does_not_throttle_bounded_provider_probes(self) -> None:
         template = ROOT / "scripts/launchd/com.factory.controller.plist.template"
@@ -742,11 +757,7 @@ class FactoryControllerTest(unittest.TestCase):
         def json_call(*args, **kwargs):
             calls.append((args, kwargs))
             if args[0] == "state-machine":
-                return {
-                    "receipt": "b" * 64,
-                    "role": "builder",
-                    "stage": "FIX builder",
-                }
+                return state_transition("FIX builder")
             if args[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             raise AssertionError(args)
@@ -769,6 +780,85 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(len(state_machine_calls), 1)
         self.assertIn("timeout", state_machine_calls[0][1])
         self.assertIsNone(state_machine_calls[0][1]["timeout"])
+
+    def test_state_machine_transition_envelope_mutations_fail_before_provider(
+        self,
+    ) -> None:
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        valid = {
+            "action": "FIX",
+            "detail": "builder",
+            "receipt": "b" * 64,
+            "role": "builder",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "stage": "FIX builder",
+            "status": "ok",
+            "ticket": "T-110",
+        }
+        cases = {
+            "schema": {**valid, "schema": "wrong"},
+            "status": {**valid, "status": "error"},
+            "ticket": {**valid, "ticket": "T-111"},
+            "action": {**valid, "action": "RUN"},
+            "detail": {**valid, "detail": "narrator"},
+            "receipt": {**valid, "receipt": "not-a-digest"},
+            "empty-stage": {**valid, "stage": "", "action": "", "detail": None},
+            "unknown-stage": {
+                **valid, "stage": "GARBAGE", "action": "GARBAGE",
+                "detail": None, "role": None,
+            },
+            "role-stage-mismatch": {**valid, "role": "narrator"},
+            "non-role-has-role": {
+                **valid,
+                "action": "AWAIT-OPERATOR",
+                "detail": "product decision required",
+                "role": "builder",
+                "stage": "AWAIT-OPERATOR product decision required",
+            },
+        }
+
+        for name, transition in cases.items():
+            with self.subTest(mutation=name):
+                controller = CONTROL.Controller(self.args)
+                claim = {
+                    "branch": "ticket/T-110",
+                    "lease": "a" * 64,
+                    "priority": "normal",
+                    "publication_lease": "",
+                    "receipt": "",
+                    "role": "",
+                    "schema": CONTROL.CLAIM_SCHEMA,
+                    "status": "claimed",
+                    "ticket": "T-110",
+                    "worktree": str(cell),
+                }
+                controller.ensure_lease = lambda *_args: None
+                controller.finish_pending_run = lambda _claim: True
+                controller.refresh_dependency_tracking = lambda _claim: True
+                controller.json_call = lambda *_args, **_kwargs: transition
+                controller.withdraw_publication = lambda *_args: None
+                controller.release_ticket_lease = lambda item: item.update(
+                    lease="", lease_released=True
+                )
+                controller.run_role = lambda *_args: self.fail(
+                    f"{name} reached provider execution"
+                )
+                controller.ticket_pr = lambda *_args: self.fail(
+                    f"{name} reached publication execution"
+                )
+
+                result = controller.reconcile_ticket(claim)
+
+                self.assertEqual(result["status"], "error")
+                self.assertEqual(
+                    result["error"],
+                    "state-machine returned invalid transition evidence",
+                )
+                self.assertEqual(claim["status"], "blocked")
+                self.assertTrue(claim["lease_released"])
 
     def test_concurrent_tickets_share_one_batch_readiness_probe(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -2358,11 +2448,9 @@ class FactoryControllerTest(unittest.TestCase):
 
         def json_call(*args, **_kwargs):
             if args[0] == "state-machine":
-                return {
-                    "receipt": "b" * 64,
-                    "role": None,
-                    "stage": "COMPLETE attested Done is on protected main",
-                }
+                return state_transition(
+                    "COMPLETE attested Done is on protected main"
+                )
             if args[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             return {}
@@ -3419,11 +3507,7 @@ class FactoryControllerTest(unittest.TestCase):
         def json_call(*args, **_kwargs):
             calls.append(args)
             if args[0] == "state-machine":
-                return {
-                    "receipt": receipt,
-                    "role": None,
-                    "stage": stage,
-                }
+                return state_transition(stage, receipt)
             if args[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             if args[0] == "ticket-attest":
@@ -3494,7 +3578,7 @@ class FactoryControllerTest(unittest.TestCase):
         def json_call(*args, **_kwargs):
             calls.append(args)
             if args[0] == "state-machine":
-                return {"receipt": "b" * 64, "role": None, "stage": stage}
+                return state_transition(stage)
             if args[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             if args[0] == "release":
@@ -4008,19 +4092,14 @@ class FactoryControllerTest(unittest.TestCase):
             "worktree": str(cell),
         }
         stages = iter((
-            {
-                "receipt": "b" * 64,
-                "role": None,
-                "stage": "AWAIT-OPERATOR Linear approval observed",
-            },
-            {
-                "receipt": "c" * 64,
-                "role": None,
-                "stage": (
-                    "AWAIT-MERGE approval attested; "
-                    "protected auto-merge request pending"
-                ),
-            },
+            state_transition(
+                "AWAIT-OPERATOR Linear approval observed", "b" * 64
+            ),
+            state_transition(
+                "AWAIT-MERGE approval attested; "
+                "protected auto-merge request pending",
+                "c" * 64,
+            ),
         ))
         heads = iter(("d" * 40, "e" * 40))
         calls = []
@@ -4134,7 +4213,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         def json_call(*arguments, **_kwargs):
             if arguments[0] == "state-machine":
-                return {"receipt": receipt, "role": None, "stage": stage}
+                return state_transition(stage, receipt)
             if arguments[0] == "ticket-attest":
                 self.assertIn("dependency-refresh", arguments)
                 return next(results)
@@ -4208,7 +4287,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         def json_call(*arguments, **_kwargs):
             if arguments[0] == "state-machine":
-                return {"receipt": receipt, "role": None, "stage": stage}
+                return state_transition(stage, receipt)
             if arguments[0] == "ticket-attest":
                 return {
                     "action": "dependency-conflict-refresh",
@@ -4392,11 +4471,9 @@ class FactoryControllerTest(unittest.TestCase):
         def json_call(*arguments, **_kwargs):
             calls.append(arguments[:2])
             if arguments[0] == "state-machine":
-                return {
-                    "receipt": "b" * 64,
-                    "role": None,
-                    "stage": "AWAIT-OPERATOR product decision required",
-                }
+                return state_transition(
+                    "AWAIT-OPERATOR product decision required"
+                )
             if arguments[:2] == ("publication", "withdraw"):
                 return {"status": "withdrawn"}
             raise AssertionError(arguments)
@@ -4443,11 +4520,9 @@ class FactoryControllerTest(unittest.TestCase):
                 }
             if arguments[0] == "state-machine":
                 self.assertEqual(arguments[4], "b" * 64)
-                return {
-                    "receipt": "c" * 64,
-                    "role": None,
-                    "stage": "AWAIT-OPERATOR product decision required",
-                }
+                return state_transition(
+                    "AWAIT-OPERATOR product decision required", "c" * 64
+                )
             if arguments[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             raise AssertionError(arguments)

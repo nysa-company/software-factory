@@ -43,6 +43,41 @@ def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+def valid_transition_evidence(value: dict[str, Any], ticket: str) -> bool:
+    stage = value.get("stage")
+    if not isinstance(stage, str) or not stage:
+        return False
+    runnable = re.fullmatch(
+        r"(?:RUN|FIX) "
+        r"(planner|spec-linter|test-author|builder|reviewer|narrator)",
+        stage,
+    )
+    non_role = (
+        stage.startswith("AWAIT-OPERATOR ")
+        or stage.startswith("AWAIT_DEPENDENCY ")
+        or stage.startswith("AWAIT_BUDGET ")
+        or stage.startswith("COMPLETE ")
+        or stage.startswith("ESCALATE ")
+        or stage.startswith("REFUSE ")
+        or stage.startswith((
+            "AWAIT-MERGE approval attested; protected auto-merge request pending",
+            "AWAIT-MERGE protected auto-merge requested",
+            "AWAIT-MERGE closeout auto-merge pending",
+        ))
+    )
+    expected_role = runnable[1] if runnable else None
+    return not any((
+        not DIGEST.fullmatch(value.get("receipt", "")),
+        value.get("schema") != "nysa.software-factory.state-machine/v1",
+        value.get("status") != "ok",
+        value.get("ticket") != ticket,
+        value.get("action") != stage.partition(" ")[0],
+        value.get("detail") != (stage.partition(" ")[2] or None),
+        not (runnable or non_role),
+        value.get("role") != expected_role,
+    ))
+
+
 def safe_directory(path: Path, create: bool = False) -> Path:
     if create:
         path.mkdir(mode=0o700, parents=False, exist_ok=True)
@@ -2178,57 +2213,17 @@ class Controller:
                 "--json",
                 timeout=None,
             )
+            maintenance = (self.product / "factory/MAINTENANCE").exists()
+            if not valid_transition_evidence(transition, claim["ticket"]):
+                raise ControllerError(
+                    "maintenance boundary has invalid transition evidence"
+                    if maintenance else
+                    "state-machine returned invalid transition evidence"
+                )
             stage = transition.get("stage", "")
             receipt = transition.get("receipt", "")
             role = transition.get("role")
-            if (self.product / "factory/MAINTENANCE").exists():
-                runnable_stage = (
-                    re.fullmatch(
-                        r"(?:RUN|FIX) "
-                        r"(planner|spec-linter|test-author|builder|"
-                        r"reviewer|narrator)",
-                        stage,
-                    )
-                    if isinstance(stage, str)
-                    else None
-                )
-                non_role_stage = (
-                    isinstance(stage, str)
-                    and (
-                        stage.startswith("AWAIT-OPERATOR ")
-                        or stage.startswith("AWAIT_DEPENDENCY ")
-                        or stage.startswith("AWAIT_BUDGET ")
-                        or stage.startswith("COMPLETE ")
-                        or stage.startswith("ESCALATE ")
-                        or stage.startswith("REFUSE ")
-                        or stage.startswith((
-                            "AWAIT-MERGE approval attested; "
-                            "protected auto-merge request pending",
-                            "AWAIT-MERGE protected auto-merge requested",
-                            "AWAIT-MERGE closeout auto-merge pending",
-                        ))
-                    )
-                )
-                expected_role = (
-                    runnable_stage[1] if runnable_stage else None
-                )
-                if (
-                    not isinstance(stage, str)
-                    or not stage
-                    or not DIGEST.fullmatch(receipt)
-                    or transition.get("schema")
-                    != "nysa.software-factory.state-machine/v1"
-                    or transition.get("status") != "ok"
-                    or transition.get("ticket") != claim["ticket"]
-                    or transition.get("action") != stage.partition(" ")[0]
-                    or transition.get("detail")
-                    != (stage.partition(" ")[2] or None)
-                    or not (runnable_stage or non_role_stage)
-                    or role != expected_role
-                ):
-                    raise ControllerError(
-                        "maintenance boundary has invalid transition evidence"
-                    )
+            if maintenance:
                 self.event(
                     "stage_resolution_paused",
                     claim["ticket"],
