@@ -140,6 +140,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   later Narrator must also belong to the receipt-bound old head; earlier
   discarded-lineage rows remain auditable but do not disqualify a later valid
   pair. Unknown and semantic changes still invalidate review.
+- Contract 1.8 evidence bundles are scoped to the latest effective, non-void
+  Reviewer generation. Only successful Narrators after that Reviewer may
+  decide the bundle boundary: an unchanged generation preserves an explicit
+  `NOT APPROVABLE` result and routes to repair, while a later approved Reviewer
+  makes the older bundle and attestation stale and authorizes one fresh
+  Narrator. A rejected latest review cannot inherit an older approval, and
+  planning/build gates do not reduce later-stage generation evidence early.
 - Contract 1.8 passport export accepts a terminal receipt across one uniquely
   matching contiguous authenticated migration suffix. Every new versioned
   edge retains the raw and embedded digests of its authenticated source

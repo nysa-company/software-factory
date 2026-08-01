@@ -328,6 +328,203 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(STATE.resolve(self.args), "RUN builder")
         self.assertEqual(list(self.state_dir.glob(".role-evidence-*")), [])
 
+    def test_narrator_bundle_decisions_are_scoped_to_latest_review_generation(
+        self,
+    ) -> None:
+        release = self.root / ("c" * 40)
+        shutil.copytree(ROOT / "scripts", release / "scripts")
+        (release / "integrations/hermes").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "integrations/hermes/contract.json",
+            release / "integrations/hermes/contract.json",
+        )
+        release_tree = run(
+            "/bin/bash", "-c",
+            'source "$1"; factory_directory_tree "$2"',
+            "_", str(release / "scripts/lib/kit-pin.sh"), str(release),
+            cwd=self.root,
+        )
+        self.args.factory_sha = release.name
+        self.args.kit_dir = release
+        (self.product / "factory/KIT_PIN").write_text(
+            f"{release.name}\n", encoding="utf-8"
+        )
+        (self.product / "factory/ENVELOPE.env").write_text(
+            "PER_RUN_BUDGET_USD=2.00\n"
+            "PER_TICKET_BUDGET_USD=100.00\n"
+            "PER_RUN_MAX_TURNS=5\n"
+            "PER_RUN_TIMEOUT_MIN=1\n"
+            "DAILY_CAP_USD=300.00\n",
+            encoding="utf-8",
+        )
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text(
+            "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
+            "exit_status,run_id,provider_family,model_id,selection_reason,"
+            "cost_basis,adapter_version\n",
+            encoding="utf-8",
+        )
+        durable_ledger = self.product / "factory/ledger.csv"
+        shutil.copy2(ledger, durable_ledger)
+        secret = b"n" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        route = self.product / "factory/route-plans/T-110.json"
+        ticket = self.product / "factory/tickets/T-110.md"
+        bundle = self.product / "factory/tickets/T-110-bundle.md"
+        attestation = self.product / "factory/attestations/T-110/bundle.json"
+        prefix = ("planner", "spec-linter", "test-author", "builder")
+        valid_bundle = (
+            "# What this does\n# Preview\n# Screenshots\n"
+            "# Acceptance criteria\n# Risk\n# Cost\n# Rollback\n"
+            "Approve to merge?\n"
+        )
+        not_approvable = "NOT APPROVABLE: deployed preview is broken\n" + valid_bundle
+        invalid_bundle = valid_bundle.replace("# Cost\n", "")
+        cases = (
+            (
+                "unchanged explicit failure",
+                ("reviewer", "narrator"),
+                "reviewer round 1: APPROVE\n",
+                not_approvable,
+                False,
+                "FIX builder",
+            ),
+            (
+                "approved repair makes old failure stale",
+                ("reviewer", "narrator", "builder", "reviewer"),
+                "reviewer round 1: APPROVE\nreviewer round 2: APPROVE\n",
+                not_approvable,
+                False,
+                "RUN narrator",
+            ),
+            (
+                "fresh explicit failure returns to repair",
+                ("reviewer", "narrator", "builder", "reviewer", "narrator"),
+                "reviewer round 1: APPROVE\nreviewer round 2: APPROVE\n",
+                not_approvable,
+                False,
+                "FIX builder",
+            ),
+            (
+                "rejected repair review cannot authorize narrator",
+                ("reviewer", "narrator", "builder", "reviewer"),
+                "reviewer round 1: APPROVE\n"
+                "reviewer round 2: REQUEST CHANGES\n"
+                "reviewer round 2 FIX-OWNER: builder\n",
+                not_approvable,
+                False,
+                "FIX builder",
+            ),
+            (
+                "void duplicate reviewer preserves narrator",
+                ("reviewer", "narrator", "reviewer"),
+                "reviewer round 1: APPROVE\n"
+                "OPERATOR NOTE: reviewer run 2 void — duplicate\n",
+                not_approvable,
+                False,
+                "FIX builder",
+            ),
+            (
+                "stale valid attestation cannot bypass narrator",
+                ("reviewer", "narrator", "builder", "reviewer"),
+                "reviewer round 1: APPROVE\nreviewer round 2: APPROVE\n",
+                valid_bundle,
+                True,
+                "RUN narrator",
+            ),
+            (
+                "fresh valid bundle awaits operator",
+                ("reviewer", "narrator", "builder", "reviewer", "narrator"),
+                "reviewer round 1: APPROVE\nreviewer round 2: APPROVE\n",
+                valid_bundle,
+                False,
+                "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step",
+            ),
+            (
+                "one malformed bundle correction",
+                ("reviewer", "narrator"),
+                "reviewer round 1: APPROVE\n",
+                invalid_bundle,
+                False,
+                "RUN narrator",
+            ),
+            (
+                "malformed bundle correction exhausted",
+                ("reviewer", "narrator", "narrator"),
+                "reviewer round 1: APPROVE\n",
+                invalid_bundle,
+                False,
+                "ESCALATE evidence bundle remained invalid after one Narrator retry",
+            ),
+        )
+
+        for case_index, (
+            name, suffix, verdicts, bundle_text, has_attestation, expected,
+        ) in enumerate(cases, 1):
+            with self.subTest(name=name):
+                ticket.write_text(
+                    f"# T-110\n\nState: Review\nKit-SHA: {release.name}\n"
+                    f"SPEC-LINT: PASS\n{verdicts}",
+                    encoding="utf-8",
+                )
+                bundle.write_text(bundle_text, encoding="utf-8")
+                if has_attestation:
+                    attestation.parent.mkdir(parents=True, exist_ok=True)
+                    attestation.write_text("{}\n", encoding="utf-8")
+                elif attestation.parent.exists():
+                    shutil.rmtree(attestation.parent)
+                run("git", "add", "-A", cwd=self.product)
+                run(
+                    "git", "commit", "--allow-empty", "-qm",
+                    f"generation case {case_index}",
+                    cwd=self.product,
+                )
+                head = run("git", "rev-parse", "HEAD", cwd=self.product)
+                roles = prefix + suffix
+                records = []
+                for index, role in enumerate(roles, 1):
+                    records.append({
+                        "contract_version": "1.8.0",
+                        "factory_sha": f"{index:040x}",
+                        "head_before": head,
+                        "manifest_sha256": f"{index:064x}",
+                        "output_sha256": f"{index + 100:064x}",
+                        "role": role,
+                        "run_id": f"case-{case_index}-run-{index}",
+                        "transition_receipt_sha256": f"{index + 200:064x}",
+                    })
+                body = {
+                    "branch": "ticket/T-110",
+                    "completed_role_evidence": records,
+                    "contract_version": "1.8.0",
+                    "factory_sha": self.args.factory_sha,
+                    "head_sha": head,
+                    "project": "relay",
+                    "route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
+                    "schema": STATE.PASSPORT_SCHEMA,
+                    "ticket": "T-110",
+                }
+                signed = dict(body)
+                signed["authentication_sha256"] = hmac.new(
+                    secret, STATE.canonical(body), hashlib.sha256
+                ).hexdigest()
+                signed["passport_sha256"] = hashlib.sha256(
+                    STATE.canonical(signed)
+                ).hexdigest()
+                STATE.write_atomic(passports / "T-110.json", signed)
+                with mock.patch.dict(os.environ, {
+                    "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+                    "FACTORY_RELEASE_PATH": str(release),
+                    "FACTORY_RELEASE_TREE": release_tree,
+                    "FACTORY_LEDGER": str(ledger),
+                    "FACTORY_DURABLE_LEDGER": str(durable_ledger),
+                }):
+                    self.assertEqual(STATE.resolve(self.args), expected)
+                self.assertEqual(list(self.state_dir.glob(".role-evidence-*")), [])
+
     def test_completed_repair_stage_is_not_resolved_again(self) -> None:
         receipt = "b" * 64
         with (

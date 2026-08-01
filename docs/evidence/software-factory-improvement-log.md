@@ -4120,6 +4120,50 @@ section or introduce an equivalent compare-and-swap/per-ticket design that
 preserves operator updates, repeated-cycle idempotence, and duplicate refusal.
 The sealed `eda0811` release is not modified or restarted for this finding.
 
+## FI-20260801-137 — Stale non-approvable bundle caused a repair/review loop
+
+Status: Focused regression green; live qualification canary pending
+Priority: P0
+Area: Contract 1.8 Reviewer/Narrator evidence generation
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`eda081122a82e628c7f4e663146382155a8f0d29`
+Impact: T-094 completed a no-change Builder repair and an independent Reviewer
+round-5 `APPROVE` after the operator repaired the PR preview pairing. The
+sequencer nevertheless read the preserved older Narrator bundle beginning
+`NOT APPROVABLE:` and returned `FIX builder` again, committing
+`0e4f856df81be8c70cbfffbc638540e4b77dfeac` (`Review -> Building`). The
+qualification product entered maintenance as the redundant Builder launch
+started; the supported maintenance boundary parked it before any new provider
+attempt, role mutation, or charge completed. The earlier Narrator output and
+screenshots remain unchanged.
+Evidence: successful Narrator run `1785596620-61582` preceded later successful
+Builder and Reviewer runs, including Reviewer run `1785606996-44365` at
+deployed head `22edcfb1057681a10354bf16978416cf7c733cb5`. Reviewer reconciliation
+commit `839db6c02696bbb00878fa8fe527a252ee37412e` recorded `APPROVE`, but
+`narrator_bundle_stage` received the lifetime Narrator count and unconditionally
+routed any unattested explicit non-approvable bundle to Builder.
+Finding: a bundle is evidence for one effective Reviewer generation, not for
+the ticket lifetime. Only successful Narrators after the latest non-void
+Reviewer may decide that generation. A preserved Narrator at the end of an
+unchanged generation must not be replayed; a later effective Reviewer makes
+the old bundle and attestation stale and requires a fresh Narrator. A rejected
+latest review cannot inherit an older approval.
+Smallest repair: reduce the authenticated role sequence (with a ledger fallback
+only for older contracts) to the count of Narrators after the latest non-void
+Reviewer, and evaluate it lazily only after the planning/build/review gates.
+Keep the refresh-generation reducer intact and use the same per-generation
+count for valid, explicitly non-approvable, and structurally invalid bundles.
+Edge coverage: unchanged explicit failure, repaired and approved generation,
+fresh repeated failure, stale valid bundle, stale attestation, authenticated
+role evidence, rejected repair review, void duplicate Reviewer, bounded invalid
+bundle correction, and early-stage missing-ledger/override behavior. Live proof
+must show the repaired T-094 head reaches one new Narrator without another
+Builder/Reviewer loop before this entry closes.
+The focused state-machine suite passes 27/27, including the nine-case
+authenticated generation matrix and the existing 48-case role/state matrix;
+shell syntax, Python compilation, and diff-integrity checks are green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

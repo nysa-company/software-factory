@@ -605,6 +605,7 @@ LOCAL_P="$P"; LOCAL_SL="$SL"; LOCAL_TA="$TA"
 LOCAL_B="$B"; LOCAL_R="$R"; LOCAL_N="$N"
 CHECKPOINT_P=0; CHECKPOINT_SL=0; CHECKPOINT_TA=0
 CHECKPOINT_B=0; CHECKPOINT_R=0; CHECKPOINT_N=0
+CHECKPOINT_N_AFTER_LATEST_R=0
 CHECKPOINT_NEXT_STAGE=""
 CHECKPOINT_AWAIT_REOPENED=0
 if [[ -n "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]]; then
@@ -674,6 +675,9 @@ PY
   )" || { echo "REFUSE development checkpoint binding is invalid"; exit 1; }
   IFS=$'\t' read -r CHECKPOINT_P CHECKPOINT_SL CHECKPOINT_TA CHECKPOINT_B \
     CHECKPOINT_R CHECKPOINT_N CHECKPOINT_NEXT_STAGE <<<"$CHECKPOINT_COUNTS"
+  CHECKPOINT_N_AFTER_LATEST_R="$CHECKPOINT_N"
+  [[ "$CHECKPOINT_NEXT_STAGE" != "RUN narrator" ]] || \
+    CHECKPOINT_N_AFTER_LATEST_R=0
   P=$((P + CHECKPOINT_P)); SL=$((SL + CHECKPOINT_SL))
   TA=$((TA + CHECKPOINT_TA)); B=$((B + CHECKPOINT_B))
   R=$((R + CHECKPOINT_R)); N=$((N + CHECKPOINT_N))
@@ -791,6 +795,60 @@ VOID_COUNT="${VOID_DATA%%|*}"
 VOID_RUNS="${VOID_DATA#*|}"
 REVIEWER_RUNS=$((R - VOID_COUNT))
 
+# Evidence bundles belong to the latest effective Reviewer generation. A
+# Narrator result before a later Reviewer remains immutable history, but it
+# cannot decide the new generation. Count only successful Narrators after the
+# latest non-void Reviewer so a repaired/re-reviewed head gets exactly one
+# fresh deployed-preview pass without replaying Narrator on an unchanged
+# reviewed generation.
+narrators_after_latest_reviewer() {
+  if [[ -n "$ROLE_EVIDENCE" ]]; then
+    python3 - "$ROLE_EVIDENCE" "$VOID_RUNS" "$CHECKPOINT_R" \
+      "$CHECKPOINT_N_AFTER_LATEST_R" <<'PY'
+import json
+import sys
+
+path, ignored, imported_reviewers, imported_narrators = sys.argv[1:]
+ignored = {int(item) for item in ignored.split(",") if item}
+reviewer_ordinal = int(imported_reviewers)
+latest_reviewer = reviewer_ordinal > 0
+narrators = int(imported_narrators) if latest_reviewer else 0
+for item in json.load(open(path, encoding="utf-8"))["records"]:
+    role = item["role"]
+    if role == "reviewer":
+        reviewer_ordinal += 1
+        if reviewer_ordinal not in ignored:
+            latest_reviewer = True
+            narrators = 0
+    elif role == "narrator" and latest_reviewer:
+        narrators += 1
+print(narrators)
+PY
+    return
+  fi
+  awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
+    -v imported_reviewers="$CHECKPOINT_R" \
+    -v imported_narrators="$CHECKPOINT_N_AFTER_LATEST_R" '
+  BEGIN {
+    voids="," void_list ","
+    reviewer_ordinal=imported_reviewers
+    if (imported_reviewers>0) {
+      latest_reviewer=1
+      narrators=imported_narrators
+    }
+  }
+  NR>1 && $3==t && $9=="0" {
+    if ($4=="reviewer") {
+      reviewer_ordinal++
+      if (index(voids, "," reviewer_ordinal ",")==0) {
+        latest_reviewer=1
+        narrators=0
+      }
+    }
+    else if ($4=="narrator" && latest_reviewer) narrators++
+  }
+  END { print narrators+0 }' "$LEDGER"
+}
 if [[ "$REFRESH_ACTIVE" -eq 1 ]] &&
    { [[ "$REVIEWER_RUNS" -lt "$REFRESH_REVIEWERS" ]] ||
      [[ "$A" -lt "$REFRESH_APPROVES" ]] ||
@@ -1167,7 +1225,10 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   fi
   # A post-refresh rejection must use the ordinary fix/re-review path below;
   # an approval from the invalidated generation cannot short-circuit it.
-elif [[ "$A" -ge 1 ]]; then
+elif [[ "$A" -ge 1 &&
+        ( ( "$CONTRACT_VERSION" != "1.7.0" &&
+            "$CONTRACT_VERSION" != "1.8.0" ) ||
+          "$LATEST_VERDICT" == "APPROVE" ) ]]; then
   if [[ "$REFRESH_ACTIVE" -eq 1 &&
         "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
         "$REFRESH_PRESERVE_NARRATOR" -eq 0 ]]; then
@@ -1185,7 +1246,11 @@ elif [[ "$A" -ge 1 ]]; then
     echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
     exit 1
   fi
-  narrator_bundle_stage "$N"
+  NARRATORS_AFTER_LATEST_REVIEWER="$(narrators_after_latest_reviewer)" || {
+    echo "REFUSE latest Reviewer/Narrator generation could not be reduced"
+    exit 1
+  }
+  narrator_bundle_stage "$NARRATORS_AFTER_LATEST_REVIEWER"
   exit 0
 fi
 

@@ -2698,8 +2698,10 @@ expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for app
   "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
 
-# An explicitly non-approvable bundle routes to Builder without another
-# Narrator attempt, even when historical Narrator evidence already exists.
+# An explicitly non-approvable bundle routes to Builder without replaying
+# Narrator on the unchanged reviewed generation. A later successful Builder and
+# effective Reviewer make the old bundle stale and authorize exactly one fresh
+# Narrator pass for the newly reviewed generation.
 NOT_APPROVABLE_ROOT="$TMP/not-approvable-bundle-repair"
 mkdir -p "$NOT_APPROVABLE_ROOT/factory/tickets"
 cat > "$NOT_APPROVABLE_ROOT/factory/tickets/T-503.md" <<'TICKET'
@@ -2728,10 +2730,18 @@ Approve to merge?
 BUNDLE
 NOT_APPROVABLE_OK=1
 expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 builder >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+expect_stage "RUN reviewer" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 reviewer >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+printf 'reviewer round 2: APPROVE\n' >> \
+  "$NOT_APPROVABLE_ROOT/factory/tickets/T-503.md"
+expect_stage "RUN narrator" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 narrator >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
 ledger_row T-503 narrator >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
 expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
 [[ "$NOT_APPROVABLE_OK" -eq 1 ]] &&
-  pass "sequencer routes explicit non-approvable evidence to Builder"
+  pass "sequencer binds explicit non-approvable evidence to its review generation"
 
 # One structurally invalid, unattested bundle gets one Narrator correction.
 INVALID_BUNDLE_ROOT="$TMP/invalid-bundle-retry"
