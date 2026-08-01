@@ -245,15 +245,21 @@ def validate_takeover_product(
         )
 
     protected = "refs/remotes/origin/main"
-    protected_sha = command("git", "-C", str(product), "rev-parse", protected)
-    protected_tree = command("git", "-C", str(product), "rev-parse", f"{protected}^{{tree}}")
-    if (
-        command("git", "-C", str(source_product), "rev-parse", "HEAD") != protected_sha
-        or command("git", "-C", str(source_product), "rev-parse", "HEAD^{tree}")
-        != protected_tree
-        or active.get("product_tree") != protected_tree
-    ):
-        raise EnvironmentError("takeover source product is not exact protected main")
+    source_sha = command("git", "-C", str(source_product), "rev-parse", "HEAD")
+    source_tree = command(
+        "git", "-C", str(source_product), "rev-parse", "HEAD^{tree}"
+    )
+    if active.get("product_tree") != source_tree:
+        raise EnvironmentError("takeover source product does not match active product")
+    try:
+        command(
+            "git", "-C", str(product), "merge-base", "--is-ancestor",
+            source_sha, protected,
+        )
+    except EnvironmentError as error:
+        raise EnvironmentError(
+            "takeover protected main does not contain the active product"
+        ) from error
     try:
         command(
             "git", "-C", str(product), "merge-base", "--is-ancestor", protected, "HEAD"

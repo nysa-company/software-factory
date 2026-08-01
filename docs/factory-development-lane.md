@@ -25,8 +25,10 @@ uses the canonical drained controller passports and provider accounting in
 place under the shared lock. Its product controls may live on a clean
 local-only linked worktree of the same canonical repository: the preparer
 admits only the candidate pin, successor manifest, and dependency-only edits
-for selected tickets, all based on exact protected main. No setup pull request
-is required. A fresh development product, unrelated clone, or copied
+for selected tickets, all based on current protected main. The still-active
+source checkout may remain at an earlier protected ancestor only when its clean
+tree exactly matches the production activation. No setup pull request is
+required. A fresh development product, unrelated clone, or copied
 qualification state cannot substitute for that proof.
 
 ## Mock lifecycle

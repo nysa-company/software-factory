@@ -3773,6 +3773,35 @@ exact bookkeeping exemptions. Gate and helper agree on every marker case. The
 updated gate passes the real synchronized T-094, T-100, and T-093 histories;
 the T-094 helper reports `NOTHING-TO-DO` without changing its head or tree.
 
+## FI-20260731-132 — Qualification required protected product activation first
+
+Status: Shared-path repair implemented and focused environment suite green;
+successor seal, ordered cohort, protected CI, and final release transactions
+pending
+Priority: P0
+Area: production-successor qualification admission
+Owner: Factory
+First seen: Nysa qualification after protected control PR #305
+Impact: protected `main` advanced with the shared test-immutability policy while
+the active production checkout correctly remained unchanged. Candidate `60a2eff`
+could not prepare a successor root because takeover admission required both
+checkouts and the activation to equal current protected main. No controller,
+provider, installation, certification, promotion, or activation action ran.
+Root cause: the preparer conflated two trust facts: the product tree currently
+authenticated by production activation and the newer protected base consumed
+by the qualification control worktree. Satisfying it would have required the
+preliminary product activation that qualification exists to precede.
+Smallest repair: require the clean activated source checkout's tree to equal the
+activation record, require current protected main to contain that source commit,
+and continue requiring the qualification worktree to descend from current
+protected main with only its exact control-file allowlist. Divergent protected
+history and active-tree drift fail closed.
+Validation: the focused takeover regression now advances protected policy after
+creating the active source worktree, successfully prepares qualification, then
+separately rejects an active-tree mismatch and a protected ref that does not
+contain the active commit. The four-test environment suite is green. A new
+sealed root and live ordered cohort remain required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -438,12 +438,16 @@ For a production-successor qualification, preparation additionally requires
 a clean linked qualification worktree of the canonical product repository,
 the selected tickets' authenticated passports with an exact release-history
 suffix rooted at the installed source, a drained controller,
-and the current production provider activation. The worktree must be based on
-exact protected main and may differ only by the candidate pin, successor
+and the current production provider activation. The activated source checkout
+must be clean and match its authenticated product tree, while current protected
+main must contain that source commit. This permits shared control policy to
+advance without activating it first. The qualification worktree must be based
+on current protected main and may differ only by the candidate pin, successor
 manifest, and dependency lines of selected tickets; this local authority does
 not require a setup pull request. The sealed helper environment binds the exact
-product tree already authenticated by the owner-only qualification activation
-record. Preflight therefore requires that clean tree in this one environment;
+qualification product tree authenticated by the owner-only qualification
+activation record. Preflight therefore requires that clean tree in this one
+environment;
 an ordinary or unbound launcher continues to require a clean, current `main`
 checkout. The helper also binds the canonical live Linear map and revalidates
 it on every launch, so ticket-state

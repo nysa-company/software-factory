@@ -223,6 +223,16 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         operator_map = source_product / "factory/linear-map.json"
         ENVIRONMENT.write(operator_map, {"last_success_at": "2026-07-31T12:00:00Z"})
+        (self.product / "shared-policy.txt").write_text(
+            "protected control change\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", "shared-policy.txt")
+        run(self.product, "git", "commit", "-qm", "advance protected policy")
+        current_protected_sha = run(self.product, "git", "rev-parse", "HEAD")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            current_protected_sha,
+        )
         (self.product / "factory/KIT_PIN").write_text(
             self.sha + "\n", encoding="utf-8",
         )
@@ -338,6 +348,33 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertFalse((self.product / "factory/linear-map.json").exists())
         self.assertFalse((self.root / "provider").exists())
         self.assertFalse((self.root / "projects/relay/controller").exists())
+
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "does not match active product",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                self.product,
+                {"product_tree": "0" * 40},
+                {"tickets": tickets},
+            )
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            f"{protected_sha}^",
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "does not contain the active product",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                self.product,
+                {"product_tree": protected_tree},
+                {"tickets": tickets},
+            )
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            current_protected_sha,
+        )
 
         unrelated = self.workspace / "unrelated-product"
         shutil.copytree(self.product, unrelated, ignore=shutil.ignore_patterns(".git"))

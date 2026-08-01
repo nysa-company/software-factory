@@ -59,6 +59,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   remains fail-closed, and only the trusted wrapper pushes role commits. The
   ticket-PR boundary applies the same bounded retry to its read-only exact
   branch-head observation.
+- Production-successor qualification authenticates the clean activated product
+  tree separately from current protected main. Protected main must contain the
+  active commit, and the local qualification control worktree must be based on
+  that current protected ref with only the admitted control diff. Qualification
+  therefore never requires a preliminary product activation.
 - Reviewer terminalization normalizes exact verdict-only Markdown headings,
   exact wrapped repair-owner lines, and known Cursor background-callback
   concatenation only when every verdict and owner signal agrees. Ambiguous,
@@ -2435,3 +2440,15 @@ repair role and current blocked receipt. This permits a receipt to be rebound
 after its parent becomes passport-authenticated without treating the interim
 withdrawal as a duplicate. Two actual in-window additions still remain
 ambiguous and fail closed before provider GO.
+
+## 2026-07-31 — Decision 179: Qualification does not require preliminary activation
+
+Category: Incident
+
+Protected product policy can advance while the installed production product
+correctly remains on its last activated tree. A takeover now authenticates that
+clean source tree against the activation and requires current protected main to
+contain its commit; the qualification control worktree remains based on current
+protected main with the existing narrow diff allowlist. This removes a hidden
+certify-before-qualification loop without permitting divergent history or
+changes outside the sealed qualification tree to reach production.
