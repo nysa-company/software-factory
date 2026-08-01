@@ -729,11 +729,25 @@ if not re.search(r"approve to merge", text, re.I):
 PY
 }
 
+evidence_bundle_is_not_approvable() {
+  local bundle="$CONTENT_ROOT/factory/tickets/$TICKET-bundle.md"
+  [[ -f "$bundle" && ! -L "$bundle" ]] || return 1
+  python3 - "$bundle" <<'PY'
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+raise SystemExit(0 if text.startswith("NOT APPROVABLE:") else 1)
+PY
+}
+
 narrator_bundle_stage() {
   local narrator_runs="$1"
   local attestation="$CONTENT_ROOT/factory/attestations/$TICKET/bundle.json"
   if [[ "$narrator_runs" -eq 0 ]]; then
     echo "RUN narrator"
+  elif [[ ! -e "$attestation" && ! -L "$attestation" ]] &&
+       evidence_bundle_is_not_approvable; then
+    echo "FIX builder"
   elif [[ ! -e "$attestation" && ! -L "$attestation" ]] &&
        ! evidence_bundle_is_valid; then
     if [[ "$narrator_runs" -eq 1 ]]; then

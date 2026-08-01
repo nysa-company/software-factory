@@ -2698,7 +2698,42 @@ expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for app
   "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
 
-# One structurally invalid, unattested bundle gets one Narrator retry.
+# An explicitly non-approvable bundle routes to Builder without another
+# Narrator attempt, even when historical Narrator evidence already exists.
+NOT_APPROVABLE_ROOT="$TMP/not-approvable-bundle-repair"
+mkdir -p "$NOT_APPROVABLE_ROOT/factory/tickets"
+cat > "$NOT_APPROVABLE_ROOT/factory/tickets/T-503.md" <<'TICKET'
+# T-503
+State: Review
+reviewer round 1: APPROVE
+TICKET
+{
+  ledger_header
+  ledger_row T-503 planner
+  ledger_row T-503 test-author
+  ledger_row T-503 builder
+  ledger_row T-503 reviewer
+  ledger_row T-503 narrator
+} > "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+cat > "$NOT_APPROVABLE_ROOT/factory/tickets/T-503-bundle.md" <<'BUNDLE'
+NOT APPROVABLE: preview deployment is missing.
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
+NOT_APPROVABLE_OK=1
+expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 narrator >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+[[ "$NOT_APPROVABLE_OK" -eq 1 ]] &&
+  pass "sequencer routes explicit non-approvable evidence to Builder"
+
+# One structurally invalid, unattested bundle gets one Narrator correction.
 INVALID_BUNDLE_ROOT="$TMP/invalid-bundle-retry"
 mkdir -p "$INVALID_BUNDLE_ROOT/factory/tickets"
 cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502.md" <<'TICKET'
@@ -2715,13 +2750,11 @@ TICKET
   ledger_row T-502 narrator
 } > "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
 cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md" <<'BUNDLE'
-NOT APPROVABLE: preview deployment is missing.
 # What this does
 # Preview
 # Screenshots
 # Acceptance criteria
 # Risk
-# Cost
 # Rollback
 Approve to merge?
 BUNDLE

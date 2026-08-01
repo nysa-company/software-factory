@@ -4036,7 +4036,8 @@ controller park it once, release the ticket lease, and record the exact detail.
 Focused state-resolver and controller regressions cover this terminal path. The
 Narrator commit and screenshots remain immutable failure evidence; no Narrator
 rerun is allowed against the unchanged preview. The separate product preview
-pairing defect must route through repair before a new deployed-head proof.
+pairing defect routes directly to Builder before a new deployed-head proof;
+only malformed Narrator output consumes the bounded Narrator correction.
 
 ## Maintenance rule
 

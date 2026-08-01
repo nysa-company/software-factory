@@ -44,8 +44,10 @@ End with the single question the operator must answer: approve to merge, or send
   and accounting evidence. It verifies only the deployed preview behavior and
   captures the contract-required screenshots.
 - Begin any bundle that cannot be approved with the exact standalone prefix
-  `NOT APPROVABLE:` and the concrete reason. The trusted sequencer permits one
-  bounded Narrator retry for such a bundle and escalates a repeated failure.
+  `NOT APPROVABLE:` and the concrete reason. The trusted sequencer sends this
+  product or deployment failure to Builder without another Narrator attempt.
+  One bounded Narrator correction remains available only for malformed or
+  structurally incomplete output; a repeated malformed result escalates.
 - The bundle for `external`-labeled tickets must name the exact destination (who receives what, when).
 - A required preview that is missing or broken is not approvable and goes back
   to the Builder. Under `FACTORY_DEV_PRLESS_EVIDENCE_V1`, an explicitly

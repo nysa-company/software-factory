@@ -2555,12 +2555,13 @@ the lease instead of resolving the same stage again.
 
 Category: Incident
 
-The sequencer's second invalid or explicitly non-approvable evidence bundle is
-an expected `ESCALATE` transition, not an unknown resolver result and not
-another role retry. The typed state resolver accepts that non-role action, and
-the controller blocks the claim once, releases its ticket lease, and records
-the escalation detail. This keeps a broken preview from becoming a Narrator
-spend loop while preserving the exact failed bundle and screenshots for repair.
+The sequencer's second structurally invalid evidence bundle is an expected
+`ESCALATE` transition, not an unknown resolver result and not another role
+retry. The typed state resolver accepts that non-role action, and the controller
+blocks the claim once, releases its ticket lease, and records the escalation
+detail. An explicit `NOT APPROVABLE:` bundle represents a product or deployment
+failure and routes directly to Builder without another Narrator attempt. Both
+paths preserve the exact failed bundle and screenshots for repair.
 
 Every newly proven Factory edge case must add the smallest deterministic
 regression that reproduces its original boundary before the repair is accepted.
