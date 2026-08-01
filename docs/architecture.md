@@ -697,7 +697,10 @@ attestation commit, change only the current ticket and a newly added ordinary
 approval receipt, preserve all ticket text except the sealed
 Awaiting Approval → Approved/Linear transformation, and bind the same reviewed
 SHA, repository, branch, Kit-SHA, PR, bundle blobs, merge method, and ordered
-timestamps. `approval` consumes only a newer exact Linear
+timestamps. A later sealed successor may append a validated release-migration
+route commit and replace only the ticket's Kit-SHA; the approval and bundle
+receipts, bundle document, and all other approved ticket text remain
+byte-identical. `approval` consumes only a newer exact Linear
 Awaiting Approval → Approved overlay, commits the approval attestation, and
 requests normal protected GitHub auto-merge for that exact PR head. `done`
 requires the exact merged commit on authoritative `origin/main`, all configured

@@ -4262,10 +4262,15 @@ shared helper consumed by both ticket-PR and ticket-attest. The helper binds
 exact keys and identities, complete direct-parent topology, exact `M ticket + A
 receipt` commit shapes, ordinary blob modes, immutable bundle/route blobs,
 ordered timestamps, and the exact Awaiting Approval → Approved plus Linear
-approval ticket transformation.
-Edge coverage: ticket-PR passes 31/31, including the exact approval continuation
+approval ticket transformation. For a later sealed successor, it locates the
+unique approval-addition commit under the original Kit-SHA and admits only an
+exact validated route migration and ticket Kit-SHA replacement while holding
+the approval/bundle evidence and all other approved ticket text byte-identical.
+Edge coverage: ticket-PR passes 34/34, including the exact approval continuation
 and refusals for a tampered receipt, approval-time ticket drift, executable
-receipt, duplicate JSON keys, and an extra commit path. Ticket attestation
+receipt, duplicate JSON keys, and an extra commit path, plus acceptance of the
+exact successor route continuation and refusals for later receipt mutation or
+ticket drift. Ticket attestation
 passes 57/57 through the same helper. The helper independently validates the
 exact live T-094 approval head and reviewed SHA `22edcfb1057681a10354bf16978416cf7c733cb5`.
 Live closure requires a sealed successor to cross the approval-head PR gate,

@@ -445,8 +445,14 @@ else:
             raise ValueError(mode)
         self.commit_and_push("refresh narrator evidence")
 
-    def prepare_approval_continuation(self, mode="valid"):
-        route_plan, _ = self.prepare_route_migration()
+    def prepare_approval_continuation(self, mode="valid", successor=False):
+        route_plan, journal = self.prepare_route_migration()
+        approval_kit_sha = "d" * 40 if successor else KIT_SHA
+        if successor:
+            ticket_path = self.product / "factory/tickets/T-100.md"
+            ticket_path.write_text(ticket_path.read_text().replace(
+                f"Kit-SHA: {KIT_SHA}", f"Kit-SHA: {approval_kit_sha}", 1,
+            ))
         bundle_path = self.product / "factory/tickets/T-100-bundle.md"
         bundle_path.write_text("# Evidence bundle\n\nApprove to merge?\n")
         self.commit_and_push("record narrator bundle")
@@ -487,7 +493,7 @@ else:
             "pr_url": "https://example.invalid/pr/7",
             "reviewer_run_id": "run-5",
             "narrator_run_id": "run-6",
-            "kit_sha": KIT_SHA,
+            "kit_sha": approval_kit_sha,
             "policy_hash": "1" * 64,
             "route_plan_path": "factory/route-plans/T-100.json",
             "route_plan_blob": route_blob,
@@ -529,7 +535,7 @@ else:
             "operator_version": "2" * 64,
             "linear_updated_at": "2026-07-20T02:00:00Z",
             "observed_at": "2026-07-20T02:01:00Z",
-            "kit_sha": KIT_SHA,
+            "kit_sha": approval_kit_sha,
             "auto_merge_method": "squash",
             "attested_at": "2026-07-20T02:01:00Z",
         }
@@ -553,6 +559,7 @@ else:
         elif mode not in {"valid", "tampered-receipt", "ticket-drift"}:
             raise ValueError(mode)
         self.commit_and_push("attest Linear approval")
+        return route_plan, journal, approval_kit_sha
 
     def publication_command(self, expected=0):
         return self.command(
@@ -668,6 +675,53 @@ else:
         ready = self.publication_command()
         self.assertEqual(ready["boundary"], "publication")
         self.assertEqual(ready["status"], "ready")
+
+    def test_publication_accepts_approval_then_successor_route_migration(self):
+        route_plan, journal, prior_kit = self.prepare_approval_continuation(
+            successor=True,
+        )
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text().replace(
+            f"Kit-SHA: {prior_kit}", f"Kit-SHA: {KIT_SHA}", 1,
+        ))
+        self.append_route_migration(route_plan, journal)
+        ready = self.publication_command()
+        self.assertEqual(ready["boundary"], "publication")
+        self.assertEqual(ready["status"], "ready")
+
+    def test_publication_rejects_changed_approval_after_successor_migration(self):
+        route_plan, journal, prior_kit = self.prepare_approval_continuation(
+            successor=True,
+        )
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text().replace(
+            f"Kit-SHA: {prior_kit}", f"Kit-SHA: {KIT_SHA}", 1,
+        ))
+        self.append_route_migration(route_plan, journal)
+        approval = self.product / "factory/attestations/T-100/approval.json"
+        approval.write_text(approval.read_text().replace(
+            '"operator_version": "' + "2" * 64 + '"',
+            '"operator_version": "' + "3" * 64 + '"',
+        ))
+        self.commit_and_push("tamper with migrated approval")
+        refused = self.publication_command(expected=2)
+        self.assertIn("approval continuation", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_ticket_drift_after_successor_migration(self):
+        route_plan, journal, prior_kit = self.prepare_approval_continuation(
+            successor=True,
+        )
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(
+            ticket.read_text().replace(
+                f"Kit-SHA: {prior_kit}", f"Kit-SHA: {KIT_SHA}", 1,
+            ) + "Unattested successor scope.\n"
+        )
+        self.append_route_migration(route_plan, journal)
+        refused = self.publication_command(expected=2)
+        self.assertIn("approval continuation", refused["error"])
+        self.assertFalse(self.trace.exists())
 
     def test_publication_rejects_tampered_approval_receipt(self):
         self.prepare_approval_continuation("tampered-receipt")

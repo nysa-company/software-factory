@@ -64,18 +64,30 @@ def _unique_object(pairs):
     return value
 
 
-def read_json(path: Path, label: str):
-    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
-        raise ApprovalEvidenceError(f"{label} is missing or unsafe")
+def _decode_json(text: str, label: str):
     try:
         value = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object,
+            text, object_pairs_hook=_unique_object,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise ApprovalEvidenceError(f"{label} is not valid JSON") from error
     if not isinstance(value, dict):
         raise ApprovalEvidenceError(f"{label} must be a JSON object")
     return value
+
+
+def read_json(path: Path, label: str):
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+        raise ApprovalEvidenceError(f"{label} is missing or unsafe")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ApprovalEvidenceError(f"{label} is not valid JSON") from error
+    return _decode_json(text, label)
+
+
+def _read_json_at(workdir: Path, commit: str, relative: str, label: str):
+    return _decode_json(_git_raw(workdir, "show", f"{commit}:{relative}"), label)
 
 
 def _timestamp(value, label):
@@ -264,13 +276,54 @@ def trusted_approval_continuation_paths(
     relative = f"factory/attestations/{ticket}/approval.json"
     if relative not in changed:
         return set()
-    root = Path(workdir) / "factory" / "attestations" / ticket
-    bundle = read_json(root / "bundle.json", "bundle attestation")
-    approval = read_json(root / "approval.json", "approval attestation")
-    validate_bundle_attestation(bundle, ticket, repo, branch, kit_sha, workdir)
+    bundle_relative = f"factory/attestations/{ticket}/bundle.json"
+    bundle_document = f"factory/tickets/{ticket}-bundle.md"
+    ticket_relative = f"factory/tickets/{ticket}.md"
+    additions = _git(
+        workdir, "log", "--format=%H", "--diff-filter=A",
+        f"{reviewed}..{head}", "--", relative,
+    ).splitlines()
+    if len(additions) != 1 or not OID.fullmatch(additions[0]):
+        raise ApprovalEvidenceError(
+            "approval continuation addition lineage is invalid"
+        )
+    approval_commit = additions[0]
+    bundle = _read_json_at(
+        workdir, approval_commit, bundle_relative, "bundle attestation",
+    )
+    approval = _read_json_at(
+        workdir, approval_commit, relative, "approval attestation",
+    )
+    approval_kit_sha = approval.get("kit_sha", "")
+    if not OID.fullmatch(approval_kit_sha):
+        raise ApprovalEvidenceError("approval continuation Kit-SHA is invalid")
+    validate_bundle_attestation(
+        bundle, ticket, repo, branch, approval_kit_sha, workdir,
+    )
     if bundle.get("reviewed_sha") != reviewed:
         raise ApprovalEvidenceError("approval continuation reviewed SHA is invalid")
     validate_approval_attestation(
-        approval, bundle, ticket, repo, branch, kit_sha, method, workdir, head,
+        approval, bundle, ticket, repo, branch, approval_kit_sha, method,
+        workdir, approval_commit,
     )
+    approved_ticket = _git_raw(
+        workdir, "show", f"{approval_commit}:{ticket_relative}",
+    )
+    current_ticket = _git_raw(workdir, "show", f"{head}:{ticket_relative}")
+    expected_ticket = _replace_field(approved_ticket, "Kit-SHA", kit_sha)
+    route_relative = f"factory/route-plans/{ticket}.json"
+    if (
+        _mode_at(workdir, head, relative) != "100644"
+        or _mode_at(workdir, head, bundle_relative) != "100644"
+        or _blob_at(workdir, head, relative)
+        != _blob_at(workdir, approval_commit, relative)
+        or _blob_at(workdir, head, bundle_relative)
+        != _blob_at(workdir, approval_commit, bundle_relative)
+        or _blob_at(workdir, head, bundle_document) != bundle.get("bundle_blob")
+        or current_ticket != expected_ticket
+        or (kit_sha != approval_kit_sha and route_relative not in changed)
+    ):
+        raise ApprovalEvidenceError(
+            "approval continuation changed after its attested commit"
+        )
     return {relative}

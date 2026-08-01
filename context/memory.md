@@ -2667,5 +2667,10 @@ identities, ordered timestamps, and the one permitted ticket transformation
 from Awaiting Approval to Approved with `Operator-Approval: Linear`. Duplicate
 JSON keys, altered receipt identity, approval-time ticket scope changes, extra
 paths, executable evidence, or a non-direct commit refuse before publication.
+If an already approved ticket crosses a sealed successor boundary, the helper
+locates the unique approval-addition commit, validates it under its original
+Kit-SHA, and permits only a later validated route migration plus the exact
+ticket Kit-SHA replacement. The approval receipt, bundle receipt, bundle
+document, and remaining approved ticket text stay byte-identical.
 This rule preserves Reviewer and Narrator output while allowing the protected
 H2 approval head to run checks and reach auto-merge.
