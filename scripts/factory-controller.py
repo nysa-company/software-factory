@@ -1281,17 +1281,7 @@ class Controller:
                 if claim.get("receipt")
                 else None
             )
-            contract_blocked = (
-                terminal is not None
-                and terminal.get("role_exit") == "role_exit_contract_blocked"
-                and terminal.get("exit_status") == "12"
-            )
-            successful_terminal = (
-                terminal is not None
-                and terminal.get("role_exit") == "ok"
-                and terminal.get("exit_status") == "0"
-            )
-            if contract_blocked or successful_terminal:
+            if terminal is not None:
                 claim["status"] = "blocked"
             else:
                 claim.update(receipt="", role="", status="claimed")

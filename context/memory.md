@@ -2360,3 +2360,15 @@ attempted a duplicate claim, which correctly refused. Successful successor
 renewal or reacquisition now removes that stale marker in the same claim write.
 The exact recovered lease is reused; duplicate leases are still forbidden, and
 failure still releases and parks the ticket.
+
+## 2026-07-31 — Decision 171: Release migration preserves every terminal receipt
+
+Category: Incident
+
+The `bb05660` upgrade migrated T-094's passport, then cleared its failed Builder
+receipt before typed recovery ran. Upgrade recovery had preserved only contract
+blockers and successful terminals; every other terminal was treated like stale
+claim cache. A release migration now retains any receipt with a unique terminal
+manifest and leaves it blocked for the next exact recovery pass. Success goes to
+terminal export, recognized failure goes to its typed recovery, and unknown
+failure stays blocked. Only a receipt with no terminal evidence may be cleared.

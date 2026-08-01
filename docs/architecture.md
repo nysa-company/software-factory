@@ -694,6 +694,11 @@ When the successor reacquires a dispatcher lease, it clears the prior lease's
 released marker in the same durable claim update; the recovered lease is then
 renewed by ordinary scheduling rather than mistaken for an already-released
 lease and claimed a second time.
+An upgrade never clears a receipt that still has terminal run evidence.
+Successful terminals remain available to terminal-export recovery; recognized
+failed terminals remain available to their exact typed recovery; unknown
+failures remain blocked. Only a receipt with no terminal manifest may be
+cleared as stale cache after the passport and route migration authenticate.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.

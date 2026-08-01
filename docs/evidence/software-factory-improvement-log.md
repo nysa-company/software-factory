@@ -3592,6 +3592,20 @@ regression starts with that historical flag, crosses the two-phase route
 migration, and proves ordinary scheduling receives one reusable lease. Another
 sealed successor remains required before the Builder retry.
 
+That same `bb05660` pass exposed a second ordering gap: after migrating T-094's
+passport, `recover_upgraded_claims` cleared the failed Builder receipt because
+it retained only contract-blocked and successful terminals. The later typed
+recovery therefore had no claim identity to consume, even though immutable run
+`1785537237-15335` and its attempt-terminal event still bound the exact receipt
+and role. This created no provider call or charge, and the branch, passport,
+diagnostic ref, and remote remained intact. Upgrade recovery now preserves every
+receipt that has one terminal manifest. Existing success export and typed
+failure recovery consume recognized shapes; an unknown shape remains blocked,
+and only missing terminal evidence can clear stale claim cache. A focused test
+proves a migrated history-rewrite failure keeps its receipt and role for the
+successor recovery pass. The one legacy claim whose cache was cleared is
+restored from its exact immutable manifest before the next sealed successor.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
