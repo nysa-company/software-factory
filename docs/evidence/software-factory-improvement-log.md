@@ -4084,6 +4084,42 @@ Mocked `503`, malformed, negative, and extreme delay cases pass alongside
 illegal-state restoration, full pagination, duplicate refusal, lock
 contention, failed writes, approval ingestion, and repeated-cycle idempotence.
 
+## FI-20260801-136 — Full-board Linear lock delayed a ticket transition
+
+Status: Annotated for the next Factory upgrade; current sealed qualification
+continues unchanged
+Priority: P1
+Area: Linear reconciliation concurrency and qualification latency
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`eda081122a82e628c7f4e663146382155a8f0d29`
+Impact: after T-094 Builder completed and the authenticated `Building -> Review`
+commit reached both local and remote heads, `ticket-state.sh` waited behind the
+canonical `.linear-sync.lock` before it could clear the matching operator
+overlay. The controller remained fail-closed and later launched Reviewer, but
+the unrelated asynchronous full-board sync added roughly four minutes to the
+state transition. No duplicate provider, state rewrite, lost operator update,
+certification, promotion, or production activation occurred.
+Evidence: launchd job `com.factory.linear-sync.nysa-app` ran the installed
+release `4651e544152d65bbb9e18ad6993a633634b79907` while the sealed controller
+used candidate `eda0811`. PID `93873` held the canonical lock and PID `97300`
+waited in the candidate's exact operator-version compare-and-clear section.
+The live sync projected T-094 from Building to Review and completed normally;
+the sealed state machine then returned and Reviewer started with receipt
+`51d72a0ac421a5bf0f07d2153f3c160f0c66145e718e4f315ad4f6c9184a37f0`.
+Finding: global lock serialization preserves map correctness, but the current
+sync holds that lock across a slow full-board network cycle. A single ticket's
+post-transition compare-and-clear therefore inherits unrelated Linear API and
+board traversal latency. Qualification and production intentionally share the
+operator overlay, so this is a latency/availability boundary rather than
+evidence corruption.
+Next-upgrade requirement: first add a deterministic contention regression that
+holds a mocked full-board sync at the network boundary while a ticket performs
+its exact operator-version compare-and-clear. Then shorten the global critical
+section or introduce an equivalent compare-and-swap/per-ticket design that
+preserves operator updates, repeated-cycle idempotence, and duplicate refusal.
+The sealed `eda0811` release is not modified or restarted for this finding.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
