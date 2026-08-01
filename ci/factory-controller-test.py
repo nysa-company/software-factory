@@ -705,6 +705,13 @@ class FactoryControllerTest(unittest.TestCase):
             calls,
         )
         self.assertIn("fallback-lock", calls)
+        self.assertNotIn("passport", calls)
+        fallback = next(
+            index
+            for index, call in enumerate(calls)
+            if isinstance(call, tuple) and call[:2] == ("models", "fallback-auto")
+        )
+        self.assertLess(fallback, calls.index("migrate"))
         self.assertFalse(
             any(
                 isinstance(call, tuple) and call and call[0] == "release"

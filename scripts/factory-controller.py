@@ -1747,14 +1747,20 @@ class Controller:
             if claim["role"] in {"reviewer", "narrator"}
             else "none"
         )
-        if self.terminal_already_exported(claim, terminal):
-            self.migrate_passport(claim, publication)
-            self.event(
-                "terminal_export_recovered", claim["ticket"],
-                run_id=terminal.get("run_id"),
-            )
-        else:
-            self.passport(claim, publication)
+        qualification_fallback = (
+            self.qualification
+            and terminal.get("role_exit") == "provider_failed"
+            and terminal.get("route_id", "").startswith("cursor-")
+        )
+        if not qualification_fallback:
+            if self.terminal_already_exported(claim, terminal):
+                self.migrate_passport(claim, publication)
+                self.event(
+                    "terminal_export_recovered", claim["ticket"],
+                    run_id=terminal.get("run_id"),
+                )
+            else:
+                self.passport(claim, publication)
         if (
             terminal.get("accounting_state") in {"cancelled", "cancelled_conservative"}
             or terminal.get("role_exit") == "cancelled"
@@ -1775,11 +1781,7 @@ class Controller:
             )
             return True
         if terminal.get("exit_status") != "0" or terminal.get("role_exit") != "ok":
-            if (
-                self.qualification
-                and terminal.get("role_exit") == "provider_failed"
-                and terminal.get("route_id", "").startswith("cursor-")
-            ):
+            if qualification_fallback:
                 with self.fallback_lock:
                     result = self.json_call(
                         "models", "fallback-auto", "--ticket", claim["ticket"],

@@ -2452,3 +2452,17 @@ contain its commit; the qualification control worktree remains based on current
 protected main with the existing narrow diff allowlist. This removes a hidden
 certify-before-qualification loop without permitting divergent history or
 changes outside the sealed qualification tree to reach production.
+
+## 2026-07-31 — Decision 180: Qualification roles keep local verification scoped
+
+Category: Incident
+
+T-094's Builder remained productive but spent the full ninety-minute role
+boundary running the product's root workspace test command. Builder now runs
+only the narrowest existing ticket-scoped tests and targeted lint or typecheck;
+protected CI and final certification own broad verification. When a first
+qualification Cursor attempt fails after leaving permitted partial changes,
+the trusted fallback snapshots those changes before passport export, then
+migrates the failed charge onto the resulting clean exact head. This keeps the
+partial implementation and accounting without requiring manual cleanup or
+replaying earlier roles.

@@ -3802,6 +3802,48 @@ separately rejects an active-tree mismatch and a protected ref that does not
 contain the active commit. The four-test environment suite is green. A new
 sealed root and live ordered cohort remain required.
 
+## FI-20260731-133 — Builder broad verification blocked its own fallback
+
+Status: Shared-path repair implemented and focused validation green; live
+successor recovery pending
+Priority: P0
+Area: qualification role verification and provider fallback recovery
+Owner: Factory
+First seen: Nysa qualification candidate
+`202b6c07d0ae8393450e09824acf2b3767b22122`
+Impact: T-094 Builder run `1785562372-25208` produced 229 structured progress
+events and useful application changes, but exhausted the exact ninety-minute
+hard boundary while running the root workspace test command. Its terminal kept
+the full conservative $10 charge and left permitted partial changes in the
+ticket cell. The controller then tried the clean-worktree passport export
+before its automatic fallback, so fallback did not preserve the changes and
+the claim remained blocked. T-100 and T-093 stayed dependency-waiting; no
+publication, certification, promotion, or production activation ran.
+Evidence: the immutable terminal records exit 124, `provider_failed`,
+`hard_timeout`, four turns, and receipt
+`c70a4c53c818940a5722fde7f8c244213bd564cdbee90251e55ebdbcd4801aa6`.
+The cell contains only modified product implementation and ticket-log paths,
+while the controller emitted `factory-launch: ticket worktree must be clean`
+before `fallback-auto` could run.
+Root cause: Builder v5 required “all tests green locally,” which encouraged a
+repository-wide suite despite qualification's ticket-scoped iteration policy.
+Independently, `finish_pending_run` exported every terminal passport before
+classifying the one failure whose trusted fallback explicitly accepts and
+commits a dirty permitted worktree.
+Smallest repair: Builder v6 forbids root, workspace-wide, and full local suites
+and requires the narrowest existing acceptance and static checks. For the
+first qualification Cursor provider failure only, the controller now invokes
+the existing idempotent fallback before passport export and then migrates the
+failed charge onto the clean fallback head. All other terminal ordering is
+unchanged.
+Validation: all 56 focused controller tests pass, including the assertion that
+no eager passport export occurs and that `fallback-auto` precedes preserving
+migration. The Builder contract check proves v6 contains the full-suite ban and
+no longer contains the v5 all-tests requirement. Changed-scope CI passed its
+targeted `ci-scope`, immutability, and artifact-policy selection while deferring
+broad suites to required protected CI; repository and secret checks are green.
+Live successor recovery remains required.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
