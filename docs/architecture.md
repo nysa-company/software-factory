@@ -704,8 +704,10 @@ failures remain blocked. Only a receipt with no terminal manifest may be
 cleared as stale cache after the passport and route migration authenticate.
 Before typed recovery clears a failed claim, the terminal charge must already
 appear exactly once in the authenticated passport. Legacy push failures and
-pre-submission interruptions invoke the preserving passport migration when
-that charge is absent; a clean remote head alone is not accounting evidence.
+pre-submission interruptions invoke the receipt-bound passport export when
+that charge is absent. If an authorized head rewrite blocks that export, the
+controller first migrates the head and then retries the same bound export; a
+clean remote head alone is not accounting evidence.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.

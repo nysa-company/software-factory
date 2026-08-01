@@ -2393,6 +2393,7 @@ A valid remote passport authenticates ticket head and lineage but does not by
 itself prove that the failed attempt being recovered is charged. Before
 clearing a legacy push-failure or pre-submission-interruption receipt, the
 controller requires its exact terminal export in the current passport. If it
-is absent, the existing preserving passport migration must add it and the
-controller must revalidate it. Claim clearance, remote validation, and lease
+is absent, the existing receipt-bound passport export must add it and the
+controller must revalidate it. An authorized head mismatch migrates first and
+then retries that same export. Claim clearance, remote validation, and lease
 acquisition remain separate gates.

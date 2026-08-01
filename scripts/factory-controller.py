@@ -1516,8 +1516,22 @@ class Controller:
             if push_failure or interrupted_before_submission:
                 try:
                     if not self.terminal_already_exported(claim, terminal):
-                        self.migrate_passport(claim, "preserve")
-                except ControllerError:
+                        publication = read(passport_path).get(
+                            "publication_state", ""
+                        )
+                        if publication not in {
+                            "none", "validating", "ready", "merge-pending",
+                            "merged", "repair",
+                        }:
+                            continue
+                        try:
+                            self.passport(claim, publication)
+                        except ControllerError:
+                            self.migrate_passport(claim, "preserve")
+                            self.passport(claim, publication)
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                ):
                     continue
             if (
                 push_failure or interrupted_before_submission

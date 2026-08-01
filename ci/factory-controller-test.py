@@ -2528,6 +2528,7 @@ class FactoryControllerTest(unittest.TestCase):
                 "branch": claim["branch"],
                 "head_sha": head,
                 "passport_sha256": passport_digest,
+                "publication_state": "none",
             },
         )
         (self.product / "factory/runs/failed.meta").write_text(
@@ -2563,14 +2564,14 @@ class FactoryControllerTest(unittest.TestCase):
             terminal["run_id"] in exported
         )
 
-        def migrate(_claim, _state):
+        def export(_claim, _state):
             terminal = controller.terminal_for_receipt(
                 claim["ticket"], claim["receipt"],
             )
             exported.add(terminal["run_id"])
-            calls.append(("passport", "migrate"))
+            calls.append(("passport", "export"))
 
-        controller.migrate_passport = migrate
+        controller.passport = export
         remote = CONTROL.subprocess.CompletedProcess(
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
@@ -2658,6 +2659,7 @@ class FactoryControllerTest(unittest.TestCase):
                 "branch": claim["branch"],
                 "head_sha": "f" * 40,
                 "passport_sha256": old_digest,
+                "publication_state": "none",
             },
         )
         (self.product / "factory/runs/failed-rewrite.meta").write_text(
@@ -2671,23 +2673,23 @@ class FactoryControllerTest(unittest.TestCase):
             encoding="utf-8",
         )
         calls = []
-        validations = 0
+        migrated = False
+        exported = False
 
         def json_call(*args, **_kwargs):
-            nonlocal validations
+            nonlocal migrated
             calls.append(args)
             if args[:2] == ("passport", "validate"):
-                validations += 1
-                if validations == 1:
-                    raise CONTROL.ControllerError("passport head is stale")
                 return {"passport": new_digest, "status": "ok"}
             if args[:2] == ("passport", "migrate"):
+                migrated = True
                 CONTROL.write(
                     passport_path,
                     {
                         "branch": claim["branch"],
                         "head_sha": head,
                         "passport_sha256": new_digest,
+                        "publication_state": "none",
                     },
                 )
             if args[0] == "renew":
@@ -2702,7 +2704,16 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.json_call = json_call
         controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
-        controller.terminal_already_exported = lambda *_args: True
+        controller.terminal_already_exported = lambda *_args: exported
+
+        def export(_claim, _state):
+            nonlocal exported
+            calls.append(("passport", "export"))
+            if not migrated:
+                raise CONTROL.ControllerError("passport head is stale")
+            exported = True
+
+        controller.passport = export
         remote = CONTROL.subprocess.CompletedProcess(
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
@@ -2713,8 +2724,9 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             [call[:2] for call in calls],
             [
-                ("passport", "validate"),
+                ("passport", "export"),
                 ("passport", "migrate"),
+                ("passport", "export"),
                 ("passport", "validate"),
                 ("renew", "--ticket"),
                 ("claim", "--ticket"),

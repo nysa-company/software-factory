@@ -3667,17 +3667,17 @@ restored the exact input and remote topology, so validation succeeded even
 though it proves head identity, not failed-charge inclusion. The same gap
 applied to a pre-submission interruption.
 Smallest repair: before either recovery can clear its claim, the controller
-checks the exact terminal export. If absent, it runs the existing preserving
-passport migration and requires the export to validate afterward. Remote
-passport validation and fresh lease acquisition remain separate downstream
-gates.
+checks the exact terminal export. If absent, it runs the existing receipt-bound
+passport export and validates the result. An authorized stale head first uses
+the existing preserving migration and then retries that export. Remote passport
+validation and fresh lease acquisition remain separate downstream gates.
 Validation: the focused recovery regression starts with a valid remote
-passport that lacks each failed charge, proves one preserving migration occurs
+passport that lacks each failed charge, proves one receipt-bound export occurs
 for both push failure and pre-submission interruption, and permits claim
 clearance only after the terminal export check changes to true. The authorized
-rewrite regression still proves the independent stale-head migration. All 55
-controller tests pass. Live restoration from the immutable T-094 manifest and
-one successor replay remain required.
+rewrite regression proves failed export, stale-head migration, and successful
+bound re-export in that order. All 55 controller tests pass. Live restoration
+from the immutable T-094 manifest and one successor replay remain required.
 
 ## Maintenance rule
 
