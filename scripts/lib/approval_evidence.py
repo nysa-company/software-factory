@@ -262,7 +262,7 @@ def validate_approval_attestation(
     return value
 
 
-def trusted_approval_continuation_paths(
+def validate_approval_continuation(
     workdir: Path,
     ticket: str,
     repo: str,
@@ -271,14 +271,20 @@ def trusted_approval_continuation_paths(
     method: str,
     reviewed: str,
     head: str,
-    changed: set[str],
-) -> set[str]:
+) -> tuple[dict, dict, str]:
     relative = f"factory/attestations/{ticket}/approval.json"
-    if relative not in changed:
-        return set()
     bundle_relative = f"factory/attestations/{ticket}/bundle.json"
     bundle_document = f"factory/tickets/{ticket}-bundle.md"
     ticket_relative = f"factory/tickets/{ticket}.md"
+    route_relative = f"factory/route-plans/{ticket}.json"
+    if not OID.fullmatch(reviewed):
+        raise ApprovalEvidenceError("approval continuation reviewed SHA is invalid")
+    try:
+        _git(workdir, "merge-base", "--is-ancestor", reviewed, head)
+    except ApprovalEvidenceError as error:
+        raise ApprovalEvidenceError(
+            "approval continuation reviewed SHA is invalid"
+        ) from error
     additions = _git(
         workdir, "log", "--format=%H", "--diff-filter=A",
         f"{reviewed}..{head}", "--", relative,
@@ -310,8 +316,14 @@ def trusted_approval_continuation_paths(
         workdir, "show", f"{approval_commit}:{ticket_relative}",
     )
     current_ticket = _git_raw(workdir, "show", f"{head}:{ticket_relative}")
-    expected_ticket = _replace_field(approved_ticket, "Kit-SHA", kit_sha)
-    route_relative = f"factory/route-plans/{ticket}.json"
+    expected_ticket = (
+        approved_ticket
+        if kit_sha == approval_kit_sha
+        else _replace_field(approved_ticket, "Kit-SHA", kit_sha)
+    )
+    later_changed = set(_git(
+        workdir, "diff", "--name-only", f"{approval_commit}..{head}",
+    ).splitlines())
     if (
         _mode_at(workdir, head, relative) != "100644"
         or _mode_at(workdir, head, bundle_relative) != "100644"
@@ -321,9 +333,31 @@ def trusted_approval_continuation_paths(
         != _blob_at(workdir, approval_commit, bundle_relative)
         or _blob_at(workdir, head, bundle_document) != bundle.get("bundle_blob")
         or current_ticket != expected_ticket
-        or (kit_sha != approval_kit_sha and route_relative not in changed)
+        or later_changed - {ticket_relative, route_relative}
+        or (head != approval_commit and route_relative not in later_changed)
+        or (kit_sha != approval_kit_sha and route_relative not in later_changed)
     ):
         raise ApprovalEvidenceError(
             "approval continuation changed after its attested commit"
         )
+    return bundle, approval, approval_commit
+
+
+def trusted_approval_continuation_paths(
+    workdir: Path,
+    ticket: str,
+    repo: str,
+    branch: str,
+    kit_sha: str,
+    method: str,
+    reviewed: str,
+    head: str,
+    changed: set[str],
+) -> set[str]:
+    relative = f"factory/attestations/{ticket}/approval.json"
+    if relative not in changed:
+        return set()
+    validate_approval_continuation(
+        workdir, ticket, repo, branch, kit_sha, method, reviewed, head,
+    )
     return {relative}

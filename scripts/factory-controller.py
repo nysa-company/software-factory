@@ -2023,6 +2023,34 @@ class Controller:
         )
         return True
 
+    def request_protected_auto_merge(
+        self, claim: dict[str, Any], receipt: str, pr: dict[str, Any]
+    ) -> bool:
+        if not self.publication_ready(claim, receipt, pr["head"]):
+            return False
+        approval = self.json_call(
+            "ticket-attest", "--ticket", claim["ticket"],
+            "--lease", claim["lease"], "--receipt", receipt,
+            "--workdir", claim["worktree"], "--action", "approval",
+            "--json",
+        )
+        if (
+            approval.get("action") != "approval"
+            or approval.get("auto_merge") is not True
+            or approval.get("head") != pr["head"]
+            or approval.get("pr_number") != pr.get("pr_number")
+        ):
+            raise ControllerError(
+                "protected auto-merge did not bind exact H2"
+            )
+        self.migrate_passport(claim, "merge-pending")
+        self.event(
+            "protected_auto_merge_requested",
+            claim["ticket"],
+            head_sha=pr["head"],
+        )
+        return True
+
     def ticket_merged(self, claim: dict[str, Any]) -> bool:
         repo_values = re.findall(
             r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
@@ -2328,29 +2356,8 @@ class Controller:
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 if pr.get("status") != "ready":
                     return {"status": "waiting", "ticket": claim["ticket"]}
-                if not self.publication_ready(claim, receipt, pr["head"]):
+                if not self.request_protected_auto_merge(claim, receipt, pr):
                     return {"status": "waiting", "ticket": claim["ticket"]}
-                approval = self.json_call(
-                    "ticket-attest", "--ticket", claim["ticket"],
-                    "--lease", claim["lease"], "--receipt", receipt,
-                    "--workdir", claim["worktree"], "--action", "approval",
-                    "--json",
-                )
-                if (
-                    approval.get("action") != "approval"
-                    or approval.get("auto_merge") is not True
-                    or approval.get("head") != pr["head"]
-                    or approval.get("pr_number") != pr.get("pr_number")
-                ):
-                    raise ControllerError(
-                        "protected auto-merge did not bind exact H2"
-                    )
-                self.migrate_passport(claim, "merge-pending")
-                self.event(
-                    "protected_auto_merge_requested",
-                    claim["ticket"],
-                    head_sha=pr["head"],
-                )
                 return {"status": "progressed", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT_DEPENDENCY"):
                 claim["status"] = "waiting"
@@ -2392,8 +2399,11 @@ class Controller:
                 if pr.get("status") == "failed":
                     self.publication_repair(claim, receipt, pr)
                     return {"status": "progressed", "ticket": claim["ticket"]}
-                if pr.get("status") in {"wait", "ready"}:
+                if pr.get("status") == "wait":
                     self.publication_ready(claim, receipt, pr["head"])
+                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if pr.get("status") == "ready":
+                    self.request_protected_auto_merge(claim, receipt, pr)
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 raise ControllerError("publication PR gate returned an invalid status")
             if stage.startswith("AWAIT-MERGE closeout auto-merge pending"):

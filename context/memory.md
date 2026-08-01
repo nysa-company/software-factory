@@ -2674,3 +2674,18 @@ ticket Kit-SHA replacement. The approval receipt, bundle receipt, bundle
 document, and remaining approved ticket text stay byte-identical.
 This rule preserves Reviewer and Narrator output while allowing the protected
 H2 approval head to run checks and reach auto-merge.
+
+## 2026-08-01 — Decision 194: GitHub truth closes projected approval publication
+
+Category: State machine
+
+Linear's operator overlay is transient authorization input, not proof that
+GitHub accepted protected auto-merge. After the exact approval receipt exists,
+phase two may retry from that immutable receipt when Linear has projected only
+the state/approval fields away; a partial overlay refuses. A deterministic
+`protected auto-merge requested` stage never lets the controller merely wait:
+it reacquires the exact publication lease, invokes the idempotent approval
+request, and verifies GitHub bound it to the exact H2 PR head. Post-merge
+approval validation follows the same successor-continuation lineage, so a
+sealed route migration between approval and merge remains valid without role
+replay.

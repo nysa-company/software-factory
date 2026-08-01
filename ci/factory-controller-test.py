@@ -4153,6 +4153,70 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertNotIn("--attest-only", calls[3])
         self.assertEqual(claim["publication_lease"], "f" * 64)
 
+    def test_projected_approval_stage_still_requests_exact_auto_merge(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        receipt = "b" * 64
+        head = "d" * 40
+        calls = []
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.ticket_merged = lambda _claim: False
+        controller.withdraw_publication = lambda *_args: None
+        controller.publication_ready = lambda item, _receipt, exact_head: (
+            calls.append(("publication", exact_head)),
+            item.update(publication_lease="f" * 64),
+            True,
+        )[-1]
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+
+        def json_call(*arguments, **_kwargs):
+            if arguments[0] == "state-machine":
+                return state_transition(
+                    "AWAIT-MERGE protected auto-merge requested; "
+                    "await merge and closeout",
+                    receipt,
+                )
+            if arguments[0] == "ticket-pr":
+                return {
+                    "head": head, "pr_number": 24, "status": "ready",
+                }
+            if arguments[0] == "ticket-attest":
+                calls.append(arguments)
+                return {
+                    "action": "approval", "auto_merge": True,
+                    "head": head, "pr_number": 24,
+                }
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "waiting", "ticket": "T-110"},
+        )
+        self.assertEqual(calls[0], ("publication", head))
+        self.assertEqual(calls[1][0], "ticket-attest")
+        self.assertIn("passport", calls)
+        self.assertIn("protected_auto_merge_requested", calls)
+        self.assertEqual(claim["publication_lease"], "f" * 64)
+
     def test_dependency_refresh_race_waits_then_migrates_exact_base(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

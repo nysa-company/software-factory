@@ -4271,11 +4271,48 @@ and refusals for a tampered receipt, approval-time ticket drift, executable
 receipt, duplicate JSON keys, and an extra commit path, plus acceptance of the
 exact successor route continuation and refusals for later receipt mutation or
 ticket drift. Ticket attestation
-passes 57/57 through the same helper. The helper independently validates the
+passes 60/60 through the same helper. The helper independently validates the
 exact live T-094 approval head and reviewed SHA `22edcfb1057681a10354bf16978416cf7c733cb5`.
 Live closure requires a sealed successor to cross the approval-head PR gate,
 request protected auto-merge, and close T-094 without replaying Reviewer or
 Narrator.
+
+## FI-20260801-141 — Projected Linear approval falsely implied GitHub auto-merge
+
+Status: Focused regressions green; sealed successor recovery pending
+Priority: P0
+Area: two-phase protected publication truth
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`33f282b9da6a532ce7164f3d2be3e4dbffe3e471`
+Impact: T-094 reached exact migrated approval head
+`46fc583c045161b0f2aba70e766ff643bb0d6e06` with every required GitHub and
+Railway check green. The approval receipt remained valid and the controller
+repeatedly acquired the sole publication lease, but GitHub PR #304 still had
+no `autoMergeRequest`. T-100 and T-093 correctly remained dependency-gated;
+no role replay or implementation mutation occurred.
+Finding: Linear sync correctly projected the transient Approved/Linear operator
+fields away after the approval commit. `next-stage` used that absence as an
+indirect signal that auto-merge had already been requested, even though the
+phase-one attest-only operation deliberately had not called GitHub. The
+controller's requested-stage branch therefore only renewed publication and
+waited. Phase-two attestation also required the already-projected overlay and
+assumed the approval commit was the current PR head, which would reject the
+sealed successor route commit and later closeout.
+Smallest repair: treat the immutable approval receipt as phase-two authority
+when the state/approval overlay is wholly projected away, while refusing any
+partial overlay. Share exact successor-continuation validation with phase-two
+and protected-main closeout. When the requested stage is observed with a ready
+PR, the controller now reacquires the exact publication lease, idempotently
+requests auto-merge, verifies the exact H2 head and PR number, and only then
+waits for merge.
+Edge coverage: ticket attestation passes 60/60, ticket publication passes
+34/34, and the Factory controller passes 65/65. The new cases prove
+projected-overlay phase two after a successor route, partial-overlay refusal,
+protected closeout after that route, and the controller's
+misleading-requested-stage recovery. Live closure requires PR
+#304 to record protected auto-merge, merge, and reach Factory-owned Done under
+the sealed successor without replaying Reviewer or Narrator.
 
 ## Maintenance rule
 

@@ -486,6 +486,21 @@ else:
             }}},
         }))
 
+    def project_approval_overlay(self):
+        (self.product / "factory/linear-map.json").write_text(json.dumps({
+            "tickets": {"T-700": {"operator": {
+                "initiative": "I-1", "priority": "normal",
+            }}},
+        }))
+
+    def append_successor_route(self):
+        route = self.product / "factory/route-plans/T-700.json"
+        value = json.loads(route.read_text())
+        value["successor_test"] = True
+        route.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        self.commit("migrate approved route")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+
     def test_bundle_and_approval_happy_path_and_retry(self):
         self.bundle()
         self.approval_overlay()
@@ -804,6 +819,45 @@ else:
         self.assertTrue(second["auto_merge"])
         self.assertTrue(json.loads(self.state.read_text())["auto_merge"])
 
+    def test_projected_overlay_retries_approval_after_successor_route(self):
+        self.bundle()
+        self.approval_overlay()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        self.project_approval_overlay()
+        self.append_successor_route()
+        self.write_state(auto_merge=False)
+
+        phase_two = self.attest("approval")
+
+        self.assertEqual(phase_two.returncode, 0, phase_two.stderr)
+        result = json.loads(phase_two.stdout)
+        self.assertEqual(result["action"], "approval")
+        self.assertEqual(result["head"], self.head())
+        self.assertTrue(result["auto_merge"])
+        operator = json.loads(
+            (self.product / "factory/linear-map.json").read_text()
+        )["tickets"]["T-700"]["operator"]
+        self.assertEqual(operator, {"initiative": "I-1", "priority": "normal"})
+
+    def test_partial_projected_approval_overlay_is_refused(self):
+        self.bundle()
+        self.approval_overlay()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        mapping = json.loads(
+            (self.product / "factory/linear-map.json").read_text()
+        )
+        mapping["tickets"]["T-700"]["operator"].pop("approval")
+        (self.product / "factory/linear-map.json").write_text(
+            json.dumps(mapping)
+        )
+
+        refused = self.attest("approval")
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("exact Linear", refused.stderr)
+
     def test_approval_retry_rejects_tampered_receipt_or_later_head(self):
         self.bundle()
         self.approval_overlay()
@@ -827,7 +881,7 @@ else:
         self.commit("later unrelated head")
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.write_state()
-        self.assertIn("invalid", self.attest("approval").stderr)
+        self.assertIn("approval continuation", self.attest("approval").stderr)
 
     def test_auto_merge_unconfirmed_is_refused(self):
         self.bundle()
@@ -1445,6 +1499,35 @@ else:
         merged_state.update(state)
         self.write_state(**merged_state)
 
+    def prepare_done_after_successor_route(self):
+        self.bundle()
+        self.approval_overlay()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        self.project_approval_overlay()
+        self.append_successor_route()
+        phase_two = self.attest("approval")
+        self.assertEqual(phase_two.returncode, 0, phase_two.stderr)
+        merge_sha = self.head()
+        command("git", "branch", "-f", "main", merge_sha, cwd=self.product)
+        command(
+            "git", "push", "-q", "origin", f"{merge_sha}:refs/heads/main",
+            cwd=self.product,
+        )
+        self.workdir = self.temp / "successor-closeout"
+        command(
+            "git", "worktree", "add", "-q", "-b", "chore/t700-closeout",
+            str(self.workdir), "origin/main", cwd=self.product,
+        )
+        command(
+            "git", "push", "-q", "-u", "origin", "chore/t700-closeout",
+            cwd=self.workdir,
+        )
+        self.env["FAKE_WORKDIR"] = str(self.workdir)
+        self.write_state(
+            merged=True, merge_sha=merge_sha, pr_head=merge_sha,
+        )
+
     def test_done_refuses_failed_checks_and_merge_not_on_main(self):
         self.prepare_done(checks={"ci": True, "deploy-production": False})
         self.assertIn("missing or unsuccessful", self.attest("done").stderr)
@@ -1471,6 +1554,17 @@ else:
             "Factory-owned metadata and accounting closeout for T-700.\n\n"
             "No additional business approval is required. Protected checks, "
             "reviews, and merge policy remain authoritative.",
+        )
+
+    def test_done_accepts_approval_followed_by_successor_route(self):
+        self.prepare_done_after_successor_route()
+
+        result = self.attest("done")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "State: Done",
+            (self.workdir / "factory/tickets/T-700.md").read_text(),
         )
 
     def test_done_accepts_an_unchanged_preprojected_ledger(self):

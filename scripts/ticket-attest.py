@@ -26,6 +26,7 @@ from refresh_semantics import (  # noqa: E402
 from narrator_evidence import trusted_narrator_evidence_paths  # noqa: E402
 from approval_evidence import (  # noqa: E402
     ApprovalEvidenceError,
+    validate_approval_continuation as validate_shared_approval_continuation,
     validate_approval_attestation as validate_shared_approval_attestation,
     validate_bundle_attestation as validate_shared_bundle_attestation,
     validate_bundle_commit as validate_shared_bundle_commit,
@@ -954,62 +955,25 @@ def protected_approval_evidence(
     approval_path = root / "approval.json"
     if not bundle_path.is_file() or not approval_path.is_file():
         raise Refusal("protected main lacks bundle or approval attestation")
-    bundle_att = validate_bundle_attestation(
-        json.loads(bundle_path.read_text()), ticket, repo, branch, kit_sha, workdir,
-    )
     approval_att = json.loads(approval_path.read_text())
-    approval_keys = {
-        "schema", "ticket", "repository", "branch", "parent_head",
-        "reviewed_sha", "bundle_blob", "bundle_attestation_blob", "pr_number",
-        "operator_version", "linear_updated_at", "observed_at", "kit_sha",
-        "auto_merge_method", "attested_at",
-    }
     approval_head = pr.get("headRefOid", "")
     if not valid_oid(approval_head):
         raise Refusal("merged PR lacks the approved head commit")
-    parent = git(workdir, "rev-parse", f"{approval_head}^").stdout.strip()
-    validate_bundle_commit(workdir, ticket, bundle_att, parent)
-    expected_paths = {
-        f"factory/tickets/{ticket}.md",
-        f"factory/attestations/{ticket}/approval.json",
-    }
-    actual_paths = set(git(
-        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r",
-        approval_head,
-    ).stdout.splitlines())
-    relative_bundle = f"factory/attestations/{ticket}/bundle.json"
-    relative_approval = f"factory/attestations/{ticket}/approval.json"
+    try:
+        bundle_att, approval_att, _ = validate_shared_approval_continuation(
+            workdir, ticket, repo, branch, kit_sha, method,
+            approval_att.get("reviewed_sha", ""), approval_head,
+        )
+    except ApprovalEvidenceError as error:
+        raise Refusal(
+            f"protected approval evidence is invalid: {error}"
+        ) from error
     bundle_attestation_blob = blob_id(workdir, bundle_path)
     approval_attestation_blob = blob_id(workdir, approval_path)
-    observed = timestamp(approval_att.get("observed_at"), "approval observation")
-    updated = timestamp(
-        approval_att.get("linear_updated_at"), "Linear approval update",
-    )
-    bundle_time = timestamp(bundle_att.get("attested_at"), "bundle attestation")
     if (
-        set(approval_att) != approval_keys
-        or approval_att.get("schema") != "nysa.software-factory.ticket-approval/v1"
-        or approval_att.get("ticket") != ticket
-        or approval_att.get("repository") != repo
-        or approval_att.get("branch") != branch
-        or approval_att.get("pr_number") != pr.get("number")
-        or approval_att.get("reviewed_sha") != bundle_att["reviewed_sha"]
-        or approval_att.get("bundle_blob") != bundle_att["bundle_blob"]
-        or approval_att.get("bundle_attestation_blob") != bundle_attestation_blob
-        or approval_att.get("kit_sha") != kit_sha
-        or approval_att.get("auto_merge_method") != method
-        or approval_att.get("attested_at") != approval_att.get("observed_at")
-        or observed <= bundle_time
-        or updated <= bundle_time
-        or not re.fullmatch(
-            r"[0-9a-f]{64}", approval_att.get("operator_version", ""),
-        )
-        or approval_att.get("parent_head") != parent
-        or actual_paths != expected_paths
-        or blob_at(workdir, approval_head, relative_bundle)
+        approval_att.get("pr_number") != pr.get("number")
+        or approval_att.get("bundle_attestation_blob")
         != bundle_attestation_blob
-        or blob_at(workdir, approval_head, relative_approval)
-        != approval_attestation_blob
     ):
         raise Refusal("protected approval evidence does not match the merged PR head")
     approved_ticket = git(
@@ -1989,12 +1953,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     bundle_path = workdir / "factory" / "tickets" / f"{args.ticket}-bundle.md"
     attestation_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     approval_path = attestation_path.with_name("approval.json")
-    bundle_att = validate_bundle_attestation(
-        json.loads(attestation_path.read_text()), args.ticket, repo, branch, kit_sha,
-        workdir,
-    )
-    if git(workdir, "hash-object", str(bundle_path)).stdout.strip() != bundle_att.get("bundle_blob"):
-        raise Refusal("evidence bundle changed after attestation")
+    bundle_value = json.loads(attestation_path.read_text())
     mapping = json.loads(operator_map_path(product).read_text())
     operator = mapping.get("tickets", {}).get(args.ticket, {}).get("operator") or {}
     existing_approval = json.loads(approval_path.read_text()) if approval_path.exists() else None
@@ -2003,17 +1962,55 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         and operator.get("approval") == "Linear"
         and operator.get("state_base") == "awaiting approval"
     )
-    if not exact_overlay:
+    projected_overlay = not any(
+        key in operator for key in ("state", "approval", "state_base")
+    )
+    if not exact_overlay and not (existing_approval and projected_overlay):
         raise Refusal("exact Linear Awaiting Approval -> Approved overlay is required")
-    observed = timestamp(operator.get("observed_at"), "approval observation")
-    updated = timestamp(operator.get("linear_updated_at"), "Linear approval update")
-    attested = timestamp(bundle_att.get("attested_at"), "bundle attestation")
-    if observed <= attested or updated <= attested:
-        raise Refusal("Linear approval is not newer than the bundle attestation")
-    version = hashlib.sha256(json.dumps(
-        {key: operator[key] for key in ("priority", "initiative", "state", "approval") if key in operator},
-        sort_keys=True, separators=(",", ":"),
-    ).encode()).hexdigest()
+    if attest_only and not exact_overlay:
+        raise Refusal("exact Linear approval overlay is required for phase-one attestation")
+    if existing_approval:
+        reviewed = existing_approval.get("reviewed_sha", "")
+        try:
+            bundle_att, approval_att, _ = validate_shared_approval_continuation(
+                workdir, args.ticket, repo, branch, kit_sha, method,
+                reviewed, head,
+            )
+        except ApprovalEvidenceError as error:
+            raise Refusal(str(error)) from error
+        version = approval_att["operator_version"]
+        if exact_overlay:
+            current_version = hashlib.sha256(json.dumps(
+                {
+                    key: operator[key]
+                    for key in ("priority", "initiative", "state", "approval")
+                    if key in operator
+                },
+                sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()
+            if current_version != version:
+                raise Refusal(
+                    "existing approval attestation does not match the overlay"
+                )
+    else:
+        bundle_att = validate_bundle_attestation(
+            bundle_value, args.ticket, repo, branch, kit_sha, workdir,
+        )
+        observed = timestamp(operator.get("observed_at"), "approval observation")
+        updated = timestamp(operator.get("linear_updated_at"), "Linear approval update")
+        attested = timestamp(bundle_att.get("attested_at"), "bundle attestation")
+        if observed <= attested or updated <= attested:
+            raise Refusal("Linear approval is not newer than the bundle attestation")
+        version = hashlib.sha256(json.dumps(
+            {
+                key: operator[key]
+                for key in ("priority", "initiative", "state", "approval")
+                if key in operator
+            },
+            sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+    if git(workdir, "hash-object", str(bundle_path)).stdout.strip() != bundle_att.get("bundle_blob"):
+        raise Refusal("evidence bundle changed after attestation")
     pr = exact_pr(repo, branch, "open")
     if pr.get("number") != bundle_att.get("pr_number") or pr.get("headRefOid") != head:
         raise Refusal("PR identity or head changed before approval")
@@ -2044,14 +2041,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
                 raise Refusal(
                     "GitHub did not disable auto-merge before approval attestation"
                 )
-    if existing_approval:
-        approval_att = validate_approval_attestation(
-            existing_approval, bundle_att, args.ticket, repo, branch, kit_sha,
-            method, workdir, head,
-        )
-        if approval_att.get("operator_version") != version:
-            raise Refusal("existing approval attestation does not match the overlay")
-    else:
+    if not existing_approval:
         text = ticket_path.read_text()
         if field(text, "State").lower() != "awaiting approval":
             raise Refusal("approval requires committed Awaiting Approval state")
@@ -2137,7 +2127,8 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         and request.get("mergeMethod") != method.upper()
     ):
         raise Refusal("GitHub did not confirm auto-merge for the exact approved head")
-    consume_overlay(product, args.ticket, version)
+    if exact_overlay:
+        consume_overlay(product, args.ticket, version)
     return {"action": "approval", "head": head, "pr_number": current["number"], "auto_merge": True}
 
 
