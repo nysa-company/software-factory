@@ -574,8 +574,10 @@ same-family direct-CLI fallback and resumes the same deterministic stage. The
 fallback atomically converts an initial v1 route plan into a same-release v2
 journal before appending its revision, preserving the original plan bytes and
 provenance. Because that trusted fallback snapshots permitted partial role
-changes, it runs before terminal passport export; the resulting clean exact
-head then receives the failed charge through preserving passport migration.
+changes, including a Builder's current-ticket root-cause log but never sibling
+tickets, tests, or Factory controls, it runs before terminal passport export;
+the resulting clean exact head then receives the failed charge through
+preserving passport migration.
 It is idempotent across controller restart. A second task-submitted
 attempt for that ticket and role is refused as no progress instead of replayed.
 An exit 143 before task submission reopens only that interrupted role, and only

@@ -3824,7 +3824,9 @@ Evidence: the immutable terminal records exit 124, `provider_failed`,
 `c70a4c53c818940a5722fde7f8c244213bd564cdbee90251e55ebdbcd4801aa6`.
 The cell contains only modified product implementation and ticket-log paths,
 while the controller emitted `factory-launch: ticket worktree must be clean`
-before `fallback-auto` could run.
+before `fallback-auto` could run. A direct retry through that sealed helper
+then failed without mutation because the Builder boundary rejected its own
+required `factory/tickets/T-094.md` root-cause log.
 Root cause: Builder v5 required “all tests green locally,” which encouraged a
 repository-wide suite despite qualification's ticket-scoped iteration policy.
 Independently, `finish_pending_run` exported every terminal passport before
@@ -3834,15 +3836,19 @@ Smallest repair: Builder v6 forbids root, workspace-wide, and full local suites
 and requires the narrowest existing acceptance and static checks. For the
 first qualification Cursor provider failure only, the controller now invokes
 the existing idempotent fallback before passport export and then migrates the
-failed charge onto the clean fallback head. All other terminal ordering is
-unchanged.
+failed charge onto the clean fallback head. The handoff boundary permits the
+current ticket log as the sole Builder exception to `factory/**`; sibling
+tickets, tests, route journals, and other controls remain forbidden. All other
+terminal ordering is unchanged.
 Validation: all 56 focused controller tests pass, including the assertion that
 no eager passport export occurs and that `fallback-auto` precedes preserving
 migration. The Builder contract check proves v6 contains the full-suite ban and
 no longer contains the v5 all-tests requirement. Changed-scope CI passed its
 targeted `ci-scope`, immutability, and artifact-policy selection while deferring
 broad suites to required protected CI; repository and secret checks are green.
-Live successor recovery remains required.
+The focused fallback, handoff, approval, and model-control suites pass all 28
+tests, including current-ticket acceptance and sibling-ticket rejection. Live
+successor recovery remains required.
 
 ## Maintenance rule
 

@@ -293,6 +293,23 @@ class FallbackTest(unittest.TestCase):
         preview = self.command("preview")
         self.assertEqual(preview["failed_run_id"], "run-failed-1")
 
+    def test_builder_handoff_accepts_only_its_own_ticket_log(self):
+        ticket = self.repo / "factory/tickets/T-1.md"
+        original = ticket.read_text()
+        ticket.write_text(original + "Builder root cause: scoped failure.\n")
+        preview = self.command("preview")
+        self.assertEqual(preview["failed_run_id"], "run-failed-1")
+
+        ticket.write_text(original)
+        sibling = self.repo / "factory/tickets/T-2.md"
+        sibling.write_text("State: Backlog\n")
+        result = self.command("preview", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "path is forbidden for builder: factory/tickets/T-2.md",
+            result.stderr,
+        )
+
     def test_qualification_apply_uses_sealed_local_successor_manifest(self):
         protected = self.repo / "factory/QUALIFICATION.json"
         value = json.loads(protected.read_text())

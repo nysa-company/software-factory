@@ -2465,4 +2465,6 @@ qualification Cursor attempt fails after leaving permitted partial changes,
 the trusted fallback snapshots those changes before passport export, then
 migrates the failed charge onto the resulting clean exact head. This keeps the
 partial implementation and accounting without requiring manual cleanup or
-replaying earlier roles.
+replaying earlier roles. Its Builder boundary accepts only the current ticket's
+required root-cause log as an exception to the Factory-control ban; sibling
+tickets, tests, route journals, and other Factory controls remain forbidden.
