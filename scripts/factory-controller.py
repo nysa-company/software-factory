@@ -18,6 +18,7 @@ import tempfile
 from threading import Lock
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -2032,7 +2033,8 @@ class Controller:
         return value.get("closeout_pr_state") == "MERGED"
 
     def run_role(
-        self, claim: dict[str, Any], role: str, receipt: str, failed_checks: list[str]
+        self, claim: dict[str, Any], role: str, receipt: str,
+        failed_checks: list[str], publication: dict[str, Any] | None = None,
     ) -> None:
         self.ensure_execution_cell(claim)
         if role == "planner":
@@ -2054,6 +2056,48 @@ class Controller:
         task = f"Execute {role} for {claim['ticket']} from its frozen contract and repository state."
         if failed_checks:
             task += " Required GitHub checks failed: " + ", ".join(failed_checks)
+        if role == "narrator":
+            if publication is None:
+                raise ControllerError("Narrator publication evidence is missing")
+            preview_urls = publication.get("preview_urls")
+            pr_number = publication.get("pr_number")
+            pr_url = publication.get("url")
+            head = publication.get("head")
+            if (
+                publication.get("status") != "ready"
+                or not isinstance(pr_number, int)
+                or pr_number <= 0
+                or not isinstance(pr_url, str)
+                or not re.fullmatch(r"https://github[.]com/[^\s]+/pull/[1-9][0-9]*", pr_url)
+                or not SHA.fullmatch(head or "")
+                or publication.get("checks") != []
+                or not isinstance(preview_urls, list)
+                or not preview_urls
+            ):
+                raise ControllerError("Narrator publication evidence is invalid")
+            for preview_url in preview_urls:
+                parsed = urlsplit(preview_url) if isinstance(preview_url, str) else None
+                if (
+                    parsed is None
+                    or parsed.scheme != "https"
+                    or not parsed.hostname
+                    or not parsed.hostname.endswith(".up.railway.app")
+                    or parsed.username is not None
+                    or parsed.password is not None
+                    or parsed.port is not None
+                    or parsed.query
+                    or parsed.fragment
+                    or parsed.path not in ("", "/")
+                ):
+                    raise ControllerError("Narrator preview evidence is invalid")
+            task += (
+                f" Trusted publication evidence: PR #{pr_number} is {pr_url} at exact "
+                f"head {head}; every configured required GitHub check passed. Trusted "
+                f"preview endpoints: {', '.join(preview_urls)}. Verify the deployed head "
+                "and exercise the frozen preview behavior, then capture the required "
+                "screenshots. Use the existing Reviewer and protected-CI evidence. Do not "
+                "run tests, builds, repo-check, secret-scan, or any broad verification suite."
+            )
         command = [
             str(self.launcher), self.project, "run",
             "--role", role, "--ticket", claim["ticket"],
@@ -2188,7 +2232,10 @@ class Controller:
                         raise ControllerError("Reviewer PR gate returned an invalid status")
                     if pr.get("status") == "failed":
                         failed_checks = list(pr.get("checks", []))
-                self.run_role(claim, role, receipt, failed_checks)
+                if role == "narrator":
+                    self.run_role(claim, role, receipt, failed_checks, pr)
+                else:
+                    self.run_role(claim, role, receipt, failed_checks)
                 return {
                     "status": (
                         claim["status"]

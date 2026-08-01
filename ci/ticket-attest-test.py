@@ -712,6 +712,15 @@ else:
         self.approval_overlay()
         self.assertIn("bundle changed", self.attest("approval").stderr)
 
+    def test_explicitly_non_approvable_bundle_is_refused(self):
+        path = self.product / "factory/tickets/T-700-bundle.md"
+        path.write_text("NOT APPROVABLE: preview is missing.\n" + path.read_text())
+        self.commit("record failed bundle")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        result = self.attest("bundle")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("explicitly not approvable", result.stderr)
+
     def test_wrong_duplicate_and_head_mismatched_prs_are_refused(self):
         for update, message in (
             ({"duplicate": True}, "exactly one"),

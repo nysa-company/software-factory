@@ -117,6 +117,12 @@ elif args[:2] == ['pr', 'checks']:
         raise SystemExit(1)
     print(json.dumps([{'name': 'ci', 'state': bucket, 'bucket': bucket}]))
     raise SystemExit(8 if bucket == 'pending' else 1 if bucket != 'pass' else 0)
+elif args[:2] == ['pr', 'view']:
+    print(json.dumps({'comments': [{
+        'author': {'login': 'railway-app'},
+        'body': '| api | success | [Web](https://api-example-pr-7.up.railway.app) | now |\\n'
+                '| web | success | [Web](https://web-example-pr-7.up.railway.app) | now |',
+    }]}))
 else:
     raise SystemExit(2)
 """
@@ -363,7 +369,15 @@ else:
         prs = json.loads(self.state.read_text())
         prs[0]["headRefOid"] = current
         self.state.write_text(json.dumps(prs))
-        self.assertEqual(self.command()["status"], "ready")
+        ready = self.command()
+        self.assertEqual(ready["status"], "ready")
+        self.assertEqual(
+            ready["preview_urls"],
+            [
+                "https://api-example-pr-7.up.railway.app",
+                "https://web-example-pr-7.up.railway.app",
+            ],
+        )
 
         (self.product / "implementation.txt").write_text("changed after review\n")
         subprocess.run(["git", "-C", self.product, "add", "implementation.txt"], check=True)

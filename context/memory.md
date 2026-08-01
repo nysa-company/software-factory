@@ -2491,3 +2491,23 @@ must pair sealed manifests with that same canonical runtime ledger. Ticket PR
 preparation and ticket attestation now resolve the ledger from the claimed
 worktree (unless the launcher supplies an explicit trusted override). They do
 not fall back to the qualification control checkout's stale ignored ledger.
+
+## 2026-08-01 — Decision 182: Qualification isolates mutable accounting, not logic
+
+Category: Incident
+
+The canonical ignored runtime ledger cannot safely serve two controllers that
+reduce different run-manifest roots: production Linear sync can replace the
+qualification view and erase a just-completed Reviewer row. The sealed
+qualification launcher now binds both runtime and durable ledger paths inside
+its isolated product worktree, and every helper receives that trusted override.
+Stage selection refreshes the lane-local projection from the lane's own
+manifest root before consuming it. Production continues using its canonical
+path. Both lanes execute the same release code and reducers; only mutable
+runtime evidence is separated.
+
+Narrator also receives the exact PR, head, validated Railway preview endpoints,
+green required-check result, and current accounting snapshot from trusted host
+boundaries. It must not rerun repository verification. An explicit
+`NOT APPROVABLE:` bundle is never attested and consumes the one bounded
+Narrator retry before escalation.

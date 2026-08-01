@@ -3884,8 +3884,8 @@ certification, promotion, or production activation occurred.
 
 ## FI-20260801-134 — Publication read the sealed checkout's stale runtime ledger
 
-Status: Shared-path repair implemented and focused validation green; sealed
-successor and live PR-boundary recovery pending
+Status: Closed by focused validation and live PR-boundary recovery; follow-on
+lane-isolation defect recorded as FI-20260801-135
 Priority: P0
 Area: qualification publication evidence and canonical runtime accounting
 Owner: Factory
@@ -3920,8 +3920,63 @@ checkout whose stale control ledger cannot hide the canonical successful row.
 The attestation run passed all 53 existing cases; its new split-checkout case
 reached the correct Reviewer and Narrator rows but exposed an order-sensitive
 test expectation. That assertion now compares the role set, and the corrected
-regression passes independently. A sealed successor and live T-094 publication
-boundary remain required.
+regression passes independently. Sealed successor
+`178ab9016c0f68fd8fe70f60b491060cb7b2d1ff` then reattached T-094, reused PR
+#304, and crossed the Reviewer-bound ticket-PR boundary with every required
+check green before launching Narrator. That live canary closes this defect; the
+later overwrite of the shared canonical ignored ledger is a distinct
+multi-lane isolation defect below.
+
+## FI-20260801-135 — Shared ignored ledger and unbound Narrator inputs regressed publication
+
+Status: Implemented; focused and Hermes integration regressions green; sealed
+successor canary pending
+Priority: P0
+Area: qualification accounting isolation and Narrator publication evidence
+Owner: Factory
+First seen: Nysa qualification candidate
+`178ab9016c0f68fd8fe70f60b491060cb7b2d1ff`
+Impact: T-094 crossed the repaired ticket-PR boundary and launched Narrator,
+but Narrator lacked the exact PR, preview, and accounting inputs promised by
+its role contract. It ran root `npm test` for 494 seconds, encountered 33
+unrelated web-test timeouts under broad-suite load, and committed an explicitly
+non-approvable bundle. After that commit, the controller's next ticket-PR
+validation failed with `successful reviewer run evidence is missing` and parked
+T-094; T-100 and T-093 remained dependency-waiting. No certification,
+promotion, or production activation ran.
+Evidence: Narrator run `1785577279-77281` completed exit 0 with 115 progress
+events and committed `b9171a37`. Its terminal transcript records root
+`npm test`; the command's web workspace ended 18 files failed / 20 passed and
+33 tests failed / 115 passed. PR #304 had all required checks green and a
+current `railway-app` comment naming successful API and web preview endpoints,
+but the bundle stated that no PR, preview, or runtime ledger existed. The sealed
+Reviewer manifest `1785573332-1737.meta` remained intact while the canonical
+ignored runtime ledger no longer contained its row; production sync had reduced
+that same file from a different run root.
+Root cause: qualification and production used identical accounting code but
+shared one mutable ignored ledger while owning different manifest roots, so the
+last reducer writer could erase the other lane's effective rows. Separately,
+the controller supplied Narrator only a generic task, while the sanitized
+provider process intentionally inherited neither GitHub credentials nor Factory
+control paths; nothing bound the promised PR, preview, or accounting inputs, and
+the role contract did not explicitly prohibit broad verification reruns.
+Smallest repair: the qualification launcher supplies trusted lane-local runtime
+and durable ledger overrides to every unchanged helper, and stage selection
+refreshes that view from the lane's own manifest root before consuming it.
+`ticket-pr` extracts
+only validated `railway-app` Web endpoints on `*.up.railway.app`, waits while
+none are reported, and returns them with the exact PR/head/check result. The
+controller binds those values into Narrator's task; the runner adds the
+post-reservation accounting snapshot. Narrator v8 forbids tests, builds,
+repository checks, secret scans, and broad suites. The sequencer treats an
+explicit `NOT APPROVABLE:` bundle as its one bounded retry, and ticket
+attestation refuses to advance one.
+Validation: ticket PR passes 12/12, controller passes 58/58, and ticket
+attestation passes 55/55. The full factory-script suite passes, including the
+lane-local ledger refresh, explicit non-approvable retry, planning, repair, and
+contract-1.8 refresh cases. The complete isolated Hermes contract suite also
+passes, including serialized execution, ticket PR, project-ledger closeout, and
+the final launcher schema audit. The sealed live successor remains pending.
 
 ## Maintenance rule
 

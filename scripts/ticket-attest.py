@@ -2001,6 +2001,8 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     if field(text, "State").lower() != "review":
         raise Refusal("bundle requires ticket State Review")
     bundle_text = bundle_path.read_text()
+    if re.search(r"\bNOT\s+APPROVABLE\s*:", bundle_text, re.I):
+        raise Refusal("evidence bundle is explicitly not approvable")
     required = (
         "What this does", "Preview", "Screenshots", "Acceptance criteria",
         "Risk", "Cost", "Rollback",

@@ -2427,10 +2427,12 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
     "FACTORY_MODEL_STATE_ROOT": "resolved production kits projects directory",
     "FACTORY_PROJECT": "validated launcher project slug",
+    "FACTORY_OPERATOR_MAP": "canonical live operator overlay path supplied only by a sealed production-successor takeover",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
     "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
     "FACTORY_TRANSITION_STATE_DIR": "Contract 1.8 owner-only controller state directory",
+    "FACTORY_AUTHENTICATED_ROLE_EVIDENCE": "Contract 1.8 owner-only ephemeral completed-role sequence created only by the state machine for its next-stage child",
     "FACTORY_PROVIDER_DB": "fixed Contract 1.6+ owner-local transactional database",
     "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6+ owner-local admission policy",
     "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
@@ -2455,10 +2457,12 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_RELEASE_CONTRACT_VERSION",
     "FACTORY_MODEL_STATE_ROOT",
     "FACTORY_PROJECT",
+    "FACTORY_OPERATOR_MAP",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
     "FACTORY_TRANSITION_RECEIPT_SHA256",
     "FACTORY_TRANSITION_STATE_DIR",
+    "FACTORY_AUTHENTICATED_ROLE_EVIDENCE",
     "FACTORY_PROVIDER_DB",
     "FACTORY_PROVIDER_POLICY",
     "FACTORY_PROVIDER_BROKER_DB",
@@ -2548,13 +2552,17 @@ launcher_text = open(
 ).read()
 assert "/private/tmp/nysa-sf-qualification" in launcher_text
 assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
-assert 'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")' in launcher_text
+assert '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"' in launcher_text
+assert '"FACTORY_LEDGER=$PRODUCT_ROOT/factory/runtime-ledger.csv"' in launcher_text
+assert '"FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"' in launcher_text
+assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text
 assert '"FACTORY_CLI_RUNTIME_ROOT=$PROVIDER_STATE_ROOT/cli-runtimes"' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
 runner_text = open(
     os.path.join(root, "scripts", "run-agent.sh"), encoding="utf-8"
 ).read()
 assert 'nysa-sf-qualification.*' in runner_text
+assert "including this Narrator attempt's conservative reservation" in runner_text
 
 integration = os.path.join(root, "integrations", "hermes")
 required = [

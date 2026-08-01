@@ -154,12 +154,15 @@ They do not trust `runtime-ledger.csv`, because that file is an ignored output
 view and linked production/qualification worktrees may materialize different
 copies without changing the underlying accounting evidence.
 Where a publication boundary must pair a completed role manifest with its
-effective ledger row, the manifest remains in the sealed controller product's
-run root and the ignored ledger is resolved beside the claimed ticket
-worktree's canonical main checkout. Ticket PR preparation and ticket
-attestation share this exact rule with role execution. A sealed qualification
-control checkout's stale ignored ledger is never substituted for the
-canonical ticket runtime view.
+effective ledger row, both views must come from the same runtime lane. Ordinary
+production resolves the ignored ledger beside the claimed ticket worktree's
+canonical main checkout. A sealed qualification launcher instead supplies an
+explicit trusted override inside its isolated control product, so production
+sync cannot rewrite qualification evidence from a different run-manifest root.
+Ticket execution, PR preparation, and ticket attestation consume that same
+launcher-bound path. Qualification stage selection refreshes that projection
+from its own manifest root before consuming it. The code and evidence reducer
+are identical; only the lane's mutable runtime file is isolated.
 
 Failed-attempt handoff snapshots cover the Git tree, index, and non-ignored
 untracked files. Git-ignored dependency/build trees are outside that snapshot;

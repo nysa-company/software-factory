@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
@@ -351,6 +352,48 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
     return "pass", []
 
 
+def railway_preview_urls(repo: str, number: int) -> list[str]:
+    result = run([
+        "gh", "pr", "view", str(number), "--repo", repo,
+        "--json", "comments",
+    ])
+    try:
+        value = json.loads(result.stdout)
+        comments = value["comments"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise Refusal("GitHub returned invalid preview evidence") from error
+    if not isinstance(comments, list):
+        raise Refusal("GitHub returned invalid preview evidence")
+    urls = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            raise Refusal("GitHub returned malformed preview evidence")
+        author = comment.get("author")
+        body = comment.get("body")
+        if not (
+            isinstance(author, dict)
+            and author.get("login") == "railway-app"
+            and isinstance(body, str)
+        ):
+            continue
+        for candidate in re.findall(r"\[Web\]\((https://[^\s()]+)\)", body):
+            parsed = urlsplit(candidate)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or not parsed.hostname.endswith(".up.railway.app")
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port is not None
+                or parsed.query
+                or parsed.fragment
+                or parsed.path not in ("", "/")
+            ):
+                raise Refusal("Railway preview URL is malformed")
+            urls.append(candidate.rstrip("/"))
+    return list(dict.fromkeys(urls))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticket", required=True)
@@ -440,6 +483,19 @@ def main() -> None:
         ):
             raise Refusal("ticket PR branch, base, head, or state is invalid")
         check_status, checks = required_check_status(repo, pr["number"])
+        preview_urls = (
+            railway_preview_urls(repo, pr["number"])
+            if boundary in {"narrator", "publication"}
+            and check_status == "pass"
+            else []
+        )
+        if (
+            boundary in {"narrator", "publication"}
+            and check_status == "pass"
+            and not preview_urls
+        ):
+            check_status = "wait"
+            checks = ["preview deployment not reported"]
         status = (
             "ready" if boundary in {"narrator", "publication"} and check_status == "pass"
             else "prepared" if check_status == "pass"
@@ -451,6 +507,7 @@ def main() -> None:
             "checks": checks,
             "head": head,
             "pr_number": pr["number"],
+            "preview_urls": preview_urls,
             "schema": SCHEMA,
             "status": status,
             "ticket": args.ticket,

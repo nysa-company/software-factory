@@ -594,7 +594,7 @@ write_run_manifest() {
 }
 
 expect_stage() {
-  local expected="$1" root="$2" ticket="$3" actual status certified_origin
+  local expected="$1" root="$2" ticket="$3" actual status certified_origin contract
   mkdir -p "$root/factory/runs"
   [[ -f "$root/factory/KIT_PIN" ]] ||
     printf '%s\n' "$KIT_SHA" > "$root/factory/KIT_PIN"
@@ -602,10 +602,20 @@ expect_stage() {
     init_product_git "$root"
   fi
   certified_origin="$(git -C "$root" remote get-url --push origin 2>/dev/null || true)"
-  actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
-    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
-    FACTORY_HERMES_CONTRACT_VERSION="${TEST_CONTRACT_VERSION:-1.2.0}" \
-    "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
+  contract="${TEST_CONTRACT_VERSION:-1.2.0}"
+  if [[ "$contract" == "1.8.0" ]]; then
+    actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
+      FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
+      FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+      FACTORY_RELEASE_CONTRACT_VERSION="$contract" \
+      "$SEALED_RELEASE/scripts/next-stage.sh" --ticket "$ticket" 2>&1)"
+  else
+    actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
+      FACTORY_HERMES_CONTRACT_VERSION="$contract" \
+      "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
+  fi
   status=$?
   [[ "$actual" == "$expected"* ]] || {
     fail "$ticket expected '$expected'" "got '$actual' (status $status)"
@@ -921,6 +931,30 @@ if [[ "$OVERRIDE_STATUS" -eq 0 && "$OVERRIDE_ROWS" == "1" &&
 else
   fail "FACTORY_LEDGER override wins" \
     "status=$OVERRIDE_STATUS override_rows=$OVERRIDE_ROWS canonical_rows=$CANONICAL_ROWS"
+fi
+
+# A trusted lane override can request reduction from its own manifest root
+# before stage selection instead of consuming a stale projected file.
+REFRESH_OVERRIDE="$TMP/refresh-override"
+write_envelope "$REFRESH_OVERRIDE"
+write_ticket "$REFRESH_OVERRIDE" T-203
+mkdir -p "$REFRESH_OVERRIDE/factory/runs"
+{
+  ledger_header
+  ledger_row T-203 planner
+} > "$REFRESH_OVERRIDE/factory/ledger.csv"
+ledger_header > "$REFRESH_OVERRIDE/factory/runtime-ledger.csv"
+REFRESH_STAGE="$(FACTORY_ROOT="$REFRESH_OVERRIDE" \
+  FACTORY_LEDGER="$REFRESH_OVERRIDE/factory/runtime-ledger.csv" \
+  FACTORY_REFRESH_RUNTIME_LEDGER=1 \
+  "$NEXT_STAGE" --ticket T-203 2>&1)"
+if [[ "$REFRESH_STAGE" == "RUN spec-linter" ]] &&
+   [[ "$(awk -F, '$3=="T-203" {n++} END {print n+0}' \
+       "$REFRESH_OVERRIDE/factory/runtime-ledger.csv")" == "1" ]]; then
+  pass "trusted lane override refreshes its own runtime ledger"
+else
+  fail "trusted lane override refreshes its own runtime ledger" \
+    "stage=$REFRESH_STAGE"
 fi
 
 # Legacy or partial headers migrate to the complete append-only schema.
@@ -2680,8 +2714,17 @@ TICKET
   ledger_row T-502 reviewer
   ledger_row T-502 narrator
 } > "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
-printf 'Preview broken: not approvable.\n' > \
-  "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md"
+cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md" <<'BUNDLE'
+NOT APPROVABLE: preview deployment is missing.
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
 INVALID_BUNDLE_OK=1
 expect_stage "RUN narrator" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
 ledger_row T-502 narrator >> "$INVALID_BUNDLE_ROOT/factory/ledger.csv"

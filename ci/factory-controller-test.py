@@ -492,6 +492,54 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls[0][0][0], "preflight")
         self.assertIn("planner", calls[0][0])
 
+    def test_narrator_receives_trusted_publication_context(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        captured = []
+
+        class CompletedProcess:
+            def __init__(self, command, **_kwargs):
+                captured.append(command)
+
+            @staticmethod
+            def wait(timeout=None):
+                return 0
+
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        publication = {
+            "checks": [],
+            "head": "b" * 40,
+            "pr_number": 7,
+            "preview_urls": [
+                "https://api-example-pr-7.up.railway.app",
+                "https://web-example-pr-7.up.railway.app",
+            ],
+            "status": "ready",
+            "url": "https://github.com/example/product/pull/7",
+        }
+        with patch.object(CONTROL.subprocess, "Popen", CompletedProcess):
+            controller.run_role(
+                claim, "narrator", "c" * 64, [], publication,
+            )
+        task = captured[0][-1]
+        self.assertIn("PR #7", task)
+        self.assertIn("web-example-pr-7.up.railway.app", task)
+        self.assertIn("Do not run tests", task)
+
     def test_model_pin_relies_on_its_bounded_probes_not_an_outer_timeout(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

@@ -86,6 +86,11 @@ canonical_factory_file() {
 
 LEDGER="${FACTORY_LEDGER:-$(canonical_factory_file "$REPO_ROOT" runtime-ledger.csv)}"
 DURABLE_LEDGER="${FACTORY_DURABLE_LEDGER:-$(canonical_factory_file "$REPO_ROOT" ledger.csv)}"
+REFRESH_RUNTIME_LEDGER="${FACTORY_REFRESH_RUNTIME_LEDGER:-0}"
+[[ "$REFRESH_RUNTIME_LEDGER" == "0" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] || {
+  echo "REFUSE runtime ledger refresh policy is invalid"
+  exit 1
+}
 ROLE_EVIDENCE="${FACTORY_AUTHENTICATED_ROLE_EVIDENCE:-}"
 TICKETS_DIR="$CONTENT_ROOT/factory/tickets"
 
@@ -533,7 +538,7 @@ PY
     exit 0
   fi
 fi
-if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+if [[ -z "${FACTORY_LEDGER:-}" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] &&
    ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh \
      --factory-root "$REPO_ROOT" \
      --durable-ledger "$DURABLE_LEDGER" \
@@ -710,6 +715,8 @@ import re
 import sys
 
 text = open(sys.argv[1], encoding="utf-8").read()
+if re.search(r"\bNOT\s+APPROVABLE\s*:", text, re.I):
+    raise SystemExit(1)
 required = (
     "What this does", "Preview", "Screenshots", "Acceptance criteria",
     "Risk", "Cost", "Rollback",

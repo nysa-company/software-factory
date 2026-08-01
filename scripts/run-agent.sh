@@ -2167,6 +2167,25 @@ if ! refresh_runtime_ledger; then
   echo "effective ledger could not be materialized; refusing launch" >&2
   exit 3
 fi
+if [[ "$ROLE" == "narrator" ]]; then
+  NARRATOR_ATTEMPTS="$(python3 -B - "$LEDGER" "$TICKET" <<'PY'
+import csv
+import sys
+
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    print(sum(row.get("ticket") == sys.argv[2] for row in csv.DictReader(handle)))
+PY
+)" || {
+    echo "Narrator accounting evidence could not be counted; refusing launch" >&2
+    exit 3
+  }
+  NARRATOR_COST="$(python3 "$MONEY" sum-csv --csv "$LEDGER" \
+    --date-column 0 --amount-column 7 --filter-column 2 --filter-value "$TICKET")" || {
+    echo "Narrator accounting evidence could not be summed; refusing launch" >&2
+    exit 3
+  }
+  TASK="$TASK Trusted effective accounting at launch, including this Narrator attempt's conservative reservation: attempts=$NARRATOR_ATTEMPTS cost_usd=$NARRATOR_COST. Do not rerun tests, builds, repo-check, secret-scan, or any broad verification suite."
+fi
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]]; then
   rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 fi
