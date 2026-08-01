@@ -566,19 +566,24 @@ def qualification_apply(args):
         qualification = json.loads(raw)
     except json.JSONDecodeError as error:
         raise FallbackError("protected qualification manifest is malformed") from error
+    release_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
+    authorized_factory_sha = (
+        release_sha if manifest_path else result["journal"]["kit_sha"]
+    )
     if (
         qualification.get("schema") not in {
             "nysa.software-factory.qualification/v1",
             "nysa.software-factory.qualification/v2",
         }
-        or qualification.get("factory_sha") != result["journal"]["kit_sha"]
+        or qualification.get("factory_sha") != authorized_factory_sha
         or args.ticket not in qualification.get("tickets", [])
         or not isinstance(qualification.get("generation"), int)
         or qualification["generation"] < 1
     ):
         raise FallbackError("protected qualification manifest does not authorize fallback")
     if manifest_path and (
-        qualification.get("schema") != "nysa.software-factory.qualification/v2"
+        not re.fullmatch(r"[0-9a-f]{40}", release_sha)
+        or qualification.get("schema") != "nysa.software-factory.qualification/v2"
         or qualification.get("mode") != "successor"
         or not re.fullmatch(r"[0-9a-f]{40}", qualification.get("source_factory_sha", ""))
     ):

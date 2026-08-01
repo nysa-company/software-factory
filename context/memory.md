@@ -2471,3 +2471,7 @@ tickets, tests, route journals, and other Factory controls remain forbidden.
 The first-attempt limit counts submitted GO attempts only for the failed run's
 exact frozen candidate; preserved attempts from predecessor candidates remain
 accounted but do not disable the successor's fallback.
+A sealed successor may checkpoint the latest exact failed candidate before
+route migration: the failure remains bound to its old journal SHA, while the
+local successor manifest must bind the executing sealed release. The resulting
+clean handoff head is then eligible for ordinary route and passport migration.

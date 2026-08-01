@@ -332,7 +332,7 @@ class FallbackTest(unittest.TestCase):
     def test_qualification_apply_uses_sealed_local_successor_manifest(self):
         protected = self.repo / "factory/QUALIFICATION.json"
         value = json.loads(protected.read_text())
-        value["factory_sha"] = "f" * 40
+        value["factory_sha"] = "e" * 40
         protected.write_text(json.dumps(value))
         git(self.repo, "add", "factory/QUALIFICATION.json")
         git(self.repo, "commit", "-m", "unauthorized protected manifest")
@@ -345,7 +345,7 @@ class FallbackTest(unittest.TestCase):
 
         qualification = self.product / "factory/QUALIFICATION.json"
         qualification.write_text(json.dumps({
-            "factory_sha": "a" * 40,
+            "factory_sha": "f" * 40,
             "generation": 1,
             "mode": "successor",
             "schema": "nysa.software-factory.qualification/v2",
@@ -360,6 +360,7 @@ class FallbackTest(unittest.TestCase):
 
         applied = self.command("qualification-apply", environment={
             "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_RELEASE_SHA": "f" * 40,
             "FACTORY_ROOT": str(self.product),
         })
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])

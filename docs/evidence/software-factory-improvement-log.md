@@ -3830,6 +3830,9 @@ required `factory/tickets/T-094.md` root-cause log. The corrected successor
 accepted that boundary, then refused because its first-attempt guard counted
 all nine historical T-094 Builder runs rather than the sole submitted Builder
 attempt under candidate `202b6c07`.
+After candidate-scoped counting passed, the sealed successor still could not
+authorize the old failure because the helper required its local successor
+manifest SHA to equal the older journal Kit-SHA before route migration.
 Root cause: Builder v5 required “all tests green locally,” which encouraged a
 repository-wide suite despite qualification's ticket-scoped iteration policy.
 Independently, `finish_pending_run` exported every terminal passport before
@@ -3845,7 +3848,11 @@ tickets, tests, route journals, and other controls remain forbidden. All other
 terminal ordering is unchanged. The automatic fallback's one-attempt guard now
 counts only submitted GO attempts for the exact failed candidate; historical
 attempts remain immutable accounting evidence but do not consume that
-candidate's retry boundary.
+candidate's retry boundary. For sealed successor takeover only, the local
+manifest binds the executing release SHA while the failure and journal retain
+their exact older SHA; ordinary qualification still requires one shared SHA.
+This permits a clean handoff commit before the existing route migration and
+does not relax head, route, latest-run, ticket, or successor-manifest checks.
 Validation: all 56 focused controller tests pass, including the assertion that
 no eager passport export occurs and that `fallback-auto` precedes preserving
 migration. The Builder contract check proves v6 contains the full-suite ban and
@@ -3855,7 +3862,9 @@ broad suites to required protected CI; repository and secret checks are green.
 The focused fallback, handoff, approval, and model-control suites pass all 29
 tests, including current-ticket acceptance, sibling-ticket rejection, and a
 historical predecessor attempt that does not consume the current candidate's
-fallback. Live successor recovery remains required.
+fallback. The sealed-local-manifest regression also proves the executing
+successor SHA may differ from the exact failed journal SHA while an unrelated
+protected manifest is ignored. Live successor recovery remains required.
 
 ## Maintenance rule
 

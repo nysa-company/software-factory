@@ -582,6 +582,12 @@ It is idempotent across controller restart. A second task-submitted
 attempt for that ticket, role, and frozen candidate is refused as no progress
 instead of replayed; preserved attempts from predecessor candidates do not
 consume the successor's one fallback boundary.
+When that failure predates the executing sealed successor, its failed manifest
+and route journal remain bound to the exact older Kit-SHA while the local
+successor qualification manifest must bind the executing release SHA. The
+handoff makes the cell clean before the ordinary release-migration revision;
+an unsealed, non-successor, differently headed, or differently routed recovery
+still fails closed.
 An exit 143 before task submission reopens only that interrupted role, and only
 after the current signed passport, clean cell, branch, and remote head agree
 exactly; every submitted or differently terminated interruption stays blocked.
