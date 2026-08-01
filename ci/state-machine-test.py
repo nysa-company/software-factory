@@ -110,6 +110,11 @@ class StateMachineTest(unittest.TestCase):
             STATE.stage_role("AWAIT_BUDGET ticket budget exhausted")
         )
         self.assertIsNone(STATE.stage_role("AWAIT_DEPENDENCY T-094"))
+        self.assertIsNone(
+            STATE.stage_role(
+                "ESCALATE evidence bundle remained invalid after one Narrator retry"
+            )
+        )
         with self.assertRaisesRegex(STATE.StateError, "unsupported transition"):
             STATE.stage_role("FIX builder-or-test-author")
 

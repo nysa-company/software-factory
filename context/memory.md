@@ -2550,3 +2550,19 @@ root and exact project/Kit-SHA tuple; it does not require the product path to be
 nested under that root. If a role subprocess exits without a receipt-bound
 terminal manifest, the controller blocks with the receipt intact and releases
 the lease instead of resolving the same stage again.
+
+## 2026-08-01 — Decision 186: Narrator retry exhaustion is a typed terminal escalation
+
+Category: Incident
+
+The sequencer's second invalid or explicitly non-approvable evidence bundle is
+an expected `ESCALATE` transition, not an unknown resolver result and not
+another role retry. The typed state resolver accepts that non-role action, and
+the controller blocks the claim once, releases its ticket lease, and records
+the escalation detail. This keeps a broken preview from becoming a Narrator
+spend loop while preserving the exact failed bundle and screenshots for repair.
+
+Every newly proven Factory edge case must add the smallest deterministic
+regression that reproduces its original boundary before the repair is accepted.
+The regression remains in the focused suite so incident evidence accumulates
+into durable coverage instead of being discarded after the immediate fix.

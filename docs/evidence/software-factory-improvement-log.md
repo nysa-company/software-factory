@@ -4022,6 +4022,22 @@ its receipt intact and lease released. Focused coverage includes successful and
 failed subprocess exit codes, so absence of terminal evidence can never imply
 progress.
 
+Third follow-on occurrence: sealed candidate `d8e768e8` admitted T-094 under
+the exact candidate-scoped provider identity, submitted one Narrator attempt,
+and produced terminal run `1785596620-61582` with 147 structured progress
+events. The committed bundle correctly began `NOT APPROVABLE:` because the PR
+web preview called the production API and the PR API did not allow the PR web
+origin. With the one bounded Narrator retry exhausted, `next-stage.sh` emitted
+`ESCALATE evidence bundle remained invalid after one Narrator retry`; the typed
+Python resolver rejected that documented non-role action as unsupported, so
+the controller safely blocked T-094 but reported a controller error. The
+smallest repair admits `ESCALATE` as a typed non-role transition and makes the
+controller park it once, release the ticket lease, and record the exact detail.
+Focused state-resolver and controller regressions cover this terminal path. The
+Narrator commit and screenshots remain immutable failure evidence; no Narrator
+rerun is allowed against the unchanged preview. The separate product preview
+pairing defect must route through repair before a new deployed-head proof.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

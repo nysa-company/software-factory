@@ -368,7 +368,7 @@ def stage_role(stage: str) -> str | None:
         return detail
     if action in {
         "AWAIT-OPERATOR", "AWAIT-MERGE", "AWAIT_BUDGET", "AWAIT_DEPENDENCY",
-        "COMPLETE", "REFUSE",
+        "COMPLETE", "ESCALATE", "REFUSE",
     }:
         return None
     raise StateError("state resolver returned an unsupported transition")

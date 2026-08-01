@@ -2198,6 +2198,7 @@ class Controller:
                         or stage.startswith("AWAIT_DEPENDENCY ")
                         or stage.startswith("AWAIT_BUDGET ")
                         or stage.startswith("COMPLETE ")
+                        or stage.startswith("ESCALATE ")
                         or stage.startswith("REFUSE ")
                         or stage.startswith((
                             "AWAIT-MERGE approval attested; "
@@ -2406,6 +2407,13 @@ class Controller:
                 self.event("ticket_complete", claim["ticket"])
                 self.release(claim)
                 return {"status": "complete", "ticket": claim["ticket"]}
+            if stage.startswith("ESCALATE "):
+                detail = stage.partition(" ")[2]
+                self.block(claim, "state-machine-escalation")
+                self.event(
+                    "state_machine_escalated", claim["ticket"], detail=detail,
+                )
+                return {"status": "blocked", "ticket": claim["ticket"]}
             if stage in {
                 "REFUSE refresh receipt was not committed directly after its merge",
                 "REFUSE stale refresh receipt does not bind this branch history",

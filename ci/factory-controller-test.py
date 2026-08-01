@@ -3412,6 +3412,68 @@ class FactoryControllerTest(unittest.TestCase):
                     ],
                 )
 
+    def test_narrator_retry_exhaustion_blocks_as_typed_escalation(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        stage = (
+            "ESCALATE evidence bundle remained invalid after one Narrator retry"
+        )
+        calls = []
+        controller.ensure_lease = lambda *_args: calls.append("renew")
+        controller.finish_pending_run = lambda *_args: True
+        controller.refresh_dependency_tracking = lambda *_args: True
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "state-machine":
+                return {"receipt": "b" * 64, "role": None, "stage": stage}
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            if args[0] == "release":
+                return {"status": "released"}
+            raise AssertionError(args)
+
+        events = []
+        controller.json_call = json_call
+        controller.event = (
+            lambda name, *_args, **details: events.append((name, details))
+        )
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "blocked", "ticket": "T-110"},
+        )
+        self.assertEqual(claim["status"], "blocked")
+        self.assertTrue(claim["lease_released"])
+        self.assertIn(
+            ("ticket_blocked", {"reason": "state-machine-escalation"}), events,
+        )
+        self.assertIn(
+            (
+                "state_machine_escalated",
+                {
+                    "detail": (
+                        "evidence bundle remained invalid after one Narrator retry"
+                    )
+                },
+            ),
+            events,
+        )
+
     def test_budget_wait_reopens_after_envelope_or_override_change(self) -> None:
         controller = CONTROL.Controller(self.args)
         leases = iter(("b" * 64, "c" * 64))
