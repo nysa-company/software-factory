@@ -2535,5 +2535,6 @@ A sealed successor can authenticate a predecessor candidate's typed pre-GO
 `launch_void` without replaying or charging it, but recovery must classify the
 preserved receipt as runnable before selecting the qualification restart
 cohort. The ordinary terminal reducer then clears that receipt exactly once
-and resumes the same stage. Same-release and malformed receipts remain blocked,
-so this bridge cannot create a retry loop.
+and resumes the same stage. Recovery requires the exact abandoned/no-GO/
+no-submission/zero-cost/launch-void tuple. Same-release and malformed receipts
+remain blocked, so this bridge cannot create a retry loop.

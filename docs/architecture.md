@@ -624,9 +624,11 @@ release recovery cannot become a same-release retry loop. Submission markers
 use collision-resistant owner-only temporary files before atomic publication
 and directory synchronization.
 The same release boundary applies to a typed `launch_void`: release migration
-keeps its receipt runnable until the ordinary terminal reducer clears it, while
-a same-release receipt remains blocked. This classification is required before
-restart-capacity selection so recovery cannot be stranded outside the worker.
+keeps its receipt runnable until the ordinary terminal reducer clears it only
+when the manifest proves abandoned phase, no GO, no submission, zero cost, and
+the launch-void cost basis. A same-release or malformed receipt remains blocked.
+This classification is required before restart-capacity selection so recovery
+cannot be stranded outside the worker.
 Every successful mutating role except Test-author must retain its authenticated
 role-input commit as an ancestor. The trusted wrapper checks that invariant
 before reading the remote for publication or attempting a push. If a clean

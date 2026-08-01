@@ -391,6 +391,17 @@ class Controller:
         return claim["status"] not in {"blocked", "budget"}
 
     @staticmethod
+    def typed_launch_void(terminal: dict[str, str]) -> bool:
+        return (
+            terminal.get("phase") == "abandoned"
+            and terminal.get("accounting_state") == "launch_void"
+            and terminal.get("go_issued") == "0"
+            and terminal.get("task_submitted") == "0"
+            and terminal.get("effective_cost") == "0"
+            and terminal.get("cost_basis") == "launch_void"
+        )
+
+    @staticmethod
     def consumes_capacity(claim: dict[str, Any]) -> bool:
         return (
             claim["status"] in {"claimed", "running"}
@@ -904,14 +915,7 @@ class Controller:
             ):
                 matches.append(value)
         if len(matches) > 1:
-            launch_voids = all(
-                item.get("accounting_state") == "launch_void"
-                and item.get("go_issued") == "0"
-                and item.get("task_submitted") == "0"
-                and item.get("effective_cost") == "0"
-                and item.get("cost_basis") == "launch_void"
-                for item in matches
-            )
+            launch_voids = all(self.typed_launch_void(item) for item in matches)
             identity = {
                 (
                     item.get("role"), item.get("role_head_before"),
@@ -1315,7 +1319,7 @@ class Controller:
             )
             if terminal is not None:
                 prior_release_launch_void = (
-                    terminal.get("accounting_state") == "launch_void"
+                    self.typed_launch_void(terminal)
                     and SHA.fullmatch(terminal.get("kit_sha", ""))
                     and terminal["kit_sha"] != self.release_path.name
                 )
@@ -1734,7 +1738,8 @@ class Controller:
         self.emit_attempt_terminal(claim, terminal)
         if terminal.get("accounting_state") == "launch_void":
             if (
-                SHA.fullmatch(terminal.get("kit_sha", ""))
+                self.typed_launch_void(terminal)
+                and SHA.fullmatch(terminal.get("kit_sha", ""))
                 and terminal["kit_sha"] != self.release_path.name
             ):
                 prior = terminal["kit_sha"]

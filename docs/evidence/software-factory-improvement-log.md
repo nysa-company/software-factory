@@ -3999,7 +3999,12 @@ non-Cursor terminal as blocked before the existing prior-release launch-void
 reducer could clear it. The smallest correction makes only a valid
 prior-release launch-void receipt runnable during migration, leaving
 same-release or malformed receipts blocked. Focused controller regression
-covers both sides of that boundary; live successor proof remains pending.
+covers both sides of that boundary, and a three-ticket restart regression
+proves the preserved receipt contributes to the complete restart cohort. Edge
+coverage rejects a same-release receipt, invalid release SHA, non-abandoned
+phase, prior GO or submission, nonzero cost, and a non-launch-void cost basis;
+it also proves the successful prior-release clear is idempotent. Live successor
+proof remains pending.
 
 ## Maintenance rule
 
