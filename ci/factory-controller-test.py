@@ -2380,6 +2380,68 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["receipt"], receipt)
         self.assertEqual(claim["role"], "builder")
 
+    def test_successor_upgrade_reopens_only_prior_release_launch_void(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        old_factory = "b" * 40
+        claims = []
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        for ticket, receipt, kit_sha in (
+            ("T-110", "c" * 64, old_factory),
+            ("T-111", "e" * 64, self.release.name),
+        ):
+            claim = {
+                "branch": f"ticket/{ticket}",
+                "lease": "d" * 64,
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": receipt,
+                "role": "narrator",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked",
+                "ticket": ticket,
+                "worktree": str(self.root / f"cell-{ticket}"),
+            }
+            claims.append(claim)
+            CONTROL.write(
+                passports / f"{ticket}.json", {"factory_sha": old_factory},
+            )
+            (self.product / f"factory/runs/{ticket}-void.meta").write_text(
+                f"run_id={ticket}-void\n"
+                "phase=abandoned\n"
+                f"ticket={ticket}\n"
+                "role=narrator\n"
+                "accounting_state=launch_void\n"
+                "go_issued=0\n"
+                "task_submitted=0\n"
+                "effective_cost=0\n"
+                "cost_basis=launch_void\n"
+                "exit_status=6\n"
+                "role_exit=\n"
+                f"kit_sha={kit_sha}\n"
+                f"transition_receipt_sha256={receipt}\n",
+                encoding="utf-8",
+            )
+
+        def migrate(claim, _publication):
+            CONTROL.write(
+                passports / f"{claim['ticket']}.json",
+                {"factory_sha": self.release.name},
+            )
+
+        controller.ticket_release_current = lambda _claim: True
+        controller.renew = lambda _claim: None
+        controller.migrate_passport = migrate
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.event = lambda *_args, **_kwargs: None
+
+        controller.recover_upgraded_claims(claims)
+
+        self.assertEqual(claims[0]["status"], "running")
+        self.assertEqual(claims[0]["receipt"], "c" * 64)
+        self.assertEqual(claims[1]["status"], "blocked")
+        self.assertEqual(claims[1]["receipt"], "e" * 64)
+
     def test_successor_upgrade_reopens_candidate_scoped_budget(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.qualification = {

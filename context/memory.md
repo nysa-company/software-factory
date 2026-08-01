@@ -2526,3 +2526,14 @@ takeover checkout by the generic basename `product_`. Same-day predecessor
 attempts could therefore exhaust a new candidate before provider GO. The sealed
 launcher now binds provider product and ticket admission to project plus exact
 candidate SHA. The machine-day scope remains shared and unchanged.
+
+## 2026-08-01 — Decision 184: Successor launch-void recovery is schedulable
+
+Category: Incident
+
+A sealed successor can authenticate a predecessor candidate's typed pre-GO
+`launch_void` without replaying or charging it, but recovery must classify the
+preserved receipt as runnable before selecting the qualification restart
+cohort. The ordinary terminal reducer then clears that receipt exactly once
+and resumes the same stage. Same-release and malformed receipts remain blocked,
+so this bridge cannot create a retry loop.

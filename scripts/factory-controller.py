@@ -1314,12 +1314,20 @@ class Controller:
                 else None
             )
             if terminal is not None:
+                prior_release_launch_void = (
+                    terminal.get("accounting_state") == "launch_void"
+                    and SHA.fullmatch(terminal.get("kit_sha", ""))
+                    and terminal["kit_sha"] != self.release_path.name
+                )
                 claim["status"] = (
                     "running"
                     if (
-                        self.qualification
-                        and terminal.get("role_exit") == "provider_failed"
-                        and terminal.get("route_id", "").startswith("cursor-")
+                        prior_release_launch_void
+                        or (
+                            self.qualification
+                            and terminal.get("role_exit") == "provider_failed"
+                            and terminal.get("route_id", "").startswith("cursor-")
+                        )
                     )
                     else "blocked"
                 )

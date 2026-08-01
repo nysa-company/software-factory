@@ -3991,6 +3991,16 @@ candidate SHA. Same-candidate roots still share a cap and the machine-day scope
 remains global. The focused qualification environment suite passes 4/4; shell
 syntax and diff-integrity checks are green.
 
+Follow-on occurrence: candidate `ba3ff2d3` migrated T-094, T-100, and T-093
+to exact successor routes without a provider call, but restart selection found
+only two of the required three runnable claims. T-094 retained the predecessor
+candidate's valid zero-cost `launch_void`; upgrade recovery classified every
+non-Cursor terminal as blocked before the existing prior-release launch-void
+reducer could clear it. The smallest correction makes only a valid
+prior-release launch-void receipt runnable during migration, leaving
+same-release or malformed receipts blocked. Focused controller regression
+covers both sides of that boundary; live successor proof remains pending.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
