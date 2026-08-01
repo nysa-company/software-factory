@@ -691,7 +691,13 @@ the current ticket's evidence directory are admitted, additions and updates
 must be referenced by the current bundle, and deletions must have been
 referenced by the reviewed bundle. The classifier validates the complete PNG
 chunk stream and refuses unreferenced, nested, sibling, executable, malformed,
-or excessive evidence. `approval` consumes only a newer exact Linear
+or excessive evidence. The subsequent approval head is validated by one shared
+ticket-PR/attestation helper: it must be the direct child of the exact bundle
+attestation commit, change only the current ticket and a newly added ordinary
+approval receipt, preserve all ticket text except the sealed
+Awaiting Approval → Approved/Linear transformation, and bind the same reviewed
+SHA, repository, branch, Kit-SHA, PR, bundle blobs, merge method, and ordered
+timestamps. `approval` consumes only a newer exact Linear
 Awaiting Approval → Approved overlay, commits the approval attestation, and
 requests normal protected GitHub auto-merge for that exact PR head. `done`
 requires the exact merged commit on authoritative `origin/main`, all configured

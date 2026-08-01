@@ -16,6 +16,10 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
+from approval_evidence import (  # noqa: E402
+    ApprovalEvidenceError,
+    trusted_approval_continuation_paths,
+)
 from narrator_evidence import (  # noqa: E402
     MAX_NARRATOR_EVIDENCE_BYTES,
     MAX_NARRATOR_EVIDENCE_FILES,
@@ -71,6 +75,20 @@ def project_repo(factory: Path) -> str:
             values.append(match.group(1))
     if len(values) != 1:
         raise Refusal("GH_REPO is missing or ambiguous")
+    return values[0]
+
+
+def project_auto_merge_method(factory: Path) -> str:
+    values = []
+    for raw in (factory / "PROJECT.env").read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(
+            r"(?:export\s+)?AUTO_MERGE_METHOD\s*=\s*['\"]?(squash|merge|rebase)['\"]?",
+            raw.strip(),
+        )
+        if match:
+            values.append(match.group(1))
+    if len(values) != 1:
+        raise Refusal("AUTO_MERGE_METHOD is missing or ambiguous")
     return values[0]
 
 
@@ -256,6 +274,26 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
     trusted_metadata.update(
         trusted_narrator_evidence_paths(workdir, ticket, reviewed, head, changed)
     )
+    approval_path = f"factory/attestations/{ticket}/approval.json"
+    if approval_path in changed:
+        ticket_text = git(workdir, "show", f"{head}:factory/tickets/{ticket}.md")
+        kit_shas = re.findall(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_text, re.MULTILINE)
+        if len(kit_shas) != 1:
+            raise Refusal("approval continuation Kit-SHA is missing or ambiguous")
+        try:
+            trusted_metadata.update(trusted_approval_continuation_paths(
+                workdir,
+                ticket,
+                project_repo(product / "factory"),
+                ticket_branch_prefix(product / "factory") + ticket,
+                kit_shas[0],
+                project_auto_merge_method(product / "factory"),
+                reviewed,
+                head,
+                changed,
+            ))
+        except ApprovalEvidenceError as error:
+            raise Refusal(str(error)) from error
     if changed - trusted_metadata:
         raise Refusal("ticket implementation changed after the latest successful review")
     if route_path not in changed:

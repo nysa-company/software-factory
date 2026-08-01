@@ -4235,6 +4235,43 @@ and an unreferenced file still refuses.
 Live closure requires a sealed successor to create the T-094 bundle
 attestation and reach Awaiting Approval without another Reviewer or Narrator.
 
+## FI-20260801-140 — Approval attestation was rejected as post-review implementation drift
+
+Status: Focused regressions and exact live-history validation green; sealed
+successor recovery pending
+Priority: P0
+Area: post-review approval publication lineage
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`2c087dedd49016dcdf3f4392353fe87caf073556`
+Impact: after T-094 received the required human Linear approval, the sealed
+controller correctly committed approval head
+`7c7ad4f33a9456777eee09baf9d63e7329be547c` as the direct child of bundle
+attestation head `3753b6a4cdf0ac7471ceabf178f47a4a66d8d589`. A follow-on reconciliation then
+ran the ordinary publication PR gate and rejected the Factory-generated
+`approval.json` as `ticket implementation changed after the latest successful
+review`. The exact head and all checks remained clean, auto-merge remained
+disabled, T-100 and T-093 stayed dependency-gated, and no role replay occurred.
+Finding: ticket-PR admitted the current ticket, bundle, route journal, refresh
+receipt, and shared Narrator raster evidence after Reviewer, but omitted the
+approval receipt that `ticket-attest` itself creates. Adding the path alone
+would weaken the boundary because a forged receipt or approval-time ticket
+change could then cross readiness before the attestation retry rejected it.
+Smallest repair: centralize bundle-commit and approval-commit validation in one
+shared helper consumed by both ticket-PR and ticket-attest. The helper binds
+exact keys and identities, complete direct-parent topology, exact `M ticket + A
+receipt` commit shapes, ordinary blob modes, immutable bundle/route blobs,
+ordered timestamps, and the exact Awaiting Approval → Approved plus Linear
+approval ticket transformation.
+Edge coverage: ticket-PR passes 31/31, including the exact approval continuation
+and refusals for a tampered receipt, approval-time ticket drift, executable
+receipt, duplicate JSON keys, and an extra commit path. Ticket attestation
+passes 57/57 through the same helper. The helper independently validates the
+exact live T-094 approval head and reviewed SHA `22edcfb1057681a10354bf16978416cf7c733cb5`.
+Live closure requires a sealed successor to cross the approval-head PR gate,
+request protected auto-merge, and close T-094 without replaying Reviewer or
+Narrator.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -3,6 +3,7 @@
 
 import base64
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -69,7 +70,7 @@ class TicketPrTest(unittest.TestCase):
         (factory / "tickets").mkdir(parents=True)
         (factory / "PROJECT.env").write_text(
             "GH_REPO=example/product\nTICKET_BRANCH_PREFIX=ticket/\n"
-            "MAX_CONCURRENT_TICKETS=4\n"
+            "MAX_CONCURRENT_TICKETS=4\nAUTO_MERGE_METHOD=squash\n"
         )
         leases = factory / ".dispatch-leases"
         leases.mkdir()
@@ -444,6 +445,115 @@ else:
             raise ValueError(mode)
         self.commit_and_push("refresh narrator evidence")
 
+    def prepare_approval_continuation(self, mode="valid"):
+        route_plan, _ = self.prepare_route_migration()
+        bundle_path = self.product / "factory/tickets/T-100-bundle.md"
+        bundle_path.write_text("# Evidence bundle\n\nApprove to merge?\n")
+        self.commit_and_push("record narrator bundle")
+        self.prepare_narrator()
+        reviewed = next(
+            line.partition("=")[2]
+            for line in (self.product / "factory/runs/run-5.meta").read_text().splitlines()
+            if line.startswith("role_head_before=")
+        )
+        branch_head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        route_blob = subprocess.run(
+            ["git", "-C", self.product, "hash-object", route_plan],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        bundle_blob = subprocess.run(
+            ["git", "-C", self.product, "hash-object", bundle_path],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        ticket_path = self.product / "factory/tickets/T-100.md"
+        ticket_path.write_text(ticket_path.read_text().replace(
+            "State: Building", "State: Awaiting Approval", 1,
+        ))
+        attestation_root = self.product / "factory/attestations/T-100"
+        attestation_root.mkdir(parents=True)
+        bundle_receipt = {
+            "schema": "nysa.software-factory.ticket-bundle/v1",
+            "ticket": "T-100",
+            "repository": "example/product",
+            "branch": "ticket/T-100",
+            "branch_head": branch_head,
+            "reviewed_sha": reviewed,
+            "bundle_path": "factory/tickets/T-100-bundle.md",
+            "bundle_blob": bundle_blob,
+            "pr_number": 7,
+            "pr_url": "https://example.invalid/pr/7",
+            "reviewer_run_id": "run-5",
+            "narrator_run_id": "run-6",
+            "kit_sha": KIT_SHA,
+            "policy_hash": "1" * 64,
+            "route_plan_path": "factory/route-plans/T-100.json",
+            "route_plan_blob": route_blob,
+            "route_plan_sha256": hashlib.sha256(route_plan.read_bytes()).hexdigest(),
+            "attested_at": "2026-07-20T01:00:00Z",
+        }
+        bundle_receipt_path = attestation_root / "bundle.json"
+        bundle_receipt_path.write_text(
+            json.dumps(bundle_receipt, indent=2, sort_keys=True) + "\n"
+        )
+        self.commit_and_push("attest bundle")
+
+        parent_head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        ticket = ticket_path.read_text().replace(
+            "State: Awaiting Approval",
+            "State: Approved\nOperator-Approval: Linear",
+            1,
+        )
+        if mode == "ticket-drift":
+            ticket += "Unreviewed approval-time scope.\n"
+        ticket_path.write_text(ticket)
+        bundle_attestation_blob = subprocess.run(
+            ["git", "-C", self.product, "hash-object", bundle_receipt_path],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        approval_receipt = {
+            "schema": "nysa.software-factory.ticket-approval/v1",
+            "ticket": "T-100",
+            "repository": "example/product",
+            "branch": "ticket/T-100",
+            "parent_head": parent_head,
+            "reviewed_sha": reviewed,
+            "bundle_blob": bundle_blob,
+            "bundle_attestation_blob": bundle_attestation_blob,
+            "pr_number": 7,
+            "operator_version": "2" * 64,
+            "linear_updated_at": "2026-07-20T02:00:00Z",
+            "observed_at": "2026-07-20T02:01:00Z",
+            "kit_sha": KIT_SHA,
+            "auto_merge_method": "squash",
+            "attested_at": "2026-07-20T02:01:00Z",
+        }
+        if mode == "tampered-receipt":
+            approval_receipt["reviewed_sha"] = "9" * 40
+        approval_path = attestation_root / "approval.json"
+        approval_path.write_text(
+            json.dumps(approval_receipt, indent=2, sort_keys=True) + "\n"
+        )
+        if mode == "duplicate-key":
+            approval_path.write_text(
+                approval_path.read_text().replace(
+                    '  "ticket": "T-100"',
+                    '  "ticket": "T-100",\n  "ticket": "T-100"',
+                )
+            )
+        elif mode == "executable":
+            approval_path.chmod(0o755)
+        elif mode == "extra-path":
+            (self.product / "approval-side-effect.txt").write_text("not trusted\n")
+        elif mode not in {"valid", "tampered-receipt", "ticket-drift"}:
+            raise ValueError(mode)
+        self.commit_and_push("attest Linear approval")
+
     def publication_command(self, expected=0):
         return self.command(
             expected=expected,
@@ -552,6 +662,42 @@ else:
         self.prepare_post_review_evidence("limit")
         ready = self.publication_command()
         self.assertEqual(ready["status"], "ready")
+
+    def test_publication_accepts_exact_factory_approval_continuation(self):
+        self.prepare_approval_continuation()
+        ready = self.publication_command()
+        self.assertEqual(ready["boundary"], "publication")
+        self.assertEqual(ready["status"], "ready")
+
+    def test_publication_rejects_tampered_approval_receipt(self):
+        self.prepare_approval_continuation("tampered-receipt")
+        refused = self.publication_command(expected=2)
+        self.assertIn("approval", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_approval_time_ticket_drift(self):
+        self.prepare_approval_continuation("ticket-drift")
+        refused = self.publication_command(expected=2)
+        self.assertIn("approval", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_unsafe_approval_receipt(self):
+        self.prepare_approval_continuation("executable")
+        refused = self.publication_command(expected=2)
+        self.assertIn("approval", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_duplicate_approval_keys(self):
+        self.prepare_approval_continuation("duplicate-key")
+        refused = self.publication_command(expected=2)
+        self.assertIn("duplicate key", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_approval_commit_side_effects(self):
+        self.prepare_approval_continuation("extra-path")
+        refused = self.publication_command(expected=2)
+        self.assertIn("approval", refused["error"])
+        self.assertFalse(self.trace.exists())
 
     def test_publication_rejects_unreferenced_narrator_evidence(self):
         self.prepare_post_review_evidence("unreferenced")

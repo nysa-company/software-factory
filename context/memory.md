@@ -2653,3 +2653,19 @@ ticket path and bundle reference, 2 MB per-file limit, and 32-file aggregate
 limit. A new acceptance or refusal rule therefore changes both publication
 boundaries together, while focused integration tests retain each boundary's
 call-site behavior.
+
+## 2026-08-01 — Decision 193: Approval continuation is shared immutable evidence
+
+Category: Trust boundary
+
+The Factory's approval attestation is a legitimate post-review continuation,
+not application drift. Ticket-PR readiness and ticket attestation must validate
+that continuation through one shared helper. Admission requires the exact
+two-commit bundle/approval chain, ordinary `100644` receipt blobs, exact ticket
+and receipt-only commit shapes, matching repository/branch/Kit-SHA/PR/bundle
+identities, ordered timestamps, and the one permitted ticket transformation
+from Awaiting Approval to Approved with `Operator-Approval: Linear`. Duplicate
+JSON keys, altered receipt identity, approval-time ticket scope changes, extra
+paths, executable evidence, or a non-direct commit refuse before publication.
+This rule preserves Reviewer and Narrator output while allowing the protected
+H2 approval head to run checks and reach auto-merge.

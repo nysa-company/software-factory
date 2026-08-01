@@ -24,6 +24,12 @@ from refresh_semantics import (  # noqa: E402
     retained_control_paths,
 )
 from narrator_evidence import trusted_narrator_evidence_paths  # noqa: E402
+from approval_evidence import (  # noqa: E402
+    ApprovalEvidenceError,
+    validate_approval_attestation as validate_shared_approval_attestation,
+    validate_bundle_attestation as validate_shared_bundle_attestation,
+    validate_bundle_commit as validate_shared_bundle_commit,
+)
 from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
 from runtime_paths import canonical_factory_file  # noqa: E402
 
@@ -914,128 +920,30 @@ def valid_oid(value):
 
 
 def validate_bundle_attestation(value, ticket, repo, branch, kit_sha, workdir):
-    base_keys = {
-        "schema", "ticket", "repository", "branch", "branch_head",
-        "reviewed_sha", "bundle_path", "bundle_blob", "pr_number", "pr_url",
-        "reviewer_run_id", "narrator_run_id", "kit_sha", "policy_hash",
-        "route_plan_path", "route_plan_blob", "route_plan_sha256", "attested_at",
-    }
-    schema = value.get("schema")
-    if schema == "nysa.software-factory.ticket-bundle/v1":
-        expected_keys = base_keys
-        legacy_digest_valid = "legacy_planner_manifest_sha256" not in value
-    elif schema == "nysa.software-factory.ticket-bundle/v2":
-        expected_keys = base_keys | {"legacy_planner_manifest_sha256"}
-        legacy_digest_valid = bool(re.fullmatch(
-            r"[0-9a-f]{64}", value.get("legacy_planner_manifest_sha256", ""),
-        ))
-    else:
-        expected_keys = set()
-        legacy_digest_valid = False
-    if (
-        set(value) != expected_keys
-        or not legacy_digest_valid
-        or value.get("ticket") != ticket
-        or value.get("repository") != repo
-        or value.get("branch") != branch
-        or value.get("kit_sha") != kit_sha
-        or value.get("route_plan_path") != f"factory/route-plans/{ticket}.json"
-        or not valid_oid(value.get("route_plan_blob"))
-        or not re.fullmatch(r"[0-9a-f]{64}", value.get("route_plan_sha256", ""))
-        or not re.fullmatch(r"[0-9a-f]{64}", value.get("policy_hash", ""))
-        or not isinstance(value.get("pr_number"), int)
-        or value["pr_number"] <= 0
-        or not isinstance(value.get("pr_url"), str)
-        or not value["pr_url"]
-        or not all(valid_oid(value.get(key)) for key in (
-            "branch_head", "reviewed_sha", "bundle_blob",
-        ))
-        or value.get("bundle_path") != f"factory/tickets/{ticket}-bundle.md"
-        or not isinstance(value.get("reviewer_run_id"), str)
-        or not value["reviewer_run_id"]
-        or not isinstance(value.get("narrator_run_id"), str)
-        or not value["narrator_run_id"]
-        or blob_at(
-            workdir, value.get("branch_head", ""), value.get("route_plan_path", ""),
-        ) != value.get("route_plan_blob")
-        or hashlib.sha256(git(
-            workdir, "show",
-            f"{value.get('branch_head', '')}:{value.get('route_plan_path', '')}",
-        ).stdout.encode()).hexdigest() != value.get("route_plan_sha256")
-    ):
-        raise Refusal("bundle attestation identity or evidence is invalid")
-    timestamp(value.get("attested_at"), "bundle attestation")
-    return value
+    try:
+        return validate_shared_bundle_attestation(
+            value, ticket, repo, branch, kit_sha, workdir,
+        )
+    except ApprovalEvidenceError as error:
+        raise Refusal(str(error)) from error
 
 
 def validate_bundle_commit(workdir, ticket, value, bundle_commit):
-    receipt_path = f"factory/attestations/{ticket}/bundle.json"
-    bundle_path = f"factory/tickets/{ticket}-bundle.md"
-    expected_paths = {
-        f"factory/tickets/{ticket}.md",
-        receipt_path,
-    }
-    parent = git(workdir, "rev-parse", f"{bundle_commit}^").stdout.strip()
-    actual_paths = set(git(
-        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r",
-        bundle_commit,
-    ).stdout.splitlines())
-    if (
-        parent != value["branch_head"]
-        or actual_paths != expected_paths
-        or blob_at(workdir, bundle_commit, bundle_path) != value["bundle_blob"]
-    ):
-        raise Refusal("bundle attestation commit or reviewed branch evidence is invalid")
+    try:
+        return validate_shared_bundle_commit(workdir, ticket, value, bundle_commit)
+    except ApprovalEvidenceError as error:
+        raise Refusal(str(error)) from error
 
 
 def validate_approval_attestation(
     value, bundle_att, ticket, repo, branch, kit_sha, method, workdir, head,
 ):
-    bundle_path = f"factory/attestations/{ticket}/bundle.json"
-    expected_paths = {
-        f"factory/tickets/{ticket}.md",
-        f"factory/attestations/{ticket}/approval.json",
-    }
-    expected_keys = {
-        "schema", "ticket", "repository", "branch", "parent_head",
-        "reviewed_sha", "bundle_blob", "bundle_attestation_blob", "pr_number",
-        "operator_version", "linear_updated_at", "observed_at", "kit_sha",
-        "auto_merge_method", "attested_at",
-    }
-    parent = git(workdir, "rev-parse", f"{head}^").stdout.strip()
-    validate_bundle_commit(workdir, ticket, bundle_att, parent)
-    actual_paths = set(git(
-        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r", head,
-    ).stdout.splitlines())
-    if (
-        set(value) != expected_keys
-        or value.get("schema") != "nysa.software-factory.ticket-approval/v1"
-        or value.get("ticket") != ticket
-        or value.get("repository") != repo
-        or value.get("branch") != branch
-        or value.get("pr_number") != bundle_att["pr_number"]
-        or value.get("reviewed_sha") != bundle_att["reviewed_sha"]
-        or value.get("bundle_blob") != bundle_att["bundle_blob"]
-        or value.get("kit_sha") != kit_sha
-        or value.get("auto_merge_method") != method
-        or value.get("attested_at") != value.get("observed_at")
-        or not re.fullmatch(r"[0-9a-f]{64}", value.get("operator_version", ""))
-        or timestamp(value.get("observed_at"), "approval observation")
-        <= timestamp(bundle_att.get("attested_at"), "bundle attestation")
-        or timestamp(value.get("linear_updated_at"), "Linear approval update")
-        <= timestamp(bundle_att.get("attested_at"), "bundle attestation")
-        or value.get("parent_head") != parent
-        or parent != git(workdir, "rev-parse", "HEAD^").stdout.strip()
-        or value.get("bundle_attestation_blob") != blob_at(
-            workdir, parent, bundle_path,
+    try:
+        return validate_shared_approval_attestation(
+            value, bundle_att, ticket, repo, branch, kit_sha, method, workdir, head,
         )
-        or value["bundle_attestation_blob"] != blob_id(
-            workdir, workdir / bundle_path,
-        )
-        or actual_paths != expected_paths
-    ):
-        raise Refusal("existing approval attestation or approval commit is invalid")
-    return value
+    except ApprovalEvidenceError as error:
+        raise Refusal(str(error)) from error
 
 
 def protected_approval_evidence(
