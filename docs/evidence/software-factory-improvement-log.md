@@ -4164,6 +4164,45 @@ The focused state-machine suite passes 27/27, including the nine-case
 authenticated generation matrix and the existing 48-case role/state matrix;
 shell syntax, Python compilation, and diff-integrity checks are green.
 
+## FI-20260801-138 — Narrator screenshots were misclassified as implementation drift
+
+Status: Focused regression and exact live-history validation green; sealed
+successor recovery pending
+Priority: P0
+Area: post-review publication lineage
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`ff75f3301c95457f5a98f5fcf48d8d19e3b2905d`
+Impact: the generation-bound reducer correctly launched one new Narrator for
+T-094 without replaying Builder or Reviewer. Run `1785613189-45324` completed
+successfully at reviewed head `46c3644d97f3ad3ce50f65a475c486841ab1decc`,
+committed approvable bundle head `2ef3aa6ebc5bb788b0460caa1b85f951d6703dcd`,
+and replaced two obsolete broken-preview captures with six before, after, and
+reference PNGs at the two frozen viewports. The commit was clean and pushed,
+but the publication reducer blocked with `ticket implementation changed after
+the latest successful review` before bundle attestation. T-100 and T-093
+remained in dependency wait; no role replay, product certification, promotion,
+or production activation occurred.
+Finding: `ticket-pr.py` trusted the current ticket bundle Markdown after the
+latest Reviewer but omitted the exact raster files that the Narrator contract
+requires the same commit to reference. The security boundary therefore treated
+valid evidence output as application drift even though the attestation path
+binds the exact branch head and bundle blob.
+Smallest repair: admit only changed PNGs below
+`factory/tickets/<ticket>-evidence/` when the exact path is referenced by the
+current bundle, or by the reviewed bundle when the image is deleted. Require an
+ordinary `100644` Git blob, exact PNG beginning and terminal chunk, at most 2 MB
+per image, and at most 32 changed images. Do not trust sibling-ticket paths,
+unreferenced files, symlinks, disguised bytes, other extensions, or any product
+path.
+Edge coverage: the focused ticket-PR suite passes 19/19. Seven new cases prove
+the exact referenced add/delete set succeeds and that unreferenced, fake-PNG,
+oversized, excess-count, symlink, and sibling-ticket variants fail before
+GitHub access. The repaired validator also accepts the immutable live T-094
+`2ef3aa6` history directly.
+Live closure requires the sealed successor to attest that preserved bundle
+without launching Narrator again.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

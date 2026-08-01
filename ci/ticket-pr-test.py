@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Idempotent early ticket PR boundary test."""
 
+import base64
 import copy
 import importlib.util
 import json
@@ -34,6 +35,10 @@ HEADER = (
     "run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
 )
 LEASE_ID = "a" * 64
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class TicketPrTest(unittest.TestCase):
@@ -341,6 +346,69 @@ else:
             check=True,
         )
 
+    def commit_and_push(self, message):
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", message], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
+
+    def prepare_post_review_evidence(self, mode="valid"):
+        bundle = self.product / "factory/tickets/T-100-bundle.md"
+        evidence = self.product / "factory/tickets/T-100-evidence"
+        evidence.mkdir()
+        (evidence / "old.png").write_bytes(PNG)
+        bundle.write_text("![Old](T-100-evidence/old.png)\n")
+        self.commit_and_push("record prior narrator evidence")
+        self.prepare_narrator()
+
+        (evidence / "old.png").unlink()
+        current = evidence / "current.png"
+        current.write_bytes(PNG)
+        bundle.write_text("![Current](T-100-evidence/current.png)\n")
+        if mode == "unreferenced":
+            (evidence / "orphan.png").write_bytes(PNG)
+        elif mode == "fake":
+            current.write_bytes(b"not-a-png" * 8)
+        elif mode == "oversized":
+            current.write_bytes(
+                TICKET_PR.PNG_SIGNATURE
+                + b"x" * TICKET_PR.MAX_NARRATOR_EVIDENCE_BYTES
+                + TICKET_PR.PNG_END
+            )
+        elif mode == "many":
+            lines = [bundle.read_text()]
+            for index in range(TICKET_PR.MAX_NARRATOR_EVIDENCE_FILES):
+                path = evidence / f"extra-{index}.png"
+                path.write_bytes(PNG)
+                lines.append(f"![Extra {index}](T-100-evidence/{path.name})\n")
+            bundle.write_text("".join(lines))
+        elif mode == "symlink":
+            current.unlink()
+            current.symlink_to("../T-100-bundle.md")
+        elif mode == "sibling":
+            sibling = self.product / "factory/tickets/T-999-evidence"
+            sibling.mkdir()
+            (sibling / "sibling.png").write_bytes(PNG)
+            bundle.write_text(
+                bundle.read_text()
+                + "![Sibling](T-999-evidence/sibling.png)\n"
+            )
+        elif mode != "valid":
+            raise ValueError(mode)
+        self.commit_and_push("refresh narrator evidence")
+
+    def publication_command(self, expected=0):
+        return self.command(
+            expected=expected,
+            contract="1.8.0",
+            stage="AWAIT-OPERATOR bundle approval",
+            receipt="f" * 64,
+        )
+
     def test_creates_once_reuses_and_requires_reviewer_stage(self):
         first = self.command()
         second = self.command()
@@ -425,6 +493,48 @@ else:
         recovered = self.command()
         self.assertEqual(recovered["boundary"], "narrator")
         self.assertEqual(recovered["status"], "ready")
+
+    def test_publication_accepts_referenced_current_ticket_png_evidence(self):
+        self.prepare_post_review_evidence()
+        ready = self.publication_command()
+        self.assertEqual(ready["boundary"], "publication")
+        self.assertEqual(ready["status"], "ready")
+
+    def test_publication_rejects_unreferenced_narrator_evidence(self):
+        self.prepare_post_review_evidence("unreferenced")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_fake_png_narrator_evidence(self):
+        self.prepare_post_review_evidence("fake")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_oversized_narrator_evidence(self):
+        self.prepare_post_review_evidence("oversized")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_excess_narrator_evidence_files(self):
+        self.prepare_post_review_evidence("many")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_symlinked_narrator_evidence(self):
+        self.prepare_post_review_evidence("symlink")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_sibling_ticket_narrator_evidence(self):
+        self.prepare_post_review_evidence("sibling")
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.assertFalse(self.trace.exists())
 
     def test_narrator_recovery_accepts_only_authenticated_control_refresh(self):
         self.prepare_narrator(accounting_state="abandoned_conservative")

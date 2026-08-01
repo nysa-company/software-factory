@@ -2620,3 +2620,17 @@ responses within one cycle, with no more than three total attempts. A valid
 bounded exponential backoff. GraphQL semantic errors, malformed responses, and
 other HTTP failures remain fail-closed and are retried only by the next normal
 sync cycle. Repeated successful cycles must remain idempotent.
+
+## 2026-08-01 — Decision 191: Narrator raster evidence is trusted only by bundle reference
+
+Category: Trust boundary
+
+A successful Narrator may commit its current ticket bundle and the screenshots
+that bundle references after the latest Reviewer. Publication lineage treats
+only exact current-ticket PNG paths as control evidence: additions and retained
+images must be referenced by the current bundle, while deletions must have been
+referenced by the reviewed bundle. Every admitted image is a bounded ordinary
+Git blob with valid PNG boundaries. Unreferenced files, sibling-ticket paths,
+symlinks, disguised content, and application paths remain implementation drift.
+The successful Narrator output is preserved and attested at its exact branch
+head; this boundary never authorizes a Reviewer or Narrator replay.
