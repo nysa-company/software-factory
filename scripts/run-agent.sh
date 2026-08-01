@@ -1468,8 +1468,12 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
 fi
 PROVIDER_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
 if [[ -n "${FACTORY_PROVIDER_PRODUCT_ID:-}" ]]; then
-  if [[ -z "$DEVELOPMENT_LANE_ROOT" ||
-        "$(basename "$DEVELOPMENT_LANE_ROOT")" != nysa-sf-qualification.* ||
+  if [[ "${FACTORY_CLI_LANE_ROOT:-}" != /* ||
+        ! -d "$FACTORY_CLI_LANE_ROOT" ||
+        -L "$FACTORY_CLI_LANE_ROOT" ||
+        "$(basename "$FACTORY_CLI_LANE_ROOT")" != nysa-sf-qualification.* ||
+        ! -f "$FACTORY_CLI_LANE_ROOT/marker.json" ||
+        -L "$FACTORY_CLI_LANE_ROOT/marker.json" ||
         "$FACTORY_PROVIDER_PRODUCT_ID" != "$TRANSITION_PROJECT:$FACTORY_KIT_SHA" ]]; then
     echo "qualification provider product identity is invalid; no task was submitted" >&2
     exit 3

@@ -2123,10 +2123,22 @@ class Controller:
             process = subprocess.Popen(command, stdout=log, stderr=log)
             while True:
                 try:
-                    process.wait(timeout=RECONCILE_INTERVAL_SECONDS)
+                    exit_status = process.wait(
+                        timeout=RECONCILE_INTERVAL_SECONDS
+                    )
                     break
                 except subprocess.TimeoutExpired:
                     self.observe_attempt_safely(claim)
+        if self.terminal_for_receipt(claim["ticket"], receipt) is None:
+            claim["status"] = "blocked"
+            self.save_claim(claim)
+            self.release_ticket_lease(claim)
+            self.event(
+                "role_launch_missing_terminal", claim["ticket"],
+                exit_status=exit_status, role=role,
+                transition_receipt_sha256=receipt,
+            )
+            return
         self.finish_pending_run(claim)
 
     def reconcile_ticket(self, claim: dict[str, Any]) -> dict[str, str]:

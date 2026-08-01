@@ -160,6 +160,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
             '"$FACTORY_PROVIDER_PRODUCT_ID" != "$TRANSITION_PROJECT:$FACTORY_KIT_SHA"',
             runner_text,
         )
+        self.assertIn(
+            '"${FACTORY_CLI_LANE_ROOT:-}" != /*', runner_text,
+        )
+        self.assertNotIn(
+            '[[ -z "$DEVELOPMENT_LANE_ROOT" ||', runner_text,
+        )
         self.assertIn('CLI_PRODUCT_ID="$PROVIDER_PRODUCT_ID"', runner_text)
         self.assertIn('ISOLATED_PRODUCT_ID="$PROVIDER_PRODUCT_ID"', runner_text)
         self.assertIn(

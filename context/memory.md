@@ -2538,3 +2538,15 @@ cohort. The ordinary terminal reducer then clears that receipt exactly once
 and resumes the same stage. Recovery requires the exact abandoned/no-GO/
 no-submission/zero-cost/launch-void tuple. Same-release and malformed receipts
 remain blocked, so this bridge cannot create a retry loop.
+
+## 2026-08-01 — Decision 185: Takeover provider scope binds the sealed lane root
+
+Category: Incident
+
+Production-successor takeover intentionally executes against a linked product
+worktree outside the sealed qualification root. Candidate-scoped provider
+identity validation therefore authenticates the launcher-supplied sealed lane
+root and exact project/Kit-SHA tuple; it does not require the product path to be
+nested under that root. If a role subprocess exits without a receipt-bound
+terminal manifest, the controller blocks with the receipt intact and releases
+the lease instead of resolving the same stage again.

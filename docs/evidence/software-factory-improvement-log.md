@@ -4006,6 +4006,22 @@ phase, prior GO or submission, nonzero cost, and a non-launch-void cost basis;
 it also proves the successful prior-release clear is idempotent. Live successor
 proof remains pending.
 
+Second follow-on occurrence: tested candidate `029b09f` passed the 3/3 live
+restart boundary, migrated every passport, cleared T-094's predecessor
+launch-void exactly once, and kept T-100/T-093 in authenticated dependency
+wait. Its first Narrator launch then refused before manifest creation, GO,
+submission, or charge with `qualification provider product identity is
+invalid`. Takeover keeps its linked product outside the sealed root, while the
+new identity check incorrectly required the derived nested-lane product path.
+Because the launcher exited before writing a terminal manifest, the controller
+also cleared the fresh receipt and resolved Narrator again until the operator
+stopped it. The smallest repair validates the launcher-supplied sealed
+qualification root directly and adds a generic fail-closed controller guard:
+any completed role subprocess without terminal evidence remains blocked with
+its receipt intact and lease released. Focused coverage includes successful and
+failed subprocess exit codes, so absence of terminal evidence can never imply
+progress.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -568,6 +568,7 @@ class FactoryControllerTest(unittest.TestCase):
         controller.json_call = lambda *args, **kwargs: (
             calls.append((args, kwargs)) or {"exit_code": 0, "status": "ok"}
         )
+        controller.terminal_for_receipt = lambda *_args: {}
         controller.finish_pending_run = lambda _claim: True
 
         controller.run_role(claim, "planner", "b" * 64, [])
@@ -604,6 +605,7 @@ class FactoryControllerTest(unittest.TestCase):
                 return 0
 
         controller.ensure_execution_cell = lambda _claim: None
+        controller.terminal_for_receipt = lambda *_args: {}
         controller.finish_pending_run = lambda _claim: True
         publication = {
             "checks": [],
@@ -624,6 +626,59 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("PR #7", task)
         self.assertIn("web-example-pr-7.up.railway.app", task)
         self.assertIn("Do not run tests", task)
+
+    def test_role_launch_without_terminal_blocks_once(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        exit_statuses = [0, 3]
+        releases = []
+
+        class MissingTerminalProcess:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @staticmethod
+            def wait(timeout=None):
+                return exit_statuses.pop(0)
+
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.release_ticket_lease = lambda claim: releases.append(
+            claim["ticket"]
+        )
+        with patch.object(CONTROL.subprocess, "Popen", MissingTerminalProcess):
+            for number in (110, 111):
+                ticket = f"T-{number}"
+                cell = self.root / f"cell-{number}"
+                cell.mkdir()
+                receipt = f"{number:064x}"
+                claim = {
+                    "branch": f"ticket/{ticket}",
+                    "lease": "a" * 64,
+                    "priority": "normal",
+                    "publication_lease": "",
+                    "receipt": "",
+                    "role": "",
+                    "schema": CONTROL.CLAIM_SCHEMA,
+                    "status": "claimed",
+                    "ticket": ticket,
+                    "worktree": str(cell),
+                }
+                controller.run_role(claim, "builder", receipt, [])
+                self.assertEqual(claim["status"], "blocked")
+                self.assertEqual(claim["receipt"], receipt)
+                self.assertEqual(claim["role"], "builder")
+
+        self.assertEqual(releases, ["T-110", "T-111"])
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        missing = [
+            item for item in events
+            if item["event"] == "role_launch_missing_terminal"
+        ]
+        self.assertEqual(
+            [(item["ticket"], item["exit_status"]) for item in missing],
+            [("T-110", 0), ("T-111", 3)],
+        )
 
     def test_model_pin_relies_on_its_bounded_probes_not_an_outer_timeout(self) -> None:
         controller = CONTROL.Controller(self.args)

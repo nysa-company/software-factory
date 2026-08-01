@@ -485,6 +485,10 @@ candidate. If that candidate exposes a semantic defect after authenticating its 
 the replacement uses a new qualification root while retaining the installed
 production source in the manifest; preparation and final reduction require the
 unique contiguous v2 release suffix through every intermediate candidate.
+For takeover qualification the authenticated product worktree remains outside
+the sealed root, so candidate-scoped provider admission validates the
+launcher-supplied sealed lane root directly rather than requiring the product
+to be nested beneath it.
 If a proven Factory defect requires a successor during an isolated fresh
 qualification, the same preparer upgrades that root only while reconciliation and provider work
 are drained. It seals the successor, verifies unchanged provider policy,
@@ -629,6 +633,10 @@ when the manifest proves abandoned phase, no GO, no submission, zero cost, and
 the launch-void cost basis. A same-release or malformed receipt remains blocked.
 This classification is required before restart-capacity selection so recovery
 cannot be stranded outside the worker.
+A role subprocess that exits without any receipt-bound terminal manifest is an
+invalid launcher boundary, regardless of exit code. The controller preserves
+the receipt, blocks the claim, releases its lease, and emits one content-free
+diagnostic instead of clearing the receipt and resolving the same stage again.
 Every successful mutating role except Test-author must retain its authenticated
 role-input commit as an ancestor. The trusted wrapper checks that invariant
 before reading the remote for publication or attempting a push. If a clean
