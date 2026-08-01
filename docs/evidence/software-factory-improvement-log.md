@@ -3929,8 +3929,8 @@ multi-lane isolation defect below.
 
 ## FI-20260801-135 — Shared ignored ledger and unbound Narrator inputs regressed publication
 
-Status: Implemented; focused and Hermes integration regressions green; sealed
-successor canary pending
+Status: Follow-on provider-scope repair implemented and focused qualification
+regression green; sealed successor canary pending
 Priority: P0
 Area: qualification accounting isolation and Narrator publication evidence
 Owner: Factory
@@ -3977,6 +3977,19 @@ lane-local ledger refresh, explicit non-approvable retry, planning, repair, and
 contract-1.8 refresh cases. The complete isolated Hermes contract suite also
 passes, including serialized execution, ticket PR, project-ledger closeout, and
 the final launcher schema audit. The sealed live successor remains pending.
+
+Follow-on occurrence: sealed candidate `b2c1b722` recovered all three
+passports and reached T-094's bounded Narrator retry, but provider admission
+refused before GO with exact denial `budget_micro_usd/ticket`. Its zero-cost
+terminal was run `1785590302-77633`; the controller parked T-094 and did not
+replay Builder, Reviewer, or any sibling role. The state-machine allowance
+correctly counted only candidate `b2c1b722`, while the shared coordinator used
+generic product ID `product_` and counted $100 of same-day
+predecessor-candidate reservations. The smallest shared-path correction binds
+sealed qualification provider product/ticket scope to project plus frozen
+candidate SHA. Same-candidate roots still share a cap and the machine-day scope
+remains global. The focused qualification environment suite passes 4/4; shell
+syntax and diff-integrity checks are green.
 
 ## Maintenance rule
 

@@ -351,6 +351,11 @@ a new ticket that has no passport. This prevents release migration or
 qualification takeover from replaying an already preserved Planner,
 Spec-linter, or other successful role merely because its historical manifest
 is no longer present in the current checkout.
+A sealed qualification scopes provider product- and ticket-budget admission to
+the exact project and frozen candidate SHA. Different qualification roots for
+that same candidate share the scope, while predecessor-candidate charges stay
+outside its allowance. The provider coordinator's machine-day cap remains
+global, so candidate isolation cannot evade aggregate machine accounting.
 A ticket
 whose terminal boundary spans one or more Factory migrations reuses that
 evidence only when one unique contiguous authenticated migration suffix links

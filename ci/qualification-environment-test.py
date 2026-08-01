@@ -152,6 +152,17 @@ class QualificationEnvironmentTest(unittest.TestCase):
             launcher_text,
         )
         self.assertIn(
+            '"FACTORY_PROVIDER_PRODUCT_ID=$PROJECT:$KIT_SHA"',
+            launcher_text,
+        )
+        runner_text = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            '"$FACTORY_PROVIDER_PRODUCT_ID" != "$TRANSITION_PROJECT:$FACTORY_KIT_SHA"',
+            runner_text,
+        )
+        self.assertIn('CLI_PRODUCT_ID="$PROVIDER_PRODUCT_ID"', runner_text)
+        self.assertIn('ISOLATED_PRODUCT_ID="$PROVIDER_PRODUCT_ID"', runner_text)
+        self.assertIn(
             '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"',
             launcher_text,
         )

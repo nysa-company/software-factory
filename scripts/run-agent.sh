@@ -1466,6 +1466,18 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "$FACTORY_KIT_PIN_ERROR; no task was submitted" >&2
   exit 3
 fi
+PROVIDER_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+if [[ -n "${FACTORY_PROVIDER_PRODUCT_ID:-}" ]]; then
+  if [[ -z "$DEVELOPMENT_LANE_ROOT" ||
+        "$(basename "$DEVELOPMENT_LANE_ROOT")" != nysa-sf-qualification.* ||
+        "$FACTORY_PROVIDER_PRODUCT_ID" != "$TRANSITION_PROJECT:$FACTORY_KIT_SHA" ]]; then
+    echo "qualification provider product identity is invalid; no task was submitted" >&2
+    exit 3
+  fi
+  PROVIDER_PRODUCT_ID="$FACTORY_PROVIDER_PRODUCT_ID"
+fi
+unset FACTORY_PROVIDER_PRODUCT_ID
+readonly PROVIDER_PRODUCT_ID
 if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
@@ -1831,7 +1843,7 @@ PY
 fi
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   CLI_ATTEMPT_ID="$RUN_ID-cli"
-  CLI_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+  CLI_PRODUCT_ID="$PROVIDER_PRODUCT_ID"
   CLI_CONFIGURATION_LOCK_ARGS=()
   if [[ -n "${FACTORY_PROVIDER_CONFIGURATION_LOCK:-}" ]]; then
     CLI_CONFIGURATION_LOCK_ARGS=(
@@ -2244,7 +2256,7 @@ if [[ "$ISOLATED_RUN" -eq 1 ]]; then
       echo "isolated-v1 budget conversion failed" >&2
       STATUS=3
     else
-      ISOLATED_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+      ISOLATED_PRODUCT_ID="$PROVIDER_PRODUCT_ID"
       TASK_COMMAND=(
         /usr/bin/env -u GH_TOKEN -u OPENAI_API_KEY -u ANTHROPIC_API_KEY
         python3 "$KIT_DIR/scripts/provider-isolated-run.py"

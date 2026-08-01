@@ -64,6 +64,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   active commit, and the local qualification control worktree must be based on
   that current protected ref with only the admitted control diff. Qualification
   therefore never requires a preliminary product activation.
+- Sealed qualification provider admission scopes product- and ticket-budget
+  accounting to the exact project plus frozen candidate SHA. Predecessor
+  candidates cannot exhaust a successor's allowance, multiple roots for the
+  same candidate cannot reset it, and the machine-day cap remains global.
 - Reviewer terminalization normalizes exact verdict-only Markdown headings,
   exact wrapped repair-owner lines, and known Cursor background-callback
   concatenation only when every verdict and owner signal agrees. Ambiguous,
@@ -2511,3 +2515,14 @@ green required-check result, and current accounting snapshot from trusted host
 boundaries. It must not rerun repository verification. An explicit
 `NOT APPROVABLE:` bundle is never attested and consumes the one bounded
 Narrator retry before escalation.
+
+## 2026-08-01 — Decision 183: Qualification provider admission is candidate scoped
+
+Category: Incident
+
+The state-machine budget reducer already counts only the frozen successor
+candidate, but the shared provider coordinator previously identified every
+takeover checkout by the generic basename `product_`. Same-day predecessor
+attempts could therefore exhaust a new candidate before provider GO. The sealed
+launcher now binds provider product and ticket admission to project plus exact
+candidate SHA. The machine-day scope remains shared and unchanged.
