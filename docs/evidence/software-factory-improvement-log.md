@@ -3177,6 +3177,16 @@ is rejected. The exact live T-094 history confirms only `2ef4e82...` has a
 parent in the current authenticated repair window. Protected GitHub CI owns
 the complete regression; live closure requires generation 44's successor to
 resume exactly Test-author without replaying earlier roles.
+Additional qualification occurrence: while separating Nysa gate policy into
+protected PR #305, an explanatory operator commit preceded the first receipt
+binding. Sealed passport migrations then authenticated the withdrawal and
+final binding endpoints. Candidate `991c5f8...` counted the withdrawal's
+`git log -S` match as a second authorization and refused before provider GO.
+The validator now admits a history match as a candidate only when that
+commit's resulting ticket contains the exact visible role-and-receipt pair.
+The focused 24-test state-machine suite proves the withdrawal is ignored,
+while the existing two-actual-authorizations negative remains fail-closed.
+Successor seal and live T-094 resume remain pending.
 
 ## FI-20260730-122 — Repeated blocker could not hand recovery to an earlier owner
 

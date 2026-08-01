@@ -2423,3 +2423,15 @@ removed markers, same/older versions, and mixed commits do not reset the gate.
 Within each epoch, every test commit still precedes implementation. Never use
 the reorder helper across merge-rich or authenticated role-input history; an
 identical final tree does not preserve the exact role heads or sequencing.
+
+## 2026-07-31 — Decision 178: A receipt withdrawal is not an authorization
+
+Category: Incident
+
+Operator-resume selection may search history for the exact current receipt,
+but an authenticated commit that removes that receipt is not an authorization
+candidate. A candidate's resulting ticket must contain exactly the one visible
+repair role and current blocked receipt. This permits a receipt to be rebound
+after its parent becomes passport-authenticated without treating the interim
+withdrawal as a duplicate. Two actual in-window additions still remain
+ambiguous and fail closed before provider GO.

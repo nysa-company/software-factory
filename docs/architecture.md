@@ -497,17 +497,20 @@ visible pair for a later blocker, without changing any other path:
 `OPERATOR RESUME RECEIPT: <transition-receipt-sha256>`.
 The state machine selects the unique receipt-directive commit whose single
 parent is an authenticated head in the current passport or its v2 migration
-history and whose commit remains in current branch ancestry. The receipt must
+history, whose resulting ticket contains the exact visible role-and-receipt
+pair, and whose commit remains in current branch ancestry. An authenticated
+receipt-withdrawal commit is not an authorization candidate. The receipt must
 equal the exact current consumed blocker receipt. A missing pair, an older
-receipt, zero or multiple in-window commits, more than one visible directive,
-merge commits, malformed additions or replacements, multi-path changes, or
-unrelated head drift fail closed; neither a historical role directive nor a
-stale Linear resume state can authorize a later provider call. The state
-machine persists an HMAC-bound repair record for the unique pair and runs only
-the named owner. If the owner precedes the visible coarse state, that state
-remains unchanged while the authenticated repair receipt runs the earlier
-role; ordinary deterministic stages then catch up without adding a general
-backward state transition. After catch-up, the signed completed-repair archive
+receipt, zero or multiple actual in-window authorizations, more than one
+visible directive, merge commits, malformed additions or replacements,
+multi-path changes, or unrelated head drift fail closed; neither a historical
+role directive nor a stale Linear resume state can authorize a later provider
+call. The state machine persists an HMAC-bound repair record for the unique
+pair and runs only the named owner. If the owner precedes the visible coarse
+state, that state remains unchanged while the authenticated repair receipt
+runs the earlier role; ordinary deterministic stages then catch up without
+adding a general backward state transition. After catch-up, the signed
+completed-repair archive
 authenticates the still-visible role-and-receipt pair so it cannot be mistaken
 for a new repair. More than one successful owner run fails closed.
 After an authenticated resume creates that repair record, the controller may

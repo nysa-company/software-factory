@@ -855,6 +855,78 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.operator_resume_role(self.args, passport, "builder")
 
+    def test_operator_resume_ignores_authenticated_receipt_withdrawal(
+        self,
+    ) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOperator note: adjudication is pending.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "record operator context", cwd=self.product)
+        note_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "premature receipt binding", cwd=self.product)
+        first_binding = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n", ""
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "withdraw receipt binding", cwd=self.product)
+        withdrawn = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "OPERATOR RESUME: builder\n",
+                "OPERATOR RESUME: builder\n"
+                f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "bind authenticated receipt", cwd=self.product)
+        final_binding = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": withdrawn,
+            "migration_history": [
+                {
+                    "from_head_sha": first_binding,
+                    "to_head_sha": withdrawn,
+                }
+            ],
+            "ticket": "T-110",
+        }
+        self.assertNotIn(note_head, {
+            item["from_head_sha"]
+            for item in passport["migration_history"]
+        })
+        self.assertEqual(
+            run("git", "rev-parse", f"{final_binding}^", cwd=self.product),
+            withdrawn,
+        )
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"),
+            "builder",
+        )
+
     def test_backward_contract_repair_keeps_coarse_state_and_runs_owner(
         self,
     ) -> None:

@@ -720,6 +720,23 @@ def operator_resume_role(
     for candidate in commits:
         if not SHA.fullmatch(candidate):
             continue
+        candidate_ticket = git(
+            args.workdir, "show", f"{candidate}:{relative}"
+        ) + "\n"
+        if (
+            re.findall(
+                r"^OPERATOR RESUME: "
+                r"(planner|spec-linter|test-author|builder)$",
+                candidate_ticket,
+                re.M,
+            ) != [repair_role]
+            or re.findall(
+                r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
+                candidate_ticket,
+                re.M,
+            ) != [args.receipt]
+        ):
+            continue
         ancestry = git(
             args.workdir, "rev-list", "--parents", "-n", "1", candidate
         ).split()
