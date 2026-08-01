@@ -3804,8 +3804,8 @@ sealed root and live ordered cohort remain required.
 
 ## FI-20260731-133 — Builder broad verification blocked its own fallback
 
-Status: Shared-path repair implemented and focused validation green; live
-successor recovery pending
+Status: Closed — focused validation and live successor recovery green; later
+publication evidence defect tracked separately in FI-20260801-134
 Priority: P0
 Area: qualification role verification and provider fallback recovery
 Owner: Factory
@@ -3875,7 +3875,53 @@ successor SHA may differ from the exact failed journal SHA while an unrelated
 protected manifest is ignored. Migrated-fallback suffix and upgraded-claim
 reopen regressions pass in all 12 fallback tests and all 57 controller tests;
 the focused handoff, approval, and model-control suites remain green. Live
-successor recovery remains required.
+candidate `c23fa933` reopened the old failed receipt, exported its charge once,
+and resumed Builder run `1785572530-77467` under v6. Builder finished in about
+six minutes with the focused web acceptance suite at 7/7 and scoped TypeScript
+green; Reviewer then approved the exact branch after 155 observable progress
+events. No root Builder suite, duplicate provider attempt, publication,
+certification, promotion, or production activation occurred.
+
+## FI-20260801-134 — Publication read the sealed checkout's stale runtime ledger
+
+Status: Shared-path repair implemented and focused validation green; sealed
+successor and live PR-boundary recovery pending
+Priority: P0
+Area: qualification publication evidence and canonical runtime accounting
+Owner: Factory
+First seen: Nysa qualification candidate
+`c23fa933ea7fedd8dca5adc97238046502316a0f`
+Impact: T-094 completed Builder and Reviewer successfully, Reviewer returned an
+authenticated APPROVE verdict, both exact branch commits were pushed, and the
+provider ledger drained. The next `ticket-pr` boundary nevertheless blocked
+the claim with `successful reviewer run evidence is missing`. T-100 and T-093
+remained dependency-waiting; no PR, certification, promotion, or production
+activation ran.
+Evidence: sealed run manifest `1785573332-1737.meta` records Reviewer exit 0,
+role exit `ok`, 155 progress events, and conservative accounting. The matching
+ledger row exists in the canonical Nysa product checkout. The qualification
+control checkout's ignored `factory/runtime-ledger.csv` predates the run, so
+`ticket-pr.py` found no successful row even though role execution had written
+the authoritative canonical runtime view. `ticket-attest.py` independently
+used the same incorrect control-checkout default and would have failed after
+Narrator.
+Root cause: qualification correctly separates sealed controller run manifests
+from linked canonical ticket worktrees, but the two publication helpers assumed
+both evidence types lived under `FACTORY_ROOT`. Role execution already resolves
+ignored ledgers through the worktree's Git common directory.
+Smallest repair: one shared Python runtime-path helper applies that established
+canonical-worktree rule. Ticket PR validation and ticket attestation keep
+reading manifests from the sealed product, but read effective ledger rows from
+the claimed worktree's canonical main checkout unless an explicit trusted
+ledger override is present. Their existing exact branch, origin, lease,
+manifest, cost-basis, lineage, and GitHub checks remain unchanged.
+Validation: the ticket PR suite passes 12/12, including a split control/runtime
+checkout whose stale control ledger cannot hide the canonical successful row.
+The attestation run passed all 53 existing cases; its new split-checkout case
+reached the correct Reviewer and Narrator rows but exposed an order-sensitive
+test expectation. That assertion now compares the role set, and the corrected
+regression passes independently. A sealed successor and live T-094 publication
+boundary remain required.
 
 ## Maintenance rule
 

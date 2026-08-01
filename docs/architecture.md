@@ -153,6 +153,13 @@ the tracked durable ledger and owner-only terminal manifests on every check.
 They do not trust `runtime-ledger.csv`, because that file is an ignored output
 view and linked production/qualification worktrees may materialize different
 copies without changing the underlying accounting evidence.
+Where a publication boundary must pair a completed role manifest with its
+effective ledger row, the manifest remains in the sealed controller product's
+run root and the ignored ledger is resolved beside the claimed ticket
+worktree's canonical main checkout. Ticket PR preparation and ticket
+attestation share this exact rule with role execution. A sealed qualification
+control checkout's stale ignored ledger is never substituted for the
+canonical ticket runtime view.
 
 Failed-attempt handoff snapshots cover the Git tree, index, and non-ignored
 untracked files. Git-ignored dependency/build trees are outside that snapshot;

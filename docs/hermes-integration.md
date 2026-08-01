@@ -209,6 +209,12 @@ same call may create it at the Narrator boundary only after that reviewed-head
 lineage passes unchanged. A completed, role-valid Cursor run remains eligible
 when its billing state conservatively reserves the full run budget. It cannot
 approve or merge.
+Run manifests remain in the sealed controller product, while their effective
+ledger rows are read from the claimed ticket worktree's canonical main
+checkout (or an explicit trusted ledger override). This is the same runtime
+path rule used by role execution and attestation, so a qualification control
+checkout cannot hide a successfully completed role behind its stale ignored
+ledger copy.
 For Contract 1.8, both profile skills are compatibility documentation only.
 They invoke `reconcile` and cannot choose stages or spawn an agentic
 dispatcher or supervisor.

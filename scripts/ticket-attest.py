@@ -24,6 +24,7 @@ from refresh_semantics import (  # noqa: E402
     retained_control_paths,
 )
 from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
+from runtime_paths import canonical_factory_file  # noqa: E402
 
 
 class Refusal(ValueError):
@@ -135,7 +136,7 @@ def meta(path):
     return values
 
 
-def successful_runs(product, ticket):
+def successful_runs(product, workdir, ticket):
     manifests = []
     runs = product / "factory" / "runs"
     if not runs.is_dir() or runs.is_symlink():
@@ -174,7 +175,12 @@ def successful_runs(product, ticket):
             value["_manifest_name"] = path.name
             value["_manifest_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
             manifests.append(value)
-    ledger = product / "factory" / "runtime-ledger.csv"
+    configured_ledger = os.environ.get("FACTORY_LEDGER", "")
+    ledger = (
+        Path(configured_ledger)
+        if configured_ledger
+        else canonical_factory_file(workdir, "runtime-ledger.csv")
+    )
     if not ledger.is_file() or ledger.is_symlink():
         raise Refusal("effective runtime ledger is missing")
     with ledger.open(newline="") as handle:
@@ -1419,7 +1425,7 @@ def refresh(args, product, workdir, repo, prefix, remote):
         ):
             raise Refusal("GitHub did not make the exact stale PR head a draft")
 
-    manifests = successful_runs(product, args.ticket)
+    manifests = successful_runs(product, workdir, args.ticket)
     reviewers, approvals, requests, narrators = refresh_baselines(text, manifests)
     bundle_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     approval_path = bundle_path.with_name("approval.json")
@@ -2003,7 +2009,7 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         raise Refusal("evidence bundle is missing a required section")
     if not re.search(r"approve to merge", bundle_text, re.I):
         raise Refusal("evidence bundle lacks the operator approval question")
-    manifests = successful_runs(product, args.ticket)
+    manifests = successful_runs(product, workdir, args.ticket)
     route_plan = route_plan_evidence(workdir, product, args.ticket, kit_sha, manifests)
     reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
     preserved_base = validate_refresh_review_evidence(

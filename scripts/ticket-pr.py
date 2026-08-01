@@ -15,6 +15,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
+from runtime_paths import canonical_factory_file  # noqa: E402
 from refresh_semantics import (  # noqa: E402
     ClassificationError,
     preserved_control_paths,
@@ -65,7 +66,7 @@ def project_repo(factory: Path) -> str:
     return values[0]
 
 
-def latest_reviewer_head(product: Path, ticket: str) -> str:
+def latest_reviewer_head(product: Path, workdir: Path, ticket: str) -> str:
     runs = product / "factory" / "runs"
     if not runs.is_dir() or runs.is_symlink():
         raise Refusal("reviewer run evidence is missing")
@@ -98,9 +99,12 @@ def latest_reviewer_head(product: Path, ticket: str) -> str:
             if not run_id or run_id in reviewers:
                 raise Refusal("reviewer run evidence is ambiguous")
             reviewers[run_id] = values
-    ledger = Path(os.environ.get(
-        "FACTORY_LEDGER", product / "factory" / "runtime-ledger.csv"
-    ))
+    configured_ledger = os.environ.get("FACTORY_LEDGER", "")
+    ledger = (
+        Path(configured_ledger)
+        if configured_ledger
+        else canonical_factory_file(workdir, "runtime-ledger.csv")
+    )
     if not ledger.is_file() or ledger.is_symlink():
         raise Refusal("reviewer ledger evidence is missing")
     with ledger.open(newline="", encoding="utf-8") as handle:
@@ -228,7 +232,7 @@ def preserved_refresh_metadata(
 
 
 def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str) -> None:
-    reviewed = latest_reviewer_head(product, ticket)
+    reviewed = latest_reviewer_head(product, workdir, ticket)
     run(["git", "-C", str(workdir), "merge-base", "--is-ancestor", reviewed, head])
     changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").splitlines())
     route_path = f"factory/route-plans/{ticket}.json"

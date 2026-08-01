@@ -168,6 +168,21 @@ class TicketAttestTests(unittest.TestCase):
         self.assertEqual(result.stdout, passed.stdout)
         self.assertEqual(call.call_count, 2)
 
+    def test_successful_runs_use_canonical_worktree_ledger(self):
+        canonical = self.temp / "canonical-product"
+        canonical.mkdir()
+        command("git", "init", "-q", "-b", "main", cwd=canonical)
+        (canonical / "factory").mkdir()
+        ledger = self.product / "factory/runtime-ledger.csv"
+        (canonical / "factory/runtime-ledger.csv").write_bytes(ledger.read_bytes())
+        ledger.write_text(ledger.read_text().splitlines()[0] + "\n")
+
+        with patch.dict(os.environ, {"FACTORY_LEDGER": ""}):
+            runs = TICKET_ATTEST.successful_runs(
+                self.product, canonical, "T-700",
+            )
+        self.assertCountEqual([run["role"] for run in runs], ["reviewer", "narrator"])
+
     def test_overlay_consumption_uses_launcher_bound_operator_map(self):
         external = self.temp / "operator-map.json"
         operator = {

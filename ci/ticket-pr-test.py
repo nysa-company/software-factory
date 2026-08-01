@@ -389,6 +389,21 @@ else:
         self.assertEqual(recovered["status"], "ready")
         self.assertEqual(self.trace.read_text().count("pr create"), 1)
 
+    def test_review_evidence_uses_canonical_worktree_ledger(self):
+        self.prepare_narrator(accounting_state="abandoned_conservative")
+        canonical = self.root / "canonical-product"
+        subprocess.run(["git", "init", "-q", "-b", "main", canonical], check=True)
+        (canonical / "factory").mkdir()
+        canonical_ledger = canonical / "factory/runtime-ledger.csv"
+        canonical_ledger.write_bytes(self.ledger.read_bytes())
+        self.ledger.write_text(HEADER + "\n")
+
+        with patch.dict(os.environ, {"FACTORY_LEDGER": ""}):
+            reviewed = TICKET_PR.latest_reviewer_head(
+                self.product, canonical, "T-100",
+            )
+        self.assertRegex(reviewed, r"^[0-9a-f]{40}$")
+
     def test_narrator_recovery_accepts_current_ticket_route_metadata(self):
         route_plan, journal = self.prepare_route_migration()
         self.prepare_narrator(accounting_state="abandoned_conservative")

@@ -2479,3 +2479,15 @@ Recovery remains valid after that migration only when the journal suffix is
 entirely release migrations and one unique ancestor commit binds the exact
 fallback revision trailer. The upgraded claim becomes runnable with its receipt
 intact so terminal accounting finishes before the role resumes.
+
+## 2026-08-01 — Decision 181: Publication evidence follows the canonical ticket ledger
+
+Category: Incident
+
+Qualification intentionally separates sealed controller manifests from the
+canonical linked ticket worktrees. Role execution reduces effective accounting
+beside the ticket repository's main checkout, so later publication helpers
+must pair sealed manifests with that same canonical runtime ledger. Ticket PR
+preparation and ticket attestation now resolve the ledger from the claimed
+worktree (unless the launcher supplies an explicit trusted override). They do
+not fall back to the qualification control checkout's stale ignored ledger.
