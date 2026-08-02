@@ -2273,7 +2273,7 @@ fi
 # Contract 1.7 makes repair ownership mechanical. When both roles own a fix,
 # Test-author must finish before the Builder and only then may Reviewer rerun.
 OWNED_FIX="$TMP/owned-fix"
-mkdir -p "$OWNED_FIX/factory/tickets"
+write_envelope "$OWNED_FIX" no-git
 {
   ledger_header
   ledger_row T-302 planner
@@ -2286,6 +2286,8 @@ cat > "$OWNED_FIX/factory/tickets/T-302.md" <<'EOF'
 reviewer round 1: REQUEST CHANGES
 reviewer round 1 FIX-OWNER: both
 EOF
+OWNED_FIX_18="$TMP/owned-fix-18"
+cp -R "$OWNED_FIX" "$OWNED_FIX_18"
 if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302; then
   ledger_row T-302 test-author >> "$OWNED_FIX/factory/ledger.csv"
   if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX builder" "$OWNED_FIX" T-302; then
@@ -2294,31 +2296,31 @@ if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302
       pass "contract 1.7 sequences explicit dual-owner repairs"
   fi
 fi
-if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$OWNED_FIX" T-302; then
-  ledger_row T-302 planner >> "$OWNED_FIX/factory/ledger.csv"
+if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$OWNED_FIX_18" T-302; then
+  ledger_row T-302 planner >> "$OWNED_FIX_18/factory/ledger.csv"
   TEST_CONTRACT_VERSION=1.8.0 expect_stage \
     "REFUSE Planner repair did not open one authenticated test-first contract epoch" \
-    "$OWNED_FIX" T-302 &&
+    "$OWNED_FIX_18" T-302 &&
     pass "contract 1.8 refuses late Test-author work without a new epoch"
   printf '%s\n' \
     '## Frozen contract — version 1' \
     '- **Freeze result:** PASS. Contract version 1 is frozen.' >> \
-    "$OWNED_FIX/factory/tickets/T-302.md"
-  git -C "$OWNED_FIX" add factory/tickets/T-302.md
-  git -C "$OWNED_FIX" -c user.name=test -c user.email=test@example.com \
+    "$OWNED_FIX_18/factory/tickets/T-302.md"
+  git -C "$OWNED_FIX_18" add factory/tickets/T-302.md
+  git -C "$OWNED_FIX_18" -c user.name=test -c user.email=test@example.com \
     commit -qm "open test-first repair epoch"
-  if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302; then
-    ledger_row T-302 test-author >> "$OWNED_FIX/factory/ledger.csv"
-    if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX builder" "$OWNED_FIX" T-302; then
-      ledger_row T-302 builder >> "$OWNED_FIX/factory/ledger.csv"
-      TEST_CONTRACT_VERSION=1.8.0 expect_stage "RUN reviewer" "$OWNED_FIX" T-302 &&
+  if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX test-author" "$OWNED_FIX_18" T-302; then
+    ledger_row T-302 test-author >> "$OWNED_FIX_18/factory/ledger.csv"
+    if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX builder" "$OWNED_FIX_18" T-302; then
+      ledger_row T-302 builder >> "$OWNED_FIX_18/factory/ledger.csv"
+      TEST_CONTRACT_VERSION=1.8.0 expect_stage "RUN reviewer" "$OWNED_FIX_18" T-302 &&
         pass "contract 1.8 sequences a test-first dual-owner repair epoch"
     fi
   fi
 fi
 
 TEST_ONLY_FIX="$TMP/test-only-fix"
-mkdir -p "$TEST_ONLY_FIX/factory/tickets"
+write_envelope "$TEST_ONLY_FIX" no-git
 {
   ledger_header
   ledger_row T-304 planner
@@ -2404,17 +2406,17 @@ GUARD="$TMP/guard"
 write_envelope "$GUARD"
 write_ticket "$GUARD" T-400
 GUARD_LEDGER="$GUARD/factory/runtime-ledger.csv"
-MOCK_SLEEP=5 FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
+MOCK_SLEEP=30 FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-400 -- "slow run" > "$TMP/first.out" 2>&1 &
 FIRST_PID=$!
-for _i in $(seq 1 50); do
+for _i in $(seq 1 1200); do
   [[ -n "$(ls "$GUARD/factory/.active-runs/"*.lock/owner 2>/dev/null || true)" ]] && break
   sleep 0.05
 done
 GUARD_CLAIM_OWNER="$(find "$GUARD/factory/.active-runs" -name owner -print -quit)"
-for _i in $(seq 1 50); do
+for _i in $(seq 1 1200); do
   [[ -f "$GUARD/factory/.provider.lock/owner" ]] && break
   sleep 0.05
 done
@@ -2541,7 +2543,7 @@ MOCK_SLEEP=30 MOCK_DESCENDANT_PID_FILE="$DESCENDANT_PID_FILE" \
   > "$TMP/kill-wrapper.out" 2>&1 &
 KILL_WRAPPER_PID=$!
 KILL_PID_FILE=""
-for _i in $(seq 1 200); do
+for _i in $(seq 1 1200); do
   KILL_PID_FILE="$(ls "$KILL_ROOT/factory/runs/"*.pid 2>/dev/null || true)"
   [[ -n "$KILL_PID_FILE" && -f "$DESCENDANT_PID_FILE" ]] && break
   sleep 0.05

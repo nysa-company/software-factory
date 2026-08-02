@@ -1308,7 +1308,7 @@ fi
 if [[ "$CONTRACT_VERSION" == "1.8.0" &&
       ( "$LATEST_FIX_OWNER" == "test-author" || "$LATEST_FIX_OWNER" == "both" ) &&
       "$FIX_PLANNER" -eq 1 && "$CONTRACT17_FIX_ACTION" != "FIX planner" ]]; then
-  python3 - "$TICKET_WORKTREE_ROOT" "$TICKET_FILE" "$COMMITTED_HEAD" <<'PY' || {
+  python3 - "$TICKET_WORKTREE_ROOT" "$SOURCE_TICKET_FILE" "$COMMITTED_HEAD" <<'PY' || {
 import pathlib
 import re
 import subprocess
