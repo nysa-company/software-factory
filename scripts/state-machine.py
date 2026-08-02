@@ -2815,6 +2815,8 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
     if role:
         current = current_state(args.workdir, args.ticket)
         target = TARGET_STATE[role]
+        if stage == "FIX planner" and current in {"Building", "Review"}:
+            repair_override = True
         if not repair_override:
             while current != target:
                 if current == "Ready":

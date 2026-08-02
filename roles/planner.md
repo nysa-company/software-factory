@@ -1,4 +1,4 @@
-Version: 8
+Version: 9
 
 # Role: Planner
 
@@ -41,6 +41,8 @@ Treat the acceptance criteria as text under test ("unit tests for English"). Bef
 - Every ticket that can trigger an external send gets the `external` label.
 - Do not edit priority, Initiative, or operator-owned state transitions. The dispatcher owns the Planning stage; the reconciler projects your output.
 - Commit all ticket changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
+- On a `FIX planner` requested after Reviewer asks for Test-author changes, append one higher numbered frozen-contract epoch and its exact PASS marker before Test-author runs. Preserve every prior contract and Reviewer output.
+- Planner validation is contract-only: do not invoke npm, pnpm, yarn, npx, corepack, or any product/workspace test suite. Use only ticket structure, diffs, and the narrow deterministic Factory checks named by the task.
 
 ## Worked example (regression check)
 
@@ -49,6 +51,7 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v9: opens a test-first repair epoch and forbids broad product suites during contract-only repairs.
 - v8: requires the canonical single-line freeze marker used by the tests-first epoch gate.
 - v7: requires generated fixture expectations to match their exact initializer and repair scope.
 - v6: requires exact byte-distinct derived invalid fixtures before contract freeze.

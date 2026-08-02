@@ -1109,21 +1109,26 @@ value = json.load(open(sys.argv[1], encoding="utf-8"))
 voids = {int(item) for item in sys.argv[2].split(",") if item}
 reviewer_run = int(sys.argv[3])
 last_reviewer = reviewer_run > 0
-builder = test_author = builder_after_test = False
+planner = builder = test_author = builder_after_test = False
+planner_head = ""
 for item in value["records"]:
     role = item["role"]
     if role == "reviewer":
         reviewer_run += 1
         if reviewer_run not in voids:
             last_reviewer = True
-            builder = test_author = builder_after_test = False
+        planner = builder = test_author = builder_after_test = False
+        planner_head = ""
+    elif role == "planner" and last_reviewer:
+        planner = True
+        planner_head = item.get("head_before", "")
     elif role == "builder" and last_reviewer:
         builder = True
         if test_author:
             builder_after_test = True
     elif role == "test-author" and last_reviewer:
         test_author = True
-print(f"{int(builder)}|{int(test_author)}|{int(builder_after_test)}")
+print(f"{int(planner)}|{int(builder)}|{int(test_author)}|{int(builder_after_test)}|{planner_head}")
 PY
 )"
 else
@@ -1138,18 +1143,19 @@ else
     if ($4=="reviewer") {
       reviewer_run++
       if (index(voids, "," reviewer_run ",")==0) {
-        last_r=NR; builder=0; test_author=0; builder_after_test=0
+        last_r=NR; planner=0; builder=0; test_author=0; builder_after_test=0
       }
     }
+    else if ($4=="planner" && last_r>0) planner=1
     else if ($4=="builder" && last_r>0) {
       builder=1
       if (test_author) builder_after_test=1
     }
     else if ($4=="test-author" && last_r>0) test_author=1
   }
-  END { print builder+0 "|" test_author+0 "|" builder_after_test+0 }' "$LEDGER")"
+  END { print planner+0 "|" builder+0 "|" test_author+0 "|" builder_after_test+0 "|" }' "$LEDGER")"
 fi
-IFS='|' read -r FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST <<<"$FIX_AFTER"
+IFS='|' read -r FIX_PLANNER FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST FIX_PLANNER_HEAD <<<"$FIX_AFTER"
 
 LATEST_VERDICT=""
 LATEST_FIX_OWNER=""
@@ -1212,7 +1218,9 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       fi
       ;;
     test-author)
-      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+      if [[ "$CONTRACT_VERSION" == "1.8.0" && "$FIX_PLANNER" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX planner"
+      elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
       else
         echo "RUN reviewer"
@@ -1220,7 +1228,9 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       fi
       ;;
     both)
-      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+      if [[ "$CONTRACT_VERSION" == "1.8.0" && "$FIX_PLANNER" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX planner"
+      elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
       elif [[ "$FIX_BUILDER_AFTER_TEST" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX builder"
@@ -1293,6 +1303,56 @@ elif [[ "$A" -ge 1 &&
   }
   narrator_bundle_stage "$NARRATORS_AFTER_LATEST_REVIEWER"
   exit 0
+fi
+
+if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+      ( "$LATEST_FIX_OWNER" == "test-author" || "$LATEST_FIX_OWNER" == "both" ) &&
+      "$FIX_PLANNER" -eq 1 && "$CONTRACT17_FIX_ACTION" != "FIX planner" ]]; then
+  python3 - "$TICKET_WORKTREE_ROOT" "$TICKET_FILE" "$COMMITTED_HEAD" <<'PY' || {
+import pathlib
+import re
+import subprocess
+import sys
+
+repo, ticket, head = sys.argv[1:]
+if not re.fullmatch(r"[0-9a-f]{40}", head):
+    raise SystemExit(1)
+relative = pathlib.Path(ticket).resolve().relative_to(pathlib.Path(repo).resolve()).as_posix()
+files = subprocess.run(
+    ["git", "-C", repo, "diff-tree", "--no-commit-id", "--name-only", "-r", head],
+    text=True, capture_output=True, check=True,
+).stdout.splitlines()
+if files != [relative]:
+    raise SystemExit(1)
+diff = subprocess.run(
+    ["git", "-C", repo, "diff", "--unified=0", f"{head}^", head, "--", relative],
+    text=True, capture_output=True, check=True,
+).stdout.splitlines()
+headers = [
+    int(match.group(1)) for line in diff if line.startswith("+")
+    if (match := re.fullmatch(r"## Frozen contract — version ([1-9][0-9]*)", line[1:]))
+]
+passes = [
+    int(match.group(1)) for line in diff if line.startswith("+")
+    if (match := re.fullmatch(
+        r"- \*\*Freeze result:\*\* PASS\. Contract version ([1-9][0-9]*) is frozen\.",
+        line[1:],
+    ))
+]
+prior = subprocess.run(
+    ["git", "-C", repo, "show", f"{head}^:{relative}"],
+    text=True, capture_output=True, check=True,
+).stdout.splitlines()
+versions = [
+    int(match.group(1)) for line in prior
+    if (match := re.fullmatch(r"## Frozen contract — version ([1-9][0-9]*)", line))
+]
+if len(headers) != 1 or headers != passes or headers[0] <= max(versions, default=0):
+    raise SystemExit(1)
+PY
+    echo "REFUSE Planner repair did not open one authenticated test-first contract epoch"
+    exit 1
+  }
 fi
 
 echo "${CONTRACT17_FIX_ACTION:-FIX builder-or-test-author}"

@@ -67,6 +67,7 @@ PROVIDER_WAIT_SECONDS=0
 DEVELOPMENT_LANE_ROOT=""
 CLI_RUNTIME_STATE_ROOT=""
 CLI_RUNTIME_LAYOUT=""
+ROLE_GUARD_ROOT=""
 if [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
       ( "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* ||
         "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-qualification.* ) &&
@@ -1309,6 +1310,12 @@ cleanup() {
   fi
   cleanup_cli_runtime ||
     echo "WARNING: subscription CLI runtime retained for operator reconciliation" >&2
+  if [[ -n "$ROLE_GUARD_ROOT" && -d "$ROLE_GUARD_ROOT" ]]; then
+    rm -f "$ROLE_GUARD_ROOT"/npm "$ROLE_GUARD_ROOT"/npx \
+      "$ROLE_GUARD_ROOT"/pnpm "$ROLE_GUARD_ROOT"/yarn \
+      "$ROLE_GUARD_ROOT"/corepack
+    rmdir "$ROLE_GUARD_ROOT" 2>/dev/null || true
+  fi
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
       rm -f "$RUN_PID_FILE"
@@ -2249,6 +2256,16 @@ CLI_PROVIDER_TMPDIR="${TMPDIR:-/tmp}"
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   prepare_cli_runtime || exit 6
 fi
+TASK_PATH="$PATH"
+if [[ "$ROLE" == "planner" ]]; then
+  ROLE_GUARD_ROOT="$(mktemp -d "$CLI_PROVIDER_TMPDIR/factory-planner-policy.XXXXXX")" ||
+    exit 125
+  for command in npm npx pnpm yarn corepack; do
+    ln -s "$KIT_DIR/scripts/lib/role-command-guard.sh" "$ROLE_GUARD_ROOT/$command" ||
+      exit 125
+  done
+  TASK_PATH="$ROLE_GUARD_ROOT:$PATH"
+fi
 TASK_COMMAND=()
 STATUS=0
 if [[ "$ISOLATED_RUN" -eq 1 ]]; then
@@ -2319,7 +2336,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --machine-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}"
       --pre-reserved
       -- /usr/bin/env -i
-        "HOME=$CLI_PROVIDER_HOME" "PATH=$PATH" "TMPDIR=$CLI_PROVIDER_TMPDIR"
+        "HOME=$CLI_PROVIDER_HOME" "PATH=$TASK_PATH" "TMPDIR=$CLI_PROVIDER_TMPDIR"
         "XDG_CACHE_HOME=$CLI_PROVIDER_CACHE_DIR"
         "npm_config_cache=$CLI_PROVIDER_CACHE_DIR/npm"
         "FACTORY_ATTEMPT_OUTPUT_ROOT=$CLI_PROVIDER_OUTPUT_DIR"
@@ -2350,7 +2367,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         "$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK"
   )
 else
-  TASK_COMMAND=("$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK")
+  TASK_COMMAND=(/usr/bin/env "PATH=$TASK_PATH" "$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK")
 fi
 if [[ "$STATUS" -eq 0 ]]; then
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \

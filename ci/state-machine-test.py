@@ -98,6 +98,19 @@ class StateMachineTest(unittest.TestCase):
         prompt = (ROOT / "roles/planner.md").read_text()
         self.assertIn("- **Freeze result:** PASS. Contract version N is frozen.", prompt)
         self.assertIn("without editing or removing prior frozen versions", prompt)
+        self.assertIn("append one higher numbered frozen-contract epoch", prompt)
+        self.assertIn("do not invoke npm, pnpm, yarn, npx, corepack", prompt)
+
+    def test_planner_package_manager_guard_refuses_product_suites(self) -> None:
+        guard = ROOT / "scripts/lib/role-command-guard.sh"
+        with tempfile.TemporaryDirectory() as raw:
+            npm = Path(raw) / "npm"
+            npm.symlink_to(guard)
+            result = subprocess.run(
+                [str(npm), "test"], text=True, capture_output=True
+            )
+        self.assertEqual(result.returncode, 126)
+        self.assertIn("role_policy_violation", result.stderr)
 
     def test_receipt_is_one_use_and_chains_after_terminal_evidence(self) -> None:
         first = STATE.issue(self.args, "RUN planner")

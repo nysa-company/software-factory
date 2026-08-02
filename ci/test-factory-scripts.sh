@@ -2294,6 +2294,43 @@ if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302
       pass "contract 1.7 sequences explicit dual-owner repairs"
   fi
 fi
+if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$OWNED_FIX" T-302; then
+  ledger_row T-302 planner >> "$OWNED_FIX/factory/ledger.csv"
+  TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+    "REFUSE Planner repair did not open one authenticated test-first contract epoch" \
+    "$OWNED_FIX" T-302 &&
+    pass "contract 1.8 refuses late Test-author work without a new epoch"
+  printf '%s\n' \
+    '## Frozen contract — version 1' \
+    '- **Freeze result:** PASS. Contract version 1 is frozen.' >> \
+    "$OWNED_FIX/factory/tickets/T-302.md"
+  git -C "$OWNED_FIX" add factory/tickets/T-302.md
+  git -C "$OWNED_FIX" -c user.name=test -c user.email=test@example.com \
+    commit -qm "open test-first repair epoch"
+  if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302; then
+    ledger_row T-302 test-author >> "$OWNED_FIX/factory/ledger.csv"
+    if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX builder" "$OWNED_FIX" T-302; then
+      ledger_row T-302 builder >> "$OWNED_FIX/factory/ledger.csv"
+      TEST_CONTRACT_VERSION=1.8.0 expect_stage "RUN reviewer" "$OWNED_FIX" T-302 &&
+        pass "contract 1.8 sequences a test-first dual-owner repair epoch"
+    fi
+  fi
+fi
+
+TEST_ONLY_FIX="$TMP/test-only-fix"
+mkdir -p "$TEST_ONLY_FIX/factory/tickets"
+{
+  ledger_header
+  ledger_row T-304 planner
+  ledger_row T-304 test-author
+  ledger_row T-304 builder
+  ledger_row T-304 reviewer
+} > "$TEST_ONLY_FIX/factory/ledger.csv"
+printf '%s\n' '# T-304' 'reviewer round 1: REQUEST CHANGES' \
+  'reviewer round 1 FIX-OWNER: test-author' > \
+  "$TEST_ONLY_FIX/factory/tickets/T-304.md"
+TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$TEST_ONLY_FIX" T-304 &&
+  pass "contract 1.8 opens an epoch before a single-owner Test-author repair"
 
 MISSING_OWNER="$TMP/missing-fix-owner"
 mkdir -p "$MISSING_OWNER/factory/tickets"
