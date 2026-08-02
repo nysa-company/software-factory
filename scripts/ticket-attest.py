@@ -995,7 +995,7 @@ def successful_post_merge_checks(repo, merge, required):
     for status in combined.get("statuses", []):
         name = status.get("context")
         if name in required and name not in statuses:
-            statuses[name] = status.get("state") == "success"
+            statuses[name] = status.get("state")
     successful = []
     for name in required:
         encoded = quote(name, safe="")
@@ -1013,17 +1013,20 @@ def successful_post_merge_checks(repo, merge, required):
         if len(check_runs) > 1:
             raise Refusal(f"multiple latest check runs share required name: {name}")
         if name in statuses:
-            passed = statuses[name]
+            if statuses[name] == "pending":
+                raise Refusal(f"required post-merge check is pending: {name}")
+            passed = statuses[name] == "success"
         elif len(check_runs) == 1:
             item = check_runs[0]
+            if item.get("status") != "completed":
+                raise Refusal(f"required post-merge check is pending: {name}")
             passed = (
-                item.get("status") == "completed"
-                and item.get("conclusion") == "success"
+                item.get("conclusion") == "success"
             )
         else:
-            passed = False
+            raise Refusal(f"required post-merge check is missing: {name}")
         if not passed:
-            raise Refusal(f"required post-merge check is missing or unsuccessful: {name}")
+            raise Refusal(f"required post-merge check is unsuccessful: {name}")
         successful.append(name)
     return successful
 

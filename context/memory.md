@@ -2689,3 +2689,14 @@ request, and verifies GitHub bound it to the exact H2 PR head. Post-merge
 approval validation follows the same successor-continuation lineage, so a
 sealed route migration between approval and merge remains valid without role
 replay.
+
+## 2026-08-01 — Decision 195: Post-merge propagation is a wait, not a ticket failure
+
+Category: State machine
+
+Protected-main closeout distinguishes missing, pending, and completed
+unsuccessful required checks. Missing or pending contexts record a wait and
+retry the same closeout claim; a completed unsuccessful context and ambiguous
+duplicate evidence remain fail-closed errors. This prevents ordinary GitHub
+check propagation after merge from parking an otherwise valid ticket without
+weakening the Done boundary.

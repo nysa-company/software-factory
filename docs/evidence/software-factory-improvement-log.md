@@ -4317,6 +4317,36 @@ misleading-requested-stage recovery. Live closure requires PR
 #304 to record protected auto-merge, merge, and reach Factory-owned Done under
 the sealed successor without replaying Reviewer or Narrator.
 
+## FI-20260801-142 — Post-merge check propagation parked a merged ticket
+
+Status: Focused regressions green; sealed successor recovery pending
+Priority: P0
+Area: protected-main closeout recovery
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`bbb441acd90bab0670310c6707fe25475e4bd3a3`
+Impact: the repaired controller requested protected auto-merge for T-094 head
+`5c1beaf8a5ffda0a9b491d2db4094a2578f61bd5`, and PR #304 merged as
+`894d1b6d454f1b6f14134e21153ee4b77c20e6a4` without replaying a role. The
+immediate protected-main closeout ran before the required `ci` check appeared,
+reported it as missing or unsuccessful, and parked T-094. Main CI and both
+Railway statuses later passed, but same-release reconciliation excluded the
+blocked claim, so no Done attestation was emitted and T-100 remained gated.
+Finding: ticket attestation collapsed three distinct check states—missing,
+pending, and completed unsuccessfully—into one refusal. The controller could
+therefore not distinguish normal post-merge propagation from a terminal check
+failure and applied its generic fail-closed parking behavior.
+Smallest repair: preserve the exact check state in ticket-attest errors. The
+controller treats only missing or pending post-merge checks as a wait, records
+`post_merge_check_wait`, and retries closeout with the same claim; completed
+unsuccessful checks remain errors. No role, ticket implementation, approval,
+or Narrator evidence is regenerated.
+Edge coverage: focused controller and ticket-attestation regressions prove an
+in-progress required check waits while an unsuccessful or structurally
+ambiguous check still refuses. The Factory controller passes 67/67; ticket
+attestation passes 61/61. Live closure requires a sealed successor to retry the
+already-merged T-094 and emit Factory-owned Done.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

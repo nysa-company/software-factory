@@ -2102,10 +2102,20 @@ class Controller:
                 ],
                 check=True, timeout=120,
             )
-        value = self.json_call(
-            "ticket-attest", "--ticket", ticket, "--lease", claim["lease"],
-            "--workdir", str(worktree), "--action", "done", "--json",
-        )
+        try:
+            value = self.json_call(
+                "ticket-attest", "--ticket", ticket, "--lease", claim["lease"],
+                "--workdir", str(worktree), "--action", "done", "--json",
+            )
+        except ControllerError as error:
+            detail = str(error).removeprefix("ticket-attest: ")
+            if detail.startswith((
+                "required post-merge check is missing: ",
+                "required post-merge check is pending: ",
+            )):
+                self.event("post_merge_check_wait", ticket, reason=detail)
+                return False
+            raise
         return value.get("closeout_pr_state") == "MERGED"
 
     def run_role(

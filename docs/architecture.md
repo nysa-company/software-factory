@@ -711,6 +711,8 @@ requires the exact merged commit on authoritative `origin/main`, all configured
 post-merge contexts successful on that commit, and projects accounting into a
 separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
+Missing or pending post-merge contexts keep closeout waiting; a completed
+unsuccessful context remains a fail-closed controller error.
 If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a

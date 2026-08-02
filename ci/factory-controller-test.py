@@ -4695,6 +4695,28 @@ class FactoryControllerTest(unittest.TestCase):
             }))
         self.assertEqual(calls, ["git-lock", "fetch", "git-unlock", "done"])
 
+    def test_closeout_waits_for_post_merge_check_propagation(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        (cell.parent / "closeout-T-110").mkdir()
+        events = []
+        controller.event = lambda *args, **kwargs: events.append((args, kwargs))
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(CONTROL.ControllerError(
+                "ticket-attest: required post-merge check is pending: ci"
+            ))
+        )
+        with patch.object(CONTROL.subprocess, "run"):
+            self.assertFalse(controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            }))
+        self.assertEqual(events, [(("post_merge_check_wait", "T-110"), {
+            "reason": "required post-merge check is pending: ci",
+        })])
+
 
 if __name__ == "__main__":
     unittest.main()

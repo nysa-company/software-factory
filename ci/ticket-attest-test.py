@@ -1530,11 +1530,20 @@ else:
 
     def test_done_refuses_failed_checks_and_merge_not_on_main(self):
         self.prepare_done(checks={"ci": True, "deploy-production": False})
-        self.assertIn("missing or unsuccessful", self.attest("done").stderr)
+        self.assertIn("unsuccessful: deploy-production", self.attest("done").stderr)
         self.write_state(merged=True, merge_sha=self.head(), checks={"ci": True})
-        self.assertIn("missing or unsuccessful", self.attest("done").stderr)
+        self.assertIn("missing: deploy-production", self.attest("done").stderr)
         self.write_state(merged=True, merge_sha="d" * 40)
         self.assertIn("not reachable", self.attest("done").stderr)
+
+    def test_done_reports_pending_post_merge_check(self):
+        self.prepare_done(
+            checks={"deploy-production": True},
+            check_runs={"ci": [{
+                "name": "ci", "status": "in_progress", "conclusion": None,
+            }]},
+        )
+        self.assertIn("pending: ci", self.attest("done").stderr)
 
     def test_done_happy_path_projects_ledger_and_attests(self):
         self.prepare_done()
