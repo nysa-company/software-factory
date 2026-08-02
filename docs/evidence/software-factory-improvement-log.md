@@ -4603,6 +4603,27 @@ records the latest remote timestamp as the new baseline.
 Edge coverage: the Linear regression now proves resume, same-state re-block,
 overlay removal, new baseline capture, and only then a later second resume.
 
+## FI-20260801-155 — Backward repair blocker required an impossible state rewind
+
+Status: Focused regression green; sealed T-100 retry pending
+Priority: P0
+Area: contract-repair state transitions
+Owner: Factory
+First seen: T-100 Planner repair run `1785661512-9483` under sealed Factory
+`4a8abc0eb8d4ac0ebf10604d1db57f0a34ce5dca`
+Impact: the signed `FIX planner` correctly ran beneath T-100's unchanged
+Building state and committed a new contract blocker. The shared block
+transition then required Planning, so it could neither materialize the blocker
+nor preserve the Planner output for an authenticated resume. No downstream
+role or provider run was admitted.
+Smallest repair: the exact active signed backward repair may block at its later
+coarse state and records that state as `Resume-State`; block recovery and
+resume authenticate the same repair. Every unsigned, mismatched-role, earlier,
+or non-phase state remains refused.
+Edge coverage: the state-machine regression proves refusal without the signed
+repair, direct block without materialization, idempotent blocked recovery, and
+resume to the unchanged coarse state.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

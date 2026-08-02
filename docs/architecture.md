@@ -552,6 +552,11 @@ runs the earlier role; ordinary deterministic stages then catch up without
 adding a general backward state transition. When a completed Planner repair
 opens a new test-first epoch beneath Building or Review, its signed archive
 retains that same narrow authority for the immediate resolved catch-up stage.
+If that exact backward repair blocks again, the active signed repair also
+authorizes the block at the unchanged coarse state. The block records that
+coarse state as its resume target, and the same signed repair must authenticate
+both an idempotent block recovery and the later resume; ordinary role/state
+drift remains refused.
 After catch-up, the signed completed-repair archive
 authenticates the still-visible role-and-receipt pair so it cannot be mistaken
 for a new repair. More than one successful owner run fails closed.

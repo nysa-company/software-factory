@@ -48,6 +48,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   immediate deterministic successor opens a new test-first epoch beneath
   Building or Review. This permits only the authenticated resolved stage and
   does not enable a general backward transition.
+- If the active signed backward repair itself contract-blocks, its later coarse
+  state is retained as the exact resume target. The same repair authenticates
+  block recovery and resume; ordinary role/state drift remains refused.
 - Planner, Spec-linter, and Test-author independently evaluate exact generated
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
@@ -2791,3 +2794,12 @@ A remote/local Blocked-Escalated observation clears the prior state/approval
 overlay before effective-state materialization and records a new timestamp
 baseline. Sharing the same coarse state with an earlier block does not preserve
 that earlier resume authority.
+
+## 2026-08-01 — Decision 204: Backward repair blockers retain coarse state
+
+Category: State machine
+
+An active signed backward repair may enter Blocked-Escalated directly from its
+unchanged later coarse state and records that state as `Resume-State`.
+Idempotent block recovery and later resume authenticate the same exact repair;
+without it, any role/state mismatch remains fail-closed.

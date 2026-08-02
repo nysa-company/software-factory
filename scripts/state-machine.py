@@ -538,9 +538,15 @@ def materialized_contract_block(
         or not isinstance(charges, list)
         or not isinstance(completed, list)
         or current_state(args.workdir, args.ticket) != "Blocked-Escalated"
-        or ticket_field(args.workdir, args.ticket, "Resume-State")
-        != TARGET_STATE[role]
     ):
+        return False
+    try:
+        contract_block_resume_state(
+            args,
+            role,
+            ticket_field(args.workdir, args.ticket, "Resume-State"),
+        )
+    except StateError:
         return False
     matches = [
         item for item in charges
@@ -2772,23 +2778,46 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def contract_block_resume_state(
+    args: argparse.Namespace, role: str, state: str
+) -> str:
+    target = TARGET_STATE[role]
+    if state == target:
+        return target
+    repair_stage, repair_override = contract_repair_stage(args)
+    order = {"Planning": 1, "Building": 2, "Review": 3}
+    if (
+        repair_override
+        and repair_stage == f"FIX {role}"
+        and state in order
+        and order[state] > order[target]
+    ):
+        return state
+    raise StateError("contract blocker role state drifted")
+
+
 def block_transition(args: argparse.Namespace) -> dict[str, Any]:
     role = contract_blocked_receipt(args)
-    target = TARGET_STATE[role]
     state = current_state(args.workdir, args.ticket)
     if state != "Blocked-Escalated":
-        if state != target:
-            raise StateError("contract blocker role state drifted")
-        run_helper(
-            args, "ticket-state.sh", "--ticket", args.ticket,
-            "--workdir", str(args.workdir), "--action", "materialize",
-        )
-        if current_state(args.workdir, args.ticket) != target:
-            raise StateError("operator overlay changed the contract blocker state")
+        resume_state = contract_block_resume_state(args, role, state)
+        if state == TARGET_STATE[role]:
+            run_helper(
+                args, "ticket-state.sh", "--ticket", args.ticket,
+                "--workdir", str(args.workdir), "--action", "materialize",
+            )
+            if current_state(args.workdir, args.ticket) != resume_state:
+                raise StateError(
+                    "operator overlay changed the contract blocker state"
+                )
         transition(args, "Blocked-Escalated")
+    else:
+        resume_state = ticket_field(args.workdir, args.ticket, "Resume-State")
+        contract_block_resume_state(args, role, resume_state)
     if (
         current_state(args.workdir, args.ticket) != "Blocked-Escalated"
-        or ticket_field(args.workdir, args.ticket, "Resume-State") != target
+        or ticket_field(args.workdir, args.ticket, "Resume-State")
+        != resume_state
     ):
         raise StateError("contract blocker transition is invalid")
     migrate_passport(args)
@@ -2806,9 +2835,9 @@ def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
     role = contract_blocked_receipt(args)
     passport, secret = authenticated_passport(args)
     repair_role = operator_resume_role(args, passport, role)
-    target = TARGET_STATE[role]
-    if ticket_field(args.workdir, args.ticket, "Resume-State") != target:
-        raise StateError("contract blocker resume target drifted")
+    target = contract_block_resume_state(
+        args, role, ticket_field(args.workdir, args.ticket, "Resume-State")
+    )
     state = current_state(args.workdir, args.ticket)
     if state == "Blocked-Escalated":
         run_helper(

@@ -1347,6 +1347,113 @@ class StateMachineTest(unittest.TestCase):
             "planner",
         )
 
+    def test_backward_contract_repair_blocks_and_resumes_at_coarse_state(
+        self,
+    ) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\nResume-State: Building\n",
+            encoding="utf-8",
+        )
+        self.args.receipt = "b" * 64
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "passport_sha256": "e" * 64,
+            "ticket": "T-110",
+        }
+
+        with (
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="planner"
+            ),
+            mock.patch.object(
+                STATE, "contract_repair_stage", return_value=(None, False)
+            ),
+            mock.patch.object(STATE, "transition") as transition,
+        ):
+            with self.assertRaisesRegex(
+                STATE.StateError, "contract blocker role state drifted"
+            ):
+                STATE.block_transition(self.args)
+        transition.assert_not_called()
+
+        def block(_args, _state):
+            ticket.write_text(
+                "# T-110\n\nState: Blocked-Escalated\n"
+                "Resume-State: Building\n",
+                encoding="utf-8",
+            )
+
+        with (
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="planner"
+            ),
+            mock.patch.object(
+                STATE,
+                "contract_repair_stage",
+                return_value=("FIX planner", True),
+            ),
+            mock.patch.object(STATE, "run_helper") as materialize,
+            mock.patch.object(STATE, "transition", side_effect=block),
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.block_transition(self.args)
+        self.assertEqual(result["status"], "blocked")
+        materialize.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+
+        with (
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="planner"
+            ),
+            mock.patch.object(
+                STATE,
+                "contract_repair_stage",
+                return_value=("FIX planner", True),
+            ),
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.block_transition(self.args)
+        self.assertEqual(result["status"], "blocked")
+        transition.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+
+        def resume(*_args, **_kwargs):
+            ticket.write_text(
+                "# T-110\n\nState: Building\nResume-State: Building\n",
+                encoding="utf-8",
+            )
+            return ""
+
+        with (
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="planner"
+            ),
+            mock.patch.object(
+                STATE,
+                "authenticated_passport",
+                return_value=(passport, b"k" * 32),
+            ),
+            mock.patch.object(
+                STATE, "operator_resume_role", return_value="planner"
+            ),
+            mock.patch.object(
+                STATE,
+                "contract_repair_stage",
+                return_value=("FIX planner", True),
+            ),
+            mock.patch.object(STATE, "run_helper", side_effect=resume),
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.resume_transition(self.args)
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["repair_role"], "planner")
+        migrate.assert_called_once_with(self.args)
+        self.assertIn("State: Building", ticket.read_text(encoding="utf-8"))
+
     def test_completed_repair_authenticates_visible_historical_directive(
         self,
     ) -> None:
