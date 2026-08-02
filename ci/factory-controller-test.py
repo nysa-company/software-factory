@@ -4217,6 +4217,24 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("protected_auto_merge_requested", calls)
         self.assertEqual(claim["publication_lease"], "f" * 64)
 
+    def test_launcher_authorizes_requested_stage_publication_recovery(self) -> None:
+        launcher = (
+            ROOT / "integrations/hermes/bin/factory-launch"
+        ).read_text(encoding="utf-8")
+        phase_two = launcher.index(
+            'die "transition receipt does not authorize protected auto-merge"'
+        )
+        guard = launcher[phase_two - 500:phase_two]
+        self.assertIn(
+            '"$TRANSITION_STAGE" == AWAIT-MERGE\\ approval\\ attested*',
+            guard,
+        )
+        self.assertIn(
+            '"AWAIT-MERGE protected auto-merge requested; '
+            'await merge and closeout"',
+            guard,
+        )
+
     def test_dependency_refresh_race_waits_then_migrates_exact_base(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

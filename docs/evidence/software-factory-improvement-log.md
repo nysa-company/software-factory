@@ -4305,9 +4305,12 @@ partial overlay. Share exact successor-continuation validation with phase-two
 and protected-main closeout. When the requested stage is observed with a ready
 PR, the controller now reacquires the exact publication lease, idempotently
 requests auto-merge, verifies the exact H2 head and PR number, and only then
-waits for merge.
+waits for merge. The launcher authorizes that recovery only from either the
+ordinary request-pending receipt or the exact misleading requested-stage
+receipt; all other transition stages remain refused.
 Edge coverage: ticket attestation passes 60/60, ticket publication passes
-34/34, and the Factory controller passes 65/65. The new cases prove
+34/34, the Factory controller passes 66/66, and the complete sealed-launcher
+contract passes. The new cases prove
 projected-overlay phase two after a successor route, partial-overlay refusal,
 protected closeout after that route, and the controller's
 misleading-requested-stage recovery. Live closure requires PR

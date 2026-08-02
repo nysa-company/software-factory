@@ -2033,7 +2033,8 @@ PY
             [[ "$TRANSITION_STAGE" == AWAIT-OPERATOR\ Linear\ approval\ observed* ]] ||
               die "transition receipt does not authorize approval attestation"
           else
-            [[ "$TRANSITION_STAGE" == AWAIT-MERGE\ approval\ attested* ]] ||
+            [[ "$TRANSITION_STAGE" == AWAIT-MERGE\ approval\ attested* ||
+               "$TRANSITION_STAGE" == "AWAIT-MERGE protected auto-merge requested; await merge and closeout" ]] ||
               die "transition receipt does not authorize protected auto-merge"
           fi
           ;;
