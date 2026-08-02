@@ -33,8 +33,9 @@ EXEMPT_PATHS="${EXEMPT_PATHS:-factory/ conformance/factory/ .gitignore context/m
 FAIL=0
 SEEN_IMPL=0
 
-contract_epoch_reset() { # commit -> 0 only for one append-only frozen contract
+contract_epoch_reset() { # commit -> 0 only for one authenticated frozen-contract epoch
   local commit="$1" files ticket diff versions passes version pass prior_max
+  local removed_versions removed_passes removed_version removed_pass
   files="$(git diff-tree --no-commit-id --name-only -r "$commit")"
   [[ "$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] ||
     return 1
@@ -46,19 +47,31 @@ contract_epoch_reset() { # commit -> 0 only for one append-only frozen contract
   versions="$(printf '%s\n' "$diff" | sed -n \
     's/^+## Frozen contract — version \([1-9][0-9]*\)$/\1/p')"
   passes="$(printf '%s\n' "$diff" | sed -n \
-    's/^+- \*\*Freeze result — PASS\.\*\* Contract version \([1-9][0-9]*\) is frozen\.$/\1/p')"
+    -e 's/^+- \*\*Freeze result — PASS\.\*\* Contract version \([1-9][0-9]*\) is frozen\.$/\1/p' \
+    -e 's/^+- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) is frozen\([.;].*\)\{0,1\}$/\1/p' \
+    -e 's/^+- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) supersedes \(contract \)\{0,1\}versions\{0,1\} [1-9][0-9]*.*$/\1/p')"
+  removed_versions="$(printf '%s\n' "$diff" | sed -n \
+    's/^-## Frozen contract — version \([1-9][0-9]*\)$/\1/p')"
+  removed_passes="$(printf '%s\n' "$diff" | sed -n \
+    -e 's/^-- \*\*Freeze result — PASS\.\*\* Contract version \([1-9][0-9]*\) is frozen\.$/\1/p' \
+    -e 's/^-- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) is frozen\([.;].*\)\{0,1\}$/\1/p' \
+    -e 's/^-- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) supersedes \(contract \)\{0,1\}versions\{0,1\} [1-9][0-9]*.*$/\1/p')"
   [[ "$(printf '%s\n' "$versions" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 &&
      "$(printf '%s\n' "$passes" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] ||
     return 1
   version="$versions"; pass="$passes"
   [[ "$version" == "$pass" ]] || return 1
-  if printf '%s\n' "$diff" | grep -Eq \
-      '^-(## Frozen contract — version [1-9][0-9]*|- \*\*Freeze result — PASS\.\*\* Contract version [1-9][0-9]* is frozen\.)$'; then
-    return 1
-  fi
   prior_max="$(git show "$commit^:$ticket" 2>/dev/null | sed -n \
     's/^## Frozen contract — version \([1-9][0-9]*\)$/\1/p' | sort -n | tail -1)"
   prior_max="${prior_max:-0}"
+  if [[ -n "$removed_versions" || -n "$removed_passes" ]]; then
+    [[ "$(printf '%s\n' "$removed_versions" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 &&
+       "$(printf '%s\n' "$removed_passes" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] ||
+      return 1
+    removed_version="$removed_versions"; removed_pass="$removed_passes"
+    [[ "$removed_version" == "$removed_pass" && "$removed_version" == "$prior_max" ]] ||
+      return 1
+  fi
   [[ "$version" -gt "$prior_max" ]]
 }
 

@@ -4670,6 +4670,34 @@ that Blocked is republished and a new baseline recorded, then accepts only a
 later resume. The controller regression proves an older receipt waits and the
 current receipt reaches state-machine validation.
 
+## FI-20260802-158 — Epoch gate rejected the Planner's established freeze form
+
+Status: Focused regression green; sealed mock lifecycle pending
+Priority: P0
+Area: Planner contract and test-immutability epoch classification
+Owner: Factory
+First seen: T-100 Planner repair commit
+`36a8c916a2e68f614a43b683774cf06bc97de53c`
+Impact: T-100's authenticated Planner repair changed only its ticket, replaced
+the latest v3 heading and established `Freeze result: PASS` line with the
+higher matching v4 pair, and then correctly handed the repair to Test-author.
+The new epoch gate recognized only a novel exact sentence and append-only text,
+although the Planner role required neither. It therefore classified protected
+test commit `a4247011fe10114138b94a4563f7167dde7ec994` as late under v3. No
+provider, publication, or production action followed the refusal.
+Root cause: the Planner producer and the gate/reorder consumers had different
+freeze-marker and version-retention contracts.
+Smallest repair: both consumers share the established PASS forms and admit only
+one exact legacy replacement of the latest heading plus its matching PASS with
+one higher pair in a ticket-only commit. Planner v8 requires the canonical
+single-line marker and append-only versions going forward. Partial, mismatched,
+repeated, lower, mixed, and malformed evidence remains closed.
+Validation: the synthetic gate/reorder scenario reproduces T-100's exact v3
+comma-terminated marker, one-for-one v4 replacement, and later canonical v5
+append; its negative matrix covers eight invalid shapes. The candidate gate
+passes T-100's complete real branch with production `TEST_PATHS` while leaving
+its head and tree unchanged.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

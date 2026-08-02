@@ -445,7 +445,7 @@ scenario_targeted_default_exemptions() {
   return 0
 }
 
-# ---------- scenario 8: later frozen contract starts a new tests-first epoch ----------
+# ---------- scenario 8: legacy replacement and later append start exact epochs ----------
 scenario_contract_epoch() {
   local repo base orig_head rc
   repo="$(new_repo)"
@@ -453,24 +453,31 @@ scenario_contract_epoch() {
   write_file "$repo" conformance/app/server.js "server v0"
   write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
     "# T-EPOCH" \
-    "## Frozen contract — version 1" \
-    "- **Freeze result — PASS.** Contract version 1 is frozen."
+    "## Frozen contract — version 3" \
+    "- **Freeze result:** PASS. Contract version 3 supersedes contract version 2,"
   commit_all "$repo" "base"
   base="$(head_sha "$repo")"
 
-  write_file "$repo" conformance/app/tests/epoch.test.js "test('v1', () => {});"
-  commit_all "$repo" "test: version 1"
+  write_file "$repo" conformance/app/tests/epoch.test.js "test('v3', () => {});"
+  commit_all "$repo" "test: version 3"
   append_file "$repo" conformance/app/server.js "server v1"
-  commit_all "$repo" "impl: version 1"
+  commit_all "$repo" "impl: version 3"
+
+  write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+    "## Frozen contract — version 4" \
+    "- **Freeze result:** PASS. Contract version 4 supersedes version 3 because its fixtures changed."
+  commit_all "$repo" "plan: replace contract version 3 with version 4"
+  write_file "$repo" conformance/app/tests/epoch.test.js "test('v4', () => {});"
+  commit_all "$repo" "test: version 4"
+  append_file "$repo" conformance/app/server.js "server v2"
+  commit_all "$repo" "impl: version 4"
 
   append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
-    "## Frozen contract — version 2" \
-    "- **Freeze result — PASS.** Contract version 2 is frozen."
-  commit_all "$repo" "plan: freeze contract version 2"
-  write_file "$repo" conformance/app/tests/epoch.test.js "test('v2', () => {});"
-  commit_all "$repo" "test: version 2"
-  append_file "$repo" conformance/app/server.js "server v2"
-  commit_all "$repo" "impl: version 2"
+    "## Frozen contract — version 5" \
+    "- **Freeze result:** PASS. Contract version 5 is frozen."
+  commit_all "$repo" "plan: append contract version 5"
+  write_file "$repo" conformance/app/tests/epoch.test.js "test('v5', () => {});"
+  commit_all "$repo" "test: version 5"
 
   if ! run_gate "$repo" "$base"; then
     echo "  [epoch] gate rejected tests-first work under a later frozen contract"
@@ -513,6 +520,7 @@ invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
       ;;
     removed)
       write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 1" \
         "## Frozen contract — version 2" \
         "- **Freeze result — PASS.** Contract version 2 is frozen."
       ;;
@@ -526,6 +534,22 @@ invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
       write_file "$repo" conformance/factory/tickets/T-EPOCH/nested.md \
         "## Frozen contract — version 2" \
         "- **Freeze result — PASS.** Contract version 2 is frozen."
+      ;;
+    mismatched)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result:** PASS. Contract version 3 is frozen."
+      ;;
+    ambiguous)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result — PASS.** Contract version 2 is frozen." \
+        "- **Freeze result:** PASS. Contract version 2 is frozen."
+      ;;
+    malformed-supersedes)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result:** PASS. Contract version 2 supersedes prior prose."
       ;;
     *) return 1 ;;
   esac
@@ -547,7 +571,7 @@ invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
 
 scenario_invalid_contract_epoch() {
   local mode
-  for mode in incomplete repeated removed mixed nested; do
+  for mode in incomplete repeated removed mixed nested mismatched ambiguous malformed-supersedes; do
     invalid_contract_epoch_case "$mode" || return 1
   done
 }

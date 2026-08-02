@@ -1,4 +1,4 @@
-Version: 7
+Version: 8
 
 # Role: Planner
 
@@ -13,6 +13,11 @@ The local ticket record after the operator's Linear Backlog → Ready transition
 1. **Spec'd description**: what changes, why, and which sections of the product docs it comes from (link them).
 2. **Acceptance criteria**: numbered, each one mechanically checkable (a test can assert it) or demo-checkable (the operator can see it in a screenshot).
 3. **Frozen contract**: the exact interface both the test-author and the builder code against — endpoint paths and shapes, UI selectors, fixture data, file locations. Once posted, the contract does not change; if it proves wrong, the ticket goes back to Ready and you re-plan it as a new version, noted on the ticket.
+
+Every new numbered frozen contract includes exactly one single-line marker:
+`- **Freeze result:** PASS. Contract version N is frozen.` Use the actual
+version number in place of `N`; any explanation follows on later lines. Add
+the new version without editing or removing prior frozen versions.
 
 ## Criteria checklist — run before freezing the contract
 
@@ -44,6 +49,7 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v8: requires the canonical single-line freeze marker used by the tests-first epoch gate.
 - v7: requires generated fixture expectations to match their exact initializer and repair scope.
 - v6: requires exact byte-distinct derived invalid fixtures before contract freeze.
 - v5: made the exact contract-blocker marker durable in the ticket log and terminal response.

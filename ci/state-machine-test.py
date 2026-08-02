@@ -94,6 +94,11 @@ class StateMachineTest(unittest.TestCase):
         for role, rule in prompts.items():
             self.assertIn(rule, (ROOT / "roles" / f"{role}.md").read_text())
 
+    def test_planner_emits_the_epoch_gate_marker_append_only(self) -> None:
+        prompt = (ROOT / "roles/planner.md").read_text()
+        self.assertIn("- **Freeze result:** PASS. Contract version N is frozen.", prompt)
+        self.assertIn("without editing or removing prior frozen versions", prompt)
+
     def test_receipt_is_one_use_and_chains_after_terminal_evidence(self) -> None:
         first = STATE.issue(self.args, "RUN planner")
         self.args.receipt = first["receipt_sha256"]

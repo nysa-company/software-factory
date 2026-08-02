@@ -295,9 +295,11 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Notice: a newly frozen numbered contract may legitimately reopen
   Test-author ownership after implementation under the superseded contract.
 - Do: update the instantiated product gate from the certified Factory template
-  and verify the exact contract-freeze commit starts one new epoch. Preserve
-  the append-only role-input history; do not reorder across Planner,
-  Test-author, Builder, or Reviewer evidence.
+  and verify the ticket-only contract-freeze commit starts one new epoch. New
+  Planner output appends the canonical PASS marker. Historical output may
+  replace only the latest heading and matching established PASS marker
+  one-for-one; do not reorder across Planner, Test-author, Builder, or Reviewer
+  evidence.
 - Notice: within one unchanged contract epoch, reviewer-requested test commits
   after implementation still fail the test-immutability gate.
 - Do: ensure `scripts/reorder-test-fixes.sh` is present. Use it only on a

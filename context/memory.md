@@ -48,6 +48,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   immediate deterministic successor opens a new test-first epoch beneath
   Building or Review. This permits only the authenticated resolved stage and
   does not enable a general backward transition.
+- A tests-first epoch begins only in a ticket-only commit with one higher
+  frozen-contract heading and one matching PASS marker. New Planner output uses
+  the canonical append-only form. Historical output may replace only the
+  latest heading and matching established PASS one-for-one; every partial,
+  mismatched, repeated, lower, mixed, or malformed shape remains closed.
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
@@ -2832,3 +2837,14 @@ which it was ingested. Any later ticket commit, or a legacy unbound overlay,
 clears it before projection so a repeated block cannot be masked. Recovery
 waits for the exact current blocker receipt to become visible before asking the
 state machine to authenticate resume.
+
+## 2026-08-02 — Decision 207: Freeze producers and epoch consumers share one grammar
+
+Category: State machine
+
+Planner emits one canonical append-only `Freeze result: PASS` marker for every
+new numbered contract. The gate and reorder helper also accept the established
+historical marker forms and an exact one-for-one replacement of only the latest
+heading and its matching PASS with a higher version. Git preserves the prior
+role input; partial removal, mismatched versions, multiple markers, lower
+versions, mixed commits, and malformed supersession remain fail-closed.

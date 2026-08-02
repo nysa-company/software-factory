@@ -102,10 +102,17 @@ def diff_tree_files(repo, sha, pathspecs=None):
 
 
 FROZEN = re.compile(r"^## Frozen contract — version ([1-9][0-9]*)$")
-FROZEN_PASS = re.compile(
+FROZEN_PASSES = tuple(map(re.compile, (
     r"^- \*\*Freeze result — PASS\.\*\* "
-    r"Contract version ([1-9][0-9]*) is frozen\.$"
-)
+    r"Contract version ([1-9][0-9]*) is frozen\.$",
+    r"^- \*\*Freeze result:\*\* PASS\. Contract version ([1-9][0-9]*) "
+    r"(?:is frozen(?:[.;].*)?|supersedes (?:contract )?versions? "
+    r"[1-9][0-9]*.*)$",
+)))
+
+
+def frozen_pass(line):
+    return next((match for regex in FROZEN_PASSES if (match := regex.fullmatch(line))), None)
 
 
 def contract_epoch_reset(repo, sha, files):
@@ -120,22 +127,25 @@ def contract_epoch_reset(repo, sha, files):
     ).stdout.splitlines()
     added = [FROZEN.fullmatch(line[1:]) for line in diff if line.startswith("+")]
     added = [match for match in added if match]
-    passed = [
-        FROZEN_PASS.fullmatch(line[1:]) for line in diff if line.startswith("+")
-    ]
+    passed = [frozen_pass(line[1:]) for line in diff if line.startswith("+")]
     passed = [match for match in passed if match]
     if len(added) != 1 or len(passed) != 1 or added[0][1] != passed[0][1]:
-        return False
-    if any(
-        FROZEN.fullmatch(line[1:]) or FROZEN_PASS.fullmatch(line[1:])
-        for line in diff if line.startswith("-")
-    ):
         return False
     prior = git(repo, "show", f"{sha}^:{path}", check=False).stdout.splitlines()
     versions = [
         int(match[1]) for line in prior if (match := FROZEN.fullmatch(line))
     ]
-    return int(added[0][1]) > max(versions, default=0)
+    prior_max = max(versions, default=0)
+    removed = [FROZEN.fullmatch(line[1:]) for line in diff if line.startswith("-")]
+    removed = [match for match in removed if match]
+    removed_passes = [frozen_pass(line[1:]) for line in diff if line.startswith("-")]
+    removed_passes = [match for match in removed_passes if match]
+    if removed or removed_passes:
+        if len(removed) != 1 or len(removed_passes) != 1:
+            return False
+        if removed[0][1] != removed_passes[0][1] or int(removed[0][1]) != prior_max:
+            return False
+    return int(added[0][1]) > prior_max
 
 
 def classify_commits(repo, base, head, test_paths, exempt_paths):
