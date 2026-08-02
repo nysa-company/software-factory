@@ -1038,6 +1038,9 @@ implemented; referenced and rollback-eligible releases are retained.
 
 Planner, Builder, and Narrator use the selected portfolio's production family.
 Spec-linter, Test-author, and Reviewer use its distinct checking family.
+Planner, Spec-linter, and Test-author independently evaluate exact generated
+fixture values from their frozen initializer or reset; an unproducible value
+or a repair scope excluding its required setup correction is a contract block.
 `cursor-balanced-v2` is the no-record default; `balanced-v2` and
 `legacy-balanced-v1` remain available for compatibility with prior activation
 records and migrations.

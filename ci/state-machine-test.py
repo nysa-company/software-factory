@@ -85,6 +85,15 @@ class StateMachineTest(unittest.TestCase):
         for role, rule in prompts.items():
             self.assertIn(rule, (ROOT / "roles" / f"{role}.md").read_text())
 
+    def test_role_prompts_reject_unproducible_generated_values(self) -> None:
+        prompts = {
+            "planner": "evaluate its first generated value",
+            "spec-linter": "a repair scope that excludes its required setup correction",
+            "test-author": "the repair scope forbids the setup correction",
+        }
+        for role, rule in prompts.items():
+            self.assertIn(rule, (ROOT / "roles" / f"{role}.md").read_text())
+
     def test_receipt_is_one_use_and_chains_after_terminal_evidence(self) -> None:
         first = STATE.issue(self.args, "RUN planner")
         self.args.receipt = first["receipt_sha256"]

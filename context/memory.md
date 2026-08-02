@@ -48,6 +48,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   immediate deterministic successor opens a new test-first epoch beneath
   Building or Review. This permits only the authenticated resolved stage and
   does not enable a general backward transition.
+- Planner, Spec-linter, and Test-author independently evaluate exact generated
+  fixture values from their initializer/reset. An expected identifier,
+  sequence, counter, or timestamp the setup cannot produce—or a repair scope
+  excluding its required setup fix—is a contract block before Builder.
 - Contract 1.8 at ticket capacity above one requires an exact owner-approved
   subscription provider policy and activation covering every enabled Cursor,
   Claude Code, and Codex route at no less than ticket capacity. The installed
@@ -2767,3 +2771,11 @@ After a signed Planner repair is archived, its immediate resolved successor
 may still target Planning beneath a Building or Review coarse state. The state
 machine preserves that one authenticated override through the catch-up stage;
 ordinary backward state materialization remains forbidden.
+
+## 2026-08-01 — Decision 202: Generated fixtures must be producible
+
+Category: State machine
+
+The planning and checking roles evaluate exact generated fixture expectations
+from their frozen initializer/reset. A value the setup cannot produce, or a
+repair scope that forbids the required setup correction, blocks before Builder.

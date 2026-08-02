@@ -4567,6 +4567,24 @@ state. Ordinary backward transitions remain forbidden.
 Edge coverage: the completed-repair regression drives `next_transition` from
 Building to `RUN spec-linter` and proves no generic state transition is called.
 
+## FI-20260801-153 — Frozen generated ID contradicted its reset
+
+Status: Focused prompt regression green; sealed T-100 repair pending
+Priority: P0
+Area: frozen-contract and test-author correctness
+Owner: Factory
+First seen: T-100 Test-author run `1785657239-55398` under sealed Factory
+`7a855d62b556b78ed9233fa3926bb7d6fed8a5bb`
+Impact: contract v4 required receipt ID `4001`, while the protected test setup's
+identity reset produced `1`; the narrow v4 repair scope also forbade correcting
+that setup. Test-author detected and committed the contradiction before Builder,
+so no implementation run was admitted.
+Smallest repair: Planner, Spec-linter, and Test-author now independently evaluate
+exact generated identifiers, sequences, counters, and timestamps from their
+initializer/reset and reject a repair scope excluding a required setup fix.
+Edge coverage: prompt-contract regression locks all three checks; the sealed mock
+role-sequence and complete lifecycle-state matrix remain required before retry.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

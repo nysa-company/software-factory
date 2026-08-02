@@ -1,4 +1,4 @@
-Version: 5
+Version: 6
 
 # Role: Test author
 
@@ -20,6 +20,7 @@ The reconciled Markdown ticket in Building with its acceptance criteria and froz
 - No trivially-passing tests: every test must assert observable behavior from the contract. A test that would pass against an empty implementation is a defect in your work.
 - If the contract is ambiguous or untestable as written, stop and flag it on the ticket — do not guess.
 - Evaluate every casing, normalization, or mutation used to derive an invalid fixture before writing its test. If the result is byte-identical to a valid fixture, treat the contract as blocked; do not encode an impossible negative assertion.
+- Evaluate every exact generated identifier, sequence, counter, or timestamp from the test's actual initializer/reset before writing its assertion. If the setup cannot produce the frozen value, or the repair scope forbids the setup correction, treat the contract as blocked.
 - For that contract blocker, stop immediately. Commit the exact ambiguity to the ticket log with one standalone `ROLE-ESCALATE: CONTRACT-BLOCKED` line, then end your response with that same standalone line. A blocker discovered at any point supersedes normal completion; do not complete the tests after it.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
 - Commit all test and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
@@ -38,6 +39,7 @@ For the receipt-row example: `test("approving t-001 creates a receipt row", ...)
 
 ## Changelog
 
+- v6: rejects generated fixture values their test setup cannot produce.
 - v5: rejects byte-identical transformed invalid fixtures as contract blockers.
 - v4: added exact-owner recovery for authenticated protected-base test conflicts.
 - v3: made the exact contract-blocker marker durable in the ticket log and terminal response.

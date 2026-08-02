@@ -1,4 +1,4 @@
-Version: 6
+Version: 7
 
 # Role: Planner
 
@@ -25,6 +25,7 @@ Treat the acceptance criteria as text under test ("unit tests for English"). Bef
 5. **Cross-ticket file-boundary conflict** — grep sibling ticket files under `factory/tickets/` for overlapping implementation-surface/file-ownership declarations before freezing; a conflict is an ambiguity-log item at planning time, not a Builder-stage discovery. Ceiling: contracts of concurrently in-flight tickets on unmerged branches aren't visible to this check; when bounded concurrency is active, also inspect every other leased ticket branch (`git show origin/ticket/T-XXX:factory/tickets/T-XXX.md`).
 6. **Deploy/topology completeness** — if the contract touches cross-origin, auth, cookies, or preview-deploy behavior, state the concrete topology (domains, cookie SameSite, CORS origins/credentials) explicitly; an inferable-but-unstated detail is an ambiguity-log item.
 7. **Derived-fixture distinctness** — freeze the exact result of every casing, normalization, or mutation used to create an invalid fixture and verify it is byte-distinct from every valid fixture. An identity transformation is a contract contradiction, not a negative case.
+8. **Generated-value determinism** — when a fixture asserts an exact generated identifier, sequence, counter, or timestamp, freeze the initializer/reset and evaluate its first generated value. An expected value the setup cannot produce is a contract contradiction, and a repair scope must include every setup edit required to make it producible.
 
 ## Rules
 
@@ -43,6 +44,7 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v7: requires generated fixture expectations to match their exact initializer and repair scope.
 - v6: requires exact byte-distinct derived invalid fixtures before contract freeze.
 - v5: made the exact contract-blocker marker durable in the ticket log and terminal response.
 - v4: rulings.md check before operator escalation, with rulings ledger entries on new ruling application; pre-freeze checks for cross-ticket file-boundary conflicts and deploy/topology completeness.
