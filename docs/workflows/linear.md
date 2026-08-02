@@ -85,6 +85,10 @@ Blocked-Escalated. A contract blocker resumes only when the operator's Linear
 move matches `Resume-State:` and the ticket contains one exact repair-role
 directive paired with the current blocked transition-receipt digest. A stale
 role, receipt, or prior Linear move grants nothing.
+The reconciler must first observe Linear in Blocked-Escalated after the local
+block. Only a later Linear update to the declared resume state is operator
+authority; a pre-block state still visible during reconciliation is restored
+to Blocked-Escalated and cannot resume the ticket.
 
 The team intentionally archives Linear's default `Todo` and `In Progress`
 states plus the former Spec Lint, Test Authoring, and Evidence micro-states.

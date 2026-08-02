@@ -1,4 +1,4 @@
-Version: 5
+Version: 6
 
 # Role: Planner
 
@@ -24,6 +24,7 @@ Treat the acceptance criteria as text under test ("unit tests for English"). Bef
 4. **Ambiguity log** — list on the ticket the underspecified areas you found while planning and how each was resolved: answered from the product docs (cite the section) or escalated to the operator. An empty log on a non-trivial ticket is a smell, not a win.
 5. **Cross-ticket file-boundary conflict** — grep sibling ticket files under `factory/tickets/` for overlapping implementation-surface/file-ownership declarations before freezing; a conflict is an ambiguity-log item at planning time, not a Builder-stage discovery. Ceiling: contracts of concurrently in-flight tickets on unmerged branches aren't visible to this check; when bounded concurrency is active, also inspect every other leased ticket branch (`git show origin/ticket/T-XXX:factory/tickets/T-XXX.md`).
 6. **Deploy/topology completeness** — if the contract touches cross-origin, auth, cookies, or preview-deploy behavior, state the concrete topology (domains, cookie SameSite, CORS origins/credentials) explicitly; an inferable-but-unstated detail is an ambiguity-log item.
+7. **Derived-fixture distinctness** — freeze the exact result of every casing, normalization, or mutation used to create an invalid fixture and verify it is byte-distinct from every valid fixture. An identity transformation is a contract contradiction, not a negative case.
 
 ## Rules
 
@@ -42,6 +43,7 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v6: requires exact byte-distinct derived invalid fixtures before contract freeze.
 - v5: made the exact contract-blocker marker durable in the ticket log and terminal response.
 - v4: rulings.md check before operator escalation, with rulings ledger entries on new ruling application; pre-freeze checks for cross-ticket file-boundary conflicts and deploy/topology completeness.
 - v3: clarified reconciled Linear/Markdown ownership and visible Planning stage.

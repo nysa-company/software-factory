@@ -76,6 +76,15 @@ class StateMachineTest(unittest.TestCase):
         self.origin.stop()
         self.temporary.cleanup()
 
+    def test_role_prompts_reject_identity_transformed_fixtures(self) -> None:
+        prompts = {
+            "planner": "An identity transformation is a contract contradiction",
+            "spec-linter": "byte-identical to an accepted valid fixture",
+            "test-author": "byte-identical to a valid fixture",
+        }
+        for role, rule in prompts.items():
+            self.assertIn(rule, (ROOT / "roles" / f"{role}.md").read_text())
+
     def test_receipt_is_one_use_and_chains_after_terminal_evidence(self) -> None:
         first = STATE.issue(self.args, "RUN planner")
         self.args.receipt = first["receipt_sha256"]
@@ -254,7 +263,8 @@ class StateMachineTest(unittest.TestCase):
         self.args.kit_dir = release
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
-            f"# T-110\n\nState: Building\nKit-SHA: {release.name}\n",
+            f"# T-110\n\nState: Building\nKit-SHA: {release.name}\n\n"
+            "SPEC-LINT: PASS\n",
             encoding="utf-8",
         )
         (self.product / "factory/KIT_PIN").write_text(
@@ -287,36 +297,43 @@ class StateMachineTest(unittest.TestCase):
         passports.mkdir(mode=0o700)
         route = self.product / "factory/route-plans/T-110.json"
         records = []
-        for index, role in enumerate(("planner", "spec-linter", "test-author"), 1):
+        def add_role(role: str) -> None:
+            index = len(records) + 1
             records.append({
                 "contract_version": "1.8.0",
-                "factory_sha": str(index) * 40,
+                "factory_sha": f"{index:040x}",
                 "head_before": run("git", "rev-parse", "HEAD", cwd=self.product),
-                "manifest_sha256": str(index) * 64,
-                "output_sha256": str(index + 3) * 64,
+                "manifest_sha256": f"{index:064x}",
+                "output_sha256": f"{index + 100:064x}",
                 "role": role,
                 "run_id": f"historical-{index}",
-                "transition_receipt_sha256": str(index + 6) * 64,
+                "transition_receipt_sha256": f"{index + 200:064x}",
             })
-        body = {
-            "branch": "ticket/T-110",
-            "completed_role_evidence": records,
-            "contract_version": "1.8.0",
-            "factory_sha": self.args.factory_sha,
-            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
-            "project": "relay",
-            "route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
-            "schema": STATE.PASSPORT_SCHEMA,
-            "ticket": "T-110",
-        }
-        signed = dict(body)
-        signed["authentication_sha256"] = hmac.new(
-            secret, STATE.canonical(body), hashlib.sha256
-        ).hexdigest()
-        signed["passport_sha256"] = hashlib.sha256(
-            STATE.canonical(signed)
-        ).hexdigest()
-        STATE.write_atomic(passports / "T-110.json", signed)
+
+        def write_passport() -> None:
+            body = {
+                "branch": "ticket/T-110",
+                "completed_role_evidence": records,
+                "contract_version": "1.8.0",
+                "factory_sha": self.args.factory_sha,
+                "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+                "project": "relay",
+                "route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
+                "schema": STATE.PASSPORT_SCHEMA,
+                "ticket": "T-110",
+            }
+            signed = dict(body)
+            signed["authentication_sha256"] = hmac.new(
+                secret, STATE.canonical(body), hashlib.sha256
+            ).hexdigest()
+            signed["passport_sha256"] = hashlib.sha256(
+                STATE.canonical(signed)
+            ).hexdigest()
+            STATE.write_atomic(passports / "T-110.json", signed)
+
+        for role in ("planner", "spec-linter", "test-author"):
+            add_role(role)
+        write_passport()
 
         with mock.patch.dict(os.environ, {
             "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
@@ -326,6 +343,37 @@ class StateMachineTest(unittest.TestCase):
             "FACTORY_DURABLE_LEDGER": str(durable_ledger),
         }):
             self.assertEqual(STATE.resolve(self.args), "RUN builder")
+            add_role("planner")
+            write_passport()
+            self.assertEqual(STATE.resolve(self.args), "RUN spec-linter")
+            add_role("spec-linter")
+            ticket.write_text(
+                ticket.read_text(encoding="utf-8")
+                + "SPEC-LINT: FAIL — repair is incomplete\n",
+                encoding="utf-8",
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            run("git", "commit", "-qm", "reject repaired contract", cwd=self.product)
+            write_passport()
+            self.assertEqual(STATE.resolve(self.args), "RUN planner")
+            add_role("planner")
+            write_passport()
+            self.assertEqual(STATE.resolve(self.args), "RUN spec-linter")
+            add_role("spec-linter")
+            ticket.write_text(
+                ticket.read_text(encoding="utf-8") + "SPEC-LINT: PASS\n",
+                encoding="utf-8",
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            run("git", "commit", "-qm", "record repaired spec lint", cwd=self.product)
+            write_passport()
+            self.assertEqual(STATE.resolve(self.args), "RUN test-author")
+            add_role("test-author")
+            write_passport()
+            self.assertEqual(STATE.resolve(self.args), "RUN builder")
+            add_role("builder")
+            write_passport()
+            self.assertEqual(STATE.resolve(self.args), "RUN reviewer")
         self.assertEqual(list(self.state_dir.glob(".role-evidence-*")), [])
 
     def test_narrator_bundle_decisions_are_scoped_to_latest_review_generation(

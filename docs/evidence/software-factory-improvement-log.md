@@ -4498,6 +4498,57 @@ Edge coverage: one regression exercises both pre-restart and post-restart with
 one protected Done target and two runnable claims; the existing all-runnable
 restart and terminal-claim cleanup regressions remain green.
 
+## FI-20260801-149 — Derived invalid fixture was identical to its valid input
+
+Status: Focused regression green; sealed T-100 canary pending
+Priority: P0
+Area: frozen-contract and test-author correctness
+Owner: Factory
+First seen: T-100 under sealed Factory
+`752fe7afcd67af693d3d7b6c30e78a7b6f95e7a5`
+Impact: T-100's accepted Test-author evidence derived an invalid fixture with
+`.toUpperCase()` from a numeric UUID. The transformation was byte-identical to
+the valid fixture, so Builder could not satisfy both assertions and spent a
+full implementation run before reporting the contradiction.
+Smallest repair: Planner now freezes the exact transformed value and verifies
+byte distinction; Spec-linter and Test-author independently reject an identity
+transformation. Prompt-contract coverage locks all three checks.
+
+## FI-20260801-150 — Pre-block Linear state could impersonate operator resume
+
+Status: Focused regression green; production install deferred
+Priority: P0
+Area: Linear operator authority
+Owner: Factory
+First seen: T-100 contract-block recovery on 2026-08-01
+Impact: Linear still exposed Building when the local ticket first entered
+Blocked-Escalated. Without a post-block observation boundary, that stale state
+could be consumed as a new operator resume even though the operator had not
+made a later transition.
+Smallest repair: record Linear's `updatedAt` only after the reconciler observes
+Blocked-Escalated, then accept the declared resume state only with a strictly
+newer timestamp. The focused suite proves stale Building is restored, the
+Blocked baseline is observed, and only a later Building transition resumes.
+
+## FI-20260801-151 — Planner repair retained superseded downstream evidence
+
+Status: Focused regression green; sealed T-100 canary pending
+Priority: P0
+Area: test-first role sequencing
+Owner: Factory
+First seen: T-100 Planner repair commit
+`36a8c916` under sealed Factory
+`752fe7afcd67af693d3d7b6c30e78a7b6f95e7a5`
+Impact: Planner repaired T-100's frozen contract, but the sequencer counted the
+older Spec-linter and Test-author evidence and issued Builder receipt
+`733d3272` without a new checking-lane run. No provider run or new role output
+was accepted under that receipt.
+Smallest repair: authenticated completed-role order now treats any Planner run
+after Test-author as a new test-first epoch. It requires Spec-linter,
+Test-author, then Builder while preserving all earlier evidence. The focused
+state-machine suite proves the complete reopened sequence and its prior normal
+planning path.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

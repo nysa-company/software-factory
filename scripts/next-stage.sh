@@ -863,11 +863,36 @@ if [[ "$P" -eq 0 ]]; then echo "RUN planner"; exit 0; fi
 # --- spec-lint gate: plan → lint → (replan on FAIL) → tests ---
 # The spec-linter appends its own verdict line (SPEC-LINT: PASS/FAIL) to the
 # ticket; each planner run must be followed by one lint run, each FAIL by one
-# replan. The gate applies only before the test-author has run, so tickets
-# already past planning (including all pre-gate tickets) are unaffected.
-if [[ "$TA" -eq 0 ]]; then
-  SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS[[:space:]]*$' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
-  SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
+# replan. An authenticated Planner run after Test-author starts one new
+# tests-first epoch; immutable earlier role evidence remains history but cannot
+# skip the new spec-lint, tests, or Builder boundaries.
+TEST_FIRST_EPOCH="0|complete"
+if [[ -n "$ROLE_EVIDENCE" ]]; then
+  TEST_FIRST_EPOCH="$(python3 - "$ROLE_EVIDENCE" <<'PY'
+import json
+import sys
+
+roles = [item["role"] for item in json.load(open(sys.argv[1], encoding="utf-8"))["records"]]
+planner = next((index for index in range(len(roles) - 1, -1, -1)
+                if roles[index] == "planner" and "test-author" in roles[:index]), -1)
+if planner < 0:
+    print("0|complete")
+else:
+    spec = next((index for index in range(len(roles) - 1, planner, -1)
+                 if roles[index] == "spec-linter"), -1)
+    test = next((index for index in range(len(roles) - 1, planner, -1)
+                 if roles[index] == "test-author"), -1)
+    builder = next((index for index in range(len(roles) - 1, test, -1)
+                    if roles[index] == "builder"), -1) if test >= 0 else -1
+    phase = "spec" if spec < 0 else "test" if test < 0 else "builder" if builder < 0 else "complete"
+    print(f"1|{phase}")
+PY
+)"
+fi
+IFS='|' read -r REOPENED_TEST_FIRST_EPOCH TEST_FIRST_PHASE <<<"$TEST_FIRST_EPOCH"
+SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS[[:space:]]*$' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
+SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
+if [[ "$TA" -eq 0 || "$REOPENED_TEST_FIRST_EPOCH" -eq 1 ]]; then
   if [[ "$SL" -gt $((SLP + SLF)) ]]; then
     echo "REFUSE spec-linter has $SL successful run(s) but only $((SLP + SLF)) SPEC-LINT verdict(s) on $TICKET_FILE — the lint run must end with a 'SPEC-LINT: PASS' or 'SPEC-LINT: FAIL' line"
     exit 1
@@ -876,7 +901,23 @@ if [[ "$TA" -eq 0 ]]; then
     echo "REFUSE ticket logs $((SLP + SLF)) SPEC-LINT verdict(s) but the ledger has only $SL successful spec-linter run(s) — correct the ticket bookkeeping"
     exit 1
   fi
-  SPEC_VERDICTS=$((SLP + SLF))
+fi
+if [[ "$REOPENED_TEST_FIRST_EPOCH" -eq 1 && "$TEST_FIRST_PHASE" != "complete" ]]; then
+  case "$TEST_FIRST_PHASE" in
+    spec) echo "RUN spec-linter" ;;
+    test)
+      LATEST_SPEC_VERDICT="$(grep -iE '^[[:space:]]*SPEC-LINT:[[:space:]]*(PASS|FAIL)' "$TICKET_FILE" | tail -1)"
+      if grep -qiE 'SPEC-LINT:[[:space:]]*FAIL' <<<"$LATEST_SPEC_VERDICT"; then
+        echo "RUN planner"
+      else
+        echo "RUN test-author"
+      fi
+      ;;
+    builder) echo "RUN builder" ;;
+  esac
+  exit 0
+fi
+if [[ "$TA" -eq 0 ]]; then
   if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
   if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
 fi

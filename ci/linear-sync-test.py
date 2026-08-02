@@ -130,6 +130,7 @@ class FakeLinear:
                 "labels": {"nodes": [{"id": item, "name": item} for item in data.get("labelIds", [])]},
                 "assignee": {"id": data["assigneeId"]} if data.get("assigneeId") else None,
                 "comments": {"nodes": [], "pageInfo": {"hasPreviousPage": False, "startCursor": None}},
+                "updatedAt": "2026-08-01T00:00:00Z",
             }
             self.issues[issue_id] = issue
             return {"issueCreate": {"issue": {"id": issue_id, "identifier": issue["identifier"]}}}
@@ -145,6 +146,7 @@ class FakeLinear:
                     issue[key] = data[key]
             if "stateId" in data:
                 issue["state"] = {"id": data["stateId"], "name": self.state_name(data["stateId"])}
+                issue["updatedAt"] = "2026-08-01T00:00:01Z"
             if "projectId" in data:
                 issue["project"] = {"id": data["projectId"]}
             if "labelIds" in data:
@@ -383,8 +385,23 @@ class LinearSyncTest(unittest.TestCase):
         )
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
+        issue["updatedAt"] = "2026-08-01T00:00:00Z"
         self.reconcile()
         self.assertIn("State: Blocked-Escalated", path.read_text())
+        self.assertEqual(issue["state"]["name"], "Blocked-Escalated")
+        self.assertNotIn("state", self.mapping["tickets"]["T-001"]["operator"])
+
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        operator = entry["operator"]
+        self.assertEqual(
+            entry["blocked_remote_updated_at"], "2026-08-01T00:00:01Z"
+        )
+        issue["state"] = {
+            "id": config()["states"]["building"], "name": "Building"
+        }
+        issue["updatedAt"] = "2026-08-01T00:00:02Z"
+        self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
     def test_blocked_ticket_cannot_resume_to_evidence_sensitive_state(self):

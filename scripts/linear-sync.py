@@ -870,12 +870,27 @@ def desired_labels(ticket, config):
     return [config["labels"][name] for name in names if name in config.get("labels", {})]
 
 
+def linear_updated_after(candidate, baseline):
+    if not isinstance(candidate, str) or not isinstance(baseline, str):
+        return False
+    try:
+        return dt.datetime.fromisoformat(candidate.replace("Z", "+00:00")) > (
+            dt.datetime.fromisoformat(baseline.replace("Z", "+00:00"))
+        )
+    except ValueError:
+        return False
+
+
 def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     operator = dict(entry.get("operator", {}))
+    blocked_remote_updated_at = entry.get("blocked_remote_updated_at")
     if operator.get("state") and normalize_state(operator.get("state_base", "")) != ticket["state"]:
         operator.pop("state", None)
         operator.pop("state_base", None)
         operator.pop("approval", None)
+        blocked_remote_updated_at = None
+        if not dry:
+            entry.pop("blocked_remote_updated_at", None)
     remote_priority = PRIORITY_NAMES.get(actual.get("priority", 0), "none")
     operator["priority"] = remote_priority
 
@@ -893,12 +908,21 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
         ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)
     )
     local_state = effective["state"]
+    remote_updated_at = actual.get("updatedAt")
+    if local_state == "blocked-escalated" and remote_state == local_state:
+        if isinstance(remote_updated_at, str):
+            blocked_remote_updated_at = remote_updated_at
+            if not dry:
+                entry["blocked_remote_updated_at"] = remote_updated_at
     allowed = (local_state, remote_state) in OPERATOR_TRANSITIONS
     if (
         local_state == "blocked-escalated"
         and remote_state == effective["resume_state"]
         and remote_state in STATES
         and remote_state not in {"awaiting approval", "approved", "done"}
+        and linear_updated_after(
+            remote_updated_at, blocked_remote_updated_at
+        )
     ):
         allowed = True
     if allowed:
@@ -909,7 +933,7 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     elif remote_state != local_state:
         log(f"{ticket['id']}: ignoring non-operator transition {local_state} -> {remote_state}")
 
-    operator["linear_updated_at"] = actual.get("updatedAt")
+    operator["linear_updated_at"] = remote_updated_at
     operator["observed_at"] = utc_now()
     if dry:
         log(f"{ticket['id']}: DRY would update operator overlay")
