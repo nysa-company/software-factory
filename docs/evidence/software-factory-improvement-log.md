@@ -4672,7 +4672,8 @@ current receipt reaches state-machine validation.
 
 ## FI-20260802-158 — Epoch gate rejected the Planner's established freeze form
 
-Status: Focused regression green; sealed mock lifecycle pending
+Status: Focused regression and disposable six-role mock lifecycle green;
+sealed successor replay pending
 Priority: P0
 Area: Planner contract and test-immutability epoch classification
 Owner: Factory
@@ -4696,7 +4697,9 @@ Validation: the synthetic gate/reorder scenario reproduces T-100's exact v3
 comma-terminated marker, one-for-one v4 replacement, and later canonical v5
 append; its negative matrix covers eight invalid shapes. The candidate gate
 passes T-100's complete real branch with production `TEST_PATHS` while leaving
-its head and tree unchanged.
+its head and tree unchanged. Candidate `cdeef046` then completed the disposable
+Planner, Spec-linter, Test-author, Builder, Reviewer, and Narrator mock lifecycle
+once in 178 seconds and stopped at `AWAIT-OPERATOR` with no replay.
 
 ## Maintenance rule
 
