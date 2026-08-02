@@ -44,6 +44,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   Planner work still requires the visible Planning state; an authenticated
   `FIX planner` receipt may run beneath a later coarse state without mutating
   that state backward or recomputing repair ownership.
+- A signed completed Planner repair retains narrow catch-up authority when its
+  immediate deterministic successor opens a new test-first epoch beneath
+  Building or Review. This permits only the authenticated resolved stage and
+  does not enable a general backward transition.
 - Contract 1.8 at ticket capacity above one requires an exact owner-approved
   subscription provider policy and activation covering every enabled Cursor,
   Claude Code, and Codex route at no less than ticket capacity. The installed
@@ -2754,3 +2758,12 @@ without retaining or reconstructing a runnable claim. Restart and recovery
 events bind the complete configured ticket set, while only unfinished claims
 are scheduled. This permits a sealed successor to continue the remaining
 tickets without replaying terminal work or waiting forever for a third claim.
+
+## 2026-08-01 — Decision 201: Completed Planner repair retains catch-up authority
+
+Category: State machine
+
+After a signed Planner repair is archived, its immediate resolved successor
+may still target Planning beneath a Building or Review coarse state. The state
+machine preserves that one authenticated override through the catch-up stage;
+ordinary backward state materialization remains forbidden.

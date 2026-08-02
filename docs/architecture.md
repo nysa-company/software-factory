@@ -549,8 +549,10 @@ call. The state machine persists an HMAC-bound repair record for the unique
 pair and runs only the named owner. If the owner precedes the visible coarse
 state, that state remains unchanged while the authenticated repair receipt
 runs the earlier role; ordinary deterministic stages then catch up without
-adding a general backward state transition. After catch-up, the signed
-completed-repair archive
+adding a general backward state transition. When a completed Planner repair
+opens a new test-first epoch beneath Building or Review, its signed archive
+retains that same narrow authority for the immediate resolved catch-up stage.
+After catch-up, the signed completed-repair archive
 authenticates the still-visible role-and-receipt pair so it cannot be mistaken
 for a new repair. More than one successful owner run fails closed.
 After an authenticated resume creates that repair record, the controller may

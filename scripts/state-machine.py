@@ -2323,6 +2323,16 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
                 raise StateError(
                     "operator resume lacks authenticated contract repair state"
                 )
+            current = current_state(args.workdir, args.ticket)
+            if directives[0] == "planner" and current in {"Building", "Review"}:
+                stage = resolve(args)
+                role = stage_role(stage)
+                order = {"Planning": 1, "Building": 2, "Review": 3}
+                if (
+                    role is not None
+                    and order[TARGET_STATE[role]] < order[current]
+                ):
+                    return stage, True
         return None, False
     owner = record.get("repair_role", "")
     head = record.get("head_sha", "")

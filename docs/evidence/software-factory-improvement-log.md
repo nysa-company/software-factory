@@ -4549,6 +4549,24 @@ Test-author, then Builder while preserving all earlier evidence. The focused
 state-machine suite proves the complete reopened sequence and its prior normal
 planning path.
 
+## FI-20260801-152 — Archived Planner repair lost catch-up authority
+
+Status: Focused regression green; sealed T-100 retry pending
+Priority: P0
+Area: state materialization after contract repair
+Owner: Factory
+First seen: T-100 sealed successor canary under Factory
+`3a90ab040667f9c37c0397b6a086d40e193f6c66`
+Impact: authenticated role order correctly selected a fresh Spec-linter after
+the completed Planner repair, but the materializer refused the required
+Building-to-Planning catch-up. The refusal occurred before provider admission;
+no role ran and no output or charge was created.
+Smallest repair: only a signed completed Planner repair may retain the narrow
+backward override when its immediate resolved stage targets an earlier coarse
+state. Ordinary backward transitions remain forbidden.
+Edge coverage: the completed-repair regression drives `next_transition` from
+Building to `RUN spec-linter` and proves no generic state transition is called.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -1394,6 +1394,20 @@ class StateMachineTest(unittest.TestCase):
         )
 
         self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
+        with (
+            mock.patch.object(STATE, "current_state", return_value="Building"),
+            mock.patch.object(
+                STATE, "resolve", return_value="RUN spec-linter"
+            ) as resolve,
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.next_transition(self.args)
+
+        resolve.assert_called_once_with(self.args)
+        transition.assert_not_called()
+        migrate.assert_called_once_with(self.args)
+        self.assertEqual(result["stage"], "RUN spec-linter")
 
     def test_repeated_blocker_hands_back_to_earlier_owner_then_continues(
         self,
@@ -1480,10 +1494,13 @@ class StateMachineTest(unittest.TestCase):
                 STATE.contract_repair_stage(self.args),
                 ("RUN spec-linter", True),
             )
-        self.assertEqual(
-            STATE.contract_repair_stage(self.args),
-            (None, False),
-        )
+        with mock.patch.object(
+            STATE, "resolve", return_value="RUN spec-linter"
+        ):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args),
+                ("RUN spec-linter", True),
+            )
 
     def test_authenticated_contract_repair_is_one_success_boundary(self) -> None:
         secret = b"k" * 32
