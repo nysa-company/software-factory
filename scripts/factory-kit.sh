@@ -17,7 +17,7 @@ CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
 INSTALL_MANIFEST_SCHEMA=1
 SUITE_EVIDENCE_SCHEMA=2
-CERTIFICATION_TOOL_VERSION=4
+CERTIFICATION_TOOL_VERSION=5
 # Bump whenever run_kit_checks_isolated command composition or semantics change.
 KIT_SUITE_DEFINITION="factory-kit-suite-v2"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
@@ -1782,26 +1782,76 @@ configure_phase_sandbox() {
   write_sandbox_profile "$SANDBOX_PROFILE" "$workspace" "$network_opt_in" "$@"
 }
 
+preserve_certification_failure() {
+  local evidence="$1" redacted="$2" sha="$3" tree="$4" directory failure_id
+  directory="$RECEIPTS_DIR/failures"
+  safe_create_directory "$directory"
+  failure_id="$(python3 - "$evidence" "$redacted" "$sha" "$tree" <<'PY'
+import hashlib, pathlib, sys
+evidence, output, sha, tree = sys.argv[1:]
+digest = hashlib.sha256((sha + tree).encode())
+for item in (evidence, output):
+    path = pathlib.Path(item)
+    digest.update(path.read_bytes() if path.is_file() else b"")
+print(digest.hexdigest())
+PY
+)"
+  python3 - "$evidence" "$redacted" "$sha" "$tree" "$failure_id" <<'PY' |
+import hashlib, json, pathlib, sys
+evidence, output, factory_sha, product_tree, failure_id = sys.argv[1:]
+evidence_path, output_path = pathlib.Path(evidence), pathlib.Path(output)
+raw_output = output_path.read_bytes() if output_path.is_file() else b""
+try:
+    result = json.loads(evidence_path.read_text()) if evidence_path.is_file() else None
+except (OSError, json.JSONDecodeError):
+    result = None
+body = {
+    "factory_sha": factory_sha,
+    "failure_id": failure_id,
+    "output_sha256": hashlib.sha256(raw_output).hexdigest(),
+    "product_tree": product_tree,
+    "redacted_output": raw_output[:1_000_000].decode("utf-8", "replace"),
+    "result": result,
+    "schema": "nysa.software-factory.certification-failure/v1",
+    "status": "fail",
+}
+body["record_sha256"] = hashlib.sha256(json.dumps(
+    body, sort_keys=True, separators=(",", ":")
+).encode()).hexdigest()
+print(json.dumps(body))
+PY
+    atomic_json_from_stdin "$directory/$failure_id.json"
+  chmod 600 "$directory/$failure_id.json"
+  say "CERTIFICATION FAILURE PRESERVED: $directory/$failure_id.json" >&2
+}
+
 run_product_certification() {
   local product_copy="$1" script="$2" sha="$3" release_copy="$4"
   local workspace="$5" real_product="$6" real_release="$7"
   local product_git_tree="$8"
   local raw="$workspace/certification.raw" redacted="$workspace/certification.redacted"
   local evidence="$workspace/product-certification.json" timeout status=0
+  local network_opt_in deny_profile=""
   PRODUCT_CERTIFICATION_EVIDENCE=""
   PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
   timeout="${FACTORY_KIT_CERTIFY_TIMEOUT_SECONDS:-900}"
   [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -gt 0 ]] ||
     die "certification timeout must be positive"
   configure_phase_sandbox "certification" "$workspace" "$real_product" "$real_release"
+  network_opt_in="${FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED:-0}"
+  if [[ -n "$SANDBOX_EXEC" ]]; then
+    deny_profile="$workspace/certification-phase-denied.sb"
+    write_sandbox_profile "$deny_profile" "$workspace" 0 \
+      "$real_product" "$real_release"
+  fi
   python3 - "$product_copy" "$script" "$sha" "$release_copy" "$workspace/home" \
     "$workspace/tmp" "$timeout" "$raw" "$SANDBOX_PROFILE" "$SANDBOX_EXEC" \
     "$SCRIPT_ROOT/scripts/lib/sandbox-ps.py" \
     "${FACTORY_KIT_SANDBOX_CAPTURE:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
-    "$product_git_tree" "$evidence" <<'PY' || status=$?
-import os, pathlib, subprocess, sys
+    "$product_git_tree" "$evidence" "$network_opt_in" "$deny_profile" <<'PY' || status=$?
+import json, os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
 profile = sys.argv[9]
 sandbox_exec = sys.argv[10]
@@ -1811,6 +1861,8 @@ deny_sibling = sys.argv[13]
 deny_home = sys.argv[14]
 product_tree = sys.argv[15]
 certification_evidence = sys.argv[16]
+network_reviewed = sys.argv[17]
+deny_profile = sys.argv[18]
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
@@ -1861,7 +1913,12 @@ environment = {
     "FACTORY_PRODUCT_TREE": product_tree,
     "FACTORY_CERTIFICATION_EVIDENCE": certification_evidence,
     "FACTORY_KIT_OUTER_SANDBOX": "1",
+    "FACTORY_CERTIFICATION_NETWORK_REVIEWED": network_reviewed,
 }
+if sandbox_exec and deny_profile:
+    environment["FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX"] = json.dumps(
+        [sandbox_exec, "-f", deny_profile], separators=(",", ":")
+    )
 environment.update(tool_environment)
 if capture:
     environment["FACTORY_KIT_SANDBOX_CAPTURE"] = capture
@@ -1886,6 +1943,8 @@ PY
   redact_output "$raw" "$redacted"
   rm -f "$raw"
   if [[ "$status" -ne 0 ]]; then
+    preserve_certification_failure \
+      "$evidence" "$redacted" "$sha" "$product_git_tree"
     awk '{print "  | " $0}' "$redacted" >&2
     return "$status"
   fi
@@ -1918,13 +1977,21 @@ if (
     or value.get("factory_sha") != factory_sha
     or value.get("product_tree") != product_tree
     or value.get("max_workers") not in {1, 2, 3}
+    or not isinstance(value.get("network_reviewed"), bool)
+    or not isinstance(value.get("runtime"), dict)
+    or set(value["runtime"]) != {"node", "npm"}
     or not isinstance(phases, list) or not phases
     or any(
         not isinstance(phase, dict)
         or phase.get("exit_status") != 0
         or phase.get("cache_hit") is not False
+        or phase.get("network_declared") not in {"denied", "optional", "required"}
+        or not isinstance(phase.get("network_granted"), bool)
+        or (phase.get("network_declared") == "required" and not phase["network_granted"])
+        or (phase.get("network_declared") == "denied" and phase["network_granted"])
         or not digest.fullmatch(phase.get("input_sha256", ""))
         or not digest.fullmatch(phase.get("artifact_sha256", ""))
+        or not digest.fullmatch(phase.get("output_sha256", ""))
         for phase in phases
     )
 ):
@@ -2682,6 +2749,42 @@ cmd_pause() {
 active_file_for() { printf '%s/%s/active.json\n' "$PROJECTS_DIR" "$1"; }
 journal_dir_for() { printf '%s/%s/activation-journal\n' "$PROJECTS_DIR" "$1"; }
 
+certification_active_binding() {
+  local slug="$1" product="$2" origin="$3" active journal_dir
+  active="$(active_file_for "$slug")"
+  journal_dir="$(journal_dir_for "$slug")"
+  [[ ! -L "$active" ]] ||
+    die "certification_preflight_product_binding: active record is unsafe"
+  [[ -f "$active" ]] || { printf '\n'; return 0; }
+  [[ -z "$(latest_open_journal "$journal_dir")" ]] ||
+    die "certification_preflight_product_binding: project has an interrupted activation"
+  python3 - "$active" "$journal_dir" "$slug" "$product" "$origin" <<'PY'
+import json, pathlib, sys
+active_path, journal_dir, project, product, origin = sys.argv[1:]
+active = json.load(open(active_path, encoding="utf-8"))
+generation = active.get("generation")
+if (
+    active.get("project") != project
+    or active.get("product_path") != product
+    or not isinstance(generation, int)
+    or isinstance(generation, bool)
+    or generation < 1
+):
+    raise SystemExit("certification_preflight_product_binding: active product binding is invalid")
+matches = list(pathlib.Path(journal_dir).glob(f"{generation:020d}-*.json"))
+if len(matches) != 1:
+    raise SystemExit("certification_preflight_product_binding: active generation journal is ambiguous")
+journal = json.loads(matches[0].read_text(encoding="utf-8"))
+if (
+    journal.get("phase") != "committed"
+    or journal.get("candidate_record") != active
+    or journal.get("receipt_snapshot", {}).get("product_origin") != origin
+):
+    raise SystemExit("certification_preflight_product_binding: active path or origin does not match this product")
+print(generation)
+PY
+}
+
 latest_open_journal() {
   local directory="$1"
   if [[ ! -d "$directory" ]]; then
@@ -2910,7 +3013,7 @@ cmd_certify() {
   local writable writable_head script created expires receipt_id receipt previous_generation workspace
   local kit_pin_hash project_env_hash kit_origin lock evidence_values evidence_id
   local evidence_digest evidence_created evidence_expires evidence_source suite_reused
-  local refresh_source refresh_mode refresh_remote_id
+  local refresh_source refresh_mode refresh_remote_id active_binding_hash
   validate_slug "$slug"
   validate_sha "$sha"
   validate_suite_evidence_ttl
@@ -2932,6 +3035,10 @@ cmd_certify() {
   require_clean_product "$product_top"
   product_git_tree="$(product_tree "$product_top")"
   product_repo="$(product_origin "$product_top")"
+  previous_generation="$(certification_active_binding \
+    "$slug" "$product_top" "$product_repo")" ||
+    die "certification_preflight_product_binding: active product binding failed"
+  active_binding_hash="$(file_hash "$(active_file_for "$slug")")"
   contract="$(contract_version "$release")"
   require_provider_concurrency_ready \
     "$product_top" "$release" "$contract" "$sha" "$kit_tree"
@@ -3000,13 +3107,8 @@ cmd_certify() {
     die "kit-suite evidence expired during product certification"
   kit_pin_hash="$(file_hash "$product_top/factory/KIT_PIN")"
   project_env_hash="$(file_hash "$product_top/factory/PROJECT.env")"
-  previous_generation=""
-  if [[ -f "$(active_file_for "$slug")" ]]; then
-    [[ ! -L "$(active_file_for "$slug")" &&
-       "$(json_get "$(active_file_for "$slug")" product_path)" == "$product_top" ]] ||
-      die "existing activation record belongs to a different product"
-    previous_generation="$(json_get "$(active_file_for "$slug")" generation)"
-  fi
+  [[ "$(file_hash "$(active_file_for "$slug")")" == "$active_binding_hash" ]] ||
+    die "certification preflight binding changed during product phases"
   receipt_id="$(printf '%s\n' "$slug|$sha|$kit_tree|$product_git_tree|$created|$previous_generation|$CERTIFICATION_TOOL_VERSION|$(random_nonce)" |
     shasum -a 256 | awk '{print $1}')"
   receipt="$RECEIPTS_DIR/$receipt_id.json"

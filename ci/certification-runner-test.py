@@ -17,17 +17,35 @@ RUNNER = ROOT / "scripts/certification-runner.py"
 
 
 class CertificationRunnerTest(unittest.TestCase):
-    def run_plan(self, root: Path, phases: list[dict], workers: int = 2):
+    def runtime(self):
+        return {
+            "node": subprocess.run(
+                ["node", "--version"], text=True, capture_output=True, check=True
+            ).stdout.strip(),
+            "npm": subprocess.run(
+                ["npm", "--version"], text=True, capture_output=True, check=True
+            ).stdout.strip(),
+        }
+
+    def run_plan(
+        self, root: Path, phases: list[dict], workers: int = 2,
+        network_reviewed: bool = False,
+    ):
+        phases = [{**phase, "network": phase.get("network", "denied")} for phase in phases]
         plan = root / "plan.json"
         plan.write_text(json.dumps({
-            "schema": "nysa.software-factory.certification-plan/v1",
+            "schema": "nysa.software-factory.certification-plan/v2",
             "phases": phases,
+            "runtime": self.runtime(),
         }))
         result = root / "results" / "result.json"
         environment = os.environ.copy()
         environment.update(
             FACTORY_KIT_SHA="a" * 40,
             FACTORY_PRODUCT_TREE="b" * 40,
+            FACTORY_CERTIFICATION_NETWORK_REVIEWED=(
+                "1" if network_reviewed else "0"
+            ),
         )
         completed = subprocess.run(
             [
@@ -82,6 +100,9 @@ class CertificationRunnerTest(unittest.TestCase):
             )
             self.assertTrue(
                 all(item["cache_hit"] is False for item in result["phases"])
+            )
+            self.assertTrue(
+                all(item["network_granted"] is False for item in result["phases"])
             )
 
     def test_failed_phase_cancels_sibling_and_never_passes(self) -> None:
@@ -141,8 +162,9 @@ class CertificationRunnerTest(unittest.TestCase):
             ]
             plan = root / "plan.json"
             plan.write_text(json.dumps({
-                "schema": "nysa.software-factory.certification-plan/v1",
-                "phases": phases,
+                "schema": "nysa.software-factory.certification-plan/v2",
+                "phases": [{**phase, "network": "denied"} for phase in phases],
+                "runtime": self.runtime(),
             }))
             environment = os.environ.copy()
             environment.update(
@@ -162,6 +184,63 @@ class CertificationRunnerTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 2)
             self.assertIn("cycle", completed.stderr)
             self.assertFalse((root / "result.json").exists())
+
+    def test_required_network_fails_before_phase_without_review(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            sentinel = root / "spawned"
+            phases = [{
+                "artifacts": [],
+                "command": [sys.executable, "-c", f"open({str(sentinel)!r},'w').close()"],
+                "depends_on": [],
+                "name": "npm-ci",
+                "network": "required",
+            }]
+            completed, result = self.run_plan(root, phases)
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(result["failure"]["reason_code"], "reviewed_network_required")
+            self.assertFalse(sentinel.exists())
+
+            completed, result = self.run_plan(
+                root, phases, network_reviewed=True
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue(sentinel.exists())
+            self.assertTrue(result["phases"][0]["network_granted"])
+
+    def test_missing_runtime_is_a_typed_preflight_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "phases": [{
+                    "artifacts": [],
+                    "command": [sys.executable, "-c", "raise SystemExit(99)"],
+                    "depends_on": [],
+                    "name": "fixture",
+                    "network": "denied",
+                }],
+                "runtime": self.runtime(),
+                "schema": "nysa.software-factory.certification-plan/v2",
+            }))
+            result = root / "result.json"
+            environment = os.environ.copy()
+            environment.update(
+                FACTORY_KIT_SHA="a" * 40,
+                FACTORY_PRODUCT_TREE="b" * 40,
+                FACTORY_CERTIFICATION_NETWORK_REVIEWED="0",
+                PATH=str(root),
+            )
+            completed = subprocess.run(
+                [sys.executable, str(RUNNER), "--plan", str(plan),
+                 "--result", str(result), "--workers", "1"],
+                cwd=root, env=environment, text=True, capture_output=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(
+                json.loads(result.read_text())["failure"]["reason_code"],
+                "runtime_identity_mismatch",
+            )
 
 
 if __name__ == "__main__":
