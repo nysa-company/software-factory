@@ -4445,6 +4445,48 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(calls, ["release", "passport", "closeout"])
 
+    def test_recovered_merged_passport_closes_without_publication_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        (self.state / "passports").mkdir()
+        passport = self.state / "passports/T-110.json"
+        passport.write_text(
+            json.dumps({"publication_state": "merged"}), encoding="utf-8"
+        )
+        passport.chmod(0o600)
+        calls = []
+        controller.ensure_lease = lambda *_args: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.ticket_merged = lambda _claim: True
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.closeout = lambda _claim: calls.append("closeout") or True
+        controller.refresh_dependency_tracking = lambda _claim: (
+            (_ for _ in ()).throw(
+                AssertionError("merged recovery refreshed dependencies")
+            )
+        )
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(
+                AssertionError("merged recovery entered state machine")
+            )
+        )
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "progressed", "ticket": "T-110"},
+        )
+        self.assertEqual(calls, ["passport", "closeout"])
+
     def test_run_wrapper_renews_lease_before_provider_queue(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
         required = source.index(

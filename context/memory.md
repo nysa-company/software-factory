@@ -2700,3 +2700,14 @@ retry the same closeout claim; a completed unsuccessful context and ambiguous
 duplicate evidence remain fail-closed errors. This prevents ordinary GitHub
 check propagation after merge from parking an otherwise valid ticket without
 weakening the Done boundary.
+
+## 2026-08-01 — Decision 196: Merged passport truth survives publication-lease release
+
+Category: State machine
+
+A transient publication lease is not required to recover a merged ticket.
+Before dependency tracking or ordinary state-machine evaluation, the controller
+uses a safe current passport with `publication_state=merged` as authority to
+verify exact GitHub merge truth and enter protected-main closeout. It releases a
+publication lease only when one still exists. This preserves post-merge
+recovery across a sealed successor without reopening prepublication stages.

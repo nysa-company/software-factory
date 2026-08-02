@@ -2228,11 +2228,19 @@ class Controller:
                     ),
                     "ticket": claim["ticket"],
                 }
+            passport_path = (
+                self.state / "passports" / f"{claim['ticket']}.json"
+            )
             if (
-                claim.get("publication_lease")
+                (
+                    claim.get("publication_lease")
+                    or passport_path.exists()
+                    and read(passport_path).get("publication_state") == "merged"
+                )
                 and self.ticket_merged(claim)
             ):
-                self.release_publication(claim)
+                if claim.get("publication_lease"):
+                    self.release_publication(claim)
                 self.migrate_passport(claim, "merged")
                 self.closeout(claim)
                 return {

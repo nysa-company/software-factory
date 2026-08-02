@@ -713,6 +713,8 @@ separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
 Missing or pending post-merge contexts keep closeout waiting; a completed
 unsuccessful context remains a fail-closed controller error.
+An authenticated merged passport enters closeout before dependency refresh,
+even when a prior wait already released its publication lease.
 If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a

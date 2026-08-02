@@ -4347,6 +4347,34 @@ ambiguous check still refuses. The Factory controller passes 67/67; ticket
 attestation passes 61/61. Live closure requires a sealed successor to retry the
 already-merged T-094 and emit Factory-owned Done.
 
+## FI-20260801-143 — Released publication lease hid an already-merged ticket
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main closeout ordering
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`0b4f5c9c622aba3cb741e362475582a6d5e30061`
+Impact: T-094 remained merged as
+`894d1b6d454f1b6f14134e21153ee4b77c20e6a4`, with main CI and both Railway
+statuses green. Its earlier closeout failure had released the publication
+lease. Successor recovery therefore skipped the merged-ticket shortcut,
+entered dependency evaluation, and attempted a prepublication dependency
+refresh that correctly refused the Approved ticket. No role or implementation
+was rerun, and T-100 remained gated.
+Finding: the merged-ticket shortcut incorrectly required a live publication
+lease. Lease ownership serializes publication; it is not evidence of whether
+GitHub already merged the PR.
+Smallest repair: an authenticated passport whose publication state is merged
+checks authoritative merged-PR truth before dependency refresh, regardless of
+lease presence. A lease is released only when present, and protected-main
+attestation remains the fail-closed Done authority.
+Edge coverage: the controller regression proves a recovered merged passport
+with no publication lease bypasses dependency tracking and the ordinary state
+machine, then enters closeout without manufacturing a lease release; the full
+controller suite passes 68/68. Live closure requires a sealed successor to
+emit T-094 Done without role replay.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
