@@ -4802,6 +4802,27 @@ Smallest repair: overlap only independent per-ticket recovery calls up to the
 already-certified capacity. Every ticket retains its existing launcher,
 passport, route, lease, repair, and accounting sequence.
 
+## FI-20260802-165 — Frozen test scope omitted fixture cleanup dependencies
+
+Status: Focused role-contract regression green; protected CI pending
+Priority: P0 (#192)
+Area: planning, specification lint, and protected-test ownership
+Owner: Factory
+First seen: T-100 Test-author contract block at product commit `d44bb6a4`
+under sealed Factory `498dadc36f4c70956a7d25231215b9f11cafb4a8`
+Impact: a required serialized suite created a non-cascading child row in one
+criterion, then a later reset deleted its parent first. The exact frozen repair
+scope omitted the required cleanup edit, so Test-author correctly preserved its
+valid committed tests and stopped before Builder.
+Smallest repair: Planner and Spec-linter trace setup, reset, and teardown across
+the required serialized command, enumerate sibling foreign-key dependencies,
+and freeze only required child-first cleanup edits. Exact `ON DELETE CASCADE`
+relationships need no redundant cleanup and unrelated protected tests remain
+outside Test-author ownership.
+Validation: the focused role-contract regression covers child-first cleanup,
+sibling dependencies, cascade control, narrow ownership, and preserved
+Test-author fail-closed behavior.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -2937,3 +2937,14 @@ baseline even when no operator state overlay exists. Description comparison
 canonicalizes only Linear's observed ordered-list, inline-code, link, and fence
 round trips; nested structure, fenced content, and meaningful edits remain
 different and are restored from Git.
+
+## 2026-08-02 — Decision 216: Frozen test scopes close fixture lifecycle dependencies
+
+Category: State machine
+
+Planner and Spec-linter trace every required serialized suite through setup,
+reset, and teardown before contract freeze. Parent cleanup names every sibling
+dependent table and includes child-first cleanup for each non-cascading foreign
+key; an exact `ON DELETE CASCADE` needs no redundant edit. The frozen
+Test-author scope contains only those required setup corrections. If it does
+not, Test-author preserves valid committed tests and blocks before Builder.

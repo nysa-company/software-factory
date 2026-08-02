@@ -1105,6 +1105,12 @@ Spec-linter, Test-author, and Reviewer use its distinct checking family.
 Planner, Spec-linter, and Test-author independently evaluate exact generated
 fixture values from their frozen initializer or reset; an unproducible value
 or a repair scope excluding its required setup correction is a contract block.
+For every required serialized test command they also trace fixture setup,
+reset, and teardown across criteria. A parent-row cleanup requires child-first
+cleanup for every non-cascading sibling dependency inside the exact
+protected-test scope; `ON DELETE CASCADE` closes that dependency without a
+redundant edit. Missing closure blocks before Builder, preserves valid
+Test-author commits, and never grants unrelated protected-test ownership.
 Under Contract 1.8, Reviewer-owned Test-author work first routes through one
 ticket-only Planner repair that appends a higher frozen-contract epoch. The
 sequencer authenticates that exact commit before Test-author, preserving
