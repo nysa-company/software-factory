@@ -2641,18 +2641,19 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls, [("renew-existing",)])
 
     def test_release_upgrade_recovery_overlaps_independent_tickets(self) -> None:
+        import threading
+
         controller = CONTROL.Controller(self.args)
         claims = [{"ticket": f"T-{number}"} for number in range(110, 113)]
-        started = time.monotonic()
+        barrier = threading.Barrier(len(claims))
 
         def recovery(items):
             self.assertEqual(len(items), 1)
-            time.sleep(0.1)
+            barrier.wait(timeout=2)
 
         controller.recover_each(
             claims, recovery, "release-upgrade", concurrent=True
         )
-        self.assertLess(time.monotonic() - started, 0.22)
 
     def test_factory_upgrade_preserves_failed_terminal_for_recovery(self) -> None:
         controller = CONTROL.Controller(self.args)
