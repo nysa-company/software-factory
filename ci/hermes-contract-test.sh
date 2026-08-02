@@ -1149,6 +1149,8 @@ factory/runs/
 factory/runtime-ledger.csv
 factory/linear-map.json
 factory/.linear-sync.lock
+factory/.linear-sync-cycle.lock
+factory/.linear-operator-clears/
 factory/.active-runs/
 factory/.provider.lock/
 factory/.dispatch-leases/

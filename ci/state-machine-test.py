@@ -699,6 +699,12 @@ class StateMachineTest(unittest.TestCase):
             for role, target in targets.items():
                 for current in ("Ready", "Planning", "Building", "Review"):
                     expected = paths.get((current, target))
+                    if (
+                        action == "FIX"
+                        and role == "planner"
+                        and current in {"Building", "Review"}
+                    ):
+                        expected = []
                     with self.subTest(
                         action=action, role=role, current=current, target=target
                     ):

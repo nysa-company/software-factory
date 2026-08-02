@@ -4675,7 +4675,8 @@ import hashlib, importlib.util, json, pathlib, subprocess, sys
 spec=importlib.util.spec_from_file_location("ticket_pr", sys.argv[1])
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 try:
-    print(module.latest_reviewer_head(pathlib.Path(sys.argv[2]), sys.argv[3]))
+    print(module.latest_reviewer_head(
+        pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[7]), sys.argv[3]))
 except module.Refusal as current_error:
     source, imported=map(pathlib.Path,sys.argv[4:6])
     if not source.is_file() or not imported.is_file(): raise current_error
