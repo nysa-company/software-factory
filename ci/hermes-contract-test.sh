@@ -1954,12 +1954,20 @@ run_launcher launchtest claim --ticket T-779 > "$TMP/real-claim-779.json"
 run_launcher launchtest claim --ticket T-780 > "$TMP/real-claim-780.json"
 REAL_LEASE_779="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-779.json")"
 REAL_LEASE_780="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' "$TMP/real-claim-780.json")"
-run_launcher launchtest preflight --ticket T-779 --role planner \
+if ! run_launcher launchtest preflight --ticket T-779 --role planner \
   --lease "$REAL_LEASE_779" \
-  --workdir "$REAL_RUN_WORKTREE_779_PHYS" --json > "$TMP/real-preflight-779.json"
-run_launcher launchtest preflight --ticket T-780 --role planner \
+  --workdir "$REAL_RUN_WORKTREE_779_PHYS" --json \
+  > "$TMP/real-preflight-779.json" 2>&1; then
+  sed 's/^/T-779 preflight: /' "$TMP/real-preflight-779.json" >&2
+  fail "first concurrent-capacity preflight failed"
+fi
+if ! run_launcher launchtest preflight --ticket T-780 --role planner \
   --lease "$REAL_LEASE_780" \
-  --workdir "$REAL_RUN_WORKTREE_780_PHYS" --json > "$TMP/real-preflight-780.json"
+  --workdir "$REAL_RUN_WORKTREE_780_PHYS" --json \
+  > "$TMP/real-preflight-780.json" 2>&1; then
+  sed 's/^/T-780 preflight: /' "$TMP/real-preflight-780.json" >&2
+  fail "second concurrent-capacity preflight failed"
+fi
 run_launcher launchtest ticket-state --ticket T-779 --workdir "$REAL_RUN_WORKTREE_779_PHYS" \
   --action transition --state Planning --json > "$TMP/real-ticket-transition-779.json"
 run_launcher launchtest ticket-state --ticket T-780 --workdir "$REAL_RUN_WORKTREE_780_PHYS" \
