@@ -2528,6 +2528,149 @@ class StateMachineTest(unittest.TestCase):
             )
         self.assertFalse(STATE.repair_path(self.args).exists())
 
+    def test_blocked_repair_survives_release_migration(self) -> None:
+        old_factory = "b" * 40
+        blocked_receipt = "c" * 64
+        old_passport = "d" * 64
+        repair_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "\nRepair blocked.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "block repair", cwd=self.product)
+        blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "\nMigrate route.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "migrate route", cwd=self.product)
+        current_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        receipt_body = {
+            "branch": "ticket/T-110",
+            "contract_version": self.args.contract_version,
+            "factory_sha": old_factory,
+            "head_sha": repair_head,
+            "head_tree": run(
+                "git", "rev-parse", f"{repair_head}^{{tree}}", cwd=self.product
+            ),
+            "parent_digest": blocked_receipt,
+            "passport_sha256": "e" * 64,
+            "product_origin_sha256": hashlib.sha256(
+                b"test-origin"
+            ).hexdigest(),
+            "project": self.args.project,
+            "role": "test-author",
+            "schema": STATE.RECEIPT_SCHEMA,
+            "stage": "FIX test-author",
+            "ticket": "T-110",
+        }
+        receipt_digest = hashlib.sha256(
+            STATE.canonical(receipt_body)
+        ).hexdigest()
+        STATE.write_atomic(
+            self.state_dir / "T-110.json",
+            {
+                **receipt_body,
+                "consumed": True,
+                "consumed_at_epoch": 1,
+                "receipt_sha256": receipt_digest,
+            },
+        )
+        manifest = (
+            "run_id=blocked-repair\nphase=completed\n"
+            "accounting_state=completed\n"
+            f"contract_version={self.args.contract_version}\n"
+            "ticket=T-110\nrole=test-author\nexit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            f"kit_sha={old_factory}\nrole_head_before={repair_head}\n"
+            "role_branch_before=ticket/T-110\n"
+            f"transition_receipt_sha256={receipt_digest}\n"
+            "go_issued=1\ntask_submitted=1\n"
+        ).encode()
+        (self.product / "factory/runs/blocked-repair.meta").write_bytes(
+            manifest
+        )
+        charge = {
+            "accounting_state": "completed",
+            "contract_version": self.args.contract_version,
+            "factory_sha": old_factory,
+            "head_before": repair_head,
+            "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+            "role": "test-author",
+            "run_id": "blocked-repair",
+            "transition_receipt_sha256": receipt_digest,
+        }
+        passport = {
+            "branch": "ticket/T-110",
+            "charge_records": [
+                {
+                    "role": "builder",
+                    "transition_receipt_sha256": blocked_receipt,
+                },
+                charge,
+            ],
+            "completed_role_evidence": [],
+            "contract_version": self.args.contract_version,
+            "current_stage": "FIX test-author",
+            "factory_release_history": [
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": old_factory,
+                },
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": self.args.factory_sha,
+                },
+            ],
+            "factory_sha": self.args.factory_sha,
+            "head_sha": current_head,
+            "migration_history": [{
+                "from_factory_sha": old_factory,
+                "from_head_sha": blocked_head,
+                "from_passport_file_sha256": "1" * 64,
+                "from_passport_sha256": "2" * 64,
+                "from_protected_base_sha": "3" * 40,
+                "from_route_plan_sha256": "4" * 64,
+                "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.args.factory_sha,
+                "to_head_sha": current_head,
+                "to_protected_base_sha": "5" * 40,
+                "to_route_plan_sha256": "6" * 64,
+            }],
+            "product_origin_sha256": hashlib.sha256(
+                b"test-origin"
+            ).hexdigest(),
+            "project": self.args.project,
+            "protected_base_sha": "5" * 40,
+            "route_plan_sha256": "6" * 64,
+            "ticket": "T-110",
+            "transition_receipt_sha256": receipt_digest,
+        }
+        record = {
+            "blocked_receipt": blocked_receipt,
+            "blocked_role": "builder",
+            "factory_sha": old_factory,
+            "head_sha": repair_head,
+            "passport_sha256": old_passport,
+            "repair_role": "test-author",
+            "schema": STATE.REPAIR_SCHEMA,
+        }
+        with mock.patch.object(
+            STATE, "authenticated_passport", return_value=(passport, b"k" * 32)
+        ):
+            self.assertTrue(
+                STATE.migrated_contract_repair(self.args, passport, record)
+            )
+            self.assertFalse(STATE.migrated_contract_repair(
+                self.args,
+                {**passport, "current_stage": "RUN builder"},
+                record,
+            ))
+
     def test_completed_repair_retires_after_terminal_export_lost_history(
         self,
     ) -> None:

@@ -4624,6 +4624,28 @@ Edge coverage: the state-machine regression proves refusal without the signed
 repair, direct block without materialization, idempotent blocked recovery, and
 resume to the unchanged coarse state.
 
+## FI-20260801-156 — Blocked repair lost authority across a successor migration
+
+Status: Focused regression green; sealed T-100 retry pending
+Priority: P0
+Area: contract-repair release migration
+Owner: Factory
+First seen: T-100 recovery under sealed Factory
+`0e6f8632cb91e2daefa184ae4fa249aed842b56f`
+Impact: T-100's passport and route journal migrated successfully, but the
+active signed Planner repair predated the Planner's contract-block commit. The
+migration validator required an edge beginning at the repair authorization
+head and rejected the authentic edge beginning at the later terminal-block
+head. Recovery stopped before block materialization or any provider call.
+Smallest repair: reuse the shared exact contract-block terminal validator and
+accept the later migration start only when the consumed `FIX` receipt, its
+parent blocker, unique terminal manifest, authenticated charge, passport stage,
+and Git ancestry all bind the active repair to the successor passport.
+Edge coverage: a synthetic repair-owner block plus release migration now
+survives, while a passport whose current stage does not match that `FIX` receipt
+remains invalid; the preserved live T-100 evidence also resolves to
+`FIX planner` without mutation.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

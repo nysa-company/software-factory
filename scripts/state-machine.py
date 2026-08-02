@@ -584,6 +584,49 @@ def materialized_contract_block(
     return True
 
 
+def contract_block_terminal(
+    args: argparse.Namespace,
+    receipt: dict[str, Any],
+    charge: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    matches = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        fields, raw = run_manifest(path)
+        if fields.get("transition_receipt_sha256") == receipt.get(
+            "receipt_sha256"
+        ):
+            matches.append((fields, raw))
+    if len(matches) != 1:
+        raise StateError("contract blocker terminal evidence is ambiguous")
+    terminal, raw = matches[0]
+    accounted = terminal.get("accounting_state") == "completed" or (
+        terminal.get("accounting_state") == "abandoned_conservative"
+        and terminal.get("cost_basis") == "conservative_reservation"
+        and terminal.get("effective_cost") == terminal.get("reserved_usd")
+    )
+    if not accounted or any((
+        terminal.get("ticket") != args.ticket,
+        terminal.get("role") != receipt.get("role"),
+        terminal.get("contract_version") != args.contract_version,
+        terminal.get("kit_sha") != receipt.get("factory_sha"),
+        terminal.get("phase") != "completed",
+        terminal.get("go_issued") != "1",
+        terminal.get("task_submitted") != "1",
+        terminal.get("exit_status") != "12",
+        terminal.get("role_exit") != "role_exit_contract_blocked",
+        terminal.get("role_branch_before") != receipt.get("branch"),
+        terminal.get("role_head_before") != receipt.get("head_sha"),
+    )):
+        raise StateError("contract blocker terminal evidence is invalid")
+    if charge is not None and (
+        charge.get("run_id") != terminal.get("run_id")
+        or charge.get("accounting_state") != terminal.get("accounting_state")
+        or charge.get("manifest_sha256") != hashlib.sha256(raw).hexdigest()
+    ):
+        raise StateError("contract blocker passport evidence is invalid")
+    return terminal
+
+
 def contract_blocked_receipt(args: argparse.Namespace) -> str:
     value = safe_receipt(args.state_dir / f"{args.ticket}.json")
     origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
@@ -638,40 +681,7 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
         timeout=120,
     ).returncode:
         raise StateError("contract blocker is outside receipt lineage")
-    matches = []
-    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
-        fields, raw = run_manifest(path)
-        if fields.get("transition_receipt_sha256") == args.receipt:
-            matches.append((fields, raw))
-    if len(matches) != 1:
-        raise StateError("contract blocker terminal evidence is ambiguous")
-    terminal, raw = matches[0]
-    accounted = terminal.get("accounting_state") == "completed" or (
-        terminal.get("accounting_state") == "abandoned_conservative"
-        and terminal.get("cost_basis") == "conservative_reservation"
-        and terminal.get("effective_cost") == terminal.get("reserved_usd")
-    )
-    if not accounted or any((
-        terminal.get("ticket") != args.ticket,
-        terminal.get("role") != role,
-        terminal.get("contract_version") != args.contract_version,
-        terminal.get("kit_sha") != value.get("factory_sha"),
-        terminal.get("phase") != "completed",
-        terminal.get("go_issued") != "1",
-        terminal.get("task_submitted") != "1",
-        terminal.get("exit_status") != "12",
-        terminal.get("role_exit") != "role_exit_contract_blocked",
-        terminal.get("role_branch_before") != value.get("branch"),
-        terminal.get("role_head_before") != value.get("head_sha"),
-    )):
-        raise StateError("contract blocker terminal evidence is invalid")
-    if migrated and (
-        charge is None
-        or charge.get("run_id") != terminal.get("run_id")
-        or charge.get("accounting_state") != terminal.get("accounting_state")
-        or charge.get("manifest_sha256") != hashlib.sha256(raw).hexdigest()
-    ):
-        raise StateError("contract blocker passport evidence is invalid")
+    contract_block_terminal(args, value, charge if migrated else None)
     return role
 
 
@@ -1686,14 +1696,63 @@ def migrated_contract_repair(
         or passport.get("head_sha") != current_head
     ):
         return False
+    blocked_repair_migration = False
+    if success is None and record.get("repair_source") is None:
+        try:
+            transition = safe_receipt(
+                args.state_dir / f"{args.ticket}.json"
+            )
+            migrated_passport, charge = migrated_contract_block(
+                args, transition
+            )
+            owner = record.get("repair_role", "")
+            if (
+                migrated_passport == passport
+                and charge is not None
+                and transition.get("consumed") is True
+                and transition.get("factory_sha") == record_factory
+                and transition.get("head_sha") == record_head
+                and transition.get("parent_digest")
+                == record.get("blocked_receipt")
+                and transition.get("role") == owner
+                and transition.get("stage") == f"FIX {owner}"
+                and passport.get("current_stage") == f"FIX {owner}"
+                and passport.get("transition_receipt_sha256")
+                == transition.get("receipt_sha256")
+            ):
+                contract_block_terminal(args, transition, charge)
+                blocked_repair_migration = True
+        except (
+            FileNotFoundError, json.JSONDecodeError, OSError, StateError,
+        ):
+            pass
     starts = []
     for index, edge in enumerate(migrations):
+        direct_start = (
+            isinstance(edge, dict)
+            and edge.get("from_head_sha") == record_head
+            and edge.get("from_passport_sha256") == record_passport
+        )
+        blocked_start = (
+            blocked_repair_migration
+            and isinstance(edge, dict)
+            and SHA.fullmatch(edge.get("from_head_sha", ""))
+            and subprocess.run(
+                [
+                    "git", "-C", str(args.workdir), "merge-base",
+                    "--is-ancestor", record_head, edge["from_head_sha"],
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=120,
+            ).returncode == 0
+        )
         if (
             not isinstance(edge, dict)
             or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
             or edge.get("from_factory_sha") != record_factory
-            or edge.get("from_head_sha") != record_head
-            or edge.get("from_passport_sha256") != record_passport
+            or not (direct_start or blocked_start)
         ):
             continue
         suffix = migrations[index:migration_limit]

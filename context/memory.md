@@ -51,6 +51,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
+- A successor may retain that active repair after its owner commits a blocker
+  only when the consumed FIX receipt, parent blocker, unique terminal manifest,
+  authenticated charge, current passport stage, ancestry, and migration suffix
+  all bind the repair authorization to the successor passport.
 - Planner, Spec-linter, and Test-author independently evaluate exact generated
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
@@ -2803,3 +2807,13 @@ An active signed backward repair may enter Blocked-Escalated directly from its
 unchanged later coarse state and records that state as `Resume-State`.
 Idempotent block recovery and later resume authenticate the same exact repair;
 without it, any role/state mismatch remains fail-closed.
+
+## 2026-08-01 — Decision 205: Blocked repairs migrate through terminal evidence
+
+Category: Trust boundary
+
+When a repair owner contract-blocks before a successor migration, its active
+repair may survive only through the exact consumed FIX receipt, parent blocker,
+unique terminal manifest, authenticated charge, unchanged passport stage, Git
+ancestry, and contiguous release suffix. The descendant migration edge by
+itself is not authority.

@@ -557,6 +557,11 @@ authorizes the block at the unchanged coarse state. The block records that
 coarse state as its resume target, and the same signed repair must authenticate
 both an idempotent block recovery and the later resume; ordinary role/state
 drift remains refused.
+If a successor is sealed after the backward repair owner commits that blocker,
+the active repair remains valid only when the consumed `FIX` receipt, unique
+contract-block terminal manifest, authenticated charge, current passport
+stage, and contiguous migration suffix all bind the repair head to the
+successor head. A descendant migration edge alone is never sufficient.
 After catch-up, the signed completed-repair archive
 authenticates the still-visible role-and-receipt pair so it cannot be mistaken
 for a new repair. More than one successful owner run fails closed.
