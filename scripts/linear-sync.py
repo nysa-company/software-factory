@@ -243,7 +243,7 @@ def parse_ticket_text(ticket_id, path, text):
         "resume_state": normalize_state(field(text, "Resume-State", "")),
         "initiative": field(text, "Initiative"),
         "priority": field(text, "Priority", "none").lower(),
-        "branch": field(text, "Branch"),
+        "branch": re.sub(r"^`([^`\n]+)`$", r"\1", field(text, "Branch")),
         "risk": field(text, "Risk class", "low").lower().split()[0],
         "external": field(text, "External", "no").lower() in ("yes", "true", "1"),
         "merge_policy": merge_policy(text),
@@ -492,16 +492,63 @@ def build_description(ticket, stats):
 
 def normalize_md(text):
     lines = []
-    for line in (text or "").splitlines():
+    fence = None
+    ordered = {}
+    continuation = None
+    for raw_line in (text or "").splitlines():
+        if fence:
+            lines.append(raw_line)
+            if re.fullmatch(rf"\s*{re.escape(fence[0])}{{{fence[1]},}}\s*", raw_line):
+                fence = None
+            continue
+        line = raw_line.rstrip()
+        opening = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if opening:
+            while lines and not lines[-1]:
+                lines.pop()
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            lines.append(line)
+            ordered.clear()
+            continuation = None
+            continue
         line = re.sub(r"^(\s*)\*(\s)", r"\1-\2", line)
         line = re.sub(r"(\[[^\]\n]*\]\()<([^<>\n]+)>(\))", r"\1\2\3", line)
-        lines.append(line.rstrip())
-    normalized = "\n".join(lines).strip()
-    return re.sub(
-        r"(?<=\S)\n {3}(?![-+*] |\d+[.)] |[>#|])(?=\S)",
-        " ",
-        normalized,
-    )
+        line = re.sub(r"^ (?=\d+[.)] )", "", line)
+        marker = re.match(r"^(\s*)(\d+)([.)])\s+(.*)$", line)
+        if marker:
+            indent, number, delimiter, body = marker.groups()
+            depth = len(indent)
+            for item in tuple(ordered):
+                if item > depth:
+                    ordered.pop(item)
+            if depth in ordered:
+                number = str(ordered[depth])
+            ordered[depth] = int(number) + 1
+            line = f"{indent}{number}{delimiter} {body}"
+            continuation = (depth, depth + 3)
+        else:
+            nested = re.match(r"^(\s*)[-+*] ", line)
+            if nested:
+                depth = len(nested.group(1))
+                for item in tuple(ordered):
+                    if item >= depth:
+                        ordered.pop(item)
+                continuation = (depth, depth + 2)
+            elif line and continuation:
+                depth = len(line) - len(line.lstrip())
+                if (
+                    depth in {continuation[1], continuation[1] + 1}
+                    and not re.match(r"\s*(?:[-+*] |\d+[.)] |[>#|])", line)
+                ):
+                    lines[-1] += " " + line.lstrip()
+                    continue
+                if depth <= continuation[0]:
+                    ordered.clear()
+                    continuation = None
+        lines.append(line)
+    if fence:
+        lines.append(fence[0] * fence[1])
+    return "\n".join(lines).strip()
 
 
 def setup(key, mapping, map_path, dry=False):
@@ -930,6 +977,10 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     operator = dict(entry.get("operator", {}))
     blocked_remote_updated_at = entry.get("blocked_remote_updated_at")
     source_digest = hashlib.sha256(ticket["text"].encode()).hexdigest()
+    new_blocked_source = (
+        ticket["state"] == "blocked-escalated"
+        and entry.get("blocked_source_sha256") != source_digest
+    )
     source_changed = (
         operator.get("state")
         and entry.get("operator_state_source_sha256") != source_digest
@@ -945,6 +996,18 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
         if not dry:
             entry.pop("blocked_remote_updated_at", None)
             entry.pop("operator_state_source_sha256", None)
+    if new_blocked_source:
+        operator.pop("state", None)
+        operator.pop("state_base", None)
+        operator.pop("approval", None)
+        blocked_remote_updated_at = None
+        if not dry:
+            entry["blocked_source_sha256"] = source_digest
+            entry.pop("blocked_remote_updated_at", None)
+            entry.pop("operator_state_source_sha256", None)
+    elif ticket["state"] != "blocked-escalated" and not dry:
+        entry.pop("blocked_source_sha256", None)
+        entry.pop("blocked_remote_updated_at", None)
     remote_priority = PRIORITY_NAMES.get(actual.get("priority", 0), "none")
     operator["priority"] = remote_priority
 
