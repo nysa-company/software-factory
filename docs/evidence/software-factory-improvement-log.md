@@ -4703,8 +4703,8 @@ once in 178 seconds and stopped at `AWAIT-OPERATOR` with no replay.
 
 ## FI-20260802-159 — Pending operator commit invalidated an active migrated repair
 
-Status: Focused regression and live read-only proof green; disposable mock and
-sealed successor replay pending
+Status: Focused regression, live read-only proof, and disposable six-role mock
+lifecycle green; sealed successor replay pending
 Priority: P0
 Area: contract-repair authentication and passport migration
 Owner: Factory
@@ -4731,6 +4731,10 @@ commit after its passport head. It proves repair recovery plus one passport
 migration. The candidate also passes all 32 focused state-machine cases and
 resolves the preserved live T-100 evidence read-only to `FIX planner` without
 changing its claim, passport, repair, branch, or charge state.
+Candidate `246782f` then ran Planner, Spec-linter, Test-author, Builder,
+Reviewer, and Narrator exactly once in disposable lane
+`/private/tmp/nysa-sf-dev.amHs9i`, reached `AWAIT-OPERATOR`, and retained a
+clean pushed mock branch in 224 seconds.
 
 ## Maintenance rule
 
