@@ -30,6 +30,7 @@ from effective_ticket import (  # noqa: E402
     apply_operator_fields,
     committed_factory_file,
     committed_ticket,
+    operator_version,
 )
 
 API_URL = "https://api.linear.app/graphql"
@@ -320,7 +321,7 @@ def sync_lock(factory_dir, dry_run=False):
     if dry_run:
         yield
         return
-    lock_path = factory_dir / ".linear-sync.lock"
+    lock_path = factory_dir / ".linear-sync-cycle.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("w") as handle:
         try:
@@ -328,6 +329,48 @@ def sync_lock(factory_dir, dry_run=False):
         except BlockingIOError as error:
             raise RuntimeError("another reconciliation cycle is active") from error
         yield
+
+
+@contextmanager
+def map_lock(map_path):
+    with (map_path.parent / ".linear-sync.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def operator_clear_intents(map_path):
+    directory = map_path.parent / ".linear-operator-clears"
+    if not directory.is_dir() or directory.is_symlink():
+        return []
+    result = []
+    for path in sorted(directory.glob("T-*.json")):
+        value = json.loads(path.read_text())
+        if (
+            set(value) != {"operator_version", "schema", "ticket"}
+            or value.get("schema") != "linear-operator-clear/v1"
+            or path.name != f"{value.get('ticket')}-{value.get('operator_version')}.json"
+            or not re.fullmatch(r"T-[0-9]+", value.get("ticket", ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", value.get("operator_version", ""))
+        ):
+            raise ValueError("Linear operator clear intent is invalid")
+        result.append((path, value))
+    return result
+
+
+def apply_operator_clears(map_path, mapping):
+    for _path, intent in operator_clear_intents(map_path):
+        entry = mapping.get("tickets", {}).get(intent["ticket"], {})
+        if operator_version(entry.get("operator") or {}) == intent["operator_version"]:
+            entry.pop("operator", None)
+
+
+def retire_operator_clears(map_path):
+    with map_lock(map_path):
+        mapping = load_map(map_path)
+        for path, intent in operator_clear_intents(map_path):
+            entry = mapping.get("tickets", {}).get(intent["ticket"], {})
+            if operator_version(entry.get("operator") or {}) != intent["operator_version"]:
+                path.unlink()
 
 
 def load_map(path):
@@ -343,7 +386,9 @@ def load_map(path):
 
 
 def save_map(path, mapping):
-    atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
+    with map_lock(path):
+        apply_operator_clears(path, mapping)
+        atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
 
 
 def record_failure(map_path, mapping, error):
@@ -1172,6 +1217,7 @@ def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
     if not dry:
         mapping["_sync"] = {"last_success_at": utc_now(), "last_error": None}
         save_map(map_path, mapping)
+        retire_operator_clears(map_path)
 
 
 def main():

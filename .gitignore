@@ -7,6 +7,8 @@ factory/KILL
 **/factory/runtime-ledger.csv
 **/factory/linear-map.json
 **/factory/.linear-sync.lock
+**/factory/.linear-sync-cycle.lock
+**/factory/.linear-operator-clears/
 **/factory/MAINTENANCE
 **/factory/.launch.lock/
 **/factory/.provider.lock/

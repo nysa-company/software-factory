@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -706,7 +707,7 @@ class LinearSyncTest(unittest.TestCase):
         }
         LINEAR.save_map(self.map_path, self.mapping)
         before = self.map_path.read_bytes()
-        with (self.factory / ".linear-sync.lock").open("w") as handle:
+        with (self.factory / ".linear-sync-cycle.lock").open("w") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts/linear-sync.py"),
@@ -717,6 +718,32 @@ class LinearSyncTest(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(self.map_path.read_bytes(), before)
+
+    def test_ticket_clear_survives_stale_full_board_save(self):
+        operator = {"state": "Ready", "observed_at": "fresh"}
+        self.mapping["tickets"]["T-001"] = {"operator": operator}
+        LINEAR.save_map(self.map_path, self.mapping)
+        digest = LINEAR.operator_version(operator)
+        intents = self.factory / ".linear-operator-clears"
+        intents.mkdir(mode=0o700)
+        (intents / f"T-001-{digest}.json").write_text(json.dumps({
+            "operator_version": digest,
+            "schema": "linear-operator-clear/v1",
+            "ticket": "T-001",
+        }))
+
+        LINEAR.save_map(self.map_path, json.loads(json.dumps(self.mapping)))
+        self.assertNotIn(
+            "operator", json.loads(self.map_path.read_text())["tickets"]["T-001"]
+        )
+        LINEAR.retire_operator_clears(self.map_path)
+        self.assertFalse(any(intents.iterdir()))
+
+    def test_full_board_cycle_does_not_hold_ticket_map_lock(self):
+        started = time.monotonic()
+        with LINEAR.sync_lock(self.factory):
+            LINEAR.save_map(self.map_path, self.mapping)
+        self.assertLess(time.monotonic() - started, 0.5)
 
     def test_setup_creates_all_states_and_labels(self):
         mapping = LINEAR.load_map(self.map_path)

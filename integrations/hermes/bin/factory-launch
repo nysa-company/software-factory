@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|qualification|dispatch-plan|state-machine|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|ticket-control|qualification|dispatch-plan|state-machine|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -1112,6 +1112,25 @@ PY
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR"
+    ;;
+  ticket-control)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "ticket control requires contract 1.8.0"
+    [[ $# -eq 4 && ( "$1" == "pause" || "$1" == "resume" ) &&
+       "$2" == "--ticket" && "$3" =~ ^T-[0-9]+$ && "$4" == "--json" ]] || usage
+    CONTROL_ACTION="$1" TICKET="$3"
+    controller_state_dir
+    CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
+    require_managed_file "$CONTROLLER" "active release controller"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+      --launcher "$SELF_PATH" \
+      --project "$PROJECT" \
+      --product-root "$PRODUCT_ROOT" \
+      --release-path "$RELEASE_PATH" \
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      --action "$CONTROL_ACTION" --ticket "$TICKET"
     ;;
   qualification)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||

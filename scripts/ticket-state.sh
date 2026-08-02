@@ -305,6 +305,24 @@ from effective_ticket import operator_version
 path, ticket, expected = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
 if not path.is_file():
     raise SystemExit(0)
+intents = path.parent / ".linear-operator-clears"
+intents.mkdir(mode=0o700, exist_ok=True)
+intent = intents / f"{ticket}-{expected}.json"
+if not intent.exists():
+    try:
+        fd = os.open(intent, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        with os.fdopen(fd, "w") as output:
+            json.dump({
+                "operator_version": expected,
+                "schema": "linear-operator-clear/v1",
+                "ticket": ticket,
+            }, output, sort_keys=True, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
 lock = path.parent / ".linear-sync.lock"
 with lock.open("a") as handle:
     fcntl.flock(handle, fcntl.LOCK_EX)
