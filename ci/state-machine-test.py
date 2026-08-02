@@ -2552,6 +2552,15 @@ class StateMachineTest(unittest.TestCase):
         )
         run("git", "add", str(ticket), cwd=self.product)
         run("git", "commit", "-qm", "migrate route", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "State: Planning",
+                "State: Blocked-Escalated\nResume-State: Building",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "materialize blocked repair", cwd=self.product)
         current_head = run("git", "rev-parse", "HEAD", cwd=self.product)
 
         receipt_body = {
@@ -2568,9 +2577,9 @@ class StateMachineTest(unittest.TestCase):
                 b"test-origin"
             ).hexdigest(),
             "project": self.args.project,
-            "role": "test-author",
+            "role": "planner",
             "schema": STATE.RECEIPT_SCHEMA,
-            "stage": "FIX test-author",
+            "stage": "FIX planner",
             "ticket": "T-110",
         }
         receipt_digest = hashlib.sha256(
@@ -2589,7 +2598,7 @@ class StateMachineTest(unittest.TestCase):
             "run_id=blocked-repair\nphase=completed\n"
             "accounting_state=completed\n"
             f"contract_version={self.args.contract_version}\n"
-            "ticket=T-110\nrole=test-author\nexit_status=12\n"
+            "ticket=T-110\nrole=planner\nexit_status=12\n"
             "role_exit=role_exit_contract_blocked\n"
             f"kit_sha={old_factory}\nrole_head_before={repair_head}\n"
             "role_branch_before=ticket/T-110\n"
@@ -2605,7 +2614,7 @@ class StateMachineTest(unittest.TestCase):
             "factory_sha": old_factory,
             "head_before": repair_head,
             "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
-            "role": "test-author",
+            "role": "planner",
             "run_id": "blocked-repair",
             "transition_receipt_sha256": receipt_digest,
         }
@@ -2620,7 +2629,7 @@ class StateMachineTest(unittest.TestCase):
             ],
             "completed_role_evidence": [],
             "contract_version": self.args.contract_version,
-            "current_stage": "FIX test-author",
+            "current_stage": "FIX planner",
             "factory_release_history": [
                 {
                     "contract_version": self.args.contract_version,
@@ -2661,7 +2670,7 @@ class StateMachineTest(unittest.TestCase):
             "factory_sha": old_factory,
             "head_sha": repair_head,
             "passport_sha256": old_passport,
-            "repair_role": "test-author",
+            "repair_role": "planner",
             "schema": STATE.REPAIR_SCHEMA,
         }
         with mock.patch.object(
@@ -2675,6 +2684,44 @@ class StateMachineTest(unittest.TestCase):
                 {**passport, "current_stage": "RUN builder"},
                 record,
             ))
+
+        secret = b"k" * 32
+        record.update({
+            "branch": "ticket/T-110",
+            "head_tree": run(
+                "git", "rev-parse", f"{repair_head}^{{tree}}", cwd=self.product
+            ),
+            "ticket": "T-110",
+        })
+        STATE.write_atomic(
+            STATE.repair_path(self.args), STATE.signed_repair(record, secret)
+        )
+        self.args.receipt = receipt_digest
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\n"
+            "OPERATOR RESUME: planner\n"
+            f"OPERATOR RESUME RECEIPT: {receipt_digest}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "authorize migrated repeated repair", cwd=self.product)
+
+        with (
+            mock.patch.object(
+                STATE, "authenticated_passport", return_value=(passport, secret)
+            ),
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="planner"
+            ),
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args), ("FIX planner", True)
+            )
+            result = STATE.block_transition(self.args)
+        self.assertEqual(result["status"], "blocked")
+        migrate.assert_called_once_with(self.args)
 
     def test_completed_repair_retires_after_terminal_export_lost_history(
         self,

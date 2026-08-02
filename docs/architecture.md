@@ -548,7 +548,11 @@ receipt, zero or multiple actual in-window authorizations, more than one
 visible directive, merge commits, malformed additions or replacements,
 multi-path changes, or unrelated head drift fail closed; neither a historical
 role directive nor a stale Linear resume state can authorize a later provider
-call. The state machine persists an HMAC-bound repair record for the unique
+call. During idempotent block recovery, that one validated commit may be the
+direct child of the authenticated passport head: repair validation stays bound
+to the passport head, then the ordinary passport migration authenticates the
+directive commit before resume. The state machine persists an HMAC-bound
+repair record for the unique
 pair and runs only the named owner. If the owner precedes the visible coarse
 state, that state remains unchanged while the authenticated repair receipt
 runs the earlier role; ordinary deterministic stages then catch up without

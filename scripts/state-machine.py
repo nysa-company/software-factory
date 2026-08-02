@@ -1606,6 +1606,7 @@ def migrated_contract_repair(
     passport: dict[str, Any],
     record: dict[str, Any],
     success: dict[str, str] | None = None,
+    authenticated_head: str | None = None,
 ) -> bool:
     if record.get("factory_sha") == args.factory_sha:
         return True
@@ -1616,7 +1617,7 @@ def migrated_contract_repair(
     record_factory = record.get("factory_sha", "")
     record_head = record.get("head_sha", "")
     record_passport = record.get("passport_sha256", "")
-    current_head = git(args.workdir, "rev-parse", "HEAD")
+    current_head = authenticated_head or git(args.workdir, "rev-parse", "HEAD")
     migration_target_head = current_head
     migration_target_factory = args.factory_sha
     migration_target_base = passport.get("protected_base_sha")
@@ -2462,11 +2463,18 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     successes = contract_repair_successes(args, owner, head)
     if source is None and len(successes) > 1:
         raise StateError("contract repair has duplicate successful evidence")
+    authenticated_head = None
+    if passport.get("head_sha") != git(args.workdir, "rev-parse", "HEAD"):
+        if not has_directive or not args.receipt:
+            raise StateError("contract repair record is invalid")
+        operator_resume_role(args, passport, owner)
+        authenticated_head = passport.get("head_sha")
     migrated = migrated_contract_repair(
         args,
         passport,
         record,
         successes[0] if source is None and successes else None,
+        authenticated_head=authenticated_head,
     )
     if not migrated and (
         source == DEPENDENCY_CONFLICT_SOURCE

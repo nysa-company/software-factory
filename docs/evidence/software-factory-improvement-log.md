@@ -4701,6 +4701,37 @@ its head and tree unchanged. Candidate `cdeef046` then completed the disposable
 Planner, Spec-linter, Test-author, Builder, Reviewer, and Narrator mock lifecycle
 once in 178 seconds and stopped at `AWAIT-OPERATOR` with no replay.
 
+## FI-20260802-159 — Pending operator commit invalidated an active migrated repair
+
+Status: Focused regression and live read-only proof green; disposable mock and
+sealed successor replay pending
+Priority: P0
+Area: contract-repair authentication and passport migration
+Owner: Factory
+First seen: T-100 controller recovery at operator commit
+`2ac344d80706e101b5a53a8cb356f7e57a5d4602` under sealed Factory
+`6b350a3fb0d7e8edec2a0f2fda7fe21d26d81003`
+Impact: the exact Planner resume directive was the sole ticket-only child of
+T-100's authenticated passport head
+`4f7bbbf33786ca625e89efdeee1f3ba4ba0eaa2b`. Idempotent block recovery tried
+to validate the retained migrated repair against the newer Git head before the
+ordinary block transition could migrate the passport, so the controller
+emitted `ticket_recovery_failed` and stopped before any provider run or charge.
+Root cause: repair migration implicitly treated the working Git head as the
+authenticated passport boundary even inside the deliberately narrow pending
+operator-commit window.
+Smallest repair: reuse the existing strict operator-directive validator when
+Git HEAD differs from the passport head, validate the retained repair at that
+authenticated head, and let the existing block transition migrate the exact
+directive commit before resume. No second resolver or ticket-specific rule is
+introduced; arbitrary descendants still fail closed.
+Validation: the regression reconstructs a backward Planner repair that blocks,
+survives a release migration, then receives one exact receipt-bound operator
+commit after its passport head. It proves repair recovery plus one passport
+migration. The candidate also passes all 32 focused state-machine cases and
+resolves the preserved live T-100 evidence read-only to `FIX planner` without
+changing its claim, passport, repair, branch, or charge state.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

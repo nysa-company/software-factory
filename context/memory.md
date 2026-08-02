@@ -60,6 +60,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   only when the consumed FIX receipt, parent blocker, unique terminal manifest,
   authenticated charge, current passport stage, ancestry, and migration suffix
   all bind the repair authorization to the successor passport.
+- During idempotent block recovery, the one exact receipt-bound operator commit
+  may sit directly after the authenticated passport head. The state machine
+  validates that ticket-only commit against the passport head, validates the
+  retained repair at that authenticated boundary, and then performs the
+  ordinary passport migration before resume. Any other descendant remains
+  closed.
 - Planner, Spec-linter, and Test-author independently evaluate exact generated
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
@@ -2848,3 +2854,14 @@ historical marker forms and an exact one-for-one replacement of only the latest
 heading and its matching PASS with a higher version. Git preserves the prior
 role input; partial removal, mismatched versions, multiple markers, lower
 versions, mixed commits, and malformed supersession remain fail-closed.
+
+## 2026-08-02 — Decision 208: Pending operator commits authenticate at the passport boundary
+
+Category: Trust boundary
+
+Idempotent block recovery may inspect the one exact receipt-bound operator
+commit directly after the authenticated passport head. It validates the active
+repair at that prior authenticated head and then migrates the passport through
+the already-validated directive commit before resume. Any unrelated, ambiguous,
+multi-path, merge, stale-receipt, or non-passport-parent descendant remains
+fail-closed.

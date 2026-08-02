@@ -552,7 +552,9 @@ These run in your interactive session — never inside the loop. The factory's o
   Then move the Linear issue out of Blocked-Escalated to the ticket's
   `Resume-State:`. A missing, stale, mismatched, partial, or otherwise illegal
   decision is rejected and reported in sync health; an earlier decision never
-  authorizes a later blocker.
+  authorizes a later blocker. The exact ticket-only commit may be the direct
+  child of the current authenticated passport head; block recovery validates
+  that boundary and migrates the passport through it before resuming.
 
 ## The general rule
 
