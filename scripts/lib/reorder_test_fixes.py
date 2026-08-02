@@ -8,15 +8,16 @@ ci/test-immutability-check.sh enforces two rules on BASE_REF..HEAD:
   Rule 1 (separation): a commit touches only TEST_PATHS files, or only
   non-TEST_PATHS files. Mixing fails.
   Rule 2 (order): every test commit must precede every implementation
-  commit. Files under EXEMPT_PATHS are invisible to both rules.
+  commit in its frozen-contract epoch. Files under EXEMPT_PATHS are invisible
+  to both rules except for the exact append-only contract-epoch marker.
 
 When a reviewer asks for test fixes after the builder has already committed
-implementation, the fix commit is a pure test commit but lands after
-implementation started, and always fails rule 2. This tool rewrites history
-so that any such "late" test commit moves to sit immediately before the
-first implementation commit, preserving the late test commits' relative
-order and leaving every other commit (implementation, bookkeeping, or
-rule-1-violating "mixed" commits) exactly where it was.
+implementation in the same contract epoch, the fix commit is a pure test
+commit but lands after implementation started, and fails rule 2. This tool
+rewrites history so that any such "late" test commit moves to sit immediately
+before that epoch's first implementation commit, preserving relative order
+and leaving every other commit exactly where it was. A newly frozen numbered
+contract starts a new epoch and therefore requires no rewrite.
 
 Classification mirrors ci/test-immutability-check.sh exactly (same
 TEST_PATHS/EXEMPT_PATHS semantics, same directory-prefix/exact-file match, same precedence of
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -83,6 +85,8 @@ class Commit:
     test_files: list = field(default_factory=list)
     nontest_files: list = field(default_factory=list)
     kind: str = ""  # TEST | IMPL | BOOKKEEPING | MIXED
+    contract_epoch_reset: bool = False
+    is_merge: bool = False
 
 
 def is_exempt(path, exempt_paths):
@@ -97,6 +101,53 @@ def diff_tree_files(repo, sha, pathspecs=None):
     return [line for line in out.splitlines() if line]
 
 
+FROZEN = re.compile(r"^## Frozen contract — version ([1-9][0-9]*)$")
+FROZEN_PASSES = tuple(map(re.compile, (
+    r"^- \*\*Freeze result — PASS\.\*\* "
+    r"Contract version ([1-9][0-9]*) is frozen\.$",
+    r"^- \*\*Freeze result:\*\* PASS\. Contract version ([1-9][0-9]*) "
+    r"(?:is frozen(?:[.;].*)?|supersedes (?:contract )?versions? "
+    r"[1-9][0-9]*.*)$",
+)))
+
+
+def frozen_pass(line):
+    return next((match for regex in FROZEN_PASSES if (match := regex.fullmatch(line))), None)
+
+
+def contract_epoch_reset(repo, sha, files):
+    if len(files) != 1 or not re.fullmatch(
+        r"(?:factory|conformance/factory)/tickets/T-[^/]+\.md", files[0]
+    ):
+        return False
+    path = files[0]
+    diff = git(
+        repo, "diff", "--no-ext-diff", "--unified=0", f"{sha}^", sha,
+        "--", path,
+    ).stdout.splitlines()
+    added = [FROZEN.fullmatch(line[1:]) for line in diff if line.startswith("+")]
+    added = [match for match in added if match]
+    passed = [frozen_pass(line[1:]) for line in diff if line.startswith("+")]
+    passed = [match for match in passed if match]
+    if len(added) != 1 or len(passed) != 1 or added[0][1] != passed[0][1]:
+        return False
+    prior = git(repo, "show", f"{sha}^:{path}", check=False).stdout.splitlines()
+    versions = [
+        int(match[1]) for line in prior if (match := FROZEN.fullmatch(line))
+    ]
+    prior_max = max(versions, default=0)
+    removed = [FROZEN.fullmatch(line[1:]) for line in diff if line.startswith("-")]
+    removed = [match for match in removed if match]
+    removed_passes = [frozen_pass(line[1:]) for line in diff if line.startswith("-")]
+    removed_passes = [match for match in removed_passes if match]
+    if removed or removed_passes:
+        if len(removed) != 1 or len(removed_passes) != 1:
+            return False
+        if removed[0][1] != removed_passes[0][1] or int(removed[0][1]) != prior_max:
+            return False
+    return int(added[0][1]) > prior_max
+
+
 def classify_commits(repo, base, head, test_paths, exempt_paths):
     rev_list = git(repo, "rev-list", "--reverse", f"{base}..{head}").stdout
     shas = [line for line in rev_list.splitlines() if line]
@@ -104,11 +155,7 @@ def classify_commits(repo, base, head, test_paths, exempt_paths):
     commits = []
     for sha in shas:
         parents = git(repo, "rev-list", "--parents", "-n", "1", sha).stdout.split()
-        if len(parents) > 2:  # sha + >1 parent
-            raise Fail(
-                f"commit {sha} is a merge commit; reorder-test-fixes.sh only "
-                "supports linear history"
-            )
+        is_merge = len(parents) > 2  # sha + >1 parent
 
         subject = git(repo, "log", "-1", "--format=%s", sha).stdout.strip()
         all_files = diff_tree_files(repo, sha)
@@ -133,6 +180,8 @@ def classify_commits(repo, base, head, test_paths, exempt_paths):
                 test_files=test_files,
                 nontest_files=nontest_files,
                 kind=kind,
+                contract_epoch_reset=contract_epoch_reset(repo, sha, all_files),
+                is_merge=is_merge,
             )
         )
     return commits
@@ -141,19 +190,17 @@ def classify_commits(repo, base, head, test_paths, exempt_paths):
 def plan_new_order(commits):
     """Return (new_order_shas, moved_commits, first_impl_commit) or None if
     the branch already satisfies rule 2 (nothing to do)."""
-    first_impl_idx = None
-    for i, c in enumerate(commits):
-        if c.kind == "IMPL":
-            first_impl_idx = i
-            break
-
-    if first_impl_idx is None:
-        return None  # no implementation commit at all; rule 2 can't be violated
-
-    first_impl = commits[first_impl_idx]
-    late_test = [
-        c for i, c in enumerate(commits) if i > first_impl_idx and c.kind == "TEST"
-    ]
+    first_impl = None
+    moves = {}
+    late_test = []
+    for commit in commits:
+        if commit.contract_epoch_reset:
+            first_impl = None
+        if commit.kind == "IMPL" and first_impl is None:
+            first_impl = commit
+        elif commit.kind == "TEST" and first_impl is not None:
+            moves.setdefault(first_impl.sha, []).append(commit)
+            late_test.append(commit)
     if not late_test:
         return None
 
@@ -162,11 +209,12 @@ def plan_new_order(commits):
     for c in commits:
         if c.sha in late_shas:
             continue
-        if c.sha == first_impl.sha:
-            new_order.extend(lc.sha for lc in late_test)
+        if c.sha in moves:
+            new_order.extend(lc.sha for lc in moves[c.sha])
         new_order.append(c.sha)
 
-    return new_order, late_test, first_impl
+    first = next(c for c in commits if c.sha in moves)
+    return new_order, late_test, first
 
 
 CONFLICT_STATUS_CODES = {"UU", "AA", "DD", "AU", "UA", "UD", "DU"}
@@ -363,6 +411,11 @@ def main(argv):
         return 0
 
     new_order, moved, first_impl = plan
+    if any(commit.is_merge for commit in commits):
+        raise Fail(
+            "history requires reordering but contains a merge commit; choose a "
+            "linear base at or after the latest protected refresh"
+        )
 
     print(f"branch: {branch}")
     print(f"base:   {args.base} ({base_sha})")

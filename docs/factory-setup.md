@@ -80,12 +80,20 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
 - Pre-promotion live qualification uses the owner-only sealed environment
   prepared by `scripts/qualification-environment.py`; it does not replace the
   installed launcher or production activation record. Its generated marker
-  and launcher-supplied root binding are required for isolated subscription
-  provider attempts; never construct that environment by hand. The preparer
-  also fails before admission when the chosen root is too long for Cursor's
-  isolated attempt scratch. After a proven candidate defect, use its
-  `--upgrade` mode only after the product pin advances and all provider actions
-  drain; it preserves the authenticated controller/passport state in place.
+  and launcher-supplied root binding are required for subscription provider
+  attempts; never construct that environment by hand. Use
+  `--takeover-project <project>` only for a protected production-successor
+  manifest after unloading and draining the installed controller. That mode
+  requires the clean activated source checkout to match its authenticated tree
+  and current protected main to contain that source commit. It accepts a clean
+  local-only linked product worktree based on current protected main, with only
+  the candidate pin, successor manifest, and selected-ticket dependency edits.
+  Its sealed helper environment binds the canonical live
+  Linear map. It validates and reuses canonical authenticated passports
+  and provider accounting under their existing lock rather than copying them.
+  The preparer also fails before admission when the chosen root is too long for Cursor's
+  isolated attempt scratch. `--upgrade` is limited to a fresh isolated
+  qualification; a takeover binds one frozen candidate.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry
@@ -152,7 +160,12 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   changing it forces a fresh suite and caps the product receipt to that proof.
   A product that has independent validation branches may call the sealed
   `scripts/certification-runner.py` from its certification script with a
-  repository-owned `nysa.software-factory.certification-plan/v1` JSON plan.
+  repository-owned `nysa.software-factory.certification-plan/v2` JSON plan.
+  The plan pins exact Node and npm versions independently and declares every
+  phase's network requirement as `denied`, `optional`, or `required`. A
+  required phase fails before spawning when the command-scoped reviewed-network
+  opt-in is absent; denied phases remain network-denied when that opt-in is
+  present for another phase.
   Start with two workers; the runner permits at most three, isolates phase logs
   and temporary directories, records timing/CPU/peak-memory/input/artifact
   evidence, cancels siblings after failure, and binds the passing result into

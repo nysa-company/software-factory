@@ -445,6 +445,137 @@ scenario_targeted_default_exemptions() {
   return 0
 }
 
+# ---------- scenario 8: legacy replacement and later append start exact epochs ----------
+scenario_contract_epoch() {
+  local repo base orig_head rc
+  repo="$(new_repo)"
+
+  write_file "$repo" conformance/app/server.js "server v0"
+  write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+    "# T-EPOCH" \
+    "## Frozen contract — version 3" \
+    "- **Freeze result:** PASS. Contract version 3 supersedes contract version 2,"
+  commit_all "$repo" "base"
+  base="$(head_sha "$repo")"
+
+  write_file "$repo" conformance/app/tests/epoch.test.js "test('v3', () => {});"
+  commit_all "$repo" "test: version 3"
+  append_file "$repo" conformance/app/server.js "server v1"
+  commit_all "$repo" "impl: version 3"
+
+  write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+    "## Frozen contract — version 4" \
+    "- **Freeze result:** PASS. Contract version 4 supersedes version 3 because its fixtures changed."
+  commit_all "$repo" "plan: replace contract version 3 with version 4"
+  write_file "$repo" conformance/app/tests/epoch.test.js "test('v4', () => {});"
+  commit_all "$repo" "test: version 4"
+  append_file "$repo" conformance/app/server.js "server v2"
+  commit_all "$repo" "impl: version 4"
+
+  append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+    "## Frozen contract — version 5" \
+    "- **Freeze result:** PASS. Contract version 5 is frozen."
+  commit_all "$repo" "plan: append contract version 5"
+  write_file "$repo" conformance/app/tests/epoch.test.js "test('v5', () => {});"
+  commit_all "$repo" "test: version 5"
+
+  if ! run_gate "$repo" "$base"; then
+    echo "  [epoch] gate rejected tests-first work under a later frozen contract"
+    cat "$(gate_log "$repo")"
+    return 1
+  fi
+  orig_head="$(head_sha "$repo")"
+  run_reorder "$repo" "$base"; rc=$?
+  if [ "$rc" -ne 0 ] || ! grep -q "NOTHING-TO-DO" "$(reorder_log "$repo")"; then
+    echo "  [epoch] reorder did not agree with the gate"
+    cat "$(reorder_log "$repo")"
+    return 1
+  fi
+  [ "$(head_sha "$repo")" = "$orig_head" ]
+}
+
+# Incomplete, repeated, removed, mixed, or noncanonical freeze evidence must
+# not reopen test ownership. The gate and repair helper must classify every
+# case alike.
+invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
+  local mode="$1" repo base rc
+  repo="$(new_repo)"
+  write_file "$repo" conformance/app/server.js "server v0"
+  write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+    "## Frozen contract — version 1" \
+    "- **Freeze result — PASS.** Contract version 1 is frozen."
+  commit_all "$repo" "base"
+  base="$(head_sha "$repo")"
+  append_file "$repo" conformance/app/server.js "server v1"
+  commit_all "$repo" "impl: version 1"
+  case "$mode" in
+    incomplete)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2"
+      ;;
+    repeated)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 1" \
+        "- **Freeze result — PASS.** Contract version 1 is frozen."
+      ;;
+    removed)
+      write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 1" \
+        "## Frozen contract — version 2" \
+        "- **Freeze result — PASS.** Contract version 2 is frozen."
+      ;;
+    mixed)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result — PASS.** Contract version 2 is frozen."
+      write_file "$repo" docs/contract.md "mixed contract work"
+      ;;
+    nested)
+      write_file "$repo" conformance/factory/tickets/T-EPOCH/nested.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result — PASS.** Contract version 2 is frozen."
+      ;;
+    mismatched)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result:** PASS. Contract version 3 is frozen."
+      ;;
+    ambiguous)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result — PASS.** Contract version 2 is frozen." \
+        "- **Freeze result:** PASS. Contract version 2 is frozen."
+      ;;
+    malformed-supersedes)
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "## Frozen contract — version 2" \
+        "- **Freeze result:** PASS. Contract version 2 supersedes prior prose."
+      ;;
+    *) return 1 ;;
+  esac
+  commit_all "$repo" "log: invalid $mode freeze evidence"
+  write_file "$repo" conformance/app/tests/epoch.test.js "test('late', () => {});"
+  commit_all "$repo" "test: still late"
+  if run_gate "$repo" "$base"; then
+    echo "  [invalid-epoch:$mode] invalid evidence reopened the gate"
+    return 1
+  fi
+  run_reorder "$repo" "$base"; rc=$?
+  if [ "$rc" -ne 0 ] || ! run_gate "$repo" "$base"; then
+    echo "  [invalid-epoch:$mode] repair helper disagreed with the gate"
+    cat "$(reorder_log "$repo")"
+    cat "$(gate_log "$repo")"
+    return 1
+  fi
+}
+
+scenario_invalid_contract_epoch() {
+  local mode
+  for mode in incomplete repeated removed mixed nested mismatched ambiguous malformed-supersedes; do
+    invalid_contract_epoch_case "$mode" || return 1
+  done
+}
+
 # ---------- runner ----------
 
 run_scenario() { # run_scenario <name> <function>
@@ -473,6 +604,8 @@ run_scenario "scenario-4-already-ordered"             scenario_already_ordered
 run_scenario "scenario-5-dirty-working-tree"          scenario_dirty_tree
 run_scenario "scenario-6-default-pathspecs-bonus"     scenario_default_paths
 run_scenario "scenario-7-targeted-default-exemptions" scenario_targeted_default_exemptions
+run_scenario "scenario-8-frozen-contract-epoch"        scenario_contract_epoch
+run_scenario "scenario-9-invalid-contract-epoch"       scenario_invalid_contract_epoch
 
 echo
 echo "== summary: $PASS_TOTAL passed, $FAIL_TOTAL failed =="

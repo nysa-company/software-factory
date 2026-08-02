@@ -594,7 +594,7 @@ write_run_manifest() {
 }
 
 expect_stage() {
-  local expected="$1" root="$2" ticket="$3" actual status certified_origin
+  local expected="$1" root="$2" ticket="$3" actual status certified_origin contract
   mkdir -p "$root/factory/runs"
   [[ -f "$root/factory/KIT_PIN" ]] ||
     printf '%s\n' "$KIT_SHA" > "$root/factory/KIT_PIN"
@@ -602,10 +602,20 @@ expect_stage() {
     init_product_git "$root"
   fi
   certified_origin="$(git -C "$root" remote get-url --push origin 2>/dev/null || true)"
-  actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
-    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
-    FACTORY_HERMES_CONTRACT_VERSION="${TEST_CONTRACT_VERSION:-1.2.0}" \
-    "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
+  contract="${TEST_CONTRACT_VERSION:-1.2.0}"
+  if [[ "$contract" == "1.8.0" ]]; then
+    actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
+      FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
+      FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+      FACTORY_RELEASE_CONTRACT_VERSION="$contract" \
+      "$SEALED_RELEASE/scripts/next-stage.sh" --ticket "$ticket" 2>&1)"
+  else
+    actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
+      FACTORY_HERMES_CONTRACT_VERSION="$contract" \
+      "$NEXT_STAGE" --ticket "$ticket" 2>&1)"
+  fi
   status=$?
   [[ "$actual" == "$expected"* ]] || {
     fail "$ticket expected '$expected'" "got '$actual' (status $status)"
@@ -921,6 +931,30 @@ if [[ "$OVERRIDE_STATUS" -eq 0 && "$OVERRIDE_ROWS" == "1" &&
 else
   fail "FACTORY_LEDGER override wins" \
     "status=$OVERRIDE_STATUS override_rows=$OVERRIDE_ROWS canonical_rows=$CANONICAL_ROWS"
+fi
+
+# A trusted lane override can request reduction from its own manifest root
+# before stage selection instead of consuming a stale projected file.
+REFRESH_OVERRIDE="$TMP/refresh-override"
+write_envelope "$REFRESH_OVERRIDE"
+write_ticket "$REFRESH_OVERRIDE" T-203
+mkdir -p "$REFRESH_OVERRIDE/factory/runs"
+{
+  ledger_header
+  ledger_row T-203 planner
+} > "$REFRESH_OVERRIDE/factory/ledger.csv"
+ledger_header > "$REFRESH_OVERRIDE/factory/runtime-ledger.csv"
+REFRESH_STAGE="$(FACTORY_ROOT="$REFRESH_OVERRIDE" \
+  FACTORY_LEDGER="$REFRESH_OVERRIDE/factory/runtime-ledger.csv" \
+  FACTORY_REFRESH_RUNTIME_LEDGER=1 \
+  "$NEXT_STAGE" --ticket T-203 2>&1)"
+if [[ "$REFRESH_STAGE" == "RUN spec-linter" ]] &&
+   [[ "$(awk -F, '$3=="T-203" {n++} END {print n+0}' \
+       "$REFRESH_OVERRIDE/factory/runtime-ledger.csv")" == "1" ]]; then
+  pass "trusted lane override refreshes its own runtime ledger"
+else
+  fail "trusted lane override refreshes its own runtime ledger" \
+    "stage=$REFRESH_STAGE"
 fi
 
 # Legacy or partial headers migrate to the complete append-only schema.
@@ -2239,7 +2273,7 @@ fi
 # Contract 1.7 makes repair ownership mechanical. When both roles own a fix,
 # Test-author must finish before the Builder and only then may Reviewer rerun.
 OWNED_FIX="$TMP/owned-fix"
-mkdir -p "$OWNED_FIX/factory/tickets"
+write_envelope "$OWNED_FIX" no-git
 {
   ledger_header
   ledger_row T-302 planner
@@ -2252,6 +2286,8 @@ cat > "$OWNED_FIX/factory/tickets/T-302.md" <<'EOF'
 reviewer round 1: REQUEST CHANGES
 reviewer round 1 FIX-OWNER: both
 EOF
+OWNED_FIX_18="$TMP/owned-fix-18"
+cp -R "$OWNED_FIX" "$OWNED_FIX_18"
 if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302; then
   ledger_row T-302 test-author >> "$OWNED_FIX/factory/ledger.csv"
   if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX builder" "$OWNED_FIX" T-302; then
@@ -2260,6 +2296,43 @@ if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302
       pass "contract 1.7 sequences explicit dual-owner repairs"
   fi
 fi
+if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$OWNED_FIX_18" T-302; then
+  ledger_row T-302 planner >> "$OWNED_FIX_18/factory/ledger.csv"
+  TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+    "REFUSE Planner repair did not open one authenticated test-first contract epoch" \
+    "$OWNED_FIX_18" T-302 &&
+    pass "contract 1.8 refuses late Test-author work without a new epoch"
+  printf '%s\n' \
+    '## Frozen contract — version 1' \
+    '- **Freeze result:** PASS. Contract version 1 is frozen.' >> \
+    "$OWNED_FIX_18/factory/tickets/T-302.md"
+  git -C "$OWNED_FIX_18" add factory/tickets/T-302.md
+  git -C "$OWNED_FIX_18" -c user.name=test -c user.email=test@example.com \
+    commit -qm "open test-first repair epoch"
+  if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX test-author" "$OWNED_FIX_18" T-302; then
+    ledger_row T-302 test-author >> "$OWNED_FIX_18/factory/ledger.csv"
+    if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX builder" "$OWNED_FIX_18" T-302; then
+      ledger_row T-302 builder >> "$OWNED_FIX_18/factory/ledger.csv"
+      TEST_CONTRACT_VERSION=1.8.0 expect_stage "RUN reviewer" "$OWNED_FIX_18" T-302 &&
+        pass "contract 1.8 sequences a test-first dual-owner repair epoch"
+    fi
+  fi
+fi
+
+TEST_ONLY_FIX="$TMP/test-only-fix"
+write_envelope "$TEST_ONLY_FIX" no-git
+{
+  ledger_header
+  ledger_row T-304 planner
+  ledger_row T-304 test-author
+  ledger_row T-304 builder
+  ledger_row T-304 reviewer
+} > "$TEST_ONLY_FIX/factory/ledger.csv"
+printf '%s\n' '# T-304' 'reviewer round 1: REQUEST CHANGES' \
+  'reviewer round 1 FIX-OWNER: test-author' > \
+  "$TEST_ONLY_FIX/factory/tickets/T-304.md"
+TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$TEST_ONLY_FIX" T-304 &&
+  pass "contract 1.8 opens an epoch before a single-owner Test-author repair"
 
 MISSING_OWNER="$TMP/missing-fix-owner"
 mkdir -p "$MISSING_OWNER/factory/tickets"
@@ -2333,17 +2406,17 @@ GUARD="$TMP/guard"
 write_envelope "$GUARD"
 write_ticket "$GUARD" T-400
 GUARD_LEDGER="$GUARD/factory/runtime-ledger.csv"
-MOCK_SLEEP=5 FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
+MOCK_SLEEP=30 FACTORY_ROOT="$GUARD" FACTORY_LEDGER="$GUARD_LEDGER" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-400 -- "slow run" > "$TMP/first.out" 2>&1 &
 FIRST_PID=$!
-for _i in $(seq 1 50); do
+for _i in $(seq 1 1200); do
   [[ -n "$(ls "$GUARD/factory/.active-runs/"*.lock/owner 2>/dev/null || true)" ]] && break
   sleep 0.05
 done
 GUARD_CLAIM_OWNER="$(find "$GUARD/factory/.active-runs" -name owner -print -quit)"
-for _i in $(seq 1 50); do
+for _i in $(seq 1 1200); do
   [[ -f "$GUARD/factory/.provider.lock/owner" ]] && break
   sleep 0.05
 done
@@ -2470,7 +2543,7 @@ MOCK_SLEEP=30 MOCK_DESCENDANT_PID_FILE="$DESCENDANT_PID_FILE" \
   > "$TMP/kill-wrapper.out" 2>&1 &
 KILL_WRAPPER_PID=$!
 KILL_PID_FILE=""
-for _i in $(seq 1 200); do
+for _i in $(seq 1 1200); do
   KILL_PID_FILE="$(ls "$KILL_ROOT/factory/runs/"*.pid 2>/dev/null || true)"
   [[ -n "$KILL_PID_FILE" && -f "$DESCENDANT_PID_FILE" ]] && break
   sleep 0.05
@@ -2664,7 +2737,52 @@ expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for app
   "$WALK" T-500 || WALK_OK=0
 [[ "$WALK_OK" -eq 1 ]] && pass "sequencer happy-path walkthrough"
 
-# One structurally invalid, unattested bundle gets one Narrator retry.
+# An explicitly non-approvable bundle routes to Builder without replaying
+# Narrator on the unchanged reviewed generation. A later successful Builder and
+# effective Reviewer make the old bundle stale and authorize exactly one fresh
+# Narrator pass for the newly reviewed generation.
+NOT_APPROVABLE_ROOT="$TMP/not-approvable-bundle-repair"
+mkdir -p "$NOT_APPROVABLE_ROOT/factory/tickets"
+cat > "$NOT_APPROVABLE_ROOT/factory/tickets/T-503.md" <<'TICKET'
+# T-503
+State: Review
+reviewer round 1: APPROVE
+TICKET
+{
+  ledger_header
+  ledger_row T-503 planner
+  ledger_row T-503 test-author
+  ledger_row T-503 builder
+  ledger_row T-503 reviewer
+  ledger_row T-503 narrator
+} > "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+cat > "$NOT_APPROVABLE_ROOT/factory/tickets/T-503-bundle.md" <<'BUNDLE'
+NOT APPROVABLE: preview deployment is missing.
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
+NOT_APPROVABLE_OK=1
+expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 builder >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+expect_stage "RUN reviewer" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 reviewer >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+printf 'reviewer round 2: APPROVE\n' >> \
+  "$NOT_APPROVABLE_ROOT/factory/tickets/T-503.md"
+expect_stage "RUN narrator" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 narrator >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+ledger_row T-503 narrator >> "$NOT_APPROVABLE_ROOT/factory/ledger.csv"
+expect_stage "FIX builder" "$NOT_APPROVABLE_ROOT" T-503 || NOT_APPROVABLE_OK=0
+[[ "$NOT_APPROVABLE_OK" -eq 1 ]] &&
+  pass "sequencer binds explicit non-approvable evidence to its review generation"
+
+# One structurally invalid, unattested bundle gets one Narrator correction.
 INVALID_BUNDLE_ROOT="$TMP/invalid-bundle-retry"
 mkdir -p "$INVALID_BUNDLE_ROOT/factory/tickets"
 cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502.md" <<'TICKET'
@@ -2680,8 +2798,15 @@ TICKET
   ledger_row T-502 reviewer
   ledger_row T-502 narrator
 } > "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
-printf 'Preview broken: not approvable.\n' > \
-  "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md"
+cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md" <<'BUNDLE'
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Rollback
+Approve to merge?
+BUNDLE
 INVALID_BUNDLE_OK=1
 expect_stage "RUN narrator" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
 ledger_row T-502 narrator >> "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
@@ -3195,6 +3320,47 @@ if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
 else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
+fi
+
+setup_role_exit_fixture T-654 builder
+ROLE_REWRITE_INPUT="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_REWRITE_STATUS=0
+MOCK_COMMIT_WORKDIR=1 MOCK_REWRITE_WORKDIR=1 \
+  FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role builder --ticket T-654 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "rewrite history" >"$TMP/role-history-rewrite.out" 2>&1 ||
+  ROLE_REWRITE_STATUS=$?
+ROLE_REWRITE_META="$(ls "$ROLE_EXIT_ROOT"/factory/runs/*.meta)"
+ROLE_REWRITE_RUN_ID="$(sed -n 's/^run_id=//p' "$ROLE_REWRITE_META")"
+ROLE_REWRITE_REF="refs/factory/failed-role/T-654/$ROLE_REWRITE_RUN_ID"
+ROLE_REWRITE_OUTPUT="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse \
+  "$ROLE_REWRITE_REF" 2>/dev/null || true)"
+if [[ "$ROLE_REWRITE_STATUS" -eq 11 &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+        "$ROLE_REWRITE_INPUT" &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse \
+        refs/heads/ticket/T-654)" == "$ROLE_REWRITE_INPUT" &&
+      -z "$(git -C "$ROLE_EXIT_WORKTREE" status --porcelain=v1)" &&
+      -n "$ROLE_REWRITE_OUTPUT" &&
+      "$ROLE_REWRITE_OUTPUT" != "$ROLE_REWRITE_INPUT" ]] &&
+   ! git -C "$ROLE_EXIT_WORKTREE" merge-base --is-ancestor \
+      "$ROLE_REWRITE_INPUT" "$ROLE_REWRITE_OUTPUT" &&
+   grep -q 'role_exit_history_rewritten' "$TMP/role-history-rewrite.out" &&
+   grep -q '^phase=completed$' "$ROLE_REWRITE_META" &&
+   grep -q '^accounting_state=abandoned_conservative$' "$ROLE_REWRITE_META" &&
+   grep -q '^go_issued=1$' "$ROLE_REWRITE_META" &&
+   grep -q '^task_submitted=1$' "$ROLE_REWRITE_META" &&
+   grep -q '^effective_cost=1.00$' "$ROLE_REWRITE_META" &&
+   grep -q '^exit_status=11$' "$ROLE_REWRITE_META" &&
+   grep -q '^role_exit=role_exit_history_rewritten$' "$ROLE_REWRITE_META" &&
+   grep -q "^role_head_before=$ROLE_REWRITE_INPUT$" "$ROLE_REWRITE_META"; then
+  pass "non-Test-author history rewrite is quarantined and restored before push"
+else
+  fail "history rewrite did not preserve output and restore authenticated input" \
+    "status=$ROLE_REWRITE_STATUS run=$ROLE_REWRITE_RUN_ID"
 fi
 
 setup_role_exit_fixture T-650

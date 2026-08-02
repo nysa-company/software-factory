@@ -103,6 +103,70 @@ class BudgetStageTest(unittest.TestCase):
             )
             self.assertEqual(BUDGET.resolve(ROOT, product, "T-110"), "AVAILABLE")
 
+    def test_successor_qualification_counts_only_current_candidate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            product = Path(temporary)
+            runs = product / "factory/runs"
+            runs.mkdir(parents=True)
+            (product / "factory/ENVELOPE.env").write_text(
+                "PER_RUN_BUDGET_USD=10.000000\n"
+                "PER_TICKET_BUDGET_USD=100.000000\n"
+                "PER_RUN_MAX_TURNS=20\n"
+                "PER_RUN_TIMEOUT_MIN=30\n"
+                "DAILY_CAP_USD=500.000000\n",
+                encoding="utf-8",
+            )
+            current = "a" * 40
+            source = "b" * 40
+            (product / "factory/QUALIFICATION.json").write_text(
+                json.dumps({
+                    "budget_usd": "300.000000",
+                    "capacity": 3,
+                    "contract_version": "1.8.0",
+                    "factory_sha": current,
+                    "generation": 1,
+                    "mode": "successor",
+                    "per_run_budget_usd": "10.000000",
+                    "per_ticket_budget_usd": "100.000000",
+                    "schema": "nysa.software-factory.qualification/v2",
+                    "source_factory_sha": source,
+                    "target_done": 3,
+                    "tickets": ["T-110", "T-111", "T-112"],
+                }),
+                encoding="utf-8",
+            )
+
+            def charge(run_id: str, factory_sha: str) -> None:
+                (runs / f"{run_id}.meta").write_text(
+                    f"run_id={run_id}\n"
+                    "ticket=T-110\n"
+                    "role=builder\n"
+                    "accounting_state=completed\n"
+                    "effective_cost=10.000000\n"
+                    "exit_status=5\n"
+                    "role_exit=budget\n"
+                    f"kit_sha={factory_sha}\n",
+                    encoding="utf-8",
+                )
+
+            for number in range(10):
+                charge(f"historical-{number}", source)
+            charge("current-0", current)
+            self.assertEqual(
+                BUDGET.resolve(ROOT, product, "T-110", current), "AVAILABLE"
+            )
+            for number in range(1, 10):
+                charge(f"current-{number}", current)
+            self.assertTrue(
+                BUDGET.resolve(ROOT, product, "T-110", current).startswith(
+                    "AWAIT_BUDGET"
+                )
+            )
+            with self.assertRaisesRegex(
+                ValueError, "successor qualification budget is invalid"
+            ):
+                BUDGET.resolve(ROOT, product, "T-110", "c" * 40)
+
 
 if __name__ == "__main__":
     unittest.main()

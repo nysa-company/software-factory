@@ -129,25 +129,37 @@ class DispatchPlanTest(unittest.TestCase):
         )
         return tickets
 
-    def write_contract_18_qualification(self):
-        tickets = [f"T-{number}" for number in range(110, 114)]
+    def write_contract_18_qualification(
+        self, target=4, dependencies=None, successor=False
+    ):
+        tickets = [f"T-{number}" for number in range(110, 110 + target)]
         for ticket in tickets:
             self.ticket(ticket, "normal", "Ready")
+        for ticket, required in (dependencies or {}).items():
+            path = self.product / "factory/tickets" / f"{ticket}.md"
+            path.write_text(
+                path.read_text() + f"Depends-On: {','.join(required)}\n"
+            )
         (self.product / "factory/PROJECT.env").write_text(
-            "TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS=4\n"
+            f"TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS={target}\n"
         )
         manifest = {
-            "budget_usd": "100.000000",
-            "capacity": 4,
+            "budget_usd": "300.000000" if successor else "100.000000",
+            "capacity": target,
             "contract_version": "1.8.0",
             "factory_sha": "a" * 40,
             "generation": 1,
-            "per_run_budget_usd": "2.000000",
-            "per_ticket_budget_usd": "25.000000",
+            "per_run_budget_usd": "10.000000" if successor else "2.000000",
+            "per_ticket_budget_usd": "100.000000" if successor else "25.000000",
             "schema": "nysa.software-factory.qualification/v2",
-            "target_done": 4,
+            "target_done": target,
             "tickets": tickets,
         }
+        if successor:
+            manifest.update({
+                "mode": "successor",
+                "source_factory_sha": "b" * 40,
+            })
         (self.product / "factory/QUALIFICATION.json").write_text(
             json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
         )
@@ -203,7 +215,13 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "commit", "-qm", "authorize pre-provider reset", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
 
-    def command(self, action, expected=0):
+    def command(self, action, expected=0, operator_map=None):
+        environment = {
+            **os.environ,
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+        }
+        if operator_map is not None:
+            environment["FACTORY_OPERATOR_MAP"] = str(operator_map)
         result = subprocess.run(
             [
                 sys.executable, str(HELPER),
@@ -214,7 +232,7 @@ class DispatchPlanTest(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
-            env={**os.environ, "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote)},
+            env=environment,
             timeout=30,
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
@@ -226,6 +244,14 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["status"], "SHADOW")
         self.assertFalse((self.product / "factory/.dispatch-leases").exists())
         self.assertEqual(list(self.worktrees.iterdir()), [])
+
+    def test_shadow_uses_launcher_bound_operator_map(self):
+        external = self.root / "operator-map.json"
+        external.write_bytes(self.mapping.read_bytes())
+        self.mapping.write_text("{}\n")
+        value = self.command("shadow", operator_map=external)
+        self.assertEqual(value["ticket"], "T-200")
+        self.assertEqual(value["status"], "SHADOW")
 
     def test_nonqualification_dispatch_waits_for_protected_dependency(self):
         ticket = self.product / "factory/tickets/T-200.md"
@@ -484,7 +510,7 @@ class DispatchPlanTest(unittest.TestCase):
         with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
             DISPATCH.qualification(self.product, self.product / "factory", 4)
 
-    def test_contract_18_qualification_requires_four_independent_canaries(self):
+    def test_contract_18_qualification_accepts_four_independent_canaries(self):
         tickets = self.write_contract_18_qualification()
         with mock.patch.object(
             DISPATCH, "protected_terminal", side_effect=DISPATCH.ValidationError("not done")
@@ -496,6 +522,45 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["capacity"], 4)
         self.assertEqual(value["dependencies"], {ticket: () for ticket in tickets})
         self.assertEqual(value["done"], 0)
+
+    def test_contract_18_qualification_accepts_ordered_three_ticket_cohort(self):
+        tickets = self.write_contract_18_qualification(3, {
+            "T-111": ["T-110"],
+            "T-112": ["T-111", "T-099"],
+        })
+
+        def terminal(_product, ticket):
+            if ticket != "T-099":
+                raise DISPATCH.ValidationError("not done")
+            return {"ticket": ticket}
+
+        with mock.patch.object(DISPATCH, "protected_terminal", side_effect=terminal):
+            value = DISPATCH.qualification(
+                self.product, self.product / "factory", 3
+            )
+        self.assertEqual(value["tickets"], tickets)
+        self.assertEqual(value["capacity"], 3)
+        self.assertEqual(value["dependencies"]["T-112"], ("T-111", "T-099"))
+        self.assertEqual(value["terminal"], {"T-099"})
+
+        path = self.product / "factory/tickets/T-110.md"
+        path.write_text(path.read_text() + "Depends-On: T-112\n")
+        with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
+            DISPATCH.qualification(self.product, self.product / "factory", 3)
+
+    def test_contract_18_successor_qualification_uses_production_envelope(self):
+        tickets = self.write_contract_18_qualification(3, {
+            "T-111": ["T-110"], "T-112": ["T-111"],
+        }, successor=True)
+        with mock.patch.object(
+            DISPATCH, "protected_terminal", side_effect=DISPATCH.ValidationError("not done")
+        ):
+            value = DISPATCH.qualification(
+                self.product, self.product / "factory", 3
+            )
+        self.assertEqual(value["tickets"], tickets)
+        self.assertEqual(value["mode"], "successor")
+        self.assertEqual(value["source_factory_sha"], "b" * 40)
 
 if __name__ == "__main__":
     unittest.main()

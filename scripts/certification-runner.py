@@ -18,7 +18,7 @@ import time
 from typing import Any
 
 
-SCHEMA = "nysa.software-factory.certification-plan/v1"
+SCHEMA = "nysa.software-factory.certification-plan/v2"
 RESULT_SCHEMA = "nysa.software-factory.certification-result/v1"
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -52,9 +52,17 @@ def safe_plan(path: Path) -> tuple[dict[str, Any], str]:
         if descriptor >= 0:
             os.close(descriptor)
     value = json.loads(raw)
-    if not isinstance(value, dict) or set(value) != {"schema", "phases"}:
+    if not isinstance(value, dict) or set(value) != {"schema", "phases", "runtime"}:
         raise PlanError("certification plan is malformed")
-    if value["schema"] != SCHEMA or not isinstance(value["phases"], list):
+    runtime = value.get("runtime")
+    if (
+        value["schema"] != SCHEMA
+        or not isinstance(value["phases"], list)
+        or not isinstance(runtime, dict)
+        or set(runtime) != {"node", "npm"}
+        or not re.fullmatch(r"v[1-9][0-9]*\.[0-9]+\.[0-9]+", runtime.get("node", ""))
+        or not re.fullmatch(r"[1-9][0-9]*\.[0-9]+\.[0-9]+", runtime.get("npm", ""))
+    ):
         raise PlanError("certification plan schema is invalid")
     return value, hashlib.sha256(raw).hexdigest()
 
@@ -63,13 +71,14 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
     phases: dict[str, dict[str, Any]] = {}
     for phase in plan["phases"]:
         if not isinstance(phase, dict) or set(phase) != {
-            "artifacts", "command", "depends_on", "name"
+            "artifacts", "command", "depends_on", "name", "network"
         }:
             raise PlanError("certification phase is malformed")
         name = phase["name"]
         command = phase["command"]
         dependencies = phase["depends_on"]
         artifacts = phase["artifacts"]
+        network = phase["network"]
         if (
             not isinstance(name, str)
             or not NAME.fullmatch(name)
@@ -85,6 +94,7 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
             or len(set(dependencies)) != len(dependencies)
             or not isinstance(artifacts, list)
             or not all(isinstance(item, str) and item for item in artifacts)
+            or network not in {"denied", "optional", "required"}
         ):
             raise PlanError("certification phase values are invalid")
         for artifact in artifacts:
@@ -165,6 +175,15 @@ def iso(epoch: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
+def tool_version(command: list[str]) -> str:
+    try:
+        return subprocess.run(
+            command, text=True, capture_output=True, check=False
+        ).stdout.strip()
+    except OSError:
+        return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", required=True, type=Path)
@@ -174,11 +193,13 @@ def main() -> int:
     root = Path.cwd().resolve(strict=True)
     factory_sha = os.environ.get("FACTORY_KIT_SHA", "")
     product_tree = os.environ.get("FACTORY_PRODUCT_TREE", "")
+    network_reviewed = os.environ.get("FACTORY_CERTIFICATION_NETWORK_REVIEWED", "0")
     if (
         not 1 <= args.workers <= 3
         or not SHA.fullmatch(factory_sha)
         or not SHA.fullmatch(product_tree)
         or not args.result.is_absolute()
+        or network_reviewed not in {"0", "1"}
     ):
         print("invalid certification runner boundary", file=sys.stderr)
         return 2
@@ -187,6 +208,39 @@ def main() -> int:
         phases = validate_plan(plan, root)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(str(error), file=sys.stderr)
+        return 2
+
+    runtime = {
+        "node": tool_version(["node", "--version"]),
+        "npm": tool_version(["npm", "--version"]),
+    }
+    missing_network = sorted(
+        name for name, phase in phases.items()
+        if phase["network"] == "required" and network_reviewed != "1"
+    )
+    reason = (
+        "runtime_identity_mismatch"
+        if runtime != plan["runtime"]
+        else "reviewed_network_required" if missing_network else ""
+    )
+    if reason:
+        observed = time.time()
+        atomic_result(args.result, {
+            "ended_at": iso(observed),
+            "factory_sha": factory_sha,
+            "failure": {"phases": missing_network, "reason_code": reason},
+            "max_workers": args.workers,
+            "network_reviewed": network_reviewed == "1",
+            "phases": [],
+            "plan_sha256": plan_digest,
+            "product_tree": product_tree,
+            "runtime": runtime,
+            "schema": RESULT_SCHEMA,
+            "started_at": iso(observed),
+            "status": "fail",
+            "wall_seconds": 0,
+        })
+        print(f"certification preflight failed: {reason}", file=sys.stderr)
         return 2
 
     run_root = args.result.parent / "certification-phases"
@@ -216,14 +270,38 @@ def main() -> int:
                     "phase": phase,
                     "plan_sha256": plan_digest,
                     "product_tree": product_tree,
+                    "runtime": runtime,
+                    "network": {
+                        "declared": phase["network"],
+                        "granted": (
+                            network_reviewed == "1"
+                            and phase["network"] in {"optional", "required"}
+                        ),
+                    },
                 }
             )
         ).hexdigest()
         environment = os.environ.copy()
         environment["TMPDIR"] = str(phase_root / "tmp")
         Path(environment["TMPDIR"]).mkdir(mode=0o700)
+        granted = (
+            network_reviewed == "1"
+            and phase["network"] in {"optional", "required"}
+        )
+        command = list(phase["command"])
+        deny_prefix = os.environ.get("FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX", "")
+        if not granted and deny_prefix:
+            try:
+                prefix = json.loads(deny_prefix)
+            except json.JSONDecodeError as error:
+                raise PlanError("certification network deny prefix is invalid") from error
+            if not isinstance(prefix, list) or not all(
+                isinstance(item, str) and item for item in prefix
+            ):
+                raise PlanError("certification network deny prefix is invalid")
+            command = prefix + command
         process = subprocess.Popen(
-            phase["command"],
+            command,
             cwd=root,
             env=environment,
             stdout=stream,
@@ -234,6 +312,8 @@ def main() -> int:
             "input_sha256": input_digest,
             "log": log,
             "name": name,
+            "network_declared": phase["network"],
+            "network_granted": granted,
             "process": process,
             "started": time.time(),
             "stream": stream,
@@ -258,6 +338,17 @@ def main() -> int:
             process = active["process"]
             process.returncode = os.waitstatus_to_exitcode(status)
             ended = time.time()
+            if (
+                process.returncode != 0
+                and phases[active["name"]]["command"][0] == "npm"
+            ):
+                logs = Path(os.environ.get("npm_config_cache", "")) / "_logs"
+                with active["log"].open("ab") as stream:
+                    for debug in (
+                        sorted(logs.glob("*-debug-0.log")) if logs.is_dir() else []
+                    ):
+                        stream.write(f"\n--- preserved {debug.name} ---\n".encode())
+                        stream.write(debug.read_bytes()[:1_000_000])
             try:
                 artifact = artifact_digest(
                     root, phases[active["name"]]["artifacts"], active["log"]
@@ -280,6 +371,9 @@ def main() -> int:
                 "exit_status": process.returncode,
                 "input_sha256": active["input_sha256"],
                 "name": active["name"],
+                "network_declared": active["network_declared"],
+                "network_granted": active["network_granted"],
+                "output_sha256": hashlib.sha256(active["log"].read_bytes()).hexdigest(),
                 "peak_memory_kb": peak,
                 "started_at": iso(active["started"]),
                 "system_cpu_seconds": round(usage.ru_stime, 6),
@@ -305,6 +399,9 @@ def main() -> int:
                     "exit_status": None,
                     "input_sha256": "",
                     "name": name,
+                    "network_declared": phases[name]["network"],
+                    "network_granted": False,
+                    "output_sha256": "",
                     "peak_memory_kb": 0,
                     "started_at": None,
                     "system_cpu_seconds": 0,
@@ -320,9 +417,11 @@ def main() -> int:
         "ended_at": iso(ended),
         "factory_sha": factory_sha,
         "max_workers": args.workers,
+        "network_reviewed": network_reviewed == "1",
         "phases": [completed[name] for name in sorted(completed)],
         "plan_sha256": plan_digest,
         "product_tree": product_tree,
+        "runtime": runtime,
         "schema": RESULT_SCHEMA,
         "started_at": iso(started),
         "status": "fail" if failed else "pass",

@@ -3177,6 +3177,16 @@ is rejected. The exact live T-094 history confirms only `2ef4e82...` has a
 parent in the current authenticated repair window. Protected GitHub CI owns
 the complete regression; live closure requires generation 44's successor to
 resume exactly Test-author without replaying earlier roles.
+Additional qualification occurrence: while separating Nysa gate policy into
+protected PR #305, an explanatory operator commit preceded the first receipt
+binding. Sealed passport migrations then authenticated the withdrawal and
+final binding endpoints. Candidate `991c5f8...` counted the withdrawal's
+`git log -S` match as a second authorization and refused before provider GO.
+The validator now admits a history match as a candidate only when that
+commit's resulting ticket contains the exact visible role-and-receipt pair.
+The focused 24-test state-machine suite proves the withdrawal is ignored,
+while the existing two-actual-authorizations negative remains fail-closed.
+Successor seal and live T-094 resume remain pending.
 
 ## FI-20260730-122 — Repeated blocker could not hand recovery to an earlier owner
 
@@ -3387,7 +3397,7 @@ without another Planner call.
 
 ## FI-20260731-127 — Separate regressions missed the composite historical state
 
-Status: Shared-path repair and successor-only submission recovery implemented; sealed Contract 1.8 qualification passed; protected CI and live closure pending
+Status: Shared-path repair and successor-only submission recovery implemented; sealed launcher smoke passed; ordered three-ticket qualification, protected CI, and live closure pending
 Priority: P0
 Area: controller recovery and aggregate historical-state verification
 Owner: Factory
@@ -3460,9 +3470,1337 @@ typed reason and retains the bounded diagnostic-output digest for new
 occurrences, while only the exact legacy blank-reason/empty-output shape remains
 readable. The composite replay adds this conservative charge before successor
 B, refuses same-release replay, preserves sibling state, and resumes Reviewer
-only after the successor migration. Production parity is proven in the sealed
-Contract 1.8 qualification environment; the separate development product lane
-is used only for shared runner/provider and Nysa application compatibility.
+only after the successor migration. The sealed launcher smoke proved exact
+production code and contract selection but did not authorize or execute the
+Nysa cohort. The attempted promotion stopped before installation, product
+certification, or activation, and its automatic full-main run was cancelled.
+The shared qualification contract now admits an acyclic T-094, T-100, T-093
+cohort at capacity three, requires protected external dependencies, and reduces
+that exact restart, relocation, protected publication, and Done lifecycle
+without making a four-ticket concurrency claim. Full Factory CI and every
+production release transaction remain downstream of a green sealed reducer;
+the separate development product lane remains limited to shared
+runner/provider and application compatibility. Production-successor
+qualification reuses the canonical drained controller passports, route state,
+provider accounting, and reconciliation lock instead of copying or re-signing
+them. Its reducer requires the source-to-candidate migration, validates all
+historical charge identities, and caps/reports only the candidate's additional
+spend. This closes the state-split that would otherwise make a fresh sandbox
+green while leaving the real T-094/T-100/T-093 passports unproved.
+
+The first sealed takeover occurrence exposed one more relationship in this
+same aggregate root before promotion. T-094's authenticated passport retained
+seven successful roles, including two Planner runs, one Spec-linter run, and
+four Test-author runs. After the candidate Test-author repair succeeded, the
+current product runtime ledger contained only that newest run. `next-stage`
+therefore counted Planner as zero, returned ordinary `RUN planner` beneath the
+coarse Building state, and planner preflight correctly refused. The controller
+parked T-094; T-100 and T-093 stayed dependency-waiting; no sibling provider
+or publication authority was admitted. The shared resolver now validates the
+current passport HMAC plus ticket/branch/head/route/release identity and gives
+the sole `next-stage` call its ordered completed-role sequence through an
+owner-only ephemeral capability. New tickets without passports retain the
+ordinary ledger path. This preserves historical successful-role identity for
+scheduling without rewriting the accounting ledger or relabelling its Factory
+SHA. A successor candidate, a replay of this exact parked boundary, the full
+ordered cohort, protected CI, and final release transactions remain required.
+
+Re-sealing that successor exposed the paired qualification-side assumption:
+the takeover preparer and final reducer required each current passport, or one
+direct migration edge, to name the still-installed production source. The
+first candidate had already authenticated a production-to-candidate edge, so
+the passports correctly named that intermediate release while production was
+unchanged. The shared successor model now validates ordered, unique release
+history and one contiguous v2 cross-release suffix from the manifest's
+installed source through intermediate qualification candidates. Preparation
+accepts the authenticated current endpoint; the reducer requires that same
+suffix to terminate at the frozen final candidate and continues to count only
+that final candidate's additional spend. Focused environment and reducer
+tests cover the two-edge path and reject a disconnected edge. A new sealed
+root and the ordered live cohort remain required.
+
+The next sealed occurrence reached the correctly selected T-094 Builder, whose
+Cursor route returned HTTP 503 after GO with zero turns and a conservative $10
+terminal charge. The qualification-only automatic fallback failed before a
+handoff because it read the qualification control worktree's stale ignored
+`runtime-ledger.csv`; ticket execution had materialized accounting through the
+ticket worktree's canonical Git root. The shared fallback evidence boundary
+now invokes the existing ledger reducer over tracked durable rows plus
+authoritative run manifests and hashes that exact effective CSV. A focused
+regression leaves a deliberately stale runtime view in place and still accepts
+only the unique latest terminal manifest; model-fallback, ledger-view, and
+controller suites pass. Re-sealing, the automatic same-role fallback, the
+ordered cohort, protected CI, and final release transactions remain required.
+
+That live automatic fallback next rejected the product's ordinary ignored pnpm
+workspace symlink at `node_modules/@nysa/web`. The snapshot already derived
+commit candidates from the tree, index, and Git's non-ignored untracked set,
+but its separate hazard walk traversed ignored dependency/build state too. The
+shared handoff now asks sanitized Git for exact ignored paths and prunes only
+those paths from the hazard walk. Candidate reads still use no-follow
+descriptors, and focused tests retain rejection of tracked or non-ignored
+symlinks, hardlinks, FIFOs, nested repositories, and submodules while proving
+an ignored dependency symlink is absent from the snapshot. A successor seal
+and live fallback replay remain required.
+
+The next T-094 occurrence reached the exact authenticated `FIX planner`
+transition but stopped before GO. All role-specific checks passed; preflight
+rejected the clean qualification control branch solely because it was named
+`local/qualification-6fe56bb` rather than `main`. That branch carries the
+required local qualification authority and cannot also equal protected product
+main, so the production branch assertion made the sealed lane behaviorally
+incomplete. The launcher now supplies the exact product tree already validated
+against its owner-only qualification activation record, and preflight accepts
+only a clean checkout matching that tree. Production and every unbound call
+still fetch and require clean current `main`. Focused tests prove the unbound
+branch fails, the sealed exact tree passes, and a forged tree fails. A successor
+seal, the pending Planner repair, ordered cohort, protected CI, and final release
+transactions remain required.
+
+That successor advanced T-094 through the repaired Planner, Test-author, and
+Builder stages, proving real state-machine progress, but Builder run
+`1785537237-15335` replaced the authenticated input ancestry after GO. Its
+terminal bound receipt
+`6a5eadff77082ca4b3a8dd4b62fcc64f1ab22fde9cf6ec44c8f4786a52a074e4`,
+input `be0d9d10e6b299f86cd7b93e8762f7ce9a8d3cb6`, Factory
+`fef0bea4f1d933df689b96aac7a31cfb918ae232`, one submitted task, and one full
+$10 conservative charge. Output
+`741a55a400795a93e8d1dd275104779ca45c16e6` had unrelated parent
+`459b9cbcb24443a14dcbaa294ee3343fb61a5031`; the trusted non-force push refused
+and the remote stayed at the input. The runner had no typed pre-push ancestry
+check, left the cell on the output, and passport export then failed because the
+remote/input lineage no longer matched the local cell. The output is preserved
+at `refs/factory/failed-role/T-094/1785537237-15335`, and the cell was restored
+exactly to the input before any further controller call.
+
+The shared runner now rejects non-Test-author ancestry loss before publication,
+creates that collision-checked diagnostic ref, restores the exact input with
+compare-and-swap ref updates plus `git restore`, and revalidates the clean cell
+and unchanged remote. The typed `role_exit_history_rewritten` terminal can be
+reclaimed only by a successor Factory after the exact signed passport proves
+one matching charge, no matching completion, and the terminal's input head.
+Same-release replay and every malformed topology stay blocked. Builder's role
+contract now explicitly forbids rebases, resets, amends, and other input-history
+rewrites; the existing protected Test-author rewrite lifecycle is untouched.
+Focused runner and controller suites prove quarantine/restoration, conservative
+accounting, same-release refusal, successor-only recovery, and unchanged
+Test-author behavior. A new sealed successor and live T-094 Builder retry remain
+required before the ordered cohort can continue.
+
+The next sealed successor migrated the exact revision-33 routes and passports
+for T-094, T-100, and T-093 to Factory
+`bb05660edeafb19ea67e0ea56afd60de53fdba02` without a provider call. T-094 then
+stopped at ordinary scheduling with `ticket already has a dispatcher lease`.
+Upgrade recovery had correctly reacquired one fresh lease after the old lease
+was released, but saved it beside the prior claim's `lease_released=true`
+marker. The next `ensure_lease` treated the fresh lease as released, attempted
+a second claim, and the lease helper correctly refused. The controller released
+and parked T-094; T-100 and T-093 returned to dependency waiting, and no new run
+or charge was created. Recovery now clears the stale released marker whenever
+the successor renews or reacquires the exact lease. A focused controller
+regression starts with that historical flag, crosses the two-phase route
+migration, and proves ordinary scheduling receives one reusable lease. Another
+sealed successor remains required before the Builder retry.
+
+That same `bb05660` pass exposed a second ordering gap: after migrating T-094's
+passport, `recover_upgraded_claims` cleared the failed Builder receipt because
+it retained only contract-blocked and successful terminals. The later typed
+recovery therefore had no claim identity to consume, even though immutable run
+`1785537237-15335` and its attempt-terminal event still bound the exact receipt
+and role. This created no provider call or charge, and the branch, passport,
+diagnostic ref, and remote remained intact. Upgrade recovery now preserves every
+receipt that has one terminal manifest. Existing success export and typed
+failure recovery consume recognized shapes; an unknown shape remains blocked,
+and only missing terminal evidence can clear stale claim cache. A focused test
+proves a migrated history-rewrite failure keeps its receipt and role for the
+successor recovery pass. The one legacy claim whose cache was cleared is
+restored from its exact immutable manifest before the next sealed successor.
+
+## FI-20260731-128 — Qualification restart proof was not candidate-scoped
+
+Status: Shared-path repair implemented and focused controller suite green;
+successor seal, live restart proof, ordered cohort, protected CI, and final
+release transactions pending
+Priority: P0
+Area: sealed qualification restart recovery
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`134976c10030c20de20a08bbe34c656112d13751`
+Impact: after all three revision-35 routes and passports named the candidate,
+the controller found `qualification-restart-boundary.json` and
+`qualification-recovered.json` from Factory `5f32510` in canonical takeover
+state. It treated existence alone as current proof and could have entered the
+cohort without demonstrating the required restart under `134976c`. The
+controller was stopped before any provider submission; the three branches,
+passports, charges, and production installation remained unchanged.
+Evidence: both legacy markers authenticated Factory `5f32510` and the exact
+three tickets while the sealed activation and qualification manifest bound
+Factory `134976c`. No candidate-scoped restart or recovered marker existed.
+Root cause: qualification markers had fixed filenames and reads checked only
+filesystem existence. Their contents were never compared with the active
+release or authorized ticket set.
+Smallest repair: restart-boundary and recovered markers now include the exact
+candidate SHA in their filename and validate an exact value containing the
+current Factory SHA, event schema, and sorted qualification ticket set. Legacy
+markers are ignored; a malformed current-candidate marker fails closed.
+Validation: the controller regression preloads both valid-looking legacy
+markers from another release, proves the current candidate still returns
+`restart_required`, and proves the second invocation writes and consumes only
+the current candidate's exact boundary and recovery markers. All 55 controller
+tests pass. Live successor replay and final qualification reduction remain
+required before closure.
+
+## FI-20260731-129 — Clean remote validation skipped failed-charge export
+
+Status: Shared-path repair implemented and focused controller suite green;
+successor seal, live charge export, ordered cohort, protected CI, and final
+release transactions pending
+Priority: P0
+Area: failed-role recovery and passport accounting
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`134976c10030c20de20a08bbe34c656112d13751`
+Impact: T-094's exact legacy Builder push failure emitted
+`push_failure_recovered` and cleared its claim receipt, but the authenticated
+passport remained at 22 charges and did not contain run
+`1785537237-15335`'s full conservative charge. The controller was stopped
+before a provider submission, so the branch and cumulative provider ledger did
+not advance, but ordinary scheduling could have resumed without carrying the
+failed attempt in the ticket passport.
+Evidence: the immutable terminal retained receipt
+`6a5eadff77082ca4b3a8dd4b62fcc64f1ab22fde9cf6ec44c8f4786a52a074e4`;
+the post-recovery claim had empty role and receipt, while the passport's last
+charge was the earlier Test-author run and its charge count remained 22.
+Root cause: the legacy push-failure path invoked preserving passport migration
+only when remote-passport validation raised an error. History quarantine had
+restored the exact input and remote topology, so validation succeeded even
+though it proves head identity, not failed-charge inclusion. The same gap
+applied to a pre-submission interruption.
+Smallest repair: before either recovery can clear its claim, the controller
+checks the exact terminal export. If absent, it runs the existing receipt-bound
+passport export and validates the result. An authorized stale head first uses
+the existing preserving migration and then retries that export. Remote passport
+validation and fresh lease acquisition remain separate downstream gates.
+Validation: the focused recovery regression starts with a valid remote
+passport that lacks each failed charge, proves one receipt-bound export occurs
+for both push failure and pre-submission interruption, and permits claim
+clearance only after the terminal export check changes to true. The authorized
+rewrite regression proves failed export, stale-head migration, and successful
+bound re-export in that order. All 55 controller tests pass. Live restoration
+from the immutable T-094 manifest and one successor replay remain required.
+
+## FI-20260731-130 — Successor runtime budget counted earlier candidates
+
+Status: Shared-path repair implemented and focused budget/controller suites
+green; successor seal, live Reviewer continuation, ordered cohort, protected
+CI, and final release transactions pending
+Priority: P0
+Area: successor qualification runtime budget and controller recovery
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`4101a4a3f86097e5dca7ebd58444c2327a0cf091`
+Impact: T-094 successfully completed and pushed Builder run
+`1785549789-96973`, advanced to `4e1dc4c1151831ccee5687b47c109711edbe6a16`,
+and exported its 24th charge plus 10th completed role. Before Reviewer, runtime
+budget admission returned `AWAIT_BUDGET` at exactly 100,000,000/100,000,000
+micro-USD and parked the ticket. Only 10,000,000 micro-USD belonged to the
+frozen candidate; the other 90,000,000 came from prior qualification
+candidates. T-100 and T-093 remained dependency-waiting, all leases drained,
+and no Reviewer provider call started.
+Evidence: the final qualification reducer already computes candidate spend by
+including only charge records whose `factory_sha` equals the manifest's frozen
+candidate. `budget-stage.py` instead summed every immutable run manifest for
+the ticket, so iterative successor qualification used cumulative candidate
+history against a candidate-only cap.
+Root cause: successor preparation and reduction defined a candidate-scoped
+budget, but runtime stage resolution reused ordinary production's lifetime
+ticket sum. A resulting budget claim also reopened only when the envelope file
+changed, even though a new frozen successor SHA changes the authenticated
+budget basis without changing that envelope.
+Smallest repair: the runtime budget helper accepts the launcher-authenticated
+Factory SHA, strictly validates the exact successor qualification manifest,
+uses its fixed $100 cap, and sums only current-candidate charges. Ordinary and
+fresh qualification behavior retains the existing envelope/override reducer.
+The controller may reopen a `budget` claim only across an authenticated
+successor release migration, removes the obsolete envelope digest after that
+migration, and never reopens a same-release or ordinary production budget wait.
+Validation: the focused budget test creates $100 of historical charges plus
+$10 under the current candidate, proves admission remains available, reaches
+the stop only when current-candidate charges equal $100, and rejects a Factory
+SHA mismatch. The controller regression proves cross-release successor reopen,
+same-release refusal, and ordinary-production refusal. The budget suite's 3
+tests and controller suite's 56 tests pass. Live Reviewer continuation remains
+required.
+
+## FI-20260731-131 — Test immutability ignored frozen-contract epochs
+
+Status: Shared-path repair implemented and focused gate/reorder suite green;
+successor seal, instantiated Nysa gate proof, ordered cohort, protected CI, and
+final release transactions pending
+Priority: P0
+Area: product test immutability and authenticated repair history
+Owner: Factory
+First seen: Nysa successor qualification candidate
+`5953b185dbe11d38d2c9828d4af26d552213532a`
+Impact: T-094 preserved and pushed its v4 Builder result, entered Review, and
+completed Reviewer run `1785553142-55592`. Required `ci` and
+`test-immutability` checks failed because v3 implementation commit `7b66d7ff`
+precedes v4 Test-author commit `be0d9d10`. Reviewer correctly requested a
+Builder fix; Builder run `1785553918-73363` proved that an append-only role
+cannot reorder authenticated input history and recorded the blocker. A second
+Reviewer admission was interrupted before submission and terminalized with
+zero progress, preventing a duplicate paid review loop. T-100 and T-093
+remained dependency-waiting.
+Evidence: contract v4 was frozen append-only in Planner commit `a44d58ec`,
+then its protected tests landed in `be0d9d10`, followed by the exact v4
+implementation correction `4e1dc4c1`. The existing gate carried one global
+`SEEN_IMPL` bit across superseded contracts. The reorder helper could make the
+final tree identical only by changing the exact input heads of later Planner,
+Test-author, Builder, and Reviewer evidence, so history rewriting was rejected.
+Root cause: tests-first ownership had no mechanical contract-epoch boundary.
+A legitimate newer frozen contract reopened Test-author semantically, while
+the gate continued treating every earlier implementation commit as current.
+Smallest repair: a commit that changes exactly one canonical ticket file, adds
+exactly one higher numbered `Frozen contract` heading, and adds its matching
+`Freeze result — PASS` begins a new tests-first epoch. Removed, repeated,
+older, mixed, prose-only, or incomplete markers do not reset the gate. The
+reorder helper shares the same classifier and refuses a required rewrite when
+merge history remains.
+Validation: the focused suite passes nine scenarios including valid v1→v2
+epoch reopening; incomplete, repeated, removed, mixed, and noncanonical-marker
+refusals; same-contract reordering; conflict abort; dirty-tree refusal; and
+exact bookkeeping exemptions. Gate and helper agree on every marker case. The
+updated gate passes the real synchronized T-094, T-100, and T-093 histories;
+the T-094 helper reports `NOTHING-TO-DO` without changing its head or tree.
+
+## FI-20260731-132 — Qualification required protected product activation first
+
+Status: Shared-path repair implemented and focused environment suite green;
+successor seal, ordered cohort, protected CI, and final release transactions
+pending
+Priority: P0
+Area: production-successor qualification admission
+Owner: Factory
+First seen: Nysa qualification after protected control PR #305
+Impact: protected `main` advanced with the shared test-immutability policy while
+the active production checkout correctly remained unchanged. Candidate `60a2eff`
+could not prepare a successor root because takeover admission required both
+checkouts and the activation to equal current protected main. No controller,
+provider, installation, certification, promotion, or activation action ran.
+Root cause: the preparer conflated two trust facts: the product tree currently
+authenticated by production activation and the newer protected base consumed
+by the qualification control worktree. Satisfying it would have required the
+preliminary product activation that qualification exists to precede.
+Smallest repair: require the clean activated source checkout's tree to equal the
+activation record, require current protected main to contain that source commit,
+and continue requiring the qualification worktree to descend from current
+protected main with only its exact control-file allowlist. Divergent protected
+history and active-tree drift fail closed.
+Validation: the focused takeover regression now advances protected policy after
+creating the active source worktree, successfully prepares qualification, then
+separately rejects an active-tree mismatch and a protected ref that does not
+contain the active commit. The four-test environment suite is green. A new
+sealed root and live ordered cohort remain required.
+
+## FI-20260731-133 — Builder broad verification blocked its own fallback
+
+Status: Closed — focused validation and live successor recovery green; later
+publication evidence defect tracked separately in FI-20260801-134
+Priority: P0
+Area: qualification role verification and provider fallback recovery
+Owner: Factory
+First seen: Nysa qualification candidate
+`202b6c07d0ae8393450e09824acf2b3767b22122`
+Impact: T-094 Builder run `1785562372-25208` produced 229 structured progress
+events and useful application changes, but exhausted the exact ninety-minute
+hard boundary while running the root workspace test command. Its terminal kept
+the full conservative $10 charge and left permitted partial changes in the
+ticket cell. The controller then tried the clean-worktree passport export
+before its automatic fallback, so fallback did not preserve the changes and
+the claim remained blocked. T-100 and T-093 stayed dependency-waiting; no
+publication, certification, promotion, or production activation ran.
+Evidence: the immutable terminal records exit 124, `provider_failed`,
+`hard_timeout`, four turns, and receipt
+`c70a4c53c818940a5722fde7f8c244213bd564cdbee90251e55ebdbcd4801aa6`.
+The cell contains only modified product implementation and ticket-log paths,
+while the controller emitted `factory-launch: ticket worktree must be clean`
+before `fallback-auto` could run. A direct retry through that sealed helper
+then failed without mutation because the Builder boundary rejected its own
+required `factory/tickets/T-094.md` root-cause log. The corrected successor
+accepted that boundary, then refused because its first-attempt guard counted
+all nine historical T-094 Builder runs rather than the sole submitted Builder
+attempt under candidate `202b6c07`.
+After candidate-scoped counting passed, the sealed successor still could not
+authorize the old failure because the helper required its local successor
+manifest SHA to equal the older journal Kit-SHA before route migration.
+Once the handoff and route migration succeeded, upgrade recovery retained the
+failed receipt as `blocked`; blocked claims are not runnable, and fallback
+recovery recognized only a journal whose final revision was the fallback rather
+than the legitimate successor migration that now followed it.
+Root cause: Builder v5 required “all tests green locally,” which encouraged a
+repository-wide suite despite qualification's ticket-scoped iteration policy.
+Independently, `finish_pending_run` exported every terminal passport before
+classifying the one failure whose trusted fallback explicitly accepts and
+commits a dirty permitted worktree.
+Smallest repair: Builder v6 forbids root, workspace-wide, and full local suites
+and requires the narrowest existing acceptance and static checks. For the
+first qualification Cursor provider failure only, the controller now invokes
+the existing idempotent fallback before passport export and then migrates the
+failed charge onto the clean fallback head. The handoff boundary permits the
+current ticket log as the sole Builder exception to `factory/**`; sibling
+tickets, tests, route journals, and other controls remain forbidden. All other
+terminal ordering is unchanged. The automatic fallback's one-attempt guard now
+counts only submitted GO attempts for the exact failed candidate; historical
+attempts remain immutable accounting evidence but do not consume that
+candidate's retry boundary. For sealed successor takeover only, the local
+manifest binds the executing release SHA while the failure and journal retain
+their exact older SHA; ordinary qualification still requires one shared SHA.
+This permits a clean handoff commit before the existing route migration and
+does not relax head, route, latest-run, ticket, or successor-manifest checks.
+Recovery validates the full journal, accepts only a release-migration suffix,
+and requires one unique ancestor commit with the exact fallback trailer. A
+successor qualification Cursor terminal is reopened as running with its receipt
+intact so the ordinary finish path exports accounting and clears it.
+Validation: all 56 focused controller tests pass, including the assertion that
+no eager passport export occurs and that `fallback-auto` precedes preserving
+migration. The Builder contract check proves v6 contains the full-suite ban and
+no longer contains the v5 all-tests requirement. Changed-scope CI passed its
+targeted `ci-scope`, immutability, and artifact-policy selection while deferring
+broad suites to required protected CI; repository and secret checks are green.
+The focused fallback, handoff, approval, and model-control suites pass all 29
+tests, including current-ticket acceptance, sibling-ticket rejection, and a
+historical predecessor attempt that does not consume the current candidate's
+fallback. The sealed-local-manifest regression also proves the executing
+successor SHA may differ from the exact failed journal SHA while an unrelated
+protected manifest is ignored. Migrated-fallback suffix and upgraded-claim
+reopen regressions pass in all 12 fallback tests and all 57 controller tests;
+the focused handoff, approval, and model-control suites remain green. Live
+candidate `c23fa933` reopened the old failed receipt, exported its charge once,
+and resumed Builder run `1785572530-77467` under v6. Builder finished in about
+six minutes with the focused web acceptance suite at 7/7 and scoped TypeScript
+green; Reviewer then approved the exact branch after 155 observable progress
+events. No root Builder suite, duplicate provider attempt, publication,
+certification, promotion, or production activation occurred.
+
+## FI-20260801-134 — Publication read the sealed checkout's stale runtime ledger
+
+Status: Closed by focused validation and live PR-boundary recovery; follow-on
+lane-isolation defect recorded as FI-20260801-135
+Priority: P0
+Area: qualification publication evidence and canonical runtime accounting
+Owner: Factory
+First seen: Nysa qualification candidate
+`c23fa933ea7fedd8dca5adc97238046502316a0f`
+Impact: T-094 completed Builder and Reviewer successfully, Reviewer returned an
+authenticated APPROVE verdict, both exact branch commits were pushed, and the
+provider ledger drained. The next `ticket-pr` boundary nevertheless blocked
+the claim with `successful reviewer run evidence is missing`. T-100 and T-093
+remained dependency-waiting; no PR, certification, promotion, or production
+activation ran.
+Evidence: sealed run manifest `1785573332-1737.meta` records Reviewer exit 0,
+role exit `ok`, 155 progress events, and conservative accounting. The matching
+ledger row exists in the canonical Nysa product checkout. The qualification
+control checkout's ignored `factory/runtime-ledger.csv` predates the run, so
+`ticket-pr.py` found no successful row even though role execution had written
+the authoritative canonical runtime view. `ticket-attest.py` independently
+used the same incorrect control-checkout default and would have failed after
+Narrator.
+Root cause: qualification correctly separates sealed controller run manifests
+from linked canonical ticket worktrees, but the two publication helpers assumed
+both evidence types lived under `FACTORY_ROOT`. Role execution already resolves
+ignored ledgers through the worktree's Git common directory.
+Smallest repair: one shared Python runtime-path helper applies that established
+canonical-worktree rule. Ticket PR validation and ticket attestation keep
+reading manifests from the sealed product, but read effective ledger rows from
+the claimed worktree's canonical main checkout unless an explicit trusted
+ledger override is present. Their existing exact branch, origin, lease,
+manifest, cost-basis, lineage, and GitHub checks remain unchanged.
+Validation: the ticket PR suite passes 12/12, including a split control/runtime
+checkout whose stale control ledger cannot hide the canonical successful row.
+The attestation run passed all 53 existing cases; its new split-checkout case
+reached the correct Reviewer and Narrator rows but exposed an order-sensitive
+test expectation. That assertion now compares the role set, and the corrected
+regression passes independently. Sealed successor
+`178ab9016c0f68fd8fe70f60b491060cb7b2d1ff` then reattached T-094, reused PR
+#304, and crossed the Reviewer-bound ticket-PR boundary with every required
+check green before launching Narrator. That live canary closes this defect; the
+later overwrite of the shared canonical ignored ledger is a distinct
+multi-lane isolation defect below.
+
+## FI-20260801-135 — Shared ignored ledger and unbound Narrator inputs regressed publication
+
+Status: Follow-on provider-scope repair implemented and focused qualification
+regression green; sealed successor canary pending
+Priority: P0
+Area: qualification accounting isolation and Narrator publication evidence
+Owner: Factory
+First seen: Nysa qualification candidate
+`178ab9016c0f68fd8fe70f60b491060cb7b2d1ff`
+Impact: T-094 crossed the repaired ticket-PR boundary and launched Narrator,
+but Narrator lacked the exact PR, preview, and accounting inputs promised by
+its role contract. It ran root `npm test` for 494 seconds, encountered 33
+unrelated web-test timeouts under broad-suite load, and committed an explicitly
+non-approvable bundle. After that commit, the controller's next ticket-PR
+validation failed with `successful reviewer run evidence is missing` and parked
+T-094; T-100 and T-093 remained dependency-waiting. No certification,
+promotion, or production activation ran.
+Evidence: Narrator run `1785577279-77281` completed exit 0 with 115 progress
+events and committed `b9171a37`. Its terminal transcript records root
+`npm test`; the command's web workspace ended 18 files failed / 20 passed and
+33 tests failed / 115 passed. PR #304 had all required checks green and a
+current `railway-app` comment naming successful API and web preview endpoints,
+but the bundle stated that no PR, preview, or runtime ledger existed. The sealed
+Reviewer manifest `1785573332-1737.meta` remained intact while the canonical
+ignored runtime ledger no longer contained its row; production sync had reduced
+that same file from a different run root.
+Root cause: qualification and production used identical accounting code but
+shared one mutable ignored ledger while owning different manifest roots, so the
+last reducer writer could erase the other lane's effective rows. Separately,
+the controller supplied Narrator only a generic task, while the sanitized
+provider process intentionally inherited neither GitHub credentials nor Factory
+control paths; nothing bound the promised PR, preview, or accounting inputs, and
+the role contract did not explicitly prohibit broad verification reruns.
+Smallest repair: the qualification launcher supplies trusted lane-local runtime
+and durable ledger overrides to every unchanged helper, and stage selection
+refreshes that view from the lane's own manifest root before consuming it.
+`ticket-pr` extracts
+only validated `railway-app` Web endpoints on `*.up.railway.app`, waits while
+none are reported, and returns them with the exact PR/head/check result. The
+controller binds those values into Narrator's task; the runner adds the
+post-reservation accounting snapshot. Narrator v8 forbids tests, builds,
+repository checks, secret scans, and broad suites. The sequencer treats an
+explicit `NOT APPROVABLE:` bundle as its one bounded retry, and ticket
+attestation refuses to advance one.
+Validation: ticket PR passes 12/12, controller passes 58/58, and ticket
+attestation passes 55/55. The full factory-script suite passes, including the
+lane-local ledger refresh, explicit non-approvable retry, planning, repair, and
+contract-1.8 refresh cases. The complete isolated Hermes contract suite also
+passes, including serialized execution, ticket PR, project-ledger closeout, and
+the final launcher schema audit. The sealed live successor remains pending.
+
+Follow-on occurrence: sealed candidate `b2c1b722` recovered all three
+passports and reached T-094's bounded Narrator retry, but provider admission
+refused before GO with exact denial `budget_micro_usd/ticket`. Its zero-cost
+terminal was run `1785590302-77633`; the controller parked T-094 and did not
+replay Builder, Reviewer, or any sibling role. The state-machine allowance
+correctly counted only candidate `b2c1b722`, while the shared coordinator used
+generic product ID `product_` and counted $100 of same-day
+predecessor-candidate reservations. The smallest shared-path correction binds
+sealed qualification provider product/ticket scope to project plus frozen
+candidate SHA. Same-candidate roots still share a cap and the machine-day scope
+remains global. The focused qualification environment suite passes 4/4; shell
+syntax and diff-integrity checks are green.
+
+Follow-on occurrence: candidate `ba3ff2d3` migrated T-094, T-100, and T-093
+to exact successor routes without a provider call, but restart selection found
+only two of the required three runnable claims. T-094 retained the predecessor
+candidate's valid zero-cost `launch_void`; upgrade recovery classified every
+non-Cursor terminal as blocked before the existing prior-release launch-void
+reducer could clear it. The smallest correction makes only a valid
+prior-release launch-void receipt runnable during migration, leaving
+same-release or malformed receipts blocked. Focused controller regression
+covers both sides of that boundary, and a three-ticket restart regression
+proves the preserved receipt contributes to the complete restart cohort. Edge
+coverage rejects a same-release receipt, invalid release SHA, non-abandoned
+phase, prior GO or submission, nonzero cost, and a non-launch-void cost basis;
+it also proves the successful prior-release clear is idempotent. Live successor
+proof remains pending.
+
+Second follow-on occurrence: tested candidate `029b09f` passed the 3/3 live
+restart boundary, migrated every passport, cleared T-094's predecessor
+launch-void exactly once, and kept T-100/T-093 in authenticated dependency
+wait. Its first Narrator launch then refused before manifest creation, GO,
+submission, or charge with `qualification provider product identity is
+invalid`. Takeover keeps its linked product outside the sealed root, while the
+new identity check incorrectly required the derived nested-lane product path.
+Because the launcher exited before writing a terminal manifest, the controller
+also cleared the fresh receipt and resolved Narrator again until the operator
+stopped it. The smallest repair validates the launcher-supplied sealed
+qualification root directly and adds a generic fail-closed controller guard:
+any completed role subprocess without terminal evidence remains blocked with
+its receipt intact and lease released. Focused coverage includes successful and
+failed subprocess exit codes, so absence of terminal evidence can never imply
+progress.
+
+Third follow-on occurrence: sealed candidate `d8e768e8` admitted T-094 under
+the exact candidate-scoped provider identity, submitted one Narrator attempt,
+and produced terminal run `1785596620-61582` with 147 structured progress
+events. The committed bundle correctly began `NOT APPROVABLE:` because the PR
+web preview called the production API and the PR API did not allow the PR web
+origin. With the one bounded Narrator retry exhausted, `next-stage.sh` emitted
+`ESCALATE evidence bundle remained invalid after one Narrator retry`; the typed
+Python resolver rejected that documented non-role action as unsupported, so
+the controller safely blocked T-094 but reported a controller error. The
+smallest repair admits `ESCALATE` as a typed non-role transition and makes the
+controller park it once, release the ticket lease, and record the exact detail.
+Focused state-resolver and controller regressions cover this terminal path. The
+Narrator commit and screenshots remain immutable failure evidence; no Narrator
+rerun is allowed against the unchanged preview. The separate product preview
+pairing defect routes directly to Builder before a new deployed-head proof;
+only malformed Narrator output consumes the bounded Narrator correction.
+
+Fourth follow-on occurrence: candidate `d7a420f4` correctly resolved T-094's
+preserved explicit `NOT APPROVABLE:` bundle to `FIX builder`, then spent more
+than 300 seconds reducing authenticated history and materializing the ticket
+state. The nested `ticket-state.sh` completed and pushed the exact
+`Review -> Building` transition, but the controller's generic 300-second outer
+timeout killed the state-machine parent before passport migration and receipt
+issuance. The controller failed closed, released the lease, and launched no
+provider, while the ticket branch remained clean at `Building`. The smallest
+repair removes only this redundant aggregate timeout; resolver, ticket-state,
+passport, and Git subprocess bounds remain unchanged. Focused regressions bind
+the controller call to those inner bounds and prove replay from the already
+committed `Building` state issues `FIX builder` without repeating the state
+transition or changing the preserved Narrator evidence.
+A 48-case mocked role/state matrix now enumerates all six roles under both
+`RUN` and `FIX` from Ready, Planning, Building, and Review. It verifies every
+exact multi-hop, same-state, repair, and forbidden-backward edge in seconds
+before live role execution.
+
+The broader focused fault pass also exposed a test-harness boundary: the real
+oversized-output terminalization regression completes in about 24 seconds when
+isolated but exceeded its 30-second caller timeout under parallel suite load.
+The production output limit, hashing, conservative accounting, and cleanup are
+unchanged. Only the regression harness timeout is raised to 90 seconds so the
+same multi-megabyte fail-closed proof remains reliable under bounded parallel
+execution.
+
+Static cross-layer review found that ordinary reconciliation trusted the
+state-machine's decoded JSON fields independently, while only the maintenance
+boundary checked their semantic agreement. A syntactically valid but mutated
+schema, ticket, action, detail, receipt, stage, or role could therefore reach a
+provider or publication helper. The controller now applies the complete typed
+envelope check before any side effect in every mode. A ten-mutation matrix
+proves each mismatch blocks and releases the lease before provider or
+publication execution; all 64 focused controller tests remain green.
+
+The mocked Linear pass covered 42 cases after adding transient transport
+faults. The client previously retried only `429`; a transient `503` deferred
+the whole sync cycle, while a malformed `Retry-After` raised during error
+handling. It now retries only typed transient statuses (`429`, `500`, `502`,
+`503`, `504`) within the existing three-attempt bound and clamps delay to
+0–30 seconds, using exponential fallback for missing or malformed headers.
+Mocked `503`, malformed, negative, and extreme delay cases pass alongside
+illegal-state restoration, full pagination, duplicate refusal, lock
+contention, failed writes, approval ingestion, and repeated-cycle idempotence.
+
+## FI-20260801-136 — Full-board Linear lock delayed a ticket transition
+
+Status: Annotated for the next Factory upgrade; current sealed qualification
+continues unchanged
+Priority: P1
+Area: Linear reconciliation concurrency and qualification latency
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`eda081122a82e628c7f4e663146382155a8f0d29`
+Impact: after T-094 Builder completed and the authenticated `Building -> Review`
+commit reached both local and remote heads, `ticket-state.sh` waited behind the
+canonical `.linear-sync.lock` before it could clear the matching operator
+overlay. The controller remained fail-closed and later launched Reviewer, but
+the unrelated asynchronous full-board sync added roughly four minutes to the
+state transition. No duplicate provider, state rewrite, lost operator update,
+certification, promotion, or production activation occurred.
+Evidence: launchd job `com.factory.linear-sync.nysa-app` ran the installed
+release `4651e544152d65bbb9e18ad6993a633634b79907` while the sealed controller
+used candidate `eda0811`. PID `93873` held the canonical lock and PID `97300`
+waited in the candidate's exact operator-version compare-and-clear section.
+The live sync projected T-094 from Building to Review and completed normally;
+the sealed state machine then returned and Reviewer started with receipt
+`51d72a0ac421a5bf0f07d2153f3c160f0c66145e718e4f315ad4f6c9184a37f0`.
+Finding: global lock serialization preserves map correctness, but the current
+sync holds that lock across a slow full-board network cycle. A single ticket's
+post-transition compare-and-clear therefore inherits unrelated Linear API and
+board traversal latency. Qualification and production intentionally share the
+operator overlay, so this is a latency/availability boundary rather than
+evidence corruption.
+Next-upgrade requirement: first add a deterministic contention regression that
+holds a mocked full-board sync at the network boundary while a ticket performs
+its exact operator-version compare-and-clear. Then shorten the global critical
+section or introduce an equivalent compare-and-swap/per-ticket design that
+preserves operator updates, repeated-cycle idempotence, and duplicate refusal.
+The sealed `eda0811` release is not modified or restarted for this finding.
+
+## FI-20260801-137 — Stale non-approvable bundle caused a repair/review loop
+
+Status: Focused regression green; live qualification canary pending
+Priority: P0
+Area: Contract 1.8 Reviewer/Narrator evidence generation
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`eda081122a82e628c7f4e663146382155a8f0d29`
+Impact: T-094 completed a no-change Builder repair and an independent Reviewer
+round-5 `APPROVE` after the operator repaired the PR preview pairing. The
+sequencer nevertheless read the preserved older Narrator bundle beginning
+`NOT APPROVABLE:` and returned `FIX builder` again, committing
+`0e4f856df81be8c70cbfffbc638540e4b77dfeac` (`Review -> Building`). The
+qualification product entered maintenance as the redundant Builder launch
+started; the supported maintenance boundary parked it before any new provider
+attempt, role mutation, or charge completed. The earlier Narrator output and
+screenshots remain unchanged.
+Evidence: successful Narrator run `1785596620-61582` preceded later successful
+Builder and Reviewer runs, including Reviewer run `1785606996-44365` at
+deployed head `22edcfb1057681a10354bf16978416cf7c733cb5`. Reviewer reconciliation
+commit `839db6c02696bbb00878fa8fe527a252ee37412e` recorded `APPROVE`, but
+`narrator_bundle_stage` received the lifetime Narrator count and unconditionally
+routed any unattested explicit non-approvable bundle to Builder.
+Finding: a bundle is evidence for one effective Reviewer generation, not for
+the ticket lifetime. Only successful Narrators after the latest non-void
+Reviewer may decide that generation. A preserved Narrator at the end of an
+unchanged generation must not be replayed; a later effective Reviewer makes
+the old bundle and attestation stale and requires a fresh Narrator. A rejected
+latest review cannot inherit an older approval.
+Smallest repair: reduce the authenticated role sequence (with a ledger fallback
+only for older contracts) to the count of Narrators after the latest non-void
+Reviewer, and evaluate it lazily only after the planning/build/review gates.
+Keep the refresh-generation reducer intact and use the same per-generation
+count for valid, explicitly non-approvable, and structurally invalid bundles.
+Edge coverage: unchanged explicit failure, repaired and approved generation,
+fresh repeated failure, stale valid bundle, stale attestation, authenticated
+role evidence, rejected repair review, void duplicate Reviewer, bounded invalid
+bundle correction, and early-stage missing-ledger/override behavior. Live proof
+must show the repaired T-094 head reaches one new Narrator without another
+Builder/Reviewer loop before this entry closes.
+The focused state-machine suite passes 27/27, including the nine-case
+authenticated generation matrix and the existing 48-case role/state matrix;
+shell syntax, Python compilation, and diff-integrity checks are green.
+
+## FI-20260801-138 — Narrator screenshots were misclassified as implementation drift
+
+Status: Ticket-PR live recovery green; downstream attestation follow-up is
+FI-20260801-139
+Priority: P0
+Area: post-review publication lineage
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`ff75f3301c95457f5a98f5fcf48d8d19e3b2905d`
+Impact: the generation-bound reducer correctly launched one new Narrator for
+T-094 without replaying Builder or Reviewer. Run `1785613189-45324` completed
+successfully at reviewed head `46c3644d97f3ad3ce50f65a475c486841ab1decc`,
+committed approvable bundle head `2ef3aa6ebc5bb788b0460caa1b85f951d6703dcd`,
+and replaced two obsolete broken-preview captures with six before, after, and
+reference PNGs at the two frozen viewports. The commit was clean and pushed,
+but the publication reducer blocked with `ticket implementation changed after
+the latest successful review` before bundle attestation. T-100 and T-093
+remained in dependency wait; no role replay, product certification, promotion,
+or production activation occurred.
+Finding: `ticket-pr.py` trusted the current ticket bundle Markdown after the
+latest Reviewer but omitted the exact raster files that the Narrator contract
+requires the same commit to reference. The security boundary therefore treated
+valid evidence output as application drift even though the attestation path
+binds the exact branch head and bundle blob.
+Smallest repair: admit only changed PNGs below
+`factory/tickets/<ticket>-evidence/` when the exact path is referenced by the
+current bundle, or by the reviewed bundle when the image is deleted. Require an
+ordinary `100644` Git blob, exact PNG beginning and terminal chunk, at most 2 MB
+per image, and at most 32 changed images. Do not trust sibling-ticket paths,
+unreferenced files, symlinks, disguised bytes, other extensions, or any product
+path.
+Edge coverage: the focused ticket-PR suite passes 19/19. Seven new cases prove
+the exact referenced add/delete set succeeds and that unreferenced, fake-PNG,
+oversized, excess-count, symlink, and sibling-ticket variants fail before
+GitHub access. The repaired validator also accepts the immutable live T-094
+`2ef3aa6` history directly.
+Live closure reached the repaired ticket-PR boundary without launching
+Narrator again. The next independent bundle-attestation validator exposed the
+same missing classification and is tracked separately below.
+
+## FI-20260801-139 — Bundle attestation diverged from ticket-PR evidence lineage
+
+Status: Focused regressions green; sealed successor recovery pending
+Priority: P0
+Area: post-review bundle attestation
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`1580fa978525fe31f0dc482e54e00da603661721`
+Impact: T-094 crossed the repaired ticket-PR boundary at route head
+`1096355e271c4fa9355d9e66e7e6e3b9528dde8a` without replaying Narrator, but
+the immediately following `ticket-attest --action bundle` rejected the same
+lineage as `product or code changed after the reviewed SHA`. T-100 and T-093
+remained in dependency wait and all claims were safely released.
+Finding: ticket-PR and bundle attestation independently maintained their
+post-review allowlists. The first validator admitted exact referenced Narrator
+PNGs, while the second still admitted only ticket, bundle, route, and refresh
+metadata. A signature/footer-only PNG check also admitted structurally invalid
+chunk data.
+Smallest repair: move Narrator raster classification into one shared helper
+used by both validators. Validate ordinary Git mode, exact current-ticket flat
+paths and references, per-file and aggregate bounds, the complete PNG chunk
+stream and CRCs, unique IHDR/IEND, at least one IDAT, and valid IHDR fields.
+Edge coverage: ticket-PR now covers valid add/delete, in-place replacement,
+and the exact 32-file boundary plus unreferenced additions and deletions,
+bad signatures, forged signature/footer with invalid chunks, oversized and
+excess sets, symlinks, executable blobs, nested paths, and sibling-ticket
+paths. Bundle attestation separately proves the live add/delete shape succeeds
+and an unreferenced file still refuses.
+Live closure requires a sealed successor to create the T-094 bundle
+attestation and reach Awaiting Approval without another Reviewer or Narrator.
+
+## FI-20260801-140 — Approval attestation was rejected as post-review implementation drift
+
+Status: Focused regressions and exact live-history validation green; sealed
+successor recovery pending
+Priority: P0
+Area: post-review approval publication lineage
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`2c087dedd49016dcdf3f4392353fe87caf073556`
+Impact: after T-094 received the required human Linear approval, the sealed
+controller correctly committed approval head
+`7c7ad4f33a9456777eee09baf9d63e7329be547c` as the direct child of bundle
+attestation head `3753b6a4cdf0ac7471ceabf178f47a4a66d8d589`. A follow-on reconciliation then
+ran the ordinary publication PR gate and rejected the Factory-generated
+`approval.json` as `ticket implementation changed after the latest successful
+review`. The exact head and all checks remained clean, auto-merge remained
+disabled, T-100 and T-093 stayed dependency-gated, and no role replay occurred.
+Finding: ticket-PR admitted the current ticket, bundle, route journal, refresh
+receipt, and shared Narrator raster evidence after Reviewer, but omitted the
+approval receipt that `ticket-attest` itself creates. Adding the path alone
+would weaken the boundary because a forged receipt or approval-time ticket
+change could then cross readiness before the attestation retry rejected it.
+Smallest repair: centralize bundle-commit and approval-commit validation in one
+shared helper consumed by both ticket-PR and ticket-attest. The helper binds
+exact keys and identities, complete direct-parent topology, exact `M ticket + A
+receipt` commit shapes, ordinary blob modes, immutable bundle/route blobs,
+ordered timestamps, and the exact Awaiting Approval → Approved plus Linear
+approval ticket transformation. For a later sealed successor, it locates the
+unique approval-addition commit under the original Kit-SHA and admits only an
+exact validated route migration and ticket Kit-SHA replacement while holding
+the approval/bundle evidence and all other approved ticket text byte-identical.
+Edge coverage: ticket-PR passes 34/34, including the exact approval continuation
+and refusals for a tampered receipt, approval-time ticket drift, executable
+receipt, duplicate JSON keys, and an extra commit path, plus acceptance of the
+exact successor route continuation and refusals for later receipt mutation or
+ticket drift. Ticket attestation
+passes 60/60 through the same helper. The helper independently validates the
+exact live T-094 approval head and reviewed SHA `22edcfb1057681a10354bf16978416cf7c733cb5`.
+Live closure requires a sealed successor to cross the approval-head PR gate,
+request protected auto-merge, and close T-094 without replaying Reviewer or
+Narrator.
+
+## FI-20260801-141 — Projected Linear approval falsely implied GitHub auto-merge
+
+Status: Focused regressions green; sealed successor recovery pending
+Priority: P0
+Area: two-phase protected publication truth
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`33f282b9da6a532ce7164f3d2be3e4dbffe3e471`
+Impact: T-094 reached exact migrated approval head
+`46fc583c045161b0f2aba70e766ff643bb0d6e06` with every required GitHub and
+Railway check green. The approval receipt remained valid and the controller
+repeatedly acquired the sole publication lease, but GitHub PR #304 still had
+no `autoMergeRequest`. T-100 and T-093 correctly remained dependency-gated;
+no role replay or implementation mutation occurred.
+Finding: Linear sync correctly projected the transient Approved/Linear operator
+fields away after the approval commit. `next-stage` used that absence as an
+indirect signal that auto-merge had already been requested, even though the
+phase-one attest-only operation deliberately had not called GitHub. The
+controller's requested-stage branch therefore only renewed publication and
+waited. Phase-two attestation also required the already-projected overlay and
+assumed the approval commit was the current PR head, which would reject the
+sealed successor route commit and later closeout.
+Smallest repair: treat the immutable approval receipt as phase-two authority
+when the state/approval overlay is wholly projected away, while refusing any
+partial overlay. Share exact successor-continuation validation with phase-two
+and protected-main closeout. When the requested stage is observed with a ready
+PR, the controller now reacquires the exact publication lease, idempotently
+requests auto-merge, verifies the exact H2 head and PR number, and only then
+waits for merge. The launcher authorizes that recovery only from either the
+ordinary request-pending receipt or the exact misleading requested-stage
+receipt; all other transition stages remain refused.
+Edge coverage: ticket attestation passes 60/60, ticket publication passes
+34/34, the Factory controller passes 66/66, and the complete sealed-launcher
+contract passes. The new cases prove
+projected-overlay phase two after a successor route, partial-overlay refusal,
+protected closeout after that route, and the controller's
+misleading-requested-stage recovery. Live closure requires PR
+#304 to record protected auto-merge, merge, and reach Factory-owned Done under
+the sealed successor without replaying Reviewer or Narrator.
+
+## FI-20260801-142 — Post-merge check propagation parked a merged ticket
+
+Status: Focused regressions green; sealed successor recovery pending
+Priority: P0
+Area: protected-main closeout recovery
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`bbb441acd90bab0670310c6707fe25475e4bd3a3`
+Impact: the repaired controller requested protected auto-merge for T-094 head
+`5c1beaf8a5ffda0a9b491d2db4094a2578f61bd5`, and PR #304 merged as
+`894d1b6d454f1b6f14134e21153ee4b77c20e6a4` without replaying a role. The
+immediate protected-main closeout ran before the required `ci` check appeared,
+reported it as missing or unsuccessful, and parked T-094. Main CI and both
+Railway statuses later passed, but same-release reconciliation excluded the
+blocked claim, so no Done attestation was emitted and T-100 remained gated.
+Finding: ticket attestation collapsed three distinct check states—missing,
+pending, and completed unsuccessfully—into one refusal. The controller could
+therefore not distinguish normal post-merge propagation from a terminal check
+failure and applied its generic fail-closed parking behavior.
+Smallest repair: preserve the exact check state in ticket-attest errors. The
+controller treats only missing or pending post-merge checks as a wait, records
+`post_merge_check_wait`, and retries closeout with the same claim; completed
+unsuccessful checks remain errors. No role, ticket implementation, approval,
+or Narrator evidence is regenerated.
+Edge coverage: focused controller and ticket-attestation regressions prove an
+in-progress required check waits while an unsuccessful or structurally
+ambiguous check still refuses. The Factory controller passes 67/67; ticket
+attestation passes 61/61. Live closure requires a sealed successor to retry the
+already-merged T-094 and emit Factory-owned Done.
+
+## FI-20260801-143 — Released publication lease hid an already-merged ticket
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main closeout ordering
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`0b4f5c9c622aba3cb741e362475582a6d5e30061`
+Impact: T-094 remained merged as
+`894d1b6d454f1b6f14134e21153ee4b77c20e6a4`, with main CI and both Railway
+statuses green. Its earlier closeout failure had released the publication
+lease. Successor recovery therefore skipped the merged-ticket shortcut,
+entered dependency evaluation, and attempted a prepublication dependency
+refresh that correctly refused the Approved ticket. No role or implementation
+was rerun, and T-100 remained gated.
+Finding: the merged-ticket shortcut incorrectly required a live publication
+lease. Lease ownership serializes publication; it is not evidence of whether
+GitHub already merged the PR.
+Smallest repair: an authenticated passport whose publication state is merged
+checks authoritative merged-PR truth before dependency refresh, regardless of
+lease presence. A lease is released only when present, and protected-main
+attestation remains the fail-closed Done authority.
+Edge coverage: the controller regression proves a recovered merged passport
+with no publication lease bypasses dependency tracking and the ordinary state
+machine, then enters closeout without manufacturing a lease release; the full
+controller suite passes 68/68. Live closure requires a sealed successor to
+emit T-094 Done without role replay.
+
+## FI-20260801-144 — Merged-passport recovery looped after closeout merged
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main terminal transition
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`d91309deffad5689456a0d33f98117fccc870358`
+Impact: the recovered T-094 created closeout commit
+`3b33dc41544722142efb41b4631304b85677f2ad` and protected PR #306 merged as
+`7afbfebc8c1bf7947b2f4f43758d2a5ce2e418ce`. The controller nevertheless
+kept re-entering the merged-passport shortcut, repeatedly validating closeout
+instead of evaluating the authoritative terminal transition. The reconcile
+process was stopped after exact verification; no role or ticket output changed.
+Finding: the merged-passport shortcut ignored the closeout helper's result and
+always reported progress. A pending closeout therefore spun within one cycle,
+and a merged closeout could never fall through to `COMPLETE`.
+Smallest repair: return `waiting` while closeout remains open. When closeout is
+merged, continue through the ordinary state-machine boundary, require its exact
+`COMPLETE` envelope, emit `ticket_complete`, and release the ticket lease.
+Edge coverage: the Factory controller passes 69/69. The new case proves merged
+closeout reaches authoritative `COMPLETE`; the prior cases retain pending
+closeout waits with and without a publication lease. Live closure requires one
+sealed successor to emit and release T-094 terminally without role replay.
+
+## FI-20260801-145 — Branch dependency ordering masked protected-main Done
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main terminal authority
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`3a7470a9168b8cbafec3e2c56bc3084ae52e0da6`
+Impact: T-094's retrying `done` operation validated its exact closeout commit,
+Done receipt, ledger, original merge and required checks, and merged closeout PR
+#306. The controller then evaluated the stale Approved ticket branch, whose
+dependency check ran before branch-stage resolution and requested a
+prepublication refresh. That refresh correctly refused, parking T-094 again;
+no role or ticket output changed.
+Finding: protected-main terminal truth belongs to the `done` attestation and
+cannot be rediscovered by the branch-oriented prepublication state machine.
+Falling through after exact closeout validation was redundant and reopened an
+inapplicable dependency boundary.
+Smallest repair: a successful merged `done` retry is the terminal controller
+authority. It emits `ticket_complete` and releases the ticket lease immediately;
+an open closeout still returns a wait, and all failed or ambiguous attestation
+evidence remains fail closed.
+Edge coverage: the Factory controller passes 69/69. The terminal case proves
+exact merged closeout completes before dependency tracking or branch-stage
+evaluation; the pending cases retain waits with and without a publication
+lease. Live closure requires one sealed successor to release T-094 without role
+replay.
+
+## FI-20260801-146 — Successor route lineage hid valid terminal evidence
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main terminal and dependency truth
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`3a7470a9168b8cbafec3e2c56bc3084ae52e0da6`
+Impact: T-094 is Done on protected main at
+`7afbfebc8c1bf7947b2f4f43758d2a5ce2e418ce`, but the shared terminal reader
+rejected its normal attestation chain because bundle/approval Kit-SHA
+`2c087dedd49016dcdf3f4392353fe87caf073556` differed from Done Kit-SHA
+`bbb441acd90bab0670310c6707fe25475e4bd3a3`. T-100 and T-093 therefore waited
+on T-094 even though its protected closeout was complete. No role was replayed.
+Finding: terminal validation assumed the route blob and Kit-SHA could not change
+between bundle and Done, while the publication boundary already permits exact
+sealed-successor release migrations that preserve role evidence.
+Smallest repair: retain exact bundle/approval identity, then require the
+historical attested route journal to be a byte-for-byte prefix of protected
+main and validate a hash-linked suffix containing only continuous release
+migrations ending at the Done and ticket Kit-SHA. Fallback, tampering, unknown
+shape, or discontinuity still refuses.
+Edge coverage: the effective-ticket regression closes a normal ticket after a
+successor route migration, then retains its existing ledger-append and
+prefix-tamper checks. The same validator recognizes live T-094 as
+`attested-done`; the focused effective-ticket suite passes 9/9.
+
+## FI-20260801-147 — Historical passport resurrected a completed ticket
+
+Status: Focused regression green; sealed successor cleanup pending
+Priority: P0
+Area: controller terminal claim recovery
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`769b8c443daa3042317e2781158174d9fd7da60d`
+Impact: the controller emitted `ticket_complete` for T-094 and released its
+claim, then the same reconcile recovered a new claim from the retained Approved
+passport. The controller was stopped after exact inspection; no role ran and no
+ticket or role output changed.
+Finding: a passport is retained historical audit evidence after protected-main
+Done, not authority to schedule the ticket again.
+Smallest repair: sealed product tickets with exactly one `State: Done` are
+excluded from passport recovery. Any residual claim is renewed and released
+through the normal controller path before workers are scheduled; the passport
+remains intact for audit and reduction.
+Edge coverage: one regression proves a Done ticket is not recovered from its
+passport, and one proves an existing residual claim is released before recovery.
+The full controller suite passes 71/71; live successor cleanup remains pending.
+
+## FI-20260801-148 — Terminal target could not cross qualification restart
+
+Status: Focused regression green; sealed successor restart pending
+Priority: P0
+Area: qualification restart boundary
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`f769e97a566725645102bfbd5f48694d7859e1d1`
+Impact: live cleanup correctly removed T-094's residual claim, leaving T-100
+and T-093 runnable, but the restart boundary reported `active=2` and
+`waiting_for_target` forever because the manifest still requires three Done
+targets. No role ran and no ticket output changed.
+Finding: qualification restart equated the target count with runnable claims;
+it did not count protected product Done as an already satisfied target.
+Smallest repair: both sides of the restart boundary use the union of runnable
+claims and exact product Done tickets for cohort accounting and event binding,
+while the reported active count and scheduler retain only unfinished claims.
+Edge coverage: one regression exercises both pre-restart and post-restart with
+one protected Done target and two runnable claims; the existing all-runnable
+restart and terminal-claim cleanup regressions remain green.
+
+## FI-20260801-149 — Derived invalid fixture was identical to its valid input
+
+Status: Focused regression green; sealed T-100 canary pending
+Priority: P0
+Area: frozen-contract and test-author correctness
+Owner: Factory
+First seen: T-100 under sealed Factory
+`752fe7afcd67af693d3d7b6c30e78a7b6f95e7a5`
+Impact: T-100's accepted Test-author evidence derived an invalid fixture with
+`.toUpperCase()` from a numeric UUID. The transformation was byte-identical to
+the valid fixture, so Builder could not satisfy both assertions and spent a
+full implementation run before reporting the contradiction.
+Smallest repair: Planner now freezes the exact transformed value and verifies
+byte distinction; Spec-linter and Test-author independently reject an identity
+transformation. Prompt-contract coverage locks all three checks.
+
+## FI-20260801-150 — Pre-block Linear state could impersonate operator resume
+
+Status: Focused regression green; production install deferred
+Priority: P0
+Area: Linear operator authority
+Owner: Factory
+First seen: T-100 contract-block recovery on 2026-08-01
+Impact: Linear still exposed Building when the local ticket first entered
+Blocked-Escalated. Without a post-block observation boundary, that stale state
+could be consumed as a new operator resume even though the operator had not
+made a later transition.
+Smallest repair: record Linear's `updatedAt` only after the reconciler observes
+Blocked-Escalated, then accept the declared resume state only with a strictly
+newer timestamp. The focused suite proves stale Building is restored, the
+Blocked baseline is observed, and only a later Building transition resumes.
+
+## FI-20260801-151 — Planner repair retained superseded downstream evidence
+
+Status: Focused regression green; sealed T-100 canary pending
+Priority: P0
+Area: test-first role sequencing
+Owner: Factory
+First seen: T-100 Planner repair commit
+`36a8c916` under sealed Factory
+`752fe7afcd67af693d3d7b6c30e78a7b6f95e7a5`
+Impact: Planner repaired T-100's frozen contract, but the sequencer counted the
+older Spec-linter and Test-author evidence and issued Builder receipt
+`733d3272` without a new checking-lane run. No provider run or new role output
+was accepted under that receipt.
+Smallest repair: authenticated completed-role order now treats any Planner run
+after Test-author as a new test-first epoch. It requires Spec-linter,
+Test-author, then Builder while preserving all earlier evidence. The focused
+state-machine suite proves the complete reopened sequence and its prior normal
+planning path.
+
+## FI-20260801-152 — Archived Planner repair lost catch-up authority
+
+Status: Focused regression green; sealed T-100 retry pending
+Priority: P0
+Area: state materialization after contract repair
+Owner: Factory
+First seen: T-100 sealed successor canary under Factory
+`3a90ab040667f9c37c0397b6a086d40e193f6c66`
+Impact: authenticated role order correctly selected a fresh Spec-linter after
+the completed Planner repair, but the materializer refused the required
+Building-to-Planning catch-up. The refusal occurred before provider admission;
+no role ran and no output or charge was created.
+Smallest repair: only a signed completed Planner repair may retain the narrow
+backward override when its immediate resolved stage targets an earlier coarse
+state. Ordinary backward transitions remain forbidden.
+Edge coverage: the completed-repair regression drives `next_transition` from
+Building to `RUN spec-linter` and proves no generic state transition is called.
+
+## FI-20260801-153 — Frozen generated ID contradicted its reset
+
+Status: Focused prompt regression green; sealed T-100 repair pending
+Priority: P0
+Area: frozen-contract and test-author correctness
+Owner: Factory
+First seen: T-100 Test-author run `1785657239-55398` under sealed Factory
+`7a855d62b556b78ed9233fa3926bb7d6fed8a5bb`
+Impact: contract v4 required receipt ID `4001`, while the protected test setup's
+identity reset produced `1`; the narrow v4 repair scope also forbade correcting
+that setup. Test-author detected and committed the contradiction before Builder,
+so no implementation run was admitted.
+Smallest repair: Planner, Spec-linter, and Test-author now independently evaluate
+exact generated identifiers, sequences, counters, and timestamps from their
+initializer/reset and reject a repair scope excluding a required setup fix.
+Edge coverage: prompt-contract regression locks all three checks; the sealed mock
+role-sequence and complete lifecycle-state matrix remain required before retry.
+
+## FI-20260801-154 — Prior resume overlay survived a repeated block
+
+Status: Focused regression green; sealed T-100 resume pending
+Priority: P0
+Area: Linear operator authority
+Owner: Factory
+First seen: T-100 second contract block under Factory
+`8e1d0016bfe2e86d1f84daa0c126c9bedb8d863d`
+Impact: after the earlier Planner resume, the stored Building overlay already
+named `state_base=Blocked-Escalated`. When T-100 later blocked again at that
+same coarse state, the reconciler retained the old overlay, so it could not
+record the new blocked timestamp baseline. No resume or provider call occurred.
+Smallest repair: an exact remote/local Blocked-Escalated observation always
+clears a prior state/approval overlay before materializing effective state and
+records the latest remote timestamp as the new baseline.
+Edge coverage: the Linear regression now proves resume, same-state re-block,
+overlay removal, new baseline capture, and only then a later second resume.
+
+## FI-20260801-155 — Backward repair blocker required an impossible state rewind
+
+Status: Focused regression green; sealed T-100 retry pending
+Priority: P0
+Area: contract-repair state transitions
+Owner: Factory
+First seen: T-100 Planner repair run `1785661512-9483` under sealed Factory
+`4a8abc0eb8d4ac0ebf10604d1db57f0a34ce5dca`
+Impact: the signed `FIX planner` correctly ran beneath T-100's unchanged
+Building state and committed a new contract blocker. The shared block
+transition then required Planning, so it could neither materialize the blocker
+nor preserve the Planner output for an authenticated resume. No downstream
+role or provider run was admitted.
+Smallest repair: the exact active signed backward repair may block at its later
+coarse state and records that state as `Resume-State`; block recovery and
+resume authenticate the same repair. Every unsigned, mismatched-role, earlier,
+or non-phase state remains refused.
+Edge coverage: the state-machine regression proves refusal without the signed
+repair, direct block without materialization, idempotent blocked recovery, and
+resume to the unchanged coarse state.
+
+## FI-20260801-156 — Blocked repair lost authority across a successor migration
+
+Status: Focused regression green; sealed T-100 retry pending
+Priority: P0
+Area: contract-repair release migration
+Owner: Factory
+First seen: T-100 recovery under sealed Factory
+`0e6f8632cb91e2daefa184ae4fa249aed842b56f`
+Impact: T-100's passport and route journal migrated successfully, but the
+active signed Planner repair predated the Planner's contract-block commit. The
+migration validator required an edge beginning at the repair authorization
+head and rejected the authentic edge beginning at the later terminal-block
+head. Recovery stopped before block materialization or any provider call.
+Smallest repair: reuse the shared exact contract-block terminal validator and
+accept the later migration start only when the consumed `FIX` receipt, its
+parent blocker, unique terminal manifest, authenticated charge, passport stage,
+and Git ancestry all bind the active repair to the successor passport.
+Edge coverage: a synthetic repair-owner block plus release migration now
+survives, while a passport whose current stage does not match that `FIX` receipt
+remains invalid; the preserved live T-100 evidence also resolves to
+`FIX planner` without mutation.
+
+## FI-20260801-157 — Prior resume overlay masked a newly committed block
+
+Status: Focused regression green; sealed T-100 baseline pending
+Priority: P0
+Area: Linear operator authority and contract-block recovery
+Owner: Factory
+First seen: T-100 block materialization commit
+`4650e355c965227d6605d0fb62f3762ba60ddc49`
+Impact: the successor correctly committed T-100 as Blocked-Escalated with
+`Resume-State: Building`, but the canonical Linear map still held the prior
+block's Building overlay. Effective projection therefore masked the new block,
+and recovery attempted resume with the older operator receipt. The state
+machine refused before any provider call.
+Smallest repair: bind every accepted state overlay to the exact committed
+ticket text and clear it when that source changes, including legacy unbound
+overlays. The controller materializes a retained blocker but calls resume only
+when the ticket visibly contains its exact current receipt; the state machine
+remains the sole authority for authenticating that directive.
+Edge coverage: the Linear regression now re-blocks by changing only committed
+ticket content while remote Linear remains at the old resumed state, proves
+that Blocked is republished and a new baseline recorded, then accepts only a
+later resume. The controller regression proves an older receipt waits and the
+current receipt reaches state-machine validation.
+
+## FI-20260802-158 — Epoch gate rejected the Planner's established freeze form
+
+Status: Focused regression and disposable six-role mock lifecycle green;
+sealed successor replay pending
+Priority: P0
+Area: Planner contract and test-immutability epoch classification
+Owner: Factory
+First seen: T-100 Planner repair commit
+`36a8c916a2e68f614a43b683774cf06bc97de53c`
+Impact: T-100's authenticated Planner repair changed only its ticket, replaced
+the latest v3 heading and established `Freeze result: PASS` line with the
+higher matching v4 pair, and then correctly handed the repair to Test-author.
+The new epoch gate recognized only a novel exact sentence and append-only text,
+although the Planner role required neither. It therefore classified protected
+test commit `a4247011fe10114138b94a4563f7167dde7ec994` as late under v3. No
+provider, publication, or production action followed the refusal.
+Root cause: the Planner producer and the gate/reorder consumers had different
+freeze-marker and version-retention contracts.
+Smallest repair: both consumers share the established PASS forms and admit only
+one exact legacy replacement of the latest heading plus its matching PASS with
+one higher pair in a ticket-only commit. Planner v8 requires the canonical
+single-line marker and append-only versions going forward. Partial, mismatched,
+repeated, lower, mixed, and malformed evidence remains closed.
+Validation: the synthetic gate/reorder scenario reproduces T-100's exact v3
+comma-terminated marker, one-for-one v4 replacement, and later canonical v5
+append; its negative matrix covers eight invalid shapes. The candidate gate
+passes T-100's complete real branch with production `TEST_PATHS` while leaving
+its head and tree unchanged. Candidate `cdeef046` then completed the disposable
+Planner, Spec-linter, Test-author, Builder, Reviewer, and Narrator mock lifecycle
+once in 178 seconds and stopped at `AWAIT-OPERATOR` with no replay.
+
+## FI-20260802-159 — Pending operator commit invalidated an active migrated repair
+
+Status: Focused regression, live read-only proof, and disposable six-role mock
+lifecycle green; sealed successor replay pending
+Priority: P0
+Area: contract-repair authentication and passport migration
+Owner: Factory
+First seen: T-100 controller recovery at operator commit
+`2ac344d80706e101b5a53a8cb356f7e57a5d4602` under sealed Factory
+`6b350a3fb0d7e8edec2a0f2fda7fe21d26d81003`
+Impact: the exact Planner resume directive was the sole ticket-only child of
+T-100's authenticated passport head
+`4f7bbbf33786ca625e89efdeee1f3ba4ba0eaa2b`. Idempotent block recovery tried
+to validate the retained migrated repair against the newer Git head before the
+ordinary block transition could migrate the passport, so the controller
+emitted `ticket_recovery_failed` and stopped before any provider run or charge.
+Root cause: repair migration implicitly treated the working Git head as the
+authenticated passport boundary even inside the deliberately narrow pending
+operator-commit window.
+Smallest repair: reuse the existing strict operator-directive validator when
+Git HEAD differs from the passport head, validate the retained repair at that
+authenticated head, and let the existing block transition migrate the exact
+directive commit before resume. No second resolver or ticket-specific rule is
+introduced; arbitrary descendants still fail closed.
+Validation: the regression reconstructs a backward Planner repair that blocks,
+survives a release migration, then receives one exact receipt-bound operator
+commit after its passport head. It proves repair recovery plus one passport
+migration. The candidate also passes all 32 focused state-machine cases and
+resolves the preserved live T-100 evidence read-only to `FIX planner` without
+changing its claim, passport, repair, branch, or charge state.
+Candidate `246782f` then ran Planner, Spec-linter, Test-author, Builder,
+Reviewer, and Narrator exactly once in disposable lane
+`/private/tmp/nysa-sf-dev.amHs9i`, reached `AWAIT-OPERATOR`, and retained a
+clean pushed mock branch in 224 seconds.
+
+## FI-20260802-160 — Linear board work serialized ticket authority and repeated incidents
+
+Status: Focused Linear/controller regressions green; protected CI pending
+Priority: P1 (#175)
+Area: Linear synchronization and admission
+Owner: Factory
+Impact: the network-length board cycle held the same lock needed to consume a
+ticket overlay, and unchanged `unsafe_state` inputs emitted noise every cycle.
+Smallest repair: split cycle and short map locks, persist exact operator-clear
+intents, and retain one durable input-digested incident with bounded reminders.
+Validation: a stale full-board save cannot restore a consumed overlay; active
+claims continue while new admission remains closed.
+
+## FI-20260802-161 — Pause and interruption shared ambiguous claim shapes
+
+Status: 77 focused controller regressions green; protected CI pending
+Priority: P0 (#164/#184)
+Area: controller persistence
+Owner: Factory
+Impact: a deliberately claim-free passport and an accidentally receipt-free
+blocked claim had no distinct authenticated recovery authority.
+Smallest repair: add explicit passport-bound `ticket-control pause|resume` and
+one-use pre-provider reconciliation markers. Neither path scans historical
+passports or weakens typed blocked claims.
+Validation: pause/resume, stale passport, blocked restore, two-ticket restart,
+dirty/active/paused/terminal/cross-release refusal, and idempotence are covered.
+
+## FI-20260802-162 — Reviewer-requested late tests were guaranteed CI-red
+
+Status: Focused role/state regressions green; protected CI pending
+Priority: P0 (#182/#183)
+Area: repair sequencing and Planner scope
+Owner: Factory
+Impact: Contract 1.8 could push a Test-author commit after Builder, violating
+the protected tests-first gate; the preceding Planner repair also ran the full
+workspace suite.
+Smallest repair: route both single- and dual-owner late test repairs through one
+ticket-only higher frozen epoch, authenticate it before Test-author, and block
+Planner package-manager entry points. Existing Narrator output is preserved.
+
+## FI-20260802-163 — Certification prerequisites failed after expensive phases
+
+Status: Five focused runner regressions green; protected CI pending
+Priority: P0 (#165/#172/#173)
+Area: certification trust boundary
+Owner: Factory
+Impact: missing reviewed network appeared as opaque npm failure, while a known
+noncanonical active-product path failed only after the phase graph completed.
+Smallest repair: plan v2 pins Node/npm and phase network policy, fails missing
+capability before spawn, retains denied phases under reviewed opt-in, preserves
+redacted hash-bound failure evidence, and validates the active generation/path/
+origin before workspace preparation.
+
+## FI-20260802-164 — Successor ticket migrations ran serially
+
+Status: Focused overlap regression green; protected CI and successor canary pending
+Priority: P0 (#181)
+Area: migration and resume latency
+Owner: Factory
+Measured baseline: preserved three-ticket qualification events span 27.8
+seconds between first-phase migration completions and 61.7 seconds between
+authenticated resume completions because tickets ran one after another.
+Smallest repair: overlap only independent per-ticket recovery calls up to the
+already-certified capacity. Every ticket retains its existing launcher,
+passport, route, lease, repair, and accounting sequence.
 
 ## Maintenance rule
 

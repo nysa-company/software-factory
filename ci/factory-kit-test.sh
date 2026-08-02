@@ -266,12 +266,13 @@ esac
 [[ "$FACTORY_KIT_RELEASE" == *factory-kit-certification*/release ]]
 [[ -x .context/tools/gitleaks/8.30.1/gitleaks ]]
 python3 - "$FACTORY_CERTIFICATION_EVIDENCE" <<'PY'
-import json, os, pathlib, sys
+import json, os, pathlib, subprocess, sys
 path = pathlib.Path(sys.argv[1])
 value = {
     "ended_at": "2026-07-29T00:00:01Z",
     "factory_sha": os.environ["FACTORY_KIT_SHA"],
     "max_workers": 2,
+    "network_reviewed": os.environ.get("FACTORY_CERTIFICATION_NETWORK_REVIEWED") == "1",
     "phases": [{
         "artifact_sha256": "a" * 64,
         "cache_hit": False,
@@ -280,6 +281,9 @@ value = {
         "exit_status": 0,
         "input_sha256": "b" * 64,
         "name": "fixture",
+        "network_declared": "denied",
+        "network_granted": False,
+        "output_sha256": "d" * 64,
         "peak_memory_kb": 1,
         "started_at": "2026-07-29T00:00:00Z",
         "system_cpu_seconds": 0,
@@ -288,6 +292,10 @@ value = {
     }],
     "plan_sha256": "c" * 64,
     "product_tree": os.environ["FACTORY_PRODUCT_TREE"],
+    "runtime": {
+        "node": subprocess.check_output(["node", "--version"], text=True).strip(),
+        "npm": subprocess.check_output(["npm", "--version"], text=True).strip(),
+    },
     "schema": "nysa.software-factory.certification-result/v1",
     "started_at": "2026-07-29T00:00:00Z",
     "status": "pass",
@@ -892,6 +900,8 @@ commit_all "$PRODUCT_ONE" "force certification failure"
 push_main "$PRODUCT_ONE"
 expect_failure "failed certification output is redacted" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+CERTIFICATION_FAILURE="$(find "$STATE/receipts/failures" -type f -name '*.json' \
+  -print -quit)"
 if [[ "$LAST_OUTPUT" != *"supersecret"* && "$LAST_OUTPUT" != *"user:pass"* &&
       "$LAST_OUTPUT" != *"bearer-one"* && "$LAST_OUTPUT" != *"bearer-two"* &&
       "$LAST_OUTPUT" != *"digest-one"* && "$LAST_OUTPUT" != *"digest-two"* &&
@@ -902,7 +912,12 @@ if [[ "$LAST_OUTPUT" != *"supersecret"* && "$LAST_OUTPUT" != *"user:pass"* &&
       "$LAST_OUTPUT" != *"continuation-head"* &&
       "$LAST_OUTPUT" != *"continuation-one"* &&
       "$LAST_OUTPUT" != *"query-one"* && "$LAST_OUTPUT" != *"query-two"* &&
-      "$LAST_OUTPUT" == *"[REDACTED]"* ]]; then
+      "$LAST_OUTPUT" == *"[REDACTED]"* &&
+      -f "$CERTIFICATION_FAILURE" &&
+      "$(json_value "$CERTIFICATION_FAILURE" status)" == "fail" &&
+      "$(json_value "$CERTIFICATION_FAILURE" factory_sha)" == "$SHA_A" &&
+      ! grep -qE 'supersecret|user:pass|bearer-one|digest-one|json-one|line-one|query-one' \
+        "$CERTIFICATION_FAILURE" ]]; then
   pass "structured certification output never exposes secrets"
 else
   fail "structured certification output never exposes secrets" "$LAST_OUTPUT"
@@ -1193,7 +1208,7 @@ fi
 RECEIPT_STALE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 RECEIPT_STALE_ID="$(json_value "$RECEIPT_STALE" receipt_id)"
 if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
-      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "4" &&
+      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "5" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.status)" == "not-required" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_sha)" == "$SHA_A" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" &&
@@ -1519,6 +1534,15 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
 [[ "$(json_value "$ACTIVE_ALPHA" kit_sha)" == "$SHA_A" ]] &&
   pass "first active generation is release a" ||
   fail "first active generation is release a"
+
+NONCANONICAL_PRODUCT="$TMP/product-one-noncanonical"
+git -C "$PRODUCT_ONE" worktree add -q --detach "$NONCANONICAL_PRODUCT" main
+expect_failure "active product certification rejects a noncanonical worktree in preflight" \
+  certify --project alpha --product "$NONCANONICAL_PRODUCT" --sha "$SHA_A"
+[[ "$LAST_OUTPUT" == *"certification_preflight_product_binding"* ]] &&
+  pass "active product path mismatch is typed before product phases" ||
+  fail "active product path mismatch is typed before product phases" "$LAST_OUTPUT"
+git -C "$PRODUCT_ONE" worktree remove -f "$NONCANONICAL_PRODUCT"
 
 set_ticket_lease "$PRODUCT_ONE" "$SHA_B"
 printf '%s\n' '# T-009' 'State: Approved' 'Operator-Approval: Linear' \

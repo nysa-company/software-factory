@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -13,9 +14,14 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from typing import Any
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from release_lineage import successor_release_lineage  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
@@ -201,6 +207,248 @@ def prepare_provider(release: Path, root: Path) -> str:
     return policy_hash
 
 
+def product_origin(product: Path) -> str:
+    origins = command(
+        "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
+    ).splitlines()
+    if len(origins) != 1 or not origins[0]:
+        raise EnvironmentError("qualification product origin is ambiguous")
+    return origins[0]
+
+
+def without_dependency_line(value: str) -> str:
+    lines = value.splitlines()
+    if sum(line.startswith("Depends-On:") for line in lines) != 1:
+        raise EnvironmentError("qualification ticket dependency line is invalid")
+    return "\n".join(line for line in lines if not line.startswith("Depends-On:"))
+
+
+def validate_takeover_product(
+    source_product: Path,
+    product: Path,
+    active: dict[str, Any],
+    manifest: dict[str, Any],
+) -> None:
+    if command(
+        "git", "-C", str(source_product), "status", "--porcelain", "--untracked-files=all"
+    ):
+        raise EnvironmentError("takeover source product must be clean")
+    common = command(
+        "git", "-C", str(product), "rev-parse", "--path-format=absolute", "--git-common-dir"
+    )
+    source_common = command(
+        "git", "-C", str(source_product), "rev-parse", "--path-format=absolute", "--git-common-dir"
+    )
+    if common != source_common or product_origin(product) != product_origin(source_product):
+        raise EnvironmentError(
+            "takeover qualification product is not a linked canonical worktree"
+        )
+
+    protected = "refs/remotes/origin/main"
+    source_sha = command("git", "-C", str(source_product), "rev-parse", "HEAD")
+    source_tree = command(
+        "git", "-C", str(source_product), "rev-parse", "HEAD^{tree}"
+    )
+    if active.get("product_tree") != source_tree:
+        raise EnvironmentError("takeover source product does not match active product")
+    try:
+        command(
+            "git", "-C", str(product), "merge-base", "--is-ancestor",
+            source_sha, protected,
+        )
+    except EnvironmentError as error:
+        raise EnvironmentError(
+            "takeover protected main does not contain the active product"
+        ) from error
+    try:
+        command(
+            "git", "-C", str(product), "merge-base", "--is-ancestor", protected, "HEAD"
+        )
+    except EnvironmentError as error:
+        raise EnvironmentError(
+            "takeover qualification product is not based on protected main"
+        ) from error
+
+    statuses: dict[str, str] = {}
+    raw_status = command(
+        "git", "-C", str(product), "diff", "--name-status", "--no-renames",
+        protected, "HEAD", "--",
+    )
+    for line in raw_status.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 2 or fields[0] not in {"A", "M"}:
+            raise EnvironmentError("takeover qualification control diff is invalid")
+        statuses[fields[1]] = fields[0]
+    qualification = "factory/QUALIFICATION.json"
+    pin = "factory/KIT_PIN"
+    ticket_paths = {f"factory/tickets/{ticket}.md" for ticket in manifest["tickets"]}
+    if (
+        statuses.get(qualification) not in {"A", "M"}
+        or statuses.get(pin) != "M"
+        or not set(statuses).issubset({qualification, pin, *ticket_paths})
+    ):
+        raise EnvironmentError("takeover qualification changes non-control product files")
+    for path in ticket_paths & statuses.keys():
+        if statuses[path] != "M" or without_dependency_line(command(
+            "git", "-C", str(product), "show", f"{protected}:{path}"
+        )) != without_dependency_line(command(
+            "git", "-C", str(product), "show", f"HEAD:{path}"
+        )):
+            raise EnvironmentError(
+                "takeover qualification changes a ticket beyond dependency ordering"
+            )
+
+
+def operator_map(source_product: Path) -> str:
+    source = source_product / "factory/linear-map.json"
+    read(source)
+    return str(source)
+
+
+def takeover_source(
+    factory: Path, product: Path, project: str, source_project: str | None,
+) -> dict[str, str] | None:
+    if source_project is None:
+        return None
+    if source_project != project:
+        raise EnvironmentError("qualification takeover project must match the source")
+    try:
+        manifest = json.loads(
+            (product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, json.JSONDecodeError) as error:
+        raise EnvironmentError("takeover qualification manifest is unavailable") from error
+    if (
+        manifest.get("schema") != "nysa.software-factory.qualification/v2"
+        or manifest.get("mode") != "successor"
+        or manifest.get("capacity") != 3
+        or manifest.get("target_done") != 3
+        or manifest.get("budget_usd") != "300.000000"
+        or manifest.get("per_ticket_budget_usd") != "100.000000"
+        or manifest.get("per_run_budget_usd") != "10.000000"
+        or manifest.get("contract_version") != "1.8.0"
+        or manifest.get("factory_sha")
+        != command("git", "-C", str(factory), "rev-parse", "HEAD")
+        or not SHA.fullmatch(manifest.get("source_factory_sha", ""))
+        or manifest.get("source_factory_sha") == manifest.get("factory_sha")
+        or not isinstance(manifest.get("generation"), int)
+        or isinstance(manifest.get("generation"), bool)
+        or manifest.get("generation", 0) < 1
+        or not isinstance(manifest.get("tickets"), list)
+        or len(manifest["tickets"]) != 3
+        or len(set(manifest["tickets"])) != 3
+        or any(
+            not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket)
+            for ticket in manifest["tickets"]
+        )
+    ):
+        raise EnvironmentError("takeover qualification manifest is invalid")
+
+    kits = safe_directory(Path.home().resolve(strict=True) / ".factory/kits")
+    source = safe_directory(kits / f"projects/{source_project}")
+    state = safe_directory(source / "controller")
+    active = read(source / "active.json")
+    source_product_path = active.get("product_path")
+    if (
+        active.get("project") != source_project
+        or not isinstance(source_product_path, str)
+        or not Path(source_product_path).is_absolute()
+        or active.get("contract_version") != "1.8.0"
+        or active.get("kit_sha") != manifest["source_factory_sha"]
+        or not SHA.fullmatch(active.get("kit_tree", ""))
+        or not SHA.fullmatch(active.get("product_tree", ""))
+    ):
+        raise EnvironmentError("takeover source activation does not match the manifest")
+    source_product = Path(source_product_path).resolve(strict=True)
+    validate_takeover_product(source_product, product, active, manifest)
+    operator_map_path = operator_map(source_product)
+    lock = os.open(
+        state / "reconcile.lock",
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise EnvironmentError("takeover source controller is active") from error
+        if any((source_product / "factory/.active-runs").glob("*")) or any(
+            (source_product / "factory/runs").glob("*.pid")
+        ):
+            raise EnvironmentError("takeover source has an active provider run")
+        passport_spec = importlib.util.spec_from_file_location(
+            "qualification_takeover_passport", factory / "scripts/ticket-passport.py"
+        )
+        if not passport_spec or not passport_spec.loader:
+            raise EnvironmentError("takeover passport verifier is unavailable")
+        passport = importlib.util.module_from_spec(passport_spec)
+        passport_spec.loader.exec_module(passport)
+        if not (state / "passport.key").is_file():
+            raise EnvironmentError("takeover passport key is unavailable")
+        secret = passport.key(state)
+        for ticket in manifest["tickets"]:
+            value, _ = passport.load_passport(
+                state / f"passports/{ticket}.json", secret
+            )
+            if (
+                value.get("ticket") != ticket
+                or value.get("project") != project
+                or not successor_release_lineage(
+                    value.get("factory_release_history"),
+                    value.get("migration_history"),
+                    manifest["source_factory_sha"],
+                    value.get("factory_sha", ""),
+                    passport.valid_v2_migration,
+                )
+            ):
+                raise EnvironmentError("takeover passport does not match the source")
+    except (AttributeError, OSError, ValueError) as error:
+        if isinstance(error, EnvironmentError):
+            raise
+        raise EnvironmentError("takeover source state is invalid") from error
+    finally:
+        os.close(lock)
+
+    provider = safe_directory(Path.home().resolve(strict=True) / ".factory")
+    activation_path = provider / "isolated-v1.enabled"
+    policy_path = provider / "provider-policy.json"
+    activation = read(activation_path)
+    policy_hash = activation.get("policy_sha256", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", policy_hash):
+        raise EnvironmentError("takeover provider activation is invalid")
+    command(
+        "/usr/bin/python3",
+        str(factory / "scripts/provider-activation.py"),
+        "--config", str(activation_path),
+        "--policy", str(policy_path),
+        "--contract-version", "1.8.0",
+        "--status",
+    )
+    provider_status = json.loads(command(
+        "/usr/bin/python3",
+        str(factory / "scripts/provider-coordinator.py"),
+        "--db", str(provider / "accounting/state-v2.sqlite3"),
+        "status",
+    ))
+    attempts = provider_status.get("attempts")
+    if (
+        not isinstance(attempts, list)
+        or provider_status.get("active_reserve_micro_usd") != 0
+        or provider_status.get("legacy_intervals") != []
+        or any(
+            not isinstance(item, dict) or item.get("state") != "terminal"
+            for item in attempts
+        )
+    ):
+        raise EnvironmentError("takeover provider state is not drained")
+    return {
+        "mode": "takeover",
+        "operator_map_path": operator_map_path,
+        "provider_policy_sha256": policy_hash,
+        "takeover_kits_root": str(kits),
+    }
+
+
 def git_tree(path: Path) -> str:
     with tempfile.TemporaryDirectory(prefix="qualification-tree.") as raw:
         repository = Path(raw) / "repo.git"
@@ -284,12 +532,10 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     if contract != "1.8.0":
         raise EnvironmentError("qualification requires Contract 1.8.0")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
-    origins = command(
-        "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
-    ).splitlines()
-    if len(origins) != 1 or not origins[0]:
-        raise EnvironmentError("qualification product origin is ambiguous")
-    origin = origins[0]
+    origin = product_origin(product)
+    takeover = takeover_source(
+        factory, product, args.project, getattr(args, "takeover_project", None)
+    )
 
     safe_directory(root, create=not root.exists())
     releases = root / "releases"
@@ -322,7 +568,11 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     materialize(factory, sha, release)
     if git_tree(release) != tree:
         raise EnvironmentError("sealed qualification tree does not match the candidate")
-    provider_policy_sha256 = prepare_provider(release, root)
+    provider_policy_sha256 = (
+        takeover["provider_policy_sha256"]
+        if takeover else prepare_provider(release, root)
+    )
+    qualification_mode = takeover["mode"] if takeover else "isolated"
 
     receipt_value = {
         "contract_version": contract,
@@ -333,12 +583,16 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
+        "qualification_mode": qualification_mode,
         "status": "pass",
     }
+    if takeover:
+        receipt_value["operator_map_path"] = takeover["operator_map_path"]
+        receipt_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
     receipt_value["receipt_id"] = receipt_id
     write(receipts / f"{receipt_id}.json", receipt_value)
-    write(active, {
+    active_value = {
         "contract_version": contract,
         "generation": 1,
         "kit_sha": sha,
@@ -347,9 +601,14 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
+        "qualification_mode": qualification_mode,
         "receipt_id": receipt_id,
         "release_path": str(release),
-    })
+    }
+    if takeover:
+        active_value["operator_map_path"] = takeover["operator_map_path"]
+        active_value["takeover_kits_root"] = takeover["takeover_kits_root"]
+    write(active, active_value)
     registry = profile_projects / f"{args.project}.env"
     descriptor = os.open(
         registry,
@@ -367,6 +626,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
+        "qualification_mode": qualification_mode,
         "root": str(root),
         "schema": SCHEMA,
         "status": "prepared",
@@ -401,6 +661,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     marker = read(root / "marker.json")
     active_path = root / f"projects/{args.project}/active.json"
     active = read(active_path)
+    qualification_mode = active.get("qualification_mode")
     if (
         marker != {"mode": "qualification", "schema": SCHEMA}
         or active.get("project") != args.project
@@ -410,8 +671,11 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         or not isinstance(active.get("generation"), int)
         or isinstance(active.get("generation"), bool)
         or active["generation"] < 1
+        or qualification_mode not in {"isolated", "takeover"}
     ):
         raise EnvironmentError("existing qualification activation is invalid")
+    if qualification_mode == "takeover":
+        raise EnvironmentError("takeover qualification requires one frozen candidate")
 
     controller = safe_directory(root / f"projects/{args.project}/controller")
     lock = os.open(
@@ -461,6 +725,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "qualification_mode": qualification_mode,
             "status": "pass",
         }
         receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
@@ -481,6 +746,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "qualification_mode": qualification_mode,
             "receipt_id": receipt_id,
             "release_path": str(release),
         }
@@ -492,6 +758,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "qualification_mode": qualification_mode,
             "root": str(root),
             "schema": SCHEMA,
             "status": "upgraded",
@@ -508,6 +775,7 @@ def main() -> None:
     parser.add_argument("--product-root", required=True, type=Path)
     parser.add_argument("--project", required=True)
     parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--takeover-project")
     parser.add_argument("--upgrade", action="store_true")
     args = parser.parse_args()
     try:

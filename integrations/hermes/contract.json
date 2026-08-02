@@ -89,6 +89,16 @@
         "output_schema": "nysa.software-factory.controller/v1",
         "authority": "non-overlapping non-agent reconciliation claims up to four disposable cells, executes only receipt-authorized actions, persists restart-safe claims, and immediately resolves each terminal event"
       },
+      "ticket-control": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/factory-controller.py",
+        "grammars": [
+          "pause --ticket <T-NNN> --json",
+          "resume --ticket <T-NNN> --json"
+        ],
+        "output_schema": "nysa.software-factory.controller/v1",
+        "authority": "records one exact passport-bound pause or explicitly reconstructs that ticket without scanning historical passports"
+      },
       "qualification": {
         "contract_version": "1.8.0",
         "helper": "scripts/qualification-reducer.py",
@@ -96,7 +106,7 @@
           "--json"
         ],
         "output_schema": "nysa.software-factory.qualification-report/v1",
-        "authority": "immutable exact reduction of authenticated passports, run charges, controller concurrency history, protected checks, and GitHub merge truth"
+        "authority": "immutable exact reduction of an acyclic three-ticket ordered cohort or four-ticket concurrent cohort across authenticated passports, source-to-candidate migration, cumulative and candidate-only charges, controller history, protected checks, and GitHub merge truth"
       },
       "dispatch-plan": {
         "minimum_contract_version": "1.6.0",
@@ -526,10 +536,12 @@
       "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
       "FACTORY_MODEL_STATE_ROOT": "resolved production kits projects directory",
       "FACTORY_PROJECT": "validated launcher project slug",
+      "FACTORY_OPERATOR_MAP": "canonical live operator overlay path supplied only by a sealed production-successor takeover",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
       "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
       "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
       "FACTORY_TRANSITION_STATE_DIR": "Contract 1.8 owner-only controller state directory",
+      "FACTORY_AUTHENTICATED_ROLE_EVIDENCE": "Contract 1.8 owner-only ephemeral completed-role sequence created only by the state machine for its next-stage child",
       "FACTORY_PROVIDER_DB": "fixed Contract 1.6+ owner-local transactional database",
       "FACTORY_PROVIDER_POLICY": "fixed Contract 1.6+ owner-local admission policy",
       "FACTORY_PROVIDER_BROKER_DB": "fixed Contract 1.6 owner-local broker database",
@@ -554,10 +566,12 @@
       "FACTORY_RELEASE_CONTRACT_VERSION",
       "FACTORY_MODEL_STATE_ROOT",
       "FACTORY_PROJECT",
+      "FACTORY_OPERATOR_MAP",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
       "FACTORY_DISPATCH_LEASE_ID",
       "FACTORY_TRANSITION_RECEIPT_SHA256",
       "FACTORY_TRANSITION_STATE_DIR",
+      "FACTORY_AUTHENTICATED_ROLE_EVIDENCE",
       "FACTORY_PROVIDER_DB",
       "FACTORY_PROVIDER_POLICY",
       "FACTORY_PROVIDER_BROKER_DB",

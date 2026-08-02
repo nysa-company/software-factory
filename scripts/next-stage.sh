@@ -46,6 +46,7 @@ source "$KIT_DIR/scripts/lib/kit-pin.sh"
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
+OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
 CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 if ! factory_validate_runtime_overrides; then
   echo "REFUSE $FACTORY_RUNTIME_OVERRIDE_ERROR"
@@ -85,6 +86,12 @@ canonical_factory_file() {
 
 LEDGER="${FACTORY_LEDGER:-$(canonical_factory_file "$REPO_ROOT" runtime-ledger.csv)}"
 DURABLE_LEDGER="${FACTORY_DURABLE_LEDGER:-$(canonical_factory_file "$REPO_ROOT" ledger.csv)}"
+REFRESH_RUNTIME_LEDGER="${FACTORY_REFRESH_RUNTIME_LEDGER:-0}"
+[[ "$REFRESH_RUNTIME_LEDGER" == "0" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] || {
+  echo "REFUSE runtime ledger refresh policy is invalid"
+  exit 1
+}
+ROLE_EVIDENCE="${FACTORY_AUTHENTICATED_ROLE_EVIDENCE:-}"
 TICKETS_DIR="$CONTENT_ROOT/factory/tickets"
 
 TICKET_FILE="$TICKETS_DIR/$TICKET.md"
@@ -113,13 +120,81 @@ else
   : > "$COMMITTED_TICKET_FILE"
 fi
 python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
-  --ticket-file "$SOURCE_TICKET_FILE" --operator-map "$FACTORY_DIR/linear-map.json" \
+  --ticket-file "$SOURCE_TICKET_FILE" --operator-map "$OPERATOR_MAP" \
   --ticket "$TICKET" > "$EFFECTIVE_TICKET" || {
     echo "REFUSE effective ticket state could not be resolved"
     exit 1
   }
 TICKET_FILE="$EFFECTIVE_TICKET"
 CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-1.2.0}}"
+if [[ -n "$ROLE_EVIDENCE" ]]; then
+  [[ "$CONTRACT_VERSION" == "1.8.0" ]] || {
+    echo "REFUSE authenticated role evidence requires contract 1.8"
+    exit 1
+  }
+  python3 - "$ROLE_EVIDENCE" "$TICKET" <<'PY' || {
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+info = path.lstat()
+if (
+    not path.is_absolute()
+    or path.is_symlink()
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) != 0o600
+    or info.st_size > 5_000_000
+):
+    raise SystemExit(1)
+value = json.loads(path.read_text(encoding="utf-8"))
+sha = re.compile(r"[0-9a-f]{40}")
+digest = re.compile(r"[0-9a-f]{64}")
+run_id = re.compile(r"[A-Za-z0-9._-]{1,200}")
+roles = {"planner", "spec-linter", "test-author", "builder", "reviewer", "narrator"}
+expected = {
+    "contract_version", "factory_sha", "head_before", "manifest_sha256",
+    "output_sha256", "role", "run_id", "transition_receipt_sha256",
+}
+records = value.get("records")
+if (
+    set(value) != {"passport_sha256", "records", "schema", "ticket"}
+    or value.get("schema") != "nysa.software-factory.completed-role-sequence/v1"
+    or value.get("ticket") != sys.argv[2]
+    or not digest.fullmatch(value.get("passport_sha256", ""))
+    or not isinstance(records, list)
+):
+    raise SystemExit(1)
+seen_runs = set()
+seen_receipts = set()
+for item in records:
+    if (
+        not isinstance(item, dict)
+        or set(item) != expected
+        or item.get("contract_version") != "1.8.0"
+        or not sha.fullmatch(item.get("factory_sha", ""))
+        or not sha.fullmatch(item.get("head_before", ""))
+        or not digest.fullmatch(item.get("manifest_sha256", ""))
+        or not digest.fullmatch(item.get("output_sha256", ""))
+        or item.get("role") not in roles
+        or not run_id.fullmatch(item.get("run_id", ""))
+        or not digest.fullmatch(item.get("transition_receipt_sha256", ""))
+        or item["run_id"] in seen_runs
+        or item["transition_receipt_sha256"] in seen_receipts
+    ):
+        raise SystemExit(1)
+    seen_runs.add(item["run_id"])
+    seen_receipts.add(item["transition_receipt_sha256"])
+PY
+    echo "REFUSE authenticated passport role evidence is invalid"
+    exit 1
+  }
+fi
 if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
    { grep -qiE '^State:[[:space:]]*(Awaiting Approval|Approved)[[:space:]]*$' "$TICKET_FILE" ||
      grep -qiE '^Operator-Approval:' "$TICKET_FILE"; }; then
@@ -425,7 +500,7 @@ if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
     exit 0
   fi
   if [[ "$COMMITTED_STATE" == "approved" ]]; then
-    if python3 - "$FACTORY_DIR/linear-map.json" "$TICKET" <<'PY'
+    if python3 - "$OPERATOR_MAP" "$TICKET" <<'PY'
 import json
 import sys
 try:
@@ -463,7 +538,7 @@ PY
     exit 0
   fi
 fi
-if [[ -z "${FACTORY_LEDGER:-}" ]] &&
+if [[ -z "${FACTORY_LEDGER:-}" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] &&
    ! python3 "$KIT_DIR/scripts/ledger-view.py" refresh \
      --factory-root "$REPO_ROOT" \
      --durable-ledger "$DURABLE_LEDGER" \
@@ -473,7 +548,7 @@ if [[ -z "${FACTORY_LEDGER:-}" ]] &&
 fi
 if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
   BUDGET_STAGE="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
-    "$REPO_ROOT" "$TICKET")" || {
+    "$REPO_ROOT" "$TICKET" "$FACTORY_RELEASE_SHA")" || {
       echo "REFUSE ticket budget could not be reduced"
       exit 1
     }
@@ -507,7 +582,20 @@ fi
 
 # Successful (exit_status 0) runs per role, in ledger (completion) order.
 # (cat the ledger defensively: a missing ledger means zero runs, not an error.)
-count_ok() { { cat "$LEDGER" 2>/dev/null || true; } | awk -F, -v t="$TICKET" -v r="$1" 'NR>1 && $3==t && $4==r && $9=="0"' | wc -l | tr -d ' '; }
+count_ok() {
+  if [[ -n "$ROLE_EVIDENCE" ]]; then
+    python3 - "$ROLE_EVIDENCE" "$1" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(sum(item["role"] == sys.argv[2] for item in value["records"]))
+PY
+  else
+    { cat "$LEDGER" 2>/dev/null || true; } |
+      awk -F, -v t="$TICKET" -v r="$1" \
+        'NR>1 && $3==t && $4==r && $9=="0"' |
+      wc -l | tr -d ' '
+  fi
+}
 count_authorization() { # role semantic-round
   grep -ciE "^[[:space:]]*OPERATOR AUTHORIZATION:[[:space:]]*$1 round[[:space:]]*$2[[:space:]]*$" "$TICKET_FILE" || true
 }
@@ -517,6 +605,7 @@ LOCAL_P="$P"; LOCAL_SL="$SL"; LOCAL_TA="$TA"
 LOCAL_B="$B"; LOCAL_R="$R"; LOCAL_N="$N"
 CHECKPOINT_P=0; CHECKPOINT_SL=0; CHECKPOINT_TA=0
 CHECKPOINT_B=0; CHECKPOINT_R=0; CHECKPOINT_N=0
+CHECKPOINT_N_AFTER_LATEST_R=0
 CHECKPOINT_NEXT_STAGE=""
 CHECKPOINT_AWAIT_REOPENED=0
 if [[ -n "${FACTORY_DEV_PRODUCT_CHECKPOINT:-}" ]]; then
@@ -586,6 +675,9 @@ PY
   )" || { echo "REFUSE development checkpoint binding is invalid"; exit 1; }
   IFS=$'\t' read -r CHECKPOINT_P CHECKPOINT_SL CHECKPOINT_TA CHECKPOINT_B \
     CHECKPOINT_R CHECKPOINT_N CHECKPOINT_NEXT_STAGE <<<"$CHECKPOINT_COUNTS"
+  CHECKPOINT_N_AFTER_LATEST_R="$CHECKPOINT_N"
+  [[ "$CHECKPOINT_NEXT_STAGE" != "RUN narrator" ]] || \
+    CHECKPOINT_N_AFTER_LATEST_R=0
   P=$((P + CHECKPOINT_P)); SL=$((SL + CHECKPOINT_SL))
   TA=$((TA + CHECKPOINT_TA)); B=$((B + CHECKPOINT_B))
   R=$((R + CHECKPOINT_R)); N=$((N + CHECKPOINT_N))
@@ -627,6 +719,8 @@ import re
 import sys
 
 text = open(sys.argv[1], encoding="utf-8").read()
+if re.search(r"\bNOT\s+APPROVABLE\s*:", text, re.I):
+    raise SystemExit(1)
 required = (
     "What this does", "Preview", "Screenshots", "Acceptance criteria",
     "Risk", "Cost", "Rollback",
@@ -639,11 +733,25 @@ if not re.search(r"approve to merge", text, re.I):
 PY
 }
 
+evidence_bundle_is_not_approvable() {
+  local bundle="$CONTENT_ROOT/factory/tickets/$TICKET-bundle.md"
+  [[ -f "$bundle" && ! -L "$bundle" ]] || return 1
+  python3 - "$bundle" <<'PY'
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+raise SystemExit(0 if text.startswith("NOT APPROVABLE:") else 1)
+PY
+}
+
 narrator_bundle_stage() {
   local narrator_runs="$1"
   local attestation="$CONTENT_ROOT/factory/attestations/$TICKET/bundle.json"
   if [[ "$narrator_runs" -eq 0 ]]; then
     echo "RUN narrator"
+  elif [[ ! -e "$attestation" && ! -L "$attestation" ]] &&
+       evidence_bundle_is_not_approvable; then
+    echo "FIX builder"
   elif [[ ! -e "$attestation" && ! -L "$attestation" ]] &&
        ! evidence_bundle_is_valid; then
     if [[ "$narrator_runs" -eq 1 ]]; then
@@ -687,6 +795,60 @@ VOID_COUNT="${VOID_DATA%%|*}"
 VOID_RUNS="${VOID_DATA#*|}"
 REVIEWER_RUNS=$((R - VOID_COUNT))
 
+# Evidence bundles belong to the latest effective Reviewer generation. A
+# Narrator result before a later Reviewer remains immutable history, but it
+# cannot decide the new generation. Count only successful Narrators after the
+# latest non-void Reviewer so a repaired/re-reviewed head gets exactly one
+# fresh deployed-preview pass without replaying Narrator on an unchanged
+# reviewed generation.
+narrators_after_latest_reviewer() {
+  if [[ -n "$ROLE_EVIDENCE" ]]; then
+    python3 - "$ROLE_EVIDENCE" "$VOID_RUNS" "$CHECKPOINT_R" \
+      "$CHECKPOINT_N_AFTER_LATEST_R" <<'PY'
+import json
+import sys
+
+path, ignored, imported_reviewers, imported_narrators = sys.argv[1:]
+ignored = {int(item) for item in ignored.split(",") if item}
+reviewer_ordinal = int(imported_reviewers)
+latest_reviewer = reviewer_ordinal > 0
+narrators = int(imported_narrators) if latest_reviewer else 0
+for item in json.load(open(path, encoding="utf-8"))["records"]:
+    role = item["role"]
+    if role == "reviewer":
+        reviewer_ordinal += 1
+        if reviewer_ordinal not in ignored:
+            latest_reviewer = True
+            narrators = 0
+    elif role == "narrator" and latest_reviewer:
+        narrators += 1
+print(narrators)
+PY
+    return
+  fi
+  awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
+    -v imported_reviewers="$CHECKPOINT_R" \
+    -v imported_narrators="$CHECKPOINT_N_AFTER_LATEST_R" '
+  BEGIN {
+    voids="," void_list ","
+    reviewer_ordinal=imported_reviewers
+    if (imported_reviewers>0) {
+      latest_reviewer=1
+      narrators=imported_narrators
+    }
+  }
+  NR>1 && $3==t && $9=="0" {
+    if ($4=="reviewer") {
+      reviewer_ordinal++
+      if (index(voids, "," reviewer_ordinal ",")==0) {
+        latest_reviewer=1
+        narrators=0
+      }
+    }
+    else if ($4=="narrator" && latest_reviewer) narrators++
+  }
+  END { print narrators+0 }' "$LEDGER"
+}
 if [[ "$REFRESH_ACTIVE" -eq 1 ]] &&
    { [[ "$REVIEWER_RUNS" -lt "$REFRESH_REVIEWERS" ]] ||
      [[ "$A" -lt "$REFRESH_APPROVES" ]] ||
@@ -701,11 +863,36 @@ if [[ "$P" -eq 0 ]]; then echo "RUN planner"; exit 0; fi
 # --- spec-lint gate: plan → lint → (replan on FAIL) → tests ---
 # The spec-linter appends its own verdict line (SPEC-LINT: PASS/FAIL) to the
 # ticket; each planner run must be followed by one lint run, each FAIL by one
-# replan. The gate applies only before the test-author has run, so tickets
-# already past planning (including all pre-gate tickets) are unaffected.
-if [[ "$TA" -eq 0 ]]; then
-  SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS[[:space:]]*$' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
-  SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
+# replan. An authenticated Planner run after Test-author starts one new
+# tests-first epoch; immutable earlier role evidence remains history but cannot
+# skip the new spec-lint, tests, or Builder boundaries.
+TEST_FIRST_EPOCH="0|complete"
+if [[ -n "$ROLE_EVIDENCE" ]]; then
+  TEST_FIRST_EPOCH="$(python3 - "$ROLE_EVIDENCE" <<'PY'
+import json
+import sys
+
+roles = [item["role"] for item in json.load(open(sys.argv[1], encoding="utf-8"))["records"]]
+planner = next((index for index in range(len(roles) - 1, -1, -1)
+                if roles[index] == "planner" and "test-author" in roles[:index]), -1)
+if planner < 0:
+    print("0|complete")
+else:
+    spec = next((index for index in range(len(roles) - 1, planner, -1)
+                 if roles[index] == "spec-linter"), -1)
+    test = next((index for index in range(len(roles) - 1, planner, -1)
+                 if roles[index] == "test-author"), -1)
+    builder = next((index for index in range(len(roles) - 1, test, -1)
+                    if roles[index] == "builder"), -1) if test >= 0 else -1
+    phase = "spec" if spec < 0 else "test" if test < 0 else "builder" if builder < 0 else "complete"
+    print(f"1|{phase}")
+PY
+)"
+fi
+IFS='|' read -r REOPENED_TEST_FIRST_EPOCH TEST_FIRST_PHASE <<<"$TEST_FIRST_EPOCH"
+SLP="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*PASS[[:space:]]*$' "$TICKET_FILE" || true)"; SLP="${SLP:-0}"
+SLF="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"; SLF="${SLF:-0}"
+if [[ "$TA" -eq 0 || "$REOPENED_TEST_FIRST_EPOCH" -eq 1 ]]; then
   if [[ "$SL" -gt $((SLP + SLF)) ]]; then
     echo "REFUSE spec-linter has $SL successful run(s) but only $((SLP + SLF)) SPEC-LINT verdict(s) on $TICKET_FILE — the lint run must end with a 'SPEC-LINT: PASS' or 'SPEC-LINT: FAIL' line"
     exit 1
@@ -714,7 +901,23 @@ if [[ "$TA" -eq 0 ]]; then
     echo "REFUSE ticket logs $((SLP + SLF)) SPEC-LINT verdict(s) but the ledger has only $SL successful spec-linter run(s) — correct the ticket bookkeeping"
     exit 1
   fi
-  SPEC_VERDICTS=$((SLP + SLF))
+fi
+if [[ "$REOPENED_TEST_FIRST_EPOCH" -eq 1 && "$TEST_FIRST_PHASE" != "complete" ]]; then
+  case "$TEST_FIRST_PHASE" in
+    spec) echo "RUN spec-linter" ;;
+    test)
+      LATEST_SPEC_VERDICT="$(grep -iE '^[[:space:]]*SPEC-LINT:[[:space:]]*(PASS|FAIL)' "$TICKET_FILE" | tail -1)"
+      if grep -qiE 'SPEC-LINT:[[:space:]]*FAIL' <<<"$LATEST_SPEC_VERDICT"; then
+        echo "RUN planner"
+      else
+        echo "RUN test-author"
+      fi
+      ;;
+    builder) echo "RUN builder" ;;
+  esac
+  exit 0
+fi
+if [[ "$TA" -eq 0 ]]; then
   if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
   if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
 fi
@@ -733,6 +936,26 @@ if [[ "$REVIEWER_RUNS" -lt "$VERDICTS" ]]; then
 fi
 
 refresh_manifest_rows() { # role raw-baseline ignored-reviewer-ordinals
+  if [[ -n "$ROLE_EVIDENCE" ]]; then
+    python3 - "$ROLE_EVIDENCE" "$1" "$2" "$3" <<'PY'
+import json
+import sys
+
+path, role, baseline, ignored = sys.argv[1:]
+baseline = int(baseline)
+ignored = {int(item) for item in ignored.split(",") if item}
+value = json.load(open(path, encoding="utf-8"))
+ordinal = 0
+for index, item in enumerate(value["records"], 1):
+    if item["role"] != role:
+        continue
+    ordinal += 1
+    if ordinal <= baseline or (role == "reviewer" and ordinal in ignored):
+        continue
+    print(f"{index}|{item['head_before']}")
+PY
+    return
+  fi
   python3 - "$LEDGER" "$FACTORY_DIR/runs" "$TICKET" "$1" "$2" "$3" <<'PY'
 import csv
 import os
@@ -877,8 +1100,40 @@ fi
 
 # A Builder or Test-author run after the latest non-void Reviewer invalidates
 # that review, including after a protected-base evidence refresh.
-FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
-  -v imported_reviewers="$CHECKPOINT_R" '
+if [[ -n "$ROLE_EVIDENCE" ]]; then
+  FIX_AFTER="$(python3 - "$ROLE_EVIDENCE" "$VOID_RUNS" "$CHECKPOINT_R" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+voids = {int(item) for item in sys.argv[2].split(",") if item}
+reviewer_run = int(sys.argv[3])
+last_reviewer = reviewer_run > 0
+planner = builder = test_author = builder_after_test = False
+planner_head = ""
+for item in value["records"]:
+    role = item["role"]
+    if role == "reviewer":
+        reviewer_run += 1
+        if reviewer_run not in voids:
+            last_reviewer = True
+        planner = builder = test_author = builder_after_test = False
+        planner_head = ""
+    elif role == "planner" and last_reviewer:
+        planner = True
+        planner_head = item.get("head_before", "")
+    elif role == "builder" and last_reviewer:
+        builder = True
+        if test_author:
+            builder_after_test = True
+    elif role == "test-author" and last_reviewer:
+        test_author = True
+print(f"{int(planner)}|{int(builder)}|{int(test_author)}|{int(builder_after_test)}|{planner_head}")
+PY
+)"
+else
+  FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
+    -v imported_reviewers="$CHECKPOINT_R" '
   BEGIN {
     voids="," void_list ","
     reviewer_run=imported_reviewers
@@ -888,17 +1143,19 @@ FIX_AFTER="$(awk -F, -v t="$TICKET" -v void_list="$VOID_RUNS" \
     if ($4=="reviewer") {
       reviewer_run++
       if (index(voids, "," reviewer_run ",")==0) {
-        last_r=NR; builder=0; test_author=0; builder_after_test=0
+        last_r=NR; planner=0; builder=0; test_author=0; builder_after_test=0
       }
     }
+    else if ($4=="planner" && last_r>0) planner=1
     else if ($4=="builder" && last_r>0) {
       builder=1
       if (test_author) builder_after_test=1
     }
     else if ($4=="test-author" && last_r>0) test_author=1
   }
-  END { print builder+0 "|" test_author+0 "|" builder_after_test+0 }' "$LEDGER")"
-IFS='|' read -r FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST <<<"$FIX_AFTER"
+  END { print planner+0 "|" builder+0 "|" test_author+0 "|" builder_after_test+0 "|" }' "$LEDGER")"
+fi
+IFS='|' read -r FIX_PLANNER FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST FIX_PLANNER_HEAD <<<"$FIX_AFTER"
 
 LATEST_VERDICT=""
 LATEST_FIX_OWNER=""
@@ -961,7 +1218,9 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       fi
       ;;
     test-author)
-      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+      if [[ "$CONTRACT_VERSION" == "1.8.0" && "$FIX_PLANNER" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX planner"
+      elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
       else
         echo "RUN reviewer"
@@ -969,7 +1228,9 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       fi
       ;;
     both)
-      if [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
+      if [[ "$CONTRACT_VERSION" == "1.8.0" && "$FIX_PLANNER" -eq 0 ]]; then
+        CONTRACT17_FIX_ACTION="FIX planner"
+      elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
       elif [[ "$FIX_BUILDER_AFTER_TEST" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX builder"
@@ -1015,7 +1276,10 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   fi
   # A post-refresh rejection must use the ordinary fix/re-review path below;
   # an approval from the invalidated generation cannot short-circuit it.
-elif [[ "$A" -ge 1 ]]; then
+elif [[ "$A" -ge 1 &&
+        ( ( "$CONTRACT_VERSION" != "1.7.0" &&
+            "$CONTRACT_VERSION" != "1.8.0" ) ||
+          "$LATEST_VERDICT" == "APPROVE" ) ]]; then
   if [[ "$REFRESH_ACTIVE" -eq 1 &&
         "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
         "$REFRESH_PRESERVE_NARRATOR" -eq 0 ]]; then
@@ -1033,8 +1297,62 @@ elif [[ "$A" -ge 1 ]]; then
     echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
     exit 1
   fi
-  narrator_bundle_stage "$N"
+  NARRATORS_AFTER_LATEST_REVIEWER="$(narrators_after_latest_reviewer)" || {
+    echo "REFUSE latest Reviewer/Narrator generation could not be reduced"
+    exit 1
+  }
+  narrator_bundle_stage "$NARRATORS_AFTER_LATEST_REVIEWER"
   exit 0
+fi
+
+if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+      ( "$LATEST_FIX_OWNER" == "test-author" || "$LATEST_FIX_OWNER" == "both" ) &&
+      "$FIX_PLANNER" -eq 1 && "$CONTRACT17_FIX_ACTION" != "FIX planner" ]]; then
+  python3 - "$TICKET_WORKTREE_ROOT" "$SOURCE_TICKET_FILE" "$COMMITTED_HEAD" <<'PY' || {
+import pathlib
+import re
+import subprocess
+import sys
+
+repo, ticket, head = sys.argv[1:]
+if not re.fullmatch(r"[0-9a-f]{40}", head):
+    raise SystemExit(1)
+relative = pathlib.Path(ticket).resolve().relative_to(pathlib.Path(repo).resolve()).as_posix()
+files = subprocess.run(
+    ["git", "-C", repo, "diff-tree", "--no-commit-id", "--name-only", "-r", head],
+    text=True, capture_output=True, check=True,
+).stdout.splitlines()
+if files != [relative]:
+    raise SystemExit(1)
+diff = subprocess.run(
+    ["git", "-C", repo, "diff", "--unified=0", f"{head}^", head, "--", relative],
+    text=True, capture_output=True, check=True,
+).stdout.splitlines()
+headers = [
+    int(match.group(1)) for line in diff if line.startswith("+")
+    if (match := re.fullmatch(r"## Frozen contract — version ([1-9][0-9]*)", line[1:]))
+]
+passes = [
+    int(match.group(1)) for line in diff if line.startswith("+")
+    if (match := re.fullmatch(
+        r"- \*\*Freeze result:\*\* PASS\. Contract version ([1-9][0-9]*) is frozen\.",
+        line[1:],
+    ))
+]
+prior = subprocess.run(
+    ["git", "-C", repo, "show", f"{head}^:{relative}"],
+    text=True, capture_output=True, check=True,
+).stdout.splitlines()
+versions = [
+    int(match.group(1)) for line in prior
+    if (match := re.fullmatch(r"## Frozen contract — version ([1-9][0-9]*)", line))
+]
+if len(headers) != 1 or headers != passes or headers[0] <= max(versions, default=0):
+    raise SystemExit(1)
+PY
+    echo "REFUSE Planner repair did not open one authenticated test-first contract epoch"
+    exit 1
+  }
 fi
 
 echo "${CONTRACT17_FIX_ACTION:-FIX builder-or-test-author}"

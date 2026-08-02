@@ -27,6 +27,11 @@
       "**/tests/**"
     ]
   },
+  "role_forbidden_exceptions": {
+    "builder": [
+      "factory/tickets/TICKET.md"
+    ]
+  },
   "roles": {
     "builder": [
       "**"

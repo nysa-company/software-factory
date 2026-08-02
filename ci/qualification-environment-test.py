@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import importlib.util
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import json
 
 
@@ -54,6 +57,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "scripts/provider-coordinator.py",
             self.factory / "scripts/provider-coordinator.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/ticket-passport.py",
+            self.factory / "scripts/ticket-passport.py",
+        )
+        (self.factory / "scripts/lib").mkdir()
+        shutil.copy2(
+            ROOT / "scripts/lib/role_output.py",
+            self.factory / "scripts/lib/role_output.py",
         )
         (self.factory / "scripts/model-routing/catalog-v1.json").write_text(
             json.dumps({
@@ -136,7 +148,32 @@ class QualificationEnvironmentTest(unittest.TestCase):
             'PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"', launcher_text
         )
         self.assertIn(
-            'HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")',
+            '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"',
+            launcher_text,
+        )
+        self.assertIn(
+            '"FACTORY_PROVIDER_PRODUCT_ID=$PROJECT:$KIT_SHA"',
+            launcher_text,
+        )
+        runner_text = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            '"$FACTORY_PROVIDER_PRODUCT_ID" != "$TRANSITION_PROJECT:$FACTORY_KIT_SHA"',
+            runner_text,
+        )
+        self.assertIn(
+            '"${FACTORY_CLI_LANE_ROOT:-}" != /*', runner_text,
+        )
+        self.assertNotIn(
+            '[[ -z "$DEVELOPMENT_LANE_ROOT" ||', runner_text,
+        )
+        self.assertIn('CLI_PRODUCT_ID="$PROVIDER_PRODUCT_ID"', runner_text)
+        self.assertIn('ISOLATED_PRODUCT_ID="$PROVIDER_PRODUCT_ID"', runner_text)
+        self.assertIn(
+            '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"',
+            launcher_text,
+        )
+        self.assertIn(
+            '"FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"',
             launcher_text,
         )
         self.assertIn(
@@ -177,6 +214,214 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 ))
         finally:
             shutil.rmtree(root)
+
+    def test_takeover_reuses_authenticated_live_state_without_copying_it(self) -> None:
+        source_sha = "b" * 40
+        intermediate_sha = "d" * 40
+        tickets = ["T-094", "T-100", "T-093"]
+        (self.product / "factory/KIT_PIN").write_text(
+            source_sha + "\n", encoding="utf-8",
+        )
+        (self.product / ".gitignore").write_text(
+            "factory/linear-map.json\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", "factory/KIT_PIN", ".gitignore")
+        run(self.product, "git", "commit", "-qm", "protected source")
+        protected_sha = run(self.product, "git", "rev-parse", "HEAD")
+        protected_tree = run(self.product, "git", "rev-parse", "HEAD^{tree}")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            protected_sha,
+        )
+        source_product = self.workspace / "source-product"
+        run(
+            self.product, "git", "worktree", "add", "-q", "--detach",
+            str(source_product), protected_sha,
+        )
+        operator_map = source_product / "factory/linear-map.json"
+        ENVIRONMENT.write(operator_map, {"last_success_at": "2026-07-31T12:00:00Z"})
+        (self.product / "shared-policy.txt").write_text(
+            "protected control change\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", "shared-policy.txt")
+        run(self.product, "git", "commit", "-qm", "advance protected policy")
+        current_protected_sha = run(self.product, "git", "rev-parse", "HEAD")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            current_protected_sha,
+        )
+        (self.product / "factory/KIT_PIN").write_text(
+            self.sha + "\n", encoding="utf-8",
+        )
+        (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": self.sha,
+            "generation": 1,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "source_factory_sha": source_sha,
+            "target_done": 3,
+            "tickets": tickets,
+        }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json",
+        )
+        run(self.product, "git", "commit", "-qm", "authorize qualification")
+
+        account = (self.workspace / "account").resolve()
+        provider = account / ".factory"
+        kits = provider / "kits"
+        source = kits / "projects/relay"
+        state = source / "controller"
+        passports = state / "passports"
+        for path in (
+            provider, kits, kits / "projects", source, state, passports,
+            provider / "accounting", provider / "cli-runtimes",
+            provider / "provider-attempts", provider / "provider-apply-locks",
+        ):
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.chmod(0o700)
+        ENVIRONMENT.write(source / "active.json", {
+            "contract_version": "1.8.0",
+            "kit_sha": source_sha,
+            "kit_tree": "c" * 40,
+            "product_path": str(source_product.resolve()),
+            "product_tree": protected_tree,
+            "project": "relay",
+        })
+        secret = b"p" * 32
+        key = state / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        for ticket in tickets:
+            body = {
+                "factory_release_history": [{
+                    "contract_version": "1.8.0",
+                    "factory_sha": source_sha,
+                }, {
+                    "contract_version": "1.8.0",
+                    "factory_sha": intermediate_sha,
+                }],
+                "factory_sha": intermediate_sha,
+                "migration_history": [{
+                    "from_factory_sha": source_sha,
+                    "from_head_sha": "1" * 40,
+                    "from_passport_file_sha256": "2" * 64,
+                    "from_passport_sha256": "3" * 64,
+                    "from_protected_base_sha": "4" * 40,
+                    "from_route_plan_sha256": "5" * 64,
+                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                    "to_factory_sha": intermediate_sha,
+                    "to_head_sha": "6" * 40,
+                    "to_protected_base_sha": "7" * 40,
+                    "to_route_plan_sha256": "8" * 64,
+                }],
+                "project": "relay",
+                "schema": "nysa.software-factory.ticket-passport/v1",
+                "ticket": ticket,
+            }
+            authenticated = dict(body)
+            authenticated["authentication_sha256"] = hmac.new(
+                secret, ENVIRONMENT.canonical(body), hashlib.sha256
+            ).hexdigest()
+            authenticated["passport_sha256"] = hashlib.sha256(
+                ENVIRONMENT.canonical(authenticated)
+            ).hexdigest()
+            path = passports / f"{ticket}.json"
+            path.write_bytes(ENVIRONMENT.canonical(authenticated))
+            path.chmod(0o600)
+        policy, activation, _ = ENVIRONMENT.provider_configuration(self.factory)
+        ENVIRONMENT.write(provider / "provider-policy.json", policy)
+        ENVIRONMENT.write(provider / "isolated-v1.enabled", activation)
+        configuration_lock = provider / "provider-configuration.lock"
+        configuration_lock.touch(mode=0o600)
+        configuration_lock.chmod(0o600)
+        run(
+            provider,
+            "/usr/bin/python3", str(self.factory / "scripts/provider-coordinator.py"),
+            "--db", str(provider / "accounting/state-v2.sqlite3"), "status",
+        )
+
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            product_root=self.product,
+            project="relay",
+            root=self.root,
+            takeover_project="relay",
+        )
+        with mock.patch.object(Path, "home", return_value=account):
+            value = ENVIRONMENT.prepare(args)
+
+        active = json.loads((self.root / "projects/relay/active.json").read_text())
+        self.assertEqual(value["qualification_mode"], "takeover")
+        self.assertEqual(active["qualification_mode"], "takeover")
+        self.assertEqual(active["takeover_kits_root"], str(kits))
+        self.assertEqual(active["operator_map_path"], str(operator_map.resolve()))
+        self.assertFalse((self.product / "factory/linear-map.json").exists())
+        self.assertFalse((self.root / "provider").exists())
+        self.assertFalse((self.root / "projects/relay/controller").exists())
+
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "does not match active product",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                self.product,
+                {"product_tree": "0" * 40},
+                {"tickets": tickets},
+            )
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            f"{protected_sha}^",
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "does not contain the active product",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                self.product,
+                {"product_tree": protected_tree},
+                {"tickets": tickets},
+            )
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            current_protected_sha,
+        )
+
+        unrelated = self.workspace / "unrelated-product"
+        shutil.copytree(self.product, unrelated, ignore=shutil.ignore_patterns(".git"))
+        run(unrelated, "git", "init", "-q", "-b", "main")
+        run(unrelated, "git", "config", "user.name", "Test")
+        run(unrelated, "git", "config", "user.email", "test@example.invalid")
+        run(unrelated, "git", "remote", "add", "origin", "git@example.invalid")
+        run(unrelated, "git", "add", ".")
+        run(unrelated, "git", "commit", "-qm", "unrelated")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "not a linked canonical worktree",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                unrelated,
+                {"product_tree": protected_tree},
+                {"tickets": tickets},
+            )
+        (self.product / "application.txt").write_text("not control data\n")
+        run(self.product, "git", "add", "application.txt")
+        run(self.product, "git", "commit", "-qm", "change product code")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "changes non-control product files",
+        ):
+            ENVIRONMENT.validate_takeover_product(
+                source_product,
+                self.product,
+                {"product_tree": protected_tree},
+                {"tickets": tickets},
+            )
 
     def test_upgrades_release_without_replacing_controller_state(self) -> None:
         args = argparse.Namespace(

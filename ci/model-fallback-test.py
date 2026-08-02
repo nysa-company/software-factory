@@ -5,6 +5,7 @@ import base64
 import datetime as dt
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -117,13 +118,21 @@ class FallbackTest(unittest.TestCase):
         runs.mkdir(parents=True)
         now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         manifest = {
+            "accounting_schema": "1",
             "accounting_state": "completed",
+            "adapter": failed["adapter"],
+            "adapter_version": "test-v1",
+            "cost_basis": "test_fixture",
+            "effective_cost": "1.00",
             "exit_status": "75",
             "go_issued": "1",
             "kit_sha": "a" * 40,
+            "model_id": failed["selection_id"],
             "policy_hash": resolution["policy_hash"],
             "phase": "completed",
+            "prompt_version": "1",
             "provider_family": failed["provider_family"],
+            "reserved_usd": "2.00",
             "role": "builder",
             "role_exit": "provider_failed",
             "role_branch_before": "ticket/T-1",
@@ -131,15 +140,23 @@ class FallbackTest(unittest.TestCase):
             "role_remote_before": self.head,
             "route_id": failed["route_id"],
             "run_id": "run-failed-1",
+            "selection_reason": "test_fixture",
+            "started_at": now,
             "task_submitted": "1",
             "terminal_at": now,
             "ticket": "T-1",
+            "turns": "1",
         }
         (runs / "run-failed-1.meta").write_text(
             "".join(f"{key}={value}\n" for key, value in sorted(manifest.items()))
         )
+        (self.product / "factory/ledger.csv").write_text(
+            "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
+            "exit_status,run_id,provider_family,model_id,selection_reason,"
+            "cost_basis,adapter_version\n"
+        )
         (self.product / "factory/runtime-ledger.csv").write_text(
-            "ticket,run_id,exit_status\nT-1,run-failed-1,75\n"
+            "ticket,run_id,exit_status\nT-1,stale-runtime-view,0\n"
         )
         (self.repo / "src/app.txt").write_text("partial handoff\n")
 
@@ -147,7 +164,7 @@ class FallbackTest(unittest.TestCase):
         self.temp.cleanup()
 
     def command(
-        self, action, *extra, check=True, reason="credits_exhausted"
+        self, action, *extra, check=True, reason="credits_exhausted", environment=None
     ):
         result = subprocess.run(
             [
@@ -164,6 +181,7 @@ class FallbackTest(unittest.TestCase):
             ],
             text=True,
             capture_output=True,
+            env={**os.environ, **(environment or {})},
         )
         if result.returncode and check:
             self.fail(result.stderr)
@@ -271,6 +289,109 @@ class FallbackTest(unittest.TestCase):
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
 
+    def test_qualification_attempt_limit_is_candidate_scoped(self):
+        current = self.product / "factory/runs/run-failed-1.meta"
+        historical = self.product / "factory/runs/run-000-historical.meta"
+        historical.write_text(
+            current.read_text()
+            .replace("run_id=run-failed-1", "run_id=run-000-historical")
+            .replace("kit_sha=" + "a" * 40, "kit_sha=" + "f" * 40)
+            .replace(
+                "started_at=2026-",
+                "started_at=2025-",
+            )
+            .replace(
+                "terminal_at=2026-",
+                "terminal_at=2025-",
+            )
+        )
+        applied = self.command("qualification-apply")
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+
+    def test_fallback_reduces_authoritative_accounting_not_runtime_view(self):
+        preview = self.command("preview")
+        self.assertEqual(preview["failed_run_id"], "run-failed-1")
+
+    def test_builder_handoff_accepts_only_its_own_ticket_log(self):
+        ticket = self.repo / "factory/tickets/T-1.md"
+        original = ticket.read_text()
+        ticket.write_text(original + "Builder root cause: scoped failure.\n")
+        preview = self.command("preview")
+        self.assertEqual(preview["failed_run_id"], "run-failed-1")
+
+        ticket.write_text(original)
+        sibling = self.repo / "factory/tickets/T-2.md"
+        sibling.write_text("State: Backlog\n")
+        result = self.command("preview", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "path is forbidden for builder: factory/tickets/T-2.md",
+            result.stderr,
+        )
+
+    def test_qualification_apply_uses_sealed_local_successor_manifest(self):
+        protected = self.repo / "factory/QUALIFICATION.json"
+        value = json.loads(protected.read_text())
+        value["factory_sha"] = "e" * 40
+        protected.write_text(json.dumps(value))
+        git(self.repo, "add", "factory/QUALIFICATION.json")
+        git(self.repo, "commit", "-m", "unauthorized protected manifest")
+        git(
+            self.repo, "update-ref", "refs/remotes/origin/main",
+            git(self.repo, "rev-parse", "HEAD"),
+        )
+        git(self.repo, "reset", "--hard", self.head)
+        (self.repo / "src/app.txt").write_text("partial handoff\n")
+
+        qualification = self.product / "factory/QUALIFICATION.json"
+        qualification.write_text(json.dumps({
+            "factory_sha": "f" * 40,
+            "generation": 1,
+            "mode": "successor",
+            "schema": "nysa.software-factory.qualification/v2",
+            "source_factory_sha": "b" * 40,
+            "tickets": ["T-1"],
+        }))
+        git(self.product, "init", "-q", "-b", "main")
+        git(self.product, "config", "user.name", "Test")
+        git(self.product, "config", "user.email", "test@example.test")
+        git(self.product, "add", "factory/QUALIFICATION.json")
+        git(self.product, "commit", "-m", "local qualification authority")
+
+        applied = self.command("qualification-apply", environment={
+            "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_RELEASE_SHA": "f" * 40,
+            "FACTORY_ROOT": str(self.product),
+        })
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+
+        route = self.repo / "factory/route-plans/T-1.json"
+        journal = json.loads(route.read_text())
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        migrated = MANAGER.migrate_v2_journal(
+            journal,
+            applied["commit_sha"],
+            "f" * 40,
+            "2026-07-18T12:02:00Z",
+            catalog,
+            routes,
+            profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(migrated) + "\n")
+        ticket = self.repo / "factory/tickets/T-1.md"
+        ticket.write_text(ticket.read_text().replace("a" * 40, "f" * 40))
+        git(self.repo, "add", "factory/route-plans/T-1.json", "factory/tickets/T-1.md")
+        git(self.repo, "commit", "-m", "migrate fallback route")
+        git(self.repo, "push", "origin", "ticket/T-1")
+
+        recovered = self.command("qualification-apply", environment={
+            "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_RELEASE_SHA": "f" * 40,
+            "FACTORY_ROOT": str(self.product),
+        })
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["commit_sha"], git(self.repo, "rev-parse", "HEAD"))
+
     def test_qualification_apply_migrates_initial_v1_plan(self):
         path = self.repo / "factory/route-plans/T-1.json"
         journal = json.loads(path.read_text())
@@ -308,7 +429,7 @@ class FallbackTest(unittest.TestCase):
         )
         result = self.command("qualification-apply", check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("only after the first role attempt", result.stderr)
+        self.assertIn("failed run is not the latest unique ticket attempt", result.stderr)
 
     def test_handoff_preserves_role_commits_and_remaining_dirty_work(self):
         git(self.repo, "add", "src/app.txt")

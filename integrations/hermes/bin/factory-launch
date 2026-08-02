@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|qualification|dispatch-plan|state-machine|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|ticket-control|qualification|dispatch-plan|state-machine|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -346,13 +346,19 @@ for key in required:
     item = value[key]
     if not isinstance(item, str) or not item or "\n" in item or "\r" in item or "\t" in item:
         raise SystemExit(1)
-optional = (value.get("receipt_id", ""), value.get("product_tree", ""))
+optional = (
+    value.get("receipt_id", ""), value.get("product_tree", ""),
+    value.get("qualification_mode", ""), value.get("takeover_kits_root", ""),
+    value.get("operator_map_path", ""),
+)
 if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0"):
-    for item in optional:
-        if not isinstance(item, str) or not item or any(ch in item for ch in "\n\r\t"):
+    for index, item in enumerate(optional):
+        if not isinstance(item, str) or any(ch in item for ch in "\n\r\t"):
+            raise SystemExit(1)
+        if index < 2 and not item:
             raise SystemExit(1)
 else:
-    optional = ("", "")
+    optional = ("", "", "", "")
 print("\t".join((*[value[key] for key in required], *optional)))
 PY
 )" || die "project active record is invalid"
@@ -377,7 +383,8 @@ unset FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER FACTORY_LAUNCH_TEST_ACTIVE_PARSED
   ACTIVE_PARSED_MARKER ACTIVE_PARSED_GATE ACTIVE_PARSED_TRIES 2>/dev/null || true
 
 IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
-  ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH RECEIPT_ID ACTIVE_PRODUCT_TREE <<EOF
+  ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH RECEIPT_ID ACTIVE_PRODUCT_TREE \
+  QUALIFICATION_MODE TAKEOVER_KITS_ROOT TAKEOVER_OPERATOR_MAP <<EOF
 $ACTIVE_DATA
 EOF
 
@@ -389,6 +396,26 @@ case "$ACTIVE_CONTRACT" in
   1.0.0|1.1.0|1.2.0|1.3.0|1.4.0|1.5.0|1.6.0|1.7.0|1.8.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
   *) die "active Hermes contract is incompatible" ;;
 esac
+
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  [[ "$QUALIFICATION_MODE" == "isolated" || "$QUALIFICATION_MODE" == "takeover" ]] ||
+    die "qualification state mode is invalid"
+  if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+    [[ "$TAKEOVER_KITS_ROOT" == "$ACCOUNT_HOME/.factory/kits" ]] ||
+      die "qualification takeover root is invalid"
+    require_managed_directory "$TAKEOVER_KITS_ROOT" "qualification takeover kits root"
+    TAKEOVER_OPERATOR_MAP="$(expand_absolute_path "$TAKEOVER_OPERATOR_MAP" 2>/dev/null || true)"
+    [[ -n "$TAKEOVER_OPERATOR_MAP" ]] ||
+      die "qualification takeover operator map is invalid"
+    require_managed_file "$TAKEOVER_OPERATOR_MAP" "qualification takeover operator map"
+  else
+    [[ -z "$TAKEOVER_KITS_ROOT$TAKEOVER_OPERATOR_MAP" ]] ||
+      die "isolated qualification names takeover state"
+  fi
+else
+  [[ -z "$QUALIFICATION_MODE$TAKEOVER_KITS_ROOT$TAKEOVER_OPERATOR_MAP" ]] ||
+    die "installed activation contains qualification controls"
+fi
 
 CERTIFIED_PRODUCT_ORIGIN=""
 if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
@@ -403,10 +430,14 @@ if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
   require_managed_file "$RECEIPT_FILE" "active certification receipt"
   CERTIFIED_PRODUCT_ORIGIN="$("$PYTHON_BIN" -I -S - "$RECEIPT_FILE" \
     "$RECEIPT_ID" "$PROJECT" "$KIT_SHA" "$KIT_TREE" "$PRODUCT_ROOT" \
-    "$ACTIVE_PRODUCT_TREE" "$CONTRACT_VERSION" <<'PY'
+    "$ACTIVE_PRODUCT_TREE" "$CONTRACT_VERSION" "$QUALIFICATION_MODE" \
+    "$TAKEOVER_KITS_ROOT" "$TAKEOVER_OPERATOR_MAP" <<'PY'
 import json, os, stat, sys
 
-path, receipt_id, project, kit_sha, kit_tree, product_path, product_tree, contract = sys.argv[1:]
+(
+    path, receipt_id, project, kit_sha, kit_tree, product_path, product_tree,
+    contract, qualification_mode, takeover_kits_root, operator_map_path,
+) = sys.argv[1:]
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 descriptor = os.open(path, flags)
 try:
@@ -435,6 +466,17 @@ expected = {
 }
 if any(value.get(key) != item for key, item in expected.items()):
     raise SystemExit(1)
+if qualification_mode:
+    if value.get("qualification_mode") != qualification_mode:
+        raise SystemExit(1)
+    if qualification_mode == "takeover":
+        if (
+            value.get("takeover_kits_root") != takeover_kits_root
+            or value.get("operator_map_path") != operator_map_path
+        ):
+            raise SystemExit(1)
+    elif "takeover_kits_root" in value or "operator_map_path" in value:
+        raise SystemExit(1)
 origin = value.get("product_origin")
 if not isinstance(origin, str) or not origin or any(ch in origin for ch in "\r\n\t"):
     raise SystemExit(1)
@@ -463,6 +505,19 @@ EXPECTED_RELEASE="$(cd "$EXPECTED_RELEASE" 2>/dev/null && pwd -P)" ||
   die "active release escapes its exact physical release location"
 [[ "$ACTIVE_PRODUCT_PATH" == "$PRODUCT_ROOT" ]] ||
   die "active product path does not match the registry"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  QUALIFICATION_PRODUCT_TREE="$(git -C "$PRODUCT_ROOT" \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+    -c credential.helper= -c diff.external= rev-parse 'HEAD^{tree}' 2>/dev/null)" ||
+    die "qualification product tree cannot be resolved"
+  [[ "$QUALIFICATION_PRODUCT_TREE" == "$ACTIVE_PRODUCT_TREE" ]] ||
+    die "qualification product no longer matches its sealed tree"
+  [[ -z "$(git -C "$PRODUCT_ROOT" \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+    -c credential.helper= -c diff.external= status --porcelain \
+    --untracked-files=all 2>/dev/null)" ]] ||
+    die "qualification product is no longer clean"
+fi
 [[ ! -e "$RELEASE_PATH/.git" ]] ||
   die "active release contains unexpected Git metadata"
 
@@ -554,9 +609,12 @@ export FACTORY_RELEASE_TREE="$KIT_TREE"
 export FACTORY_RELEASE_PATH="$RELEASE_PATH"
 export FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT"
 
+MODEL_STATE_ROOT="$KITS_ROOT/projects"
 PROVIDER_STATE_ROOT="$HOME/.factory"
 PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/isolated-v1.enabled"
-if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+  MODEL_STATE_ROOT="$TAKEOVER_KITS_ROOT/projects"
+elif [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
   PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"
   PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/provider-activation.json"
 fi
@@ -567,7 +625,7 @@ HELPER_ENV=(
   "PATH=$SAFE_PATH"
   "TMPDIR=$SAFE_TMPDIR"
   "FACTORY_ROOT=$PRODUCT_ROOT"
-  "FACTORY_MODEL_STATE_ROOT=$KITS_ROOT/projects"
+  "FACTORY_MODEL_STATE_ROOT=$MODEL_STATE_ROOT"
   "FACTORY_PROJECT=$PROJECT"
   "FACTORY_MODEL_POLICY_FILE=$PRODUCT_ROOT/factory/model-policy.json"
   "FACTORY_RELEASE_SHA=$KIT_SHA"
@@ -575,6 +633,9 @@ HELPER_ENV=(
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
   "FACTORY_RELEASE_CONTRACT_VERSION=$ACTIVE_CONTRACT"
 )
+if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+  HELPER_ENV+=("FACTORY_OPERATOR_MAP=$TAKEOVER_OPERATOR_MAP")
+fi
 if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE_CONTRACT" == "1.8.0" ]]; then
   HELPER_ENV+=(
     "FACTORY_PROVIDER_DB=$PROVIDER_STATE_ROOT/accounting/state-v2.sqlite3"
@@ -592,7 +653,19 @@ if [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE
   )
 fi
 if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
-  HELPER_ENV+=("FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT")
+  HELPER_ENV+=(
+    "FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"
+    "FACTORY_PROVIDER_PRODUCT_ID=$PROJECT:$KIT_SHA"
+    "FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"
+    "FACTORY_LEDGER=$PRODUCT_ROOT/factory/runtime-ledger.csv"
+    "FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"
+    "FACTORY_REFRESH_RUNTIME_LEDGER=1"
+  )
+  if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+    HELPER_ENV+=(
+      "FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"
+    )
+  fi
 fi
 if [[ -n "$PROFILE_GH_TOKEN" ]]; then
   HELPER_ENV+=("GH_TOKEN=$PROFILE_GH_TOKEN")
@@ -693,7 +766,11 @@ validate_preflight_command() {
 }
 
 controller_state_dir() {
-  CONTROLLER_STATE_DIR="$KITS_ROOT/projects/$PROJECT/controller"
+  if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+    CONTROLLER_STATE_DIR="$TAKEOVER_KITS_ROOT/projects/$PROJECT/controller"
+  else
+    CONTROLLER_STATE_DIR="$KITS_ROOT/projects/$PROJECT/controller"
+  fi
   if [[ ! -e "$CONTROLLER_STATE_DIR" ]]; then
     mkdir -m 700 "$CONTROLLER_STATE_DIR" ||
       die "cannot create controller state directory"
@@ -1035,6 +1112,25 @@ PY
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR"
+    ;;
+  ticket-control)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "ticket control requires contract 1.8.0"
+    [[ $# -eq 4 && ( "$1" == "pause" || "$1" == "resume" ) &&
+       "$2" == "--ticket" && "$3" =~ ^T-[0-9]+$ && "$4" == "--json" ]] || usage
+    CONTROL_ACTION="$1" TICKET="$3"
+    controller_state_dir
+    CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
+    require_managed_file "$CONTROLLER" "active release controller"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+      --launcher "$SELF_PATH" \
+      --project "$PROJECT" \
+      --product-root "$PRODUCT_ROOT" \
+      --release-path "$RELEASE_PATH" \
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      --action "$CONTROL_ACTION" --ticket "$TICKET"
     ;;
   qualification)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
@@ -1956,7 +2052,8 @@ PY
             [[ "$TRANSITION_STAGE" == AWAIT-OPERATOR\ Linear\ approval\ observed* ]] ||
               die "transition receipt does not authorize approval attestation"
           else
-            [[ "$TRANSITION_STAGE" == AWAIT-MERGE\ approval\ attested* ]] ||
+            [[ "$TRANSITION_STAGE" == AWAIT-MERGE\ approval\ attested* ||
+               "$TRANSITION_STAGE" == "AWAIT-MERGE protected auto-merge requested; await merge and closeout" ]] ||
               die "transition receipt does not authorize protected auto-merge"
           fi
           ;;

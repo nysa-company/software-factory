@@ -30,6 +30,7 @@ from effective_ticket import (  # noqa: E402
     apply_operator_fields,
     committed_factory_file,
     committed_ticket,
+    operator_version,
 )
 
 API_URL = "https://api.linear.app/graphql"
@@ -182,9 +183,14 @@ def gql(key, query, variables=None):
                 raise RuntimeError(f"GraphQL errors: {data['errors']}")
             return data["data"]
         except urllib.error.HTTPError as error:
-            if error.code == 429 and attempt < 2:
-                wait = int(error.headers.get("Retry-After", "10"))
-                log(f"rate limited, backing off {wait}s")
+            if error.code in {429, 500, 502, 503, 504} and attempt < 2:
+                raw_wait = error.headers.get("Retry-After")
+                try:
+                    wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
+                except (TypeError, ValueError):
+                    wait = 2 ** attempt
+                wait = min(max(wait, 0), 30)
+                log(f"Linear HTTP {error.code}, backing off {wait}s")
                 time.sleep(wait)
                 continue
             detail = error.read().decode(errors="replace")
@@ -315,7 +321,7 @@ def sync_lock(factory_dir, dry_run=False):
     if dry_run:
         yield
         return
-    lock_path = factory_dir / ".linear-sync.lock"
+    lock_path = factory_dir / ".linear-sync-cycle.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("w") as handle:
         try:
@@ -323,6 +329,48 @@ def sync_lock(factory_dir, dry_run=False):
         except BlockingIOError as error:
             raise RuntimeError("another reconciliation cycle is active") from error
         yield
+
+
+@contextmanager
+def map_lock(map_path):
+    with (map_path.parent / ".linear-sync.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def operator_clear_intents(map_path):
+    directory = map_path.parent / ".linear-operator-clears"
+    if not directory.is_dir() or directory.is_symlink():
+        return []
+    result = []
+    for path in sorted(directory.glob("T-*.json")):
+        value = json.loads(path.read_text())
+        if (
+            set(value) != {"operator_version", "schema", "ticket"}
+            or value.get("schema") != "linear-operator-clear/v1"
+            or path.name != f"{value.get('ticket')}-{value.get('operator_version')}.json"
+            or not re.fullmatch(r"T-[0-9]+", value.get("ticket", ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", value.get("operator_version", ""))
+        ):
+            raise ValueError("Linear operator clear intent is invalid")
+        result.append((path, value))
+    return result
+
+
+def apply_operator_clears(map_path, mapping):
+    for _path, intent in operator_clear_intents(map_path):
+        entry = mapping.get("tickets", {}).get(intent["ticket"], {})
+        if operator_version(entry.get("operator") or {}) == intent["operator_version"]:
+            entry.pop("operator", None)
+
+
+def retire_operator_clears(map_path):
+    with map_lock(map_path):
+        mapping = load_map(map_path)
+        for path, intent in operator_clear_intents(map_path):
+            entry = mapping.get("tickets", {}).get(intent["ticket"], {})
+            if operator_version(entry.get("operator") or {}) != intent["operator_version"]:
+                path.unlink()
 
 
 def load_map(path):
@@ -338,7 +386,9 @@ def load_map(path):
 
 
 def save_map(path, mapping):
-    atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
+    with map_lock(path):
+        apply_operator_clears(path, mapping)
+        atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
 
 
 def record_failure(map_path, mapping, error):
@@ -865,12 +915,36 @@ def desired_labels(ticket, config):
     return [config["labels"][name] for name in names if name in config.get("labels", {})]
 
 
+def linear_updated_after(candidate, baseline):
+    if not isinstance(candidate, str) or not isinstance(baseline, str):
+        return False
+    try:
+        return dt.datetime.fromisoformat(candidate.replace("Z", "+00:00")) > (
+            dt.datetime.fromisoformat(baseline.replace("Z", "+00:00"))
+        )
+    except ValueError:
+        return False
+
+
 def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     operator = dict(entry.get("operator", {}))
-    if operator.get("state") and normalize_state(operator.get("state_base", "")) != ticket["state"]:
+    blocked_remote_updated_at = entry.get("blocked_remote_updated_at")
+    source_digest = hashlib.sha256(ticket["text"].encode()).hexdigest()
+    source_changed = (
+        operator.get("state")
+        and entry.get("operator_state_source_sha256") != source_digest
+    )
+    if operator.get("state") and (
+        source_changed
+        or normalize_state(operator.get("state_base", "")) != ticket["state"]
+    ):
         operator.pop("state", None)
         operator.pop("state_base", None)
         operator.pop("approval", None)
+        blocked_remote_updated_at = None
+        if not dry:
+            entry.pop("blocked_remote_updated_at", None)
+            entry.pop("operator_state_source_sha256", None)
     remote_priority = PRIORITY_NAMES.get(actual.get("priority", 0), "none")
     operator["priority"] = remote_priority
 
@@ -884,31 +958,54 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     operator["initiative"] = remote_initiative
 
     remote_state = normalize_state(actual["state"]["name"])
+    if (
+        ticket["state"] == "blocked-escalated"
+        and remote_state == "blocked-escalated"
+        and operator.get("state")
+    ):
+        operator.pop("state", None)
+        operator.pop("state_base", None)
+        operator.pop("approval", None)
+        if not dry:
+            entry.pop("operator_state_source_sha256", None)
     effective = parse_ticket_text(
         ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)
     )
     local_state = effective["state"]
+    remote_updated_at = actual.get("updatedAt")
+    if local_state == "blocked-escalated" and remote_state == local_state:
+        if isinstance(remote_updated_at, str):
+            blocked_remote_updated_at = remote_updated_at
+            if not dry:
+                entry["blocked_remote_updated_at"] = remote_updated_at
     allowed = (local_state, remote_state) in OPERATOR_TRANSITIONS
     if (
         local_state == "blocked-escalated"
         and remote_state == effective["resume_state"]
         and remote_state in STATES
         and remote_state not in {"awaiting approval", "approved", "done"}
+        and linear_updated_after(
+            remote_updated_at, blocked_remote_updated_at
+        )
     ):
         allowed = True
     if allowed:
         operator["state"] = STATES[remote_state][0]
         operator["state_base"] = ticket["state"]
+        if not dry:
+            entry["operator_state_source_sha256"] = source_digest
         if remote_state == "approved":
             operator["approval"] = "Linear"
     elif remote_state != local_state:
         log(f"{ticket['id']}: ignoring non-operator transition {local_state} -> {remote_state}")
 
-    operator["linear_updated_at"] = actual.get("updatedAt")
+    operator["linear_updated_at"] = remote_updated_at
     operator["observed_at"] = utc_now()
     if dry:
         log(f"{ticket['id']}: DRY would update operator overlay")
     else:
+        if not operator.get("state"):
+            entry.pop("operator_state_source_sha256", None)
         entry["operator"] = operator
     return parse_ticket_text(
         ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)
@@ -1120,6 +1217,7 @@ def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
     if not dry:
         mapping["_sync"] = {"last_success_at": utc_now(), "last_error": None}
         save_map(map_path, mapping)
+        retire_operator_clears(map_path)
 
 
 def main():

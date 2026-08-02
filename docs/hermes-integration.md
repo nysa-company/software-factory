@@ -162,18 +162,29 @@ Contract 1.8 caps controller capacity at four. Tickets are identified by
 product, ticket, branch, and authenticated passport; numbered cells are
 disposable worktrees. A 15-second non-overlapping LaunchAgent and terminal-run
 watch call `reconcile`. Four PRs may validate concurrently while one renewable
-publication lease serializes merge requests. `qualification --json` writes an
-immutable green report only when all four passports, charges, restart and
-relocation events, protected checks, PR heads, merge commits, and protected
-main attestations match.
+publication lease serializes merge requests. `qualification --json` accepts
+either an acyclic ordered three-ticket cohort at capacity three or four
+independent tickets at capacity four. Both forms require exact passports,
+charges, restart and relocation events, protected checks, PR heads, merge
+commits, and protected-main attestations. Only the four-ticket form asserts
+overlapping PR validation.
 
 Before promotion, `scripts/qualification-environment.py` may materialize the
 exact clean candidate as a read-only release under an owner-only
 `/private/tmp/nysa-sf-qualification.*` root. Its launcher derives that root
-from its sealed path, isolates controller and worktree state, and retains the
-account's real credential boundary while registering only the qualification
-product clone. It does not install or activate the candidate in the production
-kit registry.
+from its sealed path and retains the account's real credential boundary. The
+default fresh mode isolates controller, provider, and worktree state. An
+explicit `--takeover-project <project>` production-successor mode instead
+requires a clean control-only linked worktree of the canonical product,
+drained installed controller, current provider
+activation, source Factory binding, and authenticated selected-ticket
+passports. The linked worktree is based on exact protected main and needs no
+standalone setup pull request. Its sealed helper environment binds the
+canonical live Linear map. It reuses the canonical controller and provider
+state in place under the same reconciliation lock while keeping the sealed
+candidate and disposable worktrees isolated. It neither copies passports nor
+installs or activates the candidate in the production kit registry. The successor reducer
+caps candidate-only spend while retaining and validating cumulative history.
 
 A repeated pre-provider qualification may retain remote ticket branches from
 the prior candidate. `factory/qualification/preprovider-branch-resets.json`
@@ -198,6 +209,12 @@ same call may create it at the Narrator boundary only after that reviewed-head
 lineage passes unchanged. A completed, role-valid Cursor run remains eligible
 when its billing state conservatively reserves the full run budget. It cannot
 approve or merge.
+Run manifests remain in the sealed controller product, while their effective
+ledger rows are read from the claimed ticket worktree's canonical main
+checkout (or an explicit trusted ledger override). This is the same runtime
+path rule used by role execution and attestation, so a qualification control
+checkout cannot hide a successfully completed role behind its stale ignored
+ledger copy.
 For Contract 1.8, both profile skills are compatibility documentation only.
 They invoke `reconcile` and cannot choose stages or spawn an agentic
 dispatcher or supervisor.

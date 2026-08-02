@@ -346,7 +346,10 @@ class TicketPassportTest(unittest.TestCase):
             env=environment,
             capture_output=True,
             check=False,
-            timeout=30,
+            # The real oversized-output path hashes, terminalizes, and cleans a
+            # multi-megabyte artifact. Keep this harness bound above its
+            # measured parallel-suite runtime; production bounds are unchanged.
+            timeout=90,
         )
         self.assertEqual(result.returncode, 11, result.stderr.decode())
         self.assertIn(b"ROLE_OUTPUT_INVALID", result.stderr)

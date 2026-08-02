@@ -91,6 +91,7 @@ class RoleBoundaryPolicy:
 
     roles: Tuple[Tuple[str, Tuple[str, ...]], ...]
     role_forbidden_paths: Tuple[Tuple[str, Tuple[str, ...]], ...] = ()
+    role_forbidden_exceptions: Tuple[Tuple[str, Tuple[str, ...]], ...] = ()
     protected_paths: Tuple[str, ...] = DEFAULT_PROTECTED
     journal_path: str = "factory/model-route-journal.json"
     max_file_bytes: int = 1024 * 1024
@@ -122,6 +123,18 @@ class RoleBoundaryPolicy:
             (role, _patterns(patterns, "role forbidden path"))
             for role, patterns in sorted(forbidden_value.items())
         ]
+        exception_value = value.get("role_forbidden_exceptions", {})
+        if not isinstance(exception_value, dict):
+            raise HandoffError("role forbidden exceptions must be an object")
+        unknown_exceptions = set(exception_value) - set(roles)
+        if unknown_exceptions:
+            raise HandoffError(
+                "role forbidden exceptions reference an unknown role"
+            )
+        normalized_exceptions = [
+            (role, _patterns(patterns, "role forbidden exception"))
+            for role, patterns in sorted(exception_value.items())
+        ]
         protected = _patterns(
             value.get("protected_paths", list(DEFAULT_PROTECTED)), "protected path"
         )
@@ -142,6 +155,7 @@ class RoleBoundaryPolicy:
         return cls(
             tuple(normalized_roles),
             tuple(normalized_forbidden),
+            tuple(normalized_exceptions),
             protected,
             journal,
             maximum,
@@ -158,6 +172,9 @@ class RoleBoundaryPolicy:
     def forbidden_for(self, role):
         return dict(self.role_forbidden_paths).get(role, ())
 
+    def forbidden_exceptions_for(self, role):
+        return dict(self.role_forbidden_exceptions).get(role, ())
+
     def canonical(self):
         return {
             "journal_path": self.journal_path,
@@ -166,6 +183,10 @@ class RoleBoundaryPolicy:
             "provider_identities": list(self.provider_identities),
             "role_forbidden_paths": {
                 role: list(patterns) for role, patterns in self.role_forbidden_paths
+            },
+            "role_forbidden_exceptions": {
+                role: list(patterns)
+                for role, patterns in self.role_forbidden_exceptions
             },
             "roles": {role: list(patterns) for role, patterns in self.roles},
             "schema": self.schema,
@@ -355,7 +376,7 @@ def _parse_index(raw):
     return entries
 
 
-def _filesystem_hazard_check(root):
+def _filesystem_hazard_check(root, ignored):
     for directory, names, files in os.walk(root, topdown=True, followlinks=False):
         relative = os.path.relpath(directory, root)
         if relative == ".":
@@ -364,9 +385,15 @@ def _filesystem_hazard_check(root):
             raise HandoffError(
                 f"nested repository is forbidden: {Path(relative).as_posix()}"
             )
+        names[:] = [
+            name for name in names
+            if (Path(relative) / name).as_posix().removeprefix("./") not in ignored
+        ]
         for name in names + files:
             path = Path(directory) / name
             item_relative = path.relative_to(root).as_posix()
+            if item_relative in ignored:
+                continue
             try:
                 metadata = path.lstat()
             except OSError as error:
@@ -583,7 +610,10 @@ def _validate_committed_changes(repo, baseline, head, role, policy):
             raise HandoffError(
                 f"committed path is outside the {role} boundary: {path}"
             )
-        if _matches(path, policy.forbidden_for(role)):
+        if (
+            _matches(path, policy.forbidden_for(role))
+            and not _matches(path, policy.forbidden_exceptions_for(role))
+        ):
             raise HandoffError(f"committed path is forbidden for {role}: {path}")
         previous = baseline_tree.get(path)
         current = head_tree.get(path)
@@ -670,15 +700,32 @@ def preview_handoff(
     _validate_committed_changes(
         root, provider_scan_base or expected_head, head, role, policy
     )
-    _filesystem_hazard_check(root)
-
     tree = _parse_tree(_git(root, ["ls-tree", "-rz", "--full-tree", "HEAD"]))
     index_raw = _git(root, ["ls-files", "-z", "--stage"])
     index = _parse_index(index_raw)
     untracked_raw = _git(
         root, ["ls-files", "-z", "--others", "--exclude-standard", "--"]
     )
-    untracked = {_decode_path(item) for item in untracked_raw.split(b"\0") if item}
+    untracked = set()
+    for item in untracked_raw.split(b"\0"):
+        if not item:
+            continue
+        if item.endswith(b"/"):
+            nested = _decode_path(item[:-1])
+            raise HandoffError(f"nested repository is forbidden: {nested}")
+        untracked.add(_decode_path(item))
+    ignored_raw = _git(
+        root,
+        [
+            "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+            "--directory", "--",
+        ],
+    )
+    ignored = {
+        _decode_path(item[:-1] if item.endswith(b"/") else item)
+        for item in ignored_raw.split(b"\0") if item
+    }
+    _filesystem_hazard_check(root, ignored)
     candidates = sorted(set(tree) | set(index) | untracked, key=lambda item: item.encode())
     allowed = policy.paths_for(role)
     entries = []
@@ -712,7 +759,10 @@ def preview_handoff(
                 raise HandoffError(f"protected path changed: {path}")
             if not _matches(path, allowed):
                 raise HandoffError(f"path is outside the {role} boundary: {path}")
-            if _matches(path, policy.forbidden_for(role)):
+            if (
+                _matches(path, policy.forbidden_for(role))
+                and not _matches(path, policy.forbidden_exceptions_for(role))
+            ):
                 raise HandoffError(f"path is forbidden for {role}: {path}")
             if re.fullmatch(r"factory/tickets/T-[0-9]+\.md", path):
                 if current is None or previous is None:

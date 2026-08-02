@@ -1086,6 +1086,8 @@ EOF
 factory/runtime-ledger.csv
 factory/runs/
 factory/.active-runs/
+factory/.linear-sync-cycle.lock
+factory/.linear-operator-clears/
 factory/.launch.lock/
 factory/.provider.lock/
 factory/.ledger.lock/

@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -130,6 +131,7 @@ class FakeLinear:
                 "labels": {"nodes": [{"id": item, "name": item} for item in data.get("labelIds", [])]},
                 "assignee": {"id": data["assigneeId"]} if data.get("assigneeId") else None,
                 "comments": {"nodes": [], "pageInfo": {"hasPreviousPage": False, "startCursor": None}},
+                "updatedAt": "2026-08-01T00:00:00Z",
             }
             self.issues[issue_id] = issue
             return {"issueCreate": {"issue": {"id": issue_id, "identifier": issue["identifier"]}}}
@@ -145,6 +147,7 @@ class FakeLinear:
                     issue[key] = data[key]
             if "stateId" in data:
                 issue["state"] = {"id": data["stateId"], "name": self.state_name(data["stateId"])}
+                issue["updatedAt"] = "2026-08-01T00:00:01Z"
             if "projectId" in data:
                 issue["project"] = {"id": data["projectId"]}
             if "labelIds" in data:
@@ -383,8 +386,44 @@ class LinearSyncTest(unittest.TestCase):
         )
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
         issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
+        issue["updatedAt"] = "2026-08-01T00:00:00Z"
         self.reconcile()
         self.assertIn("State: Blocked-Escalated", path.read_text())
+        self.assertEqual(issue["state"]["name"], "Blocked-Escalated")
+        self.assertNotIn("state", self.mapping["tickets"]["T-001"]["operator"])
+
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        operator = entry["operator"]
+        self.assertEqual(
+            entry["blocked_remote_updated_at"], "2026-08-01T00:00:01Z"
+        )
+        issue["state"] = {
+            "id": config()["states"]["building"], "name": "Building"
+        }
+        issue["updatedAt"] = "2026-08-01T00:00:02Z"
+        self.reconcile()
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
+
+        path.write_text(
+            path.read_text() + "\nNew blocker under the same coarse state.\n"
+        )
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        self.assertNotIn("state", entry["operator"])
+        self.assertEqual(issue["state"]["name"], "Blocked-Escalated")
+
+        issue["updatedAt"] = "2026-08-01T00:00:03Z"
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        self.assertEqual(
+            entry["blocked_remote_updated_at"], "2026-08-01T00:00:03Z"
+        )
+        issue["state"] = {
+            "id": config()["states"]["building"], "name": "Building"
+        }
+        issue["updatedAt"] = "2026-08-01T00:00:04Z"
+        self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
     def test_blocked_ticket_cannot_resume_to_evidence_sensitive_state(self):
@@ -668,7 +707,7 @@ class LinearSyncTest(unittest.TestCase):
         }
         LINEAR.save_map(self.map_path, self.mapping)
         before = self.map_path.read_bytes()
-        with (self.factory / ".linear-sync.lock").open("w") as handle:
+        with (self.factory / ".linear-sync-cycle.lock").open("w") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts/linear-sync.py"),
@@ -679,6 +718,32 @@ class LinearSyncTest(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(self.map_path.read_bytes(), before)
+
+    def test_ticket_clear_survives_stale_full_board_save(self):
+        operator = {"state": "Ready", "observed_at": "fresh"}
+        self.mapping["tickets"]["T-001"] = {"operator": operator}
+        LINEAR.save_map(self.map_path, self.mapping)
+        digest = LINEAR.operator_version(operator)
+        intents = self.factory / ".linear-operator-clears"
+        intents.mkdir(mode=0o700)
+        (intents / f"T-001-{digest}.json").write_text(json.dumps({
+            "operator_version": digest,
+            "schema": "linear-operator-clear/v1",
+            "ticket": "T-001",
+        }))
+
+        LINEAR.save_map(self.map_path, json.loads(json.dumps(self.mapping)))
+        self.assertNotIn(
+            "operator", json.loads(self.map_path.read_text())["tickets"]["T-001"]
+        )
+        LINEAR.retire_operator_clears(self.map_path)
+        self.assertFalse(any(intents.iterdir()))
+
+    def test_full_board_cycle_does_not_hold_ticket_map_lock(self):
+        started = time.monotonic()
+        with LINEAR.sync_lock(self.factory):
+            LINEAR.save_map(self.map_path, self.mapping)
+        self.assertLess(time.monotonic() - started, 0.5)
 
     def test_setup_creates_all_states_and_labels(self):
         mapping = LINEAR.load_map(self.map_path)
@@ -952,6 +1017,54 @@ class LinearSyncTest(unittest.TestCase):
         ):
             self.assertEqual(LINEAR.gql("key", "{ ok }"), {"ok": True})
         self.assertEqual(request.call_count, 2)
+
+    def test_graphql_retries_transient_server_failure(self):
+        unavailable = urllib.error.HTTPError(
+            LINEAR.API_URL,
+            503,
+            "service unavailable",
+            {},
+            None,
+        )
+        with (
+            patch.object(
+                LINEAR.urllib.request,
+                "urlopen",
+                side_effect=[unavailable, FakeResponse()],
+            ) as request,
+            patch.object(LINEAR.time, "sleep") as sleep,
+        ):
+            self.assertEqual(LINEAR.gql("key", "{ ok }"), {"ok": True})
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_graphql_uses_bounded_backoff_for_malformed_retry_after(self):
+        for value, expected in (
+            ("not-a-number", 1),
+            ("-20", 0),
+            ("999999", 30),
+        ):
+            with self.subTest(retry_after=value):
+                limited = urllib.error.HTTPError(
+                    LINEAR.API_URL,
+                    429,
+                    "rate limited",
+                    {"Retry-After": value},
+                    None,
+                )
+                with (
+                    patch.object(
+                        LINEAR.urllib.request,
+                        "urlopen",
+                        side_effect=[limited, FakeResponse()],
+                    ) as request,
+                    patch.object(LINEAR.time, "sleep") as sleep,
+                ):
+                    self.assertEqual(
+                        LINEAR.gql("key", "{ ok }"), {"ok": True}
+                    )
+                self.assertEqual(request.call_count, 2)
+                sleep.assert_called_once_with(expected)
 
 
 def replace_state(text, state):

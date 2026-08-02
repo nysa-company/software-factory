@@ -26,6 +26,7 @@ class QualificationReducerTest(unittest.TestCase):
             "capacity": 4,
             "contract_version": "1.8.0",
             "factory_sha": candidate,
+            "generation": 1,
             "per_run_budget_usd": "2.000000",
             "per_ticket_budget_usd": "25.000000",
             "schema": REDUCER.MANIFEST_SCHEMA,
@@ -128,17 +129,41 @@ class QualificationReducerTest(unittest.TestCase):
         removed = manifest["tickets"][0]
         manifest["tickets"] = manifest["tickets"][1:]
         manifest["target_done"] = 3
+        manifest["capacity"] = 3
+        manifest["budget_usd"] = "300.000000"
+        manifest["per_ticket_budget_usd"] = "100.000000"
+        manifest["per_run_budget_usd"] = "10.000000"
+        manifest["mode"] = "successor"
         for values in (passports, terminals, prs, caps):
             del values[removed]
+        for event in events:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = manifest["tickets"]
+            elif event.get("event") == "cell_relocated" and event.get("ticket") == removed:
+                event["ticket"] = manifest["tickets"][0]
+        events[:] = [item for item in events if item.get("ticket") != removed]
 
         prior = "b" * 40
+        intermediate = "c" * 40
+        manifest["source_factory_sha"] = prior
         for passport in passports.values():
             passport["factory_release_history"].insert(0, {
                 "contract_version": "1.8.0",
                 "factory_sha": prior,
             })
-        for event in events[:3]:
-            event["factory_sha"] = prior
+            passport["factory_release_history"].insert(1, {
+                "contract_version": "1.8.0",
+                "factory_sha": intermediate,
+            })
+            passport["migration_history"] = [{
+                "from_factory_sha": prior,
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "to_factory_sha": intermediate,
+            }, {
+                "from_factory_sha": intermediate,
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "to_factory_sha": manifest["factory_sha"],
+            }]
 
         ticket = manifest["tickets"][0]
         for number in range(10):
@@ -149,15 +174,49 @@ class QualificationReducerTest(unittest.TestCase):
                 "manifest_sha256": f"{9000 + number:064x}",
                 "run_id": f"{ticket}-failed-{number}",
             })
-        passports[ticket]["cumulative_charges_micro_usd"] = 26_000_000
+            passports[ticket]["charge_records"].append({
+                "charge_micro_usd": 2_000_000,
+                "contract_version": "1.8.0",
+                "factory_sha": manifest["factory_sha"],
+                "manifest_sha256": f"{9100 + number:064x}",
+                "run_id": f"{ticket}-qualification-failed-{number}",
+            })
+        passports[ticket]["cumulative_charges_micro_usd"] = 46_000_000
         caps[ticket] = 30_000_000
-        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+        report = REDUCER.verify(*evidence)
+        self.assertEqual(report["status"], "green")
+        self.assertEqual(report["qualification_charge_micro_usd"], 38_000_000)
+
+        passports[ticket]["migration_history"][1]["from_factory_sha"] = "d" * 40
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "successor migration is missing"
+        ):
+            REDUCER.verify(*evidence)
+        passports[ticket]["migration_history"][1]["from_factory_sha"] = intermediate
 
         caps[ticket] = 25_000_000
         with self.assertRaisesRegex(
             REDUCER.QualificationError, "charges do not match the envelope"
         ):
             REDUCER.verify(*evidence)
+
+    def test_fresh_ordered_three_ticket_cohort_needs_only_its_restart_boundary(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, caps = evidence
+        removed = manifest["tickets"].pop()
+        manifest["target_done"] = 3
+        manifest["capacity"] = 3
+        for values in (passports, terminals, prs, caps):
+            del values[removed]
+        for event in events:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = manifest["tickets"]
+        events[:] = [item for item in events if item.get("ticket") != removed]
+        for number, ticket in enumerate(manifest["tickets"]):
+            prs[ticket]["createdAt"] = f"2026-07-27T{10 + 2 * number}:00:00Z"
+            prs[ticket]["mergedAt"] = f"2026-07-27T{11 + 2 * number}:00:00Z"
+
+        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
 
 
 if __name__ == "__main__":

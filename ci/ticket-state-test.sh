@@ -21,7 +21,7 @@ EOF
 cat > "$PRODUCT/factory/linear-map.json" <<'EOF'
 {"tickets":{"T-700":{"operator":{"state":"Ready","priority":"high","observed_at":"2026-07-15T00:00:00Z"}}}}
 EOF
-printf 'factory/linear-map.json\nfactory/.linear-sync.lock\n' > "$PRODUCT/.gitignore"
+printf 'factory/linear-map.json\nfactory/.linear-sync.lock\nfactory/.linear-sync-cycle.lock\nfactory/.linear-operator-clears/\n' > "$PRODUCT/.gitignore"
 git -C "$PRODUCT" init -q -b ticket/T-700
 git -C "$PRODUCT" add .gitignore factory
 git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com commit -qm fixture

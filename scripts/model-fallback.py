@@ -2,7 +2,6 @@
 """Preview or apply one operator-approved mid-ticket model fallback."""
 
 import argparse
-import csv
 import dataclasses
 import datetime as dt
 import hashlib
@@ -36,6 +35,7 @@ def load_module(name, path):
 
 MANAGER = load_module("model_manager", ROOT / "scripts/model-manager.py")
 ROUTER = load_module("model_router_fallback", ROOT / "scripts/model-router.py")
+LEDGER = load_module("ledger_view_fallback", ROOT / "scripts/ledger-view.py")
 ROLE_ORDER = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
 PRODUCER_BOUNDARY = {"planner": "P", "test-author": "T", "builder": "B"}
 REASONS = frozenset((
@@ -161,12 +161,13 @@ def load_evidence(factory_root, ticket, failed_run):
         raise FallbackError("cancelled run lacks an eligible fallback reason")
     if (runs / f"{failed_run}.pid").exists():
         raise FallbackError("failed run still has a process record")
-    ledger_path = factory_root / "factory/runtime-ledger.csv"
-    if ledger_path.is_symlink() or not ledger_path.is_file():
-        raise FallbackError("effective runtime ledger is missing or unsafe")
-    ledger_raw = ledger_path.read_bytes()
-    with ledger_path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
+    try:
+        rows = LEDGER.effective_rows(factory_root)
+        ledger_raw = LEDGER.csv_bytes(rows)
+    except (OSError, ValueError) as error:
+        raise FallbackError(
+            "effective accounting evidence is missing or unsafe"
+        ) from error
     ticket_rows = [row for row in rows if row.get("ticket") == ticket and row.get("run_id")]
     matching = [row for row in ticket_rows if row["run_id"] == failed_run]
     if len(matching) != 1 or not ticket_rows or ticket_rows[-1]["run_id"] != failed_run:
@@ -365,23 +366,57 @@ def recover_applied(args, approval):
         head = git(repo, "rev-parse", "HEAD").decode().strip()
         committed = git(repo, "show", f"HEAD:{relative}")
         journal = json.loads(committed)
-        revision = journal["revisions"][-1]
-        body = revision["body"]
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         return None
-    if (
-        body.get("kind") != "fallback"
-        or body.get("approval_receipt") != approval
-        or body.get("reason") != args.reason
-    ):
+    catalog, routes, _profiles, profile_map = load_policy_files(
+        args.catalog, args.profiles
+    )
+    MANAGER.validate_journal(
+        journal, catalog, routes, profile_map, allow_historical_active=True
+    )
+    matches = [
+        (index, revision)
+        for index, revision in enumerate(journal["revisions"])
+        if revision["body"].get("kind") == "fallback"
+        and revision["body"].get("approval_receipt") == approval
+        and revision["body"].get("reason") == args.reason
+    ]
+    if not matches:
         return None
+    if len(matches) != 1:
+        raise FallbackError("existing fallback approval is ambiguous")
+    index, revision = matches[0]
+    body = revision["body"]
+    suffix = journal["revisions"][index + 1:]
+    if any(item["body"].get("kind") != "release-migration" for item in suffix):
+        raise FallbackError("existing fallback has a non-migration suffix")
     _failed, failed_raw, _ledger, _manifests = load_evidence(
         Path(args.factory_root), args.ticket, args.failed_run
     )
     if body.get("failed_manifest_digest") != digest(failed_raw):
         raise FallbackError("existing fallback revision references different failed evidence")
-    message = git(repo, "show", "-s", "--format=%B", "HEAD").decode()
-    if f"Model-Route-Revision: {revision['revision_hash']}" not in message:
+    marker = f"Model-Route-Revision: {revision['revision_hash']}"
+    fallback_kit = (
+        suffix[0]["body"]["old_kit_sha"] if suffix else journal["kit_sha"]
+    )
+    handoff_commits = []
+    for commit in git(
+        repo, "log", "--format=%H", "HEAD", "--", relative
+    ).decode().splitlines():
+        if marker not in git(repo, "show", "-s", "--format=%B", commit).decode():
+            continue
+        try:
+            candidate = json.loads(git(repo, "show", f"{commit}:{relative}"))
+        except (FallbackError, json.JSONDecodeError):
+            continue
+        if (
+            candidate.get("schema") == journal["schema"]
+            and candidate.get("ticket") == journal["ticket"]
+            and candidate.get("kit_sha") == fallback_kit
+            and candidate.get("revisions") == journal["revisions"][:index + 1]
+        ):
+            handoff_commits.append(commit)
+    if len(handoff_commits) != 1:
         raise FallbackError("existing fallback journal is not committed by its handoff")
     descriptor, temporary_index = tempfile.mkstemp(prefix=".fallback-index.")
     os.close(descriptor)
@@ -427,22 +462,22 @@ def recover(args):
     try:
         committed = git(repo, "show", f"HEAD:{relative}")
         journal = json.loads(committed)
-        approval = journal["revisions"][-1]["body"]["approval_receipt"]
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         return {
             "recovered": False,
             "schema": "ticket-model-fallback-recovery/v1",
         }
-    if not isinstance(approval, dict):
-        raise FallbackError("committed fallback approval receipt is malformed")
-    result = recover_applied(args, approval)
-    if result is None:
-        return {
-            "recovered": False,
-            "schema": "ticket-model-fallback-recovery/v1",
-        }
-    result["approval_receipt"] = approval
-    return result
+    for revision in reversed(journal.get("revisions", [])):
+        approval = revision.get("body", {}).get("approval_receipt")
+        if isinstance(approval, dict):
+            result = recover_applied(args, approval)
+            if result is not None:
+                result["approval_receipt"] = approval
+                return result
+    return {
+        "recovered": False,
+        "schema": "ticket-model-fallback-recovery/v1",
+    }
 
 
 def apply_result(args, approval, result):
@@ -506,13 +541,14 @@ def qualification_apply(args):
                 f"HEAD:factory/route-plans/{args.ticket}.json",
             )
         )
-        approval = journal["revisions"][-1]["body"]["approval_receipt"]
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
-        approval = None
-    if isinstance(approval, dict):
-        recovered = recover_applied(args, approval)
-        if recovered is not None:
-            return recovered
+        journal = {}
+    for revision in reversed(journal.get("revisions", [])):
+        approval = revision.get("body", {}).get("approval_receipt")
+        if isinstance(approval, dict):
+            recovered = recover_applied(args, approval)
+            if recovered is not None:
+                return recovered
     result = calculate(
         args, secrets.token_hex(16),
         migrate_legacy=True,
@@ -535,28 +571,58 @@ def qualification_apply(args):
             attempts += (
                 value.get("ticket") == args.ticket
                 and value.get("role") == failed["role"]
+                and value.get("kit_sha") == failed["kit_sha"]
                 and value.get("go_issued") == "1"
+                and value.get("task_submitted") == "1"
             )
     if attempts != 1:
         raise FallbackError("qualification fallback is allowed only after the first role attempt")
-    raw = git(
-        Path(args.workdir), "show", "refs/remotes/origin/main:factory/QUALIFICATION.json"
-    )
+    manifest_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST")
+    if manifest_path:
+        product = Path(os.environ.get("FACTORY_ROOT", ""))
+        expected = product / "factory/QUALIFICATION.json"
+        try:
+            if (
+                not product.is_absolute()
+                or Path(manifest_path).resolve(strict=True)
+                != expected.resolve(strict=True)
+                or expected.is_symlink()
+            ):
+                raise FallbackError("sealed qualification manifest path is invalid")
+        except OSError as error:
+            raise FallbackError("sealed qualification manifest path is invalid") from error
+        raw = git(product, "show", "HEAD:factory/QUALIFICATION.json")
+    else:
+        raw = git(
+            Path(args.workdir), "show",
+            "refs/remotes/origin/main:factory/QUALIFICATION.json",
+        )
     try:
         qualification = json.loads(raw)
     except json.JSONDecodeError as error:
         raise FallbackError("protected qualification manifest is malformed") from error
+    release_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
+    authorized_factory_sha = (
+        release_sha if manifest_path else result["journal"]["kit_sha"]
+    )
     if (
         qualification.get("schema") not in {
             "nysa.software-factory.qualification/v1",
             "nysa.software-factory.qualification/v2",
         }
-        or qualification.get("factory_sha") != result["journal"]["kit_sha"]
+        or qualification.get("factory_sha") != authorized_factory_sha
         or args.ticket not in qualification.get("tickets", [])
         or not isinstance(qualification.get("generation"), int)
         or qualification["generation"] < 1
     ):
         raise FallbackError("protected qualification manifest does not authorize fallback")
+    if manifest_path and (
+        not re.fullmatch(r"[0-9a-f]{40}", release_sha)
+        or qualification.get("schema") != "nysa.software-factory.qualification/v2"
+        or qualification.get("mode") != "successor"
+        or not re.fullmatch(r"[0-9a-f]{40}", qualification.get("source_factory_sha", ""))
+    ):
+        raise FallbackError("sealed successor manifest does not authorize fallback")
     approval = {
         "approval_hash": result["approval_hash"],
         "generation": qualification["generation"],

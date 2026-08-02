@@ -29,6 +29,7 @@ from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E
 SCHEMA = "nysa.software-factory.state-machine/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.transition-receipt/v1"
 REPAIR_SCHEMA = "nysa.software-factory.contract-repair/v1"
+ROLE_EVIDENCE_SCHEMA = "nysa.software-factory.completed-role-sequence/v1"
 DEPENDENCY_CONFLICT_SCHEMA = "nysa.software-factory.dependency-refresh/v2"
 DEPENDENCY_CONFLICT_SOURCE = "dependency-conflict"
 PASSPORT_SCHEMA = "nysa.software-factory.ticket-passport/v1"
@@ -367,7 +368,7 @@ def stage_role(stage: str) -> str | None:
         return detail
     if action in {
         "AWAIT-OPERATOR", "AWAIT-MERGE", "AWAIT_BUDGET", "AWAIT_DEPENDENCY",
-        "COMPLETE", "REFUSE",
+        "COMPLETE", "ESCALATE", "REFUSE",
     }:
         return None
     raise StateError("state resolver returned an unsupported transition")
@@ -537,9 +538,15 @@ def materialized_contract_block(
         or not isinstance(charges, list)
         or not isinstance(completed, list)
         or current_state(args.workdir, args.ticket) != "Blocked-Escalated"
-        or ticket_field(args.workdir, args.ticket, "Resume-State")
-        != TARGET_STATE[role]
     ):
+        return False
+    try:
+        contract_block_resume_state(
+            args,
+            role,
+            ticket_field(args.workdir, args.ticket, "Resume-State"),
+        )
+    except StateError:
         return False
     matches = [
         item for item in charges
@@ -575,6 +582,49 @@ def materialized_contract_block(
         if result.returncode != 0:
             return False
     return True
+
+
+def contract_block_terminal(
+    args: argparse.Namespace,
+    receipt: dict[str, Any],
+    charge: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    matches = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        fields, raw = run_manifest(path)
+        if fields.get("transition_receipt_sha256") == receipt.get(
+            "receipt_sha256"
+        ):
+            matches.append((fields, raw))
+    if len(matches) != 1:
+        raise StateError("contract blocker terminal evidence is ambiguous")
+    terminal, raw = matches[0]
+    accounted = terminal.get("accounting_state") == "completed" or (
+        terminal.get("accounting_state") == "abandoned_conservative"
+        and terminal.get("cost_basis") == "conservative_reservation"
+        and terminal.get("effective_cost") == terminal.get("reserved_usd")
+    )
+    if not accounted or any((
+        terminal.get("ticket") != args.ticket,
+        terminal.get("role") != receipt.get("role"),
+        terminal.get("contract_version") != args.contract_version,
+        terminal.get("kit_sha") != receipt.get("factory_sha"),
+        terminal.get("phase") != "completed",
+        terminal.get("go_issued") != "1",
+        terminal.get("task_submitted") != "1",
+        terminal.get("exit_status") != "12",
+        terminal.get("role_exit") != "role_exit_contract_blocked",
+        terminal.get("role_branch_before") != receipt.get("branch"),
+        terminal.get("role_head_before") != receipt.get("head_sha"),
+    )):
+        raise StateError("contract blocker terminal evidence is invalid")
+    if charge is not None and (
+        charge.get("run_id") != terminal.get("run_id")
+        or charge.get("accounting_state") != terminal.get("accounting_state")
+        or charge.get("manifest_sha256") != hashlib.sha256(raw).hexdigest()
+    ):
+        raise StateError("contract blocker passport evidence is invalid")
+    return terminal
 
 
 def contract_blocked_receipt(args: argparse.Namespace) -> str:
@@ -631,40 +681,7 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
         timeout=120,
     ).returncode:
         raise StateError("contract blocker is outside receipt lineage")
-    matches = []
-    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
-        fields, raw = run_manifest(path)
-        if fields.get("transition_receipt_sha256") == args.receipt:
-            matches.append((fields, raw))
-    if len(matches) != 1:
-        raise StateError("contract blocker terminal evidence is ambiguous")
-    terminal, raw = matches[0]
-    accounted = terminal.get("accounting_state") == "completed" or (
-        terminal.get("accounting_state") == "abandoned_conservative"
-        and terminal.get("cost_basis") == "conservative_reservation"
-        and terminal.get("effective_cost") == terminal.get("reserved_usd")
-    )
-    if not accounted or any((
-        terminal.get("ticket") != args.ticket,
-        terminal.get("role") != role,
-        terminal.get("contract_version") != args.contract_version,
-        terminal.get("kit_sha") != value.get("factory_sha"),
-        terminal.get("phase") != "completed",
-        terminal.get("go_issued") != "1",
-        terminal.get("task_submitted") != "1",
-        terminal.get("exit_status") != "12",
-        terminal.get("role_exit") != "role_exit_contract_blocked",
-        terminal.get("role_branch_before") != value.get("branch"),
-        terminal.get("role_head_before") != value.get("head_sha"),
-    )):
-        raise StateError("contract blocker terminal evidence is invalid")
-    if migrated and (
-        charge is None
-        or charge.get("run_id") != terminal.get("run_id")
-        or charge.get("accounting_state") != terminal.get("accounting_state")
-        or charge.get("manifest_sha256") != hashlib.sha256(raw).hexdigest()
-    ):
-        raise StateError("contract blocker passport evidence is invalid")
+    contract_block_terminal(args, value, charge if migrated else None)
     return role
 
 
@@ -718,6 +735,23 @@ def operator_resume_role(
     candidates: list[tuple[str, str]] = []
     for candidate in commits:
         if not SHA.fullmatch(candidate):
+            continue
+        candidate_ticket = git(
+            args.workdir, "show", f"{candidate}:{relative}"
+        ) + "\n"
+        if (
+            re.findall(
+                r"^OPERATOR RESUME: "
+                r"(planner|spec-linter|test-author|builder)$",
+                candidate_ticket,
+                re.M,
+            ) != [repair_role]
+            or re.findall(
+                r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
+                candidate_ticket,
+                re.M,
+            ) != [args.receipt]
+        ):
             continue
         ancestry = git(
             args.workdir, "rev-list", "--parents", "-n", "1", candidate
@@ -1572,6 +1606,7 @@ def migrated_contract_repair(
     passport: dict[str, Any],
     record: dict[str, Any],
     success: dict[str, str] | None = None,
+    authenticated_head: str | None = None,
 ) -> bool:
     if record.get("factory_sha") == args.factory_sha:
         return True
@@ -1582,7 +1617,7 @@ def migrated_contract_repair(
     record_factory = record.get("factory_sha", "")
     record_head = record.get("head_sha", "")
     record_passport = record.get("passport_sha256", "")
-    current_head = git(args.workdir, "rev-parse", "HEAD")
+    current_head = authenticated_head or git(args.workdir, "rev-parse", "HEAD")
     migration_target_head = current_head
     migration_target_factory = args.factory_sha
     migration_target_base = passport.get("protected_base_sha")
@@ -1662,14 +1697,63 @@ def migrated_contract_repair(
         or passport.get("head_sha") != current_head
     ):
         return False
+    blocked_repair_migration = False
+    if success is None and record.get("repair_source") is None:
+        try:
+            transition = safe_receipt(
+                args.state_dir / f"{args.ticket}.json"
+            )
+            migrated_passport, charge = migrated_contract_block(
+                args, transition
+            )
+            owner = record.get("repair_role", "")
+            if (
+                migrated_passport == passport
+                and charge is not None
+                and transition.get("consumed") is True
+                and transition.get("factory_sha") == record_factory
+                and transition.get("head_sha") == record_head
+                and transition.get("parent_digest")
+                == record.get("blocked_receipt")
+                and transition.get("role") == owner
+                and transition.get("stage") == f"FIX {owner}"
+                and passport.get("current_stage") == f"FIX {owner}"
+                and passport.get("transition_receipt_sha256")
+                == transition.get("receipt_sha256")
+            ):
+                contract_block_terminal(args, transition, charge)
+                blocked_repair_migration = True
+        except (
+            FileNotFoundError, json.JSONDecodeError, OSError, StateError,
+        ):
+            pass
     starts = []
     for index, edge in enumerate(migrations):
+        direct_start = (
+            isinstance(edge, dict)
+            and edge.get("from_head_sha") == record_head
+            and edge.get("from_passport_sha256") == record_passport
+        )
+        blocked_start = (
+            blocked_repair_migration
+            and isinstance(edge, dict)
+            and SHA.fullmatch(edge.get("from_head_sha", ""))
+            and subprocess.run(
+                [
+                    "git", "-C", str(args.workdir), "merge-base",
+                    "--is-ancestor", record_head, edge["from_head_sha"],
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=120,
+            ).returncode == 0
+        )
         if (
             not isinstance(edge, dict)
             or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
             or edge.get("from_factory_sha") != record_factory
-            or edge.get("from_head_sha") != record_head
-            or edge.get("from_passport_sha256") != record_passport
+            or not (direct_start or blocked_start)
         ):
             continue
         suffix = migrations[index:migration_limit]
@@ -2305,6 +2389,16 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
                 raise StateError(
                     "operator resume lacks authenticated contract repair state"
                 )
+            current = current_state(args.workdir, args.ticket)
+            if directives[0] == "planner" and current in {"Building", "Review"}:
+                stage = resolve(args)
+                role = stage_role(stage)
+                order = {"Planning": 1, "Building": 2, "Review": 3}
+                if (
+                    role is not None
+                    and order[TARGET_STATE[role]] < order[current]
+                ):
+                    return stage, True
         return None, False
     owner = record.get("repair_role", "")
     head = record.get("head_sha", "")
@@ -2369,11 +2463,18 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     successes = contract_repair_successes(args, owner, head)
     if source is None and len(successes) > 1:
         raise StateError("contract repair has duplicate successful evidence")
+    authenticated_head = None
+    if passport.get("head_sha") != git(args.workdir, "rev-parse", "HEAD"):
+        if not has_directive or not args.receipt:
+            raise StateError("contract repair record is invalid")
+        operator_resume_role(args, passport, owner)
+        authenticated_head = passport.get("head_sha")
     migrated = migrated_contract_repair(
         args,
         passport,
         record,
         successes[0] if source is None and successes else None,
+        authenticated_head=authenticated_head,
     )
     if not migrated and (
         source == DEPENDENCY_CONFLICT_SOURCE
@@ -2513,16 +2614,23 @@ def verify(args: argparse.Namespace, *, consume: bool) -> dict[str, Any]:
 def run_helper(
     args: argparse.Namespace, script: str, *arguments: str,
     allow_refusal: bool = False,
+    extra_environment: dict[str, str] | None = None,
 ) -> str:
+    environment = {
+        **os.environ,
+        "FACTORY_ROOT": str(args.factory_root),
+        "FACTORY_TRANSITION_STATE_DIR": str(args.state_dir),
+        "FACTORY_RELEASE_SHA": args.factory_sha,
+    }
+    # This is an internal state-machine-to-resolver capability. Never accept
+    # a caller-supplied path in place of authenticated passport evidence.
+    environment.pop("FACTORY_AUTHENTICATED_ROLE_EVIDENCE", None)
+    if extra_environment:
+        environment.update(extra_environment)
     result = subprocess.run(
         ["/bin/bash", str(args.kit_dir / "scripts" / script), *arguments],
         cwd=args.workdir,
-        env={
-            **os.environ,
-            "FACTORY_ROOT": str(args.factory_root),
-            "FACTORY_TRANSITION_STATE_DIR": str(args.state_dir),
-            "FACTORY_RELEASE_SHA": args.factory_sha,
-        },
+        env=environment,
         text=True,
         capture_output=True,
         check=False,
@@ -2541,12 +2649,96 @@ def run_helper(
     return result.stdout.strip()
 
 
+def authenticated_role_evidence(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    path = args.state_dir / "passports" / f"{args.ticket}.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    passport, _ = authenticated_passport(args)
+    workdir = args.workdir.resolve(strict=True)
+    route = workdir / "factory" / "route-plans" / f"{args.ticket}.json"
+    branch = git(workdir, "symbolic-ref", "--quiet", "--short", "HEAD")
+    head = git(workdir, "rev-parse", "HEAD")
+    route_digest = (
+        hashlib.sha256(route.read_bytes()).hexdigest()
+        if route.is_file() and not route.is_symlink()
+        else None
+    )
+    completed = passport.get("completed_role_evidence")
+    if (
+        passport.get("ticket") != args.ticket
+        or passport.get("project") != args.project
+        or passport.get("contract_version") != args.contract_version
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("branch") != branch
+        or passport.get("head_sha") != head
+        or passport.get("route_plan_sha256") != route_digest
+        or not isinstance(completed, list)
+    ):
+        raise StateError("passport role evidence is outside current ticket identity")
+    expected = {
+        "contract_version", "factory_sha", "head_before", "manifest_sha256",
+        "output_sha256", "role", "run_id", "transition_receipt_sha256",
+    }
+    run_ids: set[str] = set()
+    receipts: set[str] = set()
+    for item in completed:
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected
+            or item.get("contract_version") != args.contract_version
+            or not SHA.fullmatch(item.get("factory_sha", ""))
+            or not SHA.fullmatch(item.get("head_before", ""))
+            or not DIGEST.fullmatch(item.get("manifest_sha256", ""))
+            or not DIGEST.fullmatch(item.get("output_sha256", ""))
+            or not ROLE.fullmatch(item.get("role", ""))
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", item.get("run_id", ""))
+            or not DIGEST.fullmatch(item.get("transition_receipt_sha256", ""))
+            or item["run_id"] in run_ids
+            or item["transition_receipt_sha256"] in receipts
+        ):
+            raise StateError("passport completed-role evidence is invalid")
+        run_ids.add(item["run_id"])
+        receipts.add(item["transition_receipt_sha256"])
+    return passport, completed
+
+
 def resolve(args: argparse.Namespace) -> str:
     command = ["--ticket", args.ticket]
     if args.lease:
         command.extend(["--lease", args.lease])
     command.extend(["--workdir", str(args.workdir)])
-    output = run_helper(args, "next-stage.sh", *command, allow_refusal=True)
+    evidence = authenticated_role_evidence(args)
+    evidence_path: Path | None = None
+    try:
+        extra_environment = None
+        if evidence is not None:
+            passport, completed = evidence
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".role-evidence-{args.ticket}.", dir=args.state_dir,
+            )
+            evidence_path = Path(temporary)
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(canonical({
+                    "passport_sha256": passport["passport_sha256"],
+                    "records": completed,
+                    "schema": ROLE_EVIDENCE_SCHEMA,
+                    "ticket": args.ticket,
+                }))
+                stream.flush()
+                os.fsync(stream.fileno())
+            extra_environment = {
+                "FACTORY_AUTHENTICATED_ROLE_EVIDENCE": str(evidence_path),
+            }
+        output = run_helper(
+            args, "next-stage.sh", *command, allow_refusal=True,
+            extra_environment=extra_environment,
+        )
+    finally:
+        if evidence_path is not None:
+            evidence_path.unlink(missing_ok=True)
     return next((line.strip() for line in output.splitlines() if line.strip()), "")
 
 
@@ -2623,6 +2815,8 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
     if role:
         current = current_state(args.workdir, args.ticket)
         target = TARGET_STATE[role]
+        if stage == "FIX planner" and current in {"Building", "Review"}:
+            repair_override = True
         if not repair_override:
             while current != target:
                 if current == "Ready":
@@ -2653,23 +2847,46 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def contract_block_resume_state(
+    args: argparse.Namespace, role: str, state: str
+) -> str:
+    target = TARGET_STATE[role]
+    if state == target:
+        return target
+    repair_stage, repair_override = contract_repair_stage(args)
+    order = {"Planning": 1, "Building": 2, "Review": 3}
+    if (
+        repair_override
+        and repair_stage == f"FIX {role}"
+        and state in order
+        and order[state] > order[target]
+    ):
+        return state
+    raise StateError("contract blocker role state drifted")
+
+
 def block_transition(args: argparse.Namespace) -> dict[str, Any]:
     role = contract_blocked_receipt(args)
-    target = TARGET_STATE[role]
     state = current_state(args.workdir, args.ticket)
     if state != "Blocked-Escalated":
-        if state != target:
-            raise StateError("contract blocker role state drifted")
-        run_helper(
-            args, "ticket-state.sh", "--ticket", args.ticket,
-            "--workdir", str(args.workdir), "--action", "materialize",
-        )
-        if current_state(args.workdir, args.ticket) != target:
-            raise StateError("operator overlay changed the contract blocker state")
+        resume_state = contract_block_resume_state(args, role, state)
+        if state == TARGET_STATE[role]:
+            run_helper(
+                args, "ticket-state.sh", "--ticket", args.ticket,
+                "--workdir", str(args.workdir), "--action", "materialize",
+            )
+            if current_state(args.workdir, args.ticket) != resume_state:
+                raise StateError(
+                    "operator overlay changed the contract blocker state"
+                )
         transition(args, "Blocked-Escalated")
+    else:
+        resume_state = ticket_field(args.workdir, args.ticket, "Resume-State")
+        contract_block_resume_state(args, role, resume_state)
     if (
         current_state(args.workdir, args.ticket) != "Blocked-Escalated"
-        or ticket_field(args.workdir, args.ticket, "Resume-State") != target
+        or ticket_field(args.workdir, args.ticket, "Resume-State")
+        != resume_state
     ):
         raise StateError("contract blocker transition is invalid")
     migrate_passport(args)
@@ -2687,9 +2904,9 @@ def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
     role = contract_blocked_receipt(args)
     passport, secret = authenticated_passport(args)
     repair_role = operator_resume_role(args, passport, role)
-    target = TARGET_STATE[role]
-    if ticket_field(args.workdir, args.ticket, "Resume-State") != target:
-        raise StateError("contract blocker resume target drifted")
+    target = contract_block_resume_state(
+        args, role, ticket_field(args.workdir, args.ticket, "Resume-State")
+    )
     state = current_state(args.workdir, args.ticket)
     if state == "Blocked-Escalated":
         run_helper(

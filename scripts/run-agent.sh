@@ -67,6 +67,7 @@ PROVIDER_WAIT_SECONDS=0
 DEVELOPMENT_LANE_ROOT=""
 CLI_RUNTIME_STATE_ROOT=""
 CLI_RUNTIME_LAYOUT=""
+ROLE_GUARD_ROOT=""
 if [[ "${FACTORY_CLI_LANE_ROOT:-}" == /* &&
       ( "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-dev.* ||
         "$(basename "$FACTORY_CLI_LANE_ROOT")" == nysa-sf-qualification.* ) &&
@@ -923,6 +924,49 @@ role_remote_head() {
   return 1
 }
 
+quarantine_rewritten_role_history() {
+  local diagnostic_ref="refs/factory/failed-role/$TICKET/$RUN_ID"
+  local existing="" current_branch current_head remote_head
+  [[ "$ROLE" != "test-author" && "$ROLE" != "reviewer" ]] || return 1
+  [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  current_branch="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  current_head="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    rev-parse HEAD 2>/dev/null || true)"
+  remote_head="$(role_remote_head || true)"
+  [[ "$current_branch" == "$ROLE_BRANCH_BEFORE" &&
+     "$current_head" == "$ROLE_HEAD_AFTER" &&
+     "$remote_head" == "$ROLE_REMOTE_BEFORE" &&
+     -z "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       status --porcelain --untracked-files=all)" ]] || return 1
+  if "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" show-ref --verify --quiet \
+      "$diagnostic_ref"; then
+    existing="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+      rev-parse "$diagnostic_ref" 2>/dev/null || true)"
+    [[ "$existing" == "$ROLE_HEAD_AFTER" ]] || return 1
+  else
+    "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" update-ref \
+      "$diagnostic_ref" "$ROLE_HEAD_AFTER" \
+      0000000000000000000000000000000000000000 || return 1
+  fi
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" update-ref \
+    "refs/heads/$ROLE_BRANCH_BEFORE" "$ROLE_HEAD_BEFORE" \
+    "$ROLE_HEAD_AFTER" || return 1
+  "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" restore \
+    --source="$ROLE_HEAD_BEFORE" --staged --worktree -- . || return 1
+  [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == \
+       "$ROLE_BRANCH_BEFORE" &&
+     "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       rev-parse HEAD 2>/dev/null || true)" == "$ROLE_HEAD_BEFORE" &&
+     "$(role_remote_head || true)" == "$ROLE_REMOTE_BEFORE" &&
+     -z "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       status --porcelain --untracked-files=all)" &&
+     "$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+       rev-parse "$diagnostic_ref" 2>/dev/null || true)" == \
+       "$ROLE_HEAD_AFTER" ]]
+}
+
 ticket_evidence_snapshot() {
   python3 - "$1" <<'PY'
 import json
@@ -1266,6 +1310,12 @@ cleanup() {
   fi
   cleanup_cli_runtime ||
     echo "WARNING: subscription CLI runtime retained for operator reconciliation" >&2
+  if [[ -n "$ROLE_GUARD_ROOT" && -d "$ROLE_GUARD_ROOT" ]]; then
+    rm -f "$ROLE_GUARD_ROOT"/npm "$ROLE_GUARD_ROOT"/npx \
+      "$ROLE_GUARD_ROOT"/pnpm "$ROLE_GUARD_ROOT"/yarn \
+      "$ROLE_GUARD_ROOT"/corepack
+    rmdir "$ROLE_GUARD_ROOT" 2>/dev/null || true
+  fi
   if [[ -n "$RUN_PID_FILE" ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
       rm -f "$RUN_PID_FILE"
@@ -1423,6 +1473,22 @@ if ! factory_validate_kit_pin "$KIT_DIR" "$REPO_ROOT"; then
   echo "$FACTORY_KIT_PIN_ERROR; no task was submitted" >&2
   exit 3
 fi
+PROVIDER_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+if [[ -n "${FACTORY_PROVIDER_PRODUCT_ID:-}" ]]; then
+  if [[ "${FACTORY_CLI_LANE_ROOT:-}" != /* ||
+        ! -d "$FACTORY_CLI_LANE_ROOT" ||
+        -L "$FACTORY_CLI_LANE_ROOT" ||
+        "$(basename "$FACTORY_CLI_LANE_ROOT")" != nysa-sf-qualification.* ||
+        ! -f "$FACTORY_CLI_LANE_ROOT/marker.json" ||
+        -L "$FACTORY_CLI_LANE_ROOT/marker.json" ||
+        "$FACTORY_PROVIDER_PRODUCT_ID" != "$TRANSITION_PROJECT:$FACTORY_KIT_SHA" ]]; then
+    echo "qualification provider product identity is invalid; no task was submitted" >&2
+    exit 3
+  fi
+  PROVIDER_PRODUCT_ID="$FACTORY_PROVIDER_PRODUCT_ID"
+fi
+unset FACTORY_PROVIDER_PRODUCT_ID
+readonly PROVIDER_PRODUCT_ID
 if ! factory_validate_ticket_kit_sha "$TICKET_FILE" "$FACTORY_KIT_SHA"; then
   echo "$FACTORY_TICKET_KIT_ERROR; no task was submitted" >&2
   exit 3
@@ -1788,7 +1854,7 @@ PY
 fi
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   CLI_ATTEMPT_ID="$RUN_ID-cli"
-  CLI_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+  CLI_PRODUCT_ID="$PROVIDER_PRODUCT_ID"
   CLI_CONFIGURATION_LOCK_ARGS=()
   if [[ -n "${FACTORY_PROVIDER_CONFIGURATION_LOCK:-}" ]]; then
     CLI_CONFIGURATION_LOCK_ARGS=(
@@ -2124,6 +2190,25 @@ if ! refresh_runtime_ledger; then
   echo "effective ledger could not be materialized; refusing launch" >&2
   exit 3
 fi
+if [[ "$ROLE" == "narrator" ]]; then
+  NARRATOR_ATTEMPTS="$(python3 -B - "$LEDGER" "$TICKET" <<'PY'
+import csv
+import sys
+
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    print(sum(row.get("ticket") == sys.argv[2] for row in csv.DictReader(handle)))
+PY
+)" || {
+    echo "Narrator accounting evidence could not be counted; refusing launch" >&2
+    exit 3
+  }
+  NARRATOR_COST="$(python3 "$MONEY" sum-csv --csv "$LEDGER" \
+    --date-column 0 --amount-column 7 --filter-column 2 --filter-value "$TICKET")" || {
+    echo "Narrator accounting evidence could not be summed; refusing launch" >&2
+    exit 3
+  }
+  TASK="$TASK Trusted effective accounting at launch, including this Narrator attempt's conservative reservation: attempts=$NARRATOR_ATTEMPTS cost_usd=$NARRATOR_COST. Do not rerun tests, builds, repo-check, secret-scan, or any broad verification suite."
+fi
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]]; then
   rmdir "$LOCK_DIR"; HELD_LEDGER_LOCK=0
 fi
@@ -2171,6 +2256,16 @@ CLI_PROVIDER_TMPDIR="${TMPDIR:-/tmp}"
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   prepare_cli_runtime || exit 6
 fi
+TASK_PATH="$PATH"
+if [[ "$ROLE" == "planner" ]]; then
+  ROLE_GUARD_ROOT="$(mktemp -d "$CLI_PROVIDER_TMPDIR/factory-planner-policy.XXXXXX")" ||
+    exit 125
+  for command in npm npx pnpm yarn corepack; do
+    ln -s "$KIT_DIR/scripts/lib/role-command-guard.sh" "$ROLE_GUARD_ROOT/$command" ||
+      exit 125
+  done
+  TASK_PATH="$ROLE_GUARD_ROOT:$PATH"
+fi
 TASK_COMMAND=()
 STATUS=0
 if [[ "$ISOLATED_RUN" -eq 1 ]]; then
@@ -2182,7 +2277,7 @@ if [[ "$ISOLATED_RUN" -eq 1 ]]; then
       echo "isolated-v1 budget conversion failed" >&2
       STATUS=3
     else
-      ISOLATED_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
+      ISOLATED_PRODUCT_ID="$PROVIDER_PRODUCT_ID"
       TASK_COMMAND=(
         /usr/bin/env -u GH_TOKEN -u OPENAI_API_KEY -u ANTHROPIC_API_KEY
         python3 "$KIT_DIR/scripts/provider-isolated-run.py"
@@ -2241,7 +2336,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --machine-cap-micro-usd "${PROVIDER_BUDGET_MICRO_VALUES[3]}"
       --pre-reserved
       -- /usr/bin/env -i
-        "HOME=$CLI_PROVIDER_HOME" "PATH=$PATH" "TMPDIR=$CLI_PROVIDER_TMPDIR"
+        "HOME=$CLI_PROVIDER_HOME" "PATH=$TASK_PATH" "TMPDIR=$CLI_PROVIDER_TMPDIR"
         "XDG_CACHE_HOME=$CLI_PROVIDER_CACHE_DIR"
         "npm_config_cache=$CLI_PROVIDER_CACHE_DIR/npm"
         "FACTORY_ATTEMPT_OUTPUT_ROOT=$CLI_PROVIDER_OUTPUT_DIR"
@@ -2272,7 +2367,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         "$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK"
   )
 else
-  TASK_COMMAND=("$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK")
+  TASK_COMMAND=(/usr/bin/env "PATH=$TASK_PATH" "$ADAPTER_SH" "${ADAPTER_ARGS[@]}" -- "$TASK")
 fi
 if [[ "$STATUS" -eq 0 ]]; then
 python3 "$KIT_DIR/scripts/lib/run-in-process-group.py" \
@@ -2621,6 +2716,14 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
          ! python3 "$KIT_DIR/scripts/lib/lane-path-sentinel.py" \
            "$WORKDIR" "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER"; then
       ROLE_EXIT_STATUS="role_exit_lane_path_leak"
+    elif [[ "$ROLE" != "test-author" && "$ROLE" != "reviewer" ]] &&
+         ! "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" merge-base --is-ancestor \
+           "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER"; then
+      if quarantine_rewritten_role_history; then
+        ROLE_EXIT_STATUS="role_exit_history_rewritten"
+      else
+        ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+      fi
     elif [[ "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     else
@@ -2715,6 +2818,11 @@ elif [[ "$GO_ISSUED" -eq 0 ]]; then
   TURNS="0"
   COST_BASIS="launch_void"
   FINAL_ACCOUNTING_STATE="launch_void"
+elif [[ "$ROLE_EXIT_STATUS" == "role_exit_history_rewritten" ]]; then
+  COST="$RESERVED_USD"
+  TURNS="${TURNS:-0}"
+  COST_BASIS="conservative_reservation"
+  FINAL_ACCOUNTING_STATE="abandoned_conservative"
 elif [[ -z "$COST" ]]; then
   echo "WARNING: run cost unparsable — ledger keeps conservative reservation of \$$RESERVED_USD for this run. Reconcile with the provider console." >&2
   COST="$RESERVED_USD"

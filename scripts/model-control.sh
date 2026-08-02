@@ -62,6 +62,7 @@ PY
   json_error "FACTORY_MODEL_STATE_ROOT must be an existing physical directory"
 [[ -n "${FACTORY_PROJECT:-}" ]] ||
   json_error "FACTORY_PROJECT is required"
+OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_ROOT/factory/linear-map.json}"
 
 manager() {
   local -a policy_args=()
@@ -522,7 +523,7 @@ PY
       json_error "could not allocate approval input"
     approval_available=1
     if ! python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" read \
-      --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+      --operator-map "$OPERATOR_MAP" \
       --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
       > "$approval_file"; then
       approval_available=0
@@ -581,7 +582,7 @@ PY
       }
       IFS=$'\t' read -r approval_hash approval_comment_id <<< "$recovery_values"
       python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" verify-consumed \
-        --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+        --operator-map "$OPERATOR_MAP" \
         --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
         --approval-hash "$approval_hash" --comment-id "$approval_comment_id" \
         >/dev/null || {
@@ -617,7 +618,7 @@ PY
     commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
       "$CONTROL_REMOTE" "$expected_remote_head")"
     python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" consume \
-      --operator-map "$FACTORY_ROOT/factory/linear-map.json" \
+    --operator-map "$OPERATOR_MAP" \
       --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
       --approval-hash "$approval_hash" >/dev/null ||
       json_error "fallback committed but Linear approval consumption requires reconciliation"

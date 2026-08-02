@@ -161,12 +161,16 @@ def qualification(
         return None
     value = json.loads(safe_file(path, "qualification manifest", 100_000))
     if value.get("schema") == QUALIFICATION_SCHEMA_V2:
-        keys = {
+        fresh_keys = {
             "budget_usd", "capacity", "contract_version", "factory_sha",
             "generation", "per_run_budget_usd", "per_ticket_budget_usd",
             "schema", "target_done", "tickets",
         }
+        successor = value.get("mode") == "successor"
+        keys = fresh_keys | ({"mode", "source_factory_sha"} if successor else set())
         tickets = value.get("tickets")
+        target_done = value.get("target_done")
+        selected_capacity = value.get("capacity")
         pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
         if (
             set(value) != keys
@@ -176,28 +180,59 @@ def qualification(
             or isinstance(value.get("generation"), bool)
             or value["generation"] < 1
             or not isinstance(tickets, list)
-            or len(tickets) != 4
+            or target_done not in (3, 4)
+            or len(tickets) != target_done
             or len(tickets) != len(set(tickets))
             or any(
                 not isinstance(item, str) or not TICKET.fullmatch(item)
                 for item in tickets
             )
-            or value.get("target_done") != 4
-            or value.get("capacity") != 4
-            or value.get("budget_usd") != "100.000000"
-            or value.get("per_ticket_budget_usd") != "25.000000"
-            or value.get("per_run_budget_usd") != "2.000000"
-            or configured_capacity != 4
+            or selected_capacity not in (3, 4)
+            or target_done > selected_capacity
+            or (
+                successor
+                and (
+                    target_done != 3
+                    or selected_capacity != 3
+                    or not SHA.fullmatch(value.get("source_factory_sha", ""))
+                    or value["source_factory_sha"] == pin
+                    or value.get("budget_usd") != "300.000000"
+                    or value.get("per_ticket_budget_usd") != "100.000000"
+                    or value.get("per_run_budget_usd") != "10.000000"
+                )
+            )
+            or (
+                not successor
+                and (
+                    value.get("budget_usd") != "100.000000"
+                    or value.get("per_ticket_budget_usd") != "25.000000"
+                    or value.get("per_run_budget_usd") != "2.000000"
+                )
+            )
+            or configured_capacity != selected_capacity
         ):
             raise DispatchError("Contract 1.8 qualification manifest is invalid")
         graph = {}
         for ticket in tickets:
             text = safe_file(factory / "tickets" / f"{ticket}.md", f"ticket {ticket}")
             graph[ticket] = dependencies(text)
-            if graph[ticket]:
-                raise DispatchError("Contract 1.8 canaries must be independent")
+            if ticket in graph[ticket]:
+                raise DispatchError("Contract 1.8 qualification ticket depends on itself")
+        pending = {
+            ticket: {item for item in graph[ticket] if item in graph}
+            for ticket in tickets
+        }
+        while pending:
+            ready = {ticket for ticket, items in pending.items() if not items}
+            if not ready:
+                raise DispatchError("Contract 1.8 qualification dependencies contain a cycle")
+            pending = {
+                ticket: items - ready
+                for ticket, items in pending.items()
+                if ticket not in ready
+            }
         terminal = set()
-        for ticket in tickets:
+        for ticket in set(tickets).union(*(set(items) for items in graph.values())):
             try:
                 protected_terminal(product, ticket)
             except ValidationError:
@@ -205,9 +240,9 @@ def qualification(
             terminal.add(ticket)
         return {
             **value,
-            "capacity": 4,
+            "capacity": selected_capacity,
             "dependencies": graph,
-            "done": len(terminal),
+            "done": len(set(tickets) & terminal),
             "terminal": terminal,
         }
     keys = {
@@ -814,7 +849,12 @@ def main() -> None:
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout is dirty")
         git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
-        mapping = fresh_mapping(factory / "linear-map.json", args.max_linear_age)
+        mapping_path = Path(os.environ.get(
+            "FACTORY_OPERATOR_MAP", factory / "linear-map.json"
+        ))
+        if not mapping_path.is_absolute():
+            raise DispatchError("Linear operator map path is invalid")
+        mapping = fresh_mapping(mapping_path, args.max_linear_age)
         maximum = capacity(factory)
         qualification_state = qualification(product, factory, maximum)
         prefix = ticket_branch_prefix(factory)
@@ -876,7 +916,7 @@ def main() -> None:
             raise DispatchError("factory control blocks dispatch")
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout changed during selection")
-        if fresh_mapping(factory / "linear-map.json", args.max_linear_age) != mapping:
+        if fresh_mapping(mapping_path, args.max_linear_age) != mapping:
             raise DispatchError("Linear reconciliation changed during selection")
         lease_dir.mkdir(mode=0o700, exist_ok=True)
         safe_directory(lease_dir, "dispatcher lease directory")

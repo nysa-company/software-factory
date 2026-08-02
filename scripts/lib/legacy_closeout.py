@@ -158,6 +158,70 @@ def one_field(text, name):
     return values[0].strip()
 
 
+def normal_route_plan(repo, ref, ticket, bundle, done, ticket_text):
+    historical = run(
+        repo, "cat-file", "blob", bundle["route_plan_blob"], check=False,
+    )
+    current_text = text_at(repo, ref, bundle["route_plan_path"])
+    if historical.returncode or current_text is None:
+        raise ValidationError("normal route plan evidence is unavailable")
+    if done["kit_sha"] == bundle["kit_sha"]:
+        if current_text != historical.stdout:
+            raise ValidationError("normal route plan changed after attestation")
+        return historical.stdout
+    try:
+        before = json.loads(historical.stdout)
+        current = json.loads(current_text)
+    except json.JSONDecodeError as error:
+        raise ValidationError("normal route migration is not valid JSON") from error
+    ticket_kits = re.findall(r"(?mi)^Kit-SHA:\s*(.*?)\s*$", ticket_text)
+    revisions = current.get("revisions") if isinstance(current, dict) else None
+    prior = before.get("revisions") if isinstance(before, dict) else None
+    if (
+        not isinstance(before, dict)
+        or not isinstance(current, dict)
+        or set(before) != {"kit_sha", "revisions", "schema", "ticket"}
+        or set(current) != set(before)
+        or before.get("schema") != "ticket-model-route-journal/v2"
+        or current.get("schema") != before["schema"]
+        or before.get("ticket") != ticket
+        or current.get("ticket") != ticket
+        or before.get("kit_sha") != bundle["kit_sha"]
+        or current.get("kit_sha") != done["kit_sha"]
+        or ticket_kits != [done["kit_sha"]]
+        or not isinstance(prior, list)
+        or not isinstance(revisions, list)
+        or len(revisions) <= len(prior)
+        or revisions[:len(prior)] != prior
+    ):
+        raise ValidationError("normal route migration does not bind terminal kit")
+    parent = prior[-1].get("revision_hash") if prior else None
+    kit = bundle["kit_sha"]
+    for index, revision in enumerate(revisions[len(prior):], len(prior)):
+        body = revision.get("body") if isinstance(revision, dict) else None
+        expected = hashlib.sha256(json.dumps(
+            {"body": body, "parent_hash": parent, "revision": index},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        if (
+            not isinstance(revision, dict)
+            or set(revision) != {"body", "parent_hash", "revision", "revision_hash"}
+            or not isinstance(body, dict)
+            or body.get("kind") != "release-migration"
+            or revision.get("revision") != index
+            or revision.get("parent_hash") != parent
+            or revision.get("revision_hash") != expected
+            or body.get("old_kit_sha") != kit
+            or not OID.fullmatch(body.get("new_kit_sha", ""))
+        ):
+            raise ValidationError("normal route migration chain is invalid")
+        kit = body["new_kit_sha"]
+        parent = revision["revision_hash"]
+    if kit != done["kit_sha"]:
+        raise ValidationError("normal route migration does not reach terminal kit")
+    return historical.stdout
+
+
 def repository_from_project(repo, ref):
     text = text_at(repo, ref, "factory/PROJECT.env")
     if text is None:
@@ -211,7 +275,6 @@ def _normal_terminal(repo, ticket, ref):
         or approval["bundle_attestation_blob"] != done["bundle_attestation_blob"]
         or approval["parent_head"] != done["approval_parent_head"]
         or approval["kit_sha"] != bundle["kit_sha"]
-        or done["kit_sha"] != bundle["kit_sha"]
         or approval["auto_merge_method"] != done["auto_merge_method"]
         or done["auto_merge_method"] not in {"squash", "merge", "rebase"}
         or done["required_checks"] != done["successful_checks"]
@@ -258,10 +321,16 @@ def _normal_terminal(repo, ticket, ref):
     if (
         blob_at(repo, ref, f"{root}/bundle.json") != done["bundle_attestation_blob"]
         or blob_at(repo, ref, f"{root}/approval.json") != done["approval_attestation_blob"]
-        or blob_at(repo, ref, bundle["route_plan_path"]) != bundle["route_plan_blob"]
     ):
         raise ValidationError("normal attestation blobs do not match protected main")
-    route_plan_text = text_at(repo, ref, bundle["route_plan_path"])
+    ticket_text = text_at(repo, ref, f"factory/tickets/{ticket}.md")
+    if ticket_text is None or one_field(ticket_text, "State").lower() != "done":
+        raise ValidationError("normal terminal ticket is not Done")
+    if one_field(ticket_text, "Operator-Approval").lower() != "linear":
+        raise ValidationError("normal terminal ticket lacks Linear approval")
+    route_plan_text = normal_route_plan(
+        repo, ref, ticket, bundle, done, ticket_text,
+    )
     bundle_text = text_at(repo, ref, bundle["bundle_path"])
     additions = run(
         repo, "log", "--format=%H", "--diff-filter=A",
@@ -296,11 +365,6 @@ def _normal_terminal(repo, ticket, ref):
         or not current_ledger_text.startswith(ledger_text)
     ):
         raise ValidationError("normal protected-main blobs or digests do not match")
-    ticket_text = text_at(repo, ref, f"factory/tickets/{ticket}.md")
-    if ticket_text is None or one_field(ticket_text, "State").lower() != "done":
-        raise ValidationError("normal terminal ticket is not Done")
-    if one_field(ticket_text, "Operator-Approval").lower() != "linear":
-        raise ValidationError("normal terminal ticket lacks Linear approval")
     return {"basis": "attested-done", "ticket": ticket, "text": ticket_text}
 
 

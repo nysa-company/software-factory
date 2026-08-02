@@ -21,6 +21,16 @@ allowlist. In this kit that includes the documentation roots plus `AGENTS.md`,
 conformance shakedown report. Repository baseline, secret, artifact, and
 test-immutability checks still run.
 
+Test immutability is evaluated per frozen-contract epoch. A commit that changes
+exactly one ticket file and adds exactly one higher numbered `Frozen contract`
+heading plus its matching PASS marker starts a new tests-first epoch. New
+Planner output appends the canonical `Freeze result: PASS` marker. Historical
+output may replace only the latest heading and matching established PASS marker
+one-for-one; partial, mismatched, repeated, lower, mixed, or malformed changes
+do not reset the gate. This permits an authenticated Planner correction to
+reopen Test-author ownership without rewriting Git history; tests remain
+frozen after the first implementation commit in each epoch.
+
 Every behavioral pull request runs fail-closed targeted-or-deferred selection
 on Linux and macOS system Bash. Mapped leaf changes execute their applicable
 suites. Unknown, shared, mixed, dependency, CI, selector, addition, deletion,

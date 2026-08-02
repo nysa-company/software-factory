@@ -70,6 +70,14 @@ if [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ||
   git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \
     commit -m "Mock role output" >/dev/null
 fi
+if [[ "${MOCK_REWRITE_WORKDIR:-0}" == "1" ]]; then
+  mock_original_head="$(git -C "$WORKDIR" rev-parse HEAD)"
+  mock_rewritten_head="$(printf '%s\n' 'Mock rewritten role output' | \
+    git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \
+      commit-tree "${mock_original_head}^{tree}")"
+  git -C "$WORKDIR" update-ref HEAD "$mock_rewritten_head" \
+    "$mock_original_head"
+fi
 if [[ "${MOCK_FORGE_MANIFEST:-0}" == "1" ]]; then
   printf 'run_id=forged\naccounting_schema=1\n' > \
     "$FACTORY_ROOT/factory/runs/forged.meta"

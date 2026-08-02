@@ -19,6 +19,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ticket-attest.py"
 KIT_SHA = "a" * 40
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 SPEC = importlib.util.spec_from_file_location("ticket_attest", SCRIPT)
 TICKET_ATTEST = importlib.util.module_from_spec(SPEC)
@@ -167,6 +171,42 @@ class TicketAttestTests(unittest.TestCase):
             )
         self.assertEqual(result.stdout, passed.stdout)
         self.assertEqual(call.call_count, 2)
+
+    def test_successful_runs_use_canonical_worktree_ledger(self):
+        canonical = self.temp / "canonical-product"
+        canonical.mkdir()
+        command("git", "init", "-q", "-b", "main", cwd=canonical)
+        (canonical / "factory").mkdir()
+        ledger = self.product / "factory/runtime-ledger.csv"
+        (canonical / "factory/runtime-ledger.csv").write_bytes(ledger.read_bytes())
+        ledger.write_text(ledger.read_text().splitlines()[0] + "\n")
+
+        with patch.dict(os.environ, {"FACTORY_LEDGER": ""}):
+            runs = TICKET_ATTEST.successful_runs(
+                self.product, canonical, "T-700",
+            )
+        self.assertCountEqual([run["role"] for run in runs], ["reviewer", "narrator"])
+
+    def test_overlay_consumption_uses_launcher_bound_operator_map(self):
+        external = self.temp / "operator-map.json"
+        operator = {
+            "approval": "Linear",
+            "initiative": "I-1",
+            "priority": "normal",
+            "state": "Approved",
+        }
+        external.write_text(json.dumps({
+            "tickets": {"T-700": {"operator": operator}},
+        }))
+        version = hashlib.sha256(json.dumps(
+            operator, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        with patch.dict(os.environ, {"FACTORY_OPERATOR_MAP": str(external)}):
+            TICKET_ATTEST.consume_overlay(self.product, "T-700", version)
+        self.assertNotIn(
+            "operator", json.loads(external.read_text())["tickets"]["T-700"]
+        )
+        self.assertFalse((self.product / "factory/linear-map.json").exists())
 
     def tearDown(self):
         shutil.rmtree(self.temp)
@@ -408,6 +448,34 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
+    def prepare_post_review_evidence(self, *, unreferenced=False):
+        bundle = self.product / "factory/tickets/T-700-bundle.md"
+        evidence = self.product / "factory/tickets/T-700-evidence"
+        evidence.mkdir()
+        (evidence / "old.png").write_bytes(PNG)
+        bundle.write_text(
+            bundle.read_text().replace(
+                "## Screenshots\nNo visual change.\n",
+                "## Screenshots\n![Old](T-700-evidence/old.png)\n",
+            )
+        )
+        self.commit("record prior narrator evidence")
+        self.reviewed = self.head()
+        self.write_runs()
+
+        (evidence / "old.png").unlink()
+        (evidence / "current.png").write_bytes(PNG)
+        bundle.write_text(
+            bundle.read_text().replace(
+                "![Old](T-700-evidence/old.png)",
+                "![Current](T-700-evidence/current.png)",
+            )
+        )
+        if unreferenced:
+            (evidence / "orphan.png").write_bytes(PNG)
+        self.commit("refresh narrator evidence")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+
     def approval_overlay(self, stale=False):
         stamp = "2020-01-01T00:00:00Z" if stale else "2099-01-01T00:00:00Z"
         (self.product / "factory/linear-map.json").write_text(json.dumps({
@@ -417,6 +485,21 @@ else:
                 "observed_at": stamp, "linear_updated_at": stamp,
             }}},
         }))
+
+    def project_approval_overlay(self):
+        (self.product / "factory/linear-map.json").write_text(json.dumps({
+            "tickets": {"T-700": {"operator": {
+                "initiative": "I-1", "priority": "normal",
+            }}},
+        }))
+
+    def append_successor_route(self):
+        route = self.product / "factory/route-plans/T-700.json"
+        value = json.loads(route.read_text())
+        value["successor_test"] = True
+        route.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        self.commit("migrate approved route")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
 
     def test_bundle_and_approval_happy_path_and_retry(self):
         self.bundle()
@@ -442,6 +525,16 @@ else:
             "reviewer-1,anthropic,mock,pinned_route_plan,conservative_reservation,1",
         ))
         self.bundle()
+
+    def test_bundle_accepts_referenced_current_ticket_png_evidence(self):
+        self.prepare_post_review_evidence()
+        self.bundle()
+
+    def test_bundle_refuses_unreferenced_narrator_evidence(self):
+        self.prepare_post_review_evidence(unreferenced=True)
+        result = self.attest("bundle")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("changed after", result.stderr)
 
     def test_bundle_refuses_changed_merge_policy(self):
         ticket = self.product / "factory/tickets/T-700.md"
@@ -676,6 +769,15 @@ else:
         self.approval_overlay()
         self.assertIn("bundle changed", self.attest("approval").stderr)
 
+    def test_explicitly_non_approvable_bundle_is_refused(self):
+        path = self.product / "factory/tickets/T-700-bundle.md"
+        path.write_text("NOT APPROVABLE: preview is missing.\n" + path.read_text())
+        self.commit("record failed bundle")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        result = self.attest("bundle")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("explicitly not approvable", result.stderr)
+
     def test_wrong_duplicate_and_head_mismatched_prs_are_refused(self):
         for update, message in (
             ({"duplicate": True}, "exactly one"),
@@ -717,6 +819,45 @@ else:
         self.assertTrue(second["auto_merge"])
         self.assertTrue(json.loads(self.state.read_text())["auto_merge"])
 
+    def test_projected_overlay_retries_approval_after_successor_route(self):
+        self.bundle()
+        self.approval_overlay()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        self.project_approval_overlay()
+        self.append_successor_route()
+        self.write_state(auto_merge=False)
+
+        phase_two = self.attest("approval")
+
+        self.assertEqual(phase_two.returncode, 0, phase_two.stderr)
+        result = json.loads(phase_two.stdout)
+        self.assertEqual(result["action"], "approval")
+        self.assertEqual(result["head"], self.head())
+        self.assertTrue(result["auto_merge"])
+        operator = json.loads(
+            (self.product / "factory/linear-map.json").read_text()
+        )["tickets"]["T-700"]["operator"]
+        self.assertEqual(operator, {"initiative": "I-1", "priority": "normal"})
+
+    def test_partial_projected_approval_overlay_is_refused(self):
+        self.bundle()
+        self.approval_overlay()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        mapping = json.loads(
+            (self.product / "factory/linear-map.json").read_text()
+        )
+        mapping["tickets"]["T-700"]["operator"].pop("approval")
+        (self.product / "factory/linear-map.json").write_text(
+            json.dumps(mapping)
+        )
+
+        refused = self.attest("approval")
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("exact Linear", refused.stderr)
+
     def test_approval_retry_rejects_tampered_receipt_or_later_head(self):
         self.bundle()
         self.approval_overlay()
@@ -740,7 +881,7 @@ else:
         self.commit("later unrelated head")
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.write_state()
-        self.assertIn("invalid", self.attest("approval").stderr)
+        self.assertIn("approval continuation", self.attest("approval").stderr)
 
     def test_auto_merge_unconfirmed_is_refused(self):
         self.bundle()
@@ -1358,13 +1499,51 @@ else:
         merged_state.update(state)
         self.write_state(**merged_state)
 
+    def prepare_done_after_successor_route(self):
+        self.bundle()
+        self.approval_overlay()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        self.project_approval_overlay()
+        self.append_successor_route()
+        phase_two = self.attest("approval")
+        self.assertEqual(phase_two.returncode, 0, phase_two.stderr)
+        merge_sha = self.head()
+        command("git", "branch", "-f", "main", merge_sha, cwd=self.product)
+        command(
+            "git", "push", "-q", "origin", f"{merge_sha}:refs/heads/main",
+            cwd=self.product,
+        )
+        self.workdir = self.temp / "successor-closeout"
+        command(
+            "git", "worktree", "add", "-q", "-b", "chore/t700-closeout",
+            str(self.workdir), "origin/main", cwd=self.product,
+        )
+        command(
+            "git", "push", "-q", "-u", "origin", "chore/t700-closeout",
+            cwd=self.workdir,
+        )
+        self.env["FAKE_WORKDIR"] = str(self.workdir)
+        self.write_state(
+            merged=True, merge_sha=merge_sha, pr_head=merge_sha,
+        )
+
     def test_done_refuses_failed_checks_and_merge_not_on_main(self):
         self.prepare_done(checks={"ci": True, "deploy-production": False})
-        self.assertIn("missing or unsuccessful", self.attest("done").stderr)
+        self.assertIn("unsuccessful: deploy-production", self.attest("done").stderr)
         self.write_state(merged=True, merge_sha=self.head(), checks={"ci": True})
-        self.assertIn("missing or unsuccessful", self.attest("done").stderr)
+        self.assertIn("missing: deploy-production", self.attest("done").stderr)
         self.write_state(merged=True, merge_sha="d" * 40)
         self.assertIn("not reachable", self.attest("done").stderr)
+
+    def test_done_reports_pending_post_merge_check(self):
+        self.prepare_done(
+            checks={"deploy-production": True},
+            check_runs={"ci": [{
+                "name": "ci", "status": "in_progress", "conclusion": None,
+            }]},
+        )
+        self.assertIn("pending: ci", self.attest("done").stderr)
 
     def test_done_happy_path_projects_ledger_and_attests(self):
         self.prepare_done()
@@ -1384,6 +1563,17 @@ else:
             "Factory-owned metadata and accounting closeout for T-700.\n\n"
             "No additional business approval is required. Protected checks, "
             "reviews, and merge policy remain authoritative.",
+        )
+
+    def test_done_accepts_approval_followed_by_successor_route(self):
+        self.prepare_done_after_successor_route()
+
+        result = self.attest("done")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "State: Done",
+            (self.workdir / "factory/tickets/T-700.md").read_text(),
         )
 
     def test_done_accepts_an_unchanged_preprojected_ledger(self):

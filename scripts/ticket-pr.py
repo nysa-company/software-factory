@@ -12,9 +12,22 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
+from approval_evidence import (  # noqa: E402
+    ApprovalEvidenceError,
+    trusted_approval_continuation_paths,
+)
+from narrator_evidence import (  # noqa: E402
+    MAX_NARRATOR_EVIDENCE_BYTES,
+    MAX_NARRATOR_EVIDENCE_FILES,
+    PNG_END,
+    PNG_SIGNATURE,
+    trusted_narrator_evidence_paths,
+)
+from runtime_paths import canonical_factory_file  # noqa: E402
 from refresh_semantics import (  # noqa: E402
     ClassificationError,
     preserved_control_paths,
@@ -65,7 +78,21 @@ def project_repo(factory: Path) -> str:
     return values[0]
 
 
-def latest_reviewer_head(product: Path, ticket: str) -> str:
+def project_auto_merge_method(factory: Path) -> str:
+    values = []
+    for raw in (factory / "PROJECT.env").read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(
+            r"(?:export\s+)?AUTO_MERGE_METHOD\s*=\s*['\"]?(squash|merge|rebase)['\"]?",
+            raw.strip(),
+        )
+        if match:
+            values.append(match.group(1))
+    if len(values) != 1:
+        raise Refusal("AUTO_MERGE_METHOD is missing or ambiguous")
+    return values[0]
+
+
+def latest_reviewer_head(product: Path, workdir: Path, ticket: str) -> str:
     runs = product / "factory" / "runs"
     if not runs.is_dir() or runs.is_symlink():
         raise Refusal("reviewer run evidence is missing")
@@ -98,9 +125,12 @@ def latest_reviewer_head(product: Path, ticket: str) -> str:
             if not run_id or run_id in reviewers:
                 raise Refusal("reviewer run evidence is ambiguous")
             reviewers[run_id] = values
-    ledger = Path(os.environ.get(
-        "FACTORY_LEDGER", product / "factory" / "runtime-ledger.csv"
-    ))
+    configured_ledger = os.environ.get("FACTORY_LEDGER", "")
+    ledger = (
+        Path(configured_ledger)
+        if configured_ledger
+        else canonical_factory_file(workdir, "runtime-ledger.csv")
+    )
     if not ledger.is_file() or ledger.is_symlink():
         raise Refusal("reviewer ledger evidence is missing")
     with ledger.open(newline="", encoding="utf-8") as handle:
@@ -228,7 +258,7 @@ def preserved_refresh_metadata(
 
 
 def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str) -> None:
-    reviewed = latest_reviewer_head(product, ticket)
+    reviewed = latest_reviewer_head(product, workdir, ticket)
     run(["git", "-C", str(workdir), "merge-base", "--is-ancestor", reviewed, head])
     changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").splitlines())
     route_path = f"factory/route-plans/{ticket}.json"
@@ -241,6 +271,29 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
     trusted_metadata.update(
         preserved_refresh_metadata(workdir, ticket, reviewed, head, changed)
     )
+    trusted_metadata.update(
+        trusted_narrator_evidence_paths(workdir, ticket, reviewed, head, changed)
+    )
+    approval_path = f"factory/attestations/{ticket}/approval.json"
+    if approval_path in changed:
+        ticket_text = git(workdir, "show", f"{head}:factory/tickets/{ticket}.md")
+        kit_shas = re.findall(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_text, re.MULTILINE)
+        if len(kit_shas) != 1:
+            raise Refusal("approval continuation Kit-SHA is missing or ambiguous")
+        try:
+            trusted_metadata.update(trusted_approval_continuation_paths(
+                workdir,
+                ticket,
+                project_repo(product / "factory"),
+                ticket_branch_prefix(product / "factory") + ticket,
+                kit_shas[0],
+                project_auto_merge_method(product / "factory"),
+                reviewed,
+                head,
+                changed,
+            ))
+        except ApprovalEvidenceError as error:
+            raise Refusal(str(error)) from error
     if changed - trusted_metadata:
         raise Refusal("ticket implementation changed after the latest successful review")
     if route_path not in changed:
@@ -347,6 +400,48 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
     return "pass", []
 
 
+def railway_preview_urls(repo: str, number: int) -> list[str]:
+    result = run([
+        "gh", "pr", "view", str(number), "--repo", repo,
+        "--json", "comments",
+    ])
+    try:
+        value = json.loads(result.stdout)
+        comments = value["comments"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise Refusal("GitHub returned invalid preview evidence") from error
+    if not isinstance(comments, list):
+        raise Refusal("GitHub returned invalid preview evidence")
+    urls = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            raise Refusal("GitHub returned malformed preview evidence")
+        author = comment.get("author")
+        body = comment.get("body")
+        if not (
+            isinstance(author, dict)
+            and author.get("login") == "railway-app"
+            and isinstance(body, str)
+        ):
+            continue
+        for candidate in re.findall(r"\[Web\]\((https://[^\s()]+)\)", body):
+            parsed = urlsplit(candidate)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or not parsed.hostname.endswith(".up.railway.app")
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port is not None
+                or parsed.query
+                or parsed.fragment
+                or parsed.path not in ("", "/")
+            ):
+                raise Refusal("Railway preview URL is malformed")
+            urls.append(candidate.rstrip("/"))
+    return list(dict.fromkeys(urls))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticket", required=True)
@@ -436,6 +531,19 @@ def main() -> None:
         ):
             raise Refusal("ticket PR branch, base, head, or state is invalid")
         check_status, checks = required_check_status(repo, pr["number"])
+        preview_urls = (
+            railway_preview_urls(repo, pr["number"])
+            if boundary in {"narrator", "publication"}
+            and check_status == "pass"
+            else []
+        )
+        if (
+            boundary in {"narrator", "publication"}
+            and check_status == "pass"
+            and not preview_urls
+        ):
+            check_status = "wait"
+            checks = ["preview deployment not reported"]
         status = (
             "ready" if boundary in {"narrator", "publication"} and check_status == "pass"
             else "prepared" if check_status == "pass"
@@ -447,6 +555,7 @@ def main() -> None:
             "checks": checks,
             "head": head,
             "pr_number": pr["number"],
+            "preview_urls": preview_urls,
             "schema": SCHEMA,
             "status": status,
             "ticket": args.ticket,
