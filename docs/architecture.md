@@ -577,6 +577,11 @@ authenticates the signed repair and selects its owner or a higher-priority
 dependency transition. Mismatched, partial, unauthenticated, or active-role
 claims remain blocked, and invalid repair evidence fails before a provider
 call.
+For a retained contract-block terminal, the controller materializes the block
+but does not request resume until the committed ticket visibly names that exact
+current blocker receipt. This check grants no authority—the state machine still
+authenticates the unique directive commit—but an absent or older receipt is an
+ordinary wait rather than a recovery error.
 An unresolved dependency may temporarily replace the visible transition
 receipt without discarding that repair record. After the dependency and any
 Factory upgrade resolve, the named owner reopens only when the record's signed
@@ -916,6 +921,11 @@ committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
 Each new Blocked-Escalated observation clears any prior resume overlay and
 replaces its timestamp baseline, including repeated blockers at the same
 coarse state.
+Every accepted state overlay is also bound to the exact committed ticket text
+from which it was ingested. A later ticket commit invalidates that overlay
+before effective-state projection, so a repeated block is published even when
+Linear still shows the prior resumed coarse state. Legacy unbound overlays are
+cleared once and must be re-observed.
 
 Before the first role, `models pin` resolves one exact six-role plan and records
 it with `Kit-SHA:` in one committed and pushed ticket-branch transaction. Every

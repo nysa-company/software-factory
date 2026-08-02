@@ -1218,6 +1218,12 @@ class FactoryControllerTest(unittest.TestCase):
                 "passport_sha256": passport_digest,
             },
         )
+        ticket = cell / "factory/tickets/T-110.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text(
+            f"# T-110\n\nOPERATOR RESUME RECEIPT: {'f' * 64}\n",
+            encoding="utf-8",
+        )
         calls.clear()
         resume_status = "waiting"
 
@@ -1249,6 +1255,17 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "blocked")
         self.assertIn(("claim", "--ticket", "T-110"), calls)
         self.assertIn(("ticket_lease_recovered",), calls)
+        self.assertNotIn(
+            ("state-machine", "resume"), [call[:2] for call in calls]
+        )
+
+        ticket.write_text(
+            f"# T-110\n\nOPERATOR RESUME RECEIPT: {receipt}\n",
+            encoding="utf-8",
+        )
+        calls.clear()
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
         self.assertIn(("state-machine", "resume"), [call[:2] for call in calls])
 
         calls.clear()

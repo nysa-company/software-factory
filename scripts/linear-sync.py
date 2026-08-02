@@ -884,13 +884,22 @@ def linear_updated_after(candidate, baseline):
 def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     operator = dict(entry.get("operator", {}))
     blocked_remote_updated_at = entry.get("blocked_remote_updated_at")
-    if operator.get("state") and normalize_state(operator.get("state_base", "")) != ticket["state"]:
+    source_digest = hashlib.sha256(ticket["text"].encode()).hexdigest()
+    source_changed = (
+        operator.get("state")
+        and entry.get("operator_state_source_sha256") != source_digest
+    )
+    if operator.get("state") and (
+        source_changed
+        or normalize_state(operator.get("state_base", "")) != ticket["state"]
+    ):
         operator.pop("state", None)
         operator.pop("state_base", None)
         operator.pop("approval", None)
         blocked_remote_updated_at = None
         if not dry:
             entry.pop("blocked_remote_updated_at", None)
+            entry.pop("operator_state_source_sha256", None)
     remote_priority = PRIORITY_NAMES.get(actual.get("priority", 0), "none")
     operator["priority"] = remote_priority
 
@@ -912,6 +921,8 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
         operator.pop("state", None)
         operator.pop("state_base", None)
         operator.pop("approval", None)
+        if not dry:
+            entry.pop("operator_state_source_sha256", None)
     effective = parse_ticket_text(
         ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)
     )
@@ -936,6 +947,8 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     if allowed:
         operator["state"] = STATES[remote_state][0]
         operator["state_base"] = ticket["state"]
+        if not dry:
+            entry["operator_state_source_sha256"] = source_digest
         if remote_state == "approved":
             operator["approval"] = "Linear"
     elif remote_state != local_state:
@@ -946,6 +959,8 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     if dry:
         log(f"{ticket['id']}: DRY would update operator overlay")
     else:
+        if not operator.get("state"):
+            entry.pop("operator_state_source_sha256", None)
         entry["operator"] = operator
     return parse_ticket_text(
         ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)

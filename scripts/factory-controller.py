@@ -1654,6 +1654,20 @@ class Controller:
                     raise ControllerError(
                         "state machine returned an invalid contract blocker"
                     )
+                try:
+                    ticket_text = (
+                        Path(claim["worktree"]) / "factory" / "tickets"
+                        / f"{claim['ticket']}.md"
+                    ).read_text(encoding="utf-8")
+                except (FileNotFoundError, OSError):
+                    continue
+                receipt_directives = re.findall(
+                    r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
+                    ticket_text,
+                    re.M,
+                )
+                if claim["receipt"] not in receipt_directives:
+                    continue
                 resumed = self.json_call(
                     "state-machine", "resume", "--ticket", claim["ticket"],
                     "--receipt", claim["receipt"],

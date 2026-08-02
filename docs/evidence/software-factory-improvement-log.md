@@ -4646,6 +4646,30 @@ survives, while a passport whose current stage does not match that `FIX` receipt
 remains invalid; the preserved live T-100 evidence also resolves to
 `FIX planner` without mutation.
 
+## FI-20260801-157 — Prior resume overlay masked a newly committed block
+
+Status: Focused regression green; sealed T-100 baseline pending
+Priority: P0
+Area: Linear operator authority and contract-block recovery
+Owner: Factory
+First seen: T-100 block materialization commit
+`4650e355c965227d6605d0fb62f3762ba60ddc49`
+Impact: the successor correctly committed T-100 as Blocked-Escalated with
+`Resume-State: Building`, but the canonical Linear map still held the prior
+block's Building overlay. Effective projection therefore masked the new block,
+and recovery attempted resume with the older operator receipt. The state
+machine refused before any provider call.
+Smallest repair: bind every accepted state overlay to the exact committed
+ticket text and clear it when that source changes, including legacy unbound
+overlays. The controller materializes a retained blocker but calls resume only
+when the ticket visibly contains its exact current receipt; the state machine
+remains the sole authority for authenticating that directive.
+Edge coverage: the Linear regression now re-blocks by changing only committed
+ticket content while remote Linear remains at the old resumed state, proves
+that Blocked is republished and a new baseline recorded, then accepts only a
+later resume. The controller regression proves an older receipt waits and the
+current receipt reaches state-machine validation.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -62,6 +62,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Every new Linear Blocked-Escalated observation clears any prior resume
   overlay and replaces its timestamp baseline, including repeated blockers at
   the same coarse state. Only a strictly later declared-state update resumes.
+- Accepted state overlays bind the exact committed ticket text; any later
+  ticket commit, or a legacy missing binding, clears the overlay before
+  projection. Contract-block recovery asks for resume only when the committed
+  ticket visibly names the exact current blocker receipt, while the state
+  machine retains final directive authority.
 - Contract 1.8 at ticket capacity above one requires an exact owner-approved
   subscription provider policy and activation covering every enabled Cursor,
   Claude Code, and Codex route at no less than ticket capacity. The installed
@@ -2817,3 +2822,13 @@ repair may survive only through the exact consumed FIX receipt, parent blocker,
 unique terminal manifest, authenticated charge, unchanged passport stage, Git
 ancestry, and contiguous release suffix. The descendant migration edge by
 itself is not authority.
+
+## 2026-08-01 — Decision 206: Operator state overlays bind their ticket source
+
+Category: State machine
+
+A Linear state overlay is valid only for the exact committed ticket text from
+which it was ingested. Any later ticket commit, or a legacy unbound overlay,
+clears it before projection so a repeated block cannot be masked. Recovery
+waits for the exact current blocker receipt to become visible before asking the
+state machine to authenticate resume.
