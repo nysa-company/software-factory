@@ -2722,3 +2722,14 @@ commit, Done receipt, ledger, original protected merge and checks, and closeout
 merge. Only that successful retry permits `ticket_complete` and ticket-lease
 release; the controller must not loop or reopen branch-oriented prepublication
 dependency logic.
+
+## 2026-08-01 — Decision 198: Normal terminal evidence preserves successor routes
+
+Category: Trust boundary
+
+A normal bundle and approval remain bound to their original Kit-SHA and route
+blob. When Done is recorded after sealed successors, its newer Kit-SHA is valid
+only if protected main retains the exact attested route journal as a prefix and
+adds a hash-linked suffix containing only release migrations that reaches the
+Done and ticket Kit-SHA. Terminal and dependency readers validate that lineage
+instead of requiring the current route blob to equal the historical bundle.

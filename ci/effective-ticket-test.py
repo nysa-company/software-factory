@@ -193,6 +193,8 @@ class EffectiveTicketTests(unittest.TestCase):
 
     def test_attested_done_survives_ledger_append_but_not_prefix_mutation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            source_kit = "2" * 40
+            terminal_kit = "3" * 40
             repo = Path(temp_dir) / "product"
             remote = Path(temp_dir) / "product.git"
             ticket = repo / "factory/tickets/T-700.md"
@@ -205,7 +207,17 @@ class EffectiveTicketTests(unittest.TestCase):
             (repo / "factory/PROJECT.env").write_text("GH_REPO=acme/widget\n")
             route_plan = repo / "factory/route-plans/T-700.json"
             route_plan.parent.mkdir(parents=True)
-            route_plan.write_text('{"schema":"test-route-plan"}\n')
+            route_plan.write_text(json.dumps({
+                "schema": "ticket-model-route-journal/v2",
+                "ticket": "T-700",
+                "kit_sha": source_kit,
+                "revisions": [{
+                    "revision": 0,
+                    "parent_hash": None,
+                    "body": {"kind": "migration"},
+                    "revision_hash": "4" * 64,
+                }],
+            }, sort_keys=True) + "\n")
             ticket_bundle = repo / "factory/tickets/T-700-bundle.md"
             ticket_bundle.write_text("# T-700 bundle\n")
             ledger = repo / "factory/ledger.csv"
@@ -221,6 +233,7 @@ class EffectiveTicketTests(unittest.TestCase):
             ticket.write_text(
                 BASE_TICKET.replace("Backlog", "Approved")
                 + "Operator-Approval: Linear\n"
+                + f"Kit-SHA: {source_kit}\n"
             )
             bundle = done.with_name("bundle.json")
             approval = done.with_name("approval.json")
@@ -237,7 +250,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 "bundle_blob": ticket_bundle_blob,
                 "reviewer_run_id": "reviewer-1",
                 "narrator_run_id": "narrator-1",
-                "kit_sha": "2" * 40,
+                "kit_sha": source_kit,
                 "policy_hash": "5" * 64,
                 "route_plan_path": "factory/route-plans/T-700.json",
                 "route_plan_blob": route_blob,
@@ -254,7 +267,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 "pr_number": 7,
                 "reviewed_sha": "c" * 40,
                 "bundle_blob": ticket_bundle_blob,
-                "kit_sha": "2" * 40,
+                "kit_sha": source_kit,
                 "auto_merge_method": "squash",
                 "parent_head": "1" * 40,
                 "bundle_attestation_blob": "",
@@ -290,7 +303,30 @@ class EffectiveTicketTests(unittest.TestCase):
             ticket.write_text(
                 BASE_TICKET.replace("Backlog", "Done")
                 + "Operator-Approval: Linear\n"
+                + f"Kit-SHA: {terminal_kit}\n"
             )
+            route_value = json.loads(route_plan.read_text())
+            body = {
+                "kind": "release-migration",
+                "migrated_at": "2026-07-17T17:45:00Z",
+                "pin_commit": "8" * 40,
+                "old_kit_sha": source_kit,
+                "new_kit_sha": terminal_kit,
+                "prior_resolution": {},
+            }
+            revision = {
+                "revision": 1,
+                "parent_hash": "4" * 64,
+                "body": body,
+            }
+            revision["revision_hash"] = __import__("hashlib").sha256(
+                json.dumps(
+                    revision, sort_keys=True, separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            route_value["kit_sha"] = terminal_kit
+            route_value["revisions"].append(revision)
+            route_plan.write_text(json.dumps(route_value, sort_keys=True) + "\n")
             done.write_text(json.dumps({
                 "schema": "nysa.software-factory.ticket-done/v1",
                 "ticket": "T-700",
@@ -304,7 +340,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 "approval_attestation_blob": approval_blob,
                 "approval_parent_head": "1" * 40,
                 "closeout_parent": closeout_parent,
-                "kit_sha": "2" * 40,
+                "kit_sha": terminal_kit,
                 "auto_merge_method": "squash",
                 "merged_at": "2026-07-17T18:00:00Z",
                 "attested_at": "2026-07-17T18:05:00Z",

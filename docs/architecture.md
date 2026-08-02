@@ -886,6 +886,10 @@ remains inert until one manual protected product merge.
 The shared protected-main reader accepts exactly one of normal attestations,
 the first legacy-closeout receipt, or this terminal-backfill receipt; overlap,
 partial/extra batches, changed sources, or inconsistent ancestry fail closed.
+For normal attestations that cross sealed successors, the reader requires the
+bundle's exact route journal as a prefix and permits only a hash-linked suffix
+of release migrations ending at the Done and ticket Kit-SHA; fallback or
+discontinuous post-bundle routing fails closed.
 
 Overlay-driven state materialization is limited to Backlog-to-Ready and the exact
 declared non-sensitive resume from Blocked-Escalated;

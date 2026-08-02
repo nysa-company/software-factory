@@ -4428,6 +4428,33 @@ evaluation; the pending cases retain waits with and without a publication
 lease. Live closure requires one sealed successor to release T-094 without role
 replay.
 
+## FI-20260801-146 — Successor route lineage hid valid terminal evidence
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main terminal and dependency truth
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`3a7470a9168b8cbafec3e2c56bc3084ae52e0da6`
+Impact: T-094 is Done on protected main at
+`7afbfebc8c1bf7947b2f4f43758d2a5ce2e418ce`, but the shared terminal reader
+rejected its normal attestation chain because bundle/approval Kit-SHA
+`2c087dedd49016dcdf3f4392353fe87caf073556` differed from Done Kit-SHA
+`bbb441acd90bab0670310c6707fe25475e4bd3a3`. T-100 and T-093 therefore waited
+on T-094 even though its protected closeout was complete. No role was replayed.
+Finding: terminal validation assumed the route blob and Kit-SHA could not change
+between bundle and Done, while the publication boundary already permits exact
+sealed-successor release migrations that preserve role evidence.
+Smallest repair: retain exact bundle/approval identity, then require the
+historical attested route journal to be a byte-for-byte prefix of protected
+main and validate a hash-linked suffix containing only continuous release
+migrations ending at the Done and ticket Kit-SHA. Fallback, tampering, unknown
+shape, or discontinuity still refuses.
+Edge coverage: the effective-ticket regression closes a normal ticket after a
+successor route migration, then retains its existing ledger-append and
+prefix-tamper checks. The same validator recognizes live T-094 as
+`attested-done`; full focused suite validation is pending before resealing.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
