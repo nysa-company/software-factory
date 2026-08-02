@@ -2242,8 +2242,11 @@ class Controller:
                 if claim.get("publication_lease"):
                     self.release_publication(claim)
                 self.migrate_passport(claim, "merged")
-                if not self.closeout(claim):
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                if self.closeout(claim):
+                    self.event("ticket_complete", claim["ticket"])
+                    self.release(claim)
+                    return {"status": "complete", "ticket": claim["ticket"]}
+                return {"status": "waiting", "ticket": claim["ticket"]}
             if not self.route_path(claim).exists():
                 raise ControllerError("ticket route was not batch pinned")
             if not self.refresh_dependency_tracking(claim):

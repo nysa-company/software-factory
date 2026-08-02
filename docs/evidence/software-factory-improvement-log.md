@@ -4400,6 +4400,34 @@ closeout reaches authoritative `COMPLETE`; the prior cases retain pending
 closeout waits with and without a publication lease. Live closure requires one
 sealed successor to emit and release T-094 terminally without role replay.
 
+## FI-20260801-145 — Branch dependency ordering masked protected-main Done
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main terminal authority
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`3a7470a9168b8cbafec3e2c56bc3084ae52e0da6`
+Impact: T-094's retrying `done` operation validated its exact closeout commit,
+Done receipt, ledger, original merge and required checks, and merged closeout PR
+#306. The controller then evaluated the stale Approved ticket branch, whose
+dependency check ran before branch-stage resolution and requested a
+prepublication refresh. That refresh correctly refused, parking T-094 again;
+no role or ticket output changed.
+Finding: protected-main terminal truth belongs to the `done` attestation and
+cannot be rediscovered by the branch-oriented prepublication state machine.
+Falling through after exact closeout validation was redundant and reopened an
+inapplicable dependency boundary.
+Smallest repair: a successful merged `done` retry is the terminal controller
+authority. It emits `ticket_complete` and releases the ticket lease immediately;
+an open closeout still returns a wait, and all failed or ambiguous attestation
+evidence remains fail closed.
+Edge coverage: the Factory controller passes 69/69. The terminal case proves
+exact merged closeout completes before dependency tracking or branch-stage
+evaluation; the pending cases retain waits with and without a publication
+lease. Live closure requires one sealed successor to release T-094 without role
+replay.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

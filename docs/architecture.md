@@ -715,8 +715,10 @@ Missing or pending post-merge contexts keep closeout waiting; a completed
 unsuccessful context remains a fail-closed controller error.
 An authenticated merged passport enters closeout before dependency refresh,
 even when a prior wait already released its publication lease.
-An open closeout PR is a controller wait; after it merges, reconciliation
-continues to the authoritative `COMPLETE` transition and ticket-lease release.
+An open closeout PR is a controller wait. After it merges, retrying `done`
+revalidates the exact protected-main Done receipt, ledger, original merge and
+checks, and closeout merge before the controller emits completion and releases
+the ticket; stale prepublication dependency logic is never reopened.
 If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a

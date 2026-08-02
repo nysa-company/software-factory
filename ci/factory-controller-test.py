@@ -4487,7 +4487,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(calls, ["passport", "closeout"])
 
-    def test_merged_closeout_reaches_authoritative_complete_stage(self) -> None:
+    def test_merged_closeout_attestation_completes_before_dependency_refresh(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {
             "branch": "ticket/T-110",
@@ -4507,19 +4507,21 @@ class FactoryControllerTest(unittest.TestCase):
             json.dumps({"publication_state": "merged"}), encoding="utf-8"
         )
         passport.chmod(0o600)
-        route = self.root / "route.json"
-        route.write_text("{}\n", encoding="utf-8")
         calls = []
         controller.ensure_lease = lambda *_args: None
         controller.finish_pending_run = lambda _claim: True
         controller.ticket_merged = lambda _claim: True
         controller.migrate_passport = lambda *_args: calls.append("passport")
         controller.closeout = lambda _claim: calls.append("closeout") or True
-        controller.route_path = lambda _claim: route
-        controller.refresh_dependency_tracking = lambda _claim: True
-        controller.withdraw_publication = lambda _claim: calls.append("withdraw")
-        controller.json_call = lambda *_args, **_kwargs: state_transition(
-            "COMPLETE protected-main attested"
+        controller.refresh_dependency_tracking = lambda _claim: (
+            (_ for _ in ()).throw(
+                AssertionError("attested Done refreshed dependencies")
+            )
+        )
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(
+                AssertionError("attested Done entered branch state machine")
+            )
         )
         controller.event = lambda name, *_args, **_kwargs: calls.append(name)
         controller.release = lambda _claim: calls.append("release")
@@ -4528,8 +4530,7 @@ class FactoryControllerTest(unittest.TestCase):
             {"status": "complete", "ticket": "T-110"},
         )
         self.assertEqual(
-            calls,
-            ["passport", "closeout", "withdraw", "ticket_complete", "release"],
+            calls, ["passport", "closeout", "ticket_complete", "release"]
         )
 
     def test_run_wrapper_renews_lease_before_provider_queue(self) -> None:
