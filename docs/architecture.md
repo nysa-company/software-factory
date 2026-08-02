@@ -349,6 +349,10 @@ Linear reconciliation retries only rate limits and transient server responses
 `Retry-After` is clamped to 0 through 30 seconds; missing or malformed values
 use bounded exponential backoff. Semantic GraphQL errors remain fail-closed for
 the next reconciliation cycle.
+Description projection compares a narrow canonical Markdown form that covers
+Linear's ordered-list indentation, continuation, renumbering, inline-code, and
+fence-boundary round trips. Nested-list structure, fenced content, and unknown
+or meaning-changing edits remain distinct and are restored from Git.
 The slow full-board Linear cycle owns a cycle lock, while each map mutation owns
 only a short map lock. A ticket-state consumer first writes a durable
 operator-version-bound clear intent, so a stale full-board snapshot cannot
@@ -946,9 +950,11 @@ Overlay-driven state materialization is limited to Backlog-to-Ready and the exac
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to
 committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
-Each new Blocked-Escalated observation clears any prior resume overlay and
-replaces its timestamp baseline, including repeated blockers at the same
-coarse state.
+Each newly committed Blocked-Escalated source clears any prior resume overlay
+and timestamp baseline before interpreting the remote state, including a
+repeated blocker at the same coarse state with no overlay. The first exact
+remote Blocked-Escalated observation for that source records the replacement
+baseline; only a strictly later remote move may resume it.
 Every accepted state overlay is also bound to the exact committed ticket text
 from which it was ingested. A later ticket commit invalidates that overlay
 before effective-state projection, so a repeated block is published even when

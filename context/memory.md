@@ -4,9 +4,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
-- Linear description comparison treats only three-space soft wrapping inside a
-  list paragraph as semantically inert. Nested list structure remains
-  significant, and Git retains the exact canonical ticket contract.
+- Linear description comparison canonicalizes the observed serializer-only
+  ordered-list indentation, continuation, renumbering, inline-code, link, and
+  fence-boundary forms. Nested-list structure, fenced content, and meaningful
+  edits remain significant, and Git retains the exact ticket contract.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -70,9 +71,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
   excluding its required setup fix—is a contract block before Builder.
-- Every new Linear Blocked-Escalated observation clears any prior resume
-  overlay and replaces its timestamp baseline, including repeated blockers at
-  the same coarse state. Only a strictly later declared-state update resumes.
+- Every new committed Blocked-Escalated source clears any prior resume overlay
+  and timestamp baseline before the remote state is interpreted, including
+  repeated blockers with no overlay. Its first exact remote blocked observation
+  records the new baseline; only a strictly later declared-state update resumes.
 - Accepted state overlays bind the exact committed ticket text; any later
   ticket commit, or a legacy missing binding, clears the overlay before
   projection. Contract-block recovery asks for resume only when the committed
@@ -2925,3 +2927,13 @@ Authenticated migration and resume for independent tickets may overlap up to
 the certified ticket capacity. Within each ticket, passport migration, route
 binding, lease replacement, repair authentication, and accounting remain in
 their original order behind the same launcher controls.
+
+## 2026-08-02 — Decision 215: Linear projection binds blocker generations and serializer semantics
+
+Category: Trust boundary
+
+Every committed blocked ticket source has its own digest-bound remote timestamp
+baseline even when no operator state overlay exists. Description comparison
+canonicalizes only Linear's observed ordered-list, inline-code, link, and fence
+round trips; nested structure, fenced content, and meaningful edits remain
+different and are restored from Git.
