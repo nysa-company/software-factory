@@ -4375,6 +4375,31 @@ machine, then enters closeout without manufacturing a lease release; the full
 controller suite passes 68/68. Live closure requires a sealed successor to
 emit T-094 Done without role replay.
 
+## FI-20260801-144 — Merged-passport recovery looped after closeout merged
+
+Status: Focused regression green; sealed successor recovery pending
+Priority: P0
+Area: protected-main terminal transition
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`d91309deffad5689456a0d33f98117fccc870358`
+Impact: the recovered T-094 created closeout commit
+`3b33dc41544722142efb41b4631304b85677f2ad` and protected PR #306 merged as
+`7afbfebc8c1bf7947b2f4f43758d2a5ce2e418ce`. The controller nevertheless
+kept re-entering the merged-passport shortcut, repeatedly validating closeout
+instead of evaluating the authoritative terminal transition. The reconcile
+process was stopped after exact verification; no role or ticket output changed.
+Finding: the merged-passport shortcut ignored the closeout helper's result and
+always reported progress. A pending closeout therefore spun within one cycle,
+and a merged closeout could never fall through to `COMPLETE`.
+Smallest repair: return `waiting` while closeout remains open. When closeout is
+merged, continue through the ordinary state-machine boundary, require its exact
+`COMPLETE` envelope, emit `ticket_complete`, and release the ticket lease.
+Edge coverage: the Factory controller passes 69/69. The new case proves merged
+closeout reaches authoritative `COMPLETE`; the prior cases retain pending
+closeout waits with and without a publication lease. Live closure requires one
+sealed successor to emit and release T-094 terminally without role replay.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

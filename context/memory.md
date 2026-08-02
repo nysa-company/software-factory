@@ -2711,3 +2711,13 @@ uses a safe current passport with `publication_state=merged` as authority to
 verify exact GitHub merge truth and enter protected-main closeout. It releases a
 publication lease only when one still exists. This preserves post-merge
 recovery across a sealed successor without reopening prepublication stages.
+
+## 2026-08-01 — Decision 197: Closeout wait must terminate at authoritative COMPLETE
+
+Category: State machine
+
+Merged-passport recovery returns a controller wait while its protected closeout
+PR is open. Once the closeout PR merges, the same path must stop intercepting
+the ticket and evaluate the exact state-machine `COMPLETE` envelope before
+emitting `ticket_complete` and releasing the ticket lease. A closeout helper's
+merged result is not itself permission to loop or to manufacture completion.

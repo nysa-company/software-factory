@@ -4428,7 +4428,7 @@ class FactoryControllerTest(unittest.TestCase):
             "release"
         )
         controller.migrate_passport = lambda *_args: calls.append("passport")
-        controller.closeout = lambda _claim: calls.append("closeout") or True
+        controller.closeout = lambda _claim: calls.append("closeout") or False
         controller.refresh_dependency_tracking = lambda _claim: (
             (_ for _ in ()).throw(
                 AssertionError("merged ticket refreshed dependencies")
@@ -4441,7 +4441,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(
             controller.reconcile_ticket(claim),
-            {"status": "progressed", "ticket": "T-110"},
+            {"status": "waiting", "ticket": "T-110"},
         )
         self.assertEqual(calls, ["release", "passport", "closeout"])
 
@@ -4470,7 +4470,7 @@ class FactoryControllerTest(unittest.TestCase):
         controller.finish_pending_run = lambda _claim: True
         controller.ticket_merged = lambda _claim: True
         controller.migrate_passport = lambda *_args: calls.append("passport")
-        controller.closeout = lambda _claim: calls.append("closeout") or True
+        controller.closeout = lambda _claim: calls.append("closeout") or False
         controller.refresh_dependency_tracking = lambda _claim: (
             (_ for _ in ()).throw(
                 AssertionError("merged recovery refreshed dependencies")
@@ -4483,9 +4483,54 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(
             controller.reconcile_ticket(claim),
-            {"status": "progressed", "ticket": "T-110"},
+            {"status": "waiting", "ticket": "T-110"},
         )
         self.assertEqual(calls, ["passport", "closeout"])
+
+    def test_merged_closeout_reaches_authoritative_complete_stage(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        (self.state / "passports").mkdir()
+        passport = self.state / "passports/T-110.json"
+        passport.write_text(
+            json.dumps({"publication_state": "merged"}), encoding="utf-8"
+        )
+        passport.chmod(0o600)
+        route = self.root / "route.json"
+        route.write_text("{}\n", encoding="utf-8")
+        calls = []
+        controller.ensure_lease = lambda *_args: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.ticket_merged = lambda _claim: True
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.closeout = lambda _claim: calls.append("closeout") or True
+        controller.route_path = lambda _claim: route
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.withdraw_publication = lambda _claim: calls.append("withdraw")
+        controller.json_call = lambda *_args, **_kwargs: state_transition(
+            "COMPLETE protected-main attested"
+        )
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.release = lambda _claim: calls.append("release")
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "complete", "ticket": "T-110"},
+        )
+        self.assertEqual(
+            calls,
+            ["passport", "closeout", "withdraw", "ticket_complete", "release"],
+        )
 
     def test_run_wrapper_renews_lease_before_provider_queue(self) -> None:
         source = (ROOT / "scripts/run-agent.sh").read_text(encoding="utf-8")
