@@ -2865,3 +2865,63 @@ repair at that prior authenticated head and then migrates the passport through
 the already-validated directive commit before resume. Any unrelated, ambiguous,
 multi-path, merge, stale-receipt, or non-passport-parent descendant remains
 fail-closed.
+
+## 2026-08-02 — Decision 209: Pause intent is distinct from missing-claim recovery
+
+Category: State machine
+
+An operator pauses one idle ticket through a passport-, branch-, head-, and
+unique-worktree-bound owner-local intent. The claim and lease are released but
+the passport and recorded status remain. Only explicit resume can reconstruct
+that exact claim; discovery never turns an arbitrary historical passport into
+scheduling authority.
+
+## 2026-08-02 — Decision 210: Pre-provider interruption recovery is marker-bound
+
+Category: State machine
+
+Before a deterministic worker starts, the controller records the exact current
+passport, release, head, route validity, and ticket run-manifest snapshot. A
+receipt-free untyped block may reopen once only if those inputs, the clean
+remote worktree, and absence of runs, terminals, pauses, and typed blockers all
+remain exact. Every mismatch stays blocked.
+
+## 2026-08-02 — Decision 211: Linear authority clears survive stale board snapshots
+
+Category: Trust boundary
+
+Full-board network work owns a cycle lock, not the map lock. Consuming an
+operator overlay durably records its exact version before a short locked map
+write; every later board save applies that intent until successful
+reconciliation proves it retired. Repeated identical unsafe admission inputs
+share one durable incident and bounded reminders without weakening admission.
+
+## 2026-08-02 — Decision 212: Late test repairs open a new tests-first epoch
+
+Category: State machine
+
+Contract 1.8 routes Reviewer-requested Test-author work through one Planner
+repair first. That repair may change only the ticket and must append one higher
+canonical frozen-contract/PASS pair. The sequencer validates the commit before
+Test-author, while a Planner PATH guard prevents package-manager product suites.
+Prior Reviewer and Narrator output remains immutable evidence.
+
+## 2026-08-02 — Decision 213: Certification capabilities are plan inputs
+
+Category: Trust boundary
+
+Certification plan v2 pins Node and npm separately and makes every phase's
+network requirement explicit. Required network without reviewed opt-in fails
+before spawn; denied phases stay denied even when another phase is granted.
+Receipts bind declared/granted capability and runtime, failures preserve
+redacted hash-bound evidence, and an existing product's canonical activation
+path/origin/generation is checked before expensive phases.
+
+## 2026-08-02 — Decision 214: Successor recovery overlaps only across tickets
+
+Category: Performance
+
+Authenticated migration and resume for independent tickets may overlap up to
+the certified ticket capacity. Within each ticket, passport migration, route
+binding, lease replacement, repair authentication, and accounting remain in
+their original order behind the same launcher controls.

@@ -226,6 +226,11 @@ release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-rea
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
+Contract 1.8 additionally exposes `ticket-control pause|resume`: pause removes
+only one idle passport-bound claim and records an owner-only intent, while
+resume validates that exact passport, remote branch, unique worktree, and
+recorded status before reacquiring one lease. Startup never scans paused or
+historical passports into runnable claims.
 The product test-immutability gate treats one ticket-only higher numbered
 frozen contract plus its matching PASS marker as a new tests-first epoch. New
 Planner output uses the canonical append-only marker. Historical Planner output
@@ -327,6 +332,10 @@ State-machine reconciliation likewise relies on its individually bounded
 resolver, ticket-state, passport, and Git operations. The controller does not
 apply a second aggregate timeout that could terminate the parent after a
 ticket-state transition has already been committed.
+Independent successor passport migrations overlap up to the already-certified
+ticket capacity. Each ticket still crosses the same launcher, passport, route,
+lease, and accounting validators; only the prior cross-ticket serialization is
+removed.
 The focused deterministic suite enumerates every `RUN` and `FIX` role from
 every lifecycle state with mocked role work. It asserts the exact forward or
 repair path and the forbidden backward edges in seconds, before a sealed lane
@@ -340,6 +349,12 @@ Linear reconciliation retries only rate limits and transient server responses
 `Retry-After` is clamped to 0 through 30 seconds; missing or malformed values
 use bounded exponential backoff. Semantic GraphQL errors remain fail-closed for
 the next reconciliation cycle.
+The slow full-board Linear cycle owns a cycle lock, while each map mutation owns
+only a short map lock. A ticket-state consumer first writes a durable
+operator-version-bound clear intent, so a stale full-board snapshot cannot
+restore consumed authority. Unsafe admission remains fail-closed, but identical
+inputs update one durable incident and emit only bounded reminders while
+already authenticated claims continue reconciling.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.
@@ -357,6 +372,12 @@ reconstruct it only from one signed nonterminal passport, one exact checked-out
 branch, current ticket/route Kit-SHAs, and a newly claimed lease. New-admission
 refusals stop admission but never prevent already authenticated claims from
 reconciling.
+Every pre-provider worker submission also records a passport-, head-, route-,
+run-snapshot-, and release-bound reconciliation marker. A restart may reopen a
+receipt-free blocked claim only when that marker and every current invariant
+still match; typed blocks, pauses, dirty or diverged cells, terminal evidence,
+active runs, and cross-release claims remain closed. The marker is consumed
+after ordinary worker completion, making recovery one-use and idempotent.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one
@@ -1040,6 +1061,13 @@ certification scripts remain compatible. Cache hits are recorded but the
 initial runner does not reuse build or test results; evidence must justify any
 future cache policy. Exact protected Factory CI proof remains reused rather
 than repeated during product certification.
+The v2 DAG also binds exact Node and npm identities plus each phase's declared
+and granted network capability. Required network without command-scoped review
+fails before spawn; a reviewed opt-in does not broaden denied phases. Redacted
+phase output, npm debug logs, result evidence, and their digests survive a
+failed product-certification workspace. Before source preparation, an existing
+active product must match its exact committed activation generation, canonical
+path, and origin; a fresh project remains certifiable without an active record.
 An activated contract 1.2, 1.3, or 1.4 keeps that receipt as the runtime destination
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.
@@ -1071,6 +1099,12 @@ Spec-linter, Test-author, and Reviewer use its distinct checking family.
 Planner, Spec-linter, and Test-author independently evaluate exact generated
 fixture values from their frozen initializer or reset; an unproducible value
 or a repair scope excluding its required setup correction is a contract block.
+Under Contract 1.8, Reviewer-owned Test-author work first routes through one
+ticket-only Planner repair that appends a higher frozen-contract epoch. The
+sequencer authenticates that exact commit before Test-author, preserving
+test-before-implementation history. Planner's runtime PATH blocks package
+manager entry points so a contract-only repair cannot launch broad product
+suites; the protected CI and certification boundaries retain those suites.
 `cursor-balanced-v2` is the no-record default; `balanced-v2` and
 `legacy-balanced-v1` remain available for compatibility with prior activation
 records and migrations.

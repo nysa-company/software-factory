@@ -160,7 +160,12 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   changing it forces a fresh suite and caps the product receipt to that proof.
   A product that has independent validation branches may call the sealed
   `scripts/certification-runner.py` from its certification script with a
-  repository-owned `nysa.software-factory.certification-plan/v1` JSON plan.
+  repository-owned `nysa.software-factory.certification-plan/v2` JSON plan.
+  The plan pins exact Node and npm versions independently and declares every
+  phase's network requirement as `denied`, `optional`, or `required`. A
+  required phase fails before spawning when the command-scoped reviewed-network
+  opt-in is absent; denied phases remain network-denied when that opt-in is
+  present for another phase.
   Start with two workers; the runner permits at most three, isolates phase logs
   and temporary directories, records timing/CPU/peak-memory/input/artifact
   evidence, cancels siblings after failure, and binds the passing result into

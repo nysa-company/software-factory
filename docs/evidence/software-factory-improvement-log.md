@@ -4736,6 +4736,72 @@ Reviewer, and Narrator exactly once in disposable lane
 `/private/tmp/nysa-sf-dev.amHs9i`, reached `AWAIT-OPERATOR`, and retained a
 clean pushed mock branch in 224 seconds.
 
+## FI-20260802-160 — Linear board work serialized ticket authority and repeated incidents
+
+Status: Focused Linear/controller regressions green; protected CI pending
+Priority: P1 (#175)
+Area: Linear synchronization and admission
+Owner: Factory
+Impact: the network-length board cycle held the same lock needed to consume a
+ticket overlay, and unchanged `unsafe_state` inputs emitted noise every cycle.
+Smallest repair: split cycle and short map locks, persist exact operator-clear
+intents, and retain one durable input-digested incident with bounded reminders.
+Validation: a stale full-board save cannot restore a consumed overlay; active
+claims continue while new admission remains closed.
+
+## FI-20260802-161 — Pause and interruption shared ambiguous claim shapes
+
+Status: 77 focused controller regressions green; protected CI pending
+Priority: P0 (#164/#184)
+Area: controller persistence
+Owner: Factory
+Impact: a deliberately claim-free passport and an accidentally receipt-free
+blocked claim had no distinct authenticated recovery authority.
+Smallest repair: add explicit passport-bound `ticket-control pause|resume` and
+one-use pre-provider reconciliation markers. Neither path scans historical
+passports or weakens typed blocked claims.
+Validation: pause/resume, stale passport, blocked restore, two-ticket restart,
+dirty/active/paused/terminal/cross-release refusal, and idempotence are covered.
+
+## FI-20260802-162 — Reviewer-requested late tests were guaranteed CI-red
+
+Status: Focused role/state regressions green; protected CI pending
+Priority: P0 (#182/#183)
+Area: repair sequencing and Planner scope
+Owner: Factory
+Impact: Contract 1.8 could push a Test-author commit after Builder, violating
+the protected tests-first gate; the preceding Planner repair also ran the full
+workspace suite.
+Smallest repair: route both single- and dual-owner late test repairs through one
+ticket-only higher frozen epoch, authenticate it before Test-author, and block
+Planner package-manager entry points. Existing Narrator output is preserved.
+
+## FI-20260802-163 — Certification prerequisites failed after expensive phases
+
+Status: Five focused runner regressions green; protected CI pending
+Priority: P0 (#165/#172/#173)
+Area: certification trust boundary
+Owner: Factory
+Impact: missing reviewed network appeared as opaque npm failure, while a known
+noncanonical active-product path failed only after the phase graph completed.
+Smallest repair: plan v2 pins Node/npm and phase network policy, fails missing
+capability before spawn, retains denied phases under reviewed opt-in, preserves
+redacted hash-bound failure evidence, and validates the active generation/path/
+origin before workspace preparation.
+
+## FI-20260802-164 — Successor ticket migrations ran serially
+
+Status: Focused overlap regression green; protected CI and successor canary pending
+Priority: P0 (#181)
+Area: migration and resume latency
+Owner: Factory
+Measured baseline: preserved three-ticket qualification events span 27.8
+seconds between first-phase migration completions and 61.7 seconds between
+authenticated resume completions because tickets ran one after another.
+Smallest repair: overlap only independent per-ticket recovery calls up to the
+already-certified capacity. Every ticket retains its existing launcher,
+passport, route, lease, repair, and accounting sequence.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
