@@ -902,6 +902,14 @@ expect_failure "failed certification output is redacted" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 CERTIFICATION_FAILURE="$(find "$STATE/receipts/failures" -type f -name '*.json' \
   -print -quit)"
+CERTIFICATION_FAILURE_SAFE=0
+if [[ -f "$CERTIFICATION_FAILURE" ]] &&
+   [[ "$(json_value "$CERTIFICATION_FAILURE" status)" == "fail" ]] &&
+   [[ "$(json_value "$CERTIFICATION_FAILURE" factory_sha)" == "$SHA_A" ]] &&
+   ! grep -qE 'supersecret|user:pass|bearer-one|digest-one|json-one|line-one|query-one' \
+     "$CERTIFICATION_FAILURE"; then
+  CERTIFICATION_FAILURE_SAFE=1
+fi
 if [[ "$LAST_OUTPUT" != *"supersecret"* && "$LAST_OUTPUT" != *"user:pass"* &&
       "$LAST_OUTPUT" != *"bearer-one"* && "$LAST_OUTPUT" != *"bearer-two"* &&
       "$LAST_OUTPUT" != *"digest-one"* && "$LAST_OUTPUT" != *"digest-two"* &&
@@ -913,11 +921,7 @@ if [[ "$LAST_OUTPUT" != *"supersecret"* && "$LAST_OUTPUT" != *"user:pass"* &&
       "$LAST_OUTPUT" != *"continuation-one"* &&
       "$LAST_OUTPUT" != *"query-one"* && "$LAST_OUTPUT" != *"query-two"* &&
       "$LAST_OUTPUT" == *"[REDACTED]"* &&
-      -f "$CERTIFICATION_FAILURE" &&
-      "$(json_value "$CERTIFICATION_FAILURE" status)" == "fail" &&
-      "$(json_value "$CERTIFICATION_FAILURE" factory_sha)" == "$SHA_A" &&
-      ! grep -qE 'supersecret|user:pass|bearer-one|digest-one|json-one|line-one|query-one' \
-        "$CERTIFICATION_FAILURE" ]]; then
+      "$CERTIFICATION_FAILURE_SAFE" -eq 1 ]]; then
   pass "structured certification output never exposes secrets"
 else
   fail "structured certification output never exposes secrets" "$LAST_OUTPUT"
