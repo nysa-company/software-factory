@@ -404,6 +404,24 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
+        issue["state"] = {
+            "id": config()["states"]["blocked-escalated"],
+            "name": "Blocked-Escalated",
+        }
+        issue["updatedAt"] = "2026-08-01T00:00:03Z"
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        self.assertNotIn("state", entry["operator"])
+        self.assertEqual(
+            entry["blocked_remote_updated_at"], "2026-08-01T00:00:03Z"
+        )
+        issue["state"] = {
+            "id": config()["states"]["building"], "name": "Building"
+        }
+        issue["updatedAt"] = "2026-08-01T00:00:04Z"
+        self.reconcile()
+        self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
+
     def test_blocked_ticket_cannot_resume_to_evidence_sensitive_state(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"

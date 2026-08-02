@@ -903,6 +903,9 @@ Overlay-driven state materialization is limited to Backlog-to-Ready and the exac
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to
 committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
+Each new Blocked-Escalated observation clears any prior resume overlay and
+replaces its timestamp baseline, including repeated blockers at the same
+coarse state.
 
 Before the first role, `models pin` resolves one exact six-role plan and records
 it with `Kit-SHA:` in one committed and pushed ticket-branch transaction. Every

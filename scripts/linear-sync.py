@@ -904,6 +904,14 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
     operator["initiative"] = remote_initiative
 
     remote_state = normalize_state(actual["state"]["name"])
+    if (
+        ticket["state"] == "blocked-escalated"
+        and remote_state == "blocked-escalated"
+        and operator.get("state")
+    ):
+        operator.pop("state", None)
+        operator.pop("state_base", None)
+        operator.pop("approval", None)
     effective = parse_ticket_text(
         ticket["id"], ticket["path"], apply_operator_fields(ticket["text"], operator)
     )

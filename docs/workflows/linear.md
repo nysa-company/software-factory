@@ -89,6 +89,9 @@ The reconciler must first observe Linear in Blocked-Escalated after the local
 block. Only a later Linear update to the declared resume state is operator
 authority; a pre-block state still visible during reconciliation is restored
 to Blocked-Escalated and cannot resume the ticket.
+Every later block clears the prior resume overlay and records a new blocked
+baseline even when both blocks share the same coarse state; only an update
+strictly newer than that latest baseline may resume again.
 
 The team intentionally archives Linear's default `Todo` and `In Progress`
 states plus the former Spec Lint, Test Authoring, and Evidence micro-states.

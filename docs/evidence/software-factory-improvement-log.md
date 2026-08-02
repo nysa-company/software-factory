@@ -4585,6 +4585,24 @@ initializer/reset and reject a repair scope excluding a required setup fix.
 Edge coverage: prompt-contract regression locks all three checks; the sealed mock
 role-sequence and complete lifecycle-state matrix remain required before retry.
 
+## FI-20260801-154 — Prior resume overlay survived a repeated block
+
+Status: Focused regression green; sealed T-100 resume pending
+Priority: P0
+Area: Linear operator authority
+Owner: Factory
+First seen: T-100 second contract block under Factory
+`8e1d0016bfe2e86d1f84daa0c126c9bedb8d863d`
+Impact: after the earlier Planner resume, the stored Building overlay already
+named `state_base=Blocked-Escalated`. When T-100 later blocked again at that
+same coarse state, the reconciler retained the old overlay, so it could not
+record the new blocked timestamp baseline. No resume or provider call occurred.
+Smallest repair: an exact remote/local Blocked-Escalated observation always
+clears a prior state/approval overlay before materializing effective state and
+records the latest remote timestamp as the new baseline.
+Edge coverage: the Linear regression now proves resume, same-state re-block,
+overlay removal, new baseline capture, and only then a later second resume.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
