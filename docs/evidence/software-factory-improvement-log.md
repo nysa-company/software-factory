@@ -4453,7 +4453,29 @@ shape, or discontinuity still refuses.
 Edge coverage: the effective-ticket regression closes a normal ticket after a
 successor route migration, then retains its existing ledger-append and
 prefix-tamper checks. The same validator recognizes live T-094 as
-`attested-done`; full focused suite validation is pending before resealing.
+`attested-done`; the focused effective-ticket suite passes 9/9.
+
+## FI-20260801-147 — Historical passport resurrected a completed ticket
+
+Status: Focused regression green; sealed successor cleanup pending
+Priority: P0
+Area: controller terminal claim recovery
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`769b8c443daa3042317e2781158174d9fd7da60d`
+Impact: the controller emitted `ticket_complete` for T-094 and released its
+claim, then the same reconcile recovered a new claim from the retained Approved
+passport. The controller was stopped after exact inspection; no role ran and no
+ticket or role output changed.
+Finding: a passport is retained historical audit evidence after protected-main
+Done, not authority to schedule the ticket again.
+Smallest repair: sealed product tickets with exactly one `State: Done` are
+excluded from passport recovery. Any residual claim is renewed and released
+through the normal controller path before workers are scheduled; the passport
+remains intact for audit and reduction.
+Edge coverage: one regression proves a Done ticket is not recovered from its
+passport, and one proves an existing residual claim is released before recovery.
+The full controller suite passes 71/71; live successor cleanup remains pending.
 
 ## Maintenance rule
 

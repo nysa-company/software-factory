@@ -2733,3 +2733,14 @@ only if protected main retains the exact attested route journal as a prefix and
 adds a hash-linked suffix containing only release migrations that reaches the
 Done and ticket Kit-SHA. Terminal and dependency readers validate that lineage
 instead of requiring the current route blob to equal the historical bundle.
+
+## 2026-08-01 — Decision 199: Product Done suppresses historical claim recovery
+
+Category: State machine
+
+A retained passport is audit evidence, not scheduling authority, after the
+sealed product ticket has exactly one `State: Done`. Reconciliation renews and
+releases any residual claim before scheduling and excludes the ticket from
+passport recovery. The passport remains intact for audit and qualification
+reduction, while malformed, missing, or non-Done ticket state stays eligible for
+ordinary fail-closed recovery.

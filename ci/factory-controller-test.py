@@ -4590,6 +4590,70 @@ class FactoryControllerTest(unittest.TestCase):
             "claimed",
         )
 
+    def test_done_product_ticket_is_not_recovered_from_passport(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        (self.product / "factory/tickets").mkdir()
+        (self.product / "factory/tickets/T-110.md").write_text(
+            "State: Done\n", encoding="utf-8"
+        )
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "branch": "ticket/T-110",
+                "current_state": "Approved",
+                "ticket": "T-110",
+            },
+        )
+        claims = []
+        with patch.object(CONTROL.subprocess, "run") as run:
+            controller.recover_missing_passport_claims(claims)
+        self.assertEqual(claims, [])
+        run.assert_not_called()
+
+    def test_done_product_ticket_prunes_existing_claim_before_recovery(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        (self.product / "factory/tickets").mkdir()
+        (self.product / "factory/tickets/T-110.md").write_text(
+            "State: Done\n", encoding="utf-8"
+        )
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        controller.save_claim(claim)
+        controller.load_claims = lambda: (
+            [claim] if controller.claim_path("T-110").exists() else []
+        )
+        calls = []
+        controller.ensure_lease = lambda *_args: calls.append("ensure")
+
+        def release(item):
+            calls.append("release")
+            controller.claim_path(item["ticket"]).unlink()
+
+        controller.release = release
+        controller.recover_missing_passport_claims = (
+            lambda claims: calls.append(("recover", len(claims)))
+        )
+        controller.recover_each = lambda *_args: None
+        controller.event = lambda *_args, **_kwargs: None
+        controller.claim_new = lambda claims, *_args: claims
+        controller.pin_routes = lambda _claims: []
+        result = controller.reconcile()
+        self.assertEqual(result["active"], 0)
+        self.assertFalse(controller.claim_path("T-110").exists())
+        self.assertEqual(calls[:3], ["ensure", "release", ("recover", 0)])
+
     def test_publication_repair_releases_merge_lease_and_preserves_checkpoint(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {

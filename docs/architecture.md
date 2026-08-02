@@ -719,6 +719,9 @@ An open closeout PR is a controller wait. After it merges, retrying `done`
 revalidates the exact protected-main Done receipt, ledger, original merge and
 checks, and closeout merge before the controller emits completion and releases
 the ticket; stale prepublication dependency logic is never reopened.
+Done in the sealed product root also suppresses passport-based claim recovery.
+Any residual claim is renewed and released before scheduling, while the
+historical passport remains available for audit and reduction.
 If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a

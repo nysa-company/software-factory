@@ -571,10 +571,26 @@ class Controller:
             claims.append(claim)
         return claims
 
+    def product_ticket_done(self, ticket: str) -> bool:
+        try:
+            text = (
+                self.product / "factory" / "tickets" / f"{ticket}.md"
+            ).read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            return False
+        states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
+        return len(states) == 1 and states[0].casefold() == "done"
+
     def recover_missing_passport_claims(
         self, claims: list[dict[str, Any]]
     ) -> None:
         if not self.qualification:
+            return
+        targets = [
+            ticket for ticket in self.qualification["tickets"]
+            if not self.product_ticket_done(ticket)
+        ]
+        if not targets:
             return
         passports = self.state / "passports"
         if not passports.is_dir():
@@ -595,7 +611,7 @@ class Controller:
             if branch and current.get("worktree"):
                 records.setdefault(branch, []).append(current["worktree"])
             current = {}
-        for ticket in self.qualification["tickets"]:
+        for ticket in targets:
             path = passports / f"{ticket}.json"
             if ticket in claimed or not path.exists() or self.active_run(ticket):
                 continue
@@ -2576,6 +2592,14 @@ class Controller:
                 if claim["ticket"] not in tickets:
                     self.withdraw_publication(claim)
             existing = [claim for claim in existing if claim["ticket"] in tickets]
+        completed = [
+            claim for claim in existing
+            if self.product_ticket_done(claim["ticket"])
+        ]
+        for claim in completed:
+            self.ensure_lease(claim, "terminal-cleanup")
+            self.release(claim)
+        existing = [claim for claim in existing if claim not in completed]
         self.recover_missing_passport_claims(existing)
         self.recover_each(
             existing, self.recover_upgraded_claims, "release-upgrade",
