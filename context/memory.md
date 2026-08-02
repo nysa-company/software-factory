@@ -2744,3 +2744,13 @@ releases any residual claim before scheduling and excludes the ticket from
 passport recovery. The passport remains intact for audit and qualification
 reduction, while malformed, missing, or non-Done ticket state stays eligible for
 ordinary fail-closed recovery.
+
+## 2026-08-01 — Decision 200: Qualification restart counts terminal targets
+
+Category: State machine
+
+A protected Done qualification target satisfies the cohort restart boundary
+without retaining or reconstructing a runnable claim. Restart and recovery
+events bind the complete configured ticket set, while only unfinished claims
+are scheduled. This permits a sealed successor to continue the remaining
+tickets without replaying terminal work or waiting forever for a third claim.

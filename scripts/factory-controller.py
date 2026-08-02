@@ -2627,14 +2627,18 @@ class Controller:
             active = sorted(
                 item["ticket"] for item in claims if self.runnable(item)
             )
+            accounted = sorted(set(active) | {
+                ticket for ticket in self.qualification["tickets"]
+                if self.product_ticket_done(ticket)
+            })
             target = self.qualification["target_done"]
-            if len(active) == target:
+            if len(accounted) == target:
                 self.qualification_marker(
                     "qualification-restart-boundary", create=True,
                 )
-                self.event("restart_boundary", tickets=active)
+                self.event("restart_boundary", tickets=accounted)
                 return {
-                    "active": target,
+                    "active": len(active),
                     "results": [],
                     "schema": SCHEMA,
                     "status": "restart_required",
@@ -2653,10 +2657,14 @@ class Controller:
             recovered = sorted(
                 item["ticket"] for item in existing if self.runnable(item)
             )
-            if recovered != sorted(self.qualification["tickets"]):
+            accounted = sorted(set(recovered) | {
+                ticket for ticket in self.qualification["tickets"]
+                if self.product_ticket_done(ticket)
+            })
+            if accounted != sorted(self.qualification["tickets"]):
                 raise ControllerError("qualification restart did not recover every target ticket")
             self.qualification_marker("qualification-recovered", create=True)
-            self.event("controller_recovered", tickets=recovered)
+            self.event("controller_recovered", tickets=accounted)
 
         results: dict[str, dict[str, str]] = {}
         settled: set[str] = set()

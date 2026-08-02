@@ -722,6 +722,9 @@ the ticket; stale prepublication dependency logic is never reopened.
 Done in the sealed product root also suppresses passport-based claim recovery.
 Any residual claim is renewed and released before scheduling, while the
 historical passport remains available for audit and reduction.
+Qualification restart and recovery count those protected Done targets together
+with runnable claims, retain the complete cohort in their boundary events, and
+schedule only unfinished tickets.
 If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a

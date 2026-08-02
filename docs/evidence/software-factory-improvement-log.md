@@ -4477,6 +4477,27 @@ Edge coverage: one regression proves a Done ticket is not recovered from its
 passport, and one proves an existing residual claim is released before recovery.
 The full controller suite passes 71/71; live successor cleanup remains pending.
 
+## FI-20260801-148 — Terminal target could not cross qualification restart
+
+Status: Focused regression green; sealed successor restart pending
+Priority: P0
+Area: qualification restart boundary
+Owner: Factory
+First seen: Nysa sealed qualification candidate
+`f769e97a566725645102bfbd5f48694d7859e1d1`
+Impact: live cleanup correctly removed T-094's residual claim, leaving T-100
+and T-093 runnable, but the restart boundary reported `active=2` and
+`waiting_for_target` forever because the manifest still requires three Done
+targets. No role ran and no ticket output changed.
+Finding: qualification restart equated the target count with runnable claims;
+it did not count protected product Done as an already satisfied target.
+Smallest repair: both sides of the restart boundary use the union of runnable
+claims and exact product Done tickets for cohort accounting and event binding,
+while the reported active count and scheduler retain only unfinished claims.
+Edge coverage: one regression exercises both pre-restart and post-restart with
+one protected Done target and two runnable claims; the existing all-runnable
+restart and terminal-claim cleanup regressions remain green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -403,6 +403,77 @@ class FactoryControllerTest(unittest.TestCase):
             (self.state / f"qualification-recovered-{'a' * 40}.json").is_file()
         )
 
+    def test_qualification_restart_counts_protected_done_ticket(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 113)]
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8"
+        )
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 3,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 3,
+                "tickets": tickets,
+            }),
+            encoding="utf-8",
+        )
+        (self.product / "factory/tickets").mkdir()
+        (self.product / "factory/tickets/T-110.md").write_text(
+            "State: Done\n", encoding="utf-8"
+        )
+        first = CONTROL.Controller(self.args)
+        for number, ticket in enumerate(tickets[1:], 1):
+            cell = self.root / f"cell-{number}"
+            cell.mkdir()
+            first.save_claim({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        first.recover_missing_passport_claims = lambda _claims: None
+        first.recover_upgraded_claims = lambda _claims: None
+        first.recover_terminal_exports = lambda _claims: None
+        first.recover_repaired_failures = lambda _claims: None
+        first.claim_new = lambda claims: claims
+        result = first.reconcile()
+        self.assertEqual(result["status"], "restart_required")
+        self.assertEqual(result["active"], 2)
+
+        second = CONTROL.Controller(self.args)
+        second.recover_missing_passport_claims = lambda _claims: None
+        second.recover_upgraded_claims = lambda _claims: None
+        second.recover_terminal_exports = lambda _claims: None
+        second.recover_repaired_failures = lambda _claims: None
+        second.claim_new = lambda claims: claims
+        second.pin_routes = lambda _claims: []
+        second.reconcile_ticket = lambda claim: {
+            "status": "active", "ticket": claim["ticket"],
+        }
+        self.assertEqual(second.reconcile()["active"], 2)
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        self.assertIn(
+            {"event": "controller_recovered", "tickets": tickets},
+            [
+                {"event": item["event"], "tickets": item.get("tickets")}
+                for item in events
+            ],
+        )
+
     def test_three_ticket_qualification_parks_an_excluded_claim(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]
         (self.product / "factory/PROJECT.env").write_text(
