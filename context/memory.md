@@ -2925,3 +2925,14 @@ Authenticated migration and resume for independent tickets may overlap up to
 the certified ticket capacity. Within each ticket, passport migration, route
 binding, lease replacement, repair authentication, and accounting remain in
 their original order behind the same launcher controls.
+
+## 2026-08-02 — Decision 215: Frozen test scopes close fixture lifecycle dependencies
+
+Category: State machine
+
+Planner and Spec-linter trace every required serialized suite through setup,
+reset, and teardown before contract freeze. Parent cleanup names every sibling
+dependent table and includes child-first cleanup for each non-cascading foreign
+key; an exact `ON DELETE CASCADE` needs no redundant edit. The frozen
+Test-author scope contains only those required setup corrections. If it does
+not, Test-author preserves valid committed tests and blocks before Builder.

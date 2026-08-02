@@ -94,6 +94,34 @@ class StateMachineTest(unittest.TestCase):
         for role, rule in prompts.items():
             self.assertIn(rule, (ROOT / "roles" / f"{role}.md").read_text())
 
+    def test_role_prompts_close_serialized_fixture_dependencies(self) -> None:
+        prompts = {
+            "planner": (
+                "enumerate every sibling dependent table",
+                "authorize child-first cleanup",
+                "an exact `ON DELETE CASCADE` is sufficient",
+                "only the minimal protected-test setup edits",
+            ),
+            "spec-linter": (
+                "enumerate every sibling dependent table",
+                "each non-cascading foreign key has child-first cleanup",
+                "an exact `ON DELETE CASCADE` needs no redundant cleanup edit",
+                "unrelated helpers or tests remain outside Test-author ownership",
+            ),
+            "test-author": (
+                "delete non-cascading dependent rows before their parent",
+                "including every sibling dependent table named by the contract",
+                "Do not add redundant cleanup for an exact `ON DELETE CASCADE`",
+                "preserve every already committed valid test",
+                "never broaden ownership yourself",
+                "ROLE-ESCALATE: CONTRACT-BLOCKED",
+            ),
+        }
+        for role, rules in prompts.items():
+            prompt = (ROOT / "roles" / f"{role}.md").read_text()
+            for rule in rules:
+                self.assertIn(rule, prompt)
+
     def test_planner_emits_the_epoch_gate_marker_append_only(self) -> None:
         prompt = (ROOT / "roles/planner.md").read_text()
         self.assertIn("- **Freeze result:** PASS. Contract version N is frozen.", prompt)
