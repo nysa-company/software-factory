@@ -3131,3 +3131,13 @@ digests, runtime, runner, command, network, file type, mode, path, and content
 bindings are mandatory. Raw logs and test/policy/security/configuration or
 undeclared side effects remain nonpersistent, and full product certification,
 receipts, and protected CI stay authoritative.
+
+## 2026-08-03 — Decision 229: Normalized blocker proof carries its active repair
+
+Category: Trust boundary
+
+An active signed repair bound to the exact consumed contract blocker may reuse
+the blocker verifier's authenticated normalized lineage after its charge,
+terminal, role, stage, and failed-role evidence agree. Later contiguous
+same-release edges are not separate repair starts; ordinary repair migrations
+still require one unique direct start, and no generic recovery bypass exists.

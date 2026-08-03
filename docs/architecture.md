@@ -618,6 +618,11 @@ the active repair remains valid only when the consumed `FIX` receipt, unique
 contract-block terminal manifest, authenticated charge, current passport
 stage, and contiguous migration suffix all bind the repair head to the
 successor head. A descendant migration edge alone is never sufficient.
+When that exact consumed repair blocker crosses an authenticated normalized
+history, the repair reuses the blocker lineage verifier instead of treating
+later contiguous same-release edges as independent starts. Its receipt,
+charge, terminal, role, stage, and failed-role evidence remain mandatory;
+ordinary repair migrations retain their unique direct-start rule.
 After catch-up, the signed completed-repair archive
 authenticates the still-visible role-and-receipt pair so it cannot be mistaken
 for a new repair. More than one successful owner run fails closed.

@@ -1809,6 +1809,9 @@ def migrated_contract_repair(
                 and passport.get("current_stage") == f"FIX {owner}"
                 and passport.get("transition_receipt_sha256")
                 == transition.get("receipt_sha256")
+                and contract_block_head_in_lineage(
+                    args, transition, passport,
+                )
             ):
                 contract_block_terminal(args, transition, charge)
                 blocked_repair_migration = True
@@ -1902,7 +1905,7 @@ def migrated_contract_repair(
         and item.get("role") == record.get("blocked_role")
     ]
     return (
-        len(starts) == 1
+        (blocked_repair_migration or len(starts) == 1)
         and len(blocked) == 1
         and not any(
             isinstance(item, dict)
