@@ -355,6 +355,99 @@ done
             '{"version":1}\n',
         )
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS zsh login-shell regression")
+    def test_login_shell_preserves_certified_task_runtime_and_refuses_drift(self) -> None:
+        pinned = self.root / "node-22/bin"
+        homebrew = self.root / "homebrew/bin"
+        pinned.mkdir(parents=True)
+        homebrew.mkdir(parents=True)
+        for directory, node, npm in (
+            (pinned, "v22.22.0", "10.9.4"),
+            (homebrew, "v25.5.0", "11.8.0"),
+        ):
+            for tool, version in (("node", node), ("npm", npm)):
+                path = directory / tool
+                path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n")
+                path.chmod(0o755)
+
+        task_path = f"{pinned}:{homebrew}:/usr/bin:/bin:/usr/sbin:/sbin"
+        launcher = (ROOT / "integrations/hermes/bin/factory-launch").read_text()
+        self.assertIn(
+            '"FACTORY_CERTIFIED_NODE_VERSION=$ACTIVE_RUNTIME_NODE"', launcher
+        )
+        self.assertIn(
+            '"FACTORY_CERTIFIED_NPM_VERSION=$ACTIVE_RUNTIME_NPM"', launcher
+        )
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^copy_cli_credential()/,/^}}/p;
+  /^prepare_cli_runtime()/,/^}}/p;
+  /^prepare_cli_login_shell()/,/^}}/p' '{RUN_AGENT}')"
+CLI_CONCURRENT_RUN=1
+CLI_RUNTIME_STATE_ROOT='{self.state}/cli-runtimes'
+CLI_RUNTIME_LAYOUT=owner
+FACTORY_CURSOR_SESSION_HOME='{self.home}'
+HOME='{self.home}'
+ADAPTER=cursor-openai
+CLI_ATTEMPT_ID=login-shell
+CLI_RUNTIME_ROOT=
+CLI_PROVIDER_HOME=
+CLI_PROVIDER_TMPDIR=
+CLI_CURSOR_CONFIG_DIR=
+CLI_CURSOR_DATA_DIR=
+CLI_CLAUDE_CONFIG_DIR=
+CLI_CLAUDE_SETTINGS=
+FACTORY_CERTIFIED_NODE_VERSION=v22.22.0
+FACTORY_CERTIFIED_NPM_VERSION=10.9.4
+TASK_PATH='{task_path}'
+TERMINAL_REASON_CODE=
+prepare_cli_runtime
+prepare_cli_login_shell
+printf '%s\\n' "$CLI_PROVIDER_HOME"
+"""
+        result = subprocess.run(
+            ["/bin/bash", "-c", script], text=True, capture_output=True,
+            check=True, timeout=30,
+        )
+        provider_home = Path(result.stdout.strip())
+        marker = self.root / "product-command-started"
+        environment = {
+            "HOME": str(provider_home),
+            "LANG": "C",
+            "LOGNAME": os.environ.get("LOGNAME", "factory"),
+            "MARKER": str(marker),
+            "PATH": f"{homebrew}:{task_path}",
+            "SHELL": "/bin/zsh",
+            "USER": os.environ.get("USER", "factory"),
+        }
+        command = 'node --version; npm --version; : > "$MARKER"'
+        ready = subprocess.run(
+            ["/bin/zsh", "-lc", command], env=environment, text=True,
+            capture_output=True, check=False, timeout=30,
+        )
+        self.assertEqual(ready.returncode, 0, ready.stderr)
+        self.assertEqual(ready.stdout.splitlines(), ["v22.22.0", "10.9.4"])
+        self.assertTrue(marker.is_file())
+
+        for tool, expected, drifted in (
+            ("node", "v22.22.0", "v22.22.1"),
+            ("npm", "10.9.4", "10.9.5"),
+        ):
+            with self.subTest(tool=tool):
+                marker.unlink(missing_ok=True)
+                path = pinned / tool
+                path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{drifted}'\n")
+                path.chmod(0o755)
+                refused = subprocess.run(
+                    ["/bin/zsh", "-lc", command], env=environment, text=True,
+                    capture_output=True, check=False, timeout=30,
+                )
+                self.assertEqual(refused.returncode, 126)
+                self.assertIn("Factory product runtime mismatch", refused.stderr)
+                self.assertFalse(marker.exists())
+                path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{expected}'\n")
+                path.chmod(0o755)
+
     def test_cursor_readiness_uses_disposable_home(self) -> None:
         binary_root = self.root / "bin"
         binary_root.mkdir()

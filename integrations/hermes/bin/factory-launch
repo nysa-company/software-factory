@@ -384,6 +384,7 @@ optional = tuple(item if item else "-" for item in optional)
 print("\t".join((
     *[value[key] for key in required], *optional,
     json.dumps(runtime_tuple, sort_keys=True, separators=(",", ":")),
+    runtime_tuple.get("node", "-"), runtime_tuple.get("npm", "-"),
 )))
 PY
 )" || die "project active record is invalid"
@@ -410,7 +411,8 @@ unset FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER FACTORY_LAUNCH_TEST_ACTIVE_PARSED
 IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
   ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH RECEIPT_ID ACTIVE_PRODUCT_TREE \
   QUALIFICATION_MODE TAKEOVER_KITS_ROOT TAKEOVER_OPERATOR_MAP \
-  ACTIVE_PRODUCT_SHA ACTIVE_RUNTIME_TUPLE <<EOF
+  ACTIVE_PRODUCT_SHA ACTIVE_RUNTIME_TUPLE ACTIVE_RUNTIME_NODE \
+  ACTIVE_RUNTIME_NPM <<EOF
 $ACTIVE_DATA
 EOF
 
@@ -420,6 +422,8 @@ EOF
 [[ "$TAKEOVER_KITS_ROOT" == "-" ]] && TAKEOVER_KITS_ROOT=""
 [[ "$TAKEOVER_OPERATOR_MAP" == "-" ]] && TAKEOVER_OPERATOR_MAP=""
 [[ "$ACTIVE_PRODUCT_SHA" == "-" ]] && ACTIVE_PRODUCT_SHA=""
+[[ "$ACTIVE_RUNTIME_NODE" == "-" ]] && ACTIVE_RUNTIME_NODE=""
+[[ "$ACTIVE_RUNTIME_NPM" == "-" ]] && ACTIVE_RUNTIME_NPM=""
 
 [[ "$KIT_SHA" =~ ^[0-9a-f]{40}$ ]] ||
   die "active kit SHA is not a lowercase full SHA"
@@ -2249,6 +2253,14 @@ PY
     require_managed_file "$RUNNER" "active release run helper"
     add_dispatch_lease_env "$LEASE_ID"
     add_certified_origin_env
+    if [[ -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" ]]; then
+      [[ -n "$ACTIVE_RUNTIME_NODE" && -n "$ACTIVE_RUNTIME_NPM" ]] ||
+        die "active runtime tuple is incomplete"
+      HELPER_ENV+=(
+        "FACTORY_CERTIFIED_NODE_VERSION=$ACTIVE_RUNTIME_NODE"
+        "FACTORY_CERTIFIED_NPM_VERSION=$ACTIVE_RUNTIME_NPM"
+      )
+    fi
     if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
       TICKET="$RUN_TICKET"
       transition_receipt consume "$RUN_ROLE" ||
