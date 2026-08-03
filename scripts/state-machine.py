@@ -2984,7 +2984,13 @@ def contract_block_resume_state(
             order.get(state, 0) > order[target],
         )):
             return state
-        if receipt.get("stage") == fix_stage or passport.get("current_stage") == fix_stage:
+        if (
+            receipt.get("factory_sha") == passport.get("factory_sha")
+            and (
+                receipt.get("stage") == fix_stage
+                or passport.get("current_stage") == fix_stage
+            )
+        ):
             raise StateError("contract blocker role state drifted")
     repair_stage, repair_override = contract_repair_stage(args)
     if (
