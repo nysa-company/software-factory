@@ -2870,11 +2870,13 @@ fail-closed.
 
 Category: State machine
 
-An operator pauses one idle ticket through a passport-, branch-, head-, and
-unique-worktree-bound owner-local intent. The claim and lease are released but
-the passport and recorded status remain. Only explicit resume can reconstruct
-that exact claim; discovery never turns an arbitrary historical passport into
-scheduling authority.
+An operator pauses one idle ticket through a passport-, branch-, head-, exact
+in-flight lifecycle-state-, and unique-worktree-bound owner-local intent. The
+claim and lease are released but the passport and recorded status remain.
+Only explicit resume can reconstruct that exact claim; lifecycle drift,
+merged/Done truth, or full capacity leaves the intent untouched. Discovery and
+interrupted-reconciliation recovery never turn an arbitrary or paused passport
+into scheduling authority.
 
 ## 2026-08-02 — Decision 210: Pre-provider interruption recovery is marker-bound
 

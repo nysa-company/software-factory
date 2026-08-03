@@ -32,6 +32,10 @@ TERMINAL_ACCOUNTING = {
     "completed", "launch_void", "abandoned_conservative", "cancelled",
     "cancelled_conservative",
 }
+INFLIGHT_STATES = frozenset({
+    "Ready", "Planning", "Building", "Review", "Awaiting Approval",
+    "Approved", "Blocked-Escalated",
+})
 RECONCILE_INTERVAL_SECONDS = 15
 
 
@@ -680,10 +684,8 @@ class Controller:
             if (
                 passport.get("ticket") != ticket
                 or passport.get("branch") != branch
-                or passport.get("current_state") not in {
-                    "Ready", "Planning", "Building", "Review",
-                    "Awaiting Approval", "Approved",
-                }
+                or passport.get("current_state") not in INFLIGHT_STATES
+                or passport.get("current_state") == "Blocked-Escalated"
                 or len(worktrees) != 1
                 or not Path(worktrees[0]).is_absolute()
             ):
@@ -743,6 +745,13 @@ class Controller:
         if claim and (claim.get("receipt") or claim.get("role")):
             raise ControllerError("ticket pause requires a pre-provider boundary")
         passport = read(path)
+        current_state = passport.get("current_state")
+        if (
+            current_state not in INFLIGHT_STATES
+            or passport.get("publication_state") == "merged"
+            or self.product_ticket_done(ticket)
+        ):
+            raise ControllerError("ticket pause requires an in-flight passport")
         existing_intent = (
             read(self.pause_path(ticket)) if self.pause_path(ticket).exists() else None
         )
@@ -766,7 +775,7 @@ class Controller:
             )
             status = (
                 existing_intent.get("status") if existing_intent else
-                "blocked" if passport.get("current_state") == "Blocked-Escalated"
+                "blocked" if current_state == "Blocked-Escalated"
                 else "claimed"
             )
             budget = existing_intent.get("budget_sha256") if existing_intent else ""
@@ -785,6 +794,7 @@ class Controller:
         value = {
             "branch": branch,
             "budget_sha256": budget or None,
+            "current_state": current_state,
             "factory_sha": passport.get("factory_sha"),
             "head_sha": passport["head_sha"],
             "passport_sha256": passport["passport_sha256"],
@@ -812,6 +822,13 @@ class Controller:
         if not passport_path.exists() or self.active_run(ticket):
             raise ControllerError("ticket resume requires an idle passport")
         passport = read(passport_path)
+        current_state = passport.get("current_state")
+        if (
+            current_state not in INFLIGHT_STATES
+            or passport.get("publication_state") == "merged"
+            or self.product_ticket_done(ticket)
+        ):
+            raise ControllerError("ticket resume requires an in-flight passport")
         lineage = passport.get("migration_history", [])
         authorized_passports = {passport.get("passport_sha256")}
         authorized_passports.update(
@@ -822,6 +839,7 @@ class Controller:
             intent.get("schema") != "nysa.software-factory.ticket-pause/v1"
             or intent.get("ticket") != ticket
             or intent.get("branch") != f"ticket/{ticket}"
+            or intent.get("current_state") != current_state
             or intent.get("passport_sha256") not in authorized_passports
             or passport.get("ticket") != ticket
             or passport.get("branch") != intent.get("branch")
