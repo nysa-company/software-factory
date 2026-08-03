@@ -37,6 +37,9 @@ INFLIGHT_STATES = frozenset({
     "Approved", "Blocked-Escalated",
 })
 RECONCILE_INTERVAL_SECONDS = 15
+COMPLETION_CORRECTION_SCHEMA = (
+    "nysa.software-factory.completed-role-correction/v1"
+)
 
 
 class ControllerError(ValueError):
@@ -1372,6 +1375,51 @@ class Controller:
             "--workdir", claim["worktree"], "--json",
         )
 
+    def correct_converged_success(
+        self, claim: dict[str, Any], terminal: dict[str, str]
+    ) -> None:
+        result = self.json_call(
+            "passport", "correct-converged-success",
+            "--ticket", claim["ticket"],
+            "--receipt", claim["receipt"],
+            "--run-id", terminal["run_id"],
+            "--workdir", claim["worktree"], "--json",
+        )
+        if result.get("status") != "ok":
+            raise ControllerError("passport completion correction failed")
+
+    def converged_success_exported(
+        self, claim: dict[str, Any], terminal: dict[str, str]
+    ) -> bool:
+        value = read(self.state / "passports" / f"{claim['ticket']}.json")
+        expected = (
+            terminal.get("run_id"), "builder", claim.get("receipt"),
+        )
+        completed = [
+            (
+                item.get("run_id"), item.get("role"),
+                item.get("transition_receipt_sha256"),
+            )
+            for item in value.get("completed_role_evidence", [])
+            if isinstance(item, dict)
+        ]
+        corrections = [
+            (
+                item.get("run_id"), item.get("schema"),
+                item.get("transition_receipt_sha256"),
+                item.get("recovery_factory_sha"),
+            )
+            for item in value.get("completed_role_corrections", [])
+            if isinstance(item, dict)
+        ]
+        return (
+            completed.count(expected) == 1
+            and corrections.count((
+                terminal.get("run_id"), COMPLETION_CORRECTION_SCHEMA,
+                claim.get("receipt"), self.release_path.name,
+            )) == 1
+        )
+
     def ticket_release_current(self, claim: dict[str, Any]) -> bool:
         try:
             route = json.loads(self.route_path(claim).read_text(encoding="utf-8"))
@@ -1899,9 +1947,45 @@ class Controller:
                 and SHA.fullmatch(terminal.get("kit_sha", ""))
                 and terminal["kit_sha"] != self.release_path.name
             )
+            converged_success = (
+                terminal is not None
+                and claim.get("role") == "builder"
+                and terminal.get("role") == "builder"
+                and terminal.get("phase") == "abandoned"
+                and terminal.get("accounting_state") == "abandoned_conservative"
+                and terminal.get("go_issued") == "1"
+                and terminal.get("task_submitted") == "1"
+                and terminal.get("exit_status") == "128"
+                and terminal.get("role_exit") == ""
+                and terminal.get("terminal_reason_code", "") == ""
+                and terminal.get("adapter") == "cursor"
+                and terminal.get("contract_version") == "1.8.0"
+                and terminal.get("role_branch_before") == claim.get("branch")
+                and terminal.get("cost_basis") == "conservative_reservation"
+                and terminal.get("effective_cost") == terminal.get("reserved_usd")
+                and re.fullmatch(
+                    r"(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,18})?",
+                    terminal.get("reserved_usd", ""),
+                )
+                and int(terminal["reserved_usd"].replace(".", "")) > 0
+                and SHA.fullmatch(terminal.get("role_head_before", ""))
+                and SHA.fullmatch(terminal.get("kit_sha", ""))
+                and terminal["kit_sha"] != self.release_path.name
+                and DIGEST.fullmatch(terminal.get("output_sha256", ""))
+                and terminal.get("progress_events", "") == ""
+                and terminal.get("progress_journal_sha256", "") == ""
+                and re.fullmatch(
+                    r"[A-Za-z0-9._:-]{1,200}",
+                    terminal.get("provider_attempt_id", ""),
+                )
+                and re.fullmatch(
+                    r"[A-Za-z0-9._-]{1,200}", terminal.get("run_id", ""),
+                )
+            )
             if not (
                 push_failure or interrupted_before_submission or contract_blocked
                 or submission_unconfirmed or history_rewrite
+                or converged_success
             ):
                 continue
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
@@ -1980,6 +2064,21 @@ class Controller:
                     or completed.count(expected) != 0
                 ):
                     continue
+            if converged_success:
+                try:
+                    if not self.remote_passport_valid(claim):
+                        continue
+                    self.correct_converged_success(claim, terminal)
+                    if (
+                        not self.remote_passport_valid(claim)
+                        or not self.converged_success_exported(claim, terminal)
+                    ):
+                        continue
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError,
+                ):
+                    continue
             if contract_blocked:
                 self.ensure_lease(claim, "contract-block-resume")
                 blocked = self.json_call(
@@ -2045,7 +2144,11 @@ class Controller:
                             else (
                                 "history_rewrite_recovered_by_release_upgrade"
                                 if history_rewrite
-                                else "interrupted_role_recovered"
+                                else (
+                                    "converged_success_recovered_by_release_upgrade"
+                                    if converged_success
+                                    else "interrupted_role_recovered"
+                                )
                             )
                         )
                     )

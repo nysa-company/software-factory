@@ -55,6 +55,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   `adapter_submission_unconfirmed` and a bounded diagnostic-output digest,
   while only the exact earlier blank-reason/empty-output shape remains readable
   during upgrade.
+- A successor may recover the one historical Builder false terminal with
+  `abandoned`/`abandoned_conservative`, durable GO and submission, exit 128,
+  and blank role-exit/reason only when its authenticated receipt, unique
+  manifest, owner-only output and terminal-success progress, charge, clean
+  cell, current Factory passport, and remote head all converge. The correction
+  is HMAC-signed, retained by later exports, idempotent, and claim clearing
+  remains controller-only; every mismatch stays blocked.
 - Contract 1.8 preflight consumes the already-verified transition stage. Normal
   Planner work still requires the visible Planning state; an authenticated
   `FIX planner` receipt may run beneath a later coarse state without mutating
@@ -3152,3 +3159,16 @@ Category: Reliability
 After a trusted push, the remote-tracking compare-and-swap accepts a concurrent
 update only when it already equals the verified pushed SHA. Every third value
 remains a hard refusal and is never overwritten.
+
+## 2026-08-03 — Decision 231: One converged Builder false terminal is correctable
+
+Category: Reliability
+
+A successor may synthesize completed Builder evidence without replay only for
+the exact issue-218 post-success terminal shape and only through the trusted
+passport/controller path. The consumed receipt, unique terminal and charge,
+owner-only output and final-success progress, clean cell, current Factory,
+authenticated direct or uniquely migrated passport lineage, and remote head
+must agree; the signed correction persists across later exports and repeated
+recovery is a no-op. This does not create a generic override: any emergency
+exception still requires target-bound owner authorization and a linked issue.

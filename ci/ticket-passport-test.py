@@ -147,6 +147,73 @@ class TicketPassportTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def converged_success_terminal(
+        self, run_id: str, receipt: str, head_before: str
+    ) -> None:
+        output_path = self.product / f"factory/runs/{run_id}.out"
+        output_digest = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/lib/role_output.py"),
+                "publish",
+                str(output_path),
+            ],
+            input=b'{"subtype":"success","type":"result"}\n',
+            capture_output=True,
+            check=True,
+        ).stdout.decode().strip()
+        progress = self.product / f"factory/runs/{run_id}.progress.jsonl"
+        records = [
+            {
+                "event_sha256": "1" * 64,
+                "observed_monotonic_ns": 1,
+                "sequence": 1,
+                "subtype": "init",
+                "type": "system",
+            },
+            {
+                "event_sha256": "2" * 64,
+                "observed_monotonic_ns": 2,
+                "sequence": 2,
+                "subtype": "success",
+                "type": "result",
+            },
+        ]
+        progress.write_text(
+            "".join(
+                json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
+                for item in records
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(progress, 0o600)
+        (self.product / f"factory/runs/{run_id}.meta").write_text(
+            f"run_id={run_id}\n"
+            "phase=abandoned\n"
+            "accounting_state=abandoned_conservative\n"
+            "reserved_usd=10.00\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            "effective_cost=10.00\n"
+            "exit_status=128\n"
+            "cost_basis=conservative_reservation\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            "adapter=cursor\n"
+            "provider_attempt_id=attempt-1\n"
+            "role_exit=\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={head_before}\n"
+            f"kit_sha={'a' * 40}\n"
+            "contract_version=1.8.0\n"
+            f"transition_receipt_sha256={receipt}\n"
+            f"output_sha256={output_digest}\n"
+            "progress_events=\n"
+            "progress_journal_sha256=\n"
+            "terminal_reason_code=\n",
+            encoding="utf-8",
+        )
+
     def test_role_output_uses_one_streaming_eight_mib_bound(self) -> None:
         existing_size = 5_662_048
         self.terminal(
@@ -410,6 +477,183 @@ class TicketPassportTest(unittest.TestCase):
         self.assertEqual(
             [item["factory_sha"] for item in upgraded["factory_release_history"]],
             ["a" * 40, "b" * 40],
+        )
+
+    def test_exact_converged_success_correction_is_authenticated_and_idempotent(
+        self,
+    ) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        planner = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = planner["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal("run-planner", "planner", planner["receipt_sha256"], "a" * 40)
+        self.passport_args.receipt = planner["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+
+        self.state_args.role = "builder"
+        builder = STATE.issue(self.state_args, "RUN builder")
+        self.state_args.receipt = builder["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        passport_path = self.state_dir / "passports/T-110.json"
+        receipt_bound_passport = passport_path.read_bytes()
+        input_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        (self.product / "builder-change").write_text("done\n", encoding="utf-8")
+        run("git", "add", "builder-change", cwd=self.product)
+        run("git", "commit", "-qm", "builder output", cwd=self.product)
+        run_id = "run-converged-success"
+        self.converged_success_terminal(
+            run_id, builder["receipt_sha256"], input_head
+        )
+        self.passport_args.receipt = builder["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+        self.passport_args.action = "correct-converged-success"
+        self.passport_args.factory_sha = "c" * 40
+        self.passport_args.run_id = run_id
+        with self.assertRaisesRegex(PASSPORT.PassportError, "authenticated lineage"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        passport_path.write_bytes(receipt_bound_passport)
+        os.chmod(passport_path, 0o600)
+
+        self.passport_args.factory_sha = "b" * 40
+        PASSPORT.migrate(self.passport_args, secret)
+        self.passport_args.factory_sha = "c" * 40
+        twice_migrated = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(len(twice_migrated["migration_history"]), 2)
+        failed = PASSPORT.export(self.passport_args, secret)
+        self.assertFalse(any(
+            item["run_id"] == run_id
+            for item in failed["completed_role_evidence"]
+        ))
+
+        ambiguous = {
+            name: item for name, item in failed.items()
+            if name not in {"authentication_sha256", "passport_sha256"}
+        }
+        identity_edge = dict(ambiguous["migration_history"][0])
+        identity_edge["to_factory_sha"] = identity_edge["from_factory_sha"]
+        identity_edge["to_head_sha"] = identity_edge["from_head_sha"]
+        identity_edge["to_protected_base_sha"] = identity_edge[
+            "from_protected_base_sha"
+        ]
+        identity_edge["to_route_plan_sha256"] = identity_edge[
+            "from_route_plan_sha256"
+        ]
+        ambiguous["migration_history"] = [
+            identity_edge, *ambiguous["migration_history"],
+        ]
+        PASSPORT.write_atomic(
+            self.state_dir / "passports/T-110.json",
+            PASSPORT.authenticate(ambiguous, secret),
+        )
+        with self.assertRaisesRegex(PASSPORT.PassportError, "authenticated lineage"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        PASSPORT.write_atomic(self.state_dir / "passports/T-110.json", failed)
+
+        corrected = PASSPORT.correct_converged_success(
+            self.passport_args, secret
+        )
+        matching = [
+            item for item in corrected["completed_role_evidence"]
+            if item["run_id"] == run_id
+        ]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(
+            corrected["completed_role_corrections"],
+            [{
+                "failed_factory_sha": "a" * 40,
+                "issue": PASSPORT.COMPLETION_CORRECTION_ISSUE,
+                "output_head_sha": run(
+                    "git", "rev-parse", "HEAD", cwd=self.product
+                ),
+                "progress_events": 2,
+                "progress_journal_sha256": hashlib.sha256(
+                    (
+                        self.product
+                        / f"factory/runs/{run_id}.progress.jsonl"
+                    ).read_bytes()
+                ).hexdigest(),
+                "recovery_factory_sha": "c" * 40,
+                "receipt_parent_file_sha256": builder["passport_sha256"],
+                "run_id": run_id,
+                "schema": PASSPORT.COMPLETION_CORRECTION_SCHEMA,
+                "transition_receipt_sha256": builder["receipt_sha256"],
+            }],
+        )
+        replayed = PASSPORT.correct_converged_success(
+            self.passport_args, secret
+        )
+        self.assertEqual(
+            replayed["passport_sha256"], corrected["passport_sha256"]
+        )
+
+        self.passport_args.run_id = "wrong-run"
+        with self.assertRaisesRegex(PASSPORT.PassportError, "ambiguous"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        self.passport_args.run_id = run_id
+        progress = self.product / f"factory/runs/{run_id}.progress.jsonl"
+        original_progress = progress.read_bytes()
+        progress.write_bytes(original_progress.replace(
+            b'"subtype":"success","type":"result"',
+            b'"subtype":"completed","type":"tool_call"',
+        ))
+        os.chmod(progress, 0o600)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "terminal success"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        progress.write_bytes(original_progress)
+        os.chmod(progress, 0o600)
+
+        output = self.product / f"factory/runs/{run_id}.out"
+        original_output = output.read_bytes()
+        output.write_bytes(original_output + b"tamper\n")
+        os.chmod(output, 0o600)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "typed converged"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        output.write_bytes(original_output)
+        os.chmod(output, 0o600)
+
+        dirty = self.product / "untracked"
+        dirty.write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(PASSPORT.PassportError, "clean execution cell"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        dirty.unlink()
+
+        authenticated = passport_path.read_bytes()
+        wrong_charge = json.loads(authenticated)
+        wrong_charge.pop("authentication_sha256")
+        wrong_charge.pop("passport_sha256")
+        next(
+            item for item in wrong_charge["charge_records"]
+            if item["run_id"] == run_id
+        )["manifest_sha256"] = "f" * 64
+        PASSPORT.write_atomic(
+            passport_path, PASSPORT.authenticate(wrong_charge, secret)
+        )
+        with self.assertRaisesRegex(PASSPORT.PassportError, "run charge is missing"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        passport_path.write_bytes(authenticated)
+        os.chmod(passport_path, 0o600)
+
+        passport_path.write_bytes(authenticated.replace(b'"builder"', b'"tamper!"', 1))
+        os.chmod(passport_path, 0o600)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "digest is invalid"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        passport_path.write_bytes(authenticated)
+        os.chmod(passport_path, 0o600)
+
+        self.state_args.factory_sha = "c" * 40
+        self.state_args.role = "reviewer"
+        reviewer = STATE.issue(self.state_args, "RUN reviewer")
+        self.state_args.receipt = reviewer["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "run-reviewer", "reviewer", reviewer["receipt_sha256"], "c" * 40
+        )
+        self.passport_args.action = "export"
+        self.passport_args.receipt = reviewer["receipt_sha256"]
+        next_export = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(
+            next_export["completed_role_corrections"],
+            corrected["completed_role_corrections"],
         )
 
     def test_terminal_export_accepts_exact_authenticated_release_migration(self) -> None:
