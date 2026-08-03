@@ -25,6 +25,12 @@ from release_lineage import successor_release_lineage  # noqa: E402
 SCHEMA = "nysa.software-factory.qualification-report/v1"
 MANIFEST_SCHEMA = "nysa.software-factory.qualification/v2"
 EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
+TERMINAL_ADOPTION_SCHEMA = (
+    "nysa.software-factory.qualification-terminal-adoption/v1"
+)
+PASSPORT_MIGRATION_SCHEMA = (
+    "nysa.software-factory.ticket-passport-migration/v2"
+)
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TICKET = re.compile(r"^T-[0-9]+$")
@@ -325,6 +331,65 @@ def verify(
     boundaries = matching("restart_boundary")
     recoveries = matching("controller_recovered")
     relocations = matching("cell_relocated")
+    completions = [
+        item for item in matching("ticket_complete")
+        if item.get("ticket") in tickets
+    ]
+    adoptions = matching("terminal_adopted")
+    adopted: set[str] = set()
+    for item in adoptions:
+        ticket = item.get("ticket")
+        passport = passports.get(ticket)
+        done = terminals.get(ticket)
+        pr = pull_requests.get(ticket)
+        migrations = passport.get("migration_history") if passport else None
+        history = passport.get("factory_release_history") if passport else None
+        edge = migrations[-1] if isinstance(migrations, list) and migrations else {}
+        pre_candidate_history = {
+            release.get("factory_sha") for release in history or []
+            if isinstance(release, dict)
+            and release.get("factory_sha") != factory_sha
+        }
+        if (
+            not successor
+            or ticket not in tickets
+            or ticket in adopted
+            or not isinstance(passport, dict)
+            or not isinstance(done, dict)
+            or not isinstance(pr, dict)
+            or item.get("adoption_schema") != TERMINAL_ADOPTION_SCHEMA
+            or item.get("source_current_state") != "Approved"
+            or item.get("source_factory_sha") != source_factory_sha
+            or item.get("source_publication_state") != "merged"
+            or item.get("candidate_passport_sha256")
+            != passport.get("passport_sha256")
+            or item.get("source_passport_sha256")
+            != edge.get("from_passport_sha256")
+            or item.get("source_passport_sha256")
+            != passport.get("parent_digest")
+            or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+            or edge.get("from_factory_sha") != source_factory_sha
+            or edge.get("to_factory_sha") != factory_sha
+            or passport.get("current_state") != "Approved"
+            or passport.get("publication_state") != "merged"
+            or any(
+                evidence.get("factory_sha") == factory_sha
+                for name in ("charge_records", "completed_role_evidence")
+                for evidence in passport.get(name, [])
+                if isinstance(evidence, dict)
+            )
+            or done.get("kit_sha") not in pre_candidate_history
+            or item.get("done_sha256")
+            != hashlib.sha256(canonical(done).encode()).hexdigest()
+            or item.get("pr_number") != done.get("pr_number")
+            or item.get("pr_number") != pr.get("number")
+            or item.get("approved_pr_head") != done.get("approved_pr_head")
+            or item.get("approved_pr_head") != pr.get("headRefOid")
+            or item.get("merge_commit") != done.get("merge_commit")
+            or item.get("merge_commit") != (pr.get("mergeCommit") or {}).get("oid")
+        ):
+            raise QualificationError("terminal adoption proof is invalid")
+        adopted.add(ticket)
     boundary_tickets = (
         boundaries[0].get("tickets") if len(boundaries) == 1 else None
     )
@@ -343,15 +408,15 @@ def verify(
             len(boundary_tickets) == target_done
             and relocations[0].get("ticket") not in tickets
         )
-        or {
-            item.get("ticket") for item in matching("ticket_complete")
-            if item.get("ticket") in tickets
-        } != set(tickets)
+        or len(completions) != len(tickets)
+        or {item.get("ticket") for item in completions} != set(tickets)
     ):
         raise QualificationError("restart, relocation, or completion proof is missing")
     holder = None
     acquired: set[str] = set()
     released: set[str] = set()
+    acquisition_count = 0
+    release_count = 0
     for item in relevant:
         if item.get("ticket") not in tickets:
             continue
@@ -360,12 +425,21 @@ def verify(
                 raise QualificationError("publication leases overlapped")
             holder = item.get("ticket")
             acquired.add(holder)
+            acquisition_count += 1
         elif item.get("event") == "publication_released":
             if item.get("ticket") != holder:
                 raise QualificationError("publication lease release is out of order")
             released.add(holder)
             holder = None
-    if holder is not None or acquired != set(tickets) or released != set(tickets):
+            release_count += 1
+    publication_targets = set(tickets) - adopted
+    if (
+        holder is not None
+        or acquired != publication_targets
+        or released != publication_targets
+        or acquisition_count != len(publication_targets)
+        or release_count != len(publication_targets)
+    ):
         raise QualificationError("publication serialization proof is incomplete")
     created = [iso(pull_requests[ticket]["createdAt"]) for ticket in tickets]
     merged = [iso(pull_requests[ticket]["mergedAt"]) for ticket in tickets]

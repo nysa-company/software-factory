@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import importlib.util
 from pathlib import Path
 import unittest
@@ -199,6 +201,155 @@ class QualificationReducerTest(unittest.TestCase):
             REDUCER.QualificationError, "charges do not match the envelope"
         ):
             REDUCER.verify(*evidence)
+
+    def test_successor_adopts_source_terminal_once_without_publication_replay(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, caps = evidence
+        removed = manifest["tickets"].pop()
+        manifest.update({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+            "target_done": 3,
+        })
+        for values in (passports, terminals, prs, caps):
+            del values[removed]
+        for event in events:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = manifest["tickets"]
+            elif event.get("event") == "cell_relocated" and event.get("ticket") == removed:
+                event["ticket"] = manifest["tickets"][1]
+        events[:] = [item for item in events if item.get("ticket") != removed]
+
+        source = manifest["source_factory_sha"]
+        candidate = manifest["factory_sha"]
+        for passport in passports.values():
+            passport["factory_release_history"].insert(0, {
+                "contract_version": "1.8.0", "factory_sha": source,
+            })
+            passport["migration_history"] = [{
+                "from_factory_sha": source,
+                "schema": REDUCER.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": candidate,
+            }]
+
+        adopted = manifest["tickets"][0]
+        done_kit = "c" * 40
+        source_passport = "d" * 64
+        candidate_passport = "e" * 64
+        passport = passports[adopted]
+        passport["factory_release_history"].insert(0, {
+            "contract_version": "1.8.0", "factory_sha": done_kit,
+        })
+        for name in ("charge_records", "completed_role_evidence"):
+            for item in passport[name]:
+                item["factory_sha"] = done_kit
+        passport.update({
+            "current_state": "Approved",
+            "parent_digest": source_passport,
+            "passport_sha256": candidate_passport,
+        })
+        passport["migration_history"] = [{
+            "from_factory_sha": source,
+            "from_passport_sha256": source_passport,
+            "schema": REDUCER.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": candidate,
+        }]
+        terminals[adopted]["kit_sha"] = done_kit
+        events[:] = [
+            item for item in events
+            if not (
+                item.get("ticket") == adopted
+                and item.get("event")
+                in {"publication_acquired", "publication_released"}
+            )
+        ]
+        events.append({
+            "adoption_schema": REDUCER.TERMINAL_ADOPTION_SCHEMA,
+            "approved_pr_head": terminals[adopted]["approved_pr_head"],
+            "candidate_passport_sha256": candidate_passport,
+            "done_sha256": hashlib.sha256(
+                REDUCER.canonical(terminals[adopted]).encode()
+            ).hexdigest(),
+            "event": "terminal_adopted",
+            "factory_sha": candidate,
+            "merge_commit": terminals[adopted]["merge_commit"],
+            "pr_number": terminals[adopted]["pr_number"],
+            "source_current_state": "Approved",
+            "source_factory_sha": source,
+            "source_passport_sha256": source_passport,
+            "source_publication_state": "merged",
+            "ticket": adopted,
+        })
+        for epoch, event in enumerate(events, 1):
+            event["observed_at_epoch_ns"] = epoch
+
+        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+
+        duplicated_completion = copy.deepcopy(evidence)
+        duplicated_completion[2].append({
+            **next(
+                item for item in duplicated_completion[2]
+                if item.get("event") == "ticket_complete"
+                and item.get("ticket") == adopted
+            ),
+            "observed_at_epoch_ns": len(duplicated_completion[2]) + 1,
+        })
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "completion proof is missing"
+        ):
+            REDUCER.verify(*duplicated_completion)
+
+        duplicated_adoption = copy.deepcopy(evidence)
+        duplicated_adoption[2].append({
+            **next(
+                item for item in duplicated_adoption[2]
+                if item.get("event") == "terminal_adopted"
+            ),
+            "observed_at_epoch_ns": len(duplicated_adoption[2]) + 1,
+        })
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "adoption proof is invalid"
+        ):
+            REDUCER.verify(*duplicated_adoption)
+
+        duplicated_publication = copy.deepcopy(evidence)
+        publication_ticket = manifest["tickets"][1]
+        duplicated_publication[2].extend([{
+            "event": "publication_acquired",
+            "factory_sha": candidate,
+            "observed_at_epoch_ns": len(duplicated_publication[2]) + 1,
+            "ticket": publication_ticket,
+        }, {
+            "event": "publication_released",
+            "factory_sha": candidate,
+            "observed_at_epoch_ns": len(duplicated_publication[2]) + 2,
+            "ticket": publication_ticket,
+        }])
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "serialization proof is incomplete"
+        ):
+            REDUCER.verify(*duplicated_publication)
+
+        replayed_adopted_publication = copy.deepcopy(evidence)
+        replayed_adopted_publication[2].extend([{
+            "event": "publication_acquired",
+            "factory_sha": candidate,
+            "observed_at_epoch_ns": len(replayed_adopted_publication[2]) + 1,
+            "ticket": adopted,
+        }, {
+            "event": "publication_released",
+            "factory_sha": candidate,
+            "observed_at_epoch_ns": len(replayed_adopted_publication[2]) + 2,
+            "ticket": adopted,
+        }])
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "serialization proof is incomplete"
+        ):
+            REDUCER.verify(*replayed_adopted_publication)
 
     def test_fresh_ordered_three_ticket_cohort_needs_only_its_restart_boundary(self):
         evidence = list(self.evidence())

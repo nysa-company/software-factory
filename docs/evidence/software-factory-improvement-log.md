@@ -4905,6 +4905,31 @@ Validation: the formerly failing migration case and the rotated-lease FIX
 positive/tamper regression pass together; the complete focused state-machine
 suite and protected CI remain authoritative.
 
+## FI-20260803-169 — Claimless Done takeover omitted candidate completion proof
+
+Status: Focused successor adoption and reducer regressions green; protected CI pending
+Priority: P0 (#233)
+Area: qualification restart and reduction
+Owner: Factory
+Impact: after a Factory candidate changed, the controller counted an exact
+protected-main Done target at restart but left its passport on the source
+Factory and could not emit a candidate completion because the terminal claim
+had already been released. Successor reduction also required a new publication
+lease pair for that already-published ticket. No remaining path could satisfy
+all three requirements, while set-based checks failed to reject some duplicate
+completion and sequential publication evidence.
+Smallest repair: authenticate and migrate the source terminal passport through
+its one surviving clean ticket cell without a claim, role, publication lease,
+or charge. Seal the source/candidate passport digests and protected Done/PR
+identity in one candidate marker and typed adoption event, append completion
+once, and exempt only that exact adopted ticket from candidate publication
+events. Reduction now checks event multiplicity instead of only set membership.
+Validation: focused controller and successor-reducer regressions cover a
+claimless source terminal, older Done kit in authenticated release history,
+candidate migration, marker/event replay, no claim or attempt, no adopted
+publication cycle, and rejection of duplicate adoption, completion, acquisition,
+and release evidence.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

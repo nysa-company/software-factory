@@ -3258,3 +3258,17 @@ when receipt and passport share a Factory SHA. A source-to-candidate mismatch
 falls through to the existing authenticated contract-repair migration proof,
 which remains solely responsible for release history, passport suffix,
 normalization, charge, terminal, directive, ancestry, and current ownership.
+
+## 2026-08-03 — Decision 238: Qualification takeover completes claimless Done targets
+
+Category: Reliability
+
+An exact protected-main Done successor target remains terminal after its claim
+has been released, but takeover is explicit rather than inferred. Through the
+surviving clean ticket cell, the controller authenticates and migrates its
+merged source passport without a claim, role, publication lease, or charge,
+then seals source/candidate passport digests and protected Done/PR identity in
+one candidate marker and typed adoption event. Completion is append-once, the
+adopted ticket alone requires no candidate publication pair, and duplicate
+adoption, completion, acquisition, or release evidence fails reduction.
+Restart and recovery continue to schedule only unfinished targets.
