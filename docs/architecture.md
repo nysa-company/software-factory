@@ -907,6 +907,11 @@ change. In both cases the embedded legacy bytes, digest, policy, selections,
 pin commit, and revision hash chain must match exactly. This authorization
 never changes ticket state, migrates a branch, renews a lease, or permits an
 unprotected-main record.
+The ordinary migration preview carries compact source, readiness, journal-tail,
+and approval digests; an explicit diagnostic flag includes the complete
+candidate journal. Apply probes readiness once and requires its exact digest
+from the approved preview, so changed readiness refuses without a second probe
+round or a weaker journal check.
 
 A one-time Contract 1.2 migration may instead use the separate
 `factory/migrations/contract-1.3/` legacy-closeout format. It does not create or

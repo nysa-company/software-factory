@@ -8,6 +8,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   ordered-list indentation, continuation, renumbering, inline-code, link, and
   fence-boundary forms. Nested-list structure, fenced content, and meaningful
   edits remain significant, and Git retains the exact ticket contract.
+- Ordinary route-migration previews return compact source, readiness,
+  journal-tail, and approval digests. `--include-journal` is the explicit
+  diagnostic path. Apply performs one fresh readiness round and requires the
+  exact preview readiness digest; it does not repeat identical probes inside
+  the same command.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -2948,3 +2953,13 @@ dependent table and includes child-first cleanup for each non-cascading foreign
 key; an exact `ON DELETE CASCADE` needs no redundant edit. The frozen
 Test-author scope contains only those required setup corrections. If it does
 not, Test-author preserves valid committed tests and blocks before Builder.
+
+## 2026-08-02 — Decision 217: Migration approval binds one readiness snapshot
+
+Category: Performance
+
+Ordinary migration preview no longer serializes the complete retained journal;
+an explicit diagnostic flag remains available. Preview exposes the exact
+readiness digest, and apply accepts only that digest after one fresh probe
+round, preserving approval, journal, and drift refusal without a duplicate
+round in the same command.

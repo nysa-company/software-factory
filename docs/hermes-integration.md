@@ -111,6 +111,7 @@ Model policy is task-free and sealed:
 ~/.factory/bin/factory-launch <project> models enable --scope-type route --scope-id codex-gpt-5.6-sol --json
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
+~/.factory/bin/factory-launch <project> models migrate --ticket T-123 --workdir /absolute/ticket-worktree --approve-hash <preview-hash> --readiness-hash <preview-readiness-hash> --approved-by <operator-id> --json
 ~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ~/.factory/bin/factory-launch <project> models fallback-auto --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason provider_unavailable --json
 ```
