@@ -279,11 +279,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   rollback.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - Product certification stages a checksum-verified pinned scanner into the disposable product copy before entering its network-denied sandbox, so managed secret scanning never depends on a prewarmed product cache or certification-time network access.
-- Certification phase reuse is explicit and restart-local. A hit requires an
-  owner-only self-hashed record bound to the exact Factory, product tree, plan,
-  dependencies, runtime, command, and network capability, followed by fresh
-  hashes of its retained log and declared artifacts. New workspaces and phases
-  with undeclared side effects run normally.
+- Certification phase reuse is explicit and artifact-only. Same-root restarts
+  retain self-hashed local evidence. Across commands, the Factory verifies an
+  owner-only HMAC entry outside the product sandbox, stages it read-only, and
+  the runner rehashes and restores only the complete plan-declared regular-file
+  manifest. Exact Factory/product trees, plan, dependencies, runtime, command,
+  runner, network, TTL, size, mode, and path bindings are mandatory; raw logs
+  and undeclared/test/policy/security/configuration side effects never persist.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
@@ -3029,7 +3031,7 @@ SHA/tree, product SHA/tree, Contract, Node, and npm tuple. The common parser
 rejects missing, unknown, malformed, or mismatched input before expensive work;
 products without a v2 plan retain the opaque certification path.
 
-## 2026-08-02 — Decision 220: Phase evidence reuse is exact and restart-local
+## 2026-08-02 — Decision 220: Phase evidence reuse is exact and restart-local (superseded by Decision 223)
 
 Category: Performance
 
@@ -3114,3 +3116,18 @@ export accepts its historical receipt only through the same contiguous
 authenticated v2 suffix with exactly one authorized byte-identical rewrite.
 Ordinary exports retain raw ancestry, and missing authorization, tree drift,
 broken chaining, or ambiguity fails before state-machine recovery.
+
+## 2026-08-02 — Decision 228: Artifact reuse crosses disposable certification safely
+
+Category: Performance
+
+Factory certification may persist only a phase's complete, nonempty,
+plan-declared artifact set. The owner-only HMAC store and key stay outside the
+product sandbox; verified entries enter as read-only disposable input, new
+candidates exit separately, and the Factory revalidates, authenticates, and
+atomically publishes them under bounded TTL, entry-count, file-count, and size
+limits. Exact Factory physical tree, product identity, raw plan, dependency
+digests, runtime, runner, command, network, file type, mode, path, and content
+bindings are mandatory. Raw logs and test/policy/security/configuration or
+undeclared side effects remain nonpersistent, and full product certification,
+receipts, and protected CI stay authoritative.

@@ -195,12 +195,22 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   evidence, cancels siblings after failure, and binds the passing result into
   the Factory receipt. Phase evidence reuse is opt-in: omit `reuse` or set it
   to `never` for commands with undeclared side effects and use `artifacts` only
-  when every reusable output is declared. A phase without artifacts cannot opt
-  in; application tests and policy/security/configuration checks must use
-  `never` even if they emit report files.
-  Reuse applies only when restarting the same isolated result root; exact inputs
-  and the retained log/artifacts are rehashed before a hit. A new certification
-  workspace always executes the complete product plan.
+  when every reusable output is declared and `kind` is exactly `build` or
+  `dependencies`. A phase without artifacts cannot opt in; every other kind,
+  including application tests and policy/security/configuration checks, must
+  use `never` even if it emits report files.
+  Same-result-root restarts reuse exact local evidence. A later Factory
+  certification command may additionally restore only a plan-authorized
+  complete artifact set from the owner-only authenticated store. The Factory
+  stages verified entries read-only into the disposable workspace, the runner
+  rehashes their complete manifests before restoration, and only independently
+  validated disposable outputs can be atomically published back. Raw phase
+  logs, application tests, policy, security, configuration, and undeclared side
+  effects are never persisted or restored. Tuple, product, plan, dependency,
+  command, runner, network, expiry, size, type, mode, containment, or digest
+  drift produces a cache miss while full product certification still runs.
+  Hit evidence reports saved phase wall time separately from cache lookup,
+  manifest rehash, and restoration overhead.
 
 - Review model policy through the sealed launcher. Run `models profiles --json`,
   preview the intended profile with `models plan [--profile <id>] --json`, and

@@ -438,7 +438,9 @@ mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
   "$ROOT/scripts/certification-preflight.py" \
   "$KIT_REPO/scripts/"
-cp "$ROOT/scripts/lib/certification_plan.py" "$KIT_REPO/scripts/lib/"
+cp "$ROOT/scripts/lib/certification_plan.py" \
+  "$ROOT/scripts/lib/certification_cache.py" \
+  "$KIT_REPO/scripts/lib/"
 cp "$ROOT/integrations/hermes/bin/factory-launch" \
   "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/integrations/hermes/contract.json" "$KIT_REPO/integrations/hermes/contract.json"
@@ -1217,7 +1219,8 @@ if [[ -f "$CERT_SANDBOX_CAPTURE" ]] &&
    grep -Fqx '(allow file-write* (subpath "/dev/fd"))' "$CERT_SANDBOX_CAPTURE" &&
    grep -q "$PRODUCT_ONE" "$CERT_SANDBOX_CAPTURE" &&
    grep -q "$STATE/releases/$SHA_A" "$CERT_SANDBOX_CAPTURE" &&
-   grep -q 'allow file-write.*factory-kit-certification' "$CERT_SANDBOX_CAPTURE"; then
+   grep -q 'allow file-write.*factory-kit-certification' "$CERT_SANDBOX_CAPTURE" &&
+   grep -q 'deny file-write.*certification-cache-input' "$CERT_SANDBOX_CAPTURE"; then
   pass "certification sandbox is filesystem and network default-deny"
 else
   fail "certification sandbox is filesystem and network default-deny"

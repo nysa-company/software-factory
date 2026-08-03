@@ -15,6 +15,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts/certification-runner.py"
+CACHE = ROOT / "scripts/lib/certification_cache.py"
 
 
 class CertificationRunnerTest(unittest.TestCase):
@@ -37,6 +38,8 @@ class CertificationRunnerTest(unittest.TestCase):
         product_tree: str = "b" * 40,
         contract_version: str = "1.8.0",
         runtime: dict | None = None,
+        cache_input: Path | None = None,
+        cache_output: Path | None = None,
     ):
         phases = [{**phase, "network": phase.get("network", "denied")} for phase in phases]
         runtime = runtime or self.runtime()
@@ -47,6 +50,8 @@ class CertificationRunnerTest(unittest.TestCase):
             "runtime": runtime,
         }))
         result = root / "results" / "result.json"
+        if cache_input is not None or cache_output is not None:
+            result.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         environment = os.environ.copy()
         environment.update(
             FACTORY_KIT_SHA=factory_sha,
@@ -67,6 +72,10 @@ class CertificationRunnerTest(unittest.TestCase):
                 "1" if network_reviewed else "0"
             ),
         )
+        if cache_input is not None:
+            environment["FACTORY_CERTIFICATION_CACHE_INPUT"] = str(cache_input)
+        if cache_output is not None:
+            environment["FACTORY_CERTIFICATION_CACHE_OUTPUT"] = str(cache_output)
         completed = subprocess.run(
             [
                 sys.executable, str(RUNNER), "--plan", str(plan),
@@ -79,6 +88,24 @@ class CertificationRunnerTest(unittest.TestCase):
             timeout=30,
         )
         return completed, json.loads(result.read_text()) if result.exists() else None
+
+    def publish_cache_command(self, store: Path, source: Path, plan: Path) -> list[str]:
+        runtime = self.runtime()
+        return [
+            sys.executable, str(CACHE), "publish", "--store", str(store),
+            "--source", str(source), "--plan", str(plan),
+            "--factory-sha", "a" * 40, "--factory-tree", "c" * 40,
+            "--product-sha", "d" * 40, "--product-tree", "b" * 40,
+            "--contract-version", "1.8.0", "--runtime-tuple", json.dumps({
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "factory_tree": "c" * 40,
+                "node": runtime["node"],
+                "npm": runtime["npm"],
+                "product_sha": "d" * 40,
+                "product_tree": "b" * 40,
+            }),
+        ]
 
     def test_two_independent_phases_run_concurrently_and_bind_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -216,6 +243,7 @@ class CertificationRunnerTest(unittest.TestCase):
                     "artifacts": [],
                     "command": [sys.executable, "-c", "raise SystemExit(0)"],
                     "depends_on": [],
+                    "kind": "build",
                     "name": "application-test",
                     "network": "denied",
                     "reuse": "artifacts",
@@ -238,7 +266,48 @@ class CertificationRunnerTest(unittest.TestCase):
             self.assertFalse((root / "result.json").exists())
 
             invalid = json.loads(plan.read_text())
+            invalid["phases"][0]["artifacts"] = ["dist", "dist/output.bin"]
+            invalid["phases"][0]["kind"] = "build"
+            invalid["phases"][0]["reuse"] = "artifacts"
+            plan.write_text(json.dumps(invalid))
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--plan", str(plan),
+                    "--result", str(root / "result.json"),
+                ],
+                cwd=root,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(
+                json.loads(completed.stderr)["failure"]["reason_code"],
+                "certification_plan_invalid",
+            )
+
+            invalid["phases"][0]["artifacts"] = ["report"]
+            invalid["phases"][0]["kind"] = "test"
+            plan.write_text(json.dumps(invalid))
+            completed = subprocess.run(
+                [
+                    sys.executable, str(RUNNER), "--plan", str(plan),
+                    "--result", str(root / "result.json"),
+                ],
+                cwd=root,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(
+                json.loads(completed.stderr)["failure"]["reason_code"],
+                "certification_plan_invalid",
+            )
+
+            invalid = json.loads(plan.read_text())
             invalid["phases"][0]["artifacts"] = ["artifact"]
+            invalid["phases"][0]["kind"] = "build"
             invalid["phases"][0]["reuse"] = "unknown"
             plan.write_text(json.dumps(invalid))
             completed = subprocess.run(
@@ -264,6 +333,7 @@ class CertificationRunnerTest(unittest.TestCase):
                 "artifacts": ["spawned"],
                 "command": [sys.executable, "-c", f"open({str(sentinel)!r},'w').close()"],
                 "depends_on": [],
+                "kind": "dependencies",
                 "name": "npm-ci",
                 "network": "required",
                 "reuse": "artifacts",
@@ -295,6 +365,7 @@ class CertificationRunnerTest(unittest.TestCase):
                 "artifacts": ["compiled.out"],
                 "command": [sys.executable, str(helper), str(counter)],
                 "depends_on": [],
+                "kind": "build",
                 "name": "compile",
                 "network": "optional",
                 "reuse": "artifacts",
@@ -406,6 +477,7 @@ class CertificationRunnerTest(unittest.TestCase):
                     "artifacts": ["artifact.txt"],
                     "command": [sys.executable, str(helper)],
                     "depends_on": [],
+                    "kind": "build",
                     "name": "build",
                     "reuse": "artifacts",
                 },
@@ -413,6 +485,7 @@ class CertificationRunnerTest(unittest.TestCase):
                     "artifacts": ["consumed.txt"],
                     "command": [sys.executable, str(consumer)],
                     "depends_on": ["build"],
+                    "kind": "build",
                     "name": "consume",
                     "reuse": "artifacts",
                 },
@@ -420,13 +493,21 @@ class CertificationRunnerTest(unittest.TestCase):
             self.run_plan(root, phases)
             _, cached = self.run_plan(root, phases)
             self.assertTrue(all(phase["cache_hit"] for phase in cached["phases"]))
+
+            (root / "artifact.txt").chmod(0o755)
+            completed, mode_drift = self.run_plan(root, phases)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse(any(phase["cache_hit"] for phase in mode_drift["phases"]))
+            self.assertEqual((root / "count").read_text(), "2")
+            self.assertEqual((root / "consumer.count").read_text(), "2")
+
             (root / "source.txt").write_text("changed")
             (root / "artifact.txt").write_text("drift")
             completed, rerun = self.run_plan(root, phases)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertFalse(any(phase["cache_hit"] for phase in rerun["phases"]))
-            self.assertEqual((root / "count").read_text(), "2")
-            self.assertEqual((root / "consumer.count").read_text(), "2")
+            self.assertEqual((root / "count").read_text(), "3")
+            self.assertEqual((root / "consumer.count").read_text(), "3")
 
             evidence = (
                 root / "results" / "certification-phases" / "build" / "evidence.json"
@@ -438,7 +519,7 @@ class CertificationRunnerTest(unittest.TestCase):
             completed, _ = self.run_plan(root, phases)
             self.assertEqual(completed.returncode, 2)
             self.assertIn("phase evidence is invalid", completed.stderr)
-            self.assertEqual((root / "count").read_text(), "2")
+            self.assertEqual((root / "count").read_text(), "3")
 
     def test_interrupted_restart_reuses_only_completed_phase(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -457,6 +538,7 @@ class CertificationRunnerTest(unittest.TestCase):
                     "artifacts": ["fast.ready"],
                     "command": [sys.executable, str(helper), "fast", "0"],
                     "depends_on": [],
+                    "kind": "build",
                     "name": "fast",
                     "network": "denied",
                     "reuse": "artifacts",
@@ -465,6 +547,7 @@ class CertificationRunnerTest(unittest.TestCase):
                     "artifacts": ["slow.ready"],
                     "command": [sys.executable, str(helper), "slow", "1"],
                     "depends_on": [],
+                    "kind": "build",
                     "name": "slow",
                     "network": "denied",
                     "reuse": "artifacts",
@@ -539,6 +622,132 @@ class CertificationRunnerTest(unittest.TestCase):
             self.assertFalse(by_name["slow"]["cache_hit"])
             self.assertEqual((root / "fast.count").read_text(), "1")
             self.assertEqual((root / "slow.count").read_text(), "2")
+
+    def test_authenticated_artifact_reuse_crosses_disposable_workspaces(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            helper = base / "build.py"
+            counter = base / "count"
+            helper.write_text(
+                "import os,pathlib,sys,time\n"
+                "time.sleep(0.25)\n"
+                "counter=pathlib.Path(sys.argv[1])\n"
+                "counter.write_text(str(int(counter.read_text())+1) if counter.exists() else '1')\n"
+                "artifact=pathlib.Path('generated/nested/output.bin')\n"
+                "artifact.parent.mkdir(parents=True)\n"
+                "artifact.write_text('exact')\n"
+                "artifact.chmod(0o755)\n"
+            )
+            phase = {
+                "artifacts": ["generated/nested"],
+                "command": [sys.executable, str(helper), str(counter)],
+                "depends_on": [],
+                "kind": "build",
+                "name": "build",
+                "reuse": "artifacts",
+            }
+            first_root = base / "first"
+            first_root.mkdir()
+            first_output = first_root / "results/cache-output"
+            first, first_result = self.run_plan(
+                first_root, [phase], cache_output=first_output,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertFalse(first_result["phases"][0]["cache_hit"])
+            self.assertEqual(
+                first_result["phases"][0]["saved_phase_wall_seconds"], 0,
+            )
+            self.assertEqual(counter.read_text(), "1")
+
+            store = base / "store"
+            store.mkdir(mode=0o700)
+            publish_command = self.publish_cache_command(
+                store, first_output, first_root / "plan.json",
+            )
+            publishers = [
+                subprocess.Popen(
+                    publish_command,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                for _ in range(2)
+            ]
+            for process in publishers:
+                _, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+            entries = list((store / "entries").glob("[0-9a-f]" * 64))
+            self.assertEqual(len(entries), 1)
+            self.assertFalse((entries[0] / "output.log").exists())
+
+            second_root = base / "second"
+            second_root.mkdir()
+            second_input = second_root / "results/cache-input"
+            second_input.parent.mkdir(mode=0o700)
+            prepared = subprocess.run(
+                [sys.executable, str(CACHE), "prepare", "--store", str(store),
+                 "--destination", str(second_input)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            second, second_result = self.run_plan(
+                second_root, [phase], cache_input=second_input,
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            reused = second_result["phases"][0]
+            self.assertTrue(reused["cache_hit"])
+            self.assertEqual(
+                reused["saved_phase_wall_seconds"],
+                first_result["phases"][0]["wall_seconds"],
+            )
+            self.assertGreater(reused["cache_overhead_seconds"], 0)
+            self.assertEqual(reused["wall_seconds"], reused["cache_overhead_seconds"])
+            self.assertGreater(
+                reused["saved_phase_wall_seconds"],
+                reused["cache_overhead_seconds"],
+            )
+            self.assertIn("cache_overhead=", second.stdout)
+            self.assertIn("saved_phase=", second.stdout)
+            self.assertEqual(counter.read_text(), "1")
+            restored = second_root / "generated/nested/output.bin"
+            self.assertEqual(restored.read_text(), "exact")
+            self.assertEqual(restored.stat().st_mode & 0o777, 0o755)
+
+            drift_root = base / "drift"
+            drift_root.mkdir()
+            drift_input = drift_root / "results/cache-input"
+            drift_input.parent.mkdir(mode=0o700)
+            prepared = subprocess.run(
+                [sys.executable, str(CACHE), "prepare", "--store", str(store),
+                 "--destination", str(drift_input)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            drifted, drifted_result = self.run_plan(
+                drift_root, [phase], product_tree="e" * 40,
+                cache_input=drift_input,
+            )
+            self.assertEqual(drifted.returncode, 0, drifted.stderr)
+            self.assertFalse(drifted_result["phases"][0]["cache_hit"])
+            self.assertEqual(counter.read_text(), "2")
+
+            cached_artifact = entries[0] / "artifacts/generated/nested/output.bin"
+            cached_artifact.chmod(0o600)
+            cached_artifact.write_text("tampered")
+            tamper_root = base / "tamper"
+            tamper_root.mkdir()
+            tamper_input = tamper_root / "results/cache-input"
+            tamper_input.parent.mkdir(mode=0o700)
+            prepared = subprocess.run(
+                [sys.executable, str(CACHE), "prepare", "--store", str(store),
+                 "--destination", str(tamper_input)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            tampered, tampered_result = self.run_plan(
+                tamper_root, [phase], cache_input=tamper_input,
+            )
+            self.assertEqual(tampered.returncode, 0, tampered.stderr)
+            self.assertFalse(tampered_result["phases"][0]["cache_hit"])
+            self.assertEqual(counter.read_text(), "3")
 
     def test_missing_runtime_is_a_typed_preflight_failure(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

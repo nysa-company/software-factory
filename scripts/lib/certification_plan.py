@@ -88,6 +88,9 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
             "artifacts", "command", "depends_on", "name", "network"
         }, {
             "artifacts", "command", "depends_on", "name", "network", "reuse"
+        }, {
+            "artifacts", "command", "depends_on", "kind", "name", "network",
+            "reuse"
         }):
             raise PlanError("certification phase is malformed")
         name = phase["name"]
@@ -96,6 +99,7 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
         artifacts = phase["artifacts"]
         network = phase["network"]
         reuse = phase.get("reuse", "never")
+        kind = phase.get("kind")
         if (
             not isinstance(name, str)
             or not NAME.fullmatch(name)
@@ -114,6 +118,8 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
             or network not in {"denied", "optional", "required"}
             or reuse not in {"never", "artifacts"}
             or (reuse == "artifacts" and not artifacts)
+            or (reuse == "artifacts" and kind not in {"build", "dependencies"})
+            or (reuse != "artifacts" and kind is not None)
         ):
             raise PlanError("certification phase values are invalid")
         for artifact in artifacts:
@@ -125,6 +131,16 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
                 != str(root)
             ):
                 raise PlanError("certification artifact escapes the product")
+        if reuse == "artifacts":
+            normalized = [Path(item).parts for item in artifacts]
+            if any(
+                left == right
+                or left[:len(right)] == right
+                or right[:len(left)] == left
+                for index, left in enumerate(normalized)
+                for right in normalized[index + 1:]
+            ):
+                raise PlanError("reusable certification artifacts overlap")
         phases[name] = phase
     if not phases:
         raise PlanError("certification plan has no phases")

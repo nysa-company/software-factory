@@ -12,6 +12,7 @@ MANIFESTS_DIR="$KITS_ROOT/manifests"
 PROJECTS_DIR="$KITS_ROOT/projects"
 RECEIPTS_DIR="$KITS_ROOT/receipts"
 CONSUMED_DIR="$RECEIPTS_DIR/consumed"
+CERTIFICATION_ARTIFACTS_DIR="$KITS_ROOT/certification-artifacts"
 PROVIDER_STATE_ROOT="$(dirname "$KITS_ROOT")"
 CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
@@ -33,6 +34,8 @@ PREPARED_PRODUCT=""
 ISOLATED_HOME=""
 PRODUCT_CERTIFICATION_EVIDENCE=""
 PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
+CERTIFICATION_CACHE_INPUT=""
+CERTIFICATION_CACHE_OUTPUT=""
 PROVIDER_CONCURRENCY_EVIDENCE=""
 
 say() { printf '%s\n' "$*"; }
@@ -228,7 +231,8 @@ validate_managed_roots() {
   reject_symlink_path_components "$RAW_KITS_ROOT" ||
     die "raw FACTORY_KITS_ROOT contains a symlink"
   for path in "$KITS_ROOT" "$RELEASES_DIR" "$MANIFESTS_DIR" \
-    "$PROJECTS_DIR" "$RECEIPTS_DIR" "$CONSUMED_DIR"; do
+    "$PROJECTS_DIR" "$RECEIPTS_DIR" "$CONSUMED_DIR" \
+    "$CERTIFICATION_ARTIFACTS_DIR"; do
     [[ ! -L "$path" ]] || die "managed state path may not be a symlink: $path"
   done
   if [[ -n "$slug" ]]; then
@@ -284,6 +288,7 @@ ensure_managed_directories() {
   safe_create_directory "$PROJECTS_DIR"
   safe_create_directory "$RECEIPTS_DIR"
   safe_create_directory "$CONSUMED_DIR"
+  safe_create_directory "$CERTIFICATION_ARTIFACTS_DIR"
   if [[ -n "$slug" ]]; then
     safe_create_directory "$PROJECTS_DIR/$slug"
     safe_create_directory "$PROJECTS_DIR/$slug/activation-journal"
@@ -1685,11 +1690,13 @@ PY
 }
 
 write_sandbox_profile() {
-  local profile="$1" workspace="$2" allow_network="$3"
+  local profile="$1" workspace="$2" allow_network="$3" read_only
   shift 3
-  python3 - "$profile" "$workspace" "$PATH" "$allow_network" "$@" <<'PY'
+  read_only="${CERTIFICATION_CACHE_INPUT:-}"
+  python3 - "$profile" "$workspace" "$PATH" "$allow_network" \
+    "$read_only" "$@" <<'PY'
 import json, os, pathlib, sys
-profile, workspace, path_value, allow_network, *extra_denied = sys.argv[1:]
+profile, workspace, path_value, allow_network, read_only, *extra_denied = sys.argv[1:]
 quote = json.dumps
 workspace = str(pathlib.Path(workspace).resolve())
 system_roots = [
@@ -1746,6 +1753,10 @@ for path in read_roots:
     lines.append("(allow file-read* (subpath %s))\n" % quote(path))
     lines.append("(allow process-exec (subpath %s))\n" % quote(path))
 lines.append("(allow file-write* (subpath %s))\n" % quote(workspace))
+if read_only:
+    lines.append("(deny file-write* (subpath %s))\n" % quote(
+        str(pathlib.Path(read_only).resolve())
+    ))
 for path in ("/dev/null", "/dev/random", "/dev/urandom"):
     lines.append("(allow file-read* (literal %s))\n" % quote(path))
 lines.append('(allow file-write* (literal "/dev/null"))\n')
@@ -1870,7 +1881,9 @@ run_product_certification() {
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
     "$product_git_tree" "$evidence" "$network_opt_in" "$deny_profile" \
-    "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" <<'PY' || status=$?
+    "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" \
+    "$CERTIFICATION_CACHE_INPUT" "$CERTIFICATION_CACHE_OUTPUT" \
+    <<'PY' || status=$?
 import json, os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
 profile = sys.argv[9]
@@ -1887,6 +1900,8 @@ product_sha = sys.argv[19]
 factory_tree = sys.argv[20]
 contract_version = sys.argv[21]
 runtime_tuple = sys.argv[22]
+cache_input = sys.argv[23]
+cache_output = sys.argv[24]
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
@@ -1943,6 +1958,10 @@ environment = {
     "FACTORY_KIT_OUTER_SANDBOX": "1",
     "FACTORY_CERTIFICATION_NETWORK_REVIEWED": network_reviewed,
 }
+if cache_input:
+    environment["FACTORY_CERTIFICATION_CACHE_INPUT"] = cache_input
+if cache_output:
+    environment["FACTORY_CERTIFICATION_CACHE_OUTPUT"] = cache_output
 if sandbox_exec and deny_profile:
     environment["FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX"] = json.dumps(
         [sandbox_exec, "-f", deny_profile], separators=(",", ":")
@@ -1968,6 +1987,15 @@ with open(output, "wb") as stream:
         raise SystemExit(124)
 raise SystemExit(result.returncode)
 PY
+  if [[ -n "$CERTIFICATION_CACHE_OUTPUT" ]]; then
+    python3 "$SCRIPT_ROOT/scripts/lib/certification_cache.py" publish \
+      --store "$CERTIFICATION_ARTIFACTS_DIR" \
+      --source "$CERTIFICATION_CACHE_OUTPUT" \
+      --plan "$real_product/factory/certification-plan.json" \
+      --factory-sha "$sha" --factory-tree "$kit_tree" \
+      --product-sha "$product_git_sha" --product-tree "$product_git_tree" \
+      --contract-version "$contract" --runtime-tuple "$runtime_tuple" || status=125
+  fi
   redact_output "$raw" "$redacted"
   rm -f "$raw"
   if [[ "$status" -ne 0 ]]; then
@@ -3153,6 +3181,16 @@ cmd_certify() {
   writable="$PREPARED_COPY"
   writable_head="$(git -C "$writable" rev-parse HEAD)"
   prepare_writable_product_copy "$product_top" "$workspace"
+  CERTIFICATION_CACHE_INPUT=""
+  CERTIFICATION_CACHE_OUTPUT=""
+  if [[ -n "$runtime_tuple" ]]; then
+    CERTIFICATION_CACHE_INPUT="$workspace/certification-cache-input"
+    CERTIFICATION_CACHE_OUTPUT="$workspace/certification-cache-output"
+    python3 "$release/scripts/lib/certification_cache.py" prepare \
+      --store "$CERTIFICATION_ARTIFACTS_DIR" \
+      --destination "$CERTIFICATION_CACHE_INPUT" ||
+      die "persistent certification artifact cache is unsafe"
+  fi
   script="$(certify_script_path "$PREPARED_PRODUCT")" ||
     die "invalid product certification contract"
   suite_reused=true
