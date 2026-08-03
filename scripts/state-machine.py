@@ -2495,6 +2495,17 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     owner = record.get("repair_role", "")
     head = record.get("head_sha", "")
     source = record.get("repair_source")
+    head_in_branch = (
+        SHA.fullmatch(head)
+        and subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base",
+                "--is-ancestor", head, "HEAD",
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        ).returncode == 0
+    )
     if any((
         record.get("schema") != REPAIR_SCHEMA,
         record.get("ticket") != args.ticket,
@@ -2502,11 +2513,7 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
         owner not in {"planner", "spec-linter", "test-author", "builder"},
         source not in {None, DEPENDENCY_CONFLICT_SOURCE},
         not SHA.fullmatch(head),
-        subprocess.run(
-            ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor", head, "HEAD"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False, timeout=120,
-        ).returncode != 0,
+        record.get("factory_sha") == args.factory_sha and not head_in_branch,
     )):
         raise StateError("contract repair record is invalid")
     if source == DEPENDENCY_CONFLICT_SOURCE:

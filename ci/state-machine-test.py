@@ -2740,7 +2740,17 @@ class StateMachineTest(unittest.TestCase):
         )
         run("git", "add", str(ticket), cwd=self.product)
         run("git", "commit", "-qm", "materialize blocked repair", cwd=self.product)
-        current_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        pre_normalized_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        normalization_parent = run(
+            "git", "commit-tree", f"{repair_head}^{{tree}}",
+            "-m", "normalization base", cwd=self.product,
+        )
+        current_head = run(
+            "git", "commit-tree", f"{pre_normalized_head}^{{tree}}",
+            "-p", normalization_parent, "-m", "normalize repair history",
+            cwd=self.product,
+        )
+        run("git", "reset", "--hard", current_head, cwd=self.product)
 
         receipt_body = {
             "branch": "ticket/T-110",
@@ -2831,6 +2841,20 @@ class StateMachineTest(unittest.TestCase):
                     "from_route_plan_sha256": "4" * 64,
                     "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
                     "to_factory_sha": old_factory,
+                    "to_head_sha": pre_normalized_head,
+                    "to_protected_base_sha": "3" * 40,
+                    "to_route_plan_sha256": "4" * 64,
+                },
+                {
+                    "from_factory_sha": old_factory,
+                    "from_head_sha": pre_normalized_head,
+                    "from_passport_file_sha256": "7" * 64,
+                    "from_passport_sha256": "8" * 64,
+                    "from_protected_base_sha": "3" * 40,
+                    "from_route_plan_sha256": "4" * 64,
+                    "rewrite_authorization_sha256": "9" * 64,
+                    "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                    "to_factory_sha": old_factory,
                     "to_head_sha": current_head,
                     "to_protected_base_sha": "3" * 40,
                     "to_route_plan_sha256": "4" * 64,
@@ -2838,8 +2862,8 @@ class StateMachineTest(unittest.TestCase):
                 {
                     "from_factory_sha": old_factory,
                     "from_head_sha": current_head,
-                    "from_passport_file_sha256": "7" * 64,
-                    "from_passport_sha256": "8" * 64,
+                    "from_passport_file_sha256": "a" * 64,
+                    "from_passport_sha256": "b" * 64,
                     "from_protected_base_sha": "3" * 40,
                     "from_route_plan_sha256": "4" * 64,
                     "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
@@ -2900,10 +2924,32 @@ class StateMachineTest(unittest.TestCase):
         )
         run("git", "add", str(ticket), cwd=self.product)
         run("git", "commit", "-qm", "authorize migrated repeated repair", cwd=self.product)
+        directive_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        resumed_passport = {
+            **passport,
+            "head_sha": directive_head,
+            "migration_history": [
+                *passport["migration_history"],
+                {
+                    "from_factory_sha": self.args.factory_sha,
+                    "from_head_sha": current_head,
+                    "from_passport_file_sha256": "c" * 64,
+                    "from_passport_sha256": "d" * 64,
+                    "from_protected_base_sha": "5" * 40,
+                    "from_route_plan_sha256": "6" * 64,
+                    "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                    "to_factory_sha": self.args.factory_sha,
+                    "to_head_sha": directive_head,
+                    "to_protected_base_sha": "5" * 40,
+                    "to_route_plan_sha256": "6" * 64,
+                },
+            ],
+        }
 
         with (
             mock.patch.object(
-                STATE, "authenticated_passport", return_value=(passport, secret)
+                STATE, "authenticated_passport",
+                return_value=(resumed_passport, secret),
             ),
             mock.patch.object(
                 STATE, "contract_blocked_receipt", return_value="planner"
