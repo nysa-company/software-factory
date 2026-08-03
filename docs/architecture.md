@@ -1086,10 +1086,19 @@ launcher retain and revalidate the same tuple, so the controller cannot inherit
 a different shell runtime. Unknown, missing, malformed, or mismatched tuple
 data fails closed with typed non-secret diagnostics. Existing opaque
 certification scripts without a v2 plan remain compatible. Cache hits are
-recorded but the
-initial runner does not reuse build or test results; evidence must justify any
-future cache policy. Exact protected Factory CI proof remains reused rather
-than repeated during product certification.
+recorded, but the
+runner reuses a phase only when its protected plan explicitly opts into
+`artifacts` and declares a nonempty, complete output set. Phases with undeclared
+side effects cannot opt in; application tests, policy, security, and
+configuration checks must retain the default `never` policy. Reuse is local to
+the same disposable certification workspace and requires an owner-only
+self-hashed phase record plus exact Factory, product tree, plan, dependency,
+command, Node/npm, runner-runtime, and network bindings. The runner rehashes
+the retained log and every declared artifact before reporting a hit. Missing,
+interrupted, stale, malformed, or tampered evidence reruns or fails closed; it
+never restores undeclared build side effects into a fresh workspace. Exact
+protected Factory CI proof remains reused rather than repeated during product
+certification.
 The v2 DAG also binds exact Node and npm identities plus each phase's declared
 and granted network capability. Required network without command-scoped review
 fails before spawn; a reviewed opt-in does not broaden denied phases. Redacted

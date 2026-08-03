@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import signal
 import stat
@@ -20,12 +21,23 @@ from typing import Any
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from certification_plan import (  # noqa: E402
-    PlanError, TupleError, compare_tuple, diagnostic, expected_tuple,
+    NAME, PlanError, TupleError, compare_tuple, diagnostic, expected_tuple,
     observed_tuple, safe_plan, strict_tuple, validate_plan,
 )
 
 RESULT_SCHEMA = "nysa.software-factory.certification-result/v1"
+CACHE_SCHEMA = "nysa.software-factory.certification-phase-evidence/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
+DIGEST = re.compile(r"^[0-9a-f]{64}$")
+TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+)
+PHASE_RESULT_KEYS = {
+    "artifact_sha256", "cache_hit", "command", "ended_at", "exit_status",
+    "input_sha256", "name", "network_declared", "network_granted",
+    "output_sha256", "peak_memory_kb", "started_at", "system_cpu_seconds",
+    "user_cpu_seconds", "wall_seconds",
+}
 
 
 def canonical(value: Any) -> bytes:
@@ -79,6 +91,130 @@ def atomic_result(path: Path, value: dict[str, Any]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def safe_directory(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        path.mkdir(mode=0o700, parents=True)
+    info = path.lstat()
+    if (
+        path.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise PlanError("certification phase evidence directory is unsafe")
+
+
+def safe_file_digest(path: Path) -> str:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 100_000_000
+        ):
+            raise PlanError("certification phase output is unsafe")
+        digest = hashlib.sha256()
+        while raw := os.read(descriptor, 1_048_576):
+            digest.update(raw)
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def load_phase_evidence(path: Path) -> dict[str, Any] | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 1_000_000
+        ):
+            raise PlanError("certification phase evidence is unsafe")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            value = json.load(stream)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(value, dict) or set(value) != {
+        "phase", "record_sha256", "schema"
+    } or value["schema"] != CACHE_SCHEMA:
+        raise PlanError("certification phase evidence is malformed")
+    expected = hashlib.sha256(canonical({
+        "phase": value["phase"], "schema": value["schema"]
+    })).hexdigest()
+    phase = value["phase"]
+    if (
+        value["record_sha256"] != expected
+        or not isinstance(phase, dict)
+        or set(phase) != PHASE_RESULT_KEYS
+        or phase["cache_hit"] is not False
+        or type(phase.get("exit_status")) is not int
+        or phase["exit_status"] != 0
+        or not isinstance(phase.get("name"), str)
+        or not NAME.fullmatch(phase["name"])
+        or not isinstance(phase.get("command"), list)
+        or not phase["command"]
+        or not all(isinstance(item, str) and item for item in phase["command"])
+        or phase.get("network_declared") not in {"denied", "optional", "required"}
+        or not isinstance(phase.get("network_granted"), bool)
+        or (
+            phase["network_declared"] == "denied"
+            and phase["network_granted"]
+        )
+        or not TIMESTAMP.fullmatch(phase.get("started_at", ""))
+        or not TIMESTAMP.fullmatch(phase.get("ended_at", ""))
+        or phase["ended_at"] < phase["started_at"]
+        or type(phase.get("peak_memory_kb")) is not int
+        or any(
+            isinstance(phase.get(key), bool)
+            or not isinstance(phase.get(key), (int, float))
+            or phase[key] < 0
+            for key in (
+                "system_cpu_seconds", "user_cpu_seconds", "wall_seconds",
+            )
+        )
+        or phase["peak_memory_kb"] < 0
+        or not DIGEST.fullmatch(phase.get("input_sha256", ""))
+        or not DIGEST.fullmatch(phase.get("artifact_sha256", ""))
+        or not DIGEST.fullmatch(phase.get("output_sha256", ""))
+    ):
+        raise PlanError("certification phase evidence is invalid")
+    return value
+
+
+def write_phase_evidence(path: Path, phase: dict[str, Any]) -> None:
+    value = {"phase": phase, "schema": CACHE_SCHEMA}
+    value["record_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
+    atomic_result(path, value)
+
+
+def secure_log(path: Path):
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+    ):
+        os.close(descriptor)
+        raise PlanError("certification phase output is unsafe")
+    os.fchmod(descriptor, 0o600)
+    return os.fdopen(descriptor, "wb")
+
+
 def iso(epoch: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
@@ -109,6 +245,7 @@ def main() -> int:
         print("invalid certification runner boundary", file=sys.stderr)
         return 2
     try:
+        args.result.unlink(missing_ok=True)
         plan, plan_digest = safe_plan(args.plan)
         phases = validate_plan(plan, root)
         identity = {
@@ -162,20 +299,36 @@ def main() -> int:
         return 2
 
     run_root = args.result.parent / "certification-phases"
-    run_root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    try:
+        safe_directory(run_root)
+        cache_records: dict[str, dict[str, Any] | None] = {}
+        for name in phases:
+            phase_root = run_root / name
+            if phase_root.exists() or phase_root.is_symlink():
+                safe_directory(phase_root)
+            cache_records[name] = load_phase_evidence(phase_root / "evidence.json")
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
     started = time.time()
     pending = set(phases)
     running: dict[int, dict[str, Any]] = {}
     completed: dict[str, dict[str, Any]] = {}
     failed = False
     failure_log: Path | None = None
+    interrupted_signal: int | None = None
 
-    def launch(name: str) -> None:
+    runner_runtime = {
+        "architecture": platform.machine(),
+        "os": platform.system(),
+        "python": platform.python_version(),
+    }
+
+    def launch(name: str) -> bool:
         phase = phases[name]
         phase_root = run_root / name
-        phase_root.mkdir(mode=0o700)
+        safe_directory(phase_root)
         log = phase_root / "output.log"
-        stream = log.open("wb")
         dependencies = {
             item: completed[item]["artifact_sha256"]
             for item in phase["depends_on"]
@@ -189,6 +342,7 @@ def main() -> int:
                     "plan_sha256": plan_digest,
                     "product_tree": product_tree,
                     "runtime_tuple": runtime_tuple,
+                    "runner_runtime": runner_runtime,
                     "network": {
                         "declared": phase["network"],
                         "granted": (
@@ -199,9 +353,50 @@ def main() -> int:
                 }
             )
         ).hexdigest()
+        evidence_path = phase_root / "evidence.json"
+        cached = cache_records[name]
+        if phase.get("reuse", "never") != "never" and cached is not None:
+            record = cached["phase"]
+            if record["input_sha256"] == input_digest:
+                try:
+                    reusable = (
+                        record["name"] == name
+                        and record["command"] == phase["command"]
+                        and record["network_declared"] == phase["network"]
+                        and record["network_granted"] == (
+                            network_reviewed == "1"
+                            and phase["network"] in {"optional", "required"}
+                        )
+                        and safe_file_digest(log) == record["output_sha256"]
+                        and artifact_digest(root, phase["artifacts"], log)
+                        == record["artifact_sha256"]
+                    )
+                except (OSError, PlanError):
+                    reusable = False
+                if reusable:
+                    observed = time.time()
+                    completed[name] = {
+                        **record,
+                        "cache_hit": True,
+                        "cache_record_sha256": cached["record_sha256"],
+                        "ended_at": iso(observed),
+                        "peak_memory_kb": 0,
+                        "started_at": iso(observed),
+                        "system_cpu_seconds": 0,
+                        "user_cpu_seconds": 0,
+                        "wall_seconds": 0,
+                    }
+                    pending.remove(name)
+                    return False
+            evidence_path.unlink()
+            cache_records[name] = None
+        elif cached is not None:
+            evidence_path.unlink()
+            cache_records[name] = None
+
+        stream = secure_log(log)
         environment = os.environ.copy()
-        environment["TMPDIR"] = str(phase_root / "tmp")
-        Path(environment["TMPDIR"]).mkdir(mode=0o700)
+        environment["TMPDIR"] = tempfile.mkdtemp(prefix=".tmp-", dir=phase_root)
         granted = (
             network_reviewed == "1"
             and phase["network"] in {"optional", "required"}
@@ -236,19 +431,43 @@ def main() -> int:
             "started": time.time(),
             "stream": stream,
         }
+        if interrupted_signal is not None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         pending.remove(name)
+        return True
+
+    def interrupt(signum: int, _frame: Any) -> None:
+        nonlocal interrupted_signal
+        interrupted_signal = signum
+        for active in running.values():
+            try:
+                os.killpg(active["process"].pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    for handled_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(handled_signal, interrupt)
 
     try:
         while pending or running:
-            if not failed:
+            if not failed and interrupted_signal is None:
                 ready = sorted(
                     name
                     for name in pending
                     if set(phases[name]["depends_on"]).issubset(completed)
                 )
+                reused = False
                 while ready and len(running) < args.workers:
-                    launch(ready.pop(0))
+                    reused = not launch(ready.pop(0)) or reused
             if not running:
+                if interrupted_signal is not None:
+                    failed = True
+                    break
+                if not failed and reused:
+                    continue
                 break
             pid, status, usage = os.wait4(-1, 0)
             active = running.pop(pid)
@@ -281,7 +500,7 @@ def main() -> int:
                 if sys.platform == "darwin"
                 else int(usage.ru_maxrss)
             )
-            completed[active["name"]] = {
+            phase_result = {
                 "artifact_sha256": artifact,
                 "cache_hit": False,
                 "command": phases[active["name"]]["command"],
@@ -291,13 +510,31 @@ def main() -> int:
                 "name": active["name"],
                 "network_declared": active["network_declared"],
                 "network_granted": active["network_granted"],
-                "output_sha256": hashlib.sha256(active["log"].read_bytes()).hexdigest(),
+                "output_sha256": safe_file_digest(active["log"]),
                 "peak_memory_kb": peak,
                 "started_at": iso(active["started"]),
                 "system_cpu_seconds": round(usage.ru_stime, 6),
                 "user_cpu_seconds": round(usage.ru_utime, 6),
                 "wall_seconds": round(ended - active["started"], 6),
             }
+            if (
+                process.returncode == 0
+                and phases[active["name"]].get("reuse", "never") != "never"
+            ):
+                try:
+                    write_phase_evidence(
+                        run_root / active["name"] / "evidence.json", phase_result
+                    )
+                except (OSError, PlanError) as error:
+                    process.returncode = 125
+                    phase_result["exit_status"] = 125
+                    with active["log"].open("ab") as stream:
+                        stream.write((f"\n{error}\n").encode())
+                    phase_result["artifact_sha256"] = artifact_digest(
+                        root, phases[active["name"]]["artifacts"], active["log"]
+                    )
+                    phase_result["output_sha256"] = safe_file_digest(active["log"])
+            completed[active["name"]] = phase_result
             if process.returncode != 0:
                 if not failed:
                     failure_log = active["log"]
@@ -355,11 +592,14 @@ def main() -> int:
             print(
                 f"{phase['name']}: status={phase['exit_status']} "
                 f"wall={phase['wall_seconds']:.3f}s "
-                f"peak_kb={phase['peak_memory_kb']} cache_hit=false"
+                f"peak_kb={phase['peak_memory_kb']} "
+                f"cache_hit={'true' if phase['cache_hit'] else 'false'}"
             )
     if failure_log is not None:
         print("failed-phase-output:")
         print(failure_log.read_text(encoding="utf-8", errors="replace"), end="")
+    if interrupted_signal is not None:
+        return 128 + interrupted_signal
     return 1 if failed else 0
 
 

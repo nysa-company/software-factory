@@ -282,7 +282,8 @@ value = {
     "network_reviewed": os.environ.get("FACTORY_CERTIFICATION_NETWORK_REVIEWED") == "1",
     "phases": [{
         "artifact_sha256": "a" * 64,
-        "cache_hit": False,
+        "cache_hit": True,
+        "cache_record_sha256": "e" * 64,
         "command": ["fixture"],
         "ended_at": "2026-07-29T00:00:01Z",
         "exit_status": 0,

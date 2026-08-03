@@ -4780,16 +4780,28 @@ Planner package-manager entry points. Existing Narrator output is preserved.
 
 ## FI-20260802-163 — Certification prerequisites failed after expensive phases
 
-Status: Five focused runner regressions green; protected CI pending
+Status: Eight focused runner regressions and caller validation green;
+protected CI pending
 Priority: P0 (#165/#172/#173)
 Area: certification trust boundary
 Owner: Factory
-Impact: missing reviewed network appeared as opaque npm failure, while a known
-noncanonical active-product path failed only after the phase graph completed.
+Impact: missing reviewed network appeared as opaque npm failure, a known
+noncanonical active-product path failed only after the phase graph completed,
+and interrupted certification discarded already-complete expensive phases.
 Smallest repair: plan v2 pins Node/npm and phase network policy, fails missing
 capability before spawn, retains denied phases under reviewed opt-in, preserves
 redacted hash-bound failure evidence, and validates the active generation/path/
-origin before workspace preparation.
+origin before workspace preparation. Explicit restart-local reuse now binds a
+self-hashed phase record to every Factory/product/plan/dependency/runtime/
+command/network input and rehashes its retained log plus declared artifacts.
+Legacy plans and undeclared side effects never reuse.
+Validation: exact repeat, Factory/product/plan/runtime/network invalidation,
+artifact drift, interruption, stale evidence, and tamper regressions prove no
+false hit. Factory receipt validation accepts only hits carrying a phase-record
+digest; full protected certification remains authoritative. Persistent reuse
+across separate disposable certification commands remains explicitly deferred
+to P1 #198 because it requires authenticated artifact packaging/restoration,
+not retention of a prior writable workspace.
 
 ## FI-20260802-164 — Successor ticket migrations ran serially
 

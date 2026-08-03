@@ -84,15 +84,18 @@ def safe_plan(path: Path) -> tuple[dict[str, Any], str]:
 def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]:
     phases: dict[str, dict[str, Any]] = {}
     for phase in plan["phases"]:
-        if not isinstance(phase, dict) or set(phase) != {
+        if not isinstance(phase, dict) or set(phase) not in ({
             "artifacts", "command", "depends_on", "name", "network"
-        }:
+        }, {
+            "artifacts", "command", "depends_on", "name", "network", "reuse"
+        }):
             raise PlanError("certification phase is malformed")
         name = phase["name"]
         command = phase["command"]
         dependencies = phase["depends_on"]
         artifacts = phase["artifacts"]
         network = phase["network"]
+        reuse = phase.get("reuse", "never")
         if (
             not isinstance(name, str)
             or not NAME.fullmatch(name)
@@ -109,6 +112,8 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
             or not isinstance(artifacts, list)
             or not all(isinstance(item, str) and item for item in artifacts)
             or network not in {"denied", "optional", "required"}
+            or reuse not in {"never", "artifacts"}
+            or (reuse == "artifacts" and not artifacts)
         ):
             raise PlanError("certification phase values are invalid")
         for artifact in artifacts:

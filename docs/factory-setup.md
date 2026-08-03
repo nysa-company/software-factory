@@ -177,8 +177,14 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   Start with two workers; the runner permits at most three, isolates phase logs
   and temporary directories, records timing/CPU/peak-memory/input/artifact
   evidence, cancels siblings after failure, and binds the passing result into
-  the Factory receipt. Do not add build or test-result caching until measured
-  runs prove a safe exact-key policy.
+  the Factory receipt. Phase evidence reuse is opt-in: omit `reuse` or set it
+  to `never` for commands with undeclared side effects and use `artifacts` only
+  when every reusable output is declared. A phase without artifacts cannot opt
+  in; application tests and policy/security/configuration checks must use
+  `never` even if they emit report files.
+  Reuse applies only when restarting the same isolated result root; exact inputs
+  and the retained log/artifacts are rehashed before a hit. A new certification
+  workspace always executes the complete product plan.
 
 - Review model policy through the sealed launcher. Run `models profiles --json`,
   preview the intended profile with `models plan [--profile <id>] --json`, and

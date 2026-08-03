@@ -2009,7 +2009,15 @@ if (
     or any(
         not isinstance(phase, dict)
         or phase.get("exit_status") != 0
-        or phase.get("cache_hit") is not False
+        or not isinstance(phase.get("cache_hit"), bool)
+        or (
+            phase["cache_hit"]
+            and not digest.fullmatch(phase.get("cache_record_sha256", ""))
+        )
+        or (
+            not phase["cache_hit"]
+            and phase.get("cache_record_sha256") is not None
+        )
         or phase.get("network_declared") not in {"denied", "optional", "required"}
         or not isinstance(phase.get("network_granted"), bool)
         or (phase.get("network_declared") == "required" and not phase["network_granted"])
@@ -2264,9 +2272,22 @@ if (
     or any(
         not isinstance(phase, dict)
         or phase.get("exit_status") != 0
-        or phase.get("cache_hit") is not False
+        or not isinstance(phase.get("cache_hit"), bool)
+        or (
+            phase["cache_hit"]
+            and not digest.fullmatch(phase.get("cache_record_sha256", ""))
+        )
+        or (
+            not phase["cache_hit"]
+            and phase.get("cache_record_sha256") is not None
+        )
+        or phase.get("network_declared") not in {"denied", "optional", "required"}
+        or not isinstance(phase.get("network_granted"), bool)
+        or (phase.get("network_declared") == "required" and not phase["network_granted"])
+        or (phase.get("network_declared") == "denied" and phase["network_granted"])
         or not digest.fullmatch(phase.get("input_sha256", ""))
         or not digest.fullmatch(phase.get("artifact_sha256", ""))
+        or not digest.fullmatch(phase.get("output_sha256", ""))
         for phase in phases
     )
 ):
