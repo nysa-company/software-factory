@@ -563,7 +563,11 @@ and exact Linear resume state agree. Across a release migration, the state
 machine accepts the historical receipt only when the current authenticated
 passport orders both releases, contains the exact immutable charge and
 manifest digest, has no successful evidence for that receipt, and the old head
-is in current branch ancestry. A live current exact-ticket lease is validated
+is in current branch ancestry or reaches it through exactly one authenticated
+same-release rewrite edge whose old and new Git trees are byte-identical. The
+edge must bind the passport's current route, protected base, and Factory; a
+missing authorization, changed tree, or ambiguous match remains blocked. A
+live current exact-ticket lease is validated
 independently; an absent old lease may therefore be replaced without weakening
 receipt, terminal, passport, or current ownership checks. If an earlier
 controller cleared the blocked claim fields during that migration, the

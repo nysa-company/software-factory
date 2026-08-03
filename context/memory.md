@@ -69,6 +69,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   authorization binds both Factory identities, the exact successful run and
   charge, old/new tree-identical heads, route, and protected merge parents;
   only an explicit exact-old-head force-with-lease may publish it.
+- A consumed contract-block receipt remains in lineage across protected
+  history normalization only through one authenticated same-release migration
+  edge with byte-identical old/new Git trees and current route/base bindings.
+  Missing authorization, tree drift, or multiple matches fail closed; this is
+  not a general state-machine override.
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
@@ -3036,3 +3041,14 @@ An exact `Blocked-Escalated` ticket may use protected accepted-test history
 normalization while retaining that state. Normalization changes only the
 authenticated tree-identical lineage; the existing receipt-bound blocker
 resume remains the sole authority that restores its recorded resume state.
+
+## 2026-08-02 — Decision 225: Normalized blocker lineage is exact and unique
+
+Category: Trust boundary
+
+A consumed contract-block receipt may cross protected history normalization
+only through one authenticated same-release migration edge whose old and new
+Git trees are byte-identical and whose route and protected-base bindings match
+the current passport. Missing rewrite authorization, changed content, or an
+ambiguous edge remains blocked; the receipt-bound operator directive is still
+the only resume authority.
