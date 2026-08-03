@@ -18,6 +18,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   before readiness tests, qualification materialization, certification suites,
   and sealed qualification launch; receipts and activation bind the same tuple,
   while malformed, missing, unknown, or mismatched values fail closed.
+- The owner bootstrap pins a v2 product's plan-matching Node/npm/npx executables
+  in `~/.factory/bin`, first in the sealed launcher PATH. The operation refuses
+  unsafe paths and version drift before replacement and verifies the resulting
+  owner-local tuple; system-wide runtime selection is never changed.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -3085,3 +3089,13 @@ Git trees are byte-identical and whose route and protected-base bindings match
 the current passport. Missing rewrite authorization, changed content, or an
 ambiguous edge remains blocked; the receipt-bound operator directive is still
 the only resume authority.
+
+## 2026-08-02 — Decision 226: Certification runtimes are owner-locally pinned
+
+Category: Trust boundary
+
+The Factory verifies a product plan's exact Node/npm/npx executables before
+atomically linking them into the sealed launcher's existing `~/.factory/bin`
+PATH priority. The system-wide Homebrew selection remains untouched; unsafe
+paths, source mismatch, or installed tuple drift fail closed before readiness,
+qualification, certification, activation, or launch can spend work.

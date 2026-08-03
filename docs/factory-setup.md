@@ -69,6 +69,22 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   links for `claude` and `agent` into `~/.factory/bin`; do not widen the
   launcher to an entire user-writable bin directory. Verify the physical link
   targets, pinned versions, and `contract-test.sh --routes` before dispatch.
+- For a product with certification plan v2, pin its exact Node/npm runtime
+  without changing the system-wide Homebrew link:
+
+  ```bash
+  bash scripts/factory-kit.sh runtime-pin \
+    --product "<absolute-product-path>" \
+    --runtime-bin "<absolute-node-bin-directory>"
+  ```
+
+  The operation reuses the launcher's fixed PATH priority by atomically linking
+  verified `node`, `npm`, and `npx` executables into `~/.factory/bin`. It reads
+  the shared strict product plan, refuses version or path drift before replacing
+  an existing pin set, and verifies the installed tuple under the exact sealed
+  launcher PATH. Run it before readiness or qualification preparation; those
+  gates, certification, activation, and launch still independently fail closed
+  on tuple drift.
 - Create the dedicated factory profile at
   `~/.hermes/profiles/factory`. Install the canonical `SOUL.md` and
   `skills/factory-dispatch/SKILL.md` from `integrations/hermes/templates/`.
@@ -218,7 +234,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] `factory/KIT_PIN` contains exactly one lowercase full SHA; `factory/PROJECT.env` names an executable, repository-contained `CERTIFY_SCRIPT`
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
 - [ ] The active contract 1.2/1.3/1.4 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
-- [ ] `~/.factory/bin/factory-launch` and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
+- [ ] `~/.factory/bin/factory-launch`, the product-plan Node/npm/npx pins, and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
 - [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-balanced-v2`
 - [ ] A clean sample ticket passed `models pin --ticket <T-NNN> --workdir <exact-worktree> --json`, creating one pushed commit containing both `Kit-SHA` and the exact six-role route plan
 - [ ] Kimi remains disabled and absent from every profile; no live/billed-pilot claim is recorded, and credential rotation plus broker/OS isolation are prerequisites to a pilot

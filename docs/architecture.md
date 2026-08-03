@@ -1109,8 +1109,12 @@ suites can spawn expensive work. Qualification activation and its sealed
 launcher retain and revalidate the same tuple, so the controller cannot inherit
 a different shell runtime. Unknown, missing, malformed, or mismatched tuple
 data fails closed with typed non-secret diagnostics. Existing opaque
-certification scripts without a v2 plan remain compatible. Cache hits are
-recorded, but the
+certification scripts without a v2 plan remain compatible. The owner bootstrap
+may first run `factory-kit runtime-pin` to verify the product plan's exact
+Node/npm/npx executables and atomically place them in `~/.factory/bin`. That
+owner-local directory is already first in the sealed launcher's fixed PATH, so
+a newer system Node cannot supersede the pin; every later boundary retains its
+independent strict tuple check. Cache hits are recorded, but the
 runner reuses a phase only when its protected plan explicitly opts into
 `artifacts` and declares a nonempty, complete output set. Phases with undeclared
 side effects cannot opt in; application tests, policy, security, and

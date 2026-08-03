@@ -187,6 +187,7 @@ Usage:
   $PROGRAM reconcile --project SLUG [--product PRODUCT_REPO]
   $PROGRAM rollback  --project SLUG [--product PRODUCT_REPO]
   $PROGRAM recover-lease --project SLUG --product PRODUCT_REPO --ticket T-NNN
+  $PROGRAM runtime-pin --product PRODUCT_REPO --runtime-bin NODE_BIN_DIR
   $PROGRAM provider-concurrency ACTION --sha FULL_SHA --capacity 2..4 [--approve-hash HASH]
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
@@ -1266,6 +1267,17 @@ cmd_provider_concurrency() {
       --release "$release" --root "$PROVIDER_STATE_ROOT" \
       --capacity "$capacity" "$action"
   fi
+}
+
+cmd_runtime_pin() {
+  local product="$1" runtime_bin="$2" product_top
+  product_top="$(absolute_dir "$product")"
+  [[ "$runtime_bin" == /* ]] || die "runtime bin path must be absolute"
+  [[ -f "$SCRIPT_ROOT/scripts/owner-runtime-pin.py" &&
+     ! -L "$SCRIPT_ROOT/scripts/owner-runtime-pin.py" ]] ||
+    die "release does not support owner runtime pinning"
+  python3 "$SCRIPT_ROOT/scripts/owner-runtime-pin.py" \
+    --product "$product_top" --runtime-bin "$runtime_bin"
 }
 
 prepare_writable_release_copy() {
@@ -3809,6 +3821,7 @@ RECEIPT=""
 TICKET=""
 CAPACITY=""
 APPROVE_HASH=""
+RUNTIME_BIN=""
 JSON=0
 POSITIONALS=()
 
@@ -3823,6 +3836,7 @@ while [[ $# -gt 0 ]]; do
     --ticket) [[ $# -ge 2 ]] || die "$1 requires a value"; TICKET="$2"; shift 2 ;;
     --capacity) [[ $# -ge 2 ]] || die "$1 requires a value"; CAPACITY="$2"; shift 2 ;;
     --approve-hash) [[ $# -ge 2 ]] || die "$1 requires a value"; APPROVE_HASH="$2"; shift 2 ;;
+    --runtime-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; RUNTIME_BIN="$2"; shift 2 ;;
     --json) JSON=1; shift ;;
     --help|-h) usage; exit 0 ;;
     --*) die "unknown option: $1" ;;
@@ -3888,6 +3902,12 @@ case "$COMMAND" in
     [[ -n "$TICKET" ]] || TICKET="${POSITIONALS[2]:-}"
     [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$TICKET" ]] || { usage >&2; exit 2; }
     cmd_recover_lease "$PROJECT" "$PRODUCT" "$TICKET"
+    ;;
+  runtime-pin)
+    [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[0]:-}"
+    [[ -n "$RUNTIME_BIN" ]] || RUNTIME_BIN="${POSITIONALS[1]:-}"
+    [[ -n "$PRODUCT" && -n "$RUNTIME_BIN" ]] || { usage >&2; exit 2; }
+    cmd_runtime_pin "$PRODUCT" "$RUNTIME_BIN"
     ;;
   provider-concurrency)
     ACTION="${POSITIONALS[0]:-}"
