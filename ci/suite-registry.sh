@@ -40,6 +40,7 @@ suite_registry() {
   "$callback" model-fallback "model fallback transaction suite" python3 "$ROOT/ci/model-fallback-test.py"
   "$callback" ci-scope "selective CI scope" bash "$ROOT/ci/ci-scope-test.sh"
   "$callback" process-group-readiness "process-group readiness suite" python3 "$ROOT/ci/run-in-process-group-test.py"
+  "$callback" suite-groups "parallel suite group mapping" bash "$ROOT/ci/suite-groups-test.sh"
   "$callback" factory-scripts "factory script regression suite" bash "$ROOT/ci/test-factory-scripts.sh"
   "$callback" dispatch-leases "dispatcher lease suite" bash "$ROOT/ci/dispatch-leases-test.sh"
   "$callback" reorder-test-fixes "reorder test-fixes suite" bash "$ROOT/ci/reorder-test-fixes-test.sh"

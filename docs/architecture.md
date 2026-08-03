@@ -98,9 +98,13 @@ and artifact-policy checks. The six audited leaf mappings remain available for
 focused local work. Pull requests run the same targeted-or-deferred selection
 on Linux and macOS: mapped leaf changes execute their suites, while broad work
 runs policy gates and defers complete coverage. Pushes to `main` partition the
-complete registry into three named shards per platform so the slow
-factory-script, Hermes-contract, and release groups run in parallel. Release
-evidence requires all six shard jobs plus the aggregate and immutability jobs
+complete registry into four stable groups per platform on separate hosted
+runners. The factory-script, Hermes-contract, and factory-kit lifecycle suites
+remain intact and sequential inside their own groups. A group is directly
+runnable as `bash ci/test-all.sh --group N`; an optional `--shard SHARD` narrows
+that group for local diagnosis. After all four groups succeed, three stable
+evidence aliases per platform retain the installed release contract. Release
+evidence requires all six aliases plus the aggregate and immutability jobs
 for the exact merged SHA. Historical runs with no shard jobs retain their
 legacy two-platform proof for rollback; any partial shard topology fails
 closed.
@@ -119,7 +123,12 @@ registry, baseline, and policy changes, runs only CI-scope, immutability, and
 artifact-policy locally and records full behavioral verification as deferred
 to required GitHub CI. The command succeeds when those local policy gates pass.
 An explicit argument-free `bash ci/test-all.sh` remains the complete local
-command; GitHub `main` divides that same registry across its six shard jobs.
+command; GitHub `main` divides that same registry across eight group jobs and
+retains the six established release-evidence aliases.
+The checked group mapping assigns every registry entry exactly once and new
+unclassified suites fail safely into release group 4. Local argument-free and
+whole-shard commands remain sequential so workstation contention cannot turn
+timing-sensitive tests flaky.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,

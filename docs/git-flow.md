@@ -35,7 +35,8 @@ Every behavioral pull request runs fail-closed targeted-or-deferred selection
 on Linux and macOS system Bash. Mapped leaf changes execute their applicable
 suites. Unknown, shared, mixed, dependency, CI, selector, addition, deletion,
 and rename changes run policy gates and defer complete coverage. Every push to
-`main` runs all three shards on both platforms so release verification remains
+`main` runs four balanced groups on both platforms, then publishes the three
+stable shard evidence aliases per platform, so release verification remains
 bound to a fully tested merged SHA. Instantiated product workflows may skip
 expensive product checks for allowlisted PRs, but every product push to `main`
 runs its full verification so deployment evidence remains bound to the merged
@@ -139,9 +140,10 @@ sequencing. Contracts through `1.5.0` retain the bound of four; only Contract
 
 - Require a pull request before merging; no direct pushes.
 - Required status checks: `ci` and `test-immutability`, strict (branch up to
-  date). The `ci` context is an aggregate job that succeeds only when all three
-  Linux shards and all three macOS system-Bash shards succeed. A separate
-  green platform shard is not sufficient.
+  date). The `ci` context is an aggregate job that succeeds only when all four
+  Linux groups and all four macOS system-Bash groups succeed. The six stable
+  shard aliases record that same complete group result for release evidence; a
+  separate green group or alias is not sufficient.
 - Block force pushes and deletion.
 - Bypass list: **empty**. The release verifier fails closed on any bypass actor,
   including organization admins, because the certified commit must be proven to

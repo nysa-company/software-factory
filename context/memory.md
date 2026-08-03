@@ -250,7 +250,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, and config-review enabled. `bash ci/test-all.sh` remains the unconditional full command; managed local readiness uses `bash ci/test-all.sh --changed-or-defer origin/main HEAD`.
-- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in three Linux and three macOS shards.
+- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in four isolated hosted-runner groups per platform while retaining the six established release-evidence aliases.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
 - The stable installed launcher is part of that exact release tuple.
   Certification and every receipt validation require its bytes to match the
@@ -2965,3 +2965,15 @@ an explicit diagnostic flag remains available. Preview exposes the exact
 readiness digest, and apply accepts only that digest after one fresh probe
 round, preserving approval, journal, and drift refusal without a duplicate
 round in the same command.
+
+## 2026-08-02 — Decision 218: Protected CI uses bounded isolated suite groups
+
+Category: Performance
+
+Protected-main CI runs four stable suite groups per platform on distinct hosted
+runners. The factory-script, Hermes-contract, and factory-kit
+lifecycle suites remain whole and sequential as canonical smokes; a checked
+mapping assigns every suite exactly once and defaults newly registered suites
+to release group 4. Whole-shard local execution stays sequential after
+development-lane benchmarks showed shared-runner concurrency causes timeout
+contention instead of a wall-time reduction.

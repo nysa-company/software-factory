@@ -363,8 +363,9 @@ same-UID token exposure remains until a broker or OS isolation is used.
 ## Preparing and activating a release
 
 1. Confirm the candidate full SHA is the current `origin/main` and its exact
-   authenticated push run has all three Linux shards, all three macOS shards,
-   aggregate `ci`, and `test-immutability` successful.
+   authenticated push run has all four Linux groups, all four macOS groups,
+   the three stable evidence aliases per platform, aggregate `ci`, and
+   `test-immutability` successful.
 2. Install that exact sealed candidate. Reuse only the protected-main evidence
    from step 1 and run the local sandboxed host smoke; never substitute a local
    complete factory suite.

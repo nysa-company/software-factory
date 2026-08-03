@@ -15,13 +15,11 @@ SHADOW=0
 DEFER_FULL=0
 DEFER_AFTER=0
 SHARD="all"
+GROUP=""
 CHANGE_BASE="${BASE_REF:-origin/main}"
 trap 'rm -rf "$TMP"' EXIT
 . "$ROOT/ci/suite-registry.sh"
-
-# Keep the slowest suites on separate runners; new suites default to release.
-FACTORY_SHARD_IDS=" factory-scripts provider-executor provider-activation provider-artifact-controller "
-HERMES_SHARD_IDS=" hermes-contract preflight ticket-attest provider-coordinator provider-credential-broker provider-recovery "
+. "$ROOT/ci/suite-groups.sh"
 
 summary() {
   printf '%s\n' "$*"
@@ -51,10 +49,21 @@ fi
 if [[ $# -gt 0 ]]; then
   case "$1" in
     --shard)
-      [[ $# -eq 2 ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+      [[ $# -eq 2 || $# -eq 4 ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
       SHARD="$2"
       case "$SHARD" in factory|hermes|release) ;; *) echo "unknown suite shard: $SHARD" >&2; exit 2 ;; esac
+      if [[ $# -eq 4 ]]; then
+        [[ "$3" == "--group" ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+        GROUP="$4"
+        case "$GROUP" in 1|2|3|4) ;; *) echo "unknown suite group: $GROUP" >&2; exit 2 ;; esac
+      fi
       REASON="complete GitHub shard: $SHARD"
+      ;;
+    --group)
+      [[ $# -eq 2 ]] || { echo "usage: ci/test-all.sh [--group 1|2|3|4 | --shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+      GROUP="$2"
+      case "$GROUP" in 1|2|3|4) ;; *) echo "unknown suite group: $GROUP" >&2; exit 2 ;; esac
+      REASON="complete GitHub group: $GROUP"
       ;;
     --changed|--shadow-changed|--changed-or-defer)
       [[ "$1" != "--shadow-changed" ]] || SHADOW=1
@@ -68,7 +77,7 @@ $SELECTION
 EOF
       ;;
     *)
-      echo "usage: ci/test-all.sh [--shard factory|hermes|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2
+      echo "usage: ci/test-all.sh [--group 1|2|3|4 | --shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2
       exit 2
       ;;
   esac
@@ -119,7 +128,14 @@ DISPLAY_SUITES="$SELECTED"
 [[ "$PLANNED_MODE" != "full" || "$DEFER_AFTER" -eq 1 ]] || DISPLAY_SUITES="all"
 [[ "$PLANNED_MODE" != "metadata" ]] || DISPLAY_SUITES="none"
 [[ "$SHARD" == "all" ]] || DISPLAY_SUITES="shard:$SHARD"
-summary "CI selection: component_state=$PLANNED_MODE executed=$MODE shard=$SHARD reason=$REASON suites=$DISPLAY_SUITES"
+if [[ -n "$GROUP" ]]; then
+  if [[ "$SHARD" == "all" ]]; then
+    DISPLAY_SUITES="group:$GROUP"
+  else
+    DISPLAY_SUITES="$DISPLAY_SUITES group:$GROUP"
+  fi
+fi
+summary "CI selection: component_state=$PLANNED_MODE executed=$MODE shard=$SHARD group=${GROUP:-all} reason=$REASON suites=$DISPLAY_SUITES"
 
 selected() {
   [[ "$PLANNED_MODE" == "full" || " $SELECTED " == *" $1 "* ]]
@@ -127,13 +143,8 @@ selected() {
 
 should_run() {
   local id="$1"
-  case "$SHARD" in
-    factory) [[ "$FACTORY_SHARD_IDS" == *" $id "* ]] || return 1 ;;
-    hermes) [[ "$HERMES_SHARD_IDS" == *" $id "* ]] || return 1 ;;
-    release)
-      [[ "$FACTORY_SHARD_IDS" != *" $id "* && "$HERMES_SHARD_IDS" != *" $id "* ]] || return 1
-      ;;
-  esac
+  [[ "$SHARD" == "all" || "$(suite_shard_for "$id")" == "$SHARD" ]] || return 1
+  [[ -z "$GROUP" || "$(suite_group_for "$id")" == "$GROUP" ]] || return 1
   [[ "$MODE" == "full" || ( "$MODE" == "targeted" && " $SELECTED " == *" $id "* ) ]]
 }
 
@@ -176,6 +187,8 @@ suite_registry run_suite
 
 RUN_LABEL="$MODE"
 [[ "$SHARD" == "all" ]] || RUN_LABEL="$SHARD shard"
+[[ -z "$GROUP" ]] || RUN_LABEL="group $GROUP"
+[[ "$SHARD" == "all" || -z "$GROUP" ]] || RUN_LABEL="$SHARD group $GROUP"
 if [[ "$FAIL" -eq 0 ]]; then
   summary "PASS: $RUN_LABEL test suite ($((SECONDS - STARTED))s)"
 else
