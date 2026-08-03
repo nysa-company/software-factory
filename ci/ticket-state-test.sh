@@ -327,17 +327,27 @@ CAS_NEW="$(git -C "$PRODUCT" rev-parse HEAD^)"
 [[ -n "$CAS_OLD" && "$CAS_RACE" != "$CAS_NEW" ]]
 git -C "$PRODUCT" update-ref "refs/remotes/origin/$CAS_BRANCH" \
   "$CAS_RACE" "$CAS_OLD"
+# A third value must fail and remain unchanged.
 if factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "$CAS_OLD" \
   >/dev/null 2>&1; then
   echo "FAIL: stale tracking compare-and-swap overwrote a concurrent update" >&2
   exit 1
 fi
 [[ "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" == "$CAS_RACE" ]]
+# The expected old value may advance normally.
 factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "$CAS_RACE"
 [[ "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" == "$CAS_NEW" ]]
 # A concurrent fetch may already have installed the exact desired SHA.
 factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "$CAS_RACE"
 [[ "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" == "$CAS_NEW" ]]
+# A missing tracking ref must fail closed and remain absent.
+git -C "$PRODUCT" update-ref -d "refs/remotes/origin/$CAS_BRANCH" "$CAS_NEW"
+if factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "" \
+  >/dev/null 2>&1; then
+  echo "FAIL: missing tracking ref was created by compare-and-swap" >&2
+  exit 1
+fi
+[[ -z "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" ]]
 
 # Qualification contract blockers return to Backlog only with a protected
 # qualification manifest and a matching authenticated role result.

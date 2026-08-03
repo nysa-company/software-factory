@@ -35,7 +35,8 @@ factory_remote_tracking_tip() {
 
 factory_update_tracking_ref() {
   local root="$1" branch="$2" new="$3" old="$4"
+  [[ -n "$new" && -n "$old" ]] || return 1
   "${FACTORY_TRUSTED_GIT_BIN:-git}" -C "$root" update-ref \
     "refs/remotes/origin/$branch" "$new" "$old" 2>/dev/null ||
-    [[ -n "$new" && "$(factory_remote_tracking_tip "$root" "$branch")" == "$new" ]]
+    [[ "$(factory_remote_tracking_tip "$root" "$branch")" == "$new" ]]
 }
