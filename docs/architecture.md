@@ -1077,9 +1077,16 @@ and cannot expire after that evidence. Products may opt into the sealed
 wall time, CPU, peak memory, cache status, exact input digests, and artifact
 digests for every phase; runs at most three workers; gives each phase a
 separate log and temporary directory; and cancels sibling process groups after
-the first failure. A passing measured result is bound to the exact Factory SHA
-and product tree and embedded in the certification receipt. Existing opaque
-certification scripts remain compatible. Cache hits are recorded but the
+the first failure. A passing measured result is bound to one exact Factory
+SHA/tree, product SHA/tree, Contract, Node, and npm tuple and embedded in the
+certification receipt. The shared `certification-preflight.py` validates that
+tuple before readiness tests, qualification materialization, or certification
+suites can spawn expensive work. Qualification activation and its sealed
+launcher retain and revalidate the same tuple, so the controller cannot inherit
+a different shell runtime. Unknown, missing, malformed, or mismatched tuple
+data fails closed with typed non-secret diagnostics. Existing opaque
+certification scripts without a v2 plan remain compatible. Cache hits are
+recorded but the
 initial runner does not reuse build or test results; evidence must justify any
 future cache policy. Exact protected Factory CI proof remains reused rather
 than repeated during product certification.

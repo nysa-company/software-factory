@@ -166,6 +166,14 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   required phase fails before spawning when the command-scoped reviewed-network
   opt-in is absent; denied phases remain network-denied when that opt-in is
   present for another phase.
+  Before repository readiness tests, call the sealed
+  `scripts/certification-preflight.py` with that plan, the exact candidate
+  Factory SHA/tree, product root, and Contract version. The command compares
+  those values plus the product SHA/tree and observed Node/npm against one
+  strict tuple and exits `2` before a plan phase can spawn on missing, unknown,
+  malformed, or mismatched input. Qualification preparation and certification
+  run the same preflight automatically and persist the tuple for sealed-launch
+  revalidation; do not duplicate its plan parser in product scripts.
   Start with two workers; the runner permits at most three, isolates phase logs
   and temporary directories, records timing/CPU/peak-memory/input/artifact
   evidence, cancels siblings after failure, and binds the passing result into

@@ -32,17 +32,30 @@ class CertificationRunnerTest(unittest.TestCase):
         network_reviewed: bool = False,
     ):
         phases = [{**phase, "network": phase.get("network", "denied")} for phase in phases]
+        runtime = self.runtime()
         plan = root / "plan.json"
         plan.write_text(json.dumps({
             "schema": "nysa.software-factory.certification-plan/v2",
             "phases": phases,
-            "runtime": self.runtime(),
+            "runtime": runtime,
         }))
         result = root / "results" / "result.json"
         environment = os.environ.copy()
         environment.update(
             FACTORY_KIT_SHA="a" * 40,
+            FACTORY_KIT_TREE="c" * 40,
+            FACTORY_PRODUCT_SHA="d" * 40,
             FACTORY_PRODUCT_TREE="b" * 40,
+            FACTORY_CONTRACT_VERSION="1.8.0",
+            FACTORY_CERTIFICATION_TUPLE=json.dumps({
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "factory_tree": "c" * 40,
+                "node": runtime["node"],
+                "npm": runtime["npm"],
+                "product_sha": "d" * 40,
+                "product_tree": "b" * 40,
+            }),
             FACTORY_CERTIFICATION_NETWORK_REVIEWED=(
                 "1" if network_reviewed else "0"
             ),
@@ -169,7 +182,10 @@ class CertificationRunnerTest(unittest.TestCase):
             environment = os.environ.copy()
             environment.update(
                 FACTORY_KIT_SHA="a" * 40,
+                FACTORY_KIT_TREE="c" * 40,
+                FACTORY_PRODUCT_SHA="d" * 40,
                 FACTORY_PRODUCT_TREE="b" * 40,
+                FACTORY_CONTRACT_VERSION="1.8.0",
             )
             completed = subprocess.run(
                 [
@@ -182,7 +198,9 @@ class CertificationRunnerTest(unittest.TestCase):
                 capture_output=True,
             )
             self.assertEqual(completed.returncode, 2)
-            self.assertIn("cycle", completed.stderr)
+            failure = json.loads(completed.stderr)["failure"]
+            self.assertEqual(failure["reason_code"], "certification_plan_invalid")
+            self.assertEqual(failure["field"], "certification_plan")
             self.assertFalse((root / "result.json").exists())
 
     def test_required_network_fails_before_phase_without_review(self) -> None:
@@ -227,7 +245,19 @@ class CertificationRunnerTest(unittest.TestCase):
             environment = os.environ.copy()
             environment.update(
                 FACTORY_KIT_SHA="a" * 40,
+                FACTORY_KIT_TREE="c" * 40,
+                FACTORY_PRODUCT_SHA="d" * 40,
                 FACTORY_PRODUCT_TREE="b" * 40,
+                FACTORY_CONTRACT_VERSION="1.8.0",
+                FACTORY_CERTIFICATION_TUPLE=json.dumps({
+                    "contract_version": "1.8.0",
+                    "factory_sha": "a" * 40,
+                    "factory_tree": "c" * 40,
+                    "node": self.runtime()["node"],
+                    "npm": self.runtime()["npm"],
+                    "product_sha": "d" * 40,
+                    "product_tree": "b" * 40,
+                }),
                 FACTORY_CERTIFICATION_NETWORK_REVIEWED="0",
                 PATH=str(root),
             )
@@ -237,9 +267,10 @@ class CertificationRunnerTest(unittest.TestCase):
                 cwd=root, env=environment, text=True, capture_output=True,
             )
             self.assertEqual(completed.returncode, 2)
+            self.assertFalse(result.exists())
             self.assertEqual(
-                json.loads(result.read_text())["failure"]["reason_code"],
-                "runtime_identity_mismatch",
+                json.loads(completed.stderr)["failure"]["reason_code"],
+                "runtime_tuple_mismatch",
             )
 
 

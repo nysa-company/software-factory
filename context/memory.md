@@ -13,6 +13,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   diagnostic path. Apply performs one fresh readiness round and requires the
   exact preview readiness digest; it does not repeat identical probes inside
   the same command.
+- A product using certification plan v2 has one exact runtime tuple: Factory
+  SHA/tree, product SHA/tree, Contract, Node, and npm. The shared preflight runs
+  before readiness tests, qualification materialization, certification suites,
+  and sealed qualification launch; receipts and activation bind the same tuple,
+  while malformed, missing, unknown, or mismatched values fail closed.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -2977,3 +2982,13 @@ mapping assigns every suite exactly once and defaults newly registered suites
 to release group 4. Whole-shard local execution stays sequential after
 development-lane benchmarks showed shared-runner concurrency causes timeout
 contention instead of a wall-time reduction.
+
+## 2026-08-02 — Decision 219: Certification runtime identity is one tuple
+
+Category: Trust boundary
+
+For products that adopt certification plan v2, readiness, sealed qualification,
+certification, receipts, and qualification launch share one strict Factory
+SHA/tree, product SHA/tree, Contract, Node, and npm tuple. The common parser
+rejects missing, unknown, malformed, or mismatched input before expensive work;
+products without a v2 plan retain the opaque certification path.
