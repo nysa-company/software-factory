@@ -1424,8 +1424,10 @@ RECEIPT_A="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print val
 
 # The barrier is visible before pause queues behind an in-flight launch.
 rm -f "$PRODUCT_ONE/factory/MAINTENANCE"
+LAUNCH_HOLDER_RELEASE="$TMP/queued-launch.release"
 /bin/sh -c '
   lock=$1
+  release=$2
   mkdir "$lock"
   start=$(ps -o lstart= -p $$ |
     python3 -c "import sys; print(\" \".join(sys.stdin.read().split()))")
@@ -1435,12 +1437,15 @@ rm -f "$PRODUCT_ONE/factory/MAINTENANCE"
     printf "nonce=11111111111111111111111111111111\n"
     printf "created_epoch=1\n"
   } > "$lock/owner"
-  sleep 2
+  for _i in $(seq 1 500); do
+    [ -f "$release" ] && break
+    sleep 0.02
+  done
   mv "$lock" "$lock.released"
   rm -rf "$lock.released"
-' queued-launch "$PRODUCT_ONE/factory/.launch.lock" &
+' queued-launch "$PRODUCT_ONE/factory/.launch.lock" "$LAUNCH_HOLDER_RELEASE" &
 LAUNCH_HOLDER_PID=$!
-for _i in $(seq 1 100); do
+for _i in $(seq 1 500); do
   [[ -f "$PRODUCT_ONE/factory/.launch.lock/owner" ]] && break
   sleep 0.02
 done
@@ -1460,6 +1465,7 @@ if [[ -f "$PRODUCT_ONE/factory/MAINTENANCE" &&
 else
   fail "pause publishes valid maintenance before waiting on launch lock"
 fi
+touch "$LAUNCH_HOLDER_RELEASE"
 if wait "$QUEUED_PAUSE_PID"; then
   pass "queued pause acquires launch lock and drains"
 else
