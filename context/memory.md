@@ -121,8 +121,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   ticket-PR boundary applies the same bounded retry to its read-only exact
   branch-head observation.
 - After a verified trusted push, remote-tracking compare-and-swap treats an
-  already-converged desired SHA as idempotent success. Every other concurrent
-  value still fails closed and is never overwritten.
+  already-converged desired SHA as idempotent success. Every third, missing,
+  or unreadable ref state still fails closed and is never overwritten.
 - Production-successor qualification authenticates the clean activated product
   tree separately from current protected main. Protected main must contain the
   active commit, and the local qualification control worktree must be based on
