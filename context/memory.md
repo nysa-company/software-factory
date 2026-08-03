@@ -60,8 +60,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   and blank role-exit/reason only when its authenticated receipt, unique
   manifest, owner-only output and terminal-success progress, charge, clean
   cell, current Factory passport, and remote head all converge. The correction
-  is HMAC-signed, retained by later exports, idempotent, and claim clearing
-  remains controller-only; every mismatch stays blocked.
+  admits only the production `cursor-openai` and `cursor-anthropic` adapters,
+  and permits one correction-only all-v2 successor suffix when an authenticated
+  failed-run export advanced from the receipt input to its descendant Builder
+  output before migration. The final edge must bind the current passport
+  parent, generic receipt lineage is unchanged, and the correction remains
+  HMAC-signed, retained, idempotent, and controller-cleared; every mismatch
+  stays blocked.
 - Contract 1.8 preflight consumes the already-verified transition stage. Normal
   Planner work still requires the visible Planning state; an authenticated
   `FIX planner` receipt may run beneath a later coarse state without mutating
@@ -3183,3 +3188,16 @@ Git's zero OID, so a legitimate first-time model pin may initialize an absent
 tracking ref without weakening compare-and-swap. An absent ref after a
 nonempty observation still fails and remains absent; exact convergence remains
 idempotent, and every third or unreadable state remains a hard refusal.
+
+## 2026-08-03 — Decision 233: Converged-success recovery binds real terminal lineage
+
+Category: Reliability
+
+The exact successor-only Builder correction accepts only `cursor-openai` and
+`cursor-anthropic`, matching the route catalog and terminal manifests. If its
+authenticated failed-run export already advanced the passport from receipt
+input to descendant output, one unique all-v2 successor suffix may bridge that
+output to the current release only when release order, head/base/route chain,
+and final source-passport parent digests all agree. Generic receipt lineage is
+not relaxed; legacy, non-Cursor, unknown, disconnected, or ambiguous evidence
+remains blocked.

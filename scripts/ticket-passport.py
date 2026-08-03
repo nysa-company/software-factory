@@ -19,6 +19,7 @@ import tempfile
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from release_lineage import successor_release_lineage  # noqa: E402
 from reorder_test_fixes import verified_normalization_plan  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256
 
@@ -1305,6 +1306,80 @@ def migrated_receipt_lineage(
     return len(rewrites) == 1
 
 
+def converged_success_migration_lineage(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    consumed: dict[str, Any],
+    current: dict[str, Any],
+) -> bool:
+    """Authenticate the release suffix after Builder advanced the receipt head."""
+    history = previous.get("factory_release_history")
+    migrations = previous.get("migration_history")
+    before = consumed.get("head_sha", "")
+    source = consumed.get("factory_sha", "")
+    if (
+        not isinstance(migrations, list)
+        or not SHA.fullmatch(before)
+        or not SHA.fullmatch(source)
+        or previous.get("factory_sha") != args.factory_sha
+        or previous.get("head_sha") != current["head_sha"]
+        or not SHA.fullmatch(previous.get("protected_base_sha", ""))
+        or not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
+        or not DIGEST.fullmatch(previous.get("parent_file_sha256", ""))
+        or not DIGEST.fullmatch(previous.get("parent_digest", ""))
+        or not successor_release_lineage(
+            history, migrations, source, args.factory_sha, valid_v2_migration,
+        )
+    ):
+        return False
+
+    candidates = []
+    for index, edge in enumerate(migrations):
+        if (
+            not valid_v2_migration(edge)
+            or edge["from_factory_sha"] != source
+            or edge["from_route_plan_sha256"]
+            != consumed.get("route_plan_sha256")
+            or edge["from_head_sha"] == before
+            or subprocess.run(
+                [
+                    "git", "-C", str(args.workdir), "merge-base",
+                    "--is-ancestor", before, edge["from_head_sha"],
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=120,
+            ).returncode != 0
+        ):
+            continue
+        suffix = migrations[index:]
+        if (
+            all(valid_v2_migration(item) for item in suffix)
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and suffix[-1]["to_factory_sha"] == args.factory_sha
+            and suffix[-1]["to_head_sha"] == current["head_sha"]
+            and suffix[-1]["to_protected_base_sha"]
+            == previous["protected_base_sha"]
+            and suffix[-1]["to_route_plan_sha256"]
+            == previous["route_plan_sha256"]
+            and suffix[-1]["from_passport_file_sha256"]
+            == previous["parent_file_sha256"]
+            and suffix[-1]["from_passport_sha256"]
+            == previous["parent_digest"]
+        ):
+            candidates.append(index)
+    return len(candidates) == 1
+
+
 def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     passports = safe_directory(args.state_dir / "passports", create=True)
     destination = passports / f"{args.ticket}.json"
@@ -1453,6 +1528,9 @@ def correct_converged_success(
     receipt_lineage = (
         consumed.get("passport_sha256") == previous.get("parent_file_sha256")
         or migrated_receipt_lineage(args, previous, consumed, current)
+        or converged_success_migration_lineage(
+            args, previous, consumed, current
+        )
         or prior_correction_bound
     )
     if (
@@ -1519,7 +1597,9 @@ def correct_converged_success(
         or terminal.get("role_exit") != ""
         or terminal.get("terminal_reason_code", "") != ""
         or terminal.get("role") != "builder"
-        or terminal.get("adapter") != "cursor"
+        or terminal.get("adapter") not in {
+            "cursor-anthropic", "cursor-openai",
+        }
         or terminal.get("role_branch_before") != current["branch"]
         or terminal.get("role_head_before") != consumed["head_sha"]
         or terminal.get("kit_sha") != consumed["factory_sha"]
