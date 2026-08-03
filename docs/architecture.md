@@ -596,8 +596,11 @@ may retain a coarse resume state later than that role only when the exact
 receipt and authenticated blocked passport name the same FIX stage. Block
 recovery and resume validate that evidence directly instead of requiring the
 repair record that resume has not created yet. When receipt and passport
-Factory SHAs differ, this same-release shortcut is inapplicable and the
-existing authenticated contract-repair migration proof remains authoritative.
+Factory SHAs differ, the state machine additionally requires the authenticated
+historical blocker charge, ordered release history, exact current passport
+digest, and receipt-to-current-head lineage before accepting that later coarse
+state. Once a signed repair exists, its narrower contract-repair migration
+proof remains authoritative.
 An operator appends the first
 exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path:

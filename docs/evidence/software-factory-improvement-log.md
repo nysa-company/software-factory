@@ -4952,6 +4952,29 @@ idempotent replay, and no claim, role, charge, or publication cycle. The
 successor reducer regression requires the same complete suffix and exact final
 edge.
 
+## FI-20260803-171 — Migrated repair resume required its future record
+
+Status: Focused state-machine regression green; protected CI pending
+Priority: P0 (#237)
+Area: contract-blocker release recovery
+Owner: Factory
+First seen: T-100 in sealed successor qualification
+Impact: a fully authenticated historical `FIX builder` blocker with a current
+blocked passport and exact receipt-bound Planner directive could not resume.
+The state machine failed before a provider call with `operator resume lacks
+authenticated contract repair state`.
+Root cause: the resume-state validator rejected the historical-receipt/current-
+passport Factory mismatch and asked for the signed repair record that the same
+resume operation creates only after state materialization.
+Smallest repair: reuse the existing migrated-blocker proof at that narrow
+boundary, additionally matching the exact authenticated passport digest and Git
+lineage. Receipt, terminal, charge, release history, role, FIX stage, directive,
+state, and ancestry validation remain mandatory; no controller bypass exists.
+Validation: the exact regression uses a predecessor `FIX builder` receipt,
+current `Blocked-Escalated` passport, `Resume-State: Review`, and receipt-bound
+Planner directive with no active or completed repair. A mismatched caller
+passport digest remains fail closed.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

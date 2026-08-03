@@ -2966,7 +2966,7 @@ def contract_block_resume_state(
         receipt = receipt or {}
         passport = passport or {}
         fix_stage = f"FIX {role}"
-        if all((
+        resume_identity = all((
             receipt.get("receipt_sha256") == args.receipt,
             receipt.get("consumed") is True,
             receipt.get("ticket") == args.ticket,
@@ -2974,7 +2974,6 @@ def contract_block_resume_state(
             receipt.get("stage") == fix_stage,
             passport.get("ticket") == args.ticket,
             passport.get("branch") == receipt.get("branch"),
-            passport.get("factory_sha") == receipt.get("factory_sha"),
             passport.get("contract_version") == receipt.get("contract_version"),
             passport.get("project") == receipt.get("project"),
             passport.get("current_stage") == fix_stage,
@@ -2982,7 +2981,19 @@ def contract_block_resume_state(
             passport.get("transition_receipt_sha256") == args.receipt,
             state in order,
             order.get(state, 0) > order[target],
-        )):
+        ))
+        release_identity = (
+            passport.get("factory_sha") == receipt.get("factory_sha")
+        )
+        if resume_identity and not release_identity:
+            migrated_passport, _ = migrated_contract_block(args, receipt)
+            release_identity = (
+                migrated_passport is not None
+                and migrated_passport.get("passport_sha256")
+                == passport.get("passport_sha256")
+                and contract_block_head_in_lineage(args, receipt, passport)
+            )
+        if resume_identity and release_identity:
             return state
         if (
             receipt.get("factory_sha") == passport.get("factory_sha")

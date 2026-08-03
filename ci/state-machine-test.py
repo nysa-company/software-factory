@@ -1230,6 +1230,142 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.contract_blocked_receipt(self.args)
 
+    def test_migrated_fix_builder_resumes_to_receipt_bound_planner(self) -> None:
+        old_factory = "b" * 40
+        current_factory = self.args.factory_sha
+        self.args.factory_sha = old_factory
+        self.args.role = "builder"
+        issued = STATE.issue(self.args, "FIX builder")
+        self.args.receipt = issued["receipt_sha256"]
+        STATE.verify(self.args, consume=True)
+        manifest = self.product / "factory/runs/migrated-fix-builder.meta"
+        manifest.write_text(
+            "run_id=migrated-fix-builder\n"
+            "phase=completed\n"
+            "accounting_state=completed\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            f"contract_version={self.args.contract_version}\n"
+            f"kit_sha={old_factory}\n"
+            "exit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={issued['head_sha']}\n"
+            f"transition_receipt_sha256={self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Blocked-Escalated\nResume-State: Review\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "materialize migrated blocker", cwd=self.product)
+        blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "authorize exact planner resume", cwd=self.product)
+        directive_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        body = {
+            "branch": "ticket/T-110",
+            "charge_records": [{
+                "accounting_state": "completed",
+                "contract_version": self.args.contract_version,
+                "factory_sha": old_factory,
+                "head_before": issued["head_sha"],
+                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "role": "builder",
+                "run_id": "migrated-fix-builder",
+                "transition_receipt_sha256": self.args.receipt,
+            }],
+            "completed_role_evidence": [],
+            "contract_version": self.args.contract_version,
+            "current_stage": "FIX builder",
+            "current_state": "Blocked-Escalated",
+            "factory_release_history": [
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": old_factory,
+                },
+                {
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": current_factory,
+                },
+            ],
+            "factory_sha": current_factory,
+            "head_sha": directive_head,
+            "migration_history": [{
+                "from_head_sha": blocked_head,
+                "to_head_sha": directive_head,
+            }],
+            "project": self.args.project,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+            "transition_receipt_sha256": self.args.receipt,
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+
+        self.args.factory_sha = current_factory
+        self.args.action = "resume"
+        receipt = STATE.safe_receipt(self.state_dir / "T-110.json")
+        with mock.patch.object(
+            STATE, "contract_repair_stage", return_value=(None, False)
+        ):
+            with self.assertRaisesRegex(
+                STATE.StateError, "contract blocker role state drifted"
+            ):
+                STATE.contract_block_resume_state(
+                    self.args,
+                    "builder",
+                    "Review",
+                    receipt,
+                    {**passport, "passport_sha256": "0" * 64},
+                )
+
+        def materialize(*_args, **_kwargs):
+            ticket.write_text(
+                ticket.read_text(encoding="utf-8").replace(
+                    "State: Blocked-Escalated", "State: Review"
+                ),
+                encoding="utf-8",
+            )
+            return ""
+
+        with (
+            mock.patch.object(STATE, "run_helper", side_effect=materialize),
+            mock.patch.object(STATE, "migrate_passport") as migrate,
+        ):
+            result = STATE.resume_transition(self.args)
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["role"], "builder")
+        self.assertEqual(result["repair_role"], "planner")
+        self.assertEqual(
+            STATE.load_repair(self.args, secret)["blocked_receipt"],
+            self.args.receipt,
+        )
+        migrate.assert_called_once_with(self.args)
+
     def test_operator_resume_names_exact_repair_owner_only(self) -> None:
         self.args.receipt = "b" * 64
         head = run("git", "rev-parse", "HEAD", cwd=self.product)
