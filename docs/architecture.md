@@ -238,8 +238,12 @@ may replace only the latest heading and its matching established PASS marker
 one-for-one; a partial, mismatched, repeated, lower, mixed, or malformed change
 does not reset the gate. Git keeps the earlier role input immutable while the
 new epoch reopens Test-author ownership. Same-contract late tests may use the
-reorder helper only on a linear unpublished tail; merge-rich or authenticated
-history must not be rewritten.
+reorder helper on a clean local tail. It never moves a commit across a merge,
+preserves every retained two-parent merge's exact tree and second parent,
+refuses octopus merges, and moves the branch only after final-tree identity
+succeeds. The helper never pushes. An already accepted remote history may move
+only through the separate protected normalization authorization and an
+explicit exact-head force-with-lease.
 Certification and every later receipt validation require that installed trust
 root to be byte-identical to the candidate release's launcher. A release whose
 launcher changed must therefore be explicitly bootstrapped before
@@ -893,6 +897,20 @@ the exact operator-authorized head is the remote ticket tip, then reopens only
 Test-author through the ordinary state machine. Missing, stale, dirty,
 non-Test-author, semantic, route-changing, or differently headed rewrites
 remain blocked.
+An accepted successful Test-author push with a merge-rich tail uses a distinct
+authorization schema at the same new-head-keyed path. The successor first
+migrates the authenticated passport on the unchanged old head. A canonical
+one-file protected-main commit directly above the replay base then binds the
+old signed passport/head/tree, new head/tree, branch, repository, route,
+current Factory, and the accepted Test-author's historical Factory, run, and
+receipt. Verification requires the exact completed evidence and charge whose
+recorded input head is the parent of a late test commit; it also proves the old
+line violates ordering, the new line satisfies it without mixed commits, the
+final trees and non-exempt patch multiset match, and every protected merge tree
+and second parent are unchanged. The controller does not migrate until its clean
+cell head is the exact remote ticket tip. Only an operator's explicit
+`--force-with-lease=<old-head>` can publish the authorized rewrite, and a
+restart after recovery is a no-op.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior
