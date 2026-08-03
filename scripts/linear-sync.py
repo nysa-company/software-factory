@@ -8,6 +8,7 @@ never calls Linear directly.
 """
 
 import argparse
+import copy
 import csv
 import datetime as dt
 import fcntl
@@ -44,6 +45,13 @@ FALLBACK_APPROVAL = re.compile(
     r"RUN:\s*([A-Za-z0-9._-]{1,200})\s+"
     r"REASON:\s*(credits_exhausted|provider_unavailable)\s+"
     r"NONCE:\s*([0-9a-f]{32})\s*\Z"
+)
+TARGETED_OPERATOR_FIELDS = (
+    "operator",
+    "model_fallback_approval",
+    "blocked_source_sha256",
+    "blocked_remote_updated_at",
+    "operator_state_source_sha256",
 )
 
 # Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
@@ -385,8 +393,52 @@ def load_map(path):
     return mapping
 
 
+def parsed_timestamp(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value.astimezone(dt.timezone.utc) if value.tzinfo is not None else None
+
+
+def operator_freshness(entry):
+    operator = entry.get("operator") if isinstance(entry, dict) else None
+    operator = operator if isinstance(operator, dict) else {}
+    earliest = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    return (
+        parsed_timestamp(operator.get("linear_updated_at")) or earliest,
+        parsed_timestamp(operator.get("observed_at")) or earliest,
+    )
+
+
+def preserve_newer_operator_pull(path, mapping):
+    if not path.is_file():
+        return
+    current = load_map(path)
+    for ticket_id, current_entry in current["tickets"].items():
+        incoming_entry = mapping["tickets"].get(ticket_id)
+        if not isinstance(incoming_entry, dict) or not isinstance(current_entry, dict):
+            continue
+        if (
+            current_entry.get("issue_id") != incoming_entry.get("issue_id")
+            or current_entry.get("operator_fields_initialized") is not True
+            or incoming_entry.get("operator_fields_initialized") is not True
+        ):
+            continue
+        if operator_freshness(current_entry) <= operator_freshness(incoming_entry):
+            continue
+        for name in TARGETED_OPERATOR_FIELDS:
+            if name in current_entry:
+                incoming_entry[name] = copy.deepcopy(current_entry[name])
+            else:
+                incoming_entry.pop(name, None)
+
+
 def save_map(path, mapping):
     with map_lock(path):
+        preserve_newer_operator_pull(path, mapping)
         apply_operator_clears(path, mapping)
         atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
 
@@ -963,14 +1015,9 @@ def desired_labels(ticket, config):
 
 
 def linear_updated_after(candidate, baseline):
-    if not isinstance(candidate, str) or not isinstance(baseline, str):
-        return False
-    try:
-        return dt.datetime.fromisoformat(candidate.replace("Z", "+00:00")) > (
-            dt.datetime.fromisoformat(baseline.replace("Z", "+00:00"))
-        )
-    except ValueError:
-        return False
+    candidate = parsed_timestamp(candidate)
+    baseline = parsed_timestamp(baseline)
+    return candidate is not None and baseline is not None and candidate > baseline
 
 
 def ingest_operator_fields(ticket, actual, mapping, entry, dry):
@@ -1088,6 +1135,72 @@ def post_comment(key, issue_id, body, dry):
     )
     if result.get("commentCreate", {}).get("success") is not True:
         raise RuntimeError("Linear commentCreate did not succeed")
+
+
+def project_bindings(mapping):
+    initiatives = mapping.get("initiatives")
+    if not isinstance(initiatives, dict):
+        raise RuntimeError("Linear initiative mapping is invalid")
+    result = {}
+    for initiative_id, entry in initiatives.items():
+        if not isinstance(entry, dict):
+            raise RuntimeError("Linear initiative mapping is invalid")
+        result[initiative_id] = entry.get("project_id")
+    return result
+
+
+def sync_ticket_operator(key, factory_dir, map_path, ticket_id, dry=False):
+    if not re.fullmatch(r"T-[0-9]+", ticket_id):
+        raise RuntimeError("exact-ticket sync requires T-NNN")
+    with map_lock(map_path):
+        mapping = load_map(map_path)
+    entry = mapping["tickets"].get(ticket_id)
+    if (
+        not isinstance(entry, dict)
+        or not isinstance(entry.get("issue_id"), str)
+        or not entry["issue_id"]
+        or entry.get("operator_fields_initialized") is not True
+    ):
+        raise RuntimeError(f"{ticket_id}: mapped initialized Linear issue is required")
+    text, source_ref = committed_ticket(factory_dir, ticket_id)
+    if text is None:
+        raise RuntimeError(f"{ticket_id}: committed ticket source is unavailable")
+    ticket = parse_ticket_text(
+        ticket_id, factory_dir / "tickets" / f"{ticket_id}.md", text
+    )
+    if ticket["state"] not in STATES:
+        raise RuntimeError(f"{ticket_id}: unknown state '{ticket['state']}'")
+
+    issue_id = entry["issue_id"]
+    bindings = project_bindings(mapping)
+    working = copy.deepcopy(mapping)
+    working_entry = working["tickets"][ticket_id]
+    actual = fetch_issue(key, issue_id)
+    ingest_fallback_approval(actual, working_entry, dry)
+    ingest_operator_fields(ticket, actual, working, working_entry, dry)
+    if dry:
+        return
+
+    with map_lock(map_path):
+        current = load_map(map_path)
+        current_entry = current["tickets"].get(ticket_id)
+        if (
+            not isinstance(current_entry, dict)
+            or current_entry.get("issue_id") != issue_id
+            or current_entry.get("operator_fields_initialized") is not True
+            or project_bindings(current) != bindings
+        ):
+            raise RuntimeError(f"{ticket_id}: Linear mapping changed during exact-ticket sync")
+        current_text, current_source_ref = committed_ticket(factory_dir, ticket_id)
+        if current_text != text or current_source_ref != source_ref:
+            raise RuntimeError(f"{ticket_id}: committed ticket changed during exact-ticket sync")
+        for name in TARGETED_OPERATOR_FIELDS:
+            if name in working_entry:
+                current_entry[name] = copy.deepcopy(working_entry[name])
+            else:
+                current_entry.pop(name, None)
+        apply_operator_clears(map_path, current)
+        atomic_write(map_path, json.dumps(current, indent=2, sort_keys=True) + "\n")
 
 
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
@@ -1288,7 +1401,10 @@ def main():
     parser.add_argument("--factory-root", default=os.environ.get("FACTORY_ROOT", "."))
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--ticket")
     args = parser.parse_args()
+    if args.ticket and args.setup:
+        parser.error("--ticket cannot be combined with --setup")
 
     factory_dir = Path(args.factory_root).expanduser().resolve() / "factory"
     if not factory_dir.is_dir():
@@ -1298,6 +1414,14 @@ def main():
     key = api_key()
     if not key:
         log(f"no API key (set LINEAR_API_KEY or create {KEY_FILE}) — skipping cycle")
+        return 1 if args.ticket else 0
+
+    if args.ticket:
+        try:
+            sync_ticket_operator(key, factory_dir, map_path, args.ticket, args.dry_run)
+        except Exception as error:
+            log(f"exact-ticket sync error: {error}")
+            return 1
         return 0
 
     try:
