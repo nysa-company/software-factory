@@ -512,6 +512,13 @@ else:
         self.assertIn("--squash", state["merge_argv"])
         self.assertNotIn("--merge", state["merge_argv"])
 
+    def test_approval_refuses_cleanly_when_operator_map_is_absent(self):
+        self.bundle()
+        result = self.attest("approval")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exact Linear", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_bundle_accepts_completed_conservative_cursor_accounting(self):
         manifest = self.product / "factory/runs/reviewer-1.meta"
         manifest.write_text(

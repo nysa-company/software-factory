@@ -347,6 +347,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         key.chmod(0o600)
         for ticket in tickets:
             body = {
+                "completed_role_evidence": [],
                 "factory_release_history": [{
                     "contract_version": "1.8.0",
                     "factory_sha": source_sha,

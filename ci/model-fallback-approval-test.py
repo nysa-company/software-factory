@@ -97,6 +97,21 @@ class ApprovalTests(unittest.TestCase):
         self.path.symlink_to(target)
         self.assertNotEqual(self.command("read", check=False).returncode, 0)
 
+    def test_linear_timestamp_skew_is_narrowly_bounded(self):
+        approval = dict(self.approval)
+        created = dt.datetime.fromisoformat(approval["linear_created_at"])
+        approval["linear_updated_at"] = (
+            created - dt.timedelta(milliseconds=24)
+        ).isoformat()
+        self.write({"tickets": {"T-1": {"model_fallback_approval": approval}}})
+        self.assertEqual(json.loads(self.command("read").stdout)["comment_id"], "comment-1")
+
+        approval["linear_updated_at"] = (
+            created - dt.timedelta(seconds=2)
+        ).isoformat()
+        self.write({"tickets": {"T-1": {"model_fallback_approval": approval}}})
+        self.assertNotEqual(self.command("read", check=False).returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

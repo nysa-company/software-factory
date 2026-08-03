@@ -822,7 +822,7 @@ def operator_resume_role(
         args.workdir,
         "log",
         "--format=%H",
-        f"-S{receipt_directive}",
+        "-G^OPERATOR RESUME(:| RECEIPT:)",
         "--",
         relative,
     ).splitlines()

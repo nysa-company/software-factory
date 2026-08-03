@@ -26,6 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import (  # noqa: E402
     passport_head_lineage, successor_release_lineage,
 )
+from qualification_artifacts import (  # noqa: E402
+    ArtifactError as QualificationArtifactError,
+    ensure_ticket as ensure_qualification_artifacts,
+)
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -2197,6 +2201,16 @@ class Controller:
             ):
                 continue
             terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
+            if (
+                self.qualification
+                and terminal is not None
+                and terminal.get("task_submitted") == "1"
+                and terminal.get("role_exit") == "provider_failed"
+                and terminal.get("route_id", "").startswith("cursor-")
+            ):
+                self.ensure_lease(claim, "provider-fallback-recovery")
+                self.finish_pending_run(claim)
+                continue
             push_failure = (
                 terminal is not None
                 and terminal.get("role_exit") == "role_exit_push_failed"
@@ -2906,6 +2920,13 @@ class Controller:
         failed_checks: list[str], publication: dict[str, Any] | None = None,
     ) -> None:
         self.ensure_execution_cell(claim)
+        if self.qualification:
+            try:
+                ensure_qualification_artifacts(
+                    self.product, self.state, claim["ticket"]
+                )
+            except QualificationArtifactError as error:
+                raise ControllerError(str(error)) from error
         if role == "planner":
             preflight = self.json_call(
                 "preflight", "--ticket", claim["ticket"], "--role", role,

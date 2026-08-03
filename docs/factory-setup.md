@@ -107,6 +107,9 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   Its sealed helper environment binds the canonical live
   Linear map. It validates and reuses canonical authenticated passports
   and provider accounting under their existing lock rather than copying them.
+  It also provisions the exact historical run artifacts named by those
+  passports from its owner-only retained closure; any absent or altered
+  manifest, output, or progress journal stops preparation before a paid role.
   The preparer also fails before admission when the chosen root is too long for Cursor's
   isolated attempt scratch. `--upgrade` is limited to a fresh isolated
   qualification; a takeover binds one frozen candidate.

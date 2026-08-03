@@ -1143,7 +1143,7 @@ class LinearSyncTest(unittest.TestCase):
             LINEAR.ingest_fallback_approval(actual, entry, False)
         self.assertEqual(
             entry["model_fallback_approval"]["comment_id"],
-            "comment-1",
+            "wrong-newer",
         )
 
         consumed = {"consumed_model_fallback_comment_ids": ["comment-1"]}

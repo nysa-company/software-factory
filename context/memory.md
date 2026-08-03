@@ -3314,3 +3314,38 @@ the qualification reducer now share one exact v2 suffix check from that
 approved head to the current authenticated passport, including Factory, base,
 route, and parent bindings. Equality remains valid; historical membership,
 disconnected or ambiguous suffixes, and substituted parents remain refused.
+
+## 2026-08-03 — Decision 242: Operator resume provenance includes role-only edits
+
+Category: Reliability
+
+Receipt-bound repair discovery follows commits that changed either operator
+directive line. A ticket-only role replacement may preserve the exact receipt
+only when its single parent is an authenticated passport head and every
+existing ticket, ancestry, Linear, and uniqueness check still agrees.
+
+## 2026-08-03 — Decision 243: Qualification retains exact passport artifacts
+
+Category: Reliability
+
+Takeover retains only the authenticated completed-role artifact closure named
+by authorized passports and restores it as ignored mode-600 runtime evidence.
+Preparation and final role dispatch both refuse missing, changed, unsafe, or
+ambiguous manifests, outputs, and progress journals before provider spend.
+
+## 2026-08-03 — Decision 244: Fallback boundaries are failed-attempt generations
+
+Category: Reliability
+
+Append-only historical fallbacks may survive release migration, but a later
+different authenticated role/run/manifest may append one new fallback.
+Exact replay stays idempotent; a parked qualification claim reacquires its
+lease and resumes through the existing passport-migrating finish path.
+
+## 2026-08-03 — Decision 245: Missing operator maps refuse cleanly
+
+Category: Reliability
+
+Direct approval attestation treats an absent Linear operator map as no exact
+approval and returns the existing refusal instead of a traceback. It does not
+invent or weaken operator evidence.

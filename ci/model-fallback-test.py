@@ -164,7 +164,8 @@ class FallbackTest(unittest.TestCase):
         self.temp.cleanup()
 
     def command(
-        self, action, *extra, check=True, reason="credits_exhausted", environment=None
+        self, action, *extra, check=True, reason="credits_exhausted", environment=None,
+        failed_run="run-failed-1",
     ):
         result = subprocess.run(
             [
@@ -173,7 +174,7 @@ class FallbackTest(unittest.TestCase):
                 "--factory-root", str(self.product),
                 "--project", "test",
                 "--ticket", "T-1",
-                "--failed-run", "run-failed-1",
+                "--failed-run", failed_run,
                 "--reason", reason,
                 "--readiness", str(self.readiness),
                 "--remote", str(self.remote),
@@ -288,6 +289,90 @@ class FallbackTest(unittest.TestCase):
         recovered = self.command("qualification-apply")
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
+
+    def test_qualification_fallback_is_scoped_to_failure_generation(self):
+        first = self.command("qualification-apply")
+        route = self.repo / "factory/route-plans/T-1.json"
+        journal = json.loads(route.read_text())
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        next_kit = "f" * 40
+        migrated = MANAGER.migrate_v2_journal(
+            journal,
+            first["commit_sha"],
+            next_kit,
+            "2026-07-18T12:02:00Z",
+            catalog,
+            routes,
+            profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(migrated) + "\n")
+        ticket = self.repo / "factory/tickets/T-1.md"
+        ticket.write_text(ticket.read_text().replace("a" * 40, next_kit))
+        qualification = self.repo / "factory/QUALIFICATION.json"
+        value = json.loads(qualification.read_text())
+        value.update(factory_sha=next_kit, generation=2)
+        qualification.write_text(json.dumps(value))
+        git(self.repo, "add", "factory/route-plans/T-1.json", "factory/tickets/T-1.md", "factory/QUALIFICATION.json")
+        git(self.repo, "commit", "-m", "migrate stale fallback generation")
+        git(self.repo, "push", "origin", "ticket/T-1")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", git(self.repo, "rev-parse", "HEAD"))
+        head = git(self.repo, "rev-parse", "HEAD")
+
+        active = MANAGER.active_resolution(migrated)
+        failed = active["selections"]["reviewer"]
+        readiness = json.loads(self.readiness.read_text())
+        readiness[failed["route_id"]].update({
+            "reason": "provider_unavailable",
+            "state": "UNAVAILABLE",
+        })
+        self.readiness.write_text(ROUTER.canonical_json(readiness) + "\n")
+        old = self.product / "factory/runs/run-failed-1.meta"
+        values = dict(line.split("=", 1) for line in old.read_text().splitlines())
+        values.update({
+            "adapter": failed["adapter"],
+            "adapter_version": readiness[failed["route_id"]]["adapter_version"],
+            "kit_sha": next_kit,
+            "model_id": failed["selection_id"],
+            "policy_hash": active["policy_hash"],
+            "provider_family": failed["provider_family"],
+            "role": "reviewer",
+            "role_head_before": head,
+            "role_remote_before": head,
+            "route_id": failed["route_id"],
+            "run_id": "run-reviewer-2",
+        })
+        (old.parent / "run-reviewer-2.meta").write_text(
+            "".join(f"{key}={item}\n" for key, item in sorted(values.items()))
+        )
+        second = self.command(
+            "qualification-apply",
+            failed_run="run-reviewer-2",
+            reason="provider_unavailable",
+        )
+        final = json.loads(route.read_text())
+        fallbacks = [
+            item for item in final["revisions"]
+            if item["body"].get("kind") == "fallback"
+        ]
+        self.assertEqual(len(fallbacks), 2)
+        self.assertEqual(
+            fallbacks[-1]["body"]["approval_receipt"]["failed_run_id"],
+            "run-reviewer-2",
+        )
+        replay = self.command(
+            "qualification-apply",
+            failed_run="run-reviewer-2",
+            reason="provider_unavailable",
+        )
+        self.assertTrue(replay["recovered"])
+        self.assertEqual(replay["commit_sha"], second["commit_sha"])
+        self.assertEqual(
+            len([
+                item for item in json.loads(route.read_text())["revisions"]
+                if item["body"].get("kind") == "fallback"
+            ]),
+            2,
+        )
 
     def test_qualification_attempt_limit_is_candidate_scoped(self):
         current = self.product / "factory/runs/run-failed-1.meta"

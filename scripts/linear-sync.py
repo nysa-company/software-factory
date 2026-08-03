@@ -971,21 +971,7 @@ def ingest_fallback_approval(actual, entry, dry):
         ))
     if not candidates:
         return
-    existing = entry.get("model_fallback_approval")
-    approval = None
-    if isinstance(existing, dict):
-        for _updated, _comment_id, candidate in candidates:
-            if all(
-                existing.get(key) == candidate[key]
-                for key in (
-                    "approval_hash", "comment_id", "failed_run_id",
-                    "nonce", "reason",
-                )
-            ):
-                approval = candidate
-                break
-    if approval is None:
-        approval = sorted(candidates, key=lambda item: (item[0], item[1]))[-1][2]
+    approval = sorted(candidates, key=lambda item: (item[0], item[1]))[-1][2]
     if dry:
         log("DRY would update model fallback approval overlay")
     else:

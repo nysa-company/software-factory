@@ -1957,7 +1957,8 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     attestation_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     approval_path = attestation_path.with_name("approval.json")
     bundle_value = json.loads(attestation_path.read_text())
-    mapping = json.loads(operator_map_path(product).read_text())
+    map_path = operator_map_path(product)
+    mapping = json.loads(map_path.read_text()) if map_path.is_file() else {}
     operator = mapping.get("tickets", {}).get(args.ticket, {}).get("operator") or {}
     existing_approval = json.loads(approval_path.read_text()) if approval_path.exists() else None
     exact_overlay = (

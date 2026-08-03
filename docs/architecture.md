@@ -423,6 +423,13 @@ a new ticket that has no passport. This prevents release migration or
 qualification takeover from replaying an already preserved Planner,
 Spec-linter, or other successful role merely because its historical manifest
 is no longer present in the current checkout.
+Takeover preparation computes that authenticated completed-role closure from
+each authorized passport and retains only its exact mode-600 manifests,
+outputs, and progress journals under the owner-only controller root. It
+restores those bytes into the ignored qualification run directory before
+admission, and the controller repeats the same digest check immediately before
+every role dispatch. Missing, changed, unsafe, or ambiguous evidence blocks
+before a provider starts.
 A sealed qualification scopes provider product- and ticket-budget admission to
 the exact project and frozen candidate SHA. Different qualification roots for
 that same candidate share the scope, while predecessor-candidate charges stay
@@ -616,7 +623,9 @@ receipt, zero or multiple actual in-window authorizations, more than one
 visible directive, merge commits, malformed additions or replacements,
 multi-path changes, or unrelated head drift fail closed; neither a historical
 role directive nor a stale Linear resume state can authorize a later provider
-call. During idempotent block recovery, that one validated commit may be the
+call. Candidate discovery follows commits that changed either directive line,
+so an otherwise exact ticket-only role correction may preserve the receipt.
+During idempotent block recovery, that one validated commit may be the
 direct child of the authenticated passport head: repair validation stays bound
 to the passport head, then the ordinary passport migration authenticates the
 directive commit before resume. The state machine persists an HMAC-bound
@@ -727,6 +736,13 @@ exact fallback revision and a suffix containing only release migrations, and
 finds the unique ancestor commit carrying the fallback revision trailer. The
 successor reopens that terminal receipt as running so the ordinary finish path
 exports its charge exactly once before resuming the role.
+A fallback is one per exact authenticated failed-attempt generation, not one
+per ticket lifetime. A later release migration may therefore retain the old
+append-only fallback while a different role/run/manifest appends one fresh
+revision; replay of either exact failure remains idempotent. If an exact
+fallback was applied after the controller parked the claim, reconciliation
+first reacquires its ticket lease and reuses the ordinary finish path to
+migrate the passport and clear only the failed receipt fields.
 An exit 143 before task submission reopens only that interrupted role, and only
 after the current signed passport, clean cell, branch, and remote head agree
 exactly; every submitted or differently terminated interruption stays blocked.
