@@ -915,7 +915,13 @@ passport helper requires the consumed `RUN builder` receipt, unique run,
 owner-only output and progress journal, exactly one final progress success,
 exact exported charge, clean current cell, current recovery Factory, and either
 the direct receipt passport or one unique contiguous authenticated migration
-suffix. The controller additionally requires passport, cell, and remote head
+suffix. Only the production `cursor-openai` and `cursor-anthropic` adapter IDs
+are eligible; legacy and non-Cursor adapters fail closed. When the failed run's
+authenticated export advanced from its receipt input to the successful Builder
+output before release migration, correction accepts only one all-v2 successor
+suffix whose source is a strict descendant of that input and whose last source
+passport binds the current passport parent. Generic receipt lineage remains
+unchanged. The controller additionally requires passport, cell, and remote head
 convergence before and after the HMAC-signed correction, then clears the claim
 through its ordinary durable update. Missing artifacts, stale Factory state,
 tamper, ambiguity, any other terminal shape, or repeat evidence fails closed.

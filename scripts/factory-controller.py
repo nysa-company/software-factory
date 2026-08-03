@@ -1958,7 +1958,9 @@ class Controller:
                 and terminal.get("exit_status") == "128"
                 and terminal.get("role_exit") == ""
                 and terminal.get("terminal_reason_code", "") == ""
-                and terminal.get("adapter") == "cursor"
+                and terminal.get("adapter") in {
+                    "cursor-anthropic", "cursor-openai",
+                }
                 and terminal.get("contract_version") == "1.8.0"
                 and terminal.get("role_branch_before") == claim.get("branch")
                 and terminal.get("cost_basis") == "conservative_reservation"

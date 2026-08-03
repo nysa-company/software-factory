@@ -3651,13 +3651,15 @@ class FactoryControllerTest(unittest.TestCase):
         if predecessor == self.release.name:
             predecessor = "f" * 40
 
-        def write_manifest(role_exit: str = "") -> None:
+        def write_manifest(
+            role_exit: str = "", adapter: str = "cursor-openai"
+        ) -> None:
             manifest.write_text(
                 f"run_id={run_id}\n"
                 "phase=abandoned\n"
                 "ticket=T-110\n"
                 "role=builder\n"
-                "adapter=cursor\n"
+                f"adapter={adapter}\n"
                 "provider_attempt_id=attempt-1\n"
                 "accounting_state=abandoned_conservative\n"
                 "reserved_usd=10.00\n"
@@ -3699,6 +3701,11 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(corrections, [])
 
+        write_manifest(adapter="codex")
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(corrections, [])
+
         write_manifest()
         controller.role_active = lambda _claim: True
         controller.recover_repaired_failures([claim])
@@ -3727,6 +3734,13 @@ class FactoryControllerTest(unittest.TestCase):
                 ),
             ],
         )
+
+        claim.update(receipt=receipt, role="builder", status="blocked")
+        events.clear()
+        write_manifest(adapter="cursor-anthropic")
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(corrections, [run_id, run_id])
 
     def test_history_rewrite_retries_only_after_release_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)

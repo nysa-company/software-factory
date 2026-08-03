@@ -148,7 +148,8 @@ class TicketPassportTest(unittest.TestCase):
         )
 
     def converged_success_terminal(
-        self, run_id: str, receipt: str, head_before: str
+        self, run_id: str, receipt: str, head_before: str,
+        adapter: str = "cursor-openai",
     ) -> None:
         output_path = self.product / f"factory/runs/{run_id}.out"
         output_digest = subprocess.run(
@@ -199,7 +200,7 @@ class TicketPassportTest(unittest.TestCase):
             "cost_basis=conservative_reservation\n"
             "ticket=T-110\n"
             "role=builder\n"
-            "adapter=cursor\n"
+            f"adapter={adapter}\n"
             "provider_attempt_id=attempt-1\n"
             "role_exit=\n"
             "role_branch_before=ticket/T-110\n"
@@ -495,7 +496,6 @@ class TicketPassportTest(unittest.TestCase):
         self.state_args.receipt = builder["receipt_sha256"]
         STATE.verify(self.state_args, consume=True)
         passport_path = self.state_dir / "passports/T-110.json"
-        receipt_bound_passport = passport_path.read_bytes()
         input_head = run("git", "rev-parse", "HEAD", cwd=self.product)
         (self.product / "builder-change").write_text("done\n", encoding="utf-8")
         run("git", "add", "builder-change", cwd=self.product)
@@ -505,24 +505,50 @@ class TicketPassportTest(unittest.TestCase):
             run_id, builder["receipt_sha256"], input_head
         )
         self.passport_args.receipt = builder["receipt_sha256"]
-        PASSPORT.export(self.passport_args, secret)
+        failed_output = PASSPORT.export(self.passport_args, secret)
         self.passport_args.action = "correct-converged-success"
         self.passport_args.factory_sha = "c" * 40
         self.passport_args.run_id = run_id
         with self.assertRaisesRegex(PASSPORT.PassportError, "authenticated lineage"):
             PASSPORT.correct_converged_success(self.passport_args, secret)
-        passport_path.write_bytes(receipt_bound_passport)
-        os.chmod(passport_path, 0o600)
+        self.assertEqual(
+            failed_output["head_sha"],
+            run("git", "rev-parse", "HEAD", cwd=self.product),
+        )
 
         self.passport_args.factory_sha = "b" * 40
         PASSPORT.migrate(self.passport_args, secret)
         self.passport_args.factory_sha = "c" * 40
         twice_migrated = PASSPORT.migrate(self.passport_args, secret)
         self.assertEqual(len(twice_migrated["migration_history"]), 2)
-        failed = PASSPORT.export(self.passport_args, secret)
+        failed = twice_migrated
         self.assertFalse(any(
             item["run_id"] == run_id
             for item in failed["completed_role_evidence"]
+        ))
+        consumed = PASSPORT.receipt(
+            self.state_dir, "T-110", builder["receipt_sha256"]
+        )
+        current = PASSPORT.identity(self.passport_args)
+        self.assertFalse(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, failed, consumed, current
+        ))
+        self.assertTrue(PASSPORT.converged_success_migration_lineage(
+            self.passport_args, failed, consumed, current
+        ))
+        wrong_parent = json.loads(json.dumps(failed))
+        wrong_parent["migration_history"][-1][
+            "from_passport_file_sha256"
+        ] = "0" * 64
+        self.assertFalse(PASSPORT.converged_success_migration_lineage(
+            self.passport_args, wrong_parent, consumed, current
+        ))
+        wrong_route = json.loads(json.dumps(failed))
+        wrong_route["migration_history"][0][
+            "from_route_plan_sha256"
+        ] = "0" * 64
+        self.assertFalse(PASSPORT.converged_success_migration_lineage(
+            self.passport_args, wrong_route, consumed, current
         ))
 
         ambiguous = {
@@ -548,6 +574,43 @@ class TicketPassportTest(unittest.TestCase):
         with self.assertRaisesRegex(PASSPORT.PassportError, "authenticated lineage"):
             PASSPORT.correct_converged_success(self.passport_args, secret)
         PASSPORT.write_atomic(self.state_dir / "passports/T-110.json", failed)
+
+        manifest = self.product / f"factory/runs/{run_id}.meta"
+        terminal = manifest.read_bytes()
+        failed_raw = passport_path.read_bytes()
+        manifest.write_bytes(terminal.replace(
+            b"adapter=cursor-openai", b"adapter=cursor-anthropic"
+        ))
+        anthropic = json.loads(failed_raw)
+        anthropic.pop("authentication_sha256")
+        anthropic.pop("passport_sha256")
+        next(
+            item for item in anthropic["charge_records"]
+            if item["run_id"] == run_id
+        )["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        PASSPORT.write_atomic(
+            passport_path, PASSPORT.authenticate(anthropic, secret)
+        )
+        anthropic_corrected = PASSPORT.correct_converged_success(
+            self.passport_args, secret
+        )
+        self.assertEqual(
+            sum(
+                item["run_id"] == run_id
+                for item in anthropic_corrected["completed_role_evidence"]
+            ),
+            1,
+        )
+        passport_path.write_bytes(failed_raw)
+        os.chmod(passport_path, 0o600)
+        manifest.write_bytes(terminal)
+
+        manifest.write_bytes(terminal.replace(
+            b"adapter=cursor-openai", b"adapter=codex"
+        ))
+        with self.assertRaisesRegex(PASSPORT.PassportError, "typed converged"):
+            PASSPORT.correct_converged_success(self.passport_args, secret)
+        manifest.write_bytes(terminal)
 
         corrected = PASSPORT.correct_converged_success(
             self.passport_args, secret
@@ -587,7 +650,7 @@ class TicketPassportTest(unittest.TestCase):
         )
 
         self.passport_args.run_id = "wrong-run"
-        with self.assertRaisesRegex(PASSPORT.PassportError, "ambiguous"):
+        with self.assertRaisesRegex(PASSPORT.PassportError, "authenticated lineage"):
             PASSPORT.correct_converged_success(self.passport_args, secret)
         self.passport_args.run_id = run_id
         progress = self.product / f"factory/runs/{run_id}.progress.jsonl"
