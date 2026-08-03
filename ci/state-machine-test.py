@@ -871,10 +871,11 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(result["repair_role"], "planner")
         migrate.assert_called_once_with(self.args)
 
-    def test_materialized_contract_block_survives_lease_rotation(self) -> None:
+    def test_fix_contract_block_survives_lease_rotation_and_resume(self) -> None:
         original_lease = "d" * 64
         self.args.lease = original_lease
-        issued = STATE.issue(self.args, "RUN planner")
+        self.args.role = "builder"
+        issued = STATE.issue(self.args, "FIX builder")
         self.args.receipt = issued["receipt_sha256"]
         STATE.verify(self.args, consume=True)
         manifest = self.product / "factory/runs/blocked-after-restart.meta"
@@ -885,7 +886,7 @@ class StateMachineTest(unittest.TestCase):
             "go_issued=1\n"
             "task_submitted=1\n"
             "ticket=T-110\n"
-            "role=planner\n"
+            "role=builder\n"
             f"contract_version={self.args.contract_version}\n"
             f"kit_sha={self.args.factory_sha}\n"
             "exit_status=12\n"
@@ -898,7 +899,7 @@ class StateMachineTest(unittest.TestCase):
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
             "# T-110\n\nState: Blocked-Escalated\n"
-            "Resume-State: Planning\n",
+            "Resume-State: Review\n",
             encoding="utf-8",
         )
         run("git", "add", str(ticket), cwd=self.product)
@@ -909,18 +910,33 @@ class StateMachineTest(unittest.TestCase):
         os.chmod(self.state_dir / "passport.key", 0o600)
         passports = self.state_dir / "passports"
         passports.mkdir(mode=0o700)
+        def write_passport(value: dict) -> dict:
+            unsigned = {
+                key: item for key, item in value.items()
+                if key not in {"authentication_sha256", "passport_sha256"}
+            }
+            signed = dict(unsigned)
+            signed["authentication_sha256"] = hmac.new(
+                secret, STATE.canonical(unsigned), hashlib.sha256
+            ).hexdigest()
+            signed["passport_sha256"] = hashlib.sha256(
+                STATE.canonical(signed)
+            ).hexdigest()
+            STATE.write_atomic(passports / "T-110.json", signed)
+            return signed
+
         body = {
             "branch": "ticket/T-110",
             "charge_records": [{
                 "contract_version": self.args.contract_version,
                 "factory_sha": self.args.factory_sha,
                 "head_before": issued["head_sha"],
-                "role": "planner",
+                "role": "builder",
                 "transition_receipt_sha256": self.args.receipt,
             }],
             "completed_role_evidence": [],
             "contract_version": self.args.contract_version,
-            "current_stage": "RUN planner",
+            "current_stage": "FIX builder",
             "current_state": "Blocked-Escalated",
             "factory_sha": self.args.factory_sha,
             "head_sha": blocked_head,
@@ -929,14 +945,7 @@ class StateMachineTest(unittest.TestCase):
             "ticket": "T-110",
             "transition_receipt_sha256": self.args.receipt,
         }
-        passport = dict(body)
-        passport["authentication_sha256"] = hmac.new(
-            secret, STATE.canonical(body), hashlib.sha256
-        ).hexdigest()
-        passport["passport_sha256"] = hashlib.sha256(
-            STATE.canonical(passport)
-        ).hexdigest()
-        STATE.write_atomic(passports / "T-110.json", passport)
+        passport = write_passport(body)
 
         self.args.action = "block"
         self.args.lease = "e" * 64
@@ -954,21 +963,36 @@ class StateMachineTest(unittest.TestCase):
             encoding="utf-8",
         )
         os.chmod(lease_path, 0o600)
-        self.assertEqual(STATE.contract_blocked_receipt(self.args), "planner")
+        self.assertEqual(STATE.contract_blocked_receipt(self.args), "builder")
 
-        passport["current_state"] = "Planning"
-        unsigned = {
-            key: value for key, value in passport.items()
-            if key not in {"authentication_sha256", "passport_sha256"}
-        }
-        passport["authentication_sha256"] = hmac.new(
-            secret, STATE.canonical(unsigned), hashlib.sha256
-        ).hexdigest()
-        passport.pop("passport_sha256")
-        passport["passport_sha256"] = hashlib.sha256(
-            STATE.canonical(passport)
-        ).hexdigest()
-        STATE.write_atomic(passports / "T-110.json", passport)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "authorize exact builder resume", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "State: Blocked-Escalated", "State: Review"
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "materialize operator resume", cwd=self.product)
+        self.assertEqual(STATE.contract_blocked_receipt(self.args), "builder")
+
+        passport["current_stage"] = "RUN builder"
+        passport = write_passport(passport)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract blocker receipt is invalid"
+        ):
+            STATE.contract_blocked_receipt(self.args)
+
+        passport["current_stage"] = "FIX builder"
+        passport["current_state"] = "Review"
+        write_passport(passport)
         with self.assertRaisesRegex(
             STATE.StateError, "contract blocker receipt is invalid"
         ):

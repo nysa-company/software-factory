@@ -591,7 +591,11 @@ expired exact-ticket lease after the block was materialized. Replaying that
 already-completed block is idempotent only when the authenticated passport
 binds the same receipt, charge, role stage, blocked state, resume target, and
 receipt-to-passport-to-current-head ancestry; otherwise the rotated lease
-cannot authorize the historical transition. An operator appends the first
+cannot authorize the historical transition. A consumed `FIX <role>` blocker
+may retain a coarse resume state later than that role only when the exact
+receipt and authenticated blocked passport name the same FIX stage. Block
+recovery and resume validate that evidence directly instead of requiring the
+repair record that resume has not created yet. An operator appends the first
 exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path:
 `OPERATOR RESUME: <role>` and
