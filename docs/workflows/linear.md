@@ -176,3 +176,12 @@ the complete current 15-minute comment window and fail closed if pagination or
 a Linear mutation is incomplete. Comparison normalizes only Linear's
 semantically inert three-space soft wraps inside list paragraphs; nested list
 items and every Git-authored contract byte remain distinct and authoritative.
+
+When one known operator action must be ingested before a broad cycle finishes,
+run `scripts/linear-sync.py --factory-root <product-repo> --ticket T-NNN`.
+This mode requires an existing initialized ticket mapping, reads only that
+issue and its bounded comment window, and atomically merges only operator-owned
+fields. It may overlap a full cycle without losing the newer observation and
+never updates the full-board `_sync` health record. Unmapped tickets, changed
+ticket sources or mappings, incomplete pagination, and network failures refuse
+without a partial overlay.

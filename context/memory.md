@@ -4,6 +4,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Linear supports a fail-closed exact-ticket operator pull for an already
+  initialized mapping. It reads only that issue, merges only operator-owned
+  fields under the short map lock, survives an overlapping stale full-board
+  save, and never advances full-board sync health.
 - Linear description comparison canonicalizes the observed serializer-only
   ordered-list indentation, continuation, renumbering, inline-code, link, and
   fence-boundary forms. Nested-list structure, fenced content, and meaningful
@@ -3231,3 +3235,14 @@ authenticated blocked passport name the same exact FIX stage. The state
 machine no longer circularly requires the signed repair record before the
 resume operation that creates it; all existing receipt, charge, terminal,
 passport, ancestry, directive, state, and current-lease checks remain in force.
+
+## 2026-08-03 — Decision 236: Exact-ticket Linear pulls bypass broad-board latency
+
+Category: Performance
+
+An already mapped and initialized ticket may ingest its Linear operator fields
+through one exact-issue read without scanning projects or the shared board.
+The targeted pull merges only operator-owned entry fields, preserves newer
+observations across stale concurrent full-cycle saves, and does not claim
+full-board health. Unmapped, changed, incomplete, timed-out, or rate-limited
+pulls leave the overlay unchanged.

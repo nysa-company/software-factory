@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dependency-free regression tests for scripts/linear-sync.py."""
 
+import copy
 import importlib.util
 import fcntl
 import json
@@ -846,6 +847,101 @@ class LinearSyncTest(unittest.TestCase):
         with LINEAR.sync_lock(self.factory):
             LINEAR.save_map(self.map_path, self.mapping)
         self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_exact_ticket_sync_ingests_mapped_operator_without_full_board_reads(self):
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        issue["updatedAt"] = "2026-08-01T00:00:01Z"
+        before_health = json.loads(self.map_path.read_text())["_sync"]
+        self.fake.calls.clear()
+
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.sync_ticket_operator(
+                "key", self.factory, self.map_path, "T-001"
+            )
+
+        saved = json.loads(self.map_path.read_text())
+        self.assertEqual(saved["tickets"]["T-001"]["operator"]["state"], "Ready")
+        self.assertEqual(saved["_sync"], before_health)
+        self.assertEqual(
+            sum("issue(id:" in query for query, _variables in self.fake.calls), 1
+        )
+        self.assertFalse(any(
+            "issues(first:" in query
+            or "project(id:" in query
+            or "viewer {" in query
+            for query, _variables in self.fake.calls
+        ))
+
+    def test_exact_ticket_sync_refuses_unmapped_ticket_without_network_or_write(self):
+        self.reconcile()
+        mapping = LINEAR.load_map(self.map_path)
+        mapping["tickets"].clear()
+        LINEAR.save_map(self.map_path, mapping)
+        before = self.map_path.read_bytes()
+        self.fake.calls.clear()
+
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            self.assertRaisesRegex(RuntimeError, "mapped initialized Linear issue"),
+        ):
+            LINEAR.sync_ticket_operator(
+                "key", self.factory, self.map_path, "T-001"
+            )
+
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.map_path.read_bytes(), before)
+
+    def test_exact_ticket_sync_survives_overlapping_stale_full_cycle_save(self):
+        self.reconcile()
+        stale = LINEAR.load_map(self.map_path)
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        issue["updatedAt"] = "2026-08-01T00:00:01Z"
+
+        with LINEAR.sync_lock(self.factory):
+            with patch.object(LINEAR, "gql", self.fake):
+                LINEAR.sync_ticket_operator(
+                    "key", self.factory, self.map_path, "T-001"
+                )
+            LINEAR.save_map(self.map_path, stale)
+
+        saved = json.loads(self.map_path.read_text())
+        self.assertEqual(saved["tickets"]["T-001"]["operator"]["state"], "Ready")
+
+    def test_stale_save_never_copies_operator_overlay_across_issue_remap(self):
+        self.reconcile()
+        stale = LINEAR.load_map(self.map_path)
+        remapped = copy.deepcopy(stale)
+        entry = remapped["tickets"]["T-001"]
+        entry["issue_id"] = "issue-remapped"
+        entry["operator"] = {
+            "priority": "none",
+            "state": "Ready",
+            "state_base": "backlog",
+            "linear_updated_at": "2026-08-01T00:00:02Z",
+            "observed_at": "2026-08-01T00:00:02+00:00",
+        }
+        LINEAR.save_map(self.map_path, remapped)
+        LINEAR.save_map(self.map_path, stale)
+
+        saved = json.loads(self.map_path.read_text())["tickets"]["T-001"]
+        self.assertNotEqual(saved.get("operator", {}).get("state"), "Ready")
+
+    def test_exact_ticket_timeout_and_rate_limit_leave_no_partial_overlay(self):
+        self.reconcile()
+        before = self.map_path.read_bytes()
+        for error in (TimeoutError("timed out"), RuntimeError("Linear HTTP 429")):
+            with self.subTest(error=str(error)):
+                with (
+                    patch.object(LINEAR, "fetch_issue", side_effect=error),
+                    self.assertRaises(type(error)),
+                ):
+                    LINEAR.sync_ticket_operator(
+                        "key", self.factory, self.map_path, "T-001"
+                    )
+                self.assertEqual(self.map_path.read_bytes(), before)
 
     def test_setup_creates_all_states_and_labels(self):
         mapping = LINEAR.load_map(self.map_path)
