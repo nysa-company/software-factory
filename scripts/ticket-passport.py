@@ -1172,7 +1172,13 @@ def migrated_receipt_lineage(
 
     if ancestor(old_head, current["head_sha"]):
         return standard_lineage
-    if not all(valid_v2_migration(item) for item in suffix):
+    if (
+        not all(valid_v2_migration(item) for item in suffix)
+        or suffix[-1]["from_passport_file_sha256"]
+        != previous.get("parent_file_sha256")
+        or suffix[-1]["from_passport_sha256"]
+        != previous.get("parent_digest")
+    ):
         return False
     rewrites = []
     for edge in suffix:

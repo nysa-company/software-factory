@@ -591,6 +591,10 @@ def contract_block_head_in_lineage(
         != passport.get("protected_base_sha")
         or suffix[-1]["to_route_plan_sha256"]
         != passport.get("route_plan_sha256")
+        or suffix[-1]["from_passport_file_sha256"]
+        != passport.get("parent_file_sha256")
+        or suffix[-1]["from_passport_sha256"]
+        != passport.get("parent_digest")
     ):
         return False
     rewrites = []
