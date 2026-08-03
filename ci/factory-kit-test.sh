@@ -441,6 +441,7 @@ cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
 cp "$ROOT/scripts/lib/certification_plan.py" "$KIT_REPO/scripts/lib/"
 cp "$ROOT/integrations/hermes/bin/factory-launch" \
   "$KIT_REPO/integrations/hermes/bin/factory-launch"
+cp "$ROOT/integrations/hermes/contract.json" "$KIT_REPO/integrations/hermes/contract.json"
 chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/scripts/model-routing/catalog-v1.json" \
   "$ROOT/scripts/model-routing/profiles-v1.json" \
