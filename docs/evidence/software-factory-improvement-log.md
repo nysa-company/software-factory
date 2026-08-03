@@ -4861,6 +4861,29 @@ symlinks in `~/.factory/bin`; it never changes a system-wide Homebrew link.
 Validation: a focused regression proves the plan-matching owner pin wins over a
 coexisting newer system Node and that source mismatch preserves prior pins.
 
+## FI-20260803-167 — FIX blocker lease recovery required its future repair record
+
+Status: Focused state-machine regression green; protected CI pending
+Priority: P0 (#228)
+Area: contract-blocker restart recovery
+Owner: Factory
+First seen: T-100 after a Builder contract block in sealed qualification
+Impact: T-100 retained its consumed `FIX builder` receipt, exact terminal
+manifest and charge, authenticated blocked passport, current branch ancestry,
+operator directive, and newly acquired exact-ticket lease. Recovery still
+refused `contract blocker receipt is invalid` before any provider call.
+Root cause: the receipt and passport correctly retained the later coarse
+`Resume-State: Review`, but validation called `contract_repair_stage()` before
+`resume_transition()` could create that signed repair record.
+Smallest repair: validate a later coarse resume state directly when the exact
+consumed receipt and authenticated blocked passport both name `FIX <role>`.
+Every receipt, role, stage, charge, terminal, state, ancestry, directive, and
+current-lease check remains fail-closed.
+Validation: the focused regression reproduces the FIX Builder/Review boundary,
+rotates the lease, commits the exact receipt directive, and proves stage and
+passport-state mismatches still fail. Existing controller, Linear-baseline,
+lease, receipt, and repair tests retain the remaining negative matrix.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

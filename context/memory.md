@@ -108,6 +108,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   retained repair at that authenticated boundary, and then performs the
   ordinary passport migration before resume. Any other descendant remains
   closed.
+- A consumed `FIX <role>` contract blocker may retain its later coarse
+  `Resume-State` before the signed repair record exists only when the exact
+  receipt and authenticated blocked passport agree on that FIX stage. Lease
+  recovery, block replay, and resume share this evidence; mismatched stages,
+  passport state, receipts, roles, or leases remain closed.
 - Planner, Spec-linter, and Test-author independently evaluate exact generated
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
@@ -3215,3 +3220,14 @@ runs. Each isolated provider home restores the trusted task PATH after macOS
 login initialization and refuses the requested product command when either
 runtime differs; the provider CLI executable remains outside that product
 runtime check.
+
+## 2026-08-03 — Decision 235: FIX blockers resume from receipt-bound stage
+
+Category: Reliability
+
+A rotated lease may revalidate a materialized `FIX <role>` blocker whose
+coarse resume state is later than the role only when the consumed receipt and
+authenticated blocked passport name the same exact FIX stage. The state
+machine no longer circularly requires the signed repair record before the
+resume operation that creates it; all existing receipt, charge, terminal,
+passport, ancestry, directive, state, and current-lease checks remain in force.

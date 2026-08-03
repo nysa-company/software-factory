@@ -635,16 +635,21 @@ def materialized_contract_block(
         or not SHA.fullmatch(receipt_head)
         or not isinstance(charges, list)
         or not isinstance(completed, list)
-        or current_state(args.workdir, args.ticket) != "Blocked-Escalated"
     ):
         return False
     try:
-        contract_block_resume_state(
+        resume_state = contract_block_resume_state(
             args,
             role,
             ticket_field(args.workdir, args.ticket, "Resume-State"),
+            receipt,
+            passport,
         )
     except StateError:
+        return False
+    if current_state(args.workdir, args.ticket) not in {
+        "Blocked-Escalated", resume_state,
+    }:
         return False
     matches = [
         item for item in charges
@@ -2947,13 +2952,41 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def contract_block_resume_state(
-    args: argparse.Namespace, role: str, state: str
+    args: argparse.Namespace,
+    role: str,
+    state: str,
+    receipt: dict[str, Any] | None = None,
+    passport: dict[str, Any] | None = None,
 ) -> str:
     target = TARGET_STATE[role]
     if state == target:
         return target
-    repair_stage, repair_override = contract_repair_stage(args)
     order = {"Planning": 1, "Building": 2, "Review": 3}
+    if receipt or passport:
+        receipt = receipt or {}
+        passport = passport or {}
+        fix_stage = f"FIX {role}"
+        if all((
+            receipt.get("receipt_sha256") == args.receipt,
+            receipt.get("consumed") is True,
+            receipt.get("ticket") == args.ticket,
+            receipt.get("role") == role,
+            receipt.get("stage") == fix_stage,
+            passport.get("ticket") == args.ticket,
+            passport.get("branch") == receipt.get("branch"),
+            passport.get("factory_sha") == receipt.get("factory_sha"),
+            passport.get("contract_version") == receipt.get("contract_version"),
+            passport.get("project") == receipt.get("project"),
+            passport.get("current_stage") == fix_stage,
+            passport.get("current_state") in {"Blocked-Escalated", state},
+            passport.get("transition_receipt_sha256") == args.receipt,
+            state in order,
+            order.get(state, 0) > order[target],
+        )):
+            return state
+        if receipt.get("stage") == fix_stage or passport.get("current_stage") == fix_stage:
+            raise StateError("contract blocker role state drifted")
+    repair_stage, repair_override = contract_repair_stage(args)
     if (
         repair_override
         and repair_stage == f"FIX {role}"
@@ -2966,9 +2999,26 @@ def contract_block_resume_state(
 
 def block_transition(args: argparse.Namespace) -> dict[str, Any]:
     role = contract_blocked_receipt(args)
+    receipt_path = args.state_dir / f"{args.ticket}.json"
+    receipt = (
+        safe_receipt(receipt_path)
+        if receipt_path.exists() or receipt_path.is_symlink()
+        else {}
+    )
+    passport = (
+        authenticated_passport(args)[0]
+        if receipt.get("stage") == f"FIX {role}"
+        else {}
+    )
     state = current_state(args.workdir, args.ticket)
     if state != "Blocked-Escalated":
-        resume_state = contract_block_resume_state(args, role, state)
+        resume_state = contract_block_resume_state(
+            args,
+            role,
+            state,
+            receipt,
+            passport,
+        )
         if state == TARGET_STATE[role]:
             run_helper(
                 args, "ticket-state.sh", "--ticket", args.ticket,
@@ -2981,7 +3031,13 @@ def block_transition(args: argparse.Namespace) -> dict[str, Any]:
         transition(args, "Blocked-Escalated")
     else:
         resume_state = ticket_field(args.workdir, args.ticket, "Resume-State")
-        contract_block_resume_state(args, role, resume_state)
+        contract_block_resume_state(
+            args,
+            role,
+            resume_state,
+            receipt,
+            passport,
+        )
     if (
         current_state(args.workdir, args.ticket) != "Blocked-Escalated"
         or ticket_field(args.workdir, args.ticket, "Resume-State")
@@ -3001,10 +3057,20 @@ def block_transition(args: argparse.Namespace) -> dict[str, Any]:
 
 def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
     role = contract_blocked_receipt(args)
+    receipt_path = args.state_dir / f"{args.ticket}.json"
+    receipt = (
+        safe_receipt(receipt_path)
+        if receipt_path.exists() or receipt_path.is_symlink()
+        else {}
+    )
     passport, secret = authenticated_passport(args)
     repair_role = operator_resume_role(args, passport, role)
     target = contract_block_resume_state(
-        args, role, ticket_field(args.workdir, args.ticket, "Resume-State")
+        args,
+        role,
+        ticket_field(args.workdir, args.ticket, "Resume-State"),
+        receipt,
+        passport,
     )
     state = current_state(args.workdir, args.ticket)
     if state == "Blocked-Escalated":
