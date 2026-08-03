@@ -985,6 +985,9 @@ printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.
 
 KITS_ROOT_PHYS="$(cd "$KITS_ROOT" && pwd -P)"
 PROFILE_PHYS="$(cd "$PROFILE" && pwd -P)"
+LAUNCHER_KITS_ROOT_OVERRIDE="$KITS_ROOT_PHYS//" \
+  LAUNCHER_PROFILE_OVERRIDE="$PROFILE_PHYS/./" \
+  run_launcher launchtest contract --json > "$TMP/component-normalization.json"
 ln -s "$KITS_ROOT_PHYS" "$TMP/kits-root-link"
 ROOT_LINK_RC=0
 LAUNCHER_KITS_ROOT_OVERRIDE="$TMP/kits-root-link" \
@@ -2501,6 +2504,12 @@ assert contract["launcher"]["helper_safe_path"] == \
     "$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 assert contract["launcher"]["managed_path_policy"] == \
     "reject every symlink component before physical resolution"
+launcher = open(
+    os.path.join(root, "integrations", "hermes", "bin", "factory-launch"),
+    encoding="utf-8",
+).read()
+path_guard = launcher.split("reject_symlink_components() {", 1)[1].split("\n}", 1)[0]
+assert "$PYTHON_BIN" not in path_guard
 assert contract["profile"]["required_registry_keys"] == ["PRODUCT_ROOT"]
 assert contract["profile"]["observed_ignored_registry_keys"] == ["KIT_DIR"]
 assert contract["launcher"]["active_record"]["required_fields"] == [

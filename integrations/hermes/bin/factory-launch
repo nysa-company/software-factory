@@ -167,21 +167,20 @@ TMPDIR="$SAFE_TMPDIR"
 export TMPDIR
 
 reject_symlink_components() {
-  local path="$1" label="$2"
-  "$PYTHON_BIN" -I -S - "$path" <<'PY' || die "$label contains a symlink"
-import os
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-if not path.is_absolute():
-    raise SystemExit(1)
-current = pathlib.Path(path.anchor)
-for part in path.parts[1:]:
-    current = current / part
-    if os.path.islink(str(current)):
-        raise SystemExit(1)
-PY
+  local path="$1" label="$2" current="/" remainder component
+  case "$path" in /*) ;; *) die "$label contains a symlink" ;; esac
+  remainder="${path#/}"
+  while [[ -n "$remainder" ]]; do
+    component="${remainder%%/*}"
+    if [[ "$remainder" == "$component" ]]; then
+      remainder=""
+    else
+      remainder="${remainder#*/}"
+    fi
+    [[ -n "$component" ]] || continue
+    current="${current%/}/$component"
+    [[ ! -L "$current" ]] || die "$label contains a symlink"
+  done
 }
 
 require_managed_directory() {
