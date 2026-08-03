@@ -282,11 +282,23 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
+- A composite Factory successor may batch only independently green, already
+  authorized issue commits from isolated branches. It starts from the exact
+  protected base, preserves issue/source/candidate commit provenance, passes
+  combined regressions and managed readiness, and pays one protected-main full
+  CI and sealed installation/certification cycle. Textually or semantically
+  overlapping, order-dependent, trust-boundary-sharing, or result-changing
+  changes remain separate.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `cursor-balanced-v2`: it preserves `balanced-v2` models and effort levels while trying the matching Cursor route before native Codex/Claude CLI. Explicit active profiles and committed ticket route plans remain authoritative; `balanced-v2`, `legacy-balanced-v1`, and the earlier priority profiles remain available for compatibility.
 - Cursor adapters append a trusted execution requirement after role and task text so factory roles stay in the default agent execution mode instead of switching to Cursor Plan or Ask mode.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Contract 1.8 multi-ticket subscription routes use exact owner-activated transactional admission; older contracts and capacity one retain legacy serialization.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
+- The sole emergency state-machine recovery mechanism is the exact current-
+  receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is
+  approved; envelope and semantic-round overrides grant no state authority.
+  Any future exception requires exact owner authorization and a dedicated
+  GitHub issue before implementation or use.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly and retain the role-input commit as an ancestor; the trusted wrapper quarantines a non-Test-author rewrite, restores the authenticated input without touching the remote, and otherwise non-force pushes and verifies output. Reviewer must leave Git unchanged, and Test-author ancestry repair remains separately operator-authorized.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection, which refuses every active or ambiguous claim and `factory/runs/*.pid` record.
@@ -3041,6 +3053,27 @@ An exact `Blocked-Escalated` ticket may use protected accepted-test history
 normalization while retaining that state. Normalization changes only the
 authenticated tree-identical lineage; the existing receipt-bound blocker
 resume remains the sole authority that restores its recorded resume state.
+
+## 2026-08-02 — Decision 223: Composite successors preserve independent provenance
+
+Category: Release management
+
+Several authorized Factory repairs may share one release only after each exact
+issue commit is independently green in its isolated branch. One successor from
+the protected base cherry-picks those commits, preserves issue/source/candidate
+provenance, runs combined readiness, and receives the single authoritative
+protected-main CI and sealed certification cycle; unsafe or overlapping changes
+remain separate.
+
+## 2026-08-02 — Decision 224: State-machine recovery has no generic bypass
+
+Category: Trust boundary
+
+The exact current-receipt-bound `OPERATOR RESUME` ticket commit is the existing
+emergency state-machine recovery authority. Envelope and semantic-round
+overrides do not change lifecycle state; any future exception requires exact
+owner authorization bound to its target and a dedicated GitHub issue before it
+is implemented or used.
 
 ## 2026-08-02 — Decision 225: Normalized blocker lineage is exact and unique
 

@@ -332,9 +332,17 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Notice: several kit features are being developed while a product remains on
   an older active release. This is expected; branches and merged candidate SHAs
   are inert.
-- Do: give each feature its own short-lived branch, linked worktree, protected
-  PR, and full verification result. Install and certify each merged SHA
-  independently. Canary compatibility-sensitive candidates.
+- Do: give each authorized issue its own short-lived branch, linked worktree,
+  focused regression, managed-readiness result, and draft PR. Keep the exact
+  issue, source branch, and independently green commit in its review record.
+- Do: when several independent repairs are required before the next sealed
+  release, create one successor branch from the exact protected base and
+  cherry-pick only those green commits. Preserve the issue-to-source-commit-to-
+  candidate-commit map, run the combined focused regressions and managed
+  readiness, and merge one protected successor PR. The exact merged tree must
+  then pass the complete protected-main suite before one installation and
+  sealed certification/qualification cycle. Canary compatibility-sensitive
+  candidates.
 - Do: serialize every product `KIT_PIN` change, activation, and rollback. Begin
   only at a ticket boundary with no active run, no conflicting nonterminal
   lease, no maintenance anomaly, and no incomplete activation journal.
@@ -347,8 +355,12 @@ same-UID token exposure remains until a broker or OS isolation is used.
   then verify the same state. Older contracts, capacity one, and other legacy
   routes retain the product-wide provider lock.
 - Don't: pull kit `main` into Sofia's live runtime, run from a mutable checkout,
-  combine unrelated candidates into one unreviewed release, or overlap two
-  activation/rollback operations.
+  include a commit that is not independently green, or combine changes that
+  overlap textually or semantically, share an unresolved trust boundary,
+  depend on cherry-pick order, or change result when composed. Keep those
+  candidates separate; never hide a failed gate in the batch, make an
+  unreviewed conflict resolution, or overlap two activation/rollback
+  operations.
 
 ## Upgrading the kit when multiple products run on it
 
@@ -575,6 +587,13 @@ These run in your interactive session — never inside the loop. The factory's o
   authorizes a later blocker. The exact ticket-only commit may be the direct
   child of the current authenticated passport head; block recovery validates
   that boundary and migrates the passport through it before resuming.
+- Treat that exact receipt-bound `OPERATOR RESUME` flow as the emergency
+  state-machine recovery mechanism. The envelope and semantic-round overrides
+  documented elsewhere do not grant lifecycle transitions, and no generic
+  state-machine bypass is approved. Do not edit state by hand or invent an
+  environment or shell override. Any future exception requires exact owner
+  authorization bound to the affected ticket, receipt, head, state, and reason,
+  plus a dedicated GitHub issue before implementation or use.
 
 ## The general rule
 
