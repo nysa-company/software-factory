@@ -3272,3 +3272,15 @@ one candidate marker and typed adoption event. Completion is append-once, the
 adopted ticket alone requires no candidate publication pair, and duplicate
 adoption, completion, acquisition, or release evidence fails reduction.
 Restart and recovery continue to schedule only unfinished targets.
+
+## 2026-08-03 — Decision 239: Terminal adoption follows the source release suffix
+
+Category: Reliability
+
+A claimless Done passport need not be current on the production source itself.
+Successor adoption accepts it only when the shared ordered lineage verifier
+finds one complete suffix from the manifest source through its immediate
+pre-candidate Factory. The authenticated passport is preserve-migrated from
+that predecessor to the candidate, and typed evidence binds both releases.
+Disconnected, reversed, ambiguous, or candidate-containing pre-lineage fails
+before migration, marker creation, or candidate completion.

@@ -435,6 +435,7 @@ class FactoryControllerTest(unittest.TestCase):
         passport_path.parent.mkdir(mode=0o700)
         source_passport = "c" * 64
         done_kit = "c" * 40
+        passport_factory = "9" * 40
         pr_head = "d" * 40
         merge_commit = "e" * 40
         CONTROL.write(passport_path, {
@@ -446,10 +447,17 @@ class FactoryControllerTest(unittest.TestCase):
                 "contract_version": "1.8.0", "factory_sha": done_kit,
             }, {
                 "contract_version": "1.8.0", "factory_sha": source_factory,
+            }, {
+                "contract_version": "1.8.0", "factory_sha": passport_factory,
             }],
-            "factory_sha": source_factory,
+            "factory_sha": passport_factory,
             "head_sha": pr_head,
-            "migration_history": [],
+            "migration_history": [{
+                "from_factory_sha": source_factory,
+                "from_passport_sha256": "1" * 64,
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "to_factory_sha": passport_factory,
+            }],
             "passport_sha256": source_passport,
             "publication_state": "merged",
             "ticket": "T-110",
@@ -499,7 +507,7 @@ class FactoryControllerTest(unittest.TestCase):
                     "contract_version": "1.8.0", "factory_sha": "a" * 40,
                 })
                 passport["migration_history"].append({
-                    "from_factory_sha": source_factory,
+                    "from_factory_sha": passport_factory,
                     "from_passport_sha256": source_passport,
                     "schema": "nysa.software-factory.ticket-passport-migration/v2",
                     "to_factory_sha": "a" * 40,
@@ -509,6 +517,42 @@ class FactoryControllerTest(unittest.TestCase):
             raise AssertionError(args)
 
         first.json_call = passport_call
+        disconnected = CONTROL.read(passport_path)
+        disconnected["migration_history"][0]["from_factory_sha"] = "8" * 40
+        CONTROL.write(passport_path, disconnected)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "unknown release"
+        ):
+            first.record_qualification_done_targets()
+        self.assertEqual(migrations, [])
+        self.assertFalse(any(
+            CONTROL.read(path).get("factory_sha") == "a" * 40
+            for path in self.state.glob("events/*.json")
+        ))
+        disconnected["migration_history"][0][
+            "from_factory_sha"
+        ] = source_factory
+        CONTROL.write(passport_path, disconnected)
+        regressed = CONTROL.read(passport_path)
+        regressed["factory_release_history"].insert(-1, {
+            "contract_version": "1.8.0", "factory_sha": "a" * 40,
+        })
+        regressed["migration_history"] = [{
+            "from_factory_sha": source_factory,
+            "schema": "nysa.software-factory.ticket-passport-migration/v2",
+            "to_factory_sha": "a" * 40,
+        }, {
+            "from_factory_sha": "a" * 40,
+            "schema": "nysa.software-factory.ticket-passport-migration/v2",
+            "to_factory_sha": passport_factory,
+        }]
+        CONTROL.write(passport_path, regressed)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "source terminal is invalid"
+        ):
+            first.record_qualification_done_targets()
+        self.assertEqual(migrations, [])
+        CONTROL.write(passport_path, disconnected)
         nonterminal = CONTROL.read(passport_path)
         nonterminal["publication_state"] = "validating"
         CONTROL.write(passport_path, nonterminal)

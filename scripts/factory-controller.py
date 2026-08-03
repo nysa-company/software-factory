@@ -14,11 +14,16 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 import tempfile
 from threading import Lock
 import time
 from typing import Any
 from urllib.parse import urlsplit
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from release_lineage import successor_release_lineage  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -41,7 +46,7 @@ COMPLETION_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v1"
 )
 TERMINAL_ADOPTION_SCHEMA = (
-    "nysa.software-factory.qualification-terminal-adoption/v1"
+    "nysa.software-factory.qualification-terminal-adoption/v2"
 )
 
 
@@ -362,7 +367,16 @@ class Controller:
             f"qualification-terminal-adoption-{self.release_path.name}-{ticket}"
         )
         marker_path = self.state / f"{marker_name}.json"
-        if passport.get("factory_sha") == source:
+        if passport.get("factory_sha") != self.release_path.name:
+            if not successor_release_lineage(
+                passport.get("factory_release_history"),
+                passport.get("migration_history"),
+                source,
+                passport.get("factory_sha", ""),
+            ):
+                raise ControllerError(
+                    "qualification terminal passport has unknown release"
+                )
             branch = f"refs/heads/ticket/{ticket}"
             worktrees = self.worktrees_by_branch().get(branch, [])
             if len(worktrees) != 1 or marker_path.exists():
@@ -405,6 +419,7 @@ class Controller:
                 )
                 or not DIGEST.fullmatch(passport.get("passport_sha256", ""))
                 or source not in source_history
+                or self.release_path.name in source_history
                 or done.get("schema")
                 != "nysa.software-factory.ticket-done/v1"
                 or done.get("ticket") != ticket
@@ -423,8 +438,6 @@ class Controller:
                 or migrated.get("passport") != passport.get("passport_sha256")
             ):
                 raise ControllerError("qualification terminal passport migration failed")
-        elif passport.get("factory_sha") != self.release_path.name:
-            raise ControllerError("qualification terminal passport has unknown release")
         elif not marker_path.exists():
             branch = f"refs/heads/ticket/{ticket}"
             worktrees = self.worktrees_by_branch().get(branch, [])
@@ -473,10 +486,13 @@ class Controller:
             or passport.get("parent_digest") != source_passport
             or edge.get("schema")
             != "nysa.software-factory.ticket-passport-migration/v2"
-            or edge.get("from_factory_sha") != source
+            or edge.get("from_factory_sha") not in pre_candidate_history
             or edge.get("to_factory_sha") != self.release_path.name
             or not DIGEST.fullmatch(source_passport or "")
             or not {source, self.release_path.name}.issubset(history_shas)
+            or not successor_release_lineage(
+                history, migrations, source, self.release_path.name,
+            )
             or candidate_records
             or done.get("schema") != "nysa.software-factory.ticket-done/v1"
             or done.get("ticket") != ticket
@@ -495,6 +511,7 @@ class Controller:
             "factory_sha": self.release_path.name,
             "merge_commit": done["merge_commit"],
             "pr_number": done["pr_number"],
+            "passport_source_factory_sha": edge["from_factory_sha"],
             "schema": TERMINAL_ADOPTION_SCHEMA,
             "source_current_state": "Approved",
             "source_factory_sha": source,
@@ -572,15 +589,19 @@ class Controller:
                 )
                 source = self.qualification["source_factory_sha"]
                 if (
-                    passport.get("factory_sha") == source
+                    passport.get("factory_sha") != self.release_path.name
                     or adoption_marker.exists()
                     or matching_adoption
                     or (
                         passport.get("factory_sha") == self.release_path.name
                         and not candidate_evidence
                         and not candidate_publication
-                        and edge.get("from_factory_sha") == source
-                        and edge.get("to_factory_sha") == self.release_path.name
+                        and successor_release_lineage(
+                            passport.get("factory_release_history"),
+                            passport.get("migration_history"),
+                            source,
+                            self.release_path.name,
+                        )
                     )
                 ):
                     adoption = self.adopt_qualification_terminal(ticket)
@@ -593,6 +614,9 @@ class Controller:
                     ],
                     "done_sha256": adoption["done_sha256"],
                     "merge_commit": adoption["merge_commit"],
+                    "passport_source_factory_sha": adoption[
+                        "passport_source_factory_sha"
+                    ],
                     "pr_number": adoption["pr_number"],
                     "source_current_state": adoption["source_current_state"],
                     "source_factory_sha": adoption["source_factory_sha"],

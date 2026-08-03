@@ -4930,6 +4930,28 @@ candidate migration, marker/event replay, no claim or attempt, no adopted
 publication cycle, and rejection of duplicate adoption, completion, acquisition,
 and release evidence.
 
+## FI-20260803-170 — Historical terminal passport bypassed successor adoption
+
+Status: Focused historical-lineage adoption regressions green; protected CI pending
+Priority: P0 (#235)
+Area: qualification terminal adoption
+Owner: Factory
+First seen: sealed successor candidate `57c304266392348625307848fd6e392d887c7c38`
+Impact: T-094's authenticated merged terminal passport was current on an
+intermediate Factory after the manifest's active production source. Takeover
+preparation accepted that valid ordered suffix, but the controller required
+direct source equality, emitted candidate completion, and left no migrated
+passport, adoption marker, or adoption event for reduction.
+Smallest repair: use the shared ordered successor-lineage reducer before
+adoption, preserve-migrate from the passport's immediate pre-candidate Factory,
+and bind both the manifest source and immediate predecessor in the marker and
+event. Disconnected lineage now fails before migration or candidate evidence.
+Validation: the focused controller regression covers source-to-intermediate-to-
+candidate adoption, nonterminal refusal, disconnected-lineage refusal,
+idempotent replay, and no claim, role, charge, or publication cycle. The
+successor reducer regression requires the same complete suffix and exact final
+edge.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

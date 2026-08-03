@@ -820,10 +820,13 @@ Qualification restart and recovery count those protected Done targets together
 with runnable claims, retain the complete cohort in their boundary events, and
 schedule only unfinished tickets. The controller also records one
 candidate-bound completion event for each claimless protected Done target. In
-successor qualification it first uses the surviving clean ticket cell to
-authenticate and migrate the merged terminal passport without a claim, role,
-publication lease, or charge, then seals the source/candidate passport digests
-and protected Done/PR identity in a typed terminal-adoption marker and event.
+successor qualification it first verifies the unique authenticated release
+suffix from the manifest's production source through the passport's current
+pre-candidate release, then uses the surviving clean ticket cell to migrate the
+merged terminal passport without a claim, role, publication lease, or charge.
+The typed terminal-adoption marker and event seal the manifest source, immediate
+passport predecessor, source/candidate passport digests, and protected Done/PR
+identity.
 A valid marker and exact event make later reconciliation a no-op. The reducer
 exempts only that adopted ticket from a candidate publication lease pair and
 rejects duplicate adoption, completion, acquisition, or release evidence.
