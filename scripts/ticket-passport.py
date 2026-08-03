@@ -19,6 +19,7 @@ import tempfile
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from reorder_test_fixes import verified_normalization_plan  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256
 
 
@@ -32,6 +33,9 @@ TERMINAL_ACCOUNTING = {
 }
 INFLIGHT_SCHEMA = "nysa.software-factory.inflight-release-authorization/v1"
 REWRITE_SCHEMA = "nysa.software-factory.ticket-rewrite-authorization/v1"
+NORMALIZATION_SCHEMA = (
+    "nysa.software-factory.ticket-history-normalization-authorization/v1"
+)
 MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
 LINEAGE_SCHEMA = "nysa.software-factory.ticket-passport-lineage-authorization/v1"
 INFLIGHT_STATES = {
@@ -453,7 +457,6 @@ def authorized_ticket_rewrite(
 ) -> str | None:
     if (
         previous.get("factory_sha") != args.factory_sha
-        or current_state != "Building"
         or git(args.workdir, "status", "--porcelain=v1", "-z")
     ):
         return None
@@ -480,6 +483,13 @@ def authorized_ticket_rewrite(
     try:
         authorization = json.loads(raw, object_pairs_hook=unique_object)
     except (json.JSONDecodeError, ValueError):
+        return None
+    if authorization.get("schema") == NORMALIZATION_SCHEMA:
+        return authorized_history_normalization(
+            args, previous, current, current_state, protected,
+            authorization, raw, relative, repository, test_paths, route,
+        )
+    if current_state != "Building":
         return None
     receipt_digest = authorization.get("transition_receipt_sha256", "")
     expected = {
@@ -514,6 +524,120 @@ def authorized_ticket_rewrite(
             test_paths, args.ticket,
         )
     ):
+        return None
+    return hashlib.sha256(canonical(authorization)).hexdigest()
+
+
+def authorized_history_normalization(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    current_state: str,
+    protected: str,
+    authorization: dict[str, Any],
+    raw: str,
+    relative: str,
+    repository: str,
+    test_paths: str,
+    route: str,
+) -> str | None:
+    base = authorization.get("base", "")
+    accepted_run = authorization.get("accepted_test_run_id", "")
+    accepted_receipt = authorization.get("accepted_test_receipt_sha256", "")
+    accepted_factory = authorization.get("accepted_test_factory_sha", "")
+    expected = {
+        "accepted_test_factory_sha": accepted_factory,
+        "accepted_test_receipt_sha256": accepted_receipt,
+        "accepted_test_run_id": accepted_run,
+        "base": base,
+        "branch": current["branch"],
+        "factory_sha": args.factory_sha,
+        "head": current["head_sha"],
+        "head_tree": current["head_tree"],
+        "mode": "accepted-push-history-normalization",
+        "passport_sha256": previous.get("passport_sha256"),
+        "previous_head": previous.get("head_sha"),
+        "previous_tree": previous.get("head_tree"),
+        "repository": repository,
+        "route_plan_sha256": route,
+        "schema": NORMALIZATION_SCHEMA,
+        "state": current_state,
+        "ticket": args.ticket,
+    }
+    if (
+        authorization != expected
+        or current_state not in {"Planning", "Building", "Review"}
+        or not SHA.fullmatch(base)
+        or not SHA.fullmatch(accepted_factory)
+        or not DIGEST.fullmatch(accepted_receipt)
+        or not isinstance(accepted_run, str)
+        or not accepted_run
+        or previous.get("head_tree") != current.get("head_tree")
+        or {
+            "contract_version": args.contract_version,
+            "factory_sha": accepted_factory,
+        } not in previous.get("factory_release_history", [])
+        or raw.encode() + b"\n" != canonical(authorization)
+    ):
+        return None
+    introductions = git(
+        args.factory_root, "log", "--format=%H", "--diff-filter=A",
+        protected, "--", relative,
+    ).splitlines()
+    if len(introductions) != 1:
+        return None
+    introduction = introductions[0]
+    parents = git(
+        args.factory_root, "show", "-s", "--format=%P", introduction
+    ).split()
+    changed = git(
+        args.factory_root, "diff-tree", "--no-commit-id", "--name-status",
+        "--no-renames", "-r", introduction,
+    ).splitlines()
+    if (
+        parents != [base]
+        or changed != [f"A\t{relative}"]
+        or subprocess.run(
+            [
+                "git", "-C", str(args.factory_root), "merge-base",
+                "--is-ancestor", introduction, protected,
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        ).returncode
+    ):
+        return None
+    test_roots = test_paths.split()
+    exempt = "factory/ conformance/factory/ .gitignore context/memory.md".split()
+    plan = verified_normalization_plan(
+        str(args.workdir), base, previous["head_sha"], current["head_sha"],
+        test_roots, exempt,
+    )
+    if plan is None:
+        return None
+    late_parents = {
+        git(args.workdir, "rev-parse", f"{commit.sha}^1")
+        for commit in plan[1]
+    }
+    completed = [
+        item for item in previous.get("completed_role_evidence", [])
+        if item.get("run_id") == accepted_run
+        and item.get("role") == "test-author"
+        and item.get("transition_receipt_sha256") == accepted_receipt
+        and item.get("factory_sha") == accepted_factory
+        and item.get("contract_version") == args.contract_version
+        and item.get("head_before") in late_parents
+    ]
+    charges = [
+        item for item in previous.get("charge_records", [])
+        if item.get("run_id") == accepted_run
+        and item.get("role") == "test-author"
+        and item.get("transition_receipt_sha256") == accepted_receipt
+        and item.get("factory_sha") == accepted_factory
+        and item.get("contract_version") == args.contract_version
+        and item.get("head_before") in late_parents
+    ]
+    if len(completed) != 1 or len(charges) != 1:
         return None
     return hashlib.sha256(canonical(authorization)).hexdigest()
 

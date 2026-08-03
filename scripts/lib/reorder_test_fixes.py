@@ -34,16 +34,22 @@ Safety model
     moved) and the tool exits non-zero.
   - The rewrite happens in a detached HEAD; the working branch ref is only
     fast-forwarded to the new history after the tree check passes.
+  - A rewrite may not move a commit across a merge. Retained two-parent merges
+    are recreated with their exact original tree and second parent; octopus
+    merges are refused.
   - Any conflict touching a non-exempt path is unresolvable by policy: the
     cherry-pick/rebase is aborted and the tool exits non-zero. Only
     conflicts where *every* conflicted path is under EXEMPT_PATHS are
     auto-resolved (see resolve_exempt_conflict below) — and even then, the
     final tree-equality check is what actually guarantees correctness, not
     the resolution heuristic itself.
+  - This local helper never pushes. Replacing an accepted remote history still
+    requires separate protected authorization and an explicit force-with-lease.
 """
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import os
 import re
 import subprocess
@@ -149,7 +155,9 @@ def contract_epoch_reset(repo, sha, files):
 
 
 def classify_commits(repo, base, head, test_paths, exempt_paths):
-    rev_list = git(repo, "rev-list", "--reverse", f"{base}..{head}").stdout
+    rev_list = git(
+        repo, "rev-list", "--first-parent", "--reverse", f"{base}..{head}"
+    ).stdout
     shas = [line for line in rev_list.splitlines() if line]
 
     commits = []
@@ -217,6 +225,17 @@ def plan_new_order(commits):
     return new_order, late_test, first
 
 
+def merge_boundaries_preserved(commits, new_order):
+    """Return true only when reordering never moves a commit across a merge."""
+    positions = {sha: index for index, sha in enumerate(new_order)}
+    for index, commit in enumerate(commits):
+        if commit.is_merge and {
+            item.sha for item in commits[:index]
+        } != set(new_order[:positions[commit.sha]]):
+            return False
+    return True
+
+
 CONFLICT_STATUS_CODES = {"UU", "AA", "DD", "AU", "UA", "UD", "DU"}
 
 
@@ -281,6 +300,12 @@ def cherry_pick_one(repo, sha, orig_head, exempt_paths):
     Fail on any unresolvable condition. On failure this function always
     leaves no in-progress cherry-pick behind (it aborts before raising).
     """
+    parents = git(repo, "rev-list", "--parents", "-n", "1", sha).stdout.split()[1:]
+    if len(parents) > 2:
+        raise Fail(f"octopus merge is not supported: {sha}")
+    before = git(repo, "rev-parse", "HEAD").stdout.strip()
+    if len(parents) == 2:
+        return recreate_merge(repo, sha, before, parents)
     r = git(repo, "cherry-pick", sha, check=False)
     if r.returncode == 0:
         return True
@@ -328,6 +353,96 @@ def cherry_pick_one(repo, sha, orig_head, exempt_paths):
 
     git(repo, "cherry-pick", "--abort", check=False)
     raise Fail(f"cherry-pick failed unexpectedly for {sha}:\n{combined}")
+
+
+def recreate_merge(repo, original, first_parent, parents):
+    """Recreate the exact reviewed merge tree and protected second parent."""
+    tree = git(repo, "rev-parse", f"{original}^{{tree}}").stdout.strip()
+    message = git(repo, "show", "-s", "--format=%B", original).stdout
+    rewritten = git(
+        repo, "commit-tree", tree, "-p", first_parent, "-p", parents[1],
+        input_text=message,
+    ).stdout.strip()
+    git(repo, "update-ref", "HEAD", rewritten, first_parent)
+    git(repo, "reset", "--hard", "-q", rewritten)
+    return True
+
+
+def nonexempt_patch_ids(repo, commits, exempt_paths):
+    """Return the semantic non-bookkeeping patches on one first-parent line."""
+    values = []
+    for commit in commits:
+        parent = git(repo, "rev-parse", f"{commit.sha}^1").stdout.strip()
+        paths = sorted(path for path in commit.files if not is_exempt(path, exempt_paths))
+        if not paths:
+            continue
+        patch = git(
+            repo, "diff", "--binary", "--no-ext-diff", parent, commit.sha,
+            "--", *paths,
+        ).stdout
+        result = run(["git", "patch-id", "--stable"], input_text=patch)
+        fields = result.stdout.split()
+        if len(fields) < 1 or not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
+            raise Fail(f"commit has no stable patch identity: {commit.sha}")
+        values.append(fields[0])
+    return Counter(values)
+
+
+def protected_merges(repo, commits):
+    result = []
+    for commit in commits:
+        parents = git(
+            repo, "rev-list", "--parents", "-n", "1", commit.sha
+        ).stdout.split()[1:]
+        if len(parents) > 2:
+            raise Fail(f"octopus merge is not supported: {commit.sha}")
+        if len(parents) == 2:
+            tree = git(repo, "rev-parse", f"{commit.sha}^{{tree}}").stdout.strip()
+            result.append((parents[1], tree))
+    return result
+
+
+def verified_normalization_plan(
+    repo, base, old_head, new_head, test_paths, exempt_paths
+):
+    """Return the verified old-history reorder plan, or None when unauthorized."""
+    try:
+        if old_head == new_head:
+            return None
+        for head in (old_head, new_head):
+            if git(repo, "merge-base", base, head).stdout.strip() != base:
+                return None
+        if git(repo, "rev-parse", f"{old_head}^{{tree}}").stdout.strip() != git(
+            repo, "rev-parse", f"{new_head}^{{tree}}"
+        ).stdout.strip():
+            return None
+        old = classify_commits(repo, base, old_head, test_paths, exempt_paths)
+        new = classify_commits(repo, base, new_head, test_paths, exempt_paths)
+        old_plan = plan_new_order(old)
+        if (
+            old_plan is None
+            or not merge_boundaries_preserved(old, old_plan[0])
+            or plan_new_order(new) is not None
+        ):
+            return None
+        if any(item.kind == "MIXED" for item in new):
+            return None
+        if protected_merges(repo, old) != protected_merges(repo, new):
+            return None
+        if nonexempt_patch_ids(repo, old, exempt_paths) != nonexempt_patch_ids(
+            repo, new, exempt_paths
+        ):
+            return None
+        return old_plan
+    except (Fail, OSError):
+        return None
+
+
+def normalization_allowed(repo, base, old_head, new_head, test_paths, exempt_paths):
+    """Authenticate a tree-identical tests-first rewrite, including merges."""
+    return verified_normalization_plan(
+        repo, base, old_head, new_head, test_paths, exempt_paths
+    ) is not None
 
 
 def ensure_clean_and_on_branch(repo):
@@ -411,12 +526,11 @@ def main(argv):
         return 0
 
     new_order, moved, first_impl = plan
-    if any(commit.is_merge for commit in commits):
+    if not merge_boundaries_preserved(commits, new_order):
         raise Fail(
-            "history requires reordering but contains a merge commit; choose a "
-            "linear base at or after the latest protected refresh"
+            "history requires moving a commit across a merge boundary; choose "
+            "a later tests-first contract epoch instead"
         )
-
     print(f"branch: {branch}")
     print(f"base:   {args.base} ({base_sha})")
     print(f"found {len(moved)} test commit(s) after the first implementation commit")

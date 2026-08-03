@@ -852,6 +852,149 @@ class TicketPassportTest(unittest.TestCase):
             r"^[0-9a-f]{64}$",
         )
 
+    def test_accepted_late_test_merge_history_normalizes_with_exact_evidence(self) -> None:
+        protected = self.root / "protected-normalization"
+        run("git", "clone", "-q", str(self.remote), str(protected), cwd=self.root)
+        run("git", "config", "user.name", "Test", cwd=protected)
+        run("git", "config", "user.email", "test@example.invalid", cwd=protected)
+        (protected / "protected.txt").write_text("protected base\n", encoding="utf-8")
+        run("git", "add", ".", cwd=protected)
+        run("git", "commit", "-qm", "protected base advance", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        base = run("git", "rev-parse", "HEAD", cwd=protected)
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\n\n"
+            "## Frozen contract — version 6\n"
+            "- **Freeze result — PASS.** Contract version 6 is frozen.\n",
+            encoding="utf-8",
+        )
+        test = self.product / "app/tests/detail.test.js"
+        test.parent.mkdir(parents=True)
+        test.write_text("v6 initial\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "test-author v6 initial", cwd=self.product)
+        implementation = self.product / "app/server.js"
+        implementation.write_text("v6 implementation\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "builder v6", cwd=self.product)
+
+        self.state_args.role = "test-author"
+        repair = STATE.issue(self.state_args, "FIX test-author")
+        self.state_args.receipt = repair["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "accepted-late-test", "test-author", repair["receipt_sha256"],
+            "a" * 40,
+        )
+        test.write_text("v6 initial\nv6 accepted late repair\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "test-author accepted late v6 repair", cwd=self.product)
+        run(
+            "git", "merge", "-q", "--no-ff", "origin/main", "-m",
+            "merge protected base", cwd=self.product,
+        )
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "\n## Frozen contract — version 7\n"
+            + "- **Freeze result — PASS.** Contract version 7 is frozen.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "planner v7", cwd=self.product)
+        test.write_text(test.read_text(encoding="utf-8") + "v7\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "test-author v7", cwd=self.product)
+        implementation.write_text("v6 implementation\nv7 implementation\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "builder v7", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "\n## Frozen contract — version 8\n"
+            + "- **Freeze result — PASS.** Contract version 8 is frozen.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "planner v8", cwd=self.product)
+
+        secret = PASSPORT.key(self.state_dir)
+        self.passport_args.receipt = repair["receipt_sha256"]
+        predecessor = PASSPORT.export(self.passport_args, secret)
+        old_head = predecessor["head_sha"]
+        run(
+            "git", "push", "-q", "origin",
+            f"{old_head}:refs/heads/ticket/T-110", cwd=self.product,
+        )
+        self.passport_args.factory_sha = "b" * 40
+        previous = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(previous["factory_sha"], "b" * 40)
+        self.assertEqual(previous["head_sha"], old_head)
+        self.assertIn(
+            {"contract_version": "1.8.0", "factory_sha": "a" * 40},
+            previous["factory_release_history"],
+        )
+        old_evidence = previous["completed_role_evidence"]
+        old_charges = previous["charge_records"]
+        subprocess.run(
+            [
+                "bash", str(ROOT / "scripts/reorder-test-fixes.sh"),
+                "--base", base, "--test-paths", "app/tests/",
+                "--exempt-paths", "factory/",
+            ],
+            cwd=self.product, text=True, capture_output=True, check=True,
+        )
+        rewritten = run("git", "rev-parse", "HEAD", cwd=self.product)
+        self.assertNotEqual(rewritten, old_head)
+        self.assertEqual(run("git", "rev-parse", "HEAD^{tree}", cwd=self.product), previous["head_tree"])
+        with self.assertRaisesRegex(PASSPORT.PassportError, "lineage"):
+            PASSPORT.migrate(self.passport_args, secret)
+
+        authorization = (
+            protected / f"factory/migrations/ticket-rewrite/{rewritten}.json"
+        )
+        authorization.parent.mkdir(parents=True, exist_ok=True)
+        authorization.write_text(json.dumps({
+            "accepted_test_factory_sha": "a" * 40,
+            "accepted_test_receipt_sha256": repair["receipt_sha256"],
+            "accepted_test_run_id": "accepted-late-test",
+            "base": base,
+            "branch": "ticket/T-110",
+            "factory_sha": "b" * 40,
+            "head": rewritten,
+            "head_tree": previous["head_tree"],
+            "mode": "accepted-push-history-normalization",
+            "passport_sha256": previous["passport_sha256"],
+            "previous_head": old_head,
+            "previous_tree": previous["head_tree"],
+            "repository": "nysa-company/relay-factory",
+            "route_plan_sha256": previous["route_plan_sha256"],
+            "schema": PASSPORT.NORMALIZATION_SCHEMA,
+            "state": "Building",
+            "ticket": "T-110",
+        }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        run("git", "add", ".", cwd=protected)
+        run("git", "commit", "-qm", "authorize exact T-100 normalization", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run(
+            "git", "push", "-q", "--force-with-lease=refs/heads/ticket/T-110:" + old_head,
+            "origin", rewritten + ":refs/heads/ticket/T-110", cwd=self.product,
+        )
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+
+        migrated = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(migrated["head_sha"], rewritten)
+        self.assertEqual(migrated["head_tree"], previous["head_tree"])
+        self.assertEqual(migrated["route_plan_sha256"], previous["route_plan_sha256"])
+        self.assertEqual(migrated["completed_role_evidence"], old_evidence)
+        self.assertEqual(migrated["charge_records"], old_charges)
+        self.assertRegex(
+            migrated["migration_history"][-1]["rewrite_authorization_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertEqual(PASSPORT.migrate(self.passport_args, secret), migrated)
+
 
 if __name__ == "__main__":
     unittest.main()

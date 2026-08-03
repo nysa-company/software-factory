@@ -3383,6 +3383,90 @@ class FactoryControllerTest(unittest.TestCase):
             ],
         )
 
+    def test_contract_block_recovers_authorized_accepted_push_normalization_once(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-accepted-normalization"
+        (cell / "factory/tickets").mkdir(parents=True)
+        receipt = "b" * 64
+        (cell / "factory/tickets/T-110.md").write_text(
+            "# T-110\n\nState: Building\n\n"
+            f"OPERATOR RESUME: builder\nOPERATOR RESUME RECEIPT: {receipt}\n",
+            encoding="utf-8",
+        )
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(
+            self.state / "passports/T-110.json",
+            {
+                "branch": claim["branch"],
+                "head_sha": "c" * 40,
+                "passport_sha256": "d" * 64,
+                "publication_state": "none",
+            },
+        )
+        (self.product / "factory/runs/contract-block.meta").write_text(
+            "run_id=contract-block\n"
+            "phase=completed\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            "accounting_state=abandoned_conservative\n"
+            "task_submitted=1\n"
+            "exit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        validations = iter((False, False, True, True))
+        remote_heads = iter((False, True))
+        controller.remote_passport_valid = lambda _claim: next(validations)
+        controller.remote_cell_head_valid = lambda _claim: next(remote_heads)
+        controller.ensure_lease = lambda *_args: calls.append(("ensure-lease",))
+
+        def migrate(_claim, publication):
+            calls.append(("migrate", publication))
+
+        controller.migrate_passport = migrate
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("state-machine", "block"):
+                return {"status": "blocked"}
+            if args[:2] == ("state-machine", "resume"):
+                return {"status": "ready"}
+            return {}
+
+        controller.json_call = json_call
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(calls, [])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], receipt)
+        controller.recover_repaired_failures([claim])
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(calls.count(("migrate", "preserve")), 1)
+        self.assertEqual(
+            calls.count(("contract_block_passport_migrated",)), 1
+        )
+        self.assertEqual(
+            calls.count(("contract_blocker_recovered",)), 1
+        )
+
     def test_submission_failure_retries_only_after_release_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-submission"

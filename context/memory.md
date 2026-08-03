@@ -64,6 +64,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   the canonical append-only form. Historical output may replace only the
   latest heading and matching established PASS one-for-one; every partial,
   mismatched, repeated, lower, mixed, or malformed shape remains closed.
+- An accepted successful late Test-author push can be normalized only after a
+  successor migrates the passport on the unchanged old head. One protected
+  authorization binds both Factory identities, the exact successful run and
+  charge, old/new tree-identical heads, route, and protected merge parents;
+  only an explicit exact-old-head force-with-lease may publish it.
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
@@ -3011,3 +3016,14 @@ capability; the retained log and artifacts are rehashed before a hit.
 Interrupted, stale, malformed, tampered, undeclared-side-effect, and
 fresh-workspace cases execute or fail closed, while the outer certification
 and receipt authority remains unchanged.
+
+## 2026-08-02 — Decision 221: Accepted late tests require protected normalization
+
+Category: Trust boundary
+
+A successor may recover an already accepted late Test-author push only after
+first migrating the authenticated passport on the unchanged old head. A
+canonical one-file protected authorization binds the predecessor evidence and
+charge, successor Factory, exact old/new tree-identical histories, route, and
+protected merge parents; the controller waits for an explicit exact-head
+force-with-lease and performs the passport migration once.
