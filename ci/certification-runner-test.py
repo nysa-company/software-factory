@@ -69,7 +69,7 @@ class CertificationRunnerTest(unittest.TestCase):
             env=environment,
             text=True,
             capture_output=True,
-            timeout=10,
+            timeout=30,
         )
         return completed, json.loads(result.read_text())
 

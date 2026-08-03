@@ -431,11 +431,13 @@ git_identity
 git init --bare -q "$CANONICAL"
 git init -q -b main "$KIT_REPO"
 git -C "$KIT_REPO" remote add origin "$CANONICAL"
-mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts" \
+mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" \
   "$KIT_REPO/integrations/hermes/bin"
 mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
+  "$ROOT/scripts/certification-preflight.py" \
   "$KIT_REPO/scripts/"
+cp "$ROOT/scripts/lib/certification_plan.py" "$KIT_REPO/scripts/lib/"
 cp "$ROOT/integrations/hermes/bin/factory-launch" \
   "$KIT_REPO/integrations/hermes/bin/factory-launch"
 chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"
