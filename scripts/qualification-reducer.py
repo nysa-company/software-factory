@@ -26,7 +26,7 @@ SCHEMA = "nysa.software-factory.qualification-report/v1"
 MANIFEST_SCHEMA = "nysa.software-factory.qualification/v2"
 EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
 TERMINAL_ADOPTION_SCHEMA = (
-    "nysa.software-factory.qualification-terminal-adoption/v1"
+    "nysa.software-factory.qualification-terminal-adoption/v2"
 )
 PASSPORT_MIGRATION_SCHEMA = (
     "nysa.software-factory.ticket-passport-migration/v2"
@@ -368,7 +368,10 @@ def verify(
             or item.get("source_passport_sha256")
             != passport.get("parent_digest")
             or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
-            or edge.get("from_factory_sha") != source_factory_sha
+            or item.get("passport_source_factory_sha")
+            != edge.get("from_factory_sha")
+            or item.get("passport_source_factory_sha")
+            not in pre_candidate_history
             or edge.get("to_factory_sha") != factory_sha
             or passport.get("current_state") != "Approved"
             or passport.get("publication_state") != "merged"

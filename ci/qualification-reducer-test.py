@@ -238,11 +238,15 @@ class QualificationReducerTest(unittest.TestCase):
 
         adopted = manifest["tickets"][0]
         done_kit = "c" * 40
+        passport_source = "9" * 40
         source_passport = "d" * 64
         candidate_passport = "e" * 64
         passport = passports[adopted]
         passport["factory_release_history"].insert(0, {
             "contract_version": "1.8.0", "factory_sha": done_kit,
+        })
+        passport["factory_release_history"].insert(2, {
+            "contract_version": "1.8.0", "factory_sha": passport_source,
         })
         for name in ("charge_records", "completed_role_evidence"):
             for item in passport[name]:
@@ -254,6 +258,10 @@ class QualificationReducerTest(unittest.TestCase):
         })
         passport["migration_history"] = [{
             "from_factory_sha": source,
+            "schema": REDUCER.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": passport_source,
+        }, {
+            "from_factory_sha": passport_source,
             "from_passport_sha256": source_passport,
             "schema": REDUCER.PASSPORT_MIGRATION_SCHEMA,
             "to_factory_sha": candidate,
@@ -277,6 +285,7 @@ class QualificationReducerTest(unittest.TestCase):
             "event": "terminal_adopted",
             "factory_sha": candidate,
             "merge_commit": terminals[adopted]["merge_commit"],
+            "passport_source_factory_sha": passport_source,
             "pr_number": terminals[adopted]["pr_number"],
             "source_current_state": "Approved",
             "source_factory_sha": source,
