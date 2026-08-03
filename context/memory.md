@@ -117,8 +117,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   receipt and authenticated blocked passport agree on that FIX stage. Lease
   recovery, block replay, and resume share this evidence; mismatched stages,
   passport state, receipts, roles, or leases remain closed. A receipt/passport
-  Factory mismatch never enters that same-release shortcut; only the existing
-  authenticated contract-repair migration proof may accept it.
+  Factory mismatch additionally requires the authenticated historical charge,
+  ordered release history, exact current passport digest, and blocker Git
+  lineage. Once the signed repair exists, its narrower repair-migration proof
+  remains authoritative.
 - Planner, Spec-linter, and Test-author independently evaluate exact generated
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
@@ -3284,3 +3286,14 @@ pre-candidate Factory. The authenticated passport is preserve-migrated from
 that predecessor to the candidate, and typed evidence binds both releases.
 Disconnected, reversed, ambiguous, or candidate-containing pre-lineage fails
 before migration, marker creation, or candidate completion.
+
+## 2026-08-03 — Decision 240: Fresh migrated repairs reuse blocker proof
+
+Category: Reliability
+
+A receipt-bound resume may create its first signed repair record after a
+Factory migration only when the historical consumed FIX receipt, unique
+terminal charge, ordered release history, exact authenticated current passport,
+and Git lineage already prove the same blocker. The operator directive remains
+exact-receipt and ticket-only authority; passport-digest drift, missing history,
+and ordinary cross-release state changes remain closed.
