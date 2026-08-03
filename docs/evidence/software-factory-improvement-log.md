@@ -4993,6 +4993,89 @@ publication action, or production activation changes.
 Validation: focused controller and reducer cases accept the post-merge suffix
 and refuse disconnected edges, ambiguous suffixes, and substituted parents.
 
+## FI-20260803-173 — Role-only operator resume edits were undiscoverable
+
+Status: Focused state-machine regression green; protected CI pending
+Priority: P1 (#243)
+Area: contract repair authorization
+Owner: Factory
+First seen: T-100 sealed successor qualification
+Impact: replacing `builder` with `planner` while preserving the exact blocked
+receipt left the new directive invisible to the receipt-addition-only Git
+search and kept the ticket blocked.
+Smallest repair: discover commits that changed either operator directive line,
+then retain the existing exact parent, ticket-only diff, receipt, ancestry,
+passport, Linear, and uniqueness checks.
+Validation: the new role-only regression and the complete state-machine suite
+pass, including withdrawal/reissue, substituted receipt, disconnected history,
+unknown parent, and binding refusals.
+
+## FI-20260803-174 — Qualification omitted passport-required run artifacts
+
+Status: Focused environment/controller regressions green; protected CI pending
+Priority: P0 (#245)
+Area: qualification artifact closure
+Owner: Factory
+First seen: T-100 Builder run `1785786940-68442`
+Impact: a paid Builder completed before passport export discovered that the
+historical Spec-linter output `1785681913-94450.out` was absent.
+Smallest repair: retain and restore only the exact completed-role artifact
+closure named by authenticated authorized passports, then recheck it at final
+role dispatch. Runtime files and retention metadata remain owner-only,
+mode-600, ignored, digest-bound, and atomic.
+Validation: focused tests cover restore/replay, unrelated evidence exclusion,
+missing/changed output, symlink/hardlink ambiguity, tampered passport, and
+pre-dispatch revalidation without exposing output content.
+
+## FI-20260803-175 — Fallback evidence outlived its failed attempt
+
+Status: Focused fallback regressions green; protected CI pending
+Priority: P0 (#246)
+Area: qualification model fallback
+Owner: Factory
+First seen: T-100 Reviewer run `1785788695-85733`
+Impact: an old Planner fallback copied through release migrations prevented a
+new authenticated Reviewer provider failure from receiving its one fallback.
+Smallest repair: when scanning historical qualification approvals, treat a
+different failed-manifest digest as a prior generation and append one new
+failure-bound revision. Exact replay remains idempotent and ordinary Linear
+approval mismatches still fail.
+Validation: old Planner fallback, release migration, new Reviewer failure,
+fresh fallback, and exact replay produce exactly two append-only fallbacks.
+
+## FI-20260803-176 — Parked exact fallback had no controller rearm path
+
+Status: Focused controller regression green; protected CI pending
+Priority: P0 (#247)
+Area: qualification recovery
+Owner: Factory
+First seen: T-100 exact fallback commit `188c8baba865d0f1ae44893f332aa830efa5d0fb`
+Impact: fallback recovery succeeded but the claim remained parked with its
+failed Reviewer receipt, excluding it from normal reconciliation.
+Smallest repair: qualification reconciliation recognizes that exact terminal,
+reacquires the ticket lease, and delegates to the existing finish path, which
+validates the fallback, migrates the passport, and clears only failed fields.
+Validation: the regression proves lease-before-migration ordering, exact failed
+run binding, resumption, and mismatch preservation.
+
+## FI-20260803-177 — Fallback ingestion and absent-map edges failed noisily
+
+Status: Focused Linear, approval, shell, and attestation regressions green;
+protected CI pending
+Priority: P1 (#251, defect C)
+Area: operator evidence ingestion
+Owner: Factory
+Impact: a newer fallback comment could be ignored in favor of stale cached
+evidence, a 24 ms Linear timestamp serialization skew failed, Bash 3.2 could
+expand an empty optional array under nounset, and direct approval attestation
+raised a traceback when the ignored operator map did not yet exist.
+Smallest repair: select the latest valid comment, allow one second only between
+Linear creation/update timestamps, keep the fallback argument vector nonempty,
+and treat an absent map as no exact approval. Expiry and observation ordering
+remain strict.
+Validation: focused regressions cover each edge; ordinary malformed or stale
+evidence remains refused.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

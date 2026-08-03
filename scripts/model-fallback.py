@@ -394,6 +394,8 @@ def recover_applied(args, approval):
         Path(args.factory_root), args.ticket, args.failed_run
     )
     if body.get("failed_manifest_digest") != digest(failed_raw):
+        if approval.get("schema") == "ticket-model-fallback-qualification/v1":
+            return None
         raise FallbackError("existing fallback revision references different failed evidence")
     marker = f"Model-Route-Revision: {revision['revision_hash']}"
     fallback_kit = (
@@ -625,6 +627,7 @@ def qualification_apply(args):
         raise FallbackError("sealed successor manifest does not authorize fallback")
     approval = {
         "approval_hash": result["approval_hash"],
+        "failed_run_id": args.failed_run,
         "generation": qualification["generation"],
         "manifest_digest": digest(raw),
         "nonce": result["nonce"],

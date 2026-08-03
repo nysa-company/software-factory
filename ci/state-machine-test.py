@@ -1438,6 +1438,38 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.operator_resume_role(self.args, passport, "test-author")
 
+    def test_operator_resume_authenticates_role_only_reissue(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "authorize builder repair", cwd=self.product)
+        blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": blocked_head,
+            "ticket": "T-110",
+        }
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "OPERATOR RESUME: builder", "OPERATOR RESUME: planner"
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "reissue repair to planner", cwd=self.product)
+
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"),
+            "planner",
+        )
+
     def test_operator_resume_upgrades_one_legacy_owner_exactly(self) -> None:
         self.args.receipt = "b" * 64
         path = self.product / "factory/tickets/T-110.md"

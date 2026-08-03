@@ -431,9 +431,13 @@ PY
           ! "$allow_reviewer_family" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
       json_error "Reviewer exception family is invalid"
     fi
-    fallback_exception_args=()
+    fallback_exception_args=(
+      --workdir "$workdir" --factory-root "$FACTORY_ROOT"
+      --project "$FACTORY_PROJECT" --ticket "$ticket"
+      --failed-run "$failed_run" --reason "$reason"
+    )
     [[ -z "$allow_reviewer_family" ]] ||
-      fallback_exception_args=(--allow-reviewer-family "$allow_reviewer_family")
+      fallback_exception_args+=(--allow-reviewer-family "$allow_reviewer_family")
     validate_control_workdir "$ticket" "$workdir" 1
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
       json_error "ticket route document is missing or unsafe"
@@ -471,9 +475,6 @@ PY
       preview_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-preview.XXXXXX")" ||
         json_error "could not allocate fallback preview"
       if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" preview \
-        --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
-        --project "$FACTORY_PROJECT" --ticket "$ticket" \
-        --failed-run "$failed_run" --reason "$reason" \
         "${fallback_exception_args[@]}" \
         --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$preview_file"; then
         rm -f "$preview_file"
@@ -605,9 +606,6 @@ PY
     apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
       json_error "could not allocate fallback result"
     if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" apply \
-      --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
-      --project "$FACTORY_PROJECT" --ticket "$ticket" \
-      --failed-run "$failed_run" --reason "$reason" \
       "${fallback_exception_args[@]}" \
       --readiness "$readiness" --remote "$CONTROL_REMOTE" \
       --approval "$approval_file" > "$apply_file"; then

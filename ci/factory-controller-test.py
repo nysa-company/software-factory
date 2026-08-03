@@ -1379,6 +1379,91 @@ class FactoryControllerTest(unittest.TestCase):
             )
         )
 
+    def test_reconcile_rearms_exact_externally_applied_fallback(self) -> None:
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 4,
+                "tickets": ["T-110", "T-111", "T-112", "T-113"],
+            }),
+            encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-112",
+            "lease": "",
+            "parked": True,
+            "publication_lease": "",
+            "receipt": "b" * 64,
+            "role": "reviewer",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-112",
+            "worktree": str(self.root / "parked/T-112"),
+        }
+        (self.product / "factory/runs/failed-reviewer.meta").write_text(
+            "run_id=failed-reviewer\n"
+            "ticket=T-112\n"
+            "role=reviewer\n"
+            "route_id=cursor-reviewer\n"
+            "task_submitted=1\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=6\n"
+            "role_exit=provider_failed\n"
+            f"transition_receipt_sha256={'b' * 64}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.role_active = lambda _claim: False
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "claim":
+                return {
+                    "lease_id": "c" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-112",
+                }
+            return {"failed_run_id": "failed-reviewer"}
+
+        controller.json_call = json_call
+        controller.renew = lambda _claim: None
+
+        def migrate(_claim, _publication):
+            self.assertEqual(_claim["receipt"], "b" * 64)
+            self.assertEqual(_claim["role"], "reviewer")
+            calls.append("migrate")
+
+        controller.migrate_passport = migrate
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.recover_repaired_failures([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "c" * 64)
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertLess(calls.index("migrate"), calls.index("provider_fallback"))
+
+        claim.update(status="blocked", receipt="b" * 64, role="reviewer")
+        controller.json_call = lambda *_args, **_kwargs: {
+            "failed_run_id": "different-run"
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "did not bind the failed run"
+        ):
+            controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], "b" * 64)
+        self.assertEqual(claim["role"], "reviewer")
+
     def test_invalid_reviewer_output_retries_only_reviewer(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {

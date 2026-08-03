@@ -23,6 +23,7 @@ APPROVAL_KEYS = frozenset((
     "linear_created_at", "linear_updated_at", "nonce", "observed_at",
     "operator_id", "operator_name", "reason", "schema",
 ))
+LINEAR_TIMESTAMP_SKEW = dt.timedelta(seconds=1)
 
 
 class ApprovalError(ValueError):
@@ -80,7 +81,7 @@ def validate(value, ticket, failed_run, reason, approval_hash=None, now=None):
     observed = timestamp(value.get("observed_at"), "approval observation")
     expires = timestamp(value.get("expires_at"), "approval expiry")
     current = now or dt.datetime.now(dt.timezone.utc)
-    if updated < created or observed < updated or current > expires:
+    if updated + LINEAR_TIMESTAMP_SKEW < created or observed < updated or current > expires:
         raise ApprovalError("fallback approval is stale or expired")
     if not TICKET.fullmatch(ticket):
         raise ApprovalError("ticket identifier is invalid")
