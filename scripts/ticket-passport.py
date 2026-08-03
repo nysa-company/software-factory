@@ -566,7 +566,9 @@ def authorized_history_normalization(
     }
     if (
         authorization != expected
-        or current_state not in {"Planning", "Building", "Review"}
+        or current_state not in {
+            "Planning", "Building", "Review", "Blocked-Escalated",
+        }
         or not SHA.fullmatch(base)
         or not SHA.fullmatch(accepted_factory)
         or not DIGEST.fullmatch(accepted_receipt)

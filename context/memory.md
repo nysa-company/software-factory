@@ -3027,3 +3027,12 @@ canonical one-file protected authorization binds the predecessor evidence and
 charge, successor Factory, exact old/new tree-identical histories, route, and
 protected merge parents; the controller waits for an explicit exact-head
 force-with-lease and performs the passport migration once.
+
+## 2026-08-02 — Decision 222: Blocked normalization does not grant resume
+
+Category: Trust boundary
+
+An exact `Blocked-Escalated` ticket may use protected accepted-test history
+normalization while retaining that state. Normalization changes only the
+authenticated tree-identical lineage; the existing receipt-bound blocker
+resume remains the sole authority that restores its recorded resume state.

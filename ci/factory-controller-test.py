@@ -3389,7 +3389,7 @@ class FactoryControllerTest(unittest.TestCase):
         (cell / "factory/tickets").mkdir(parents=True)
         receipt = "b" * 64
         (cell / "factory/tickets/T-110.md").write_text(
-            "# T-110\n\nState: Building\n\n"
+            "# T-110\n\nState: Blocked-Escalated\nResume-State: Building\n\n"
             f"OPERATOR RESUME: builder\nOPERATOR RESUME RECEIPT: {receipt}\n",
             encoding="utf-8",
         )

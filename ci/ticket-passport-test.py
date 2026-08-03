@@ -866,7 +866,7 @@ class TicketPassportTest(unittest.TestCase):
 
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
-            "# T-110\n\nState: Building\n\n"
+            "# T-110\n\nState: Blocked-Escalated\nResume-State: Building\n\n"
             "## Frozen contract — version 6\n"
             "- **Freeze result — PASS.** Contract version 6 is frozen.\n",
             encoding="utf-8",
@@ -971,7 +971,7 @@ class TicketPassportTest(unittest.TestCase):
             "repository": "nysa-company/relay-factory",
             "route_plan_sha256": previous["route_plan_sha256"],
             "schema": PASSPORT.NORMALIZATION_SCHEMA,
-            "state": "Building",
+            "state": "Blocked-Escalated",
             "ticket": "T-110",
         }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         run("git", "add", ".", cwd=protected)
