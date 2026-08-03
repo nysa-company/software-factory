@@ -977,7 +977,9 @@ def build_parser():
         migrate.add_argument("--kit-sha", required=True)
         migrate.add_argument("--migrated-at", required=True)
         migrate.add_argument("--readiness", required=True)
-        if name == "migrate":
+        if name == "migrate-plan":
+            migrate.add_argument("--include-journal", action="store_true")
+        else:
             migrate.add_argument("--approve-hash", required=True)
             migrate.add_argument("--output", required=True)
     fallback_plan = commands.add_parser("fallback-plan")
@@ -1283,11 +1285,19 @@ def run(args):
         )
         preview_hash = ROUTER.content_hash(journal)
         if args.command == "migrate-plan":
-            return {
-                "journal": journal,
+            preview = {
+                "journal_kit_sha": journal["kit_sha"],
+                "journal_revision_count": len(journal["revisions"]),
+                "journal_tail_sha256": journal["revisions"][-1]["revision_hash"],
                 "preview_hash": preview_hash,
+                "readiness_sha256": ROUTER.content_hash(readiness),
                 "schema": "ticket-model-route-migration-preview/v1",
+                "source_document_sha256": hashlib.sha256(source_blob).hexdigest(),
+                "ticket": journal["ticket"],
             }
+            if args.include_journal:
+                preview["journal"] = journal
+            return preview
         if args.approve_hash != preview_hash:
             raise ManagerError("approved hash does not match migration preview")
         output = Path(args.output)

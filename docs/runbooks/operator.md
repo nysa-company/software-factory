@@ -154,7 +154,7 @@ Use only the selected release through the sealed launcher:
 ~/.factory/bin/factory-launch <project> models enable --scope-type account-route --scope-id codex-native --json
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
-~/.factory/bin/factory-launch <project> models migrate --ticket T-123 --workdir /absolute/ticket-worktree --approve-hash <preview-hash> --approved-by <operator-id> --json
+~/.factory/bin/factory-launch <project> models migrate --ticket T-123 --workdir /absolute/ticket-worktree --approve-hash <preview-hash> --readiness-hash <preview-readiness-hash> --approved-by <operator-id> --json
 ~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ~/.factory/bin/factory-launch <project> models fallback --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ```
@@ -182,7 +182,9 @@ re-resolve. Each run re-probes only its exact pinned route, and any failure
 after task submission ends the run without retry.
 
 Contract 1.4 tickets migrate the v1 plan once with `migrate-plan`, followed by
-`models migrate` using the exact preview hash and operator ID. For a later
+`models migrate` using the exact preview and readiness hashes plus operator ID.
+The ordinary preview is compact; add `--include-journal` before `--json` only
+when the complete authenticated candidate is needed for diagnostics. For a later
 eligible failure:
 
 1. Run `fallback-plan` and post its exact `linear_comment` as a Linear comment.

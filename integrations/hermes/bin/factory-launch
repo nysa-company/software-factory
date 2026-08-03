@@ -1570,29 +1570,33 @@ PY
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
            "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "model route migration requires contract 1.4.0 or newer"
-        [[ $# -eq 6 && "$2" == "--ticket" && "$4" == "--workdir" &&
-           "$6" == "--json" ]] || usage
+        [[ ( $# -eq 6 && "$2" == "--ticket" && "$4" == "--workdir" &&
+             "$6" == "--json" ) ||
+           ( $# -eq 7 && "$2" == "--ticket" && "$4" == "--workdir" &&
+             "$6" == "--include-journal" && "$7" == "--json" ) ]] || usage
         [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
         resolve_product_workdir "$5"
         validate_ticket_worktree "$3"
         MODEL_ARGS=("$MODEL_ACTION" --ticket "$3" --workdir "$RESOLVED_WORKDIR")
+        [[ $# -eq 6 ]] || MODEL_ARGS+=(--include-journal)
         add_certified_origin_env
         ;;
       migrate)
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
            "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
           die "model route migration requires contract 1.4.0 or newer"
-        [[ $# -eq 10 && "$2" == "--ticket" && "$4" == "--workdir" &&
-           "$6" == "--approve-hash" && "$8" == "--approved-by" &&
-           "${10}" == "--json" ]] || usage
+        [[ $# -eq 12 && "$2" == "--ticket" && "$4" == "--workdir" &&
+           "$6" == "--approve-hash" && "$8" == "--readiness-hash" &&
+           "${10}" == "--approved-by" && "${12}" == "--json" ]] || usage
         [[ "$3" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
         [[ "$7" =~ ^[0-9a-f]{64}$ ]] || die "invalid migration approval hash"
-        [[ "$9" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$9" != "auto" ]] ||
+        [[ "$9" =~ ^[0-9a-f]{64}$ ]] || die "invalid migration readiness hash"
+        [[ "${11}" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "${11}" != "auto" ]] ||
           die "invalid migration approver identifier"
         resolve_product_workdir "$5"
         validate_ticket_worktree "$3"
         MODEL_ARGS=("$MODEL_ACTION" --ticket "$3" --workdir "$RESOLVED_WORKDIR" \
-          --approve-hash "$7" --approved-by "$9")
+          --approve-hash "$7" --readiness-hash "$9" --approved-by "${11}")
         add_certified_origin_env
         MODEL_MUTATION=1
         ;;

@@ -22,13 +22,11 @@ PIN_TICKET_RELATIVE=""
 PIN_PLAN_RELATIVE=""
 PIN_PLAN_EXISTED=0
 TEMPORARY_FILE=""
-TEMPORARY_FILE_2=""
 FALLBACK_LAUNCH_LOCK=""
 
 cleanup() {
   local rc=$?
   [[ -z "$TEMPORARY_FILE" ]] || rm -f "$TEMPORARY_FILE"
-  [[ -z "$TEMPORARY_FILE_2" ]] || rm -f "$TEMPORARY_FILE_2"
   [[ -z "$FALLBACK_LAUNCH_LOCK" ]] || rmdir "$FALLBACK_LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$PIN_PRECOMMIT" -eq 1 && -n "$PIN_WORKDIR" ]]; then
     git -C "$PIN_WORKDIR" restore --staged --worktree -- \
@@ -235,13 +233,16 @@ case "$command_name" in
     cat "$resolution"
     ;;
   migrate-plan|migrate)
-    ticket="" workdir="" approve_hash="" approved_by=""
+    ticket="" workdir="" approve_hash="" readiness_hash="" approved_by=""
+    include_journal=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --ticket) [[ $# -ge 2 ]] || json_error "--ticket requires a value"; ticket="$2"; shift 2 ;;
         --workdir) [[ $# -ge 2 ]] || json_error "--workdir requires a value"; workdir="$2"; shift 2 ;;
         --approve-hash) [[ $# -ge 2 ]] || json_error "--approve-hash requires a value"; approve_hash="$2"; shift 2 ;;
+        --readiness-hash) [[ $# -ge 2 ]] || json_error "--readiness-hash requires a value"; readiness_hash="$2"; shift 2 ;;
         --approved-by) [[ $# -ge 2 ]] || json_error "--approved-by requires a value"; approved_by="$2"; shift 2 ;;
+        --include-journal) include_journal=1; shift ;;
         *) json_error "unknown migration argument: $1" ;;
       esac
     done
@@ -254,9 +255,13 @@ case "$command_name" in
     if [[ "$command_name" == "migrate" ]]; then
       [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
         json_error "migration approval hash is invalid"
+      [[ "$readiness_hash" =~ ^[0-9a-f]{64}$ ]] ||
+        json_error "migration readiness hash is invalid"
       [[ "$approved_by" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ &&
          "$approved_by" != "auto" ]] ||
         json_error "migration approver is invalid"
+      [[ "$include_journal" -eq 0 ]] ||
+        json_error "--include-journal is valid only for migration preview"
     fi
     validate_control_workdir "$ticket" "$workdir" 0
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
@@ -304,42 +309,36 @@ print(dt.datetime.fromtimestamp(int(sys.argv[1]), dt.timezone.utc)
       .replace(microsecond=0).isoformat().replace("+00:00", "Z"))
 PY
 )" || json_error "cannot normalize migration timestamp"
-    preview="$(manager migrate-plan --ticket-plan "$CONTROL_PLAN_FILE" \
-      --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
-      --migrated-at "$migrated_at" --readiness "$(cat "$readiness")")" ||
-      json_error "route migration preview failed"
-    preview_hash="$(python3 - "$preview" <<'PY'
+    if [[ "$include_journal" -eq 1 ]]; then
+      preview="$(manager migrate-plan --ticket-plan "$CONTROL_PLAN_FILE" \
+        --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
+        --migrated-at "$migrated_at" --readiness "$(cat "$readiness")" \
+        --include-journal)" || json_error "route migration preview failed"
+    else
+      preview="$(manager migrate-plan --ticket-plan "$CONTROL_PLAN_FILE" \
+        --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
+        --migrated-at "$migrated_at" --readiness "$(cat "$readiness")")" ||
+        json_error "route migration preview failed"
+    fi
+    preview_values="$(python3 - "$preview" <<'PY'
 import json, re, sys
 value = json.loads(sys.argv[1])
 digest = value.get("preview_hash", "")
-if not re.fullmatch(r"[0-9a-f]{64}", digest):
+readiness = value.get("readiness_sha256", "")
+if not all(re.fullmatch(r"[0-9a-f]{64}", item) for item in (digest, readiness)):
     raise SystemExit(2)
-print(digest)
+print(digest + "\t" + readiness)
 PY
 )" || json_error "route migration preview is malformed"
+    IFS=$'\t' read -r preview_hash preview_readiness_hash <<< "$preview_values"
     if [[ "$command_name" == "migrate-plan" ]]; then
       printf '%s\n' "$preview"
       exit 0
     fi
     [[ "$approve_hash" == "$preview_hash" ]] ||
       json_error "migration approval hash does not match preview"
-    [[ "$approved_by" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$approved_by" != "auto" ]] ||
-      json_error "migration approver is invalid"
-    current_readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-migration-current.XXXXXX")" ||
-      json_error "could not allocate current migration readiness output"
-    TEMPORARY_FILE_2="$current_readiness"
-    current_plan_probe="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-migration-current-plan.XXXXXX")" ||
-      json_error "could not allocate current migration probe output"
-    rm -f "$current_readiness"
-    factory_resolve_model_profile "$profile_id" "$current_plan_probe" \
-      "$FACTORY_DISABLED_ROUTE_IDS" "$current_readiness" >/dev/null 2>&1 || true
-    rm -f "$current_plan_probe"
-    [[ -s "$current_readiness" ]] ||
-      json_error "current model migration readiness probes failed"
-    cmp -s "$readiness" "$current_readiness" ||
+    [[ "$readiness_hash" == "$preview_readiness_hash" ]] ||
       json_error "model migration readiness changed after approval"
-    rm -f "$current_readiness"
-    TEMPORARY_FILE_2=""
     expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
     [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
       json_error "remote tracking state is unavailable"

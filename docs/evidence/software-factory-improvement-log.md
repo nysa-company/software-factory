@@ -4791,7 +4791,7 @@ origin before workspace preparation.
 
 ## FI-20260802-164 — Successor ticket migrations ran serially
 
-Status: Focused overlap regression green; protected CI and successor canary pending
+Status: Focused overlap and compact-preview regressions green; protected CI and successor canary pending
 Priority: P0 (#181)
 Area: migration and resume latency
 Owner: Factory
@@ -4801,6 +4801,13 @@ authenticated resume completions because tickets ran one after another.
 Smallest repair: overlap only independent per-ticket recovery calls up to the
 already-certified capacity. Every ticket retains its existing launcher,
 passport, route, lease, repair, and accounting sequence.
+Additional occurrence: a 71-revision journal produced a 412,396-byte ordinary
+preview in the representative fixture, and live apply repeated the complete
+readiness round. Ordinary output now retains only exact source, readiness,
+journal-tail, and approval digests; full journal output is explicit diagnostics.
+Apply compares one fresh readiness digest to the approved preview instead of
+probing twice, while the candidate journal, preview hash, tamper decisions, and
+failure reasons remain identical.
 
 ## Maintenance rule
 

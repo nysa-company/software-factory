@@ -301,7 +301,7 @@ class ModelControlTest(unittest.TestCase):
             "",
         )
 
-    def test_migration_preview_and_apply_probe_current_readiness(self):
+    def test_migration_preview_binds_one_current_readiness_probe_per_command(self):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
         release = self.base / "release"
         shutil.copytree(ROOT / "scripts", release / "scripts")
@@ -312,7 +312,7 @@ class ModelControlTest(unittest.TestCase):
     count="$(awk 'NR==1 {print; exit}' "$FACTORY_TEST_MIGRATION_READINESS_COUNTER" 2>/dev/null || true)"
     count=$((${count:-0} + 1))
     printf '%s\\n' "$count" > "$FACTORY_TEST_MIGRATION_READINESS_COUNTER"
-    if [[ "$count" -eq 2 ]]; then
+    if [[ "$count" -eq 1 ]]; then
       python3 - "$tmp/readiness.json" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -368,6 +368,8 @@ PY
             "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)
         )
         preview_probes = trace.read_text().splitlines()
+        self.assertNotIn("journal", preview)
+        self.assertRegex(preview["readiness_sha256"], r"^[0-9a-f]{64}$")
         route_plan = self.workdir / "factory" / "route-plans" / "T-901.json"
         before_head = subprocess.check_output(
             ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True
@@ -384,6 +386,7 @@ PY
                 str(release / "scripts" / "model-control.sh"), "migrate",
                 "--ticket", "T-901", "--workdir", str(self.workdir),
                 "--approve-hash", preview["preview_hash"],
+                "--readiness-hash", preview["readiness_sha256"],
                 "--approved-by", "tester",
             ],
             env=drift_environment,
@@ -407,12 +410,24 @@ PY
             ),
             "",
         )
+        after_drift_probes = trace.read_text().splitlines()
+        self.assertEqual(
+            len(after_drift_probes) - len(preview_probes), len(preview_probes)
+        )
+        self.assertEqual(
+            (self.base / "migration-readiness-counter").read_text().strip(), "1"
+        )
         applied = migrate(
             "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
-            "--approve-hash", preview["preview_hash"], "--approved-by", "tester",
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester",
         )
         self.assertGreaterEqual(len(preview_probes), 6)
-        self.assertGreaterEqual(len(trace.read_text().splitlines()), 18)
+        self.assertEqual(
+            len(trace.read_text().splitlines()) - len(after_drift_probes),
+            len(preview_probes),
+        )
         self.assertEqual(applied["preview_hash"], preview["preview_hash"])
         self.assertEqual(
             json.loads(

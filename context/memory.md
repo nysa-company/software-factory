@@ -4,6 +4,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Ordinary route-migration previews return compact source, readiness,
+  journal-tail, and approval digests. `--include-journal` is the explicit
+  diagnostic path. Apply performs one fresh readiness round and requires the
+  exact preview readiness digest; it does not repeat identical probes inside
+  the same command.
 - Linear description comparison treats only three-space soft wrapping inside a
   list paragraph as semantically inert. Nested list structure remains
   significant, and Git retains the exact canonical ticket contract.
@@ -2925,3 +2930,13 @@ Authenticated migration and resume for independent tickets may overlap up to
 the certified ticket capacity. Within each ticket, passport migration, route
 binding, lease replacement, repair authentication, and accounting remain in
 their original order behind the same launcher controls.
+
+## 2026-08-02 — Decision 215: Migration approval binds one readiness snapshot
+
+Category: Performance
+
+Ordinary migration preview no longer serializes the complete retained journal;
+an explicit diagnostic flag remains available. Preview exposes the exact
+readiness digest, and apply accepts only that digest after one fresh probe
+round, preserving approval, journal, and drift refusal without a duplicate
+round in the same command.
