@@ -405,19 +405,22 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_qualification_restart_counts_protected_done_ticket(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]
+        source_factory = "b" * 40
         (self.product / "factory/PROJECT.env").write_text(
             "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8"
         )
         (self.product / "factory/QUALIFICATION.json").write_text(
             json.dumps({
-                "budget_usd": "100.000000",
+                "budget_usd": "300.000000",
                 "capacity": 3,
                 "contract_version": "1.8.0",
                 "factory_sha": "a" * 40,
                 "generation": 1,
-                "per_run_budget_usd": "2.000000",
-                "per_ticket_budget_usd": "25.000000",
+                "mode": "successor",
+                "per_run_budget_usd": "10.000000",
+                "per_ticket_budget_usd": "100.000000",
                 "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "source_factory_sha": source_factory,
                 "target_done": 3,
                 "tickets": tickets,
             }),
@@ -428,6 +431,104 @@ class FactoryControllerTest(unittest.TestCase):
             "State: Done\n", encoding="utf-8"
         )
         first = CONTROL.Controller(self.args)
+        passport_path = self.state / "passports/T-110.json"
+        passport_path.parent.mkdir(mode=0o700)
+        source_passport = "c" * 64
+        done_kit = "c" * 40
+        pr_head = "d" * 40
+        merge_commit = "e" * 40
+        CONTROL.write(passport_path, {
+            "branch": "ticket/T-110",
+            "charge_records": [],
+            "completed_role_evidence": [],
+            "current_state": "Approved",
+            "factory_release_history": [{
+                "contract_version": "1.8.0", "factory_sha": done_kit,
+            }, {
+                "contract_version": "1.8.0", "factory_sha": source_factory,
+            }],
+            "factory_sha": source_factory,
+            "head_sha": pr_head,
+            "migration_history": [],
+            "passport_sha256": source_passport,
+            "publication_state": "merged",
+            "ticket": "T-110",
+        })
+        done_path = self.product / "factory/attestations/T-110/done.json"
+        done_path.parent.mkdir(parents=True)
+        done_path.write_text(json.dumps({
+            "approved_pr_head": pr_head,
+            "kit_sha": done_kit,
+            "merge_commit": merge_commit,
+            "pr_number": 94,
+            "schema": "nysa.software-factory.ticket-done/v1",
+            "ticket": "T-110",
+        }), encoding="utf-8")
+        old_completion = {
+            "event": "ticket_complete",
+            "factory_sha": source_factory,
+            "observed_at_epoch_ns": 1,
+            "schema": CONTROL.EVENT_SCHEMA,
+            "ticket": "T-110",
+        }
+        old_completion["event_sha256"] = hashlib.sha256(
+            CONTROL.canonical(old_completion).encode()
+        ).hexdigest()
+        CONTROL.write(first.events / "old-completion.json", old_completion)
+        first.worktrees_by_branch = lambda: {
+            "refs/heads/ticket/T-110": [str(self.root / "terminal-cell")],
+        }
+        migrations = []
+
+        def passport_call(*args, **_kwargs):
+            passport = CONTROL.read(passport_path)
+            if args[:2] == ("passport", "validate"):
+                return {"passport": passport["passport_sha256"], "status": "ok"}
+            if args[:2] == ("passport", "migrate"):
+                migrations.append("T-110")
+                self.assertEqual(
+                    args[args.index("--publication-state") + 1], "preserve"
+                )
+                candidate_passport = "f" * 64
+                passport.update({
+                    "factory_sha": "a" * 40,
+                    "parent_digest": source_passport,
+                    "passport_sha256": candidate_passport,
+                })
+                passport["factory_release_history"].append({
+                    "contract_version": "1.8.0", "factory_sha": "a" * 40,
+                })
+                passport["migration_history"].append({
+                    "from_factory_sha": source_factory,
+                    "from_passport_sha256": source_passport,
+                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                    "to_factory_sha": "a" * 40,
+                })
+                CONTROL.write(passport_path, passport)
+                return {"passport": candidate_passport, "status": "ok"}
+            raise AssertionError(args)
+
+        first.json_call = passport_call
+        nonterminal = CONTROL.read(passport_path)
+        nonterminal["publication_state"] = "validating"
+        CONTROL.write(passport_path, nonterminal)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "source terminal is invalid"
+        ):
+            first.record_qualification_done_targets()
+        self.assertEqual(migrations, [])
+        self.assertFalse(
+            (
+                self.state
+                / f"qualification-terminal-adoption-{'a' * 40}-T-110.json"
+            ).exists()
+        )
+        self.assertFalse(any(
+            CONTROL.read(path).get("factory_sha") == "a" * 40
+            for path in self.state.glob("events/*.json")
+        ))
+        nonterminal["publication_state"] = "merged"
+        CONTROL.write(passport_path, nonterminal)
         for number, ticket in enumerate(tickets[1:], 1):
             cell = self.root / f"cell-{number}"
             cell.mkdir()
@@ -451,6 +552,19 @@ class FactoryControllerTest(unittest.TestCase):
         result = first.reconcile()
         self.assertEqual(result["status"], "restart_required")
         self.assertEqual(result["active"], 2)
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        self.assertEqual(
+            [
+                item["ticket"] for item in events
+                if item["event"] == "ticket_complete"
+                and item["factory_sha"] == "a" * 40
+            ],
+            ["T-110"],
+        )
+        self.assertEqual(migrations, ["T-110"])
+        self.assertEqual(CONTROL.read(passport_path)["factory_sha"], "a" * 40)
 
         second = CONTROL.Controller(self.args)
         second.recover_missing_passport_claims = lambda _claims: None
@@ -463,6 +577,7 @@ class FactoryControllerTest(unittest.TestCase):
             "status": "active", "ticket": claim["ticket"],
         }
         self.assertEqual(second.reconcile()["active"], 2)
+        self.assertEqual(second.reconcile()["active"], 2)
         events = [
             CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
         ]
@@ -472,6 +587,66 @@ class FactoryControllerTest(unittest.TestCase):
                 {"event": item["event"], "tickets": item.get("tickets")}
                 for item in events
             ],
+        )
+        self.assertEqual(
+            [
+                item["ticket"] for item in events
+                if item["event"] == "ticket_complete"
+                and item["factory_sha"] == "a" * 40
+            ],
+            ["T-110"],
+        )
+        self.assertEqual(
+            [
+                item["ticket"] for item in events
+                if item["event"] == "terminal_adopted"
+                and item["factory_sha"] == "a" * 40
+            ],
+            ["T-110"],
+        )
+        self.assertTrue(
+            (
+                self.state
+                / f"qualification-terminal-adoption-{'a' * 40}-T-110.json"
+            ).is_file()
+        )
+        self.assertNotIn(
+            "T-110",
+            {
+                item["ticket"] for item in events
+                if item["event"] in {"attempt_started", "ticket_claimed"}
+            },
+        )
+
+        (self.product / "factory/tickets/T-111.md").write_text(
+            "State: Done\n", encoding="utf-8"
+        )
+        CONTROL.write(self.state / "passports/T-111.json", {
+            "charge_records": [{"factory_sha": "a" * 40}],
+            "completed_role_evidence": [],
+            "factory_sha": "a" * 40,
+            "migration_history": [],
+        })
+        adoption_calls = []
+        original_adoption = second.adopt_qualification_terminal
+
+        def track_adoption(ticket):
+            adoption_calls.append(ticket)
+            return original_adoption(ticket)
+
+        second.adopt_qualification_terminal = track_adoption
+        second.record_qualification_done_targets()
+        self.assertEqual(adoption_calls, ["T-110"])
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        self.assertEqual(
+            [
+                item["ticket"] for item in events
+                if item["event"] == "ticket_complete"
+                and item["factory_sha"] == "a" * 40
+            ],
+            ["T-110", "T-111"],
         )
 
     def test_three_ticket_qualification_parks_an_excluded_claim(self) -> None:

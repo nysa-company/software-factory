@@ -818,7 +818,15 @@ Any residual claim is renewed and released before scheduling, while the
 historical passport remains available for audit and reduction.
 Qualification restart and recovery count those protected Done targets together
 with runnable claims, retain the complete cohort in their boundary events, and
-schedule only unfinished tickets.
+schedule only unfinished tickets. The controller also records one
+candidate-bound completion event for each claimless protected Done target. In
+successor qualification it first uses the surviving clean ticket cell to
+authenticate and migrate the merged terminal passport without a claim, role,
+publication lease, or charge, then seals the source/candidate passport digests
+and protected Done/PR identity in a typed terminal-adoption marker and event.
+A valid marker and exact event make later reconciliation a no-op. The reducer
+exempts only that adopted ticket from a candidate publication lease pair and
+rejects duplicate adoption, completion, acquisition, or release evidence.
 If protected main advances after review, `refresh` first disables any stale
 auto-merge request, non-force merges the exact certified main tip, removes the
 old bundle and approval receipts, resets the ticket to Review, and commits a

@@ -40,6 +40,9 @@ RECONCILE_INTERVAL_SECONDS = 15
 COMPLETION_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v1"
 )
+TERMINAL_ADOPTION_SCHEMA = (
+    "nysa.software-factory.qualification-terminal-adoption/v1"
+)
 
 
 class ControllerError(ValueError):
@@ -331,6 +334,286 @@ class Controller:
             stream.write(canonical(value) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+
+    def adopt_qualification_terminal(self, ticket: str) -> dict[str, Any]:
+        if (
+            not self.qualification
+            or self.qualification.get("mode") != "successor"
+        ):
+            raise ControllerError("terminal adoption requires successor qualification")
+        source = self.qualification["source_factory_sha"]
+        passport_path = self.state / "passports" / f"{ticket}.json"
+        done_path = (
+            self.product / "factory" / "attestations" / ticket / "done.json"
+        )
+        try:
+            passport = read(passport_path)
+            done_info = done_path.lstat()
+            if (
+                not stat.S_ISREG(done_info.st_mode)
+                or stat.S_IMODE(done_info.st_mode) & 0o022
+                or done_info.st_size > 1_000_000
+            ):
+                raise ControllerError("qualification terminal attestation is unsafe")
+            done = json.loads(done_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError) as error:
+            raise ControllerError("qualification terminal adoption is incomplete") from error
+        marker_name = (
+            f"qualification-terminal-adoption-{self.release_path.name}-{ticket}"
+        )
+        marker_path = self.state / f"{marker_name}.json"
+        if passport.get("factory_sha") == source:
+            branch = f"refs/heads/ticket/{ticket}"
+            worktrees = self.worktrees_by_branch().get(branch, [])
+            if len(worktrees) != 1 or marker_path.exists():
+                raise ControllerError("qualification terminal adoption cell is ambiguous")
+            claim = {
+                "branch": f"ticket/{ticket}",
+                "ticket": ticket,
+                "worktree": worktrees[0],
+            }
+            validation = self.json_call(
+                "passport", "validate", "--ticket", ticket,
+                "--workdir", worktrees[0], "--json",
+            )
+            if (
+                validation.get("status") != "ok"
+                or validation.get("passport") != passport.get("passport_sha256")
+            ):
+                raise ControllerError("qualification terminal passport is invalid")
+            source_history = {
+                item.get("factory_sha")
+                for item in passport.get("factory_release_history", [])
+                if isinstance(item, dict)
+            }
+            source_evidence = [
+                passport.get("charge_records"),
+                passport.get("completed_role_evidence"),
+            ]
+            if (
+                passport.get("ticket") != ticket
+                or passport.get("branch") != f"ticket/{ticket}"
+                or passport.get("current_state") != "Approved"
+                or passport.get("publication_state") != "merged"
+                or any(
+                    not isinstance(records, list) for records in source_evidence
+                )
+                or any(
+                    item.get("factory_sha") == self.release_path.name
+                    for records in source_evidence if isinstance(records, list)
+                    for item in records if isinstance(item, dict)
+                )
+                or not DIGEST.fullmatch(passport.get("passport_sha256", ""))
+                or source not in source_history
+                or done.get("schema")
+                != "nysa.software-factory.ticket-done/v1"
+                or done.get("ticket") != ticket
+                or done.get("kit_sha") not in source_history
+                or done.get("approved_pr_head") != passport.get("head_sha")
+                or not isinstance(done.get("pr_number"), int)
+                or isinstance(done.get("pr_number"), bool)
+                or not SHA.fullmatch(done.get("approved_pr_head", ""))
+                or not SHA.fullmatch(done.get("merge_commit", ""))
+            ):
+                raise ControllerError("qualification source terminal is invalid")
+            migrated = self.migrate_passport(claim, "preserve")
+            passport = read(passport_path)
+            if (
+                migrated.get("status") != "ok"
+                or migrated.get("passport") != passport.get("passport_sha256")
+            ):
+                raise ControllerError("qualification terminal passport migration failed")
+        elif passport.get("factory_sha") != self.release_path.name:
+            raise ControllerError("qualification terminal passport has unknown release")
+        elif not marker_path.exists():
+            branch = f"refs/heads/ticket/{ticket}"
+            worktrees = self.worktrees_by_branch().get(branch, [])
+            if len(worktrees) != 1:
+                raise ControllerError("qualification terminal adoption cell is ambiguous")
+            validation = self.json_call(
+                "passport", "validate", "--ticket", ticket,
+                "--workdir", worktrees[0], "--json",
+            )
+            if (
+                validation.get("status") != "ok"
+                or validation.get("passport") != passport.get("passport_sha256")
+            ):
+                raise ControllerError("qualification terminal passport is invalid")
+
+        migrations = passport.get("migration_history")
+        history = passport.get("factory_release_history")
+        edge = migrations[-1] if isinstance(migrations, list) and migrations else {}
+        source_passport = edge.get("from_passport_sha256")
+        evidence = [
+            passport.get("charge_records"), passport.get("completed_role_evidence")
+        ]
+        candidate_records = [
+            item for records in evidence if isinstance(records, list)
+            for item in records
+            if isinstance(item, dict)
+            and item.get("factory_sha") == self.release_path.name
+        ]
+        history_shas = {
+            item.get("factory_sha") for item in history or []
+            if isinstance(item, dict)
+        }
+        pre_candidate_history = {
+            item.get("factory_sha") for item in history or []
+            if isinstance(item, dict)
+            and item.get("factory_sha") != self.release_path.name
+        }
+        if (
+            passport.get("ticket") != ticket
+            or passport.get("branch") != f"ticket/{ticket}"
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("current_state") != "Approved"
+            or passport.get("publication_state") != "merged"
+            or any(not isinstance(records, list) for records in evidence)
+            or not DIGEST.fullmatch(passport.get("passport_sha256", ""))
+            or passport.get("parent_digest") != source_passport
+            or edge.get("schema")
+            != "nysa.software-factory.ticket-passport-migration/v2"
+            or edge.get("from_factory_sha") != source
+            or edge.get("to_factory_sha") != self.release_path.name
+            or not DIGEST.fullmatch(source_passport or "")
+            or not {source, self.release_path.name}.issubset(history_shas)
+            or candidate_records
+            or done.get("schema") != "nysa.software-factory.ticket-done/v1"
+            or done.get("ticket") != ticket
+            or done.get("kit_sha") not in pre_candidate_history
+            or done.get("approved_pr_head") != passport.get("head_sha")
+            or not isinstance(done.get("pr_number"), int)
+            or isinstance(done.get("pr_number"), bool)
+            or not SHA.fullmatch(done.get("approved_pr_head", ""))
+            or not SHA.fullmatch(done.get("merge_commit", ""))
+        ):
+            raise ControllerError("qualification terminal adoption is invalid")
+        value = {
+            "approved_pr_head": done["approved_pr_head"],
+            "candidate_passport_sha256": passport["passport_sha256"],
+            "done_sha256": hashlib.sha256(canonical(done).encode()).hexdigest(),
+            "factory_sha": self.release_path.name,
+            "merge_commit": done["merge_commit"],
+            "pr_number": done["pr_number"],
+            "schema": TERMINAL_ADOPTION_SCHEMA,
+            "source_current_state": "Approved",
+            "source_factory_sha": source,
+            "source_passport_sha256": source_passport,
+            "source_publication_state": "merged",
+            "ticket": ticket,
+        }
+        if marker_path.exists():
+            if read(marker_path) != value:
+                raise ControllerError("qualification terminal adoption marker changed")
+        elif not self.marker(marker_name, value):
+            raise ControllerError("qualification terminal adoption marker raced")
+        return value
+
+    def record_qualification_done_targets(self) -> None:
+        if not self.qualification:
+            return
+        completed = {
+            ticket for ticket in self.qualification["tickets"]
+            if self.product_ticket_done(ticket)
+        }
+        if not completed:
+            return
+        records = []
+        for path in sorted(self.events.glob("*.json")):
+            value = read(path)
+            digest = value.pop("event_sha256", "")
+            if (
+                value.get("schema") != EVENT_SCHEMA
+                or digest != hashlib.sha256(canonical(value).encode()).hexdigest()
+            ):
+                raise ControllerError("controller event evidence is invalid")
+            records.append(value)
+        for ticket in sorted(completed):
+            matching_complete = [
+                item for item in records
+                if item.get("factory_sha") == self.release_path.name
+                and item.get("event") == "ticket_complete"
+                and item.get("ticket") == ticket
+            ]
+            matching_adoption = [
+                item for item in records
+                if item.get("factory_sha") == self.release_path.name
+                and item.get("event") == "terminal_adopted"
+                and item.get("ticket") == ticket
+            ]
+            if len(matching_complete) > 1 or len(matching_adoption) > 1:
+                raise ControllerError("qualification terminal evidence was duplicated")
+            adoption = None
+            if self.qualification.get("mode") == "successor":
+                passport = read(
+                    self.state / "passports" / f"{ticket}.json"
+                )
+                edge = (
+                    passport.get("migration_history", [])[-1]
+                    if passport.get("migration_history") else {}
+                )
+                candidate_evidence = any(
+                    item.get("factory_sha") == self.release_path.name
+                    for name in ("charge_records", "completed_role_evidence")
+                    for item in passport.get(name, []) or []
+                    if isinstance(item, dict)
+                )
+                candidate_publication = any(
+                    item.get("factory_sha") == self.release_path.name
+                    and item.get("ticket") == ticket
+                    and item.get("event") in {
+                        "publication_acquired", "publication_released",
+                    }
+                    for item in records
+                )
+                adoption_marker = self.state / (
+                    "qualification-terminal-adoption-"
+                    f"{self.release_path.name}-{ticket}.json"
+                )
+                source = self.qualification["source_factory_sha"]
+                if (
+                    passport.get("factory_sha") == source
+                    or adoption_marker.exists()
+                    or matching_adoption
+                    or (
+                        passport.get("factory_sha") == self.release_path.name
+                        and not candidate_evidence
+                        and not candidate_publication
+                        and edge.get("from_factory_sha") == source
+                        and edge.get("to_factory_sha") == self.release_path.name
+                    )
+                ):
+                    adoption = self.adopt_qualification_terminal(ticket)
+            if adoption:
+                details = {
+                    "adoption_schema": adoption["schema"],
+                    "approved_pr_head": adoption["approved_pr_head"],
+                    "candidate_passport_sha256": adoption[
+                        "candidate_passport_sha256"
+                    ],
+                    "done_sha256": adoption["done_sha256"],
+                    "merge_commit": adoption["merge_commit"],
+                    "pr_number": adoption["pr_number"],
+                    "source_current_state": adoption["source_current_state"],
+                    "source_factory_sha": adoption["source_factory_sha"],
+                    "source_passport_sha256": adoption[
+                        "source_passport_sha256"
+                    ],
+                    "source_publication_state": adoption[
+                        "source_publication_state"
+                    ],
+                }
+                if matching_adoption and any(
+                    matching_adoption[0].get(name) != value
+                    for name, value in details.items()
+                ):
+                    raise ControllerError("qualification terminal evidence changed")
+                if not matching_adoption:
+                    self.event("terminal_adopted", ticket, **details)
+            elif matching_adoption:
+                raise ControllerError("qualification terminal adoption is unexpected")
+            if not matching_complete:
+                self.event("ticket_complete", ticket)
 
     def record_admission_failure(
         self, error: ControllerError, claims: list[dict[str, Any]]
@@ -1365,11 +1648,13 @@ class Controller:
             "--workdir", claim["worktree"], "--json",
         )
 
-    def migrate_passport(self, claim: dict[str, Any], publication: str) -> None:
+    def migrate_passport(
+        self, claim: dict[str, Any], publication: str
+    ) -> dict[str, Any]:
         path = self.state / "passports" / f"{claim['ticket']}.json"
         if not path.exists():
-            return
-        self.json_call(
+            return {}
+        return self.json_call(
             "passport", "migrate", "--ticket", claim["ticket"],
             "--publication-state", publication,
             "--workdir", claim["worktree"], "--json",
@@ -3054,6 +3339,7 @@ class Controller:
             self.ensure_lease(claim, "terminal-cleanup")
             self.release(claim)
         existing = [claim for claim in existing if claim not in completed]
+        self.record_qualification_done_targets()
         self.recover_missing_passport_claims(existing)
         self.recover_each(
             existing, self.recover_interrupted_claims, "interrupted-reconciliation",
