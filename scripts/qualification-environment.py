@@ -22,6 +22,7 @@ from typing import Any
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import successor_release_lineage  # noqa: E402
+from legacy_closeout import ValidationError as TerminalError, protected_terminal  # noqa: E402
 from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
     ensure_ticket as ensure_qualification_artifacts,
@@ -445,9 +446,12 @@ def takeover_source(
             ):
                 raise EnvironmentError("takeover passport does not match the source")
         for ticket in manifest["tickets"]:
-            ensure_qualification_artifacts(
-                product, state, ticket, sources=(source_product,)
-            )
+            try:
+                protected_terminal(product, ticket)
+            except TerminalError:
+                ensure_qualification_artifacts(
+                    product, state, ticket, sources=(source_product,)
+                )
     except QualificationArtifactError as error:
         raise EnvironmentError(str(error)) from error
     except (AttributeError, OSError, ValueError) as error:
