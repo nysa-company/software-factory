@@ -4,6 +4,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- A product using certification plan v2 has one exact runtime tuple: Factory
+  SHA/tree, product SHA/tree, Contract, Node, and npm. The shared preflight runs
+  before readiness tests, qualification materialization, certification suites,
+  and sealed qualification launch; receipts and activation bind the same tuple,
+  while malformed, missing, unknown, or mismatched values fail closed.
 - Linear description comparison treats only three-space soft wrapping inside a
   list paragraph as semantically inert. Nested list structure remains
   significant, and Git retains the exact canonical ticket contract.
@@ -2925,3 +2930,13 @@ Authenticated migration and resume for independent tickets may overlap up to
 the certified ticket capacity. Within each ticket, passport migration, route
 binding, lease replacement, repair authentication, and accounting remain in
 their original order behind the same launcher controls.
+
+## 2026-08-02 — Decision 215: Certification runtime identity is one tuple
+
+Category: Trust boundary
+
+For products that adopt certification plan v2, readiness, sealed qualification,
+certification, receipts, and qualification launch share one strict Factory
+SHA/tree, product SHA/tree, Contract, Node, and npm tuple. The common parser
+rejects missing, unknown, malformed, or mismatched input before expensive work;
+products without a v2 plan retain the opaque certification path.

@@ -349,7 +349,7 @@ for key in required:
 optional = (
     value.get("receipt_id", ""), value.get("product_tree", ""),
     value.get("qualification_mode", ""), value.get("takeover_kits_root", ""),
-    value.get("operator_map_path", ""),
+    value.get("operator_map_path", ""), value.get("product_sha", ""),
 )
 if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0"):
     for index, item in enumerate(optional):
@@ -358,8 +358,33 @@ if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1
         if index < 2 and not item:
             raise SystemExit(1)
 else:
-    optional = ("", "", "", "")
-print("\t".join((*[value[key] for key in required], *optional)))
+    optional = ("", "", "", "", "", "")
+runtime_tuple = value.get("runtime_tuple", {})
+tuple_keys = {
+    "factory_sha", "factory_tree", "product_sha", "product_tree",
+    "contract_version", "node", "npm",
+}
+if runtime_tuple != {}:
+    if (
+        not isinstance(runtime_tuple, dict)
+        or set(runtime_tuple) != tuple_keys
+        or not optional[5]
+    ):
+        raise SystemExit(1)
+    if any(
+        not isinstance(runtime_tuple[key], str)
+        or not runtime_tuple[key]
+        or any(ch in runtime_tuple[key] for ch in "\n\r\t")
+        for key in tuple_keys
+    ):
+        raise SystemExit(1)
+else:
+    runtime_tuple = {}
+optional = tuple(item if item else "-" for item in optional)
+print("\t".join((
+    *[value[key] for key in required], *optional,
+    json.dumps(runtime_tuple, sort_keys=True, separators=(",", ":")),
+)))
 PY
 )" || die "project active record is invalid"
 
@@ -384,9 +409,17 @@ unset FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER FACTORY_LAUNCH_TEST_ACTIVE_PARSED
 
 IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
   ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH RECEIPT_ID ACTIVE_PRODUCT_TREE \
-  QUALIFICATION_MODE TAKEOVER_KITS_ROOT TAKEOVER_OPERATOR_MAP <<EOF
+  QUALIFICATION_MODE TAKEOVER_KITS_ROOT TAKEOVER_OPERATOR_MAP \
+  ACTIVE_PRODUCT_SHA ACTIVE_RUNTIME_TUPLE <<EOF
 $ACTIVE_DATA
 EOF
+
+[[ "$RECEIPT_ID" == "-" ]] && RECEIPT_ID=""
+[[ "$ACTIVE_PRODUCT_TREE" == "-" ]] && ACTIVE_PRODUCT_TREE=""
+[[ "$QUALIFICATION_MODE" == "-" ]] && QUALIFICATION_MODE=""
+[[ "$TAKEOVER_KITS_ROOT" == "-" ]] && TAKEOVER_KITS_ROOT=""
+[[ "$TAKEOVER_OPERATOR_MAP" == "-" ]] && TAKEOVER_OPERATOR_MAP=""
+[[ "$ACTIVE_PRODUCT_SHA" == "-" ]] && ACTIVE_PRODUCT_SHA=""
 
 [[ "$KIT_SHA" =~ ^[0-9a-f]{40}$ ]] ||
   die "active kit SHA is not a lowercase full SHA"
@@ -431,12 +464,14 @@ if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
   CERTIFIED_PRODUCT_ORIGIN="$("$PYTHON_BIN" -I -S - "$RECEIPT_FILE" \
     "$RECEIPT_ID" "$PROJECT" "$KIT_SHA" "$KIT_TREE" "$PRODUCT_ROOT" \
     "$ACTIVE_PRODUCT_TREE" "$CONTRACT_VERSION" "$QUALIFICATION_MODE" \
-    "$TAKEOVER_KITS_ROOT" "$TAKEOVER_OPERATOR_MAP" <<'PY'
+    "$TAKEOVER_KITS_ROOT" "$TAKEOVER_OPERATOR_MAP" "$ACTIVE_PRODUCT_SHA" \
+    "$ACTIVE_RUNTIME_TUPLE" <<'PY'
 import json, os, stat, sys
 
 (
     path, receipt_id, project, kit_sha, kit_tree, product_path, product_tree,
     contract, qualification_mode, takeover_kits_root, operator_map_path,
+    product_sha, runtime_tuple,
 ) = sys.argv[1:]
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 descriptor = os.open(path, flags)
@@ -464,6 +499,10 @@ expected = {
     "contract_version": contract,
     "status": "pass",
 }
+if product_sha:
+    expected["product_sha"] = product_sha
+if runtime_tuple != "{}":
+    expected["runtime_tuple"] = json.loads(runtime_tuple)
 if any(value.get(key) != item for key, item in expected.items()):
     raise SystemExit(1)
 if qualification_mode:
@@ -505,7 +544,13 @@ EXPECTED_RELEASE="$(cd "$EXPECTED_RELEASE" 2>/dev/null && pwd -P)" ||
   die "active release escapes its exact physical release location"
 [[ "$ACTIVE_PRODUCT_PATH" == "$PRODUCT_ROOT" ]] ||
   die "active product path does not match the registry"
-if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+if [[ "$QUALIFICATION_LAUNCHER" == "1" && -n "$ACTIVE_PRODUCT_SHA" ]]; then
+  QUALIFICATION_PRODUCT_SHA="$(git -C "$PRODUCT_ROOT" \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+    -c credential.helper= -c diff.external= rev-parse HEAD 2>/dev/null)" ||
+    die "qualification product SHA cannot be resolved"
+  [[ "$QUALIFICATION_PRODUCT_SHA" == "$ACTIVE_PRODUCT_SHA" ]] ||
+    die "qualification product no longer matches its sealed commit"
   QUALIFICATION_PRODUCT_TREE="$(git -C "$PRODUCT_ROOT" \
     -c core.hooksPath=/dev/null -c core.fsmonitor=false \
     -c credential.helper= -c diff.external= rev-parse 'HEAD^{tree}' 2>/dev/null)" ||
@@ -586,6 +631,18 @@ PY
 )" || die "active release contract manifest is invalid"
 [[ "$RELEASE_CONTRACT" == "$ACTIVE_CONTRACT" ]] ||
   die "active record and release contract disagree"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" ]]; then
+  FACTORY_CERTIFICATION_TUPLE="$ACTIVE_RUNTIME_TUPLE" \
+    "$PYTHON_BIN" -I "$RELEASE_PATH/scripts/certification-preflight.py" \
+      --plan "$PRODUCT_ROOT/factory/certification-plan.json" \
+      --factory-sha "$KIT_SHA" --factory-tree "$KIT_TREE" \
+      --product-root "$PRODUCT_ROOT" --contract-version "$ACTIVE_CONTRACT" \
+      >/dev/null || die "qualification runtime tuple no longer matches"
+elif [[ "$QUALIFICATION_LAUNCHER" == "1" && \
+        ( -e "$PRODUCT_ROOT/factory/certification-plan.json" || \
+          -L "$PRODUCT_ROOT/factory/certification-plan.json" ) ]]; then
+  die "qualification activation lacks its certification runtime tuple"
+fi
 ROLE_WHITELIST="$("$PYTHON_BIN" -I -S - "$CONTRACT_FILE" <<'PY'
 import json
 import re

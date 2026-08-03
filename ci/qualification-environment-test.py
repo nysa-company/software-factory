@@ -64,6 +64,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         (self.factory / "scripts/lib").mkdir()
         shutil.copy2(
+            ROOT / "scripts/certification-preflight.py",
+            self.factory / "scripts/certification-preflight.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/certification_plan.py",
+            self.factory / "scripts/lib/certification_plan.py",
+        )
+        shutil.copy2(
             ROOT / "scripts/lib/role_output.py",
             self.factory / "scripts/lib/role_output.py",
         )
@@ -92,6 +100,23 @@ class QualificationEnvironmentTest(unittest.TestCase):
         (self.product / "factory/KIT_PIN").write_text(
             self.sha + "\n", encoding="utf-8",
         )
+        (self.product / "factory/certification-plan.json").write_text(
+            json.dumps({
+                "phases": [{
+                    "artifacts": [],
+                    "command": ["true"],
+                    "depends_on": [],
+                    "name": "control",
+                    "network": "denied",
+                }],
+                "runtime": {
+                    "node": run(self.workspace, "node", "--version"),
+                    "npm": run(self.workspace, "npm", "--version"),
+                },
+                "schema": "nysa.software-factory.certification-plan/v2",
+            }) + "\n",
+            encoding="utf-8",
+        )
         run(self.product, "git", "init", "-q", "-b", "main")
         run(self.product, "git", "config", "user.name", "Test")
         run(self.product, "git", "config", "user.email", "test@example.invalid")
@@ -118,6 +143,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         value = ENVIRONMENT.prepare(args)
         release = Path(value["launcher"]).parents[3]
         self.assertEqual(value["factory_sha"], self.sha)
+        self.assertEqual(
+            value["product_sha"], run(self.product, "git", "rev-parse", "HEAD")
+        )
+        self.assertEqual(value["runtime_tuple"]["factory_sha"], self.sha)
         self.assertEqual(ENVIRONMENT.git_tree(release), value["factory_tree"])
         self.assertFalse(release.stat().st_mode & 0o222)
         self.assertEqual(
@@ -214,6 +243,24 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 ))
         finally:
             shutil.rmtree(root)
+
+    def test_runtime_mismatch_fails_before_qualification_materialization(self) -> None:
+        plan = self.product / "factory/certification-plan.json"
+        value = json.loads(plan.read_text(encoding="utf-8"))
+        value["runtime"]["node"] = "v99.0.0"
+        plan.write_text(json.dumps(value) + "\n", encoding="utf-8")
+        run(self.product, "git", "add", "factory/certification-plan.json")
+        run(self.product, "git", "commit", "-qm", "mismatched runtime")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "runtime_tuple_mismatch",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory,
+                product_root=self.product,
+                project="relay",
+                root=self.root,
+            ))
+        self.assertFalse((self.root / "marker.json").exists())
 
     def test_takeover_reuses_authenticated_live_state_without_copying_it(self) -> None:
         source_sha = "b" * 40
@@ -431,6 +478,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
             root=self.root,
         )
         first = ENVIRONMENT.prepare(args)
+        active_path = self.root / "projects/relay/active.json"
+        legacy_active = ENVIRONMENT.read(active_path)
+        legacy_active.pop("product_sha")
+        legacy_active.pop("runtime_tuple")
+        ENVIRONMENT.replace(active_path, legacy_active)
         controller = self.root / "projects/relay/controller"
         claims = controller / "claims"
         controller.mkdir(mode=0o700)
@@ -451,13 +503,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "commit", "-qm", "pin successor")
 
         second = ENVIRONMENT.upgrade(args)
-        active = json.loads(
-            (self.root / "projects/relay/active.json").read_text()
-        )
+        active = json.loads(active_path.read_text())
         self.assertEqual(first["status"], "prepared")
         self.assertEqual(second["status"], "upgraded")
         self.assertEqual(active["kit_sha"], successor)
         self.assertEqual(active["generation"], 2)
+        self.assertEqual(active["product_sha"], second["product_sha"])
+        self.assertEqual(active["runtime_tuple"], second["runtime_tuple"])
         self.assertEqual(key.read_bytes(), b"p" * 32)
         self.assertTrue((self.root / f"releases/{self.sha}").is_dir())
         self.assertTrue((self.root / f"releases/{successor}").is_dir())
