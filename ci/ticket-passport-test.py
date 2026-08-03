@@ -993,6 +993,19 @@ class TicketPassportTest(unittest.TestCase):
             migrated["migration_history"][-1]["rewrite_authorization_sha256"],
             r"^[0-9a-f]{64}$",
         )
+        rewrites = [
+            edge for edge in migrated["migration_history"]
+            if "rewrite_authorization_sha256" in edge
+        ]
+        self.assertEqual(len(rewrites), 1)
+        self.assertEqual(rewrites[0]["from_head_sha"], old_head)
+        self.assertEqual(rewrites[0]["to_head_sha"], rewritten)
+        self.assertEqual(rewrites[0]["from_factory_sha"], "b" * 40)
+        self.assertEqual(rewrites[0]["to_factory_sha"], "b" * 40)
+        self.assertEqual(
+            rewrites[0]["from_route_plan_sha256"],
+            rewrites[0]["to_route_plan_sha256"],
+        )
         self.assertEqual(PASSPORT.migrate(self.passport_args, secret), migrated)
 
 

@@ -1036,14 +1036,17 @@ class StateMachineTest(unittest.TestCase):
             "schema": STATE.PASSPORT_SCHEMA,
             "ticket": "T-110",
         }
-        passport = dict(body)
-        passport["authentication_sha256"] = hmac.new(
-            secret, STATE.canonical(body), hashlib.sha256
-        ).hexdigest()
-        passport["passport_sha256"] = hashlib.sha256(
-            STATE.canonical(passport)
-        ).hexdigest()
-        STATE.write_atomic(passports / "T-110.json", passport)
+        def write_passport(value: dict) -> None:
+            passport = dict(value)
+            passport["authentication_sha256"] = hmac.new(
+                secret, STATE.canonical(value), hashlib.sha256
+            ).hexdigest()
+            passport["passport_sha256"] = hashlib.sha256(
+                STATE.canonical(passport)
+            ).hexdigest()
+            STATE.write_atomic(passports / "T-110.json", passport)
+
+        write_passport(body)
         self.args.action = "block"
         self.args.factory_sha = current_factory
         self.args.lease = "d" * 64
@@ -1073,6 +1076,123 @@ class StateMachineTest(unittest.TestCase):
         lease["lease_id"] = self.args.lease
         lease_path.write_text(json.dumps(lease) + "\n", encoding="utf-8")
         self.assertEqual(STATE.contract_blocked_receipt(self.args), "planner")
+
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "normalized history\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "old history tip", cwd=self.product)
+        old_tip = run("git", "rev-parse", "HEAD", cwd=self.product)
+        old_tree = run("git", "rev-parse", "HEAD^{tree}", cwd=self.product)
+        normalized = subprocess.run(
+            ["git", "commit-tree", old_tree],
+            cwd=self.product,
+            input="protected normalization\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        run("git", "reset", "--hard", normalized, cwd=self.product)
+        route = hashlib.sha256(
+            (self.product / "factory/route-plans/T-110.json").read_bytes()
+        ).hexdigest()
+        protected = issued["head_sha"]
+        migration = {
+            "from_factory_sha": old_factory,
+            "from_head_sha": old_tip,
+            "from_passport_file_sha256": "1" * 64,
+            "from_passport_sha256": "2" * 64,
+            "from_protected_base_sha": protected,
+            "from_route_plan_sha256": route,
+            "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": current_factory,
+            "to_head_sha": old_tip,
+            "to_protected_base_sha": protected,
+            "to_route_plan_sha256": route,
+        }
+        rewrite = {
+            "from_factory_sha": current_factory,
+            "from_head_sha": old_tip,
+            "from_passport_file_sha256": "3" * 64,
+            "from_passport_sha256": "4" * 64,
+            "from_protected_base_sha": protected,
+            "from_route_plan_sha256": route,
+            "rewrite_authorization_sha256": "5" * 64,
+            "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": current_factory,
+            "to_head_sha": normalized,
+            "to_protected_base_sha": protected,
+            "to_route_plan_sha256": route,
+        }
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "\nOPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "authorize exact planner resume", cwd=self.product)
+        resumed = run("git", "rev-parse", "HEAD", cwd=self.product)
+        resume_migration = {
+            "from_factory_sha": current_factory,
+            "from_head_sha": normalized,
+            "from_passport_file_sha256": "6" * 64,
+            "from_passport_sha256": "7" * 64,
+            "from_protected_base_sha": protected,
+            "from_route_plan_sha256": route,
+            "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": current_factory,
+            "to_head_sha": resumed,
+            "to_protected_base_sha": protected,
+            "to_route_plan_sha256": route,
+        }
+        body.update({
+            "head_sha": resumed,
+            "migration_history": [migration, rewrite, resume_migration],
+            "protected_base_sha": protected,
+            "route_plan_sha256": route,
+        })
+        write_passport(body)
+        self.assertEqual(STATE.contract_blocked_receipt(self.args), "planner")
+        passport = json.loads((passports / "T-110.json").read_text())
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "planner"), "planner"
+        )
+
+        rewrite.pop("rewrite_authorization_sha256")
+        write_passport(body)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract blocker is outside receipt lineage"
+        ):
+            STATE.contract_blocked_receipt(self.args)
+
+        rewrite["rewrite_authorization_sha256"] = "5" * 64
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "tree drift\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "change normalized tree", cwd=self.product)
+        changed = run("git", "rev-parse", "HEAD", cwd=self.product)
+        rewrite["to_head_sha"] = changed
+        body["head_sha"] = changed
+        write_passport(body)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract blocker is outside receipt lineage"
+        ):
+            STATE.contract_blocked_receipt(self.args)
+
+        run("git", "reset", "--hard", normalized, cwd=self.product)
+        rewrite["to_head_sha"] = normalized
+        body["head_sha"] = normalized
+        body["migration_history"] = [migration, rewrite, dict(rewrite)]
+        write_passport(body)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract blocker is outside receipt lineage"
+        ):
+            STATE.contract_blocked_receipt(self.args)
 
     def test_operator_resume_names_exact_repair_owner_only(self) -> None:
         self.args.receipt = "b" * 64
