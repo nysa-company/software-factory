@@ -120,6 +120,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   remains fail-closed, and only the trusted wrapper pushes role commits. The
   ticket-PR boundary applies the same bounded retry to its read-only exact
   branch-head observation.
+- After a verified trusted push, remote-tracking compare-and-swap treats an
+  already-converged desired SHA as idempotent success. Every other concurrent
+  value still fails closed and is never overwritten.
 - Production-successor qualification authenticates the clean activated product
   tree separately from current protected main. Protected main must contain the
   active commit, and the local qualification control worktree must be based on
@@ -3141,3 +3144,11 @@ the blocker verifier's authenticated normalized lineage after its charge,
 terminal, role, stage, and failed-role evidence agree. Later contiguous
 same-release edges are not separate repair starts; ordinary repair migrations
 still require one unique direct start, and no generic recovery bypass exists.
+
+## 2026-08-03 — Decision 230: Tracking projection accepts exact convergence
+
+Category: Reliability
+
+After a trusted push, the remote-tracking compare-and-swap accepts a concurrent
+update only when it already equals the verified pushed SHA. Every third value
+remains a hard refusal and is never overwritten.
