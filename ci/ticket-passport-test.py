@@ -1025,6 +1025,14 @@ class TicketPassportTest(unittest.TestCase):
         self.assertFalse(PASSPORT.migrated_receipt_lineage(
             self.passport_args, tampered, consumed, current
         ))
+        unchained = dict(migrated)
+        unchained["migration_history"] = [
+            dict(edge) for edge in migrated["migration_history"]
+        ]
+        unchained["migration_history"][-1]["from_head_sha"] = base
+        self.assertFalse(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, unchained, consumed, current
+        ))
 
 
 if __name__ == "__main__":
