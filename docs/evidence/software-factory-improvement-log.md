@@ -4844,6 +4844,23 @@ Validation: the focused role-contract regression covers child-first cleanup,
 sibling dependencies, cascade control, narrow ownership, and preserved
 Test-author fail-closed behavior.
 
+## FI-20260802-166 — Sealed launch selected a newer system Node
+
+Status: Focused owner-runtime regression green; protected CI and qualification
+canary pending
+Priority: P2 (#206)
+Area: certification runtime bootstrap
+Owner: Factory
+Impact: qualification preparation could pass under an explicit Node 22 caller
+PATH, then the sealed launcher rebuilt its fixed PATH and selected a newer
+system Node before the strict tuple guard stopped the run.
+Smallest repair: expose one `factory-kit runtime-pin` operation that reuses the
+existing launcher PATH priority. It validates the shared product plan and the
+exact Node/npm/npx source versions before atomically replacing owner-local
+symlinks in `~/.factory/bin`; it never changes a system-wide Homebrew link.
+Validation: a focused regression proves the plan-matching owner pin wins over a
+coexisting newer system Node and that source mismatch preserves prior pins.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

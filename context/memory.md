@@ -18,6 +18,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   before readiness tests, qualification materialization, certification suites,
   and sealed qualification launch; receipts and activation bind the same tuple,
   while malformed, missing, unknown, or mismatched values fail closed.
+- The owner bootstrap pins a v2 product's plan-matching Node/npm/npx executables
+  in `~/.factory/bin`, first in the sealed launcher PATH. The operation refuses
+  unsafe paths and version drift before replacement and verifies the resulting
+  owner-local tuple; system-wide runtime selection is never changed.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -69,6 +73,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   authorization binds both Factory identities, the exact successful run and
   charge, old/new tree-identical heads, route, and protected merge parents;
   only an explicit exact-old-head force-with-lease may publish it.
+- A consumed contract-block receipt remains in lineage across protected
+  history normalization only through one authenticated same-release migration
+  edge with byte-identical old/new Git trees and current route/base bindings.
+  Passport export and block recovery share that proof. Missing authorization,
+  tree drift, or multiple matches fail closed; this is not a general
+  state-machine override.
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
@@ -269,19 +279,33 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   rollback.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - Product certification stages a checksum-verified pinned scanner into the disposable product copy before entering its network-denied sandbox, so managed secret scanning never depends on a prewarmed product cache or certification-time network access.
-- Certification phase reuse is explicit and restart-local. A hit requires an
-  owner-only self-hashed record bound to the exact Factory, product tree, plan,
-  dependencies, runtime, command, and network capability, followed by fresh
-  hashes of its retained log and declared artifacts. New workspaces and phases
-  with undeclared side effects run normally.
+- Certification phase reuse is explicit and artifact-only. Same-root restarts
+  retain self-hashed local evidence. Across commands, the Factory verifies an
+  owner-only HMAC entry outside the product sandbox, stages it read-only, and
+  the runner rehashes and restores only the complete plan-declared regular-file
+  manifest. Exact Factory/product trees, plan, dependencies, runtime, command,
+  runner, network, TTL, size, mode, and path bindings are mandatory; raw logs
+  and undeclared/test/policy/security/configuration side effects never persist.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
+- A composite Factory successor may batch only independently green, already
+  authorized issue commits from isolated branches. It starts from the exact
+  protected base, preserves issue/source/candidate commit provenance, passes
+  combined regressions and managed readiness, and pays one protected-main full
+  CI and sealed installation/certification cycle. Textually or semantically
+  overlapping, order-dependent, trust-boundary-sharing, or result-changing
+  changes remain separate.
 - On macOS hosts where `/usr/bin/python3` is an xcrun shim, the launcher and release sandboxes use the fixed Command Line Tools Python binary when available; this preserves default-deny Seatbelt behavior without xcrun cache writes outside the sandbox.
 - The no-record default is `cursor-balanced-v2`: it preserves `balanced-v2` models and effort levels while trying the matching Cursor route before native Codex/Claude CLI. Explicit active profiles and committed ticket route plans remain authoritative; `balanced-v2`, `legacy-balanced-v1`, and the earlier priority profiles remain available for compatibility.
 - Cursor adapters append a trusted execution requirement after role and task text so factory roles stay in the default agent execution mode instead of switching to Cursor Plan or Ask mode.
 - Parallel kit branches, worktrees, PRs, and inert candidate releases are supported. Product activation/rollback remains serialized; contracts 1.1 through 1.5 default to one ticket and permit at most four exact-worktree ticket leases, while Contract 1.6 defaults to four and permits at most six. `MAX_CONCURRENT_TICKETS` is the single coupled worktree/provider capacity setting. Contract 1.6 may bypass the product-wide provider lock only for an exact activation-gated API route executed through the isolated runtime, broker, networkless worker, and trusted artifact controller. Contract 1.8 multi-ticket subscription routes use exact owner-activated transactional admission; older contracts and capacity one retain legacy serialization.
 - Spec-linter and Reviewer escalation overrides accept only an exact authorization for the next semantic round. Test immutability treats `.gitignore` and `context/memory.md` as exact-file bookkeeping exemptions, while documentation remains contract-significant; revert branches use `chore/<slug>-revert`.
+- The sole emergency state-machine recovery mechanism is the exact current-
+  receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is
+  approved; envelope and semantic-round overrides grant no state authority.
+  Any future exception requires exact owner authorization and a dedicated
+  GitHub issue before implementation or use.
 - Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly and retain the role-input commit as an ancestor; the trusted wrapper quarantines a non-Test-author rewrite, restores the authenticated input without touching the remote, and otherwise non-force pushes and verifies output. Reviewer must leave Git unchanged, and Test-author ancestry repair remains separately operator-authorized.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection, which refuses every active or ambiguous claim and `factory/runs/*.pid` record.
@@ -933,6 +957,10 @@ The isolated real-Hermes canary passed on release `45008d5`, and Relay generatio
 ## 2026-07-15 — Decision 9: Parallel development, serialized production
 
 Category: Decision
+
+Partially superseded by Decision 223: isolated development remains valid, but
+independently green commits may now share one composite successor and one
+authoritative certification cycle.
 
 Multiple focused kit branches and independently certified merged SHAs may progress concurrently, while each product pin change, activation, rollback, and live dispatcher ticket remains serialized and ticket-boundary gated. Relay T-107 proved the managed lifecycle on one Kit-SHA through planner, spec-linter, test-author, builder, reviewer, Narrator, approval, protected merge, production smoke, and Done closeout; the temporary PR #12 check override was restored immediately and is not accepted as protected evidence, while PRs #13 and #14 passed the restored required checks.
 
@@ -3003,7 +3031,7 @@ SHA/tree, product SHA/tree, Contract, Node, and npm tuple. The common parser
 rejects missing, unknown, malformed, or mismatched input before expensive work;
 products without a v2 plan retain the opaque certification path.
 
-## 2026-08-02 — Decision 220: Phase evidence reuse is exact and restart-local
+## 2026-08-02 — Decision 220: Phase evidence reuse is exact and restart-local (superseded by Decision 223)
 
 Category: Performance
 
@@ -3036,3 +3064,70 @@ An exact `Blocked-Escalated` ticket may use protected accepted-test history
 normalization while retaining that state. Normalization changes only the
 authenticated tree-identical lineage; the existing receipt-bound blocker
 resume remains the sole authority that restores its recorded resume state.
+
+## 2026-08-02 — Decision 223: Composite successors preserve independent provenance
+
+Category: Release management
+
+Several authorized Factory repairs may share one release only after each exact
+issue commit is independently green in its isolated branch. One successor from
+the protected base cherry-picks those commits, preserves issue/source/candidate
+provenance, runs combined readiness, and receives the single authoritative
+protected-main CI and sealed certification cycle; unsafe or overlapping changes
+remain separate.
+
+## 2026-08-02 — Decision 224: State-machine recovery has no generic bypass
+
+Category: Trust boundary
+
+The exact current-receipt-bound `OPERATOR RESUME` ticket commit is the existing
+emergency state-machine recovery authority. Envelope and semantic-round
+overrides do not change lifecycle state; any future exception requires exact
+owner authorization bound to its target and a dedicated GitHub issue before it
+is implemented or used.
+
+## 2026-08-02 — Decision 225: Normalized blocker lineage is exact and unique
+
+Category: Trust boundary
+
+A consumed contract-block receipt may cross protected history normalization
+only through one authenticated same-release migration edge whose old and new
+Git trees are byte-identical and whose route and protected-base bindings match
+the current passport. Missing rewrite authorization, changed content, or an
+ambiguous edge remains blocked; the receipt-bound operator directive is still
+the only resume authority.
+
+## 2026-08-02 — Decision 226: Certification runtimes are owner-locally pinned
+
+Category: Trust boundary
+
+The Factory verifies a product plan's exact Node/npm/npx executables before
+atomically linking them into the sealed launcher's existing `~/.factory/bin`
+PATH priority. The system-wide Homebrew selection remains untouched; unsafe
+paths, source mismatch, or installed tuple drift fail closed before readiness,
+qualification, certification, activation, or launch can spend work.
+
+## 2026-08-02 — Decision 227: Passport export honors normalized blocker lineage
+
+Category: Trust boundary
+
+Before the controller can recover a normalized contract blocker, passport
+export accepts its historical receipt only through the same contiguous
+authenticated v2 suffix with exactly one authorized byte-identical rewrite.
+Ordinary exports retain raw ancestry, and missing authorization, tree drift,
+broken chaining, or ambiguity fails before state-machine recovery.
+
+## 2026-08-02 — Decision 228: Artifact reuse crosses disposable certification safely
+
+Category: Performance
+
+Factory certification may persist only a phase's complete, nonempty,
+plan-declared artifact set. The owner-only HMAC store and key stay outside the
+product sandbox; verified entries enter as read-only disposable input, new
+candidates exit separately, and the Factory revalidates, authenticates, and
+atomically publishes them under bounded TTL, entry-count, file-count, and size
+limits. Exact Factory physical tree, product identity, raw plan, dependency
+digests, runtime, runner, command, network, file type, mode, path, and content
+bindings are mandatory. Raw logs and test/policy/security/configuration or
+undeclared side effects remain nonpersistent, and full product certification,
+receipts, and protected CI stay authoritative.

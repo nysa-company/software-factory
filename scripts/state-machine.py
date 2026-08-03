@@ -512,6 +512,104 @@ def migrated_contract_block(
     return passport, matches[0]
 
 
+def contract_block_head_in_lineage(
+    args: argparse.Namespace,
+    receipt: dict[str, Any],
+    passport: dict[str, Any] | None,
+) -> bool:
+    old_head = receipt.get("head_sha", "")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+
+    def ancestor(before: str, after: str) -> bool:
+        result = subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base",
+                "--is-ancestor", before, after,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode not in {0, 1}:
+            raise StateError("contract blocker ancestry check failed")
+        return result.returncode == 0
+
+    if ancestor(old_head, current_head):
+        return True
+    migrations = passport.get("migration_history") if passport else None
+    if not isinstance(migrations, list):
+        return False
+    starts = []
+    for index, edge in enumerate(migrations):
+        if (
+            isinstance(edge, dict)
+            and edge.get("schema") == PASSPORT_MIGRATION_SCHEMA
+            and edge.get("from_factory_sha") == receipt.get("factory_sha")
+            and SHA.fullmatch(edge.get("from_head_sha", ""))
+            and ancestor(old_head, edge["from_head_sha"])
+        ):
+            starts.append(index)
+    if not starts:
+        return False
+    suffix = migrations[min(starts):]
+    sha_fields = (
+        "from_factory_sha", "from_head_sha", "from_protected_base_sha",
+        "to_factory_sha", "to_head_sha", "to_protected_base_sha",
+    )
+    digest_fields = (
+        "from_passport_file_sha256", "from_passport_sha256",
+        "from_route_plan_sha256", "to_route_plan_sha256",
+    )
+    if (
+        not all(
+            isinstance(edge, dict)
+            and edge.get("schema") == PASSPORT_MIGRATION_SCHEMA
+            and all(SHA.fullmatch(edge.get(name, "")) for name in sha_fields)
+            and all(
+                DIGEST.fullmatch(edge.get(name, ""))
+                for name in digest_fields
+            )
+            and (
+                "rewrite_authorization_sha256" not in edge
+                or DIGEST.fullmatch(edge["rewrite_authorization_sha256"])
+            )
+            for edge in suffix
+        )
+        or not all(
+            prior["to_factory_sha"] == following["from_factory_sha"]
+            and prior["to_head_sha"] == following["from_head_sha"]
+            and prior["to_protected_base_sha"]
+            == following["from_protected_base_sha"]
+            and prior["to_route_plan_sha256"]
+            == following["from_route_plan_sha256"]
+            for prior, following in zip(suffix, suffix[1:])
+        )
+        or suffix[-1]["to_factory_sha"] != passport.get("factory_sha")
+        or suffix[-1]["to_head_sha"] != current_head
+        or suffix[-1]["to_protected_base_sha"]
+        != passport.get("protected_base_sha")
+        or suffix[-1]["to_route_plan_sha256"]
+        != passport.get("route_plan_sha256")
+    ):
+        return False
+    rewrites = []
+    for edge in suffix:
+        if ancestor(edge["from_head_sha"], edge["to_head_sha"]):
+            continue
+        if (
+            not DIGEST.fullmatch(edge.get("rewrite_authorization_sha256", ""))
+            or git(
+                args.workdir, "rev-parse", f"{edge['from_head_sha']}^{{tree}}"
+            ) != git(
+                args.workdir, "rev-parse", f"{edge['to_head_sha']}^{{tree}}"
+            )
+        ):
+            return False
+        rewrites.append(edge)
+    return len(rewrites) == 1
+
+
 def materialized_contract_block(
     args: argparse.Namespace, receipt: dict[str, Any], role: str
 ) -> bool:
@@ -670,16 +768,7 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
         )
     ):
         raise StateError("contract blocker receipt is invalid")
-    if subprocess.run(
-        [
-            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
-            old_head, "HEAD",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=120,
-    ).returncode:
+    if not contract_block_head_in_lineage(args, value, passport):
         raise StateError("contract blocker is outside receipt lineage")
     contract_block_terminal(args, value, charge if migrated else None)
     return role

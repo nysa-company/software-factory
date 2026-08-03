@@ -24,6 +24,7 @@ from certification_plan import (  # noqa: E402
     NAME, PlanError, TupleError, compare_tuple, diagnostic, expected_tuple,
     observed_tuple, safe_plan, strict_tuple, validate_plan,
 )
+from certification_cache import CacheError, restore_phase, stage_phase  # noqa: E402
 
 RESULT_SCHEMA = "nysa.software-factory.certification-result/v1"
 CACHE_SCHEMA = "nysa.software-factory.certification-phase-evidence/v1"
@@ -33,9 +34,10 @@ TIMESTAMP = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
 )
 PHASE_RESULT_KEYS = {
-    "artifact_sha256", "cache_hit", "command", "ended_at", "exit_status",
-    "input_sha256", "name", "network_declared", "network_granted",
-    "output_sha256", "peak_memory_kb", "started_at", "system_cpu_seconds",
+    "artifact_sha256", "cache_hit", "cache_overhead_seconds", "command",
+    "ended_at", "exit_status", "input_sha256", "name", "network_declared",
+    "network_granted", "output_sha256", "peak_memory_kb",
+    "saved_phase_wall_seconds", "started_at", "system_cpu_seconds",
     "user_cpu_seconds", "wall_seconds",
 }
 
@@ -48,30 +50,36 @@ def canonical(value: Any) -> bytes:
 
 
 def artifact_digest(root: Path, paths: list[str], log: Path) -> str:
-    selected: list[tuple[str, bytes]] = []
+    selected: list[dict[str, Any]] = []
     if not paths:
-        selected.append(("log", log.read_bytes()))
+        return hashlib.sha256(log.read_bytes()).hexdigest()
     for relative in paths:
         path = root / relative
         if not path.exists() and not path.is_symlink():
             raise PlanError(f"certification artifact is missing: {relative}")
         candidates = [path]
         if path.is_dir() and not path.is_symlink():
-            candidates = sorted(
-                (item for item in path.rglob("*") if not item.is_dir()),
-                key=lambda item: item.as_posix(),
-            )
+            candidates.extend(path.rglob("*"))
         for item in candidates:
             info = item.lstat()
-            if item.is_symlink() or not stat.S_ISREG(info.st_mode):
+            name = item.relative_to(root).as_posix()
+            mode = stat.S_IMODE(info.st_mode)
+            if item.is_symlink():
                 raise PlanError(f"certification artifact is unsafe: {relative}")
-            selected.append((item.relative_to(root).as_posix(), item.read_bytes()))
-    digest = hashlib.sha256()
-    for name, raw in selected:
-        digest.update(name.encode())
-        digest.update(b"\0")
-        digest.update(hashlib.sha256(raw).digest())
-    return digest.hexdigest()
+            if stat.S_ISDIR(info.st_mode):
+                selected.append({"mode": mode, "path": name, "type": "directory"})
+            elif stat.S_ISREG(info.st_mode):
+                raw = item.read_bytes()
+                selected.append({
+                    "mode": mode,
+                    "path": name,
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "size": len(raw),
+                    "type": "file",
+                })
+            else:
+                raise PlanError(f"certification artifact is unsafe: {relative}")
+    return hashlib.sha256(canonical(sorted(selected, key=lambda item: item["path"]))).hexdigest()
 
 
 def atomic_result(path: Path, value: dict[str, Any]) -> None:
@@ -179,6 +187,7 @@ def load_phase_evidence(path: Path) -> dict[str, Any] | None:
             or not isinstance(phase.get(key), (int, float))
             or phase[key] < 0
             for key in (
+                "cache_overhead_seconds", "saved_phase_wall_seconds",
                 "system_cpu_seconds", "user_cpu_seconds", "wall_seconds",
             )
         )
@@ -233,6 +242,8 @@ def main() -> int:
     contract_version = os.environ.get("FACTORY_CONTRACT_VERSION", "")
     serialized_tuple = os.environ.get("FACTORY_CERTIFICATION_TUPLE", "")
     network_reviewed = os.environ.get("FACTORY_CERTIFICATION_NETWORK_REVIEWED", "0")
+    cache_input_raw = os.environ.get("FACTORY_CERTIFICATION_CACHE_INPUT", "")
+    cache_output_raw = os.environ.get("FACTORY_CERTIFICATION_CACHE_OUTPUT", "")
     if (
         not 1 <= args.workers <= 3
         or not SHA.fullmatch(factory_sha)
@@ -243,6 +254,23 @@ def main() -> int:
         or network_reviewed not in {"0", "1"}
     ):
         print("invalid certification runner boundary", file=sys.stderr)
+        return 2
+    cache_input = Path(cache_input_raw).resolve(strict=False) if cache_input_raw else None
+    cache_output = Path(cache_output_raw).resolve(strict=False) if cache_output_raw else None
+    try:
+        result_parent = args.result.parent.resolve(
+            strict=cache_input is not None or cache_output is not None
+        )
+        invalid_cache = any(
+            not path.is_absolute()
+            or path.parent.resolve(strict=True) != result_parent
+            for path in (cache_input, cache_output)
+            if path is not None
+        )
+    except OSError:
+        invalid_cache = True
+    if invalid_cache:
+        print("invalid certification runner cache boundary", file=sys.stderr)
         return 2
     try:
         args.result.unlink(missing_ok=True)
@@ -323,12 +351,20 @@ def main() -> int:
         "os": platform.system(),
         "python": platform.python_version(),
     }
+    cache_context = {
+        **identity,
+        "plan_sha256": plan_digest,
+        "runtime_tuple": runtime_tuple,
+        "runner_runtime": runner_runtime,
+    }
 
     def launch(name: str) -> bool:
         phase = phases[name]
         phase_root = run_root / name
         safe_directory(phase_root)
         log = phase_root / "output.log"
+        reusable_phase = phase.get("reuse", "never") != "never"
+        lookup_started = time.perf_counter()
         dependencies = {
             item: completed[item]["artifact_sha256"]
             for item in phase["depends_on"]
@@ -354,8 +390,12 @@ def main() -> int:
             )
         ).hexdigest()
         evidence_path = phase_root / "evidence.json"
+        granted = (
+            network_reviewed == "1"
+            and phase["network"] in {"optional", "required"}
+        )
         cached = cache_records[name]
-        if phase.get("reuse", "never") != "never" and cached is not None:
+        if reusable_phase and cached is not None:
             record = cached["phase"]
             if record["input_sha256"] == input_digest:
                 try:
@@ -375,16 +415,19 @@ def main() -> int:
                     reusable = False
                 if reusable:
                     observed = time.time()
+                    overhead = round(time.perf_counter() - lookup_started, 6)
                     completed[name] = {
                         **record,
                         "cache_hit": True,
+                        "cache_overhead_seconds": overhead,
                         "cache_record_sha256": cached["record_sha256"],
                         "ended_at": iso(observed),
                         "peak_memory_kb": 0,
                         "started_at": iso(observed),
                         "system_cpu_seconds": 0,
                         "user_cpu_seconds": 0,
-                        "wall_seconds": 0,
+                        "saved_phase_wall_seconds": record["wall_seconds"],
+                        "wall_seconds": overhead,
                     }
                     pending.remove(name)
                     return False
@@ -394,13 +437,40 @@ def main() -> int:
             evidence_path.unlink()
             cache_records[name] = None
 
+        if reusable_phase and cache_input is not None:
+            restored = restore_phase(
+                root, log, phase, cache_context, dependencies, input_digest,
+                granted, cache_input,
+            )
+            if restored is not None:
+                observed = time.time()
+                overhead = round(time.perf_counter() - lookup_started, 6)
+                completed[name] = {
+                    "artifact_sha256": restored["artifact_sha256"],
+                    "cache_hit": True,
+                    "cache_overhead_seconds": overhead,
+                    "cache_record_sha256": restored["authentication_sha256"],
+                    "command": phase["command"],
+                    "ended_at": iso(observed),
+                    "exit_status": 0,
+                    "input_sha256": input_digest,
+                    "name": name,
+                    "network_declared": phase["network"],
+                    "network_granted": granted,
+                    "output_sha256": safe_file_digest(log),
+                    "peak_memory_kb": 0,
+                    "saved_phase_wall_seconds": restored["phase_wall_seconds"],
+                    "started_at": iso(observed),
+                    "system_cpu_seconds": 0,
+                    "user_cpu_seconds": 0,
+                    "wall_seconds": overhead,
+                }
+                pending.remove(name)
+                return False
+
         stream = secure_log(log)
         environment = os.environ.copy()
         environment["TMPDIR"] = tempfile.mkdtemp(prefix=".tmp-", dir=phase_root)
-        granted = (
-            network_reviewed == "1"
-            and phase["network"] in {"optional", "required"}
-        )
         command = list(phase["command"])
         deny_prefix = os.environ.get("FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX", "")
         if not granted and deny_prefix:
@@ -422,6 +492,10 @@ def main() -> int:
             start_new_session=True,
         )
         running[process.pid] = {
+            "cache_overhead_seconds": (
+                round(time.perf_counter() - lookup_started, 6)
+                if reusable_phase else 0
+            ),
             "input_sha256": input_digest,
             "log": log,
             "name": name,
@@ -503,6 +577,7 @@ def main() -> int:
             phase_result = {
                 "artifact_sha256": artifact,
                 "cache_hit": False,
+                "cache_overhead_seconds": active["cache_overhead_seconds"],
                 "command": phases[active["name"]]["command"],
                 "ended_at": iso(ended),
                 "exit_status": process.returncode,
@@ -512,6 +587,7 @@ def main() -> int:
                 "network_granted": active["network_granted"],
                 "output_sha256": safe_file_digest(active["log"]),
                 "peak_memory_kb": peak,
+                "saved_phase_wall_seconds": 0,
                 "started_at": iso(active["started"]),
                 "system_cpu_seconds": round(usage.ru_stime, 6),
                 "user_cpu_seconds": round(usage.ru_utime, 6),
@@ -525,7 +601,24 @@ def main() -> int:
                     write_phase_evidence(
                         run_root / active["name"] / "evidence.json", phase_result
                     )
-                except (OSError, PlanError) as error:
+                    if cache_output is not None:
+                        stage_phase(
+                            root,
+                            active["log"],
+                            phases[active["name"]],
+                            cache_context,
+                            {
+                                item: completed[item]["artifact_sha256"]
+                                for item in phases[active["name"]]["depends_on"]
+                            },
+                            active["input_sha256"],
+                            active["network_granted"],
+                            phase_result["artifact_sha256"],
+                            phase_result["output_sha256"],
+                            phase_result["wall_seconds"],
+                            cache_output,
+                        )
+                except (CacheError, OSError, PlanError) as error:
                     process.returncode = 125
                     phase_result["exit_status"] = 125
                     with active["log"].open("ab") as stream:
@@ -549,6 +642,7 @@ def main() -> int:
                 completed[name] = {
                     "artifact_sha256": "",
                     "cache_hit": False,
+                    "cache_overhead_seconds": 0,
                     "command": phases[name]["command"],
                     "ended_at": None,
                     "exit_status": None,
@@ -558,6 +652,7 @@ def main() -> int:
                     "network_granted": False,
                     "output_sha256": "",
                     "peak_memory_kb": 0,
+                    "saved_phase_wall_seconds": 0,
                     "started_at": None,
                     "system_cpu_seconds": 0,
                     "user_cpu_seconds": 0,
@@ -592,6 +687,8 @@ def main() -> int:
             print(
                 f"{phase['name']}: status={phase['exit_status']} "
                 f"wall={phase['wall_seconds']:.3f}s "
+                f"cache_overhead={phase['cache_overhead_seconds']:.3f}s "
+                f"saved_phase={phase['saved_phase_wall_seconds']:.3f}s "
                 f"peak_kb={phase['peak_memory_kb']} "
                 f"cache_hit={'true' if phase['cache_hit'] else 'false'}"
             )

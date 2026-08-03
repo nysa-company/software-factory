@@ -1278,6 +1278,51 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["role"], "")
         self.assertIn(("contract_blocker_recovered",), calls)
 
+    def test_normalized_contract_block_exports_before_block_transition(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-normalized-block"
+        cell.mkdir()
+        receipt = "b" * 64
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        (self.product / "factory/runs/normalized-block.meta").write_text(
+            "run_id=normalized-block\n"
+            "ticket=T-110\n"
+            "role=builder\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.passport = lambda *_args: calls.append("normalized-export")
+
+        def json_call(*args, **_kwargs):
+            if args[:2] == ("state-machine", "block"):
+                self.assertEqual(calls, ["normalized-export"])
+                calls.append("state-machine-block")
+                return {"status": "blocked"}
+            if args[0] == "release":
+                calls.append("release")
+            return {}
+
+        controller.json_call = json_call
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(
+            calls, ["normalized-export", "state-machine-block", "release"]
+        )
+        self.assertEqual(claim["status"], "blocked")
+
     def test_recorded_repair_recovers_after_transition_receipt_was_replaced(
         self,
     ) -> None:

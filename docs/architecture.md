@@ -227,6 +227,9 @@ Machine-local release state lives under `~/.factory/kits`:
 - `projects/<project>/activation-journal/` records recoverable activation
   transactions.
 - `receipts/` contains mode-`0600`, expiring certification receipts.
+- `certification-artifacts/` contains the owner-only authenticated, expiring
+  artifact entries explicitly admitted by certification plans. The product
+  sandbox never receives this persistent path or its authentication key.
 
 The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
@@ -563,7 +566,13 @@ and exact Linear resume state agree. Across a release migration, the state
 machine accepts the historical receipt only when the current authenticated
 passport orders both releases, contains the exact immutable charge and
 manifest digest, has no successful evidence for that receipt, and the old head
-is in current branch ancestry. A live current exact-ticket lease is validated
+is in current branch ancestry or reaches it through exactly one authenticated
+same-release rewrite edge whose old and new Git trees are byte-identical. The
+edge must bind the passport's current route, protected base, and Factory; a
+missing authorization, changed tree, or ambiguous match remains blocked. A
+terminal passport export uses the same contiguous v2 lineage proof before the
+controller may invoke block recovery; ordinary exports still require raw Git
+ancestry. A live current exact-ticket lease is validated
 independently; an absent old lease may therefore be replaced without weakening
 receipt, terminal, passport, or current ownership checks. If an earlier
 controller cleared the blocked claim fields during that migration, the
@@ -1095,7 +1104,9 @@ release verification pass. Product receipts bind the exact evidence ID/digest
 and cannot expire after that evidence. Products may opt into the sealed
 `certification-runner.py` with a repository-owned declarative DAG. It records
 wall time, CPU, peak memory, cache status, exact input digests, and artifact
-digests for every phase; runs at most three workers; gives each phase a
+digests for every phase; cache hits report saved phase wall time separately
+from lookup, rehash, and restoration overhead. It runs at most three workers
+and gives each phase a
 separate log and temporary directory; and cancels sibling process groups after
 the first failure. A passing measured result is bound to one exact Factory
 SHA/tree, product SHA/tree, Contract, Node, and npm tuple and embedded in the
@@ -1105,20 +1116,29 @@ suites can spawn expensive work. Qualification activation and its sealed
 launcher retain and revalidate the same tuple, so the controller cannot inherit
 a different shell runtime. Unknown, missing, malformed, or mismatched tuple
 data fails closed with typed non-secret diagnostics. Existing opaque
-certification scripts without a v2 plan remain compatible. Cache hits are
-recorded, but the
+certification scripts without a v2 plan remain compatible. The owner bootstrap
+may first run `factory-kit runtime-pin` to verify the product plan's exact
+Node/npm/npx executables and atomically place them in `~/.factory/bin`. That
+owner-local directory is already first in the sealed launcher's fixed PATH, so
+a newer system Node cannot supersede the pin; every later boundary retains its
+independent strict tuple check. Cache hits are recorded, but the
 runner reuses a phase only when its protected plan explicitly opts into
 `artifacts` and declares a nonempty, complete output set. Phases with undeclared
 side effects cannot opt in; application tests, policy, security, and
-configuration checks must retain the default `never` policy. Reuse is local to
-the same disposable certification workspace and requires an owner-only
-self-hashed phase record plus exact Factory, product tree, plan, dependency,
-command, Node/npm, runner-runtime, and network bindings. The runner rehashes
-the retained log and every declared artifact before reporting a hit. Missing,
-interrupted, stale, malformed, or tampered evidence reruns or fails closed; it
-never restores undeclared build side effects into a fresh workspace. Exact
-protected Factory CI proof remains reused rather than repeated during product
-certification.
+configuration checks must retain the default `never` policy. Same-workspace
+restart reuse retains its self-hashed evidence. Across Factory certification
+commands, the Factory imports only HMAC-authenticated, unexpired entries into a
+read-only disposable cache input; the product sandbox never sees the persistent
+store or key. A hit binds the exact physical Factory tree, product SHA/tree,
+raw plan, dependency artifacts, command, Node/npm, runner runtime, and declared
+and granted network capability. The runner rehashes the complete declared file
+manifest before restoring regular files and their exact modes. Successful raw
+logs are not persisted. New entries leave through a separate disposable output
+and are independently validated, size/count/TTL bounded, authenticated, and
+atomically published under a cache lock. Missing, interrupted, stale,
+ambiguous, malformed, symlinked, or tampered evidence is a miss; it never
+restores undeclared side effects. Exact protected Factory CI proof and full
+product certification remain authoritative.
 The v2 DAG also binds exact Node and npm identities plus each phase's declared
 and granted network capability. Required network without command-scoped review
 fails before spawn; a reviewed opt-in does not broaden denied phases. Redacted

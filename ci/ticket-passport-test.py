@@ -993,7 +993,59 @@ class TicketPassportTest(unittest.TestCase):
             migrated["migration_history"][-1]["rewrite_authorization_sha256"],
             r"^[0-9a-f]{64}$",
         )
+        rewrites = [
+            edge for edge in migrated["migration_history"]
+            if "rewrite_authorization_sha256" in edge
+        ]
+        self.assertEqual(len(rewrites), 1)
+        self.assertEqual(rewrites[0]["from_head_sha"], old_head)
+        self.assertEqual(rewrites[0]["to_head_sha"], rewritten)
+        self.assertEqual(rewrites[0]["from_factory_sha"], "b" * 40)
+        self.assertEqual(rewrites[0]["to_factory_sha"], "b" * 40)
+        self.assertEqual(
+            rewrites[0]["from_route_plan_sha256"],
+            rewrites[0]["to_route_plan_sha256"],
+        )
         self.assertEqual(PASSPORT.migrate(self.passport_args, secret), migrated)
+        exported = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(exported["head_sha"], rewritten)
+        self.assertEqual(exported["charge_records"], old_charges)
+
+        consumed = PASSPORT.receipt(
+            self.state_dir, "T-110", repair["receipt_sha256"]
+        )
+        current = PASSPORT.identity(self.passport_args)
+        self.assertTrue(STATE.contract_block_head_in_lineage(
+            self.state_args, consumed, exported
+        ))
+        tampered = dict(migrated)
+        tampered["migration_history"] = [
+            dict(edge) for edge in migrated["migration_history"]
+        ]
+        tampered["migration_history"][-1].pop(
+            "rewrite_authorization_sha256"
+        )
+        self.assertFalse(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, tampered, consumed, current
+        ))
+        wrong_parent = dict(migrated)
+        wrong_parent["migration_history"] = [
+            dict(edge) for edge in migrated["migration_history"]
+        ]
+        wrong_parent["migration_history"][-1][
+            "from_passport_file_sha256"
+        ] = "0" * 64
+        self.assertFalse(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, wrong_parent, consumed, current
+        ))
+        unchained = dict(migrated)
+        unchained["migration_history"] = [
+            dict(edge) for edge in migrated["migration_history"]
+        ]
+        unchained["migration_history"][-1]["from_head_sha"] = base
+        self.assertFalse(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, unchained, consumed, current
+        ))
 
 
 if __name__ == "__main__":
