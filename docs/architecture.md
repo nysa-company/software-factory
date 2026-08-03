@@ -926,6 +926,8 @@ and second parent are unchanged. The controller does not migrate until its clean
 cell head is the exact remote ticket tip. Only an operator's explicit
 `--force-with-lease=<old-head>` can publish the authorized rewrite, and a
 restart after recovery is a no-op.
+An exact `Blocked-Escalated` ticket remains blocked during normalization; only
+its existing authenticated resume receipt may restore the recorded resume state.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior
