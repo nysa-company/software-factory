@@ -322,8 +322,9 @@ project's model-state controls. Its trusted exact-head remote observation
 retries one failed transport call before classifying branch drift; a second
 failure or any different head still fails closed without pushing.
 After a verified push, remote-tracking projection remains compare-and-swap:
-an already-converged desired SHA is idempotent success, while every third,
-missing, or unreadable ref state fails closed.
+an already-converged desired SHA is idempotent success, and an explicitly
+expected absence initializes the ref through Git's zero-OID compare-and-swap.
+Every third, unexpectedly missing, or unreadable ref state fails closed.
 The ticket-PR boundary applies the same one-retry rule only to its exact
 read-only branch-head observation; every semantic mismatch and second
 transport failure still refuses publication.

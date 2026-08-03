@@ -340,14 +340,20 @@ factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "$CAS_RACE"
 # A concurrent fetch may already have installed the exact desired SHA.
 factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "$CAS_RACE"
 [[ "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" == "$CAS_NEW" ]]
-# A missing tracking ref must fail closed and remain absent.
+# An unexpectedly missing tracking ref must fail closed and remain absent.
 git -C "$PRODUCT" update-ref -d "refs/remotes/origin/$CAS_BRANCH" "$CAS_NEW"
-if factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "" \
+if factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" "$CAS_NEW" \
   >/dev/null 2>&1; then
-  echo "FAIL: missing tracking ref was created by compare-and-swap" >&2
+  echo "FAIL: unexpectedly missing tracking ref was recreated" >&2
   exit 1
 fi
 [[ -z "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" ]]
+# An explicitly expected absence may initialize the tracking ref.
+if ! factory_update_tracking_ref "$PRODUCT" "$CAS_BRANCH" "$CAS_NEW" ""; then
+  echo "FAIL: expected-absent tracking ref was not initialized" >&2
+  exit 1
+fi
+[[ "$(factory_remote_tracking_tip "$PRODUCT" "$CAS_BRANCH")" == "$CAS_NEW" ]]
 
 # Qualification contract blockers return to Backlog only with a protected
 # qualification manifest and a matching authenticated role result.

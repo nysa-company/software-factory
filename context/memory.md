@@ -128,8 +128,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   ticket-PR boundary applies the same bounded retry to its read-only exact
   branch-head observation.
 - After a verified trusted push, remote-tracking compare-and-swap treats an
-  already-converged desired SHA as idempotent success. Every third, missing,
-  or unreadable ref state still fails closed and is never overwritten.
+  already-converged desired SHA as idempotent success, and an explicitly
+  expected absence initializes the ref through Git's zero-OID compare-and-swap.
+  Every third, unexpectedly missing, or unreadable state still fails closed.
 - Production-successor qualification authenticates the clean activated product
   tree separately from current protected main. Protected main must contain the
   active commit, and the local qualification control worktree must be based on
@@ -3172,3 +3173,13 @@ authenticated direct or uniquely migrated passport lineage, and remote head
 must agree; the signed correction persists across later exports and repeated
 recovery is a no-op. This does not create a generic override: any emergency
 exception still requires target-bound owner authorization and a linked issue.
+
+## 2026-08-03 — Decision 232: Expected absence is an explicit tracking CAS state
+
+Category: Reliability
+
+The shared remote-tracking update translates an empty observed old SHA into
+Git's zero OID, so a legitimate first-time model pin may initialize an absent
+tracking ref without weakening compare-and-swap. An absent ref after a
+nonempty observation still fails and remains absent; exact convergence remains
+idempotent, and every third or unreadable state remains a hard refusal.
