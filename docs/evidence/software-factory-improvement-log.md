@@ -4751,16 +4751,18 @@ claims continue while new admission remains closed.
 
 ## FI-20260802-161 — Pause and interruption shared ambiguous claim shapes
 
-Status: 77 focused controller regressions green; protected CI pending
+Status: 78 controller and 33 state-machine regressions green; protected CI pending
 Priority: P0 (#164/#184)
 Area: controller persistence
 Owner: Factory
 Impact: a deliberately claim-free passport and an accidentally receipt-free
 blocked claim had no distinct authenticated recovery authority.
-Smallest repair: add explicit passport-bound `ticket-control pause|resume` and
-one-use pre-provider reconciliation markers. Neither path scans historical
-passports or weakens typed blocked claims.
-Validation: pause/resume, stale passport, blocked restore, two-ticket restart,
+Smallest repair: add explicit passport- and lifecycle-state-bound
+`ticket-control pause|resume` plus one-use pre-provider reconciliation markers.
+Neither path scans historical passports or weakens typed blocked claims;
+merged/Done truth and capacity refusal leave the pause intent untouched.
+Validation: pause/resume, restart, successor passport lineage, exact state,
+capacity, merged ticket, blocked restore, two-ticket interruption recovery,
 dirty/active/paused/terminal/cross-release refusal, and idempotence are covered.
 
 ## FI-20260802-162 — Reviewer-requested late tests were guaranteed CI-red

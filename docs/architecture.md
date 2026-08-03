@@ -227,10 +227,12 @@ release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-rea
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
 Contract 1.8 additionally exposes `ticket-control pause|resume`: pause removes
-only one idle passport-bound claim and records an owner-only intent, while
-resume validates that exact passport, remote branch, unique worktree, and
-recorded status before reacquiring one lease. Startup never scans paused or
-historical passports into runnable claims.
+only one idle passport-bound claim and records an owner-only intent bound to
+its exact in-flight lifecycle state, while resume validates that state, the
+passport lineage, remote branch, unique worktree, and recorded claim status
+before reacquiring one lease. Backlog, canceled, merged, and Done tickets are
+never pause/resume targets. Startup and interrupted-reconciliation recovery
+never turn paused or historical passports into runnable claims.
 The product test-immutability gate treats one ticket-only higher numbered
 frozen contract plus its matching PASS marker as a new tests-first epoch. New
 Planner output uses the canonical append-only marker. Historical Planner output
