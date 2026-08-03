@@ -252,6 +252,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   rollback.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - Product certification stages a checksum-verified pinned scanner into the disposable product copy before entering its network-denied sandbox, so managed secret scanning never depends on a prewarmed product cache or certification-time network access.
+- Certification phase reuse is explicit and restart-local. A hit requires an
+  owner-only self-hashed record bound to the exact Factory, product tree, plan,
+  dependencies, runtime, command, and network capability, followed by fresh
+  hashes of its retained log and declared artifacts. New workspaces and phases
+  with undeclared side effects run normally.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
@@ -2925,3 +2930,17 @@ Authenticated migration and resume for independent tickets may overlap up to
 the certified ticket capacity. Within each ticket, passport migration, route
 binding, lease replacement, repair authentication, and accounting remain in
 their original order behind the same launcher controls.
+
+## 2026-08-02 — Decision 216: Phase evidence reuse is exact and restart-local
+
+Category: Performance
+
+A protected certification plan may opt a phase into evidence reuse only for a
+complete, nonempty declared-artifact set; application tests, policy, security,
+and configuration checks retain `never`, as do undeclared side effects. Reuse
+stays inside one disposable result root and binds the exact Factory, product,
+plan, dependencies, command, Node/npm and runner identities, and network
+capability; the retained log and artifacts are rehashed before a hit.
+Interrupted, stale, malformed, tampered, undeclared-side-effect, and
+fresh-workspace cases execute or fail closed, while the outer certification
+and receipt authority remains unchanged.
