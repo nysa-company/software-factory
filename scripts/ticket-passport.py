@@ -19,7 +19,9 @@ import tempfile
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from release_lineage import successor_release_lineage  # noqa: E402
+from release_lineage import (  # noqa: E402
+    successor_release_lineage, valid_v2_migration,
+)
 from reorder_test_fixes import verified_normalization_plan  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256
 
@@ -991,68 +993,6 @@ def lineage_authorization_metadata(
         "lineage_authorization_path": relative,
         "lineage_authorization_sha256": hashlib.sha256(canonical(value)).hexdigest(),
     }
-
-
-def valid_v2_migration(item: Any) -> bool:
-    sha_fields = {
-        "from_factory_sha", "from_head_sha", "from_protected_base_sha",
-        "to_factory_sha", "to_head_sha", "to_protected_base_sha",
-    }
-    digest_fields = {
-        "from_passport_file_sha256", "from_passport_sha256",
-        "from_route_plan_sha256", "to_route_plan_sha256",
-    }
-    required = sha_fields | digest_fields | {"schema"}
-    optional = {
-        "rewrite_authorization_sha256",
-        "lineage_authorization_blob",
-        "lineage_authorization_commit",
-        "lineage_authorization_path",
-        "lineage_authorization_sha256",
-    }
-    authorization = {
-        name for name in optional if name.startswith("lineage_authorization_")
-    }
-    present = set(item) & authorization if isinstance(item, dict) else set()
-    return (
-        isinstance(item, dict)
-        and required.issubset(item)
-        and set(item).issubset(required | optional)
-        and item.get("schema") == MIGRATION_SCHEMA
-        and all(
-            isinstance(item.get(name), str) and SHA.fullmatch(item[name])
-            for name in sha_fields
-        )
-        and all(
-            isinstance(item.get(name), str) and DIGEST.fullmatch(item[name])
-            for name in digest_fields
-        )
-        and (
-            "rewrite_authorization_sha256" not in item
-            or (
-                isinstance(item["rewrite_authorization_sha256"], str)
-                and DIGEST.fullmatch(item["rewrite_authorization_sha256"])
-            )
-        )
-        and (not present or present == authorization)
-        and (
-            not present
-            or (
-                isinstance(item["lineage_authorization_blob"], str)
-                and SHA.fullmatch(item["lineage_authorization_blob"])
-                and isinstance(item["lineage_authorization_commit"], str)
-                and SHA.fullmatch(item["lineage_authorization_commit"])
-                and isinstance(item["lineage_authorization_path"], str)
-                and re.fullmatch(
-                    r"factory/migrations/ticket-passport-lineage/"
-                    r"[0-9a-f]{40}/T-[0-9]+\.json",
-                    item["lineage_authorization_path"],
-                )
-                and isinstance(item["lineage_authorization_sha256"], str)
-                and DIGEST.fullmatch(item["lineage_authorization_sha256"])
-            )
-        )
-    )
 
 
 def valid_legacy_migration(item: Any) -> bool:

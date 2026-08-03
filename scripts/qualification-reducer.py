@@ -19,7 +19,9 @@ from typing import Any
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from release_lineage import successor_release_lineage  # noqa: E402
+from release_lineage import (  # noqa: E402
+    passport_head_lineage, successor_release_lineage,
+)
 
 
 SCHEMA = "nysa.software-factory.qualification-report/v1"
@@ -284,7 +286,9 @@ def verify(
             or pr.get("state") != "MERGED"
             or merge != done.get("merge_commit")
             or not SHA.fullmatch(merge or "")
-            or passport.get("head_sha") != done.get("approved_pr_head")
+            or not passport_head_lineage(
+                passport, done.get("approved_pr_head", "")
+            )
         ):
             raise QualificationError(f"{ticket} protected merge truth does not match")
         total += charge

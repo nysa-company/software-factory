@@ -437,6 +437,9 @@ class FactoryControllerTest(unittest.TestCase):
         done_kit = "c" * 40
         passport_factory = "9" * 40
         pr_head = "d" * 40
+        post_merge_head = "7" * 40
+        protected_base = "4" * 40
+        route = "5" * 64
         merge_commit = "e" * 40
         CONTROL.write(passport_path, {
             "branch": "ticket/T-110",
@@ -451,15 +454,26 @@ class FactoryControllerTest(unittest.TestCase):
                 "contract_version": "1.8.0", "factory_sha": passport_factory,
             }],
             "factory_sha": passport_factory,
-            "head_sha": pr_head,
+            "head_sha": post_merge_head,
             "migration_history": [{
                 "from_factory_sha": source_factory,
+                "from_head_sha": pr_head,
+                "from_passport_file_sha256": "2" * 64,
                 "from_passport_sha256": "1" * 64,
+                "from_protected_base_sha": "3" * 40,
+                "from_route_plan_sha256": "6" * 64,
                 "schema": "nysa.software-factory.ticket-passport-migration/v2",
                 "to_factory_sha": passport_factory,
+                "to_head_sha": post_merge_head,
+                "to_protected_base_sha": protected_base,
+                "to_route_plan_sha256": route,
             }],
+            "parent_digest": "1" * 64,
+            "parent_file_sha256": "2" * 64,
             "passport_sha256": source_passport,
+            "protected_base_sha": protected_base,
             "publication_state": "merged",
+            "route_plan_sha256": route,
             "ticket": "T-110",
         })
         done_path = self.product / "factory/attestations/T-110/done.json"
@@ -501,6 +515,7 @@ class FactoryControllerTest(unittest.TestCase):
                 passport.update({
                     "factory_sha": "a" * 40,
                     "parent_digest": source_passport,
+                    "parent_file_sha256": "8" * 64,
                     "passport_sha256": candidate_passport,
                 })
                 passport["factory_release_history"].append({
@@ -508,9 +523,16 @@ class FactoryControllerTest(unittest.TestCase):
                 })
                 passport["migration_history"].append({
                     "from_factory_sha": passport_factory,
+                    "from_head_sha": post_merge_head,
+                    "from_passport_file_sha256": "8" * 64,
                     "from_passport_sha256": source_passport,
+                    "from_protected_base_sha": protected_base,
+                    "from_route_plan_sha256": route,
                     "schema": "nysa.software-factory.ticket-passport-migration/v2",
                     "to_factory_sha": "a" * 40,
+                    "to_head_sha": post_merge_head,
+                    "to_protected_base_sha": protected_base,
+                    "to_route_plan_sha256": route,
                 })
                 CONTROL.write(passport_path, passport)
                 return {"passport": candidate_passport, "status": "ok"}
@@ -532,6 +554,23 @@ class FactoryControllerTest(unittest.TestCase):
         disconnected["migration_history"][0][
             "from_factory_sha"
         ] = source_factory
+        CONTROL.write(passport_path, disconnected)
+        disconnected_head = copy.deepcopy(disconnected)
+        disconnected_head["migration_history"][0]["from_head_sha"] = "8" * 40
+        CONTROL.write(passport_path, disconnected_head)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "source terminal is invalid"
+        ):
+            first.record_qualification_done_targets()
+        self.assertEqual(migrations, [])
+        substituted = copy.deepcopy(disconnected)
+        substituted["migration_history"][0]["from_passport_sha256"] = "0" * 64
+        CONTROL.write(passport_path, substituted)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "source terminal is invalid"
+        ):
+            first.record_qualification_done_targets()
+        self.assertEqual(migrations, [])
         CONTROL.write(passport_path, disconnected)
         regressed = CONTROL.read(passport_path)
         regressed["factory_release_history"].insert(-1, {

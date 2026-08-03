@@ -4975,6 +4975,24 @@ current `Blocked-Escalated` passport, `Resume-State: Review`, and receipt-bound
 Planner directive with no active or completed repair. A mismatched caller
 passport digest remains fail closed.
 
+## FI-20260803-172 — Terminal adoption compared approved and migrated heads
+
+Status: Focused adoption and reducer regressions green; protected CI pending
+Priority: P0 (#239)
+Area: qualification terminal adoption
+Owner: Factory
+First seen: Nysa sealed generation-11 qualification
+Impact: T-094's authenticated Done receipt bound its merged PR head, while
+signed post-merge route migrations advanced the current passport head. The
+controller and reducer required those heads to remain equal, so a valid
+terminal could not be adopted without rerunning completed work.
+Smallest repair: replace equality with one shared exact v2 suffix check from
+the approved head through the current authenticated passport Factory, head,
+protected base, route, and parent digests. No product state, role evidence,
+publication action, or production activation changes.
+Validation: focused controller and reducer cases accept the post-merge suffix
+and refuse disconnected edges, ambiguous suffixes, and substituted parents.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
