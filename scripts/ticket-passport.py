@@ -1083,12 +1083,25 @@ def migrated_receipt_lineage(
     ):
         return False
 
+    def ancestor(before: str, after: str) -> bool:
+        result = subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base",
+                "--is-ancestor", before, after,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=120,
+        )
+        return result.returncode == 0
+
     starts = []
     for index, migration in enumerate(migrations):
         if (
             not semantic_migration(migration)
             or migration.get("from_factory_sha") != old_factory
-            or migration.get("from_head_sha") != old_head
+            or not ancestor(old_head, migration.get("from_head_sha", ""))
         ):
             continue
         suffix = migrations[index:]
@@ -1099,51 +1112,87 @@ def migrated_receipt_lineage(
                 and prior["to_head_sha"] == following["from_head_sha"]
                 and prior["to_protected_base_sha"]
                 == following["from_protected_base_sha"]
+                and (
+                    not (
+                        valid_v2_migration(prior)
+                        and valid_v2_migration(following)
+                    )
+                    or prior["to_route_plan_sha256"]
+                    == following["from_route_plan_sha256"]
+                )
                 for prior, following in zip(suffix, suffix[1:])
             )
             and suffix[-1]["to_factory_sha"] == args.factory_sha
             and suffix[-1]["to_head_sha"] == current["head_sha"]
             and suffix[-1]["to_protected_base_sha"]
             == previous["protected_base_sha"]
+            and suffix[-1].get("to_route_plan_sha256")
+            == previous.get("route_plan_sha256")
         ):
             starts.append(index)
-    if len(starts) != 1:
+    if not starts:
         return False
 
-    start = starts[0]
+    start = min(starts)
     suffix = migrations[start:]
     bound_passport = consumed.get("passport_sha256")
-    if (
+    v2_lineage = (
         all(valid_v2_migration(item) for item in suffix)
         and isinstance(bound_passport, str)
         and DIGEST.fullmatch(bound_passport)
         and suffix[0]["from_passport_file_sha256"] == bound_passport
-    ):
-        return True
-
-    authorization_indexes = [
-        index for index, item in enumerate(migrations)
-        if isinstance(item, dict)
-        and "lineage_authorization_sha256" in item
-    ]
-    if len(authorization_indexes) != 1:
-        return False
-    authorization_index = authorization_indexes[0]
-    return (
-        start < authorization_index
-        and all(
-            valid_legacy_migration(item)
-            for item in migrations[start:authorization_index]
-        )
-        and all(
-            valid_v2_migration(item)
-            for item in migrations[authorization_index:]
-        )
-        and validate_legacy_lineage_authorization(
-            args, previous, consumed, current, migrations,
-            authorization_index,
-        )
     )
+    standard_lineage = v2_lineage
+    if not standard_lineage:
+        authorization_indexes = [
+            index for index, item in enumerate(migrations)
+            if isinstance(item, dict)
+            and "lineage_authorization_sha256" in item
+        ]
+        authorization_index = (
+            authorization_indexes[0]
+            if len(authorization_indexes) == 1
+            else -1
+        )
+        standard_lineage = (
+            start < authorization_index
+            and all(
+                valid_legacy_migration(item)
+                for item in migrations[start:authorization_index]
+            )
+            and all(
+                valid_v2_migration(item)
+                for item in migrations[authorization_index:]
+            )
+            and validate_legacy_lineage_authorization(
+                args, previous, consumed, current, migrations,
+                authorization_index,
+            )
+        )
+
+    if ancestor(old_head, current["head_sha"]):
+        return standard_lineage
+    if not all(valid_v2_migration(item) for item in suffix):
+        return False
+    rewrites = []
+    for edge in suffix:
+        if ancestor(edge["from_head_sha"], edge["to_head_sha"]):
+            continue
+        try:
+            same_tree = git(
+                args.workdir, "rev-parse", f"{edge['from_head_sha']}^{{tree}}"
+            ) == git(
+                args.workdir, "rev-parse", f"{edge['to_head_sha']}^{{tree}}"
+            )
+        except PassportError:
+            return False
+        if (
+            not DIGEST.fullmatch(edge.get("rewrite_authorization_sha256", ""))
+            or not same_tree
+        ):
+            return False
+        rewrites.append(edge)
+    return len(rewrites) == 1
 
 
 def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
@@ -1177,13 +1226,16 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
             and previous.get("protected_base_sha") != protected
         )
         or not SHA.fullmatch(old_head)
-        or subprocess.run(
-            ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
-             old_head, current_identity["head_sha"]],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode != 0
+        or (
+            not migrated_receipt
+            and subprocess.run(
+                ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+                 old_head, current_identity["head_sha"]],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode != 0
+        )
         or (bound_passport != parent_raw and not migrated_receipt)
     ):
         raise PassportError("transition receipt is outside current ticket lineage")

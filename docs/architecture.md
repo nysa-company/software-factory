@@ -567,7 +567,9 @@ is in current branch ancestry or reaches it through exactly one authenticated
 same-release rewrite edge whose old and new Git trees are byte-identical. The
 edge must bind the passport's current route, protected base, and Factory; a
 missing authorization, changed tree, or ambiguous match remains blocked. A
-live current exact-ticket lease is validated
+terminal passport export uses the same contiguous v2 lineage proof before the
+controller may invoke block recovery; ordinary exports still require raw Git
+ancestry. A live current exact-ticket lease is validated
 independently; an absent old lease may therefore be replaced without weakening
 receipt, terminal, passport, or current ownership checks. If an earlier
 controller cleared the blocked claim fields during that migration, the

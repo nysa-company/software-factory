@@ -76,8 +76,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - A consumed contract-block receipt remains in lineage across protected
   history normalization only through one authenticated same-release migration
   edge with byte-identical old/new Git trees and current route/base bindings.
-  Missing authorization, tree drift, or multiple matches fail closed; this is
-  not a general state-machine override.
+  Passport export and block recovery share that proof. Missing authorization,
+  tree drift, or multiple matches fail closed; this is not a general
+  state-machine override.
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
@@ -954,6 +955,10 @@ The isolated real-Hermes canary passed on release `45008d5`, and Relay generatio
 ## 2026-07-15 — Decision 9: Parallel development, serialized production
 
 Category: Decision
+
+Partially superseded by Decision 223: isolated development remains valid, but
+independently green commits may now share one composite successor and one
+authoritative certification cycle.
 
 Multiple focused kit branches and independently certified merged SHAs may progress concurrently, while each product pin change, activation, rollback, and live dispatcher ticket remains serialized and ticket-boundary gated. Relay T-107 proved the managed lifecycle on one Kit-SHA through planner, spec-linter, test-author, builder, reviewer, Narrator, approval, protected merge, production smoke, and Done closeout; the temporary PR #12 check override was restored immediately and is not accepted as protected evidence, while PRs #13 and #14 passed the restored required checks.
 
@@ -3099,3 +3104,13 @@ atomically linking them into the sealed launcher's existing `~/.factory/bin`
 PATH priority. The system-wide Homebrew selection remains untouched; unsafe
 paths, source mismatch, or installed tuple drift fail closed before readiness,
 qualification, certification, activation, or launch can spend work.
+
+## 2026-08-02 — Decision 227: Passport export honors normalized blocker lineage
+
+Category: Trust boundary
+
+Before the controller can recover a normalized contract blocker, passport
+export accepts its historical receipt only through the same contiguous
+authenticated v2 suffix with exactly one authorized byte-identical rewrite.
+Ordinary exports retain raw ancestry, and missing authorization, tree drift,
+broken chaining, or ambiguity fails before state-machine recovery.

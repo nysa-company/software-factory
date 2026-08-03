@@ -1007,6 +1007,24 @@ class TicketPassportTest(unittest.TestCase):
             rewrites[0]["to_route_plan_sha256"],
         )
         self.assertEqual(PASSPORT.migrate(self.passport_args, secret), migrated)
+        exported = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(exported["head_sha"], rewritten)
+        self.assertEqual(exported["charge_records"], old_charges)
+
+        consumed = PASSPORT.receipt(
+            self.state_dir, "T-110", repair["receipt_sha256"]
+        )
+        current = PASSPORT.identity(self.passport_args)
+        tampered = dict(migrated)
+        tampered["migration_history"] = [
+            dict(edge) for edge in migrated["migration_history"]
+        ]
+        tampered["migration_history"][-1].pop(
+            "rewrite_authorization_sha256"
+        )
+        self.assertFalse(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, tampered, consumed, current
+        ))
 
 
 if __name__ == "__main__":
