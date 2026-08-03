@@ -38,6 +38,13 @@ NORMALIZATION_SCHEMA = (
 )
 MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
 LINEAGE_SCHEMA = "nysa.software-factory.ticket-passport-lineage-authorization/v1"
+COMPLETION_CORRECTION_SCHEMA = (
+    "nysa.software-factory.completed-role-correction/v1"
+)
+COMPLETION_CORRECTION_ISSUE = (
+    "https://github.com/nysa-company/software-factory/issues/218"
+)
+RUN_ID = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
 INFLIGHT_STATES = {
     "Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved",
     "Blocked-Escalated",
@@ -267,6 +274,52 @@ def run_evidence(
     factory: Path, ticket: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return _run_evidence(factory, ticket, True)
+
+
+def successful_progress(path: Path) -> tuple[int, str]:
+    raw = read_regular(path, 0o600, 10_000_000)
+    if not raw or not raw.endswith(b"\n"):
+        raise PassportError("successful progress journal is incomplete")
+    previous_observed = -1
+    successful = 0
+    latest = ("", "")
+    allowed = {
+        ("assistant", ""),
+        ("result", "success"),
+        ("system", "init"),
+        ("system", "initialize"),
+        ("tool_call", "completed"),
+        ("tool_call", "started"),
+    }
+    for sequence, line in enumerate(raw.splitlines(), 1):
+        try:
+            value = json.loads(line, object_pairs_hook=unique_object)
+        except (TypeError, ValueError) as error:
+            raise PassportError("successful progress journal is malformed") from error
+        observed = value.get("observed_monotonic_ns") if isinstance(value, dict) else None
+        latest = (
+            value.get("type", "") if isinstance(value, dict) else "",
+            value.get("subtype", "") if isinstance(value, dict) else "",
+        )
+        if (
+            not isinstance(value, dict)
+            or set(value) != {
+                "event_sha256", "observed_monotonic_ns", "sequence",
+                "subtype", "type",
+            }
+            or value.get("sequence") != sequence
+            or not isinstance(observed, int)
+            or isinstance(observed, bool)
+            or observed <= previous_observed
+            or not DIGEST.fullmatch(value.get("event_sha256", ""))
+            or latest not in allowed
+        ):
+            raise PassportError("successful progress journal is malformed")
+        previous_observed = observed
+        successful += latest == ("result", "success")
+    if successful != 1 or latest != ("result", "success"):
+        raise PassportError("progress journal does not prove terminal success")
+    return sequence, hashlib.sha256(raw).hexdigest()
 
 
 def ticket_state(workdir: Path, ticket: str) -> str:
@@ -695,6 +748,57 @@ def merge_records(
             raise PassportError("run evidence changed across passport export")
         records[item["run_id"]] = item
     return list(records.values())
+
+
+def validate_completion_corrections(
+    value: Any, completed: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise PassportError("completion correction history is invalid")
+    identities = set()
+    expected = {
+        "failed_factory_sha", "issue", "output_head_sha", "progress_events",
+        "progress_journal_sha256", "receipt_parent_file_sha256",
+        "recovery_factory_sha", "run_id", "schema",
+        "transition_receipt_sha256",
+    }
+    for item in value:
+        identity_key = (
+            item.get("run_id", "") if isinstance(item, dict) else "",
+            item.get("transition_receipt_sha256", "")
+            if isinstance(item, dict) else "",
+        )
+        matches = [
+            evidence for evidence in completed
+            if isinstance(evidence, dict)
+            and evidence.get("run_id") == identity_key[0]
+            and evidence.get("transition_receipt_sha256") == identity_key[1]
+            and evidence.get("role") == "builder"
+            and evidence.get("factory_sha")
+            == (item.get("failed_factory_sha") if isinstance(item, dict) else None)
+        ]
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected
+            or item.get("schema") != COMPLETION_CORRECTION_SCHEMA
+            or item.get("issue") != COMPLETION_CORRECTION_ISSUE
+            or not SHA.fullmatch(item.get("failed_factory_sha", ""))
+            or not SHA.fullmatch(item.get("recovery_factory_sha", ""))
+            or item["failed_factory_sha"] == item["recovery_factory_sha"]
+            or not SHA.fullmatch(item.get("output_head_sha", ""))
+            or not DIGEST.fullmatch(item.get("progress_journal_sha256", ""))
+            or not DIGEST.fullmatch(item.get("receipt_parent_file_sha256", ""))
+            or not DIGEST.fullmatch(identity_key[1])
+            or not RUN_ID.fullmatch(identity_key[0])
+            or not isinstance(item.get("progress_events"), int)
+            or isinstance(item.get("progress_events"), bool)
+            or item["progress_events"] <= 0
+            or identity_key in identities
+            or len(matches) != 1
+        ):
+            raise PassportError("completion correction history is invalid")
+        identities.add(identity_key)
+    return list(value)
 
 
 def terminal_authorization_evidence(
@@ -1130,10 +1234,10 @@ def migrated_receipt_lineage(
             == previous.get("route_plan_sha256")
         ):
             starts.append(index)
-    if not starts:
+    if len(starts) != 1:
         return False
 
-    start = min(starts)
+    start = starts[0]
     suffix = migrations[start:]
     bound_passport = consumed.get("passport_sha256")
     v2_lineage = (
@@ -1248,6 +1352,13 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     completed, charges = run_evidence(args.factory_root / "factory", args.ticket)
     completed = merge_records(previous.get("completed_role_evidence", []), completed)
     charges = merge_records(previous.get("charge_records", []), charges)
+    correction_evidence: dict[str, Any] = {}
+    if "completed_role_corrections" in previous:
+        correction_evidence["completed_role_corrections"] = (
+            validate_completion_corrections(
+                previous["completed_role_corrections"], completed
+            )
+        )
     receipt_charges = [
         item for item in charges
         if item.get("transition_receipt_sha256") == args.receipt
@@ -1279,6 +1390,7 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
             *([] if protected in previous.get("base_history", []) else [protected]),
         ],
         "charge_records": charges,
+        **correction_evidence,
         "completed_role_evidence": completed,
         "contract_version": args.contract_version,
         "cumulative_charges_micro_usd": sum(
@@ -1309,6 +1421,199 @@ def export(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         for item in migrations
     ):
         value["migration_history"] = list(migrations)
+    signed = authenticate(value, secret)
+    write_atomic(destination, signed)
+    return signed
+
+
+def correct_converged_success(
+    args: argparse.Namespace, secret: bytes
+) -> dict[str, Any]:
+    """Recover one exact Builder success misclassified after its accepted push."""
+    passports = safe_directory(args.state_dir / "passports")
+    destination = passports / f"{args.ticket}.json"
+    previous, parent_raw = load_passport(destination, secret)
+    if git(args.workdir, "status", "--porcelain=v1", "-z"):
+        raise PassportError("completion correction requires a clean execution cell")
+    current = identity(args)
+    consumed = receipt(args.state_dir, args.ticket, args.receipt)
+    current_route = route_digest(args.workdir, args.ticket)
+    prior_corrections = previous.get("completed_role_corrections", [])
+    if not isinstance(prior_corrections, list):
+        raise PassportError("completion correction history is invalid")
+    prior_correction_bound = any(
+        isinstance(item, dict)
+        and item.get("schema") == COMPLETION_CORRECTION_SCHEMA
+        and item.get("run_id") == args.run_id
+        and item.get("transition_receipt_sha256") == args.receipt
+        and item.get("receipt_parent_file_sha256")
+        == consumed.get("passport_sha256")
+        for item in prior_corrections
+    )
+    receipt_lineage = (
+        consumed.get("passport_sha256") == previous.get("parent_file_sha256")
+        or migrated_receipt_lineage(args, previous, consumed, current)
+        or prior_correction_bound
+    )
+    if (
+        any(previous.get(name) != item for name, item in current.items())
+        or previous.get("route_plan_sha256") != current_route
+        or previous.get("current_state") != ticket_state(args.workdir, args.ticket)
+        or previous.get("current_stage") != "RUN builder"
+        or previous.get("transition_receipt_sha256") != args.receipt
+        or previous.get("contract_version") != args.contract_version
+        or previous.get("factory_sha") != args.factory_sha
+        or consumed.get("ticket") != args.ticket
+        or consumed.get("project") != args.project
+        or consumed.get("branch") != current["branch"]
+        or consumed.get("product_origin_sha256")
+        != current["product_origin_sha256"]
+        or consumed.get("role") != "builder"
+        or consumed.get("stage") != "RUN builder"
+        or consumed.get("contract_version") != args.contract_version
+        or consumed.get("receipt_sha256") != args.receipt
+        or not receipt_lineage
+        or not SHA.fullmatch(consumed.get("factory_sha", ""))
+        or consumed["factory_sha"] == args.factory_sha
+        or not SHA.fullmatch(consumed.get("head_sha", ""))
+        or consumed.get("head_tree")
+        != git(args.workdir, "rev-parse", f"{consumed.get('head_sha')}^{{tree}}")
+        or consumed["head_sha"] == current["head_sha"]
+        or subprocess.run(
+            [
+                "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+                consumed["head_sha"], current["head_sha"],
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode != 0
+    ):
+        raise PassportError("completion correction is outside authenticated lineage")
+
+    if not RUN_ID.fullmatch(args.run_id):
+        raise PassportError("completion correction run identity is invalid")
+    matches = []
+    for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
+        value = manifest_fields(path)
+        if (
+            value.get("ticket") == args.ticket
+            and value.get("transition_receipt_sha256") == args.receipt
+        ):
+            matches.append((path, value))
+    if len(matches) != 1 or matches[0][0].stem != args.run_id:
+        raise PassportError("completion correction run evidence is ambiguous")
+    manifest, terminal = matches[0]
+    manifest_digest = hashlib.sha256(read_regular(manifest)).hexdigest()
+    output_digest = role_output_digest(manifest.with_suffix(".out"))
+    progress_events, progress_digest = successful_progress(
+        manifest.with_suffix(".progress.jsonl")
+    )
+    if (
+        terminal.get("run_id") != args.run_id
+        or terminal.get("phase") != "abandoned"
+        or terminal.get("accounting_state") != "abandoned_conservative"
+        or terminal.get("go_issued") != "1"
+        or terminal.get("task_submitted") != "1"
+        or terminal.get("exit_status") != "128"
+        or terminal.get("role_exit") != ""
+        or terminal.get("terminal_reason_code", "") != ""
+        or terminal.get("role") != "builder"
+        or terminal.get("adapter") != "cursor"
+        or terminal.get("role_branch_before") != current["branch"]
+        or terminal.get("role_head_before") != consumed["head_sha"]
+        or terminal.get("kit_sha") != consumed["factory_sha"]
+        or terminal.get("contract_version") != args.contract_version
+        or terminal.get("cost_basis") != "conservative_reservation"
+        or terminal.get("effective_cost") != terminal.get("reserved_usd")
+        or micro_usd(terminal) <= 0
+        or terminal.get("output_sha256") != output_digest
+        or terminal.get("progress_events", "") != ""
+        or terminal.get("progress_journal_sha256", "") != ""
+    ):
+        raise PassportError("run is not the typed converged-success failure")
+
+    charges = run_charges(args.factory_root / "factory", args.ticket)
+    expected_charge = next(
+        (item for item in charges if item.get("run_id") == args.run_id), None
+    )
+    passport_charges = previous.get("charge_records")
+    completed = previous.get("completed_role_evidence")
+    corrections = previous.get("completed_role_corrections", [])
+    if (
+        expected_charge is None
+        or not isinstance(passport_charges, list)
+        or passport_charges.count(expected_charge) != 1
+        or sum(
+            isinstance(item, dict)
+            and item.get("transition_receipt_sha256") == args.receipt
+            for item in passport_charges
+        ) != 1
+        or not isinstance(completed, list)
+        or not isinstance(corrections, list)
+    ):
+        raise PassportError("authenticated run charge is missing")
+    corrections = validate_completion_corrections(corrections, completed)
+
+    evidence = {
+        "contract_version": args.contract_version,
+        "factory_sha": consumed["factory_sha"],
+        "head_before": consumed["head_sha"],
+        "manifest_sha256": manifest_digest,
+        "output_sha256": output_digest,
+        "role": "builder",
+        "run_id": args.run_id,
+        "transition_receipt_sha256": args.receipt,
+    }
+    correction = {
+        "failed_factory_sha": consumed["factory_sha"],
+        "issue": COMPLETION_CORRECTION_ISSUE,
+        "output_head_sha": current["head_sha"],
+        "progress_events": progress_events,
+        "progress_journal_sha256": progress_digest,
+        "recovery_factory_sha": args.factory_sha,
+        "receipt_parent_file_sha256": consumed["passport_sha256"],
+        "run_id": args.run_id,
+        "schema": COMPLETION_CORRECTION_SCHEMA,
+        "transition_receipt_sha256": args.receipt,
+    }
+    matching_completed = [
+        item for item in completed
+        if isinstance(item, dict) and (
+            item.get("run_id") == args.run_id
+            or item.get("transition_receipt_sha256") == args.receipt
+        )
+    ]
+    matching_corrections = [
+        item for item in corrections
+        if isinstance(item, dict) and (
+            item.get("run_id") == args.run_id
+            or item.get("transition_receipt_sha256") == args.receipt
+        )
+    ]
+    if matching_completed or matching_corrections:
+        if matching_completed == [evidence] and matching_corrections == [correction]:
+            return previous
+        raise PassportError("completion correction conflicts with prior evidence")
+    corrected_evidence = [*completed, evidence]
+    corrected_history = validate_completion_corrections(
+        [*corrections, correction], corrected_evidence
+    )
+
+    value = {
+        **{
+            name: item for name, item in previous.items()
+            if name not in {
+                "authentication_sha256", "passport_sha256", "parent_digest",
+                "parent_file_sha256", "nonce",
+            }
+        },
+        "completed_role_corrections": corrected_history,
+        "completed_role_evidence": corrected_evidence,
+        "nonce": secrets.token_hex(16),
+        "parent_digest": previous["passport_sha256"],
+        "parent_file_sha256": parent_raw,
+    }
     signed = authenticate(value, secret)
     write_atomic(destination, signed)
     return signed
@@ -1503,7 +1808,10 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "action", choices=("authorize-lineage", "export", "migrate", "validate")
+        "action", choices=(
+            "authorize-lineage", "correct-converged-success", "export",
+            "migrate", "validate",
+        )
     )
     parser.add_argument("--factory-root", required=True, type=Path)
     parser.add_argument("--workdir", required=True, type=Path)
@@ -1513,6 +1821,7 @@ def main() -> None:
     parser.add_argument("--factory-sha", required=True)
     parser.add_argument("--project", required=True)
     parser.add_argument("--receipt", default="")
+    parser.add_argument("--run-id", default="")
     parser.add_argument(
         "--publication-state",
         choices=(
@@ -1528,8 +1837,14 @@ def main() -> None:
             or args.contract_version != "1.8.0"
             or not SHA.fullmatch(args.factory_sha)
             or (
-                args.action in {"authorize-lineage", "export"}
+                args.action in {
+                    "authorize-lineage", "correct-converged-success", "export",
+                }
                 and not DIGEST.fullmatch(args.receipt)
+            )
+            or (
+                args.action == "correct-converged-success"
+                and not RUN_ID.fullmatch(args.run_id)
             )
         ):
             raise PassportError("invalid passport arguments")
@@ -1539,6 +1854,8 @@ def main() -> None:
         secret = key(args.state_dir)
         if args.action == "authorize-lineage":
             value = authorize_lineage(args, secret)
+        elif args.action == "correct-converged-success":
+            value = correct_converged_success(args, secret)
         elif args.action == "export":
             value = export(args, secret)
         elif args.action == "migrate":

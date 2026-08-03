@@ -1295,7 +1295,7 @@ PY
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
       die "portable passports require contract 1.8.0"
     PASSPORT_ACTION="${1:-}"
-    PASSPORT_RECEIPT="" PASSPORT_PUBLICATION="preserve"
+    PASSPORT_RECEIPT="" PASSPORT_PUBLICATION="preserve" PASSPORT_RUN_ID=""
     if [[ "$PASSPORT_ACTION" == "export" && $# -eq 10 &&
           "$2" == "--ticket" && "$4" == "--receipt" &&
           "$6" == "--publication-state" && "$8" == "--workdir" &&
@@ -1306,6 +1306,16 @@ PY
         die "invalid transition receipt"
       [[ "$PASSPORT_PUBLICATION" =~ ^(none|validating|ready|merge-pending|merged|repair)$ ]] ||
         die "invalid publication state"
+    elif [[ "$PASSPORT_ACTION" == "correct-converged-success" && $# -eq 10 &&
+            "$2" == "--ticket" && "$4" == "--receipt" &&
+            "$6" == "--run-id" && "$8" == "--workdir" &&
+            "${10}" == "--json" ]]; then
+      TICKET="$3" PASSPORT_RECEIPT="$5" PASSPORT_RUN_ID="$7"
+      TICKET_WORKDIR="$9"
+      [[ "$PASSPORT_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid transition receipt"
+      [[ "$PASSPORT_RUN_ID" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
+        die "invalid run identifier"
     elif [[ "$PASSPORT_ACTION" == "migrate" && $# -eq 8 &&
             "$2" == "--ticket" && "$4" == "--publication-state" &&
             "$6" == "--workdir" && "$8" == "--json" ]]; then
@@ -1336,7 +1346,12 @@ PY
       --factory-sha "$KIT_SHA"
       --project "$PROJECT"
     )
-    if [[ "$PASSPORT_ACTION" == "export" ]]; then
+    if [[ "$PASSPORT_ACTION" == "correct-converged-success" ]]; then
+      PASSPORT_ARGS+=(
+        --receipt "$PASSPORT_RECEIPT"
+        --run-id "$PASSPORT_RUN_ID"
+      )
+    elif [[ "$PASSPORT_ACTION" == "export" ]]; then
       PASSPORT_ARGS+=(
         --receipt "$PASSPORT_RECEIPT"
         --publication-state "$PASSPORT_PUBLICATION"

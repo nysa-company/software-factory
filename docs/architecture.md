@@ -905,6 +905,23 @@ pre-submission interruptions invoke the receipt-bound passport export when
 that charge is absent. If an authorized head rewrite blocks that export, the
 controller first migrates the head and then retries the same bound export; a
 clean remote head alone is not accounting evidence.
+One predecessor release produced a narrower false terminal after Cursor had
+reported one final success and Builder's push had already converged: the
+manifest was `abandoned`/`abandoned_conservative`, GO and submission were both
+durable, exit was 128, and role exit and terminal reason were blank. A
+successor may correct only that exact Builder shape without replay. The trusted
+passport helper requires the consumed `RUN builder` receipt, unique run,
+owner-only output and progress journal, exactly one final progress success,
+exact exported charge, clean current cell, current recovery Factory, and either
+the direct receipt passport or one unique contiguous authenticated migration
+suffix. The controller additionally requires passport, cell, and remote head
+convergence before and after the HMAC-signed correction, then clears the claim
+through its ordinary durable update. Missing artifacts, stale Factory state,
+tamper, ambiguity, any other terminal shape, or repeat evidence fails closed.
+The correction remains authenticated audit evidence on later exports; it is
+not a generic lifecycle override. Emergency override authority remains
+separate and requires explicit owner authorization bound to its target plus a
+linked GitHub issue before use.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.

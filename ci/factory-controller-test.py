@@ -3574,6 +3574,7 @@ class FactoryControllerTest(unittest.TestCase):
         events = []
         controller.restore_recorded_contract_repair = lambda _claim: False
         controller.restore_contract_blocker = lambda _claim: False
+        controller.role_active = lambda _claim: False
         controller.remote_passport_valid = lambda _claim: True
         controller.ensure_lease = lambda _claim, _label: None
         controller.event = (
@@ -3620,6 +3621,112 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_repaired_failures([claim])
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(events, [])
+
+    def test_exact_converged_builder_success_recovers_once_after_upgrade(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-converged-success"
+        cell.mkdir()
+        receipt = "9" * 64
+        run_id = "converged-success"
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "8" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {})
+        manifest = self.product / f"factory/runs/{run_id}.meta"
+        predecessor = "e" * 40
+        if predecessor == self.release.name:
+            predecessor = "f" * 40
+
+        def write_manifest(role_exit: str = "") -> None:
+            manifest.write_text(
+                f"run_id={run_id}\n"
+                "phase=abandoned\n"
+                "ticket=T-110\n"
+                "role=builder\n"
+                "adapter=cursor\n"
+                "provider_attempt_id=attempt-1\n"
+                "accounting_state=abandoned_conservative\n"
+                "reserved_usd=10.00\n"
+                "go_issued=1\n"
+                "task_submitted=1\n"
+                "effective_cost=10.00\n"
+                "exit_status=128\n"
+                "cost_basis=conservative_reservation\n"
+                f"kit_sha={predecessor}\n"
+                "contract_version=1.8.0\n"
+                "role_branch_before=ticket/T-110\n"
+                f"role_head_before={'7' * 40}\n"
+                f"role_exit={role_exit}\n"
+                "terminal_reason_code=\n"
+                f"output_sha256={'6' * 64}\n"
+                "progress_events=\n"
+                "progress_journal_sha256=\n"
+                f"transition_receipt_sha256={receipt}\n",
+                encoding="utf-8",
+            )
+
+        events = []
+        corrections = []
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.remote_passport_valid = lambda _claim: True
+        controller.converged_success_exported = lambda *_args: True
+        controller.ensure_lease = lambda _claim, label: events.append((label, {}))
+        controller.event = (
+            lambda name, *_args, **details: events.append((name, details))
+        )
+
+        def correct(_claim, terminal):
+            corrections.append(terminal["run_id"])
+
+        controller.correct_converged_success = correct
+        write_manifest("unrelated")
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(corrections, [])
+
+        write_manifest()
+        controller.role_active = lambda _claim: True
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(corrections, [])
+
+        controller.role_active = lambda _claim: False
+        controller.remote_passport_valid = lambda _claim: False
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(corrections, [])
+
+        controller.remote_passport_valid = lambda _claim: True
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+        self.assertEqual(corrections, [run_id])
+        self.assertEqual(
+            events,
+            [
+                ("repaired-role", {}),
+                (
+                    "converged_success_recovered_by_release_upgrade",
+                    {"failed_run_id": run_id},
+                ),
+            ],
+        )
 
     def test_history_rewrite_retries_only_after_release_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)
