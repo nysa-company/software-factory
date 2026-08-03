@@ -22,6 +22,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   in `~/.factory/bin`, first in the sealed launcher PATH. The operation refuses
   unsafe paths and version drift before replacement and verifies the resulting
   owner-local tuple; system-wide runtime selection is never changed.
+- Isolated subscription CLI homes restore the exact sealed task PATH from their
+  final zsh login hook after macOS `path_helper` initialization. The hook exits
+  before a requested product command when Node or npm differs from the active
+  certified tuple; provider CLIs may still use their own bundled runtimes.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -3201,3 +3205,13 @@ output to the current release only when release order, head/base/route chain,
 and final source-passport parent digests all agree. Generic receipt lineage is
 not relaxed; legacy, non-Cursor, unknown, disconnected, or ambiguous evidence
 remains blocked.
+
+## 2026-08-03 — Decision 234: Provider login shells retain the certified runtime
+
+Category: Reliability
+
+The sealed launcher passes the active certified Node/npm versions only to role
+runs. Each isolated provider home restores the trusted task PATH after macOS
+login initialization and refuses the requested product command when either
+runtime differs; the provider CLI executable remains outside that product
+runtime check.

@@ -297,6 +297,11 @@ ticket- and execution-cell-neutral state; concurrent Codex, Claude Code, and
 Cursor processes never share writable CLI homes. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
+For an active product with a certified Node/npm tuple, each isolated CLI home
+also carries a final zsh login hook. It restores the launcher's exact task PATH
+after macOS `path_helper` runs and exits before the requested product command
+when either runtime version differs; the provider CLI's own bundled runtime is
+outside this check.
 Its trusted ticket-state reconciliation binds a successful Reviewer's
 read-only head and durable output digest, records the canonical verdict and
 explicit repair owner, and commits a rejection's Review-to-Building transition

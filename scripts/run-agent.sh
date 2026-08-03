@@ -1244,6 +1244,33 @@ prepare_cli_runtime() {
   chmod 600 "$CLI_RUNTIME_ROOT/owner"
 }
 
+prepare_cli_login_shell() {
+  [[ "$CLI_CONCURRENT_RUN" -eq 1 ]] || return 0
+  [[ -n "${FACTORY_CERTIFIED_NODE_VERSION:-}${FACTORY_CERTIFIED_NPM_VERSION:-}" ]] ||
+    return 0
+  [[ "${FACTORY_CERTIFIED_NODE_VERSION:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ &&
+     "${FACTORY_CERTIFIED_NPM_VERSION:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ &&
+     "$TASK_PATH" == /* && "$TASK_PATH" != *$'\n'* && "$TASK_PATH" != *$'\r'* ]] || {
+    TERMINAL_REASON_CODE="provider_task_runtime_invalid"
+    echo "certified provider task runtime is invalid" >&2
+    return 1
+  }
+  local profile="$CLI_PROVIDER_HOME/.zlogin"
+  [[ ! -e "$profile" && ! -L "$profile" ]] || {
+    TERMINAL_REASON_CODE="provider_task_runtime_collision"
+    echo "provider login-shell profile already exists" >&2
+    return 1
+  }
+  {
+    printf 'export PATH=%q\n' "$TASK_PATH"
+    printf 'if [[ "$(node --version 2>/dev/null)" != %q || "$(npm --version 2>/dev/null)" != %q ]]; then\n' \
+      "$FACTORY_CERTIFIED_NODE_VERSION" "$FACTORY_CERTIFIED_NPM_VERSION"
+    printf "  print -u2 -- 'Factory product runtime mismatch; command refused'\n"
+    printf '  exit 126\nfi\n'
+  } >"$profile" || return 1
+  chmod 600 "$profile"
+}
+
 cleanup_cli_runtime() {
   local runtime_state_root="${CLI_RUNTIME_STATE_ROOT:-${DEVELOPMENT_LANE_ROOT:-}}"
   local runtime_layout="${CLI_RUNTIME_LAYOUT:-lane}"
@@ -2266,6 +2293,7 @@ if [[ "$ROLE" == "planner" ]]; then
   done
   TASK_PATH="$ROLE_GUARD_ROOT:$PATH"
 fi
+prepare_cli_login_shell || exit 6
 TASK_COMMAND=()
 STATUS=0
 if [[ "$ISOLATED_RUN" -eq 1 ]]; then
