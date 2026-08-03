@@ -21,7 +21,7 @@ jobs:
     outputs:
       behavioral: ${{ steps.classify.outputs.behavioral }}
       base: ${{ steps.classify.outputs.base }}
-      shards: ${{ steps.classify.outputs.shards }}
+      groups: ${{ steps.classify.outputs.groups }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,23 +34,23 @@ jobs:
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
           if test "$GITHUB_EVENT_NAME" = push; then
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
-            echo 'shards=["factory","hermes","release"]' >> "$GITHUB_OUTPUT"
+            echo 'groups=[1,2,3,4]' >> "$GITHUB_OUTPUT"
           elif bash ci/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
             echo "behavioral=false" >> "$GITHUB_OUTPUT"
-            echo 'shards=["pr"]' >> "$GITHUB_OUTPUT"
+            echo 'groups=["pr"]' >> "$GITHUB_OUTPUT"
           else
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
-            echo 'shards=["pr"]' >> "$GITHUB_OUTPUT"
+            echo 'groups=["pr"]' >> "$GITHUB_OUTPUT"
           fi
 
   linux:
-    name: linux-${{ matrix.shard }}
+    name: linux-group-${{ matrix.group }}
     needs: scope
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.scope.outputs.shards) }}
+        group: ${{ fromJSON(needs.scope.outputs.groups) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,17 +81,17 @@ jobs:
         env:
           BASE_REF: origin/main
           CI_FORCE_FULL: "1"
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh --shard "${{ matrix.shard }}"
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh --group "${{ matrix.group }}"
 
   macos-bash-3:
-    name: macos-bash-3-${{ matrix.shard }}
+    name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
     if: needs.scope.outputs.behavioral == 'true'
     runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.scope.outputs.shards) }}
+        group: ${{ fromJSON(needs.scope.outputs.groups) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,9 +110,45 @@ jobs:
         if: github.event_name == 'push'
         env:
           CI_FORCE_FULL: "1"
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --shard "${{ matrix.shard }}"
+        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --group "${{ matrix.group }}"
 
-  # Keep the required context stable while all six platform shards execute.
+  # Preserve the installed release-evidence contexts while the implementation
+  # fans out to four balanced hosted runners per platform.
+  linux-shard-evidence:
+    name: linux-${{ matrix.shard }}
+    if: always() && github.event_name == 'push'
+    needs: [scope, linux]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [factory, hermes, release]
+    steps:
+      - name: require all Linux groups
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          GROUP_RESULT: ${{ needs.linux.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          test "$GROUP_RESULT" = success
+
+  macos-shard-evidence:
+    name: macos-bash-3-${{ matrix.shard }}
+    if: always() && github.event_name == 'push'
+    needs: [scope, macos-bash-3]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [factory, hermes, release]
+    steps:
+      - name: require all macOS groups
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          GROUP_RESULT: ${{ needs.macos-bash-3.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          test "$GROUP_RESULT" = success
+
+  # Keep the required context stable while all eight platform groups execute.
   ci:
     if: always()
     needs: [scope, linux, macos-bash-3]

@@ -576,6 +576,122 @@ scenario_invalid_contract_epoch() {
   done
 }
 
+# ---------- scenario 10: accepted late test with protected merge and later epochs ----------
+# Mirrors sealed-498 T-100: the late test was already pushed, a protected-base
+# merge followed, and later Planner epochs cannot erase the earlier violation.
+scenario_t100_merge_rich() {
+  local repo base root protected_first protected_second orig_tree old_head rc order
+  local merge_parents expected_parents
+  repo="$(new_repo)"
+  write_file "$repo" conformance/app/server.js "server v0"
+  write_file "$repo" conformance/factory/tickets/T-100.md \
+    "## Frozen contract — version 6" \
+    "- **Freeze result — PASS.** Contract version 6 is frozen."
+  commit_all "$repo" "protected root"
+  root="$(head_sha "$repo")"
+
+  git -C "$repo" switch -q -c protected
+  write_file "$repo" shared/protected.txt "protected main advanced"
+  commit_all "$repo" "protected base advance"
+  protected_first="$(head_sha "$repo")"
+
+  git -C "$repo" switch -q -c ticket/T-100 "$root"
+  write_file "$repo" conformance/app/tests/t100.test.js "test('v6 initial', () => {});"
+  commit_all "$repo" "test: v6 initial"
+  append_file "$repo" conformance/app/server.js "server v6 implementation"
+  commit_all "$repo" "builder: v6 implementation"
+  append_file "$repo" conformance/app/tests/t100.test.js "test('v6 late repair', () => {});"
+  commit_all "$repo" "test-author: accepted late v6 repair"
+  git -C "$repo" merge -q --no-ff protected -m "merge protected base"
+  git -C "$repo" switch -q protected
+  write_file "$repo" .github/scripts/test-immutability-check.sh \
+    "protected gate refresh"
+  write_file "$repo" conformance/app/protected-feature.js \
+    "protected application refresh"
+  commit_all "$repo" "later protected application advance"
+  protected_second="$(head_sha "$repo")"
+  git -C "$repo" switch -q ticket/T-100
+  git -C "$repo" merge -q --no-ff protected -m "merge later protected base"
+  append_file "$repo" conformance/factory/tickets/T-100.md \
+    "## Frozen contract — version 7" \
+    "- **Freeze result — PASS.** Contract version 7 is frozen."
+  commit_all "$repo" "planner: freeze v7"
+  append_file "$repo" conformance/app/tests/t100.test.js "test('v7', () => {});"
+  commit_all "$repo" "test-author: v7"
+  append_file "$repo" conformance/app/server.js "server v7 implementation"
+  commit_all "$repo" "builder: v7"
+  append_file "$repo" conformance/factory/tickets/T-100.md \
+    "## Frozen contract — version 8" \
+    "- **Freeze result — PASS.** Contract version 8 is frozen."
+  commit_all "$repo" "planner: freeze v8"
+
+  base="$protected_second"
+  old_head="$(head_sha "$repo")"
+  orig_tree="$(head_tree "$repo")"
+  if run_gate "$repo" "$base"; then
+    echo "  [t100] precondition failed: accepted v6 late test passed"
+    return 1
+  fi
+  run_reorder "$repo" "$base"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "  [t100] merge-rich normalization refused"
+    cat "$(reorder_log "$repo")"
+    return 1
+  fi
+  if [ "$(head_tree "$repo")" != "$orig_tree" ] || ! run_gate "$repo" "$base"; then
+    echo "  [t100] normalized history lost tree identity or gate parity"
+    cat "$(gate_log "$repo")"
+    return 1
+  fi
+  merge_parents="$(git -C "$repo" rev-list --first-parent --reverse --merges \
+    --parents "$base..HEAD" | awk '{print $3}')"
+  expected_parents="$(printf '%s\n%s' "$protected_first" "$protected_second")"
+  if [ "$merge_parents" != "$expected_parents" ]; then
+    echo "  [t100] protected second parents changed: $merge_parents"
+    return 1
+  fi
+  order="$(commit_order "$repo" "$base")"
+  if [ "$(printf '%s\n' "$order" | grep -n 'accepted late' | cut -d: -f1)" \
+     -ge "$(printf '%s\n' "$order" | grep -n 'v6 implementation' | cut -d: -f1)" ]; then
+    echo "  [t100] late accepted test was not moved before v6 implementation"
+    return 1
+  fi
+  [ "$(head_sha "$repo")" != "$old_head" ]
+}
+
+# ---------- scenario 11: a late test cannot cross a merge boundary ----------
+scenario_cross_merge_refused() {
+  local repo root base old_head old_tree rc
+  repo="$(new_repo)"
+  write_file "$repo" conformance/app/server.js "server v0"
+  commit_all "$repo" "protected root"
+  root="$(head_sha "$repo")"
+  git -C "$repo" switch -q -c protected
+  write_file "$repo" shared/protected.txt "protected advance"
+  commit_all "$repo" "protected advance"
+  base="$(head_sha "$repo")"
+  git -C "$repo" switch -q -c ticket/T-100 "$root"
+  write_file "$repo" conformance/app/tests/t100.test.js "initial test"
+  commit_all "$repo" "test: initial"
+  append_file "$repo" conformance/app/server.js "implementation"
+  commit_all "$repo" "builder: implementation"
+  git -C "$repo" merge -q --no-ff protected -m "merge protected base"
+  append_file "$repo" conformance/app/tests/t100.test.js "late test"
+  commit_all "$repo" "test-author: late after merge"
+  old_head="$(head_sha "$repo")"
+  old_tree="$(head_tree "$repo")"
+
+  run_reorder "$repo" "$base"; rc=$?
+  if [ "$rc" -eq 0 ] \
+    || [ "$(head_sha "$repo")" != "$old_head" ] \
+    || [ "$(head_tree "$repo")" != "$old_tree" ] \
+    || ! grep -q "across a merge boundary" "$(reorder_log "$repo")"; then
+    echo "  [cross-merge] unsafe rewrite did not fail closed before mutation"
+    cat "$(reorder_log "$repo")"
+    return 1
+  fi
+}
+
 # ---------- runner ----------
 
 run_scenario() { # run_scenario <name> <function>
@@ -606,6 +722,8 @@ run_scenario "scenario-6-default-pathspecs-bonus"     scenario_default_paths
 run_scenario "scenario-7-targeted-default-exemptions" scenario_targeted_default_exemptions
 run_scenario "scenario-8-frozen-contract-epoch"        scenario_contract_epoch
 run_scenario "scenario-9-invalid-contract-epoch"       scenario_invalid_contract_epoch
+run_scenario "scenario-10-t100-accepted-push-merge-rich" scenario_t100_merge_rich
+run_scenario "scenario-11-cross-merge-refused"          scenario_cross_merge_refused
 
 echo
 echo "== summary: $PASS_TOTAL passed, $FAIL_TOTAL failed =="

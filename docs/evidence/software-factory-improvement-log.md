@@ -4751,16 +4751,18 @@ claims continue while new admission remains closed.
 
 ## FI-20260802-161 — Pause and interruption shared ambiguous claim shapes
 
-Status: 77 focused controller regressions green; protected CI pending
+Status: 78 controller and 33 state-machine regressions green; protected CI pending
 Priority: P0 (#164/#184)
 Area: controller persistence
 Owner: Factory
 Impact: a deliberately claim-free passport and an accidentally receipt-free
 blocked claim had no distinct authenticated recovery authority.
-Smallest repair: add explicit passport-bound `ticket-control pause|resume` and
-one-use pre-provider reconciliation markers. Neither path scans historical
-passports or weakens typed blocked claims.
-Validation: pause/resume, stale passport, blocked restore, two-ticket restart,
+Smallest repair: add explicit passport- and lifecycle-state-bound
+`ticket-control pause|resume` plus one-use pre-provider reconciliation markers.
+Neither path scans historical passports or weakens typed blocked claims;
+merged/Done truth and capacity refusal leave the pause intent untouched.
+Validation: pause/resume, restart, successor passport lineage, exact state,
+capacity, merged ticket, blocked restore, two-ticket interruption recovery,
 dirty/active/paused/terminal/cross-release refusal, and idempotence are covered.
 
 ## FI-20260802-162 — Reviewer-requested late tests were guaranteed CI-red
@@ -4778,20 +4780,32 @@ Planner package-manager entry points. Existing Narrator output is preserved.
 
 ## FI-20260802-163 — Certification prerequisites failed after expensive phases
 
-Status: Five focused runner regressions green; protected CI pending
+Status: Eight focused runner regressions and caller validation green;
+protected CI pending
 Priority: P0 (#165/#172/#173)
 Area: certification trust boundary
 Owner: Factory
-Impact: missing reviewed network appeared as opaque npm failure, while a known
-noncanonical active-product path failed only after the phase graph completed.
+Impact: missing reviewed network appeared as opaque npm failure, a known
+noncanonical active-product path failed only after the phase graph completed,
+and interrupted certification discarded already-complete expensive phases.
 Smallest repair: plan v2 pins Node/npm and phase network policy, fails missing
 capability before spawn, retains denied phases under reviewed opt-in, preserves
 redacted hash-bound failure evidence, and validates the active generation/path/
-origin before workspace preparation.
+origin before workspace preparation. Explicit restart-local reuse now binds a
+self-hashed phase record to every Factory/product/plan/dependency/runtime/
+command/network input and rehashes its retained log plus declared artifacts.
+Legacy plans and undeclared side effects never reuse.
+Validation: exact repeat, Factory/product/plan/runtime/network invalidation,
+artifact drift, interruption, stale evidence, and tamper regressions prove no
+false hit. Factory receipt validation accepts only hits carrying a phase-record
+digest; full protected certification remains authoritative. Persistent reuse
+across separate disposable certification commands remains explicitly deferred
+to P1 #198 because it requires authenticated artifact packaging/restoration,
+not retention of a prior writable workspace.
 
 ## FI-20260802-164 — Successor ticket migrations ran serially
 
-Status: Focused overlap regression green; protected CI and successor canary pending
+Status: Focused overlap and compact-preview regressions green; protected CI and successor canary pending
 Priority: P0 (#181)
 Area: migration and resume latency
 Owner: Factory
@@ -4801,6 +4815,34 @@ authenticated resume completions because tickets ran one after another.
 Smallest repair: overlap only independent per-ticket recovery calls up to the
 already-certified capacity. Every ticket retains its existing launcher,
 passport, route, lease, repair, and accounting sequence.
+Additional occurrence: a 71-revision journal produced a 412,396-byte ordinary
+preview in the representative fixture, and live apply repeated the complete
+readiness round. Ordinary output now retains only exact source, readiness,
+journal-tail, and approval digests; full journal output is explicit diagnostics.
+Apply compares one fresh readiness digest to the approved preview instead of
+probing twice, while the candidate journal, preview hash, tamper decisions, and
+failure reasons remain identical.
+
+## FI-20260802-165 — Frozen test scope omitted fixture cleanup dependencies
+
+Status: Focused role-contract regression green; protected CI pending
+Priority: P0 (#192)
+Area: planning, specification lint, and protected-test ownership
+Owner: Factory
+First seen: T-100 Test-author contract block at product commit `d44bb6a4`
+under sealed Factory `498dadc36f4c70956a7d25231215b9f11cafb4a8`
+Impact: a required serialized suite created a non-cascading child row in one
+criterion, then a later reset deleted its parent first. The exact frozen repair
+scope omitted the required cleanup edit, so Test-author correctly preserved its
+valid committed tests and stopped before Builder.
+Smallest repair: Planner and Spec-linter trace setup, reset, and teardown across
+the required serialized command, enumerate sibling foreign-key dependencies,
+and freeze only required child-first cleanup edits. Exact `ON DELETE CASCADE`
+relationships need no redundant cleanup and unrelated protected tests remain
+outside Test-author ownership.
+Validation: the focused role-contract regression covers child-first cleanup,
+sibling dependencies, cascade control, narrow ownership, and preserved
+Test-author fail-closed behavior.
 
 ## Maintenance rule
 

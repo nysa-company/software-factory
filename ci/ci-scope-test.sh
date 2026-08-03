@@ -21,11 +21,20 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: platform jobs must depend only on classification so they can run in parallel" >&2
   exit 1
 }
-[[ "$(grep -Fc 'shard: ${{ fromJSON(needs.scope.outputs.shards) }}' "$WORKFLOW")" -eq 2 &&
-    "$(grep -Fc -- '--shard "${{ matrix.shard }}"' "$WORKFLOW")" -eq 2 &&
-    "$(grep -Fc 'shards=["factory","hermes","release"]' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'shards=["pr"]' "$WORKFLOW")" -eq 2 ]] || {
-  echo "FAIL: only main may expand Linux and macOS into complete-suite shards" >&2
+[[ "$(grep -Fc 'group: ${{ fromJSON(needs.scope.outputs.groups) }}' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc -- '--group "${{ matrix.group }}"' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'groups=[1,2,3,4]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'groups=["pr"]' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'name: linux-group-${{ matrix.group }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'name: macos-bash-3-group-${{ matrix.group }}' "$WORKFLOW")" -eq 1 ]] || {
+  echo "FAIL: only main may expand Linux and macOS into four complete-suite groups" >&2
+  exit 1
+}
+[[ "$(grep -Fc 'name: linux-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'name: macos-bash-3-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'needs: [scope, linux]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'needs: [scope, macos-bash-3]' "$WORKFLOW")" -eq 1 ]] || {
+  echo "FAIL: stable release-evidence shard contexts must aggregate every platform group" >&2
   exit 1
 }
 for job in linux-factory linux-hermes linux-release \
@@ -239,10 +248,12 @@ fi
 RUNNER="$TMP/runner"
 mkdir -p "$RUNNER/ci"
 cp "$ROOT/ci/test-all.sh" "$RUNNER/ci/"
+cp "$ROOT/ci/suite-groups.sh" "$RUNNER/ci/"
 printf '%s\n' '#!/usr/bin/env bash' 'suite_registry() {' \
   '  local callback="$1"' \
   '  "$callback" factory-scripts "factory suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" hermes-contract "hermes suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" factory-kit "kit suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" pass "pass suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" fail "fail suite" bash "$ROOT/ci/fail.sh"' \
   '  "$callback" ci-scope "scope suite" bash "$ROOT/ci/pass.sh"' \
@@ -293,6 +304,22 @@ shard_case release 'PASS: pass suite' 'PASS: factory suite'
 status=0
 (cd "$RUNNER" && bash ci/test-all.sh --shard unknown >/dev/null 2>&1) || status=$?
 [[ "$status" -eq 2 ]] || { echo "FAIL: unknown shard must be rejected" >&2; exit 1; }
+
+group_case() {
+  local group="$1" expected="$2" forbidden="$3" output status=0
+  output="$(cd "$RUNNER" && bash ci/test-all.sh --group "$group" 2>&1)" || status=$?
+  if [[ "$status" -ne 0 || "$output" != *"$expected"* || "$output" == *"$forbidden"* ]]; then
+    printf 'FAIL: %s group selection (status %s; output %s)\n' "$group" "$status" "$output" >&2
+    exit 1
+  fi
+}
+group_case 1 'PASS: factory suite' 'PASS: hermes suite'
+group_case 2 'PASS: hermes suite' 'PASS: factory suite'
+group_case 3 'PASS: kit suite' 'PASS: factory suite'
+group_case 4 'PASS: pass suite' 'PASS: factory suite'
+status=0
+(cd "$RUNNER" && bash ci/test-all.sh --group unknown >/dev/null 2>&1) || status=$?
+[[ "$status" -eq 2 ]] || { echo "FAIL: unknown group must be rejected" >&2; exit 1; }
 
 git -C "$RUNNER" init -q -b main
 git -C "$RUNNER" config user.name "Runner test"

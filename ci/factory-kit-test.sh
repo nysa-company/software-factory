@@ -238,7 +238,7 @@ restore_product_tuple() {
 }
 
 make_product() {
-  local name="$1" path bare
+  local name="$1" path bare node_version npm_version
   path="$TMP/$name"
   bare="$TMP/$name.git"
   git init --bare -q "$bare"
@@ -255,6 +255,11 @@ PROJECT_NAME=test-product
 GH_REPO=example/test-product
 CERTIFY_SCRIPT=factory/certify.sh
 EOF
+  node_version="$(node --version)"
+  npm_version="$(npm --version)"
+  cat > "$path/factory/certification-plan.json" <<EOF
+{"phases":[{"artifacts":[],"command":["true"],"depends_on":[],"name":"fixture","network":"denied"}],"runtime":{"node":"$node_version","npm":"$npm_version"},"schema":"nysa.software-factory.certification-plan/v2"}
+EOF
   cat > "$path/factory/certify.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eu
@@ -269,13 +274,16 @@ python3 - "$FACTORY_CERTIFICATION_EVIDENCE" <<'PY'
 import json, os, pathlib, subprocess, sys
 path = pathlib.Path(sys.argv[1])
 value = {
+    "contract_version": os.environ["FACTORY_CONTRACT_VERSION"],
     "ended_at": "2026-07-29T00:00:01Z",
     "factory_sha": os.environ["FACTORY_KIT_SHA"],
+    "factory_tree": os.environ["FACTORY_KIT_TREE"],
     "max_workers": 2,
     "network_reviewed": os.environ.get("FACTORY_CERTIFICATION_NETWORK_REVIEWED") == "1",
     "phases": [{
         "artifact_sha256": "a" * 64,
-        "cache_hit": False,
+        "cache_hit": True,
+        "cache_record_sha256": "e" * 64,
         "command": ["fixture"],
         "ended_at": "2026-07-29T00:00:01Z",
         "exit_status": 0,
@@ -291,11 +299,13 @@ value = {
         "wall_seconds": 1,
     }],
     "plan_sha256": "c" * 64,
+    "product_sha": os.environ["FACTORY_PRODUCT_SHA"],
     "product_tree": os.environ["FACTORY_PRODUCT_TREE"],
     "runtime": {
         "node": subprocess.check_output(["node", "--version"], text=True).strip(),
         "npm": subprocess.check_output(["npm", "--version"], text=True).strip(),
     },
+    "runtime_tuple": json.loads(os.environ["FACTORY_CERTIFICATION_TUPLE"]),
     "schema": "nysa.software-factory.certification-result/v1",
     "started_at": "2026-07-29T00:00:00Z",
     "status": "pass",
@@ -422,11 +432,13 @@ git_identity
 git init --bare -q "$CANONICAL"
 git init -q -b main "$KIT_REPO"
 git -C "$KIT_REPO" remote add origin "$CANONICAL"
-mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts" \
+mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" \
   "$KIT_REPO/integrations/hermes/bin"
 mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
+  "$ROOT/scripts/certification-preflight.py" \
   "$KIT_REPO/scripts/"
+cp "$ROOT/scripts/lib/certification_plan.py" "$KIT_REPO/scripts/lib/"
 cp "$ROOT/integrations/hermes/bin/factory-launch" \
   "$KIT_REPO/integrations/hermes/bin/factory-launch"
 chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"

@@ -4,9 +4,20 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
-- Linear description comparison treats only three-space soft wrapping inside a
-  list paragraph as semantically inert. Nested list structure remains
-  significant, and Git retains the exact canonical ticket contract.
+- Linear description comparison canonicalizes the observed serializer-only
+  ordered-list indentation, continuation, renumbering, inline-code, link, and
+  fence-boundary forms. Nested-list structure, fenced content, and meaningful
+  edits remain significant, and Git retains the exact ticket contract.
+- Ordinary route-migration previews return compact source, readiness,
+  journal-tail, and approval digests. `--include-journal` is the explicit
+  diagnostic path. Apply performs one fresh readiness round and requires the
+  exact preview readiness digest; it does not repeat identical probes inside
+  the same command.
+- A product using certification plan v2 has one exact runtime tuple: Factory
+  SHA/tree, product SHA/tree, Contract, Node, and npm. The shared preflight runs
+  before readiness tests, qualification materialization, certification suites,
+  and sealed qualification launch; receipts and activation bind the same tuple,
+  while malformed, missing, unknown, or mismatched values fail closed.
 - Contract 1.8 uses a non-agent, non-overlapping one-shot controller and
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
@@ -53,6 +64,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   the canonical append-only form. Historical output may replace only the
   latest heading and matching established PASS one-for-one; every partial,
   mismatched, repeated, lower, mixed, or malformed shape remains closed.
+- An accepted successful late Test-author push can be normalized only after a
+  successor migrates the passport on the unchanged old head. One protected
+  authorization binds both Factory identities, the exact successful run and
+  charge, old/new tree-identical heads, route, and protected merge parents;
+  only an explicit exact-old-head force-with-lease may publish it.
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
@@ -70,9 +86,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
   excluding its required setup fix—is a contract block before Builder.
-- Every new Linear Blocked-Escalated observation clears any prior resume
-  overlay and replaces its timestamp baseline, including repeated blockers at
-  the same coarse state. Only a strictly later declared-state update resumes.
+- Every new committed Blocked-Escalated source clears any prior resume overlay
+  and timestamp baseline before the remote state is interpreted, including
+  repeated blockers with no overlay. Its first exact remote blocked observation
+  records the new baseline; only a strictly later declared-state update resumes.
 - Accepted state overlays bind the exact committed ticket text; any later
   ticket commit, or a legacy missing binding, clears the overlay before
   projection. Contract-block recovery asks for resume only when the committed
@@ -243,7 +260,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, and config-review enabled. `bash ci/test-all.sh` remains the unconditional full command; managed local readiness uses `bash ci/test-all.sh --changed-or-defer origin/main HEAD`.
-- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in three Linux and three macOS shards.
+- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in four isolated hosted-runner groups per platform while retaining the six established release-evidence aliases.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
 - The stable installed launcher is part of that exact release tuple.
   Certification and every receipt validation require its bytes to match the
@@ -252,6 +269,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   rollback.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
 - Product certification stages a checksum-verified pinned scanner into the disposable product copy before entering its network-denied sandbox, so managed secret scanning never depends on a prewarmed product cache or certification-time network access.
+- Certification phase reuse is explicit and restart-local. A hit requires an
+  owner-only self-hashed record bound to the exact Factory, product tree, plan,
+  dependencies, runtime, command, and network capability, followed by fresh
+  hashes of its retained log and declared artifacts. New workspaces and phases
+  with undeclared side effects run normally.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
 - The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
@@ -2870,11 +2892,13 @@ fail-closed.
 
 Category: State machine
 
-An operator pauses one idle ticket through a passport-, branch-, head-, and
-unique-worktree-bound owner-local intent. The claim and lease are released but
-the passport and recorded status remain. Only explicit resume can reconstruct
-that exact claim; discovery never turns an arbitrary historical passport into
-scheduling authority.
+An operator pauses one idle ticket through a passport-, branch-, head-, exact
+in-flight lifecycle-state-, and unique-worktree-bound owner-local intent. The
+claim and lease are released but the passport and recorded status remain.
+Only explicit resume can reconstruct that exact claim; lifecycle drift,
+merged/Done truth, or full capacity leaves the intent untouched. Discovery and
+interrupted-reconciliation recovery never turn an arbitrary or paused passport
+into scheduling authority.
 
 ## 2026-08-02 — Decision 210: Pre-provider interruption recovery is marker-bound
 
@@ -2925,3 +2949,81 @@ Authenticated migration and resume for independent tickets may overlap up to
 the certified ticket capacity. Within each ticket, passport migration, route
 binding, lease replacement, repair authentication, and accounting remain in
 their original order behind the same launcher controls.
+
+## 2026-08-02 — Decision 215: Linear projection binds blocker generations and serializer semantics
+
+Category: Trust boundary
+
+Every committed blocked ticket source has its own digest-bound remote timestamp
+baseline even when no operator state overlay exists. Description comparison
+canonicalizes only Linear's observed ordered-list, inline-code, link, and fence
+round trips; nested structure, fenced content, and meaningful edits remain
+different and are restored from Git.
+
+## 2026-08-02 — Decision 216: Frozen test scopes close fixture lifecycle dependencies
+
+Category: State machine
+
+Planner and Spec-linter trace every required serialized suite through setup,
+reset, and teardown before contract freeze. Parent cleanup names every sibling
+dependent table and includes child-first cleanup for each non-cascading foreign
+key; an exact `ON DELETE CASCADE` needs no redundant edit. The frozen
+Test-author scope contains only those required setup corrections. If it does
+not, Test-author preserves valid committed tests and blocks before Builder.
+
+## 2026-08-02 — Decision 217: Migration approval binds one readiness snapshot
+
+Category: Performance
+
+Ordinary migration preview no longer serializes the complete retained journal;
+an explicit diagnostic flag remains available. Preview exposes the exact
+readiness digest, and apply accepts only that digest after one fresh probe
+round, preserving approval, journal, and drift refusal without a duplicate
+round in the same command.
+
+## 2026-08-02 — Decision 218: Protected CI uses bounded isolated suite groups
+
+Category: Performance
+
+Protected-main CI runs four stable suite groups per platform on distinct hosted
+runners. The factory-script, Hermes-contract, and factory-kit
+lifecycle suites remain whole and sequential as canonical smokes; a checked
+mapping assigns every suite exactly once and defaults newly registered suites
+to release group 4. Whole-shard local execution stays sequential after
+development-lane benchmarks showed shared-runner concurrency causes timeout
+contention instead of a wall-time reduction.
+
+## 2026-08-02 — Decision 219: Certification runtime identity is one tuple
+
+Category: Trust boundary
+
+For products that adopt certification plan v2, readiness, sealed qualification,
+certification, receipts, and qualification launch share one strict Factory
+SHA/tree, product SHA/tree, Contract, Node, and npm tuple. The common parser
+rejects missing, unknown, malformed, or mismatched input before expensive work;
+products without a v2 plan retain the opaque certification path.
+
+## 2026-08-02 — Decision 220: Phase evidence reuse is exact and restart-local
+
+Category: Performance
+
+A protected certification plan may opt a phase into evidence reuse only for a
+complete, nonempty declared-artifact set; application tests, policy, security,
+and configuration checks retain `never`, as do undeclared side effects. Reuse
+stays inside one disposable result root and binds the exact Factory, product,
+plan, dependencies, command, Node/npm and runner identities, and network
+capability; the retained log and artifacts are rehashed before a hit.
+Interrupted, stale, malformed, tampered, undeclared-side-effect, and
+fresh-workspace cases execute or fail closed, while the outer certification
+and receipt authority remains unchanged.
+
+## 2026-08-02 — Decision 221: Accepted late tests require protected normalization
+
+Category: Trust boundary
+
+A successor may recover an already accepted late Test-author push only after
+first migrating the authenticated passport on the unchanged old head. A
+canonical one-file protected authorization binds the predecessor evidence and
+charge, successor Factory, exact old/new tree-identical histories, route, and
+protected merge parents; the controller waits for an explicit exact-head
+force-with-lease and performs the passport migration once.

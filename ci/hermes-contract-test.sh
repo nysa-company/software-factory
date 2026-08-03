@@ -1313,6 +1313,10 @@ expect_bad_model large-ttl disable --scope-type route --scope-id codex-gpt-5.6-s
 expect_bad_model pin-main pin --ticket T-123 --workdir "$LAUNCH_PRODUCT_PHYS" --json
 expect_bad_model pin-wrong-ticket pin --ticket T-123 \
   --workdir "$WRONG_TICKET_WORKTREE_PHYS" --json
+expect_bad_model missing-migration-readiness migrate --ticket T-123 \
+  --workdir "$RUN_WORKTREE_PHYS" \
+  --approve-hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --approved-by operator-1 --json
 expect_bad_model pin-batch-duplicate pin-batch \
   --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
   --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
@@ -2262,8 +2266,8 @@ assert commands["models"]["grammars"] == [
     "enable --scope-type <account-route|provider-family|model|route> --scope-id <safe-selection-or-id> --json",
     "pin-batch [--ticket <T-NNN> --workdir <exact-ticket-worktree>]... --json (one to four unique tickets)",
     "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
-    "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json",
-    "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --approved-by <safe-id> --json",
+    "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> [--include-journal] --json",
+    "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --readiness-hash <lowercase-sha256> --approved-by <safe-id> --json",
     "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> [--allow-reviewer-family <safe-id>] --json",

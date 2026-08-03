@@ -883,6 +883,7 @@ class ModelManagerTest(unittest.TestCase):
             "--kit-sha", "f" * 40,
             "--migrated-at", "2026-07-18T12:01:00Z",
             "--readiness", json.dumps(current_readiness),
+            "--include-journal",
         )
         self.assertIn(
             "new_resolution", preview["journal"]["revisions"][-1]["body"]
@@ -940,6 +941,73 @@ class ModelManagerTest(unittest.TestCase):
             MANAGER_MODULE.validate_journal(
                 tampered, self.catalog, self.routes, self.profiles
             )
+
+    def test_long_migration_preview_is_compact_and_diagnostic_is_equivalent(self):
+        legacy_path = self.base / "legacy-plan.json"
+        self.pin(legacy_path, ticket="T-181")
+        journal = MANAGER_MODULE.migrate_v1_plan(
+            legacy_path.read_bytes(),
+            "1" * 40,
+            "b" * 40,
+            "2026-01-01T00:00:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        for index in range(1, 71):
+            new_kit = ("c" if journal["kit_sha"] != "c" * 40 else "d") * 40
+            journal = MANAGER_MODULE.migrate_v2_journal(
+                journal,
+                format(index + 1, "040x"),
+                new_kit,
+                "2026-01-01T00:%02d:%02dZ" % (index // 60, index % 60),
+                self.catalog,
+                self.routes,
+                self.profiles,
+                self.readiness,
+            )
+        journal_path = self.base / "long-journal.json"
+        journal_path.write_text(ROUTER.canonical_json(journal) + "\n")
+        os.chmod(journal_path, 0o644)
+        arguments = (
+            "--ticket-plan", str(journal_path),
+            "--pin-commit", "e" * 40,
+            "--kit-sha", "f" * 40,
+            "--migrated-at", "2026-01-01T02:00:00Z",
+            "--readiness", json.dumps(self.readiness),
+        )
+        compact_result = self.command("migrate-plan", *arguments)
+        diagnostic_result = self.command(
+            "migrate-plan", *arguments, "--include-journal"
+        )
+        compact = json.loads(compact_result.stdout)
+        diagnostic = json.loads(diagnostic_result.stdout)
+        self.assertNotIn("journal", compact)
+        self.assertEqual(
+            diagnostic["journal"]["revisions"][:-1], journal["revisions"]
+        )
+        self.assertEqual(
+            {key: value for key, value in diagnostic.items() if key != "journal"},
+            compact,
+        )
+        self.assertEqual(
+            ROUTER.content_hash(diagnostic["journal"]), compact["preview_hash"]
+        )
+        self.assertLess(len(compact_result.stdout), 2048)
+        self.assertGreater(
+            len(diagnostic_result.stdout), len(compact_result.stdout) * 100
+        )
+
+        tampered = copy.deepcopy(journal)
+        tampered["revisions"][-1]["parent_hash"] = "0" * 64
+        journal_path.write_text(ROUTER.canonical_json(tampered) + "\n")
+        compact_refusal = self.command("migrate-plan", *arguments, check=False)
+        diagnostic_refusal = self.command(
+            "migrate-plan", *arguments, "--include-journal", check=False
+        )
+        self.assertEqual(compact_refusal.returncode, 2)
+        self.assertEqual(diagnostic_refusal.returncode, 2)
+        self.assertEqual(compact_refusal.stderr, diagnostic_refusal.stderr)
 
     def test_journal_tampering_non_monotonic_revision_and_ineligible_reason_fail(self):
         legacy_path = self.base / "legacy-plan.json"

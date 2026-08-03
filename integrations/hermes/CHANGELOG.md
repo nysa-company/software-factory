@@ -28,6 +28,9 @@ helper output are not compatibility promises.
   alias; it cannot spawn an agentic dispatcher.
 - Adds a sealed non-production release environment for live qualification of
   an unmerged candidate through the real controller.
+- Makes ordinary route-migration previews compact, retains an explicit full
+  journal diagnostic, and binds apply to the preview's exact readiness digest
+  with one fresh probe round.
 
 ## 1.7.0 — 2026-07-22
 

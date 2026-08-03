@@ -154,7 +154,7 @@ Use only the selected release through the sealed launcher:
 ~/.factory/bin/factory-launch <project> models enable --scope-type account-route --scope-id codex-native --json
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
-~/.factory/bin/factory-launch <project> models migrate --ticket T-123 --workdir /absolute/ticket-worktree --approve-hash <preview-hash> --approved-by <operator-id> --json
+~/.factory/bin/factory-launch <project> models migrate --ticket T-123 --workdir /absolute/ticket-worktree --approve-hash <preview-hash> --readiness-hash <preview-readiness-hash> --approved-by <operator-id> --json
 ~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ~/.factory/bin/factory-launch <project> models fallback --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ```
@@ -182,7 +182,9 @@ re-resolve. Each run re-probes only its exact pinned route, and any failure
 after task submission ends the run without retry.
 
 Contract 1.4 tickets migrate the v1 plan once with `migrate-plan`, followed by
-`models migrate` using the exact preview hash and operator ID. For a later
+`models migrate` using the exact preview and readiness hashes plus operator ID.
+The ordinary preview is compact; add `--include-journal` before `--json` only
+when the complete authenticated candidate is needed for diagnostics. For a later
 eligible failure:
 
 1. Run `fallback-plan` and post its exact `linear_comment` as a Linear comment.
@@ -302,10 +304,27 @@ same-UID token exposure remains until a broker or OS isolation is used.
   evidence.
 - Notice: within one unchanged contract epoch, reviewer-requested test commits
   after implementation still fail the test-immutability gate.
-- Do: ensure `scripts/reorder-test-fixes.sh` is present. Use it only on a
-  linear same-contract tail before publication and only when its final tree is
-  byte-identical; a merge-rich or already authenticated role history is an
-  escalation, not force-push authority.
+- Do: ensure `scripts/reorder-test-fixes.sh` is present. Use it only on a clean
+  local same-contract tail and only when its final tree is byte-identical.
+  The helper refuses to move a commit across a merge. Retained two-parent
+  merges keep their exact reviewed tree and protected second parent; octopus
+  merges are refused. The helper is never force-push authority.
+- Notice: an already accepted late Test-author push is a protected recovery,
+  not an ordinary local reorder. First activate the successor Factory and let
+  it migrate the signed passport on the unchanged old ticket head. Run the
+  helper locally from the exact protected merge base, but do not push yet.
+- Do: verify the old/new heads, identical trees, passing immutability gate,
+  unchanged protected merge parents, route digest, and exact accepted
+  Test-author Factory/run/receipt. Commit only the canonical
+  `factory/migrations/ticket-rewrite/<new-head>.json` authorization directly
+  above that protected base and merge it through protected CI. Then publish
+  exactly once with `git push
+  --force-with-lease=refs/heads/ticket/<ticket>:<old-head> origin
+  <new-head>:refs/heads/ticket/<ticket>`. The controller will migrate evidence
+  and resume only after local and remote ticket heads match exactly.
+- Don't: publish before protected authorization, use a bare `--force`, edit or
+  waive passport evidence, change the route, or retry a stale lease. Any drift
+  requires a new reviewed authorization rather than modifying the old record.
 - Don't: waive the immutability gate or ask the builder to edit tests post-implementation.
 
 ## Parallel kit work while production is running
@@ -361,8 +380,9 @@ same-UID token exposure remains until a broker or OS isolation is used.
 ## Preparing and activating a release
 
 1. Confirm the candidate full SHA is the current `origin/main` and its exact
-   authenticated push run has all three Linux shards, all three macOS shards,
-   aggregate `ci`, and `test-immutability` successful.
+   authenticated push run has all four Linux groups, all four macOS groups,
+   the three stable evidence aliases per platform, aggregate `ci`, and
+   `test-immutability` successful.
 2. Install that exact sealed candidate. Reuse only the protected-main evidence
    from step 1 and run the local sandboxed host smoke; never substitute a local
    complete factory suite.

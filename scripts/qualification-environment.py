@@ -216,6 +216,44 @@ def product_origin(product: Path) -> str:
     return origins[0]
 
 
+def certification_preflight(
+    factory: Path, product: Path, sha: str, tree: str, contract: str,
+) -> dict[str, str] | None:
+    plan = product / "factory/certification-plan.json"
+    if not plan.exists() and not plan.is_symlink():
+        return None
+    result = command(
+        "/usr/bin/python3",
+        str(factory / "scripts/certification-preflight.py"),
+        "--plan", str(plan),
+        "--factory-sha", sha,
+        "--factory-tree", tree,
+        "--product-root", str(product),
+        "--contract-version", contract,
+        cwd=product,
+    )
+    try:
+        value = json.loads(result)
+    except json.JSONDecodeError as error:
+        raise EnvironmentError("qualification runtime preflight is malformed") from error
+    runtime_tuple = value.get("runtime_tuple")
+    if (
+        value.get("schema") != "nysa.software-factory.certification-preflight/v1"
+        or value.get("status") != "pass"
+        or not isinstance(runtime_tuple, dict)
+    ):
+        raise EnvironmentError("qualification runtime preflight did not pass")
+    return runtime_tuple
+
+
+def bind_runtime_tuple(
+    value: dict[str, Any], runtime_tuple: dict[str, str] | None,
+) -> dict[str, Any]:
+    if runtime_tuple is not None:
+        value["runtime_tuple"] = runtime_tuple
+    return value
+
+
 def without_dependency_line(value: str) -> str:
     lines = value.splitlines()
     if sum(line.startswith("Depends-On:") for line in lines) != 1:
@@ -532,6 +570,10 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     if contract != "1.8.0":
         raise EnvironmentError("qualification requires Contract 1.8.0")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
+    product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
+    runtime_tuple = certification_preflight(
+        factory, product, sha, tree, contract,
+    )
     origin = product_origin(product)
     takeover = takeover_source(
         factory, product, args.project, getattr(args, "takeover_project", None)
@@ -574,37 +616,39 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     )
     qualification_mode = takeover["mode"] if takeover else "isolated"
 
-    receipt_value = {
+    receipt_value = bind_runtime_tuple({
         "contract_version": contract,
         "kit_sha": sha,
         "kit_tree": tree,
         "product_origin": origin,
         "product_path": str(product),
+        "product_sha": product_sha,
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
         "qualification_mode": qualification_mode,
         "status": "pass",
-    }
+    }, runtime_tuple)
     if takeover:
         receipt_value["operator_map_path"] = takeover["operator_map_path"]
         receipt_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
     receipt_value["receipt_id"] = receipt_id
     write(receipts / f"{receipt_id}.json", receipt_value)
-    active_value = {
+    active_value = bind_runtime_tuple({
         "contract_version": contract,
         "generation": 1,
         "kit_sha": sha,
         "kit_tree": tree,
         "product_path": str(product),
+        "product_sha": product_sha,
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
         "qualification_mode": qualification_mode,
         "receipt_id": receipt_id,
         "release_path": str(release),
-    }
+    }, runtime_tuple)
     if takeover:
         active_value["operator_map_path"] = takeover["operator_map_path"]
         active_value["takeover_kits_root"] = takeover["takeover_kits_root"]
@@ -619,10 +663,11 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         stream.write(f"PRODUCT_ROOT={product}\n")
         stream.flush()
         os.fsync(stream.fileno())
-    result = {
+    result = bind_runtime_tuple({
         "factory_sha": sha,
         "factory_tree": tree,
         "launcher": str(release / "integrations/hermes/bin/factory-launch"),
+        "product_sha": product_sha,
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
@@ -630,7 +675,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "root": str(root),
         "schema": SCHEMA,
         "status": "prepared",
-    }
+    }, runtime_tuple)
     write(root / "environment.json", result)
     return result
 
@@ -657,6 +702,11 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     ).get("contract_version")
     if contract != "1.8.0":
         raise EnvironmentError("qualification requires Contract 1.8.0")
+    product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
+    product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
+    runtime_tuple = certification_preflight(
+        factory, product, sha, tree, contract,
+    )
 
     marker = read(root / "marker.json")
     active_path = root / f"projects/{args.project}/active.json"
@@ -709,25 +759,25 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         ):
             raise EnvironmentError("successor changes the active provider policy")
 
-        product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
         origins = command(
             "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
         ).splitlines()
         if len(origins) != 1 or not origins[0]:
             raise EnvironmentError("qualification product origin is ambiguous")
-        receipt_value = {
+        receipt_value = bind_runtime_tuple({
             "contract_version": contract,
             "kit_sha": sha,
             "kit_tree": tree,
             "previous_receipt_id": active.get("receipt_id"),
             "product_origin": origins[0],
             "product_path": str(product),
+            "product_sha": product_sha,
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
             "qualification_mode": qualification_mode,
             "status": "pass",
-        }
+        }, runtime_tuple)
         receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
         receipt_value["receipt_id"] = receipt_id
         receipt = root / f"receipts/{receipt_id}.json"
@@ -737,24 +787,26 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         else:
             write(receipt, receipt_value)
         generation = active["generation"] + (active["kit_sha"] != sha)
-        next_active = {
+        next_active = bind_runtime_tuple({
             "contract_version": contract,
             "generation": generation,
             "kit_sha": sha,
             "kit_tree": tree,
             "product_path": str(product),
+            "product_sha": product_sha,
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
             "qualification_mode": qualification_mode,
             "receipt_id": receipt_id,
             "release_path": str(release),
-        }
+        }, runtime_tuple)
         replace(active_path, next_active)
-        result = {
+        result = bind_runtime_tuple({
             "factory_sha": sha,
             "factory_tree": tree,
             "launcher": str(release / "integrations/hermes/bin/factory-launch"),
+            "product_sha": product_sha,
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
@@ -762,7 +814,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "root": str(root),
             "schema": SCHEMA,
             "status": "upgraded",
-        }
+        }, runtime_tuple)
         replace(root / "environment.json", result)
         return result
     finally:

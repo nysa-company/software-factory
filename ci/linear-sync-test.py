@@ -5,6 +5,7 @@ import importlib.util
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -426,6 +427,54 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
+    def test_repeated_block_without_overlay_requires_a_fresh_remote_baseline(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Blocked-Escalated")
+            .replace("Initiative: I-001", "Resume-State: Building\nInitiative: I-001")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+
+        self.reconcile()
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        self.assertNotIn("state", entry["operator"])
+        self.assertEqual(entry["blocked_remote_updated_at"], "2026-08-01T00:00:01Z")
+
+        issue["description"] = re.sub(
+            r"(?m)^(\d+[.)] )", r" \1", issue["description"]
+        )
+        before_updated_at = issue["updatedAt"]
+        before_baseline = entry["blocked_remote_updated_at"]
+        updates_before = sum(
+            "issueUpdate" in query for query, _variables in self.fake.calls
+        )
+        self.reconcile()
+        self.assertEqual(
+            updates_before,
+            sum("issueUpdate" in query for query, _variables in self.fake.calls),
+        )
+        self.assertEqual(issue["updatedAt"], before_updated_at)
+        self.assertEqual(entry["blocked_remote_updated_at"], before_baseline)
+
+        issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
+        issue["updatedAt"] = "2026-08-01T00:00:02Z"
+        path.write_text(path.read_text() + "\nNew blocker with no ingested overlay.\n")
+        self.reconcile()
+        self.assertEqual(issue["state"]["name"], "Blocked-Escalated")
+        self.assertNotIn("state", entry["operator"])
+        self.assertNotIn("blocked_remote_updated_at", entry)
+
+        issue["updatedAt"] = "2026-08-01T00:00:03Z"
+        self.reconcile()
+        self.assertEqual(entry["blocked_remote_updated_at"], "2026-08-01T00:00:03Z")
+        issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
+        issue["updatedAt"] = "2026-08-01T00:00:04Z"
+        self.reconcile()
+        self.assertEqual(entry["operator"]["state"], "Building")
+
     def test_blocked_ticket_cannot_resume_to_evidence_sensitive_state(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"
@@ -585,19 +634,26 @@ class LinearSyncTest(unittest.TestCase):
         updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
         self.assertEqual(updates_before, updates_after)
 
-    def test_linear_list_soft_wrap_does_not_trigger_description_rewrite(self):
+    def test_linear_ordered_list_round_trip_does_not_trigger_description_rewrite(self):
         path = self.factory / "tickets" / "T-001.md"
         path.write_text(
             path.read_text().replace(
                 "1. It works.",
-                "1. The exact first clause remains semantically joined to the second clause.",
+                "1. The exact first clause remains semantically joined\n"
+                "   to the second clause.\n"
+                "5. The deliberately numbered second clause remains equivalent.",
             )
         )
         self.reconcile()
         issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
-        issue["description"] = issue["description"].replace(
-            "remains semantically joined",
-            "remains\n   semantically joined",
+        issue["description"] = re.sub(
+            r"(?m)^(\d+)([.)] )",
+            lambda match: (
+                f" {2 if match.group(1) == '5' else match.group(1)}{match.group(2)}"
+            ),
+            issue["description"],
+        ).replace(
+            "\n   to the second clause.", "\n    to the second clause."
         )
         updates_before = sum(
             "issueUpdate" in query for query, _variables in self.fake.calls
@@ -611,6 +667,52 @@ class LinearSyncTest(unittest.TestCase):
             LINEAR.normalize_md("1. Parent\n   - Nested child"),
             LINEAR.normalize_md("1. Parent - Nested child"),
         )
+        issue["description"] = issue["description"].replace(
+            "exact first clause", "meaningfully changed clause"
+        )
+        updates_before = sum(
+            "issueUpdate" in query for query, _variables in self.fake.calls
+        )
+        self.reconcile()
+        self.assertEqual(
+            sum("issueUpdate" in query for query, _variables in self.fake.calls),
+            updates_before + 1,
+        )
+
+    def test_linear_fence_boundary_round_trip_does_not_trigger_description_rewrite(self):
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text().replace("Build it.", "Records orders\n```\nfixture")
+        )
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["description"] = issue["description"].replace(
+            "Records orders\n```", "Records orders\n\n```"
+        ) + "\n```"
+        updates_before = sum(
+            "issueUpdate" in query for query, _variables in self.fake.calls
+        )
+        self.reconcile()
+        self.assertEqual(
+            updates_before,
+            sum("issueUpdate" in query for query, _variables in self.fake.calls),
+        )
+        self.assertNotEqual(
+            LINEAR.normalize_md("Records orders\n```\nfixture"),
+            LINEAR.normalize_md("Records orders\n```\nchanged"),
+        )
+
+    def test_inline_delimited_branch_is_rendered_once(self):
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text().replace(
+                "Initiative: I-001", "Initiative: I-001\nBranch: `ticket/T-001`"
+            )
+        )
+        self.reconcile()
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        self.assertIn("**Branch:** `ticket/T-001`", issue["description"])
+        self.assertNotIn("``ticket/T-001``", issue["description"])
 
     def test_review_bundle_posts_once_after_successful_narrator(self):
         self.reconcile()

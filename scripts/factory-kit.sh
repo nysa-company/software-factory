@@ -1529,6 +1529,11 @@ product_tree() {
     die "product is not a Git repository"
 }
 
+product_sha() {
+  git -C "$1" rev-parse HEAD 2>/dev/null ||
+    die "product is not a Git repository"
+}
+
 product_origin() {
   local origin count scheme authority userinfo normalized_userinfo
   origin="$(git -C "$1" remote get-url --push --all origin 2>/dev/null || true)"
@@ -1829,6 +1834,8 @@ run_product_certification() {
   local product_copy="$1" script="$2" sha="$3" release_copy="$4"
   local workspace="$5" real_product="$6" real_release="$7"
   local product_git_tree="$8"
+  local product_git_sha="$9" kit_tree="${10}" contract="${11}"
+  local runtime_tuple="${12}"
   local raw="$workspace/certification.raw" redacted="$workspace/certification.redacted"
   local evidence="$workspace/product-certification.json" timeout status=0
   local network_opt_in deny_profile=""
@@ -1850,7 +1857,8 @@ run_product_certification() {
     "${FACTORY_KIT_SANDBOX_CAPTURE:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_SIBLING:-}" \
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
-    "$product_git_tree" "$evidence" "$network_opt_in" "$deny_profile" <<'PY' || status=$?
+    "$product_git_tree" "$evidence" "$network_opt_in" "$deny_profile" \
+    "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" <<'PY' || status=$?
 import json, os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
 profile = sys.argv[9]
@@ -1863,6 +1871,10 @@ product_tree = sys.argv[15]
 certification_evidence = sys.argv[16]
 network_reviewed = sys.argv[17]
 deny_profile = sys.argv[18]
+product_sha = sys.argv[19]
+factory_tree = sys.argv[20]
+contract_version = sys.argv[21]
+runtime_tuple = sys.argv[22]
 prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
@@ -1908,9 +1920,13 @@ environment = {
     "XDG_CACHE_HOME": os.path.join(scratch, "cache"),
     "npm_config_cache": os.path.join(scratch, "npm"),
     "FACTORY_KIT_SHA": sha,
+    "FACTORY_KIT_TREE": factory_tree,
     "FACTORY_KIT_RELEASE": release,
     "FACTORY_PRODUCT_ROOT": product,
     "FACTORY_PRODUCT_TREE": product_tree,
+    "FACTORY_PRODUCT_SHA": product_sha,
+    "FACTORY_CONTRACT_VERSION": contract_version,
+    "FACTORY_CERTIFICATION_TUPLE": runtime_tuple,
     "FACTORY_CERTIFICATION_EVIDENCE": certification_evidence,
     "FACTORY_KIT_OUTER_SANDBOX": "1",
     "FACTORY_CERTIFICATION_NETWORK_REVIEWED": network_reviewed,
@@ -1950,9 +1966,13 @@ PY
   fi
   if [[ -e "$evidence" || -L "$evidence" ]]; then
     PRODUCT_CERTIFICATION_EVIDENCE_DIGEST="$(python3 - \
-      "$evidence" "$sha" "$product_git_tree" <<'PY'
+      "$evidence" "$sha" "$product_git_tree" "$product_git_sha" \
+      "$kit_tree" "$contract" "$runtime_tuple" <<'PY'
 import hashlib, json, os, re, stat, sys
-path, factory_sha, product_tree = sys.argv[1:]
+(
+    path, factory_sha, product_tree, product_sha, factory_tree,
+    contract_version, runtime_tuple_raw,
+) = sys.argv[1:]
 descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
 try:
     info = os.fstat(descriptor)
@@ -1969,13 +1989,18 @@ finally:
     if descriptor >= 0:
         os.close(descriptor)
 value = json.loads(raw)
+runtime_tuple = json.loads(runtime_tuple_raw)
 phases = value.get("phases")
 digest = re.compile(r"^[0-9a-f]{64}$")
 if (
     value.get("schema") != "nysa.software-factory.certification-result/v1"
     or value.get("status") != "pass"
     or value.get("factory_sha") != factory_sha
+    or value.get("factory_tree") != factory_tree
+    or value.get("product_sha") != product_sha
     or value.get("product_tree") != product_tree
+    or value.get("contract_version") != contract_version
+    or value.get("runtime_tuple") != runtime_tuple
     or value.get("max_workers") not in {1, 2, 3}
     or not isinstance(value.get("network_reviewed"), bool)
     or not isinstance(value.get("runtime"), dict)
@@ -1984,7 +2009,15 @@ if (
     or any(
         not isinstance(phase, dict)
         or phase.get("exit_status") != 0
-        or phase.get("cache_hit") is not False
+        or not isinstance(phase.get("cache_hit"), bool)
+        or (
+            phase["cache_hit"]
+            and not digest.fullmatch(phase.get("cache_record_sha256", ""))
+        )
+        or (
+            not phase["cache_hit"]
+            and phase.get("cache_record_sha256") is not None
+        )
         or phase.get("network_declared") not in {"denied", "optional", "required"}
         or not isinstance(phase.get("network_granted"), bool)
         or (phase.get("network_declared") == "required" and not phase["network_granted"])
@@ -2078,7 +2111,8 @@ validate_receipt_snapshot() {
   local receipt="$1" slug="$2" product="$3" sha="$4" expected_previous="$5"
   local expected_id="${6:-}" release="$RELEASES_DIR/$sha"
   local expected_tree manifest_values manifest_origin pin contract receipt_id
-  local product_top product_git_tree kit_pin_hash project_env_hash
+  local product_top product_git_sha receipt_product_sha product_git_tree kit_pin_hash project_env_hash
+  local runtime_tuple
   local evidence_created evidence_expires
   [[ -f "$receipt" ]] || die "certification receipt not found: $receipt"
   [[ ! -L "$receipt" ]] || die "certification receipt may not be a symlink"
@@ -2122,6 +2156,12 @@ validate_receipt_snapshot() {
   [[ "$product_top" == "$(json_get "$receipt" product_path)" ]] ||
     die "receipt product path does not match"
   require_clean_product "$product_top"
+  product_git_sha="$(product_sha "$product_top")"
+  receipt_product_sha="$(json_get "$receipt" product_sha)"
+  if [[ -n "$receipt_product_sha" ]]; then
+    [[ "$product_git_sha" == "$receipt_product_sha" ]] ||
+      die "product Git commit drifted since certification"
+  fi
   product_git_tree="$(product_tree "$product_top")"
   [[ "$product_git_tree" == "$(json_get "$receipt" product_tree)" ]] ||
     die "product Git tree drifted since certification"
@@ -2138,6 +2178,19 @@ validate_receipt_snapshot() {
   contract="$(contract_version "$release")"
   [[ "$contract" == "$(json_get "$receipt" contract_version)" ]] ||
     die "Hermes contract version drifted"
+  runtime_tuple="$(json_get "$receipt" runtime_tuple)"
+  if [[ -e "$product_top/factory/certification-plan.json" || \
+        -L "$product_top/factory/certification-plan.json" || \
+        -n "$runtime_tuple" ]]; then
+    [[ -n "$runtime_tuple" ]] ||
+      die "certification receipt lacks its runtime tuple"
+    FACTORY_CERTIFICATION_TUPLE="$runtime_tuple" \
+      python3 "$release/scripts/certification-preflight.py" \
+        --plan "$product_top/factory/certification-plan.json" \
+        --factory-sha "$sha" --factory-tree "$expected_tree" \
+        --product-root "$product_top" --contract-version "$contract" \
+        >/dev/null || die "certification runtime tuple drifted"
+  fi
   require_provider_concurrency_ready \
     "$product_top" "$release" "$contract" "$sha" "$expected_tree"
   [[ "$(json_get "$receipt" provider_concurrency_evidence)" == "$PROVIDER_CONCURRENCY_EVIDENCE" ]] ||
@@ -2182,9 +2235,13 @@ validate_receipt_snapshot() {
   case "$(json_get "$receipt" product_certification_evidence.mode)" in
     legacy) ;;
     measured)
-      python3 - "$receipt" "$sha" "$product_git_tree" <<'PY' || die "measured product certification evidence is invalid"
+      python3 - "$receipt" "$sha" "$expected_tree" "$product_git_sha" \
+        "$product_git_tree" "$contract" "$runtime_tuple" <<'PY' || die "measured product certification evidence is invalid"
 import hashlib, json, re, sys
-receipt, factory_sha, product_tree = sys.argv[1:]
+(
+    receipt, factory_sha, factory_tree, product_sha, product_tree,
+    contract_version, runtime_tuple_raw,
+) = sys.argv[1:]
 container = json.load(open(receipt, encoding="utf-8"))[
     "product_certification_evidence"
 ]
@@ -2195,6 +2252,12 @@ raw = (
 ).encode()
 digest = re.compile(r"^[0-9a-f]{64}$")
 phases = result.get("phases") if isinstance(result, dict) else None
+tuple_identity_invalid = bool(runtime_tuple_raw) and (
+    result.get("factory_tree") != factory_tree
+    or result.get("product_sha") != product_sha
+    or result.get("contract_version") != contract_version
+    or result.get("runtime_tuple") != json.loads(runtime_tuple_raw)
+)
 if (
     container.get("digest") != hashlib.sha256(raw).hexdigest()
     or result.get("schema")
@@ -2202,15 +2265,29 @@ if (
     or result.get("status") != "pass"
     or result.get("factory_sha") != factory_sha
     or result.get("product_tree") != product_tree
+    or tuple_identity_invalid
     or result.get("max_workers") not in {1, 2, 3}
     or not isinstance(phases, list)
     or not phases
     or any(
         not isinstance(phase, dict)
         or phase.get("exit_status") != 0
-        or phase.get("cache_hit") is not False
+        or not isinstance(phase.get("cache_hit"), bool)
+        or (
+            phase["cache_hit"]
+            and not digest.fullmatch(phase.get("cache_record_sha256", ""))
+        )
+        or (
+            not phase["cache_hit"]
+            and phase.get("cache_record_sha256") is not None
+        )
+        or phase.get("network_declared") not in {"denied", "optional", "required"}
+        or not isinstance(phase.get("network_granted"), bool)
+        or (phase.get("network_declared") == "required" and not phase["network_granted"])
+        or (phase.get("network_declared") == "denied" and phase["network_granted"])
         or not digest.fullmatch(phase.get("input_sha256", ""))
         or not digest.fullmatch(phase.get("artifact_sha256", ""))
+        or not digest.fullmatch(phase.get("output_sha256", ""))
         for phase in phases
     )
 ):
@@ -3009,11 +3086,12 @@ cmd_install() {
 
 cmd_certify() {
   local slug="$1" product="$2" sha="$3"
-  local product_top release kit_tree pin product_git_tree product_repo contract manifest_values
+  local product_top release kit_tree pin product_git_sha product_git_tree product_repo contract manifest_values
   local writable writable_head script created expires receipt_id receipt previous_generation workspace
   local kit_pin_hash project_env_hash kit_origin lock evidence_values evidence_id
   local evidence_digest evidence_created evidence_expires evidence_source suite_reused
   local refresh_source refresh_mode refresh_remote_id active_binding_hash
+  local preflight runtime_tuple
   validate_slug "$slug"
   validate_sha "$sha"
   validate_suite_evidence_ttl
@@ -3033,6 +3111,7 @@ cmd_certify() {
   pin="$(strict_product_pin "$product_top")"
   [[ "$pin" == "$sha" ]] || die "product pin does not match candidate SHA"
   require_clean_product "$product_top"
+  product_git_sha="$(product_sha "$product_top")"
   product_git_tree="$(product_tree "$product_top")"
   product_repo="$(product_origin "$product_top")"
   previous_generation="$(certification_active_binding \
@@ -3040,6 +3119,18 @@ cmd_certify() {
     die "certification_preflight_product_binding: active product binding failed"
   active_binding_hash="$(file_hash "$(active_file_for "$slug")")"
   contract="$(contract_version "$release")"
+  runtime_tuple=""
+  if [[ -e "$product_top/factory/certification-plan.json" || \
+        -L "$product_top/factory/certification-plan.json" ]]; then
+    preflight="$(python3 "$release/scripts/certification-preflight.py" \
+      --plan "$product_top/factory/certification-plan.json" \
+      --factory-sha "$sha" --factory-tree "$kit_tree" \
+      --product-root "$product_top" --contract-version "$contract")" ||
+      die "certification runtime tuple preflight failed"
+    runtime_tuple="$(printf '%s' "$preflight" | python3 -c \
+      'import json,sys; print(json.dumps(json.load(sys.stdin)["runtime_tuple"],sort_keys=True,separators=(",",":")))')" ||
+      die "certification runtime tuple preflight is malformed"
+  fi
   require_provider_concurrency_ready \
     "$product_top" "$release" "$contract" "$sha" "$kit_tree"
   workspace="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-certification.XXXXXX")"
@@ -3090,7 +3181,8 @@ cmd_certify() {
   prepare_pinned_scanner "$product_top" "$PREPARED_PRODUCT" "$workspace/tmp" ||
     die "could not stage the product's pinned scanner for isolated certification"
   run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
-    "$workspace" "$product_top" "$release" "$product_git_tree" ||
+    "$workspace" "$product_top" "$release" "$product_git_tree" \
+    "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" ||
     die "product certification failed"
   record_certification_trace "product-certification"
   verify_release_from_manifest "$sha" >/dev/null
@@ -3115,7 +3207,7 @@ cmd_certify() {
   [[ ! -e "$receipt" && ! -L "$receipt" ]] || die "receipt ID collision"
   umask 077
   python3 - "$slug" "$sha" "$kit_tree" "$kit_origin" \
-    "$product_top" "$product_repo" "$product_git_tree" "$kit_pin_hash" \
+    "$product_top" "$product_repo" "$product_git_sha" "$product_git_tree" "$kit_pin_hash" \
     "$project_env_hash" "$contract" "$(host_name)" "$(uname -s)" "$(uname -m)" \
     "$created" "$expires" "$receipt_id" "$previous_generation" \
     "$CERTIFICATION_TOOL_VERSION" "$evidence_id" "$evidence_digest" \
@@ -3124,15 +3216,16 @@ cmd_certify() {
     "$PRODUCT_CERTIFICATION_EVIDENCE" \
     "$PRODUCT_CERTIFICATION_EVIDENCE_DIGEST" \
     "$PROVIDER_CONCURRENCY_EVIDENCE" \
+    "$runtime_tuple" \
     <<'PY' | atomic_json_from_stdin "$receipt"
 import json, sys, time
-(slug, sha, kit_tree, kit_origin, product_path, product_origin, product_tree,
+(slug, sha, kit_tree, kit_origin, product_path, product_origin, product_sha, product_tree,
  kit_pin_hash, project_env_hash, contract, host, os_name, architecture,
  created, expires, receipt_id, previous_generation, tool_version, evidence_id,
  evidence_digest, evidence_created, evidence_expires, evidence_ttl,
  suite_definition, suite_reused, release, evidence_source,
  product_evidence_path, product_evidence_digest,
- provider_concurrency_evidence) = sys.argv[1:]
+ provider_concurrency_evidence, runtime_tuple) = sys.argv[1:]
 product_evidence = {"mode": "legacy"}
 if product_evidence_path:
     with open(product_evidence_path, encoding="utf-8") as stream:
@@ -3152,6 +3245,7 @@ value = {
     "kit_origin": kit_origin,
     "product_path": product_path,
     "product_origin": product_origin,
+    "product_sha": product_sha,
     "product_tree": product_tree,
     "hashes": {
         "kit_pin": kit_pin_hash,
@@ -3200,6 +3294,8 @@ value = {
         "pin_and_config": "pass",
     },
 }
+if runtime_tuple:
+    value["runtime_tuple"] = json.loads(runtime_tuple)
 print(json.dumps(value))
 PY
   chmod 600 "$receipt"
@@ -3271,11 +3367,13 @@ create_journal() {
   receipt_id="$(json_get "$receipt" receipt_id)"
   receipt_hash="$(file_hash "$receipt")"
   python3 - "$active" "$slug" "$sha" "$tree" "$receipt_id" \
-    "$(json_get "$receipt" product_tree)" "$contract" "$previous" \
+    "$(json_get "$receipt" product_sha)" "$(json_get "$receipt" product_tree)" \
+    "$(json_get "$receipt" runtime_tuple)" "$contract" "$previous" \
     "$generation" "$product" "$release" "$(now_iso)" "$receipt" \
     "$receipt_hash" "$transaction" <<'PY' | atomic_json_from_stdin "$journal"
 import json, os, sys
-(active_path, slug, sha, tree, receipt_id, product_tree, contract,
+(active_path, slug, sha, tree, receipt_id, product_sha, product_tree,
+ runtime_tuple, contract,
  previous, generation, product_path, release_path, timestamp, receipt_path,
  receipt_hash, transaction) = sys.argv[1:]
 previous_record = None
@@ -3288,6 +3386,7 @@ candidate = {
     "kit_sha": sha,
     "kit_tree": tree,
     "receipt_id": receipt_id,
+    "product_sha": product_sha,
     "product_tree": product_tree,
     "contract_version": contract,
     "previous_generation": int(previous) if previous else None,
@@ -3295,6 +3394,8 @@ candidate = {
     "product_path": product_path,
     "release_path": release_path,
 }
+if runtime_tuple:
+    candidate["runtime_tuple"] = json.loads(runtime_tuple)
 journal = {
     "schema_version": 1,
     "transaction_id": transaction,

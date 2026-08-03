@@ -98,9 +98,13 @@ and artifact-policy checks. The six audited leaf mappings remain available for
 focused local work. Pull requests run the same targeted-or-deferred selection
 on Linux and macOS: mapped leaf changes execute their suites, while broad work
 runs policy gates and defers complete coverage. Pushes to `main` partition the
-complete registry into three named shards per platform so the slow
-factory-script, Hermes-contract, and release groups run in parallel. Release
-evidence requires all six shard jobs plus the aggregate and immutability jobs
+complete registry into four stable groups per platform on separate hosted
+runners. The factory-script, Hermes-contract, and factory-kit lifecycle suites
+remain intact and sequential inside their own groups. A group is directly
+runnable as `bash ci/test-all.sh --group N`; an optional `--shard SHARD` narrows
+that group for local diagnosis. After all four groups succeed, three stable
+evidence aliases per platform retain the installed release contract. Release
+evidence requires all six aliases plus the aggregate and immutability jobs
 for the exact merged SHA. Historical runs with no shard jobs retain their
 legacy two-platform proof for rollback; any partial shard topology fails
 closed.
@@ -119,7 +123,12 @@ registry, baseline, and policy changes, runs only CI-scope, immutability, and
 artifact-policy locally and records full behavioral verification as deferred
 to required GitHub CI. The command succeeds when those local policy gates pass.
 An explicit argument-free `bash ci/test-all.sh` remains the complete local
-command; GitHub `main` divides that same registry across its six shard jobs.
+command; GitHub `main` divides that same registry across eight group jobs and
+retains the six established release-evidence aliases.
+The checked group mapping assigns every registry entry exactly once and new
+unclassified suites fail safely into release group 4. Local argument-free and
+whole-shard commands remain sequential so workstation contention cannot turn
+timing-sensitive tests flaky.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
@@ -227,10 +236,12 @@ release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-rea
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
 Contract 1.8 additionally exposes `ticket-control pause|resume`: pause removes
-only one idle passport-bound claim and records an owner-only intent, while
-resume validates that exact passport, remote branch, unique worktree, and
-recorded status before reacquiring one lease. Startup never scans paused or
-historical passports into runnable claims.
+only one idle passport-bound claim and records an owner-only intent bound to
+its exact in-flight lifecycle state, while resume validates that state, the
+passport lineage, remote branch, unique worktree, and recorded claim status
+before reacquiring one lease. Backlog, canceled, merged, and Done tickets are
+never pause/resume targets. Startup and interrupted-reconciliation recovery
+never turn paused or historical passports into runnable claims.
 The product test-immutability gate treats one ticket-only higher numbered
 frozen contract plus its matching PASS marker as a new tests-first epoch. New
 Planner output uses the canonical append-only marker. Historical Planner output
@@ -238,8 +249,12 @@ may replace only the latest heading and its matching established PASS marker
 one-for-one; a partial, mismatched, repeated, lower, mixed, or malformed change
 does not reset the gate. Git keeps the earlier role input immutable while the
 new epoch reopens Test-author ownership. Same-contract late tests may use the
-reorder helper only on a linear unpublished tail; merge-rich or authenticated
-history must not be rewritten.
+reorder helper on a clean local tail. It never moves a commit across a merge,
+preserves every retained two-parent merge's exact tree and second parent,
+refuses octopus merges, and moves the branch only after final-tree identity
+succeeds. The helper never pushes. An already accepted remote history may move
+only through the separate protected normalization authorization and an
+explicit exact-head force-with-lease.
 Certification and every later receipt validation require that installed trust
 root to be byte-identical to the candidate release's launcher. A release whose
 launcher changed must therefore be explicitly bootstrapped before
@@ -349,6 +364,10 @@ Linear reconciliation retries only rate limits and transient server responses
 `Retry-After` is clamped to 0 through 30 seconds; missing or malformed values
 use bounded exponential backoff. Semantic GraphQL errors remain fail-closed for
 the next reconciliation cycle.
+Description projection compares a narrow canonical Markdown form that covers
+Linear's ordered-list indentation, continuation, renumbering, inline-code, and
+fence-boundary round trips. Nested-list structure, fenced content, and unknown
+or meaning-changing edits remain distinct and are restored from Git.
 The slow full-board Linear cycle owns a cycle lock, while each map mutation owns
 only a short map lock. A ticket-state consumer first writes a durable
 operator-version-bound clear intent, so a stale full-board snapshot cannot
@@ -893,6 +912,20 @@ the exact operator-authorized head is the remote ticket tip, then reopens only
 Test-author through the ordinary state machine. Missing, stale, dirty,
 non-Test-author, semantic, route-changing, or differently headed rewrites
 remain blocked.
+An accepted successful Test-author push with a merge-rich tail uses a distinct
+authorization schema at the same new-head-keyed path. The successor first
+migrates the authenticated passport on the unchanged old head. A canonical
+one-file protected-main commit directly above the replay base then binds the
+old signed passport/head/tree, new head/tree, branch, repository, route,
+current Factory, and the accepted Test-author's historical Factory, run, and
+receipt. Verification requires the exact completed evidence and charge whose
+recorded input head is the parent of a late test commit; it also proves the old
+line violates ordering, the new line satisfies it without mixed commits, the
+final trees and non-exempt patch multiset match, and every protected merge tree
+and second parent are unchanged. The controller does not migrate until its clean
+cell head is the exact remote ticket tip. Only an operator's explicit
+`--force-with-lease=<old-head>` can publish the authorized rewrite, and a
+restart after recovery is a no-op.
 After activation, the operator uses the existing preview-hash-bound `models
 migrate` flow. A v1 plan becomes a v2 journal; an existing v2 journal receives
 one parent-hashed release-migration revision that preserves every prior
@@ -903,6 +936,11 @@ change. In both cases the embedded legacy bytes, digest, policy, selections,
 pin commit, and revision hash chain must match exactly. This authorization
 never changes ticket state, migrates a branch, renews a lease, or permits an
 unprotected-main record.
+The ordinary migration preview carries compact source, readiness, journal-tail,
+and approval digests; an explicit diagnostic flag includes the complete
+candidate journal. Apply probes readiness once and requires its exact digest
+from the approved preview, so changed readiness refuses without a second probe
+round or a weaker journal check.
 
 A one-time Contract 1.2 migration may instead use the separate
 `factory/migrations/contract-1.3/` legacy-closeout format. It does not create or
@@ -946,9 +984,11 @@ Overlay-driven state materialization is limited to Backlog-to-Ready and the exac
 declared non-sensitive resume from Blocked-Escalated;
 factory-owned phases use the transition action. Projection falls back to
 committed `HEAD`, never live checkout bytes, when no exact ticket ref exists.
-Each new Blocked-Escalated observation clears any prior resume overlay and
-replaces its timestamp baseline, including repeated blockers at the same
-coarse state.
+Each newly committed Blocked-Escalated source clears any prior resume overlay
+and timestamp baseline before interpreting the remote state, including a
+repeated blocker at the same coarse state with no overlay. The first exact
+remote Blocked-Escalated observation for that source records the replacement
+baseline; only a strictly later remote move may resume it.
 Every accepted state overlay is also bound to the exact committed ticket text
 from which it was ingested. A later ticket commit invalidates that overlay
 before effective-state projection, so a repeated block is published even when
@@ -1055,12 +1095,28 @@ and cannot expire after that evidence. Products may opt into the sealed
 wall time, CPU, peak memory, cache status, exact input digests, and artifact
 digests for every phase; runs at most three workers; gives each phase a
 separate log and temporary directory; and cancels sibling process groups after
-the first failure. A passing measured result is bound to the exact Factory SHA
-and product tree and embedded in the certification receipt. Existing opaque
-certification scripts remain compatible. Cache hits are recorded but the
-initial runner does not reuse build or test results; evidence must justify any
-future cache policy. Exact protected Factory CI proof remains reused rather
-than repeated during product certification.
+the first failure. A passing measured result is bound to one exact Factory
+SHA/tree, product SHA/tree, Contract, Node, and npm tuple and embedded in the
+certification receipt. The shared `certification-preflight.py` validates that
+tuple before readiness tests, qualification materialization, or certification
+suites can spawn expensive work. Qualification activation and its sealed
+launcher retain and revalidate the same tuple, so the controller cannot inherit
+a different shell runtime. Unknown, missing, malformed, or mismatched tuple
+data fails closed with typed non-secret diagnostics. Existing opaque
+certification scripts without a v2 plan remain compatible. Cache hits are
+recorded, but the
+runner reuses a phase only when its protected plan explicitly opts into
+`artifacts` and declares a nonempty, complete output set. Phases with undeclared
+side effects cannot opt in; application tests, policy, security, and
+configuration checks must retain the default `never` policy. Reuse is local to
+the same disposable certification workspace and requires an owner-only
+self-hashed phase record plus exact Factory, product tree, plan, dependency,
+command, Node/npm, runner-runtime, and network bindings. The runner rehashes
+the retained log and every declared artifact before reporting a hit. Missing,
+interrupted, stale, malformed, or tampered evidence reruns or fails closed; it
+never restores undeclared build side effects into a fresh workspace. Exact
+protected Factory CI proof remains reused rather than repeated during product
+certification.
 The v2 DAG also binds exact Node and npm identities plus each phase's declared
 and granted network capability. Required network without command-scoped review
 fails before spawn; a reviewed opt-in does not broaden denied phases. Redacted
@@ -1099,6 +1155,12 @@ Spec-linter, Test-author, and Reviewer use its distinct checking family.
 Planner, Spec-linter, and Test-author independently evaluate exact generated
 fixture values from their frozen initializer or reset; an unproducible value
 or a repair scope excluding its required setup correction is a contract block.
+For every required serialized test command they also trace fixture setup,
+reset, and teardown across criteria. A parent-row cleanup requires child-first
+cleanup for every non-cascading sibling dependency inside the exact
+protected-test scope; `ON DELETE CASCADE` closes that dependency without a
+redundant edit. Missing closure blocks before Builder, preserves valid
+Test-author commits, and never grants unrelated protected-test ownership.
 Under Contract 1.8, Reviewer-owned Test-author work first routes through one
 ticket-only Planner repair that appends a higher frozen-contract epoch. The
 sequencer authenticates that exact commit before Test-author, preserving
