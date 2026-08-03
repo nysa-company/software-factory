@@ -116,7 +116,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   `Resume-State` before the signed repair record exists only when the exact
   receipt and authenticated blocked passport agree on that FIX stage. Lease
   recovery, block replay, and resume share this evidence; mismatched stages,
-  passport state, receipts, roles, or leases remain closed.
+  passport state, receipts, roles, or leases remain closed. A receipt/passport
+  Factory mismatch never enters that same-release shortcut; only the existing
+  authenticated contract-repair migration proof may accept it.
 - Planner, Spec-linter, and Test-author independently evaluate exact generated
   fixture values from their initializer/reset. An expected identifier,
   sequence, counter, or timestamp the setup cannot produce—or a repair scope
@@ -3246,3 +3248,13 @@ The targeted pull merges only operator-owned entry fields, preserves newer
 observations across stale concurrent full-cycle saves, and does not claim
 full-board health. Unmapped, changed, incomplete, timed-out, or rate-limited
 pulls leave the overlay unchanged.
+
+## 2026-08-03 — Decision 237: Migrated FIX blockers retain their lineage validator
+
+Category: Reliability
+
+The receipt-bound same-release FIX shortcut hard-fails malformed evidence only
+when receipt and passport share a Factory SHA. A source-to-candidate mismatch
+falls through to the existing authenticated contract-repair migration proof,
+which remains solely responsible for release history, passport suffix,
+normalization, charge, terminal, directive, ancestry, and current ownership.

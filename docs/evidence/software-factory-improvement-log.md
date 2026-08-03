@@ -4884,6 +4884,27 @@ rotates the lease, commits the exact receipt directive, and proves stage and
 passport-state mismatches still fail. Existing controller, Linear-baseline,
 lease, receipt, and repair tests retain the remaining negative matrix.
 
+## FI-20260803-168 — Same-release FIX validation shadowed migration proof
+
+Status: Focused state-machine regressions green; protected CI pending
+Priority: P0 (#231)
+Area: contract-blocker release migration
+Owner: Factory
+First seen: protected-main run 30823844226
+Impact: Linux and macOS deterministically rejected the existing authenticated
+release-migration blocker regression with `contract blocker role state
+drifted`, blocking qualification of the otherwise passing candidate.
+Root cause: the new same-release FIX shortcut treated the expected historical
+receipt/current-passport Factory mismatch as malformed before the established
+migration validator could authenticate it.
+Smallest repair: retain hard refusal for same-release FIX mismatches, but let a
+cross-release pair fall through to the existing contract-repair migration
+proof. No receipt, passport, role, charge, terminal, ancestry, directive,
+lease, or migration-lineage check changes.
+Validation: the formerly failing migration case and the rotated-lease FIX
+positive/tamper regression pass together; the complete focused state-machine
+suite and protected CI remain authoritative.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

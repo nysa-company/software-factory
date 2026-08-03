@@ -595,7 +595,10 @@ cannot authorize the historical transition. A consumed `FIX <role>` blocker
 may retain a coarse resume state later than that role only when the exact
 receipt and authenticated blocked passport name the same FIX stage. Block
 recovery and resume validate that evidence directly instead of requiring the
-repair record that resume has not created yet. An operator appends the first
+repair record that resume has not created yet. When receipt and passport
+Factory SHAs differ, this same-release shortcut is inapplicable and the
+existing authenticated contract-repair migration proof remains authoritative.
+An operator appends the first
 exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path:
 `OPERATOR RESUME: <role>` and
