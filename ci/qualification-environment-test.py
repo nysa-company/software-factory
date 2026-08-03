@@ -347,7 +347,16 @@ class QualificationEnvironmentTest(unittest.TestCase):
         key.chmod(0o600)
         for ticket in tickets:
             body = {
-                "completed_role_evidence": [],
+                "completed_role_evidence": ([{
+                    "contract_version": "1.8.0",
+                    "factory_sha": source_sha,
+                    "head_before": "1" * 40,
+                    "manifest_sha256": "2" * 64,
+                    "output_sha256": "3" * 64,
+                    "role": "test-author",
+                    "run_id": "missing-terminal-run",
+                    "transition_receipt_sha256": "4" * 64,
+                }] if ticket == "T-094" else []),
                 "factory_release_history": [{
                     "contract_version": "1.8.0",
                     "factory_sha": source_sha,
@@ -402,7 +411,31 @@ class QualificationEnvironmentTest(unittest.TestCase):
             root=self.root,
             takeover_project="relay",
         )
-        with mock.patch.object(Path, "home", return_value=account):
+        (self.product / "factory/runs").mkdir()
+        with (
+            mock.patch.object(Path, "home", return_value=account),
+            mock.patch.object(
+                ENVIRONMENT, "protected_terminal",
+                side_effect=ENVIRONMENT.TerminalError("not terminal"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "missing-terminal-run test-author missing meta",
+            ),
+        ):
+            ENVIRONMENT.takeover_source(
+                self.factory, self.product.resolve(), "relay", "relay",
+            )
+        with (
+            mock.patch.object(Path, "home", return_value=account),
+            mock.patch.object(
+                ENVIRONMENT, "protected_terminal",
+                side_effect=(
+                    {},
+                    ENVIRONMENT.TerminalError("not terminal"),
+                    ENVIRONMENT.TerminalError("not terminal"),
+                ),
+            ),
+        ):
             value = ENVIRONMENT.prepare(args)
 
         active = json.loads((self.root / "projects/relay/active.json").read_text())
