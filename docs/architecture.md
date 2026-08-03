@@ -827,6 +827,11 @@ successor qualification it first verifies the unique authenticated release
 suffix from the manifest's production source through the passport's current
 pre-candidate release, then uses the surviving clean ticket cell to migrate the
 merged terminal passport without a claim, role, publication lease, or charge.
+If signed post-merge route migrations advanced the ticket head, both adoption
+and final reduction require one unique contiguous v2 passport suffix from the
+Done-approved PR head through the current passport head, Factory, protected
+base, route, and parent digests. Historical membership, disconnected or
+ambiguous suffixes, and substituted passport parents remain invalid.
 The typed terminal-adoption marker and event seal the manifest source, immediate
 passport predecessor, source/candidate passport digests, and protected Done/PR
 identity.

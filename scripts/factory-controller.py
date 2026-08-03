@@ -23,7 +23,9 @@ from urllib.parse import urlsplit
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from release_lineage import successor_release_lineage  # noqa: E402
+from release_lineage import (  # noqa: E402
+    passport_head_lineage, successor_release_lineage,
+)
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -424,7 +426,9 @@ class Controller:
                 != "nysa.software-factory.ticket-done/v1"
                 or done.get("ticket") != ticket
                 or done.get("kit_sha") not in source_history
-                or done.get("approved_pr_head") != passport.get("head_sha")
+                or not passport_head_lineage(
+                    passport, done.get("approved_pr_head", "")
+                )
                 or not isinstance(done.get("pr_number"), int)
                 or isinstance(done.get("pr_number"), bool)
                 or not SHA.fullmatch(done.get("approved_pr_head", ""))
@@ -497,7 +501,9 @@ class Controller:
             or done.get("schema") != "nysa.software-factory.ticket-done/v1"
             or done.get("ticket") != ticket
             or done.get("kit_sha") not in pre_candidate_history
-            or done.get("approved_pr_head") != passport.get("head_sha")
+            or not passport_head_lineage(
+                passport, done.get("approved_pr_head", "")
+            )
             or not isinstance(done.get("pr_number"), int)
             or isinstance(done.get("pr_number"), bool)
             or not SHA.fullmatch(done.get("approved_pr_head", ""))

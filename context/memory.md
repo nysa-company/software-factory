@@ -223,6 +223,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   replacement root accepts only a unique contiguous authenticated v2 release
   suffix from the unchanged installed source through any prior qualification
   candidate to the new final candidate.
+- A protected terminal's Done-approved PR head may precede its current passport
+  head after signed post-merge route migrations. Successor adoption and final
+  reduction accept it only through one unique contiguous v2 suffix ending at
+  the current passport Factory, head, base, route, and parent digests;
+  historical membership, disconnection, ambiguity, and parent substitution
+  remain closed.
 - A deterministic `REFUSE` receipt never migrates the ticket passport. The
   controller first blocks the claim, then owns authenticated cross-release
   passport migration and the durable pre-route pending marker on its next
@@ -3297,3 +3303,14 @@ terminal charge, ordered release history, exact authenticated current passport,
 and Git lineage already prove the same blocker. The operator directive remains
 exact-receipt and ticket-only authority; passport-digest drift, missing history,
 and ordinary cross-release state changes remain closed.
+
+## 2026-08-03 — Decision 241: Terminal adoption follows the signed head suffix
+
+Category: Reliability
+
+A protected Done receipt continues to bind the merged PR head even when later
+signed route migrations advance the ticket passport. Successor adoption and
+the qualification reducer now share one exact v2 suffix check from that
+approved head to the current authenticated passport, including Factory, base,
+route, and parent bindings. Equality remains valid; historical membership,
+disconnected or ambiguous suffixes, and substituted parents remain refused.

@@ -242,6 +242,11 @@ class QualificationReducerTest(unittest.TestCase):
         source_passport = "d" * 64
         candidate_passport = "e" * 64
         passport = passports[adopted]
+        approved_head = terminals[adopted]["approved_pr_head"]
+        intermediate_head = "7" * 40
+        current_head = "8" * 40
+        protected_base = "4" * 40
+        route = "5" * 64
         passport["factory_release_history"].insert(0, {
             "contract_version": "1.8.0", "factory_sha": done_kit,
         })
@@ -253,18 +258,37 @@ class QualificationReducerTest(unittest.TestCase):
                 item["factory_sha"] = done_kit
         passport.update({
             "current_state": "Approved",
+            "head_sha": current_head,
             "parent_digest": source_passport,
+            "parent_file_sha256": "8" * 64,
             "passport_sha256": candidate_passport,
+            "protected_base_sha": protected_base,
+            "route_plan_sha256": route,
         })
         passport["migration_history"] = [{
             "from_factory_sha": source,
+            "from_head_sha": approved_head,
+            "from_passport_file_sha256": "2" * 64,
+            "from_passport_sha256": "1" * 64,
+            "from_protected_base_sha": "3" * 40,
+            "from_route_plan_sha256": "6" * 64,
             "schema": REDUCER.PASSPORT_MIGRATION_SCHEMA,
             "to_factory_sha": passport_source,
+            "to_head_sha": intermediate_head,
+            "to_protected_base_sha": protected_base,
+            "to_route_plan_sha256": route,
         }, {
             "from_factory_sha": passport_source,
+            "from_head_sha": intermediate_head,
+            "from_passport_file_sha256": "8" * 64,
             "from_passport_sha256": source_passport,
+            "from_protected_base_sha": protected_base,
+            "from_route_plan_sha256": route,
             "schema": REDUCER.PASSPORT_MIGRATION_SCHEMA,
             "to_factory_sha": candidate,
+            "to_head_sha": current_head,
+            "to_protected_base_sha": protected_base,
+            "to_route_plan_sha256": route,
         }]
         terminals[adopted]["kit_sha"] = done_kit
         events[:] = [
@@ -297,6 +321,41 @@ class QualificationReducerTest(unittest.TestCase):
             event["observed_at_epoch_ns"] = epoch
 
         self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+
+        ambiguous = copy.deepcopy(passport)
+        cycle_head = "f" * 40
+        cycle = copy.deepcopy(passport["migration_history"][0])
+        cycle.update({
+            "to_factory_sha": source,
+            "to_head_sha": cycle_head,
+            "to_protected_base_sha": cycle["from_protected_base_sha"],
+            "to_route_plan_sha256": cycle["from_route_plan_sha256"],
+        })
+        cycle_back = copy.deepcopy(cycle)
+        cycle_back.update({
+            "from_head_sha": cycle_head,
+            "to_head_sha": approved_head,
+        })
+        ambiguous["migration_history"][:0] = [cycle, cycle_back]
+        self.assertFalse(
+            REDUCER.passport_head_lineage(ambiguous, approved_head)
+        )
+
+        disconnected = copy.deepcopy(evidence)
+        disconnected[1][adopted]["migration_history"][1][
+            "from_head_sha"
+        ] = "0" * 40
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "protected merge truth does not match"
+        ):
+            REDUCER.verify(*disconnected)
+
+        substituted = copy.deepcopy(evidence)
+        substituted[1][adopted]["parent_digest"] = "0" * 64
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "protected merge truth does not match"
+        ):
+            REDUCER.verify(*substituted)
 
         duplicated_completion = copy.deepcopy(evidence)
         duplicated_completion[2].append({
