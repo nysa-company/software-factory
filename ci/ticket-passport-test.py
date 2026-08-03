@@ -1015,6 +1015,9 @@ class TicketPassportTest(unittest.TestCase):
             self.state_dir, "T-110", repair["receipt_sha256"]
         )
         current = PASSPORT.identity(self.passport_args)
+        self.assertTrue(STATE.contract_block_head_in_lineage(
+            self.state_args, consumed, exported
+        ))
         tampered = dict(migrated)
         tampered["migration_history"] = [
             dict(edge) for edge in migrated["migration_history"]

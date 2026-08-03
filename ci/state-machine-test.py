@@ -1151,8 +1151,6 @@ class StateMachineTest(unittest.TestCase):
         body.update({
             "head_sha": resumed,
             "migration_history": [migration, rewrite, resume_migration],
-            "parent_digest": "7" * 64,
-            "parent_file_sha256": "6" * 64,
             "protected_base_sha": protected,
             "route_plan_sha256": route,
         })
@@ -1163,14 +1161,6 @@ class StateMachineTest(unittest.TestCase):
             STATE.operator_resume_role(self.args, passport, "planner"), "planner"
         )
 
-        resume_migration["from_passport_file_sha256"] = "0" * 64
-        write_passport(body)
-        with self.assertRaisesRegex(
-            STATE.StateError, "contract blocker is outside receipt lineage"
-        ):
-            STATE.contract_blocked_receipt(self.args)
-
-        resume_migration["from_passport_file_sha256"] = "6" * 64
         rewrite.pop("rewrite_authorization_sha256")
         write_passport(body)
         with self.assertRaisesRegex(
