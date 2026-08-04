@@ -283,6 +283,24 @@ TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action reviewer-reconcile >/dev/null
 grep -qx 'reviewer round 1: APPROVE' "$PRODUCT/factory/tickets/T-700.md"
 
+# The Reviewer back-edge is legal only through the shared action whitelist.
+REVIEW_HEAD="$(git -C "$PRODUCT" rev-parse HEAD)"
+printf '%s\n' 'REQUEST CHANGES' 'FIX-OWNER: builder' \
+  > "$PRODUCT/factory/runs/reviewer-2.out"
+REVIEW_DIGEST="$(shasum -a 256 "$PRODUCT/factory/runs/reviewer-2.out" | awk '{print $1}')"
+printf '%s\n' \
+  'run_id=reviewer-2' 'ticket=T-700' 'role=reviewer' 'adapter=codex' \
+  'contract_version=1.7.0' 'phase=completed' 'accounting_state=completed' \
+  'exit_status=0' 'role_exit=ok' "role_head_before=$REVIEW_HEAD" \
+  "role_remote_before=$REVIEW_HEAD" "output_sha256=$REVIEW_DIGEST" \
+  'started_at=2026-07-27T00:01:00Z' \
+  > "$PRODUCT/factory/runs/reviewer-2.meta"
+TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+  --action reviewer-reconcile >/dev/null
+grep -q '^State: Building$' "$PRODUCT/factory/tickets/T-700.md"
+grep -qx 'reviewer round 2: REQUEST CHANGES' \
+  "$PRODUCT/factory/tickets/T-700.md"
+
 DECOY="$TMP/decoy.git"
 git init --bare -q "$DECOY"
 sed -E 's/^State: .*/State: Planning/' "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"

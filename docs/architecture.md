@@ -715,6 +715,14 @@ against the exact qualification kit SHA before returning only that ticket to
 lifecycles continue. A qualification Spec-linter `FAIL` also returns the
 ticket directly to Backlog instead of entering the ordinary replan/round-three
 authorization loop.
+Every ticket mutation passes one action-aware state whitelist, including
+Reviewer reconciliation, operator resume materialization, and qualification
+backlog return. Planner/Spec-linter, Builder/Reviewer, and authenticated
+contract-repair loops derive their attempt number from existing durable ticket
+or signed repair evidence. Each transition receipt binds that number and the
+controller appends it as a typed event; a third failed lap resolves to
+`ESCALATE` before another provider launch. Repair replays keep the coarse
+business state for Linear compatibility but are no longer invisible.
 The first terminal failed Cursor attempt for a protected qualification keeps
 its claim and authenticated evidence while the controller appends the existing
 same-family direct-CLI fallback and resumes the same deterministic stage. The

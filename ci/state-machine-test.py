@@ -182,6 +182,50 @@ class StateMachineTest(unittest.TestCase):
         with self.assertRaisesRegex(STATE.StateError, "unsupported transition"):
             STATE.stage_role("FIX builder-or-test-author")
 
+    def test_rework_loops_are_visible_and_stop_at_three_failed_laps(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Planning\n"
+            "SPEC-LINT: FAIL — one\n"
+            "SPEC-LINT: FAIL — two\n"
+            "SPEC-LINT: FAIL — three\n",
+            encoding="utf-8",
+        )
+        stage, loop = STATE.govern_loop(self.args, "RUN planner", False)
+        self.assertEqual(
+            stage,
+            "ESCALATE planner-spec-linter loop cap reached; attempts=3; limit=3",
+        )
+        self.assertEqual(loop, {
+            "attempt": 3, "capped": True,
+            "kind": "planner-spec-linter", "limit": 3,
+        })
+
+        ticket.write_text(
+            "# T-110\n\nState: Building\n"
+            "reviewer round 1: REQUEST CHANGES\n"
+            "reviewer round 2: REQUEST CHANGES\n"
+            "reviewer round 3: REQUEST CHANGES\n",
+            encoding="utf-8",
+        )
+        stage, loop = STATE.govern_loop(self.args, "FIX builder", True)
+        self.assertEqual(
+            stage,
+            "ESCALATE builder-reviewer loop cap reached; attempts=3; limit=3",
+        )
+        self.assertEqual(loop["kind"], "builder-reviewer")
+
+        ticket.write_text("# T-110\n\nState: Building\n", encoding="utf-8")
+        with mock.patch.object(STATE, "contract_repair_attempt", return_value=3):
+            stage, loop = STATE.govern_loop(
+                self.args, "RUN spec-linter", True
+            )
+        self.assertEqual(stage, "RUN spec-linter")
+        self.assertEqual(loop, {
+            "attempt": 3, "capped": False,
+            "kind": "contract-repair", "limit": 3,
+        })
+
     def test_unmerged_dependency_waits_without_consuming_a_role_receipt(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(

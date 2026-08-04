@@ -3417,3 +3417,15 @@ and either label requires a SHA/tree-sealed release; mutable checkouts remain
 `development-local` and cannot claim a trusted scope. This preserves fast local
 and qualification iteration without presenting unreachable candidates as
 production provenance.
+
+## 2026-08-03 — Decision 250: Rework laps are receipt-bound and capped
+
+Category: Reliability
+
+Planner/Spec-linter, Builder/Reviewer, and authenticated contract-repair loops
+reuse canonical ticket verdicts or signed repair records as their attempt
+counter. The transition receipt and one idempotent controller event expose the
+loop, attempt, limit, and stopped stage; the third failed lap escalates before
+another provider call. The Markdown state remains the Linear-compatible coarse
+business state, while one shared action-aware whitelist validates every state
+mutation, including Reviewer and qualification back-edges.

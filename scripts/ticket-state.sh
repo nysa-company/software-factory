@@ -43,6 +43,19 @@ PRODUCT_ROOT="${FACTORY_ROOT:-$WORKDIR}"
 MAP="${FACTORY_OPERATOR_MAP:-$PRODUCT_ROOT/factory/linear-map.json}"
 TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "ticket file missing from worktree" >&2; exit 1; }
+INITIAL_STATE="$(python3 - "$TICKET_FILE" <<'PY'
+import re
+import sys
+
+values = re.findall(
+    r"^State:\s*(.*?)\s*$", open(sys.argv[1], encoding="utf-8").read(),
+    re.IGNORECASE | re.MULTILINE,
+)
+if len(values) != 1:
+    raise SystemExit("ticket State field is ambiguous")
+print(values[0])
+PY
+)"
 WORKTREE_STATUS="$(git -C "$WORKDIR" status --porcelain --untracked-files=all \
   --ignore-submodules=none)" || { echo "ticket worktree cannot be inspected" >&2; exit 1; }
 [[ -z "$WORKTREE_STATUS" ]] || { echo "ticket worktree is dirty" >&2; exit 1; }
@@ -127,16 +140,8 @@ states = {
     "awaiting approval": "Awaiting Approval", "blocked-escalated": "Blocked-Escalated",
     "approved": "Approved", "done": "Done",
 }
-allowed = {
-    ("ready", "planning"), ("planning", "building"), ("building", "review"),
-    ("review", "building"),
-}
-if target_key == "blocked-escalated" and current in {
-    "ready", "planning", "building", "review", "awaiting approval", "approved"
-}:
-    allowed.add((current, target_key))
-if (current, target_key) not in allowed or target_key not in states:
-    raise SystemExit(f"illegal factory transition: {current} -> {target_key}")
+if target_key not in states:
+    raise SystemExit(f"illegal factory transition target: {target_key}")
 text = re.sub(
     r"^State:\s*.*$", f"State: {states[target_key]}", text,
     count=1, flags=re.MULTILINE | re.IGNORECASE,
@@ -266,6 +271,42 @@ ticket_path.write_text(re.sub(
 ))
 PY
 fi
+
+python3 - "$INITIAL_STATE" "$ACTION" "$TMP" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+initial, action, path = sys.argv[1].strip().lower(), sys.argv[2], Path(sys.argv[3])
+states = re.findall(
+    r"^State:\s*(.*?)\s*$", path.read_text(), re.IGNORECASE | re.MULTILINE,
+)
+if len(states) != 1:
+    raise SystemExit("ticket State field is ambiguous")
+final = states[0].lower()
+allowed = {
+    "materialize": {
+        ("backlog", "ready"),
+        *(("blocked-escalated", state) for state in (
+            "backlog", "ready", "planning", "building", "review",
+        )),
+    },
+    "transition": {
+        ("ready", "planning"), ("planning", "building"),
+        ("building", "review"), ("review", "building"),
+        *((state, "blocked-escalated") for state in (
+            "ready", "planning", "building", "review",
+            "awaiting approval", "approved",
+        )),
+    },
+    "reviewer-reconcile": {("review", "building")},
+    "qualification-backlog": {
+        ("planning", "backlog"), ("building", "backlog"),
+    },
+}
+if initial != final and (initial, final) not in allowed[action]:
+    raise SystemExit(f"illegal {action} transition: {initial} -> {final}")
+PY
 
 CHANGED=0
 if ! cmp -s "$TMP" "$TICKET_FILE"; then

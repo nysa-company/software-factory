@@ -48,6 +48,7 @@ def state_transition(
     return {
         "action": stage.partition(" ")[0],
         "detail": stage.partition(" ")[2] or None,
+        "loop": None,
         "receipt": receipt,
         "role": STATE.stage_role(stage),
         "schema": "nysa.software-factory.state-machine/v1",
@@ -1097,7 +1098,14 @@ class FactoryControllerTest(unittest.TestCase):
         def json_call(*args, **kwargs):
             calls.append((args, kwargs))
             if args[0] == "state-machine":
-                return state_transition("FIX builder")
+                transition = state_transition("FIX builder")
+                transition["loop"] = {
+                    "attempt": 2,
+                    "capped": False,
+                    "kind": "builder-reviewer",
+                    "limit": 3,
+                }
+                return transition
             if args[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             raise AssertionError(args)
@@ -1120,6 +1128,14 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(len(state_machine_calls), 1)
         self.assertIn("timeout", state_machine_calls[0][1])
         self.assertIsNone(state_machine_calls[0][1]["timeout"])
+        loop_events = [
+            json.loads(path.read_text())
+            for path in controller.events.glob("*.json")
+            if json.loads(path.read_text()).get("event") == "loop_attempt"
+        ]
+        self.assertEqual(len(loop_events), 1)
+        self.assertEqual(loop_events[0]["attempt"], 2)
+        self.assertEqual(loop_events[0]["stage"], "FIX builder")
 
     def test_state_machine_transition_envelope_mutations_fail_before_provider(
         self,
@@ -1157,6 +1173,20 @@ class FactoryControllerTest(unittest.TestCase):
                 "detail": "product decision required",
                 "role": "builder",
                 "stage": "AWAIT-OPERATOR product decision required",
+            },
+            "loop-extra-key": {
+                **valid,
+                "loop": {
+                    "attempt": 1, "capped": False, "extra": True,
+                    "kind": "builder-reviewer", "limit": 3,
+                },
+            },
+            "loop-zero-attempt": {
+                **valid,
+                "loop": {
+                    "attempt": 0, "capped": False,
+                    "kind": "builder-reviewer", "limit": 3,
+                },
             },
         }
 

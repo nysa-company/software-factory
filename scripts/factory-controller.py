@@ -86,6 +86,19 @@ def valid_transition_evidence(value: dict[str, Any], ticket: str) -> bool:
             "AWAIT-MERGE closeout auto-merge pending",
         ))
     )
+    loop = value.get("loop")
+    valid_loop = loop is None or (
+        isinstance(loop, dict)
+        and set(loop) == {"attempt", "capped", "kind", "limit"}
+        and isinstance(loop.get("attempt"), int)
+        and not isinstance(loop.get("attempt"), bool)
+        and loop["attempt"] >= 1
+        and isinstance(loop.get("capped"), bool)
+        and loop.get("kind") in {
+            "builder-reviewer", "contract-repair", "planner-spec-linter",
+        }
+        and loop.get("limit") == 3
+    )
     expected_role = runnable[1] if runnable else None
     return not any((
         not DIGEST.fullmatch(value.get("receipt", "")),
@@ -94,6 +107,7 @@ def valid_transition_evidence(value: dict[str, Any], ticket: str) -> bool:
         value.get("ticket") != ticket,
         value.get("action") != stage.partition(" ")[0],
         value.get("detail") != (stage.partition(" ")[2] or None),
+        not valid_loop,
         not (runnable or non_role),
         value.get("role") != expected_role,
     ))
@@ -3118,6 +3132,14 @@ class Controller:
             stage = transition.get("stage", "")
             receipt = transition.get("receipt", "")
             role = transition.get("role")
+            loop = transition.get("loop")
+            if loop is not None:
+                self.event_once(
+                    "loop_attempt", claim["ticket"],
+                    stage=stage,
+                    transition_receipt_sha256=receipt,
+                    **loop,
+                )
             if maintenance:
                 self.event(
                     "stage_resolution_paused",
