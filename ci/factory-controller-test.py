@@ -416,6 +416,77 @@ class FactoryControllerTest(unittest.TestCase):
             (self.state / f"qualification-recovered-{'a' * 40}.json").is_file()
         )
 
+    def test_qualification_restart_preserves_blocked_target_claims(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 113)]
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8"
+        )
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "300.000000",
+                "capacity": 3,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 2,
+                "mode": "successor",
+                "per_run_budget_usd": "10.000000",
+                "per_ticket_budget_usd": "100.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "source_factory_sha": "b" * 40,
+                "target_done": 3,
+                "tickets": tickets,
+            }),
+            encoding="utf-8",
+        )
+        first = CONTROL.Controller(self.args)
+        for number, ticket in enumerate(tickets, 1):
+            cell = self.root / f"cell-{number}"
+            cell.mkdir()
+            first.save_claim({
+                "blocked_reason": "preflight" if number > 1 else "",
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "lease_released": number > 1,
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked" if number > 1 else "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        first.recover_missing_passport_claims = lambda _claims: None
+        first.recover_upgraded_claims = lambda _claims: None
+        first.recover_terminal_exports = lambda _claims: None
+        first.recover_repaired_failures = lambda _claims: None
+        first.claim_new = lambda claims: claims
+
+        result = first.reconcile()
+        self.assertEqual(result["status"], "restart_required")
+        self.assertEqual(result["active"], 1)
+
+        second = CONTROL.Controller(self.args)
+        second.recover_missing_passport_claims = lambda _claims: None
+        second.recover_upgraded_claims = lambda _claims: None
+        second.recover_terminal_exports = lambda _claims: None
+        second.recover_repaired_failures = lambda _claims: None
+        second.claim_new = lambda claims, *_args: claims
+        second.pin_routes = lambda claims: [
+            {"status": "waiting", "ticket": claim["ticket"]}
+            for claim in claims
+        ]
+        second.reconcile()
+
+        self.assertTrue(
+            (self.state / f"qualification-recovered-{'a' * 40}.json").is_file()
+        )
+        claims = {item["ticket"]: item for item in second.load_claims()}
+        self.assertEqual(claims["T-111"]["status"], "blocked")
+        self.assertEqual(claims["T-112"]["status"], "blocked")
+        self.assertFalse((self.state / "passports").exists())
+        self.assertEqual(list((self.product / "factory/runs").iterdir()), [])
+
     def test_qualification_restart_counts_protected_done_ticket(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]
         source_factory = "b" * 40

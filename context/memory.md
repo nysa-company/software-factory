@@ -3474,3 +3474,13 @@ Planning-level roles beneath Building or Review until the reopened test-first
 epoch reaches Builder. The grant derives only from the authenticated ordered
 role sequence and the still-current rejection; it expires at Builder and does
 not permit an ordinary backward state transition.
+
+## 2026-08-04 — Decision 255: Qualification restart proves recovery, not runnability
+
+Category: Qualification
+
+A candidate-scoped restart boundary accounts for every exact preserved target
+claim plus protected Done targets, while scheduling still counts only runnable
+claims. Successor upgrades therefore preserve intentional preflight blocks
+without inventing passports, leases, or work; missing target claims still keep
+the barrier closed.
