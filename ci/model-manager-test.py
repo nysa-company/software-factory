@@ -562,8 +562,14 @@ class ModelManagerTest(unittest.TestCase):
         self.assertEqual(
             refreshed["revisions"][1]["body"]["new_kit_sha"], "c" * 40
         )
-        self.assertIn(
-            "new_resolution", refreshed["revisions"][1]["body"]
+        refresh_body = refreshed["revisions"][1]["body"]
+        self.assertNotIn("new_resolution", refresh_body)
+        self.assertEqual(
+            refresh_body["prior_resolution_sha256"],
+            ROUTER.content_hash(legacy["resolution"]),
+        )
+        self.assertEqual(
+            MANAGER_MODULE.active_resolution(refreshed), legacy["resolution"]
         )
 
         rejected = self.command(
