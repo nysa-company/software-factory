@@ -100,6 +100,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         (self.product / "factory/KIT_PIN").write_text(
             self.sha + "\n", encoding="utf-8",
         )
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "capacity": 3,
+                "schema": "nysa.software-factory.qualification/v2",
+                "target_done": 3,
+                "tickets": ["T-101", "T-102", "T-103"],
+            }) + "\n",
+            encoding="utf-8",
+        )
         (self.product / "factory/certification-plan.json").write_text(
             json.dumps({
                 "phases": [{
@@ -170,6 +179,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "--status",
         ))
         self.assertEqual(status["execution_mode"], "cli-concurrent-v1")
+        policy = json.loads(
+            (self.root / "provider/provider-policy.json").read_text()
+        )
+        self.assertEqual(policy["coupled_max_concurrent"], 3)
+        self.assertEqual(policy["global"]["max_concurrent"], 3)
         launcher_text = (
             ROOT / "integrations/hermes/bin/factory-launch"
         ).read_text(encoding="utf-8")
@@ -520,7 +534,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ENVIRONMENT.replace(active_path, legacy_active)
         controller = self.root / "projects/relay/controller"
         claims = controller / "claims"
-        controller.mkdir(mode=0o700)
+        self.assertTrue(controller.is_dir())
+        self.assertEqual(controller.stat().st_mode & 0o777, 0o700)
         claims.mkdir(mode=0o700)
         key = controller / "passport.key"
         key.write_bytes(b"p" * 32)
