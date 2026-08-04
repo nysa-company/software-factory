@@ -5076,6 +5076,25 @@ remain strict.
 Validation: focused regressions cover each edge; ordinary malformed or stale
 evidence remains refused.
 
+## FI-20260804-178 — Reviewer repair epoch lost coarse-state catch-up
+
+Status: Focused and full state-machine regressions green; protected CI pending
+Priority: P0 (#283)
+Area: state materialization after Reviewer repair
+Owner: Factory
+First seen: T-101 qualification under Factory
+`5e274e60e3cfccb8a2d63d399dcd62a3eb2fdb46`
+Impact: Reviewer correctly routed a protected-test conflict to Planner, and the
+Planner committed frozen contract version 2, but the next Spec-linter admission
+was rejected as `state machine cannot enter Planning from Building`. The role
+output was preserved and no later role was launched.
+Smallest repair: authenticated `Reviewer -> Planner` evidence retains backward
+Planning-level admission only while the reopened test-first epoch has no
+Builder. The current Reviewer verdict must remain `REQUEST CHANGES`; reaching
+Builder expires the grant. Ordinary backward transitions remain forbidden.
+Validation: the regression admits Spec-linter without rewinding Building and
+proves Builder evidence expires the grant; all 38 state-machine tests pass.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

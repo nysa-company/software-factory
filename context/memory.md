@@ -3464,3 +3464,13 @@ Contract 1.8 role admission passes the launcher-validated
 `FACTORY_CLI_RUNTIME_ROOT` to the provider concurrency checker. Qualification
 therefore uses its short owner-local Cursor path consistently with Doctor;
 missing, unsafe, or overlong roots still fail closed before provider spend.
+
+## 2026-08-04 — Decision 254: Reviewer repair epochs retain bounded catch-up authority
+
+Category: State machine
+
+An authenticated Reviewer rejection followed by its repair Planner may admit
+Planning-level roles beneath Building or Review until the reopened test-first
+epoch reaches Builder. The grant derives only from the authenticated ordered
+role sequence and the still-current rejection; it expires at Builder and does
+not permit an ordinary backward state transition.

@@ -703,6 +703,54 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(result["role"], "builder")
         self.assertEqual(result["stage"], "RUN builder")
 
+    def test_reviewer_planner_repair_catches_up_without_rewinding_state(
+        self,
+    ) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Building\n"
+            "reviewer round 1: REQUEST CHANGES\n"
+            "reviewer round 1 FIX-OWNER: test-author\n",
+            encoding="utf-8",
+        )
+        completed = [
+            {"role": role} for role in (
+                "planner", "spec-linter", "test-author", "builder",
+                "reviewer", "planner",
+            )
+        ]
+        receipt = "b" * 64
+        with (
+            mock.patch.object(STATE, "current_state", return_value="Building"),
+            mock.patch.object(
+                STATE, "contract_repair_stage", return_value=(None, False)
+            ),
+            mock.patch.object(
+                STATE, "authenticated_role_evidence",
+                return_value=({}, completed),
+            ),
+            mock.patch.object(
+                STATE, "resolve", return_value="RUN spec-linter"
+            ),
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport"),
+            mock.patch.object(
+                STATE, "issue", return_value={"receipt_sha256": receipt}
+            ),
+        ):
+            result = STATE.next_transition(self.args)
+
+        transition.assert_not_called()
+        self.assertEqual(result["stage"], "RUN spec-linter")
+
+        with mock.patch.object(
+            STATE, "authenticated_role_evidence",
+            return_value=({}, completed + [{"role": "builder"}]),
+        ):
+            self.assertFalse(
+                STATE.reviewer_repair_catchup(self.args, "RUN spec-linter")
+            )
+
     def test_replay_after_committed_role_transition_preserves_narrator_evidence(
         self,
     ) -> None:
