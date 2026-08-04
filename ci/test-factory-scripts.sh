@@ -6,6 +6,26 @@ export FACTORY_TRUSTED_TEST_HARNESS=1
 export FACTORY_MODEL_PROFILE_OVERRIDE=legacy-balanced-v1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ "$#" -eq 0 ]]; then
+  ORCHESTRATION_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sf-factory-orchestration.XXXXXX")"
+  trap 'rm -rf "$ORCHESTRATION_TMP"' EXIT
+  python3 "$ROOT/ci/factory-script-subsets-test.py" || exit
+  python3 "$ROOT/ci/factory-script-subsets.py" \
+    --script "$ROOT/ci/test-factory-scripts.sh" \
+    --temp-root "$ORCHESTRATION_TMP/workers"
+  exit
+fi
+if [[ "$#" -ne 2 || "$1" != "--subset" ]]; then
+  echo "usage: ci/test-factory-scripts.sh [--subset model-policy|runtime-routing|launch-controls|sequencer|role-exit-git|role-exit-policy]" >&2
+  exit 2
+fi
+SUBSET="$2"
+case "$SUBSET" in
+  model-policy|runtime-routing|launch-controls|sequencer|role-exit-git|role-exit-policy) ;;
+  *) echo "unknown factory-script subset: $SUBSET" >&2; exit 2 ;;
+esac
+
 RUN_AGENT="$ROOT/scripts/run-agent.sh"
 NEXT_STAGE="$ROOT/scripts/next-stage.sh"
 KILL_SWITCH="$ROOT/scripts/kill-switch.sh"
@@ -20,13 +40,19 @@ FAILURES=0
 mkdir -p "$STUB_BIN"
 
 cleanup() {
+  trap - EXIT HUP INT TERM
   if [[ -n "${FIRST_PID:-}" ]] && kill -0 "$FIRST_PID" 2>/dev/null; then
     kill "$FIRST_PID" 2>/dev/null || true
     wait "$FIRST_PID" 2>/dev/null || true
   fi
+  for child in $(jobs -pr); do
+    kill "$child" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1${2:+ — $2}" >&2; FAILURES=$((FAILURES + 1)); }
@@ -202,6 +228,7 @@ write_backend_stubs
 ln -s "$ROOT" "$TMP/kit-link"
 LINKED_RUN_AGENT="$TMP/kit-link/scripts/run-agent.sh"
 
+if [[ "$SUBSET" == "model-policy" ]]; then
 printf 'GLOBAL_DAILY_CAP_USD=50.00\n' > "$TMP/global-minimal.env"
 printf 'CODEX_USD_PER_MTOK_IN=1.00\n' > "$TMP/global-partial-pricing.env"
 GLOBAL_CONFIG_RESET="$(GLOBAL_DAILY_CAP_USD=999 FACTORY_PROBE_CODEX=stale \
@@ -240,12 +267,19 @@ ROOT_PIN_ERROR="$(bash -c '
   factory_validate_kit_pin "$2" "$2" >/dev/null 2>&1 || true
   printf "%s\n" "$FACTORY_KIT_PIN_ERROR"
 ' _ "$ROOT/scripts/lib/kit-pin.sh" "$ROOT")"
+FORGED_PRODUCTION_SCOPE="$(FACTORY_KIT_TRUST_SCOPE=production-certified bash -c '
+  source "$1"
+  factory_load_kit_provenance "$2" "$2/conformance" >/dev/null 2>&1 || true
+  printf "%s\n" "$FACTORY_KIT_PIN_ERROR"
+' _ "$ROOT/scripts/lib/kit-pin.sh" "$ROOT")"
 if [[ "$IMPLICIT_PIN" == "1:$KIT_SHA" &&
-      "$ROOT_PIN_ERROR" == "external product requires factory/KIT_PIN" ]]; then
+      "$ROOT_PIN_ERROR" == "external product requires factory/KIT_PIN" &&
+      "$FORGED_PRODUCTION_SCOPE" == \
+        "production-certified requires a sealed release" ]]; then
   pass "only in-repo conformance receives implicit kit pin"
 else
   fail "only in-repo conformance receives implicit kit pin" \
-    "implicit=$IMPLICIT_PIN root=$ROOT_PIN_ERROR"
+    "implicit=$IMPLICIT_PIN root=$ROOT_PIN_ERROR scope=$FORGED_PRODUCTION_SCOPE"
 fi
 
 ROLE_MODELS="$(bash -c '
@@ -527,6 +561,7 @@ if [[ "$EXPIRED_CLAUDE_PROBE" == "UNAVAILABLE:authentication_expired" ]]; then
 else
   fail "expired Claude OAuth falls back before task submission" "$EXPIRED_CLAUDE_PROBE"
 fi
+fi
 
 run_mock() {
   write_ticket "$1" "$3"
@@ -539,6 +574,7 @@ run_mock() {
     "$RUN_AGENT" --role "$2" --ticket "$3" -- "test task"
 }
 
+if [[ "$SUBSET" == "model-policy" ]]; then
 # Optional role values inherit independently and the selected exact values are
 # frozen into the run manifest that supplies adapter arguments.
 ROLE_ENVELOPE="$TMP/role-envelope"
@@ -558,6 +594,7 @@ if run_mock "$ROLE_ENVELOPE" planner T-189 >/dev/null 2>&1 &&
   pass "role envelope values reach the exact run manifest"
 else
   fail "role envelope values reach the exact run manifest"
+fi
 fi
 
 ledger_header() {
@@ -626,6 +663,7 @@ expect_stage() {
 
 # Real sequencer and runner execute from a physical no-.git release when the
 # trusted launcher supplies a complete, self-consistent provenance tuple.
+if [[ "$SUBSET" == "model-policy" || "$SUBSET" == "sequencer" ]]; then
 SEALED_RELEASE="$TMP/sealed-release"
 build_sealed_release "$SEALED_RELEASE"
 SEALED_RELEASE="$(cd "$SEALED_RELEASE" && pwd -P)"
@@ -633,6 +671,9 @@ SEALED_TREE="$(bash -c '
   source "$1"
   factory_directory_tree "$2"
 ' _ "$ROOT/scripts/lib/kit-pin.sh" "$SEALED_RELEASE")"
+fi
+
+if [[ "$SUBSET" == "model-policy" ]]; then
 SEALED_PRODUCT="$TMP/sealed-product"
 write_envelope "$SEALED_PRODUCT"
 write_ticket "$SEALED_PRODUCT" T-190
@@ -688,6 +729,7 @@ env \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
@@ -714,6 +756,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q '^contract_version=1.8.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
+   grep -q '^kit_provenance_scope=qualification-candidate$' "$SEALED_META" &&
    grep -q "^transition_receipt_sha256=$SEALED_RECEIPT$" "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
   pass "sealed release runs real sequencer and mock agent"
@@ -1033,7 +1076,9 @@ else
   fail "sequencer rejects untrusted probe overrides" \
     "status $NEXT_OVERRIDE_STATUS: $NEXT_OVERRIDE"
 fi
+fi
 
+if [[ "$SUBSET" == "runtime-routing" ]]; then
 # Backend resolution: primary success submits exactly one primary task.
 PRIMARY="$TMP/primary-route"
 write_envelope "$PRIMARY"
@@ -1066,6 +1111,14 @@ fi
 
 # A ticket pin remains authoritative after profile activation changes. Its
 # selected route is re-probed alone, and stable provenance stays manifest-only.
+PROFILE_PLAN="$TMP/profile-plan.json"
+PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test \
+  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
+  FACTORY_PROBE_CURSOR_OPENAI=READY:test \
+  FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+  bash -c 'source "$1"; factory_resolve_model_profile claude-priority-v1 "$2"' \
+    _ "$ROOT/scripts/lib/backend-policy.sh" "$PROFILE_PLAN"
 PINNED="$TMP/pinned-route"
 write_envelope "$PINNED"
 write_ticket "$PINNED" T-219
@@ -1394,7 +1447,9 @@ for PIN_CASE in missing abbreviated mismatch; do
     fail "run-agent refuses $PIN_CASE kit pin before mutation" "status $PIN_STATUS"
   fi
 done
+fi
 
+if [[ "$SUBSET" == "launch-controls" ]]; then
 # A state transition while launch waits is caught under the launch lock.
 STATE_LOCK="$TMP/sequence-after-lock"
 write_envelope "$STATE_LOCK"
@@ -1687,7 +1742,7 @@ BEFORE_GATE_CANCEL="$TMP/cancel-before-adapter-gate"
 write_envelope "$BEFORE_GATE_CANCEL"
 write_ticket "$BEFORE_GATE_CANCEL" T-301
 FACTORY_ROOT="$BEFORE_GATE_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
-  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=2 \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=30 \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-301 -- "cancel before adapter gate" \
   > "$TMP/cancel-before-adapter-gate.out" 2>&1 &
@@ -1713,7 +1768,7 @@ BEFORE_GATE_CANCEL_HASH="$(python3 -c \
   "$BEFORE_GATE_CANCEL_PLAN")"
 python3 "$ATTEMPT_CANCEL" apply --factory-root "$BEFORE_GATE_CANCEL" \
   --plan "$BEFORE_GATE_CANCEL_PLAN" \
-  --preview-hash "$BEFORE_GATE_CANCEL_HASH" --timeout 10 \
+  --preview-hash "$BEFORE_GATE_CANCEL_HASH" --timeout 30 \
   > "$TMP/cancel-before-adapter-gate-receipt.json"
 wait "$BEFORE_GATE_CANCEL_PID" 2>/dev/null || true
 if grep -q 'targeted cancellation requested before adapter gate' \
@@ -1735,7 +1790,7 @@ write_envelope "$BEFORE_GATE_CANCEL_MUTATION"
 write_ticket "$BEFORE_GATE_CANCEL_MUTATION" T-307
 FACTORY_ROOT="$BEFORE_GATE_CANCEL_MUTATION" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
-  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=2 \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GATE_SLEEP=30 \
   FACTORY_ADAPTER_OVERRIDE=mock \
   "$RUN_AGENT" --role planner --ticket T-307 -- "cancel plus mutation" \
   > "$TMP/cancel-plus-mutation-before-adapter-gate.out" 2>&1 &
@@ -1768,7 +1823,7 @@ BEFORE_GATE_CANCEL_MUTATION_APPLY=0
 python3 "$ATTEMPT_CANCEL" apply \
   --factory-root "$BEFORE_GATE_CANCEL_MUTATION" \
   --plan "$BEFORE_GATE_CANCEL_MUTATION_PLAN" \
-  --preview-hash "$BEFORE_GATE_CANCEL_MUTATION_HASH" --timeout 10 \
+  --preview-hash "$BEFORE_GATE_CANCEL_MUTATION_HASH" --timeout 30 \
   > "$TMP/cancel-plus-mutation-receipt.json" 2>/dev/null ||
   BEFORE_GATE_CANCEL_MUTATION_APPLY=$?
 wait "$BEFORE_GATE_CANCEL_MUTATION_PID" 2>/dev/null || true
@@ -1910,7 +1965,9 @@ else
   fail "boundary stop exempts only its exact control record" \
     "status $AT_GATE_CONTROLS_STATUS"
 fi
+fi
 
+if [[ "$SUBSET" == "runtime-routing" ]]; then
 # The adapter gate never opens unless go_issued=1 reached durable storage.
 GO_WRITE_FAIL="$TMP/go-marker-write-failure"
 write_envelope "$GO_WRITE_FAIL"
@@ -2246,7 +2303,9 @@ else
   fail "global ledger rejects symlink storage before provider execution" \
     "status=$GLOBAL_SYMLINK_STATUS"
 fi
+fi
 
+if [[ "$SUBSET" == "sequencer" ]]; then
 # Semantic round numbering with one explicitly voided duplicate row.
 ROUNDS="$TMP/rounds"
 mkdir -p "$ROUNDS/factory/tickets"
@@ -2400,7 +2459,9 @@ mv "$ROUNDS/factory/tickets/T-300.tmp" "$ROUNDS/factory/tickets/T-300.md"
 if expect_stage "REFUSE" "$ROUNDS" T-300; then
   pass "unrecorded non-void reviewer run refuses"
 fi
+fi
 
+if [[ "$SUBSET" == "sequencer" ]]; then
 # Duplicate-run guard: overlap refused, same ticket+role allowed afterward.
 GUARD="$TMP/guard"
 write_envelope "$GUARD"
@@ -2456,7 +2517,7 @@ PRE_CANCEL="$TMP/pre-go-cancel"
 write_envelope "$PRE_CANCEL"
 write_ticket "$PRE_CANCEL" T-405
 FACTORY_ROOT="$PRE_CANCEL" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
-  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GO_SLEEP=2 \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_BEFORE_GO_SLEEP=30 \
   FACTORY_ADAPTER_OVERRIDE=mock MOCK_SLEEP=30 \
   "$RUN_AGENT" --role planner --ticket T-405 -- "pre-GO cancellation" \
   > "$TMP/pre-go-cancel.out" 2>&1 &
@@ -2476,7 +2537,7 @@ python3 "$ATTEMPT_CANCEL" preview --factory-root "$PRE_CANCEL" \
   > "$PRE_CANCEL_PLAN"
 PRE_CANCEL_HASH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' "$PRE_CANCEL_PLAN")"
 python3 "$ATTEMPT_CANCEL" apply --factory-root "$PRE_CANCEL" \
-  --plan "$PRE_CANCEL_PLAN" --preview-hash "$PRE_CANCEL_HASH" --timeout 10 \
+  --plan "$PRE_CANCEL_PLAN" --preview-hash "$PRE_CANCEL_HASH" --timeout 30 \
   > "$TMP/pre-go-cancel-receipt.json"
 wait "$PRE_CANCEL_PID" 2>/dev/null || true
 if grep -q '^accounting_state=launch_void$' "$PRE_CANCEL/factory/runs/$PRE_CANCEL_RUN.meta" &&
@@ -2513,7 +2574,7 @@ python3 "$ATTEMPT_CANCEL" preview --factory-root "$POST_CANCEL" \
   > "$POST_CANCEL_PLAN"
 POST_CANCEL_HASH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["preview_hash"])' "$POST_CANCEL_PLAN")"
 python3 "$ATTEMPT_CANCEL" apply --factory-root "$POST_CANCEL" \
-  --plan "$POST_CANCEL_PLAN" --preview-hash "$POST_CANCEL_HASH" --timeout 10 \
+  --plan "$POST_CANCEL_PLAN" --preview-hash "$POST_CANCEL_HASH" --timeout 30 \
   > "$TMP/post-go-cancel-receipt.json"
 wait "$POST_CANCEL_PID" 2>/dev/null || true
 if grep -q '^accounting_state=cancelled_conservative$' \
@@ -2654,7 +2715,9 @@ if [[ ! -e "$STALE_PROVIDER_KILL_ROOT/factory/.provider.lock" &&
 else
   fail "kill switch quarantines a proven stale provider lock"
 fi
+fi
 
+if [[ "$SUBSET" == "sequencer" ]]; then
 # Full sequencer walkthrough: happy path.
 WALK="$TMP/walk"
 mkdir -p "$WALK/factory/tickets"
@@ -3227,6 +3290,7 @@ printf 'SPEC-LINT: FAIL — round 1\nSPEC-LINT: FAIL — round 2\n' >> "$WALK/fa
 if expect_stage "RUN planner" "$WALK" T-503; then
   pass "spec-lint two-fail budget-only continuation"
 fi
+fi
 
 # Successful mutating roles must commit cleanly; the wrapper owns the push.
 setup_role_exit_fixture() {
@@ -3271,6 +3335,7 @@ setup_role_exit_fixture() {
   git -C "$ROLE_EXIT_WORKTREE" push -q -u origin "ticket/$ticket"
 }
 
+if [[ "$SUBSET" == "role-exit-git" ]]; then
 setup_role_exit_fixture T-607
 REMOTE_DRIFT_TREE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse 'HEAD^{tree}')"
 REMOTE_DRIFT_COMMIT="$(printf '%s\n' 'remote drift' | git -C "$ROLE_EXIT_WORKTREE" \
@@ -3447,7 +3512,9 @@ else
     "status=$ROLE_PORTABLE_STATUS"
 fi
 unset ROLE_EXIT_PARENT
+fi
 
+if [[ "$SUBSET" == "role-exit-policy" ]]; then
 # Contract 1.7 roles may commit a blocker without completing their stage.
 setup_role_exit_fixture T-643 builder
 ROLE_BLOCKED_STATUS=0
@@ -3785,7 +3852,9 @@ else
   fail "role exit refuses a drifted product push destination" \
     "status=$ROLE_DESTINATION_STATUS"
 fi
+fi
 
+if [[ "$SUBSET" == "model-policy" ]]; then
 if grep -Eq '(^|[^[:alnum:]_])HEAD:refs/heads/' \
      "$RUN_AGENT" "$ROOT/scripts/ticket-state.sh"; then
   fail "trusted pushes use captured commit SHAs" "symbolic HEAD refspec found"
@@ -3873,9 +3942,9 @@ else
   fail "exhausted ticket budget still refuses launch" \
     "status=$EXHAUSTED_STATUS output=$EXHAUSTED_OUT"
 fi
+fi
 
 if [[ "$FAILURES" -gt 0 ]]; then
-  echo "FAIL: $FAILURES factory-script test(s) failed" >&2
+  echo "FAIL: $FAILURES factory-script $SUBSET test(s) failed" >&2
   exit 1
 fi
-echo "PASS: all factory-script tests"

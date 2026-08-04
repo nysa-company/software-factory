@@ -131,9 +131,10 @@ factory_contract_version() {
 
 factory_load_kit_provenance() {
   local kit_dir="$1" product_root="$2" release_count=0 release_tree release_contract
-  local mutable_top
+  local mutable_top requested_scope
   FACTORY_KIT_PIN_ERROR=""
   FACTORY_KIT_PROVENANCE_MODE=""
+  FACTORY_KIT_PROVENANCE_SCOPE=""
   FACTORY_KIT_PATH="$(factory_physical_path "$kit_dir")" || {
     FACTORY_KIT_PIN_ERROR="physical kit path is unavailable"
     return 1
@@ -229,6 +230,28 @@ factory_load_kit_provenance() {
     factory_contract_version "$FACTORY_KIT_PATH"
     FACTORY_KIT_PROVENANCE_MODE="git"
   fi
+
+  requested_scope="${FACTORY_KIT_TRUST_SCOPE:-}"
+  case "$requested_scope" in
+    production-certified|qualification-candidate)
+      if [[ "$FACTORY_KIT_PROVENANCE_MODE" != "sealed" ]]; then
+        FACTORY_KIT_PIN_ERROR="$requested_scope requires a sealed release"
+        return 1
+      fi
+      FACTORY_KIT_PROVENANCE_SCOPE="$requested_scope"
+      ;;
+    "")
+      if [[ "$FACTORY_KIT_PROVENANCE_MODE" == "git" ]]; then
+        FACTORY_KIT_PROVENANCE_SCOPE="development-local"
+      else
+        FACTORY_KIT_PROVENANCE_SCOPE="standalone-sealed"
+      fi
+      ;;
+    *)
+      FACTORY_KIT_PIN_ERROR="kit trust scope is invalid"
+      return 1
+      ;;
+  esac
 
   FACTORY_PRODUCT_TREE="$(factory_product_tree "$FACTORY_PRODUCT_PATH" 2>/dev/null)" || {
     FACTORY_KIT_PIN_ERROR="product git tree is unavailable"

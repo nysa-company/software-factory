@@ -39,6 +39,9 @@ QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
+FACTORY_ISSUE = re.compile(
+    r"^https://github[.]com/[A-Za-z0-9_.-]+/software-factory/issues/[1-9][0-9]*$"
+)
 TERMINAL_ACCOUNTING = {
     "completed", "launch_void", "abandoned_conservative", "cancelled",
     "cancelled_conservative",
@@ -86,6 +89,19 @@ def valid_transition_evidence(value: dict[str, Any], ticket: str) -> bool:
             "AWAIT-MERGE closeout auto-merge pending",
         ))
     )
+    loop = value.get("loop")
+    valid_loop = loop is None or (
+        isinstance(loop, dict)
+        and set(loop) == {"attempt", "capped", "kind", "limit"}
+        and isinstance(loop.get("attempt"), int)
+        and not isinstance(loop.get("attempt"), bool)
+        and loop["attempt"] >= 1
+        and isinstance(loop.get("capped"), bool)
+        and loop.get("kind") in {
+            "builder-reviewer", "contract-repair", "planner-spec-linter",
+        }
+        and loop.get("limit") == 3
+    )
     expected_role = runnable[1] if runnable else None
     return not any((
         not DIGEST.fullmatch(value.get("receipt", "")),
@@ -94,6 +110,7 @@ def valid_transition_evidence(value: dict[str, Any], ticket: str) -> bool:
         value.get("ticket") != ticket,
         value.get("action") != stage.partition(" ")[0],
         value.get("detail") != (stage.partition(" ")[2] or None),
+        not valid_loop,
         not (runnable or non_role),
         value.get("role") != expected_role,
     ))
@@ -345,6 +362,21 @@ class Controller:
             stream.write(canonical(value) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+
+    def event_once(self, name: str, ticket: str, **details: Any) -> None:
+        for path in sorted(self.events.glob("*.json")):
+            value = read(path)
+            digest = value.pop("event_sha256", "")
+            if digest != hashlib.sha256(canonical(value).encode()).hexdigest():
+                raise ControllerError("controller event evidence is invalid")
+            if (
+                value.get("event") == name
+                and value.get("factory_sha") == self.release_path.name
+                and value.get("ticket") == ticket
+                and all(value.get(key) == item for key, item in details.items())
+            ):
+                return
+        self.event(name, ticket, **details)
 
     def adopt_qualification_terminal(self, ticket: str) -> dict[str, Any]:
         if (
@@ -785,6 +817,25 @@ class Controller:
     def pause_path(self, ticket: str) -> Path:
         return self.state / f"pause-{ticket}.json"
 
+    @staticmethod
+    def resume_state(worktree: str, ticket: str, current_state: str) -> str | None:
+        path = Path(worktree) / "factory" / "tickets" / f"{ticket}.md"
+        values = re.findall(
+            r"^Resume-State:\s*(.*?)\s*$",
+            path.read_text(encoding="utf-8"), re.I | re.M,
+        )
+        if len(values) > 1 or (
+            current_state == "Blocked-Escalated"
+            and (
+                len(values) != 1
+                or values[0] not in {
+                    "Backlog", "Ready", "Planning", "Building", "Review",
+                }
+            )
+        ):
+            raise ControllerError("ticket Resume-State is invalid")
+        return values[0] if values else None
+
     def envelope_digest(self) -> str:
         digest = hashlib.sha256(
             (self.product / "factory/ENVELOPE.env").read_bytes()
@@ -1054,9 +1105,9 @@ class Controller:
             claimed.add(ticket)
             self.event("missing_claim_recovered", ticket)
 
-    def pause_ticket(self, ticket: str) -> dict[str, Any]:
-        if not TICKET.fullmatch(ticket):
-            raise ControllerError("ticket pause identifier is invalid")
+    def pause_ticket(self, ticket: str, blocking_issue: str) -> dict[str, Any]:
+        if not TICKET.fullmatch(ticket) or not FACTORY_ISSUE.fullmatch(blocking_issue):
+            raise ControllerError("ticket pause requires a Software Factory issue URL")
         path = self.state / "passports" / f"{ticket}.json"
         if not path.exists() or self.active_run(ticket):
             raise ControllerError("ticket pause requires an idle passport")
@@ -1107,22 +1158,35 @@ class Controller:
         if claim:
             if claim.get("publication_lease"):
                 self.withdraw_publication(claim)
-            self.park_claim(claim)
+            if not self.park_claim(claim):
+                raise ControllerError("ticket pause could not park a clean checkpoint")
             if DIGEST.fullmatch(claim.get("lease", "")):
                 self.release_ticket_lease(claim)
             worktree = claim["worktree"]
         value = {
+            "blocking_issue": blocking_issue,
             "branch": branch,
             "budget_sha256": budget or None,
+            "created_at_epoch": (
+                existing_intent.get("created_at_epoch")
+                if existing_intent else int(time.time())
+            ),
+            "current_stage": passport.get("current_stage"),
             "current_state": current_state,
-            "factory_sha": passport.get("factory_sha"),
+            "factory_sha": self.release_path.name,
             "head_sha": passport["head_sha"],
             "passport_sha256": passport["passport_sha256"],
-            "schema": "nysa.software-factory.ticket-pause/v1",
+            "passport_factory_sha": passport.get("factory_sha"),
+            "resume_state": self.resume_state(worktree, ticket, current_state),
+            "run_snapshot_sha256": self.ticket_run_snapshot(ticket),
+            "schema": "nysa.software-factory.ticket-pause/v2",
             "status": status,
             "ticket": ticket,
             "worktree": worktree,
         }
+        value["pause_sha256"] = hashlib.sha256(
+            canonical(value).encode()
+        ).hexdigest()
         destination = self.pause_path(ticket)
         if destination.exists():
             if read(destination) != value:
@@ -1130,14 +1194,30 @@ class Controller:
         else:
             write(destination, value)
         self.claim_path(ticket).unlink(missing_ok=True)
-        self.event("ticket_paused", ticket, head_sha=passport["head_sha"])
+        self.event(
+            "ticket_paused", ticket, blocking_issue=blocking_issue,
+            head_sha=passport["head_sha"], pause_sha256=value["pause_sha256"],
+        )
         return {"schema": SCHEMA, "status": "paused", "ticket": ticket}
 
-    def resume_ticket(self, ticket: str) -> dict[str, Any]:
+    def resume_ticket(self, ticket: str, factory_sha: str) -> dict[str, Any]:
         path = self.pause_path(ticket)
-        if not TICKET.fullmatch(ticket) or not path.exists():
+        if (
+            not TICKET.fullmatch(ticket)
+            or not SHA.fullmatch(factory_sha)
+            or factory_sha != self.release_path.name
+            or not path.exists()
+        ):
             raise ControllerError("ticket resume intent is unavailable")
         intent = read(path)
+        intent_digest = intent.get("pause_sha256", "")
+        signed_intent = dict(intent)
+        signed_intent.pop("pause_sha256", None)
+        legacy = intent.get("schema") == "nysa.software-factory.ticket-pause/v1"
+        if not legacy and intent_digest != hashlib.sha256(
+            canonical(signed_intent).encode()
+        ).hexdigest():
+            raise ControllerError("ticket pause intent digest is invalid")
         passport_path = self.state / "passports" / f"{ticket}.json"
         if not passport_path.exists() or self.active_run(ticket):
             raise ControllerError("ticket resume requires an idle passport")
@@ -1156,7 +1236,10 @@ class Controller:
             for item in lineage if isinstance(item, dict)
         )
         if (
-            intent.get("schema") != "nysa.software-factory.ticket-pause/v1"
+            intent.get("schema") not in {
+                "nysa.software-factory.ticket-pause/v1",
+                "nysa.software-factory.ticket-pause/v2",
+            }
             or intent.get("ticket") != ticket
             or intent.get("branch") != f"ticket/{ticket}"
             or intent.get("current_state") != current_state
@@ -1164,12 +1247,34 @@ class Controller:
             or passport.get("ticket") != ticket
             or passport.get("branch") != intent.get("branch")
             or passport.get("head_sha") != intent.get("head_sha")
+            or passport.get("factory_sha") != factory_sha
             or intent.get("worktree") not in self.worktrees_by_branch().get(
                 f"refs/heads/{intent.get('branch')}", []
             )
             or self.claim_path(ticket).exists()
+            or (
+                not legacy
+                and (
+                    not FACTORY_ISSUE.fullmatch(intent.get("blocking_issue", ""))
+                    or intent.get("current_stage") != passport.get("current_stage")
+                    or intent.get("resume_state") != self.resume_state(
+                        intent["worktree"], ticket, current_state
+                    )
+                    or not DIGEST.fullmatch(intent.get("run_snapshot_sha256", ""))
+                    or intent.get("run_snapshot_sha256")
+                    != self.ticket_run_snapshot(ticket)
+                    or not DIGEST.fullmatch(intent_digest)
+                )
+            )
         ):
             raise ControllerError("ticket resume intent does not match the passport")
+        archived: Path | None = None
+        if not legacy:
+            repros = self.state / "repros"
+            safe_directory(repros, create=True)
+            archived = repros / f"{ticket}-{intent_digest}.json"
+            if archived.exists() and read(archived) != intent:
+                raise ControllerError("ticket repro record conflicts")
         claim = {
             "branch": intent["branch"],
             "lease": "",
@@ -1196,8 +1301,22 @@ class Controller:
         if not self.ticket_release_current(claim):
             claim["status"] = "blocked"
         self.save_claim(claim)
-        path.unlink()
-        self.event("ticket_resumed", ticket, head_sha=passport["head_sha"])
+        if legacy:
+            path.unlink()
+        else:
+            if archived is None:
+                raise ControllerError("ticket repro archive is unavailable")
+            if archived.exists():
+                path.unlink()
+            else:
+                os.replace(path, archived)
+        self.event(
+            "ticket_resumed", ticket,
+            blocking_issue=intent.get("blocking_issue"),
+            head_sha=passport["head_sha"],
+            source_factory_sha=intent.get("factory_sha"),
+            target_factory_sha=factory_sha,
+        )
         return {"schema": SCHEMA, "status": "resumed", "ticket": ticket}
 
     def renew(self, claim: dict[str, Any]) -> None:
@@ -2913,7 +3032,36 @@ class Controller:
                 self.event("post_merge_check_wait", ticket, reason=detail)
                 return False
             raise
-        return value.get("closeout_pr_state") == "MERGED"
+        if value.get("closeout_pr_state") != "MERGED":
+            return False
+        terminal = value.get("terminal")
+        linear = terminal.get("linear") if isinstance(terminal, dict) else None
+        if (
+            not isinstance(terminal, dict)
+            or terminal.get("basis") not in {
+                "attested-done", "attested-emergency-closeout",
+            }
+            or not SHA.fullmatch(terminal.get("protected_main", ""))
+            or not isinstance(linear, dict)
+            or linear.get("state") != "Done"
+            or linear.get("source_ref") != "refs/remotes/origin/main"
+            or not isinstance(linear.get("identifier"), str)
+            or not linear["identifier"]
+            or not isinstance(linear.get("issue_id"), str)
+            or not linear["issue_id"]
+            or not isinstance(linear.get("state_id"), str)
+            or not linear["state_id"]
+        ):
+            raise ControllerError("closeout lacks exact protected terminal Linear evidence")
+        self.event_once(
+            "linear_terminal_synced", ticket,
+            linear_identifier=linear["identifier"],
+            linear_issue_id=linear["issue_id"],
+            linear_state_id=linear["state_id"],
+            protected_main=terminal["protected_main"],
+            terminal_basis=terminal["basis"],
+        )
+        return True
 
     def run_role(
         self, claim: dict[str, Any], role: str, receipt: str,
@@ -3074,6 +3222,14 @@ class Controller:
             stage = transition.get("stage", "")
             receipt = transition.get("receipt", "")
             role = transition.get("role")
+            loop = transition.get("loop")
+            if loop is not None:
+                self.event_once(
+                    "loop_attempt", claim["ticket"],
+                    stage=stage,
+                    transition_receipt_sha256=receipt,
+                    **loop,
+                )
             if maintenance:
                 self.event(
                     "stage_resolution_paused",
@@ -3632,13 +3788,26 @@ def main() -> None:
     parser.add_argument("--product-root", required=True, type=Path)
     parser.add_argument("--release-path", required=True, type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
-    parser.add_argument("--action", choices=("reconcile", "pause", "resume"), default="reconcile")
+    parser.add_argument(
+        "--action", choices=("reconcile", "pause", "resume"),
+        default="reconcile",
+    )
     parser.add_argument("--ticket", default="")
+    parser.add_argument("--issue", default="")
+    parser.add_argument("--factory-sha", default="")
     args = parser.parse_args()
     lock_descriptor = -1
     try:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.project):
             raise ControllerError("invalid project")
+        if (
+            (args.action == "reconcile" and any((
+                args.ticket, args.issue, args.factory_sha,
+            )))
+            or (args.action == "pause" and (args.factory_sha or not args.issue))
+            or (args.action == "resume" and (args.issue or not args.factory_sha))
+        ):
+            raise ControllerError("controller action arguments are invalid")
         state = safe_directory(args.state_dir)
         lock_descriptor = os.open(
             state / "reconcile.lock",
@@ -3652,9 +3821,9 @@ def main() -> None:
             return
         controller = Controller(args)
         if args.action == "pause":
-            result = controller.pause_ticket(args.ticket)
+            result = controller.pause_ticket(args.ticket, args.issue)
         elif args.action == "resume":
-            result = controller.resume_ticket(args.ticket)
+            result = controller.resume_ticket(args.ticket, args.factory_sha)
         else:
             if args.ticket:
                 raise ControllerError("reconcile does not accept a ticket")

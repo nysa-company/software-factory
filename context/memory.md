@@ -16,6 +16,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
   save, and never advances full-board sync health.
+- Done is projected through one separate exact-ticket Linear mutation only
+  after the closeout receipt validates on protected main. The issue is re-read
+  as exact Done and one controller event is recorded before lease release;
+  missing mapping, API failure, or changed terminal truth remains retryable.
+- Production helpers run only from installed sealed releases whose SHA is on
+  Factory `origin/main` with exact successful protected CI. Qualification may
+  seal a clean local SHA/tree without that reachability; trusted launchers label
+  the two scopes, mutable kits cannot claim either, and run manifests preserve
+  the distinction.
 - Linear description comparison canonicalizes the observed serializer-only
   ordered-list indentation, continuation, renumbering, inline-code, link, and
   fence-boundary forms. Nested-list structure, fenced content, and meaningful
@@ -317,7 +326,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Model routing is portfolio policy: the catalog separates transport, gateway, inference provider, family, account route, selection ID, and reported identity; profiles order all-six-role portfolios with distinct production/checking families. Routes are pinned at the ticket boundary and may change mid-ticket only through the Contract 1.4 one-use Linear-approved journal flow; one logical role attempt submits to at most one process.
 - Stable product and operating truth lives under `docs/`; executable prompts, copied templates, conformance evidence, and vendored material remain colocated with their consumers.
 - The repository adopts Nysa Agents baseline v3 as a toolkit with repository, secret, artifact, Git-flow, CI, and config-review enabled. `bash ci/test-all.sh` remains the unconditional full command; managed local readiness uses `bash ci/test-all.sh --changed-or-defer origin/main HEAD`.
-- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in four isolated hosted-runner groups per platform while retaining the six established release-evidence aliases.
+- Dynamic CI selection is fail-closed and evidence-gated: six audited leaf components remain available for focused local and pull-request work. Broad readiness and pull requests run policy gates and defer complete coverage; every `main` commit runs the complete registry in four isolated hosted-runner groups per platform while retaining the six established release-evidence aliases. The public factory-script suite runs six fixed internal workers with isolated temporary roots while keeping launch-, cancellation-, Git-, accounting-, and cleanup-coupled cases sequential within a worker; failure and interruption drain each worker process group.
 - Live products resolve sealed exact-SHA kit releases under `~/.factory/kits` through the stable `~/.factory/bin/factory-launch` contract; kit merges are candidates until a product-specific certified activation.
 - The stable installed launcher is part of that exact release tuple.
   Certification and every receipt validation require its bytes to match the
@@ -3371,3 +3380,78 @@ an absent passport is accepted only for protected operator-built work with no
 claim or passport. Apply reuses ordinary ledger and protected closeout
 mechanisms, creates a distinct immutable terminal receipt, and is restart-safe
 without fabricating bundle or Linear approval evidence.
+
+## 2026-08-03 — Decision 247: Factory-script CI uses isolated internal workers
+
+Category: Performance
+
+The canonical `factory-scripts` suite ID and four protected-CI groups remain
+unchanged, but the monolithic shell regression now dispatches six fixed
+internal workers. Every worker receives a private temporary root; cases that
+share launch, cancellation, Git, accounting, or cleanup assumptions remain
+sequential within one worker. The parent replays successful logs in stable
+order, reports the exact failed subset and assertion, and terminates surviving
+worker process groups on failure or interruption. Focused regressions cover
+parallel start, fixture-root isolation, failure diagnostics, and leaked-child
+cleanup.
+
+## 2026-08-03 — Decision 248: Terminal Linear projection follows protected truth
+
+Category: Trust boundary
+
+Ordinary and emergency closeout may update only the ticket's exact initialized
+Linear issue, and only after the closeout receipt validates on protected main.
+The updater sends only the Done state, re-reads exact Done, honors the
+launcher-bound operator map, and returns evidence for one idempotent controller
+event before claim release. Missing mapping, transport failure, changed source,
+or unconfirmed state leaves closeout retryable without partial map writes.
+
+## 2026-08-03 — Decision 249: Kit provenance is lane-scoped
+
+Category: Trust boundary
+
+Protected production install and certification retain their existing
+`origin/main` ancestry plus exact successful main-CI proof. Trusted launchers
+now label helper runs as `production-certified` or `qualification-candidate`,
+and either label requires a SHA/tree-sealed release; mutable checkouts remain
+`development-local` and cannot claim a trusted scope. This preserves fast local
+and qualification iteration without presenting unreachable candidates as
+production provenance.
+
+## 2026-08-03 — Decision 250: Rework laps are receipt-bound and capped
+
+Category: Reliability
+
+Planner/Spec-linter, Builder/Reviewer, and authenticated contract-repair loops
+reuse canonical ticket verdicts or signed repair records as their attempt
+counter. The transition receipt and one idempotent controller event expose the
+loop, attempt, limit, and stopped stage; the third failed lap escalates before
+another provider call. The Markdown state remains the Linear-compatible coarse
+business state, while one shared action-aware whitelist validates every state
+mutation, including Reviewer and qualification back-edges.
+
+## 2026-08-03 — Decision 251: Parking preserves an issue-bound repro
+
+Category: Reliability
+
+The existing passport-bound pause is the Factory's Parked primitive; no second
+business or Linear state is added. A new pause requires an exact Software
+Factory issue URL and preserves the release, head, passport, run snapshot,
+current state, Resume-State, and claim status while releasing the ticket lease.
+Resume requires the operator to name the exact active Factory SHA, revalidates
+the portable checkpoint, and archives the repro record before execution can
+continue. Historical v1 pauses remain resumable only through the named-release
+boundary.
+
+## 2026-08-03 — Decision 252: Rejected unblocks are visible without widening authority
+
+Category: Reliability
+
+After the reconciler has observed the current Blocked-Escalated generation, a
+newer Linear move to any state other than the exact Resume-State remains
+unauthorized. It now records one digest-bound `last_rejected` sync-health event
+and posts one deduplicated Linear comment naming the required column and Git
+receipt directives. Exact-ticket and full-board pulls preserve the same
+evidence across overlapping saves. The operator transition whitelist remains
+unchanged; the already-tested absent-map attestation refusal remains the
+current behavior, and the ignored machine-local map is not re-tracked.

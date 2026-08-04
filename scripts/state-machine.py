@@ -39,6 +39,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ROLE = re.compile(r"^(planner|spec-linter|test-author|builder|reviewer|narrator)$")
 CONTRACT_BLOCK_ROLES = frozenset(("planner", "test-author", "builder"))
+LOOP_LIMIT = 3
 TARGET_STATE = {
     "planner": "Planning",
     "spec-linter": "Planning",
@@ -2607,8 +2608,121 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     return stage, False
 
 
+def contract_repair_attempt(args: argparse.Namespace) -> int:
+    directory = args.state_dir / "contract-repairs"
+    if not directory.exists() and not directory.is_symlink():
+        return 0
+    info = directory.lstat()
+    if (
+        directory.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise StateError("contract repair directory is unsafe")
+    active = directory / f"{args.ticket}.json"
+    completed = directory / "completed"
+    paths = [active] if active.exists() or active.is_symlink() else []
+    if completed.exists() or completed.is_symlink():
+        info = completed.lstat()
+        if (
+            completed.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise StateError("completed contract repair directory is unsafe")
+        paths.extend(sorted(completed.glob(f"{args.ticket}-*.json")))
+    if not paths:
+        return 0
+    if not (
+        (args.state_dir / "passport.key").exists()
+        and (args.state_dir / "passports" / f"{args.ticket}.json").exists()
+    ):
+        return 0
+    passport, secret = authenticated_passport(args)
+    seen: set[str] = set()
+    attempts = 0
+    for path in paths:
+        record = load_signed_repair(path, secret)
+        digest = record.get("repair_sha256", "")
+        if (
+            record.get("schema") != REPAIR_SCHEMA
+            or record.get("ticket") != args.ticket
+            or record.get("branch") != passport.get("branch")
+            or record.get("repair_role")
+            not in {"planner", "spec-linter", "test-author", "builder"}
+            or digest in seen
+            or (
+                path.parent == completed
+                and path.name != f"{args.ticket}-{digest}.json"
+            )
+        ):
+            raise StateError("completed contract repair record is invalid")
+        seen.add(digest)
+        if record.get("repair_source") is None:
+            attempts += 1
+    return attempts
+
+
+def govern_loop(
+    args: argparse.Namespace, stage: str, repair_override: bool
+) -> tuple[str, dict[str, Any] | None]:
+    text = (
+        args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    ).read_text(encoding="utf-8")
+    reviewer = re.findall(
+        r"^\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*$",
+        text, re.I | re.M,
+    )
+    spec = re.findall(
+        r"^\s*SPEC-LINT:\s*(PASS|FAIL)(?:\s+—\s+.*)?\s*$",
+        text, re.I | re.M,
+    )
+    kind = ""
+    attempt = 0
+    cap_stage = False
+    if (
+        reviewer
+        and reviewer[-1].upper() == "REQUEST CHANGES"
+        and (stage.startswith("FIX ") or stage == "RUN reviewer")
+    ):
+        kind = "builder-reviewer"
+        attempt = sum(item.upper() == "REQUEST CHANGES" for item in reviewer)
+        cap_stage = stage.startswith("FIX ")
+    elif (
+        spec
+        and spec[-1].upper() == "FAIL"
+        and stage in {"RUN planner", "RUN spec-linter"}
+    ):
+        kind = "planner-spec-linter"
+        attempt = sum(item.upper() == "FAIL" for item in spec)
+        cap_stage = stage == "RUN planner"
+    elif repair_override:
+        attempt = contract_repair_attempt(args)
+        if attempt:
+            kind = "contract-repair"
+            cap_stage = stage.startswith("FIX ")
+    if not kind:
+        return stage, None
+    capped = cap_stage and attempt >= LOOP_LIMIT
+    loop = {
+        "attempt": attempt,
+        "capped": capped,
+        "kind": kind,
+        "limit": LOOP_LIMIT,
+    }
+    if capped:
+        stage = (
+            f"ESCALATE {kind} loop cap reached; "
+            f"attempts={attempt}; limit={LOOP_LIMIT}"
+        )
+    return stage, loop
+
+
 def core(
-    args: argparse.Namespace, stage: str, role: str | None
+    args: argparse.Namespace, stage: str, role: str | None,
+    loop: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     workdir = args.workdir.resolve(strict=True)
     factory = args.factory_root.resolve(strict=True) / "factory"
@@ -2629,6 +2743,7 @@ def core(
             hashlib.sha256(args.lease.encode()).hexdigest()
             if args.lease else None
         ),
+        "loop": loop,
         "passport_sha256": (
             hashlib.sha256(passport.read_bytes()).hexdigest()
             if passport.is_file() and not passport.is_symlink()
@@ -2651,9 +2766,12 @@ def core(
     }
 
 
-def issue(args: argparse.Namespace, stage: str) -> dict[str, Any]:
+def issue(
+    args: argparse.Namespace, stage: str,
+    loop: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     role = stage_role(stage)
-    value = core(args, stage, role)
+    value = core(args, stage, role, loop)
     path = args.state_dir / f"{args.ticket}.json"
     prior: dict[str, Any] | None = None
     if path.exists() or path.is_symlink():
@@ -2687,7 +2805,9 @@ def verify(args: argparse.Namespace, *, consume: bool) -> dict[str, Any]:
             value = safe_receipt(path)
             if value.get("receipt_sha256") != args.receipt:
                 raise StateError("transition receipt does not match")
-            expected = core(args, value["stage"], value.get("role"))
+            expected = core(
+                args, value["stage"], value.get("role"), value.get("loop")
+            )
             actual = {
                 key: item for key, item in value.items()
                 if key not in {
@@ -2915,6 +3035,7 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
             if repair_stage is not None
             else resolve(args)
         )
+    stage, loop = govern_loop(args, stage, repair_override)
     role = stage_role(stage)
     if role:
         current = current_state(args.workdir, args.ticket)
@@ -2938,10 +3059,11 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
                 current = current_state(args.workdir, args.ticket)
     if not stage.startswith("REFUSE "):
         migrate_passport(args)
-    receipt = issue(args, stage)
+    receipt = issue(args, stage) if loop is None else issue(args, stage, loop)
     return {
         "action": stage.partition(" ")[0],
         "detail": stage.partition(" ")[2] or None,
+        "loop": receipt.get("loop"),
         "receipt": receipt["receipt_sha256"],
         "role": role,
         "schema": SCHEMA,

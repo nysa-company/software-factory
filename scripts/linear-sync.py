@@ -3,8 +3,9 @@
 
 Markdown remains execution truth. Linear owns only priority, Project
 membership, Backlog -> Ready, Awaiting Approval -> Approved, and an operator
-resume from Blocked-Escalated. Pulls happen before pushes and the sequencer
-never calls Linear directly.
+resume from Blocked-Escalated. Pulls happen before pushes. The only
+controller-bound push is an exact Done projection after protected terminal
+evidence validates.
 """
 
 import argparse
@@ -52,6 +53,7 @@ TARGETED_OPERATOR_FIELDS = (
     "blocked_source_sha256",
     "blocked_remote_updated_at",
     "operator_state_source_sha256",
+    "operator_rejection",
 )
 
 # Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
@@ -174,6 +176,15 @@ def api_key():
     if not key and KEY_FILE.is_file():
         key = KEY_FILE.read_text().strip()
     return key
+
+
+def operator_map_path(factory_dir):
+    path = Path(os.environ.get(
+        "FACTORY_OPERATOR_MAP", factory_dir / "linear-map.json"
+    ))
+    if not path.is_absolute():
+        raise RuntimeError("operator map path must be absolute")
+    return path
 
 
 def gql(key, query, variables=None):
@@ -434,6 +445,21 @@ def preserve_newer_operator_pull(path, mapping):
                 incoming_entry[name] = copy.deepcopy(current_entry[name])
             else:
                 incoming_entry.pop(name, None)
+    current_rejection = current.get("_sync", {}).get("last_rejected")
+    incoming_rejection = mapping.get("_sync", {}).get("last_rejected")
+    if (
+        isinstance(current_rejection, dict)
+        and (
+            current_rejection.get("observed_at", ""),
+            current_rejection.get("rejection_sha256", ""),
+        ) > (
+            (
+                incoming_rejection.get("observed_at", ""),
+                incoming_rejection.get("rejection_sha256", ""),
+            ) if isinstance(incoming_rejection, dict) else ("", "")
+        )
+    ):
+        mapping["_sync"]["last_rejected"] = copy.deepcopy(current_rejection)
 
 
 def save_map(path, mapping):
@@ -444,10 +470,15 @@ def save_map(path, mapping):
 
 
 def record_failure(map_path, mapping, error):
+    health = mapping.get("_sync", {})
     mapping["_sync"] = {
-        "last_success_at": mapping.get("_sync", {}).get("last_success_at"),
+        "last_success_at": health.get("last_success_at"),
         "last_error": str(error),
         "failed_at": utc_now(),
+        **(
+            {"last_rejected": health["last_rejected"]}
+            if isinstance(health.get("last_rejected"), dict) else {}
+        ),
     }
     save_map(map_path, mapping)
 
@@ -896,6 +927,15 @@ def fetch_issue(key, issue_id):
     return issue
 
 
+def fetch_issue_state(key, issue_id):
+    return gql(
+        key,
+        "query($id: String!) { issue(id: $id) { "
+        "id identifier updatedAt state { id name } } }",
+        {"id": issue_id},
+    )["issue"]
+
+
 def factory_issue_index(key, team_id):
     result = {}
     after = None
@@ -1006,7 +1046,7 @@ def linear_updated_after(candidate, baseline):
     return candidate is not None and baseline is not None and candidate > baseline
 
 
-def ingest_operator_fields(ticket, actual, mapping, entry, dry):
+def ingest_operator_fields(key, ticket, actual, mapping, entry, dry):
     operator = dict(entry.get("operator", {}))
     blocked_remote_updated_at = entry.get("blocked_remote_updated_at")
     source_digest = hashlib.sha256(ticket["text"].encode()).hexdigest()
@@ -1094,6 +1134,60 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
             operator["approval"] = "Linear"
     elif remote_state != local_state:
         log(f"{ticket['id']}: ignoring non-operator transition {local_state} -> {remote_state}")
+        if (
+            local_state == "blocked-escalated"
+            and linear_updated_after(remote_updated_at, blocked_remote_updated_at)
+        ):
+            required = effective.get("resume_state")
+            identity = {
+                "local_state": local_state,
+                "remote_state": remote_state,
+                "remote_updated_at": remote_updated_at,
+                "required_state": required,
+                "source_sha256": source_digest,
+                "ticket": ticket["id"],
+            }
+            rejection_digest = hashlib.sha256(
+                json.dumps(
+                    identity, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            rejection = {
+                **identity,
+                "observed_at": utc_now(),
+                "rejection_sha256": rejection_digest,
+            }
+            marker = f"<!-- nysa-operator-rejection:{rejection_digest} -->"
+            known_comment = any(
+                marker in (comment.get("body") or "")
+                for comment in (actual.get("comments") or {}).get("nodes", [])
+                if isinstance(comment, dict)
+            )
+            if (
+                (
+                    not isinstance(entry.get("operator_rejection"), dict)
+                    or entry["operator_rejection"].get("rejection_sha256")
+                    != rejection_digest
+                )
+                and not known_comment
+            ):
+                required_name = (
+                    STATES[required][0] if required in STATES else "a valid Resume-State"
+                )
+                post_comment(
+                    key, actual["id"],
+                    f"{marker}\n**Factory unblock rejected.** The ticket is "
+                    f"Blocked-Escalated, but Linear requested "
+                    f"{STATES.get(remote_state, (remote_state,))[0]}. Move it to "
+                    f"its exact `Resume-State: {required_name}` column. A Linear "
+                    "move alone is insufficient: commit the exact receipt-bound "
+                    "`OPERATOR RESUME: <role>` and `OPERATOR RESUME RECEIPT: "
+                    "<sha256>` lines described in the Factory operator runbook.",
+                    dry,
+                )
+            if not dry:
+                entry["operator_rejection"] = rejection
+                mapping["_sync"]["last_rejected"] = copy.deepcopy(rejection)
 
     operator["linear_updated_at"] = remote_updated_at
     operator["observed_at"] = utc_now()
@@ -1163,7 +1257,7 @@ def sync_ticket_operator(key, factory_dir, map_path, ticket_id, dry=False):
     working_entry = working["tickets"][ticket_id]
     actual = fetch_issue(key, issue_id)
     ingest_fallback_approval(actual, working_entry, dry)
-    ingest_operator_fields(ticket, actual, working, working_entry, dry)
+    ingest_operator_fields(key, ticket, actual, working, working_entry, dry)
     if dry:
         return
 
@@ -1185,8 +1279,101 @@ def sync_ticket_operator(key, factory_dir, map_path, ticket_id, dry=False):
                 current_entry[name] = copy.deepcopy(working_entry[name])
             else:
                 current_entry.pop(name, None)
+        rejection = working.get("_sync", {}).get("last_rejected")
+        current_rejection = current.get("_sync", {}).get("last_rejected")
+        if isinstance(rejection, dict) and (
+            rejection.get("observed_at", ""),
+            rejection.get("rejection_sha256", ""),
+        ) >= (
+            (
+                current_rejection.get("observed_at", ""),
+                current_rejection.get("rejection_sha256", ""),
+            ) if isinstance(current_rejection, dict) else ("", "")
+        ):
+            current["_sync"]["last_rejected"] = copy.deepcopy(rejection)
         apply_operator_clears(map_path, current)
         atomic_write(map_path, json.dumps(current, indent=2, sort_keys=True) + "\n")
+
+
+def sync_ticket_terminal(key, factory_dir, map_path, ticket_id):
+    """Project one protected terminal ticket to its exact mapped Linear issue."""
+    if not re.fullmatch(r"T-[0-9]+", ticket_id):
+        raise RuntimeError("terminal sync requires T-NNN")
+    with map_lock(map_path):
+        mapping = load_map(map_path)
+        tickets = mapping.get("tickets")
+        config = mapping.get("_config")
+        entry = tickets.get(ticket_id) if isinstance(tickets, dict) else None
+        done_state = (
+            config.get("states", {}).get("done") if isinstance(config, dict) else None
+        )
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("issue_id"), str)
+            or not entry["issue_id"]
+            or entry.get("operator_fields_initialized") is not True
+        ):
+            raise RuntimeError(f"{ticket_id}: mapped initialized Linear issue is required")
+        if not isinstance(done_state, str) or not done_state:
+            raise RuntimeError("Linear Done state mapping is required")
+        text, source_ref = committed_ticket(factory_dir, ticket_id)
+        if source_ref != "refs/remotes/origin/main":
+            raise RuntimeError(f"{ticket_id}: protected terminal ticket is unavailable")
+        ticket = parse_ticket_text(
+            ticket_id, factory_dir / "tickets" / f"{ticket_id}.md", text
+        )
+        if ticket["state"] != "done":
+            raise RuntimeError(f"{ticket_id}: protected ticket is not Done")
+
+        issue_id = entry["issue_id"]
+        actual = fetch_issue_state(key, issue_id)
+        if not isinstance(actual, dict) or actual.get("id") != issue_id:
+            raise RuntimeError(f"{ticket_id}: Linear returned the wrong issue")
+        updated = actual.get("state", {}).get("id") != done_state
+        if updated:
+            if committed_ticket(factory_dir, ticket_id) != (text, source_ref):
+                raise RuntimeError(f"{ticket_id}: protected terminal ticket changed")
+            result = gql(
+                key,
+                "mutation($id: String!, $input: IssueUpdateInput!) { "
+                "issueUpdate(id: $id, input: $input) { success } }",
+                {"id": issue_id, "input": {"stateId": done_state}},
+            )
+            if result.get("issueUpdate", {}).get("success") is not True:
+                raise RuntimeError("Linear terminal issueUpdate did not succeed")
+            actual = fetch_issue_state(key, issue_id)
+        state = actual.get("state") if isinstance(actual, dict) else None
+        if (
+            not isinstance(actual, dict)
+            or actual.get("id") != issue_id
+            or not isinstance(actual.get("identifier"), str)
+            or not actual["identifier"]
+            or not isinstance(state, dict)
+            or state.get("id") != done_state
+            or normalize_state(state.get("name", "")) != "done"
+        ):
+            raise RuntimeError(f"{ticket_id}: Linear did not confirm exact Done state")
+        if committed_ticket(factory_dir, ticket_id) != (text, source_ref):
+            raise RuntimeError(f"{ticket_id}: protected terminal ticket changed")
+
+        operator = entry.get("operator")
+        if isinstance(operator, dict):
+            for name in ("state", "state_base", "approval"):
+                operator.pop(name, None)
+            if not operator:
+                entry.pop("operator", None)
+        entry["identifier"] = actual["identifier"]
+        entry["source_ref"] = source_ref
+        apply_operator_clears(map_path, mapping)
+        atomic_write(map_path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
+    return {
+        "identifier": actual["identifier"],
+        "issue_id": issue_id,
+        "source_ref": source_ref,
+        "state": "Done",
+        "state_id": done_state,
+        "updated": updated,
+    }
 
 
 def sync_tickets(key, factory_dir, mapping, map_path, dry):
@@ -1232,7 +1419,9 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 entry["identifier"] = actual["identifier"]
                 save_map(map_path, mapping)
             if entry.get("operator_fields_initialized"):
-                ticket = ingest_operator_fields(ticket, actual, mapping, entry, dry)
+                ticket = ingest_operator_fields(
+                    key, ticket, actual, mapping, entry, dry
+                )
             else:
                 log(f"{ticket['id']}: bootstrapping operator fields from Markdown")
             if not dry:
@@ -1254,7 +1443,9 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                     "source_ref": source_ref,
                 })
                 ingest_fallback_approval(actual, entry, dry)
-                ticket = ingest_operator_fields(ticket, actual, mapping, entry, dry)
+                ticket = ingest_operator_fields(
+                    key, ticket, actual, mapping, entry, dry
+                )
                 project_id = project_ids.get(ticket["initiative"])
                 desired_state_id = config["states"].get(ticket["state"])
                 if not dry:
@@ -1377,7 +1568,14 @@ def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
     if not setup_only:
         sync_tickets(key, factory_dir, mapping, map_path, dry)
     if not dry:
-        mapping["_sync"] = {"last_success_at": utc_now(), "last_error": None}
+        previous_health = mapping.get("_sync", {})
+        mapping["_sync"] = {
+            "last_success_at": utc_now(), "last_error": None,
+            **(
+                {"last_rejected": previous_health["last_rejected"]}
+                if isinstance(previous_health.get("last_rejected"), dict) else {}
+            ),
+        }
         save_map(map_path, mapping)
         retire_operator_clears(map_path)
 
@@ -1388,15 +1586,22 @@ def main():
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ticket")
+    parser.add_argument("--terminal", action="store_true")
     args = parser.parse_args()
     if args.ticket and args.setup:
         parser.error("--ticket cannot be combined with --setup")
+    if args.terminal and (not args.ticket or args.dry_run):
+        parser.error("--terminal requires --ticket and cannot be a dry run")
 
     factory_dir = Path(args.factory_root).expanduser().resolve() / "factory"
     if not factory_dir.is_dir():
         log(f"no factory/ under {args.factory_root} — nothing to do")
         return 0
-    map_path = factory_dir / "linear-map.json"
+    try:
+        map_path = operator_map_path(factory_dir)
+    except RuntimeError as error:
+        log(str(error))
+        return 1
     key = api_key()
     if not key:
         log(f"no API key (set LINEAR_API_KEY or create {KEY_FILE}) — skipping cycle")
@@ -1404,7 +1609,11 @@ def main():
 
     if args.ticket:
         try:
-            sync_ticket_operator(key, factory_dir, map_path, args.ticket, args.dry_run)
+            if args.terminal:
+                result = sync_ticket_terminal(key, factory_dir, map_path, args.ticket)
+                print(json.dumps(result, sort_keys=True))
+            else:
+                sync_ticket_operator(key, factory_dir, map_path, args.ticket, args.dry_run)
         except Exception as error:
             log(f"exact-ticket sync error: {error}")
             return 1

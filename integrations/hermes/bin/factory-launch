@@ -672,11 +672,15 @@ export FACTORY_RELEASE_CONTRACT_VERSION="$ACTIVE_CONTRACT"
 MODEL_STATE_ROOT="$KITS_ROOT/projects"
 PROVIDER_STATE_ROOT="$HOME/.factory"
 PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/isolated-v1.enabled"
+KIT_TRUST_SCOPE="production-certified"
 if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
   MODEL_STATE_ROOT="$TAKEOVER_KITS_ROOT/projects"
 elif [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
   PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"
   PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/provider-activation.json"
+fi
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  KIT_TRUST_SCOPE="qualification-candidate"
 fi
 
 HELPER_ENV=(
@@ -692,6 +696,7 @@ HELPER_ENV=(
   "FACTORY_RELEASE_TREE=$KIT_TREE"
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
   "FACTORY_RELEASE_CONTRACT_VERSION=$ACTIVE_CONTRACT"
+  "FACTORY_KIT_TRUST_SCOPE=$KIT_TRUST_SCOPE"
 )
 if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
   HELPER_ENV+=("FACTORY_OPERATOR_MAP=$TAKEOVER_OPERATOR_MAP")
@@ -1176,9 +1181,18 @@ PY
   ticket-control)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
       die "ticket control requires contract 1.8.0"
-    [[ $# -eq 4 && ( "$1" == "pause" || "$1" == "resume" ) &&
-       "$2" == "--ticket" && "$3" =~ ^T-[0-9]+$ && "$4" == "--json" ]] || usage
-    CONTROL_ACTION="$1" TICKET="$3"
+    if [[ $# -eq 6 && "$1" == "pause" && "$2" == "--ticket" &&
+          "$3" =~ ^T-[0-9]+$ && "$4" == "--issue" &&
+          "$5" =~ ^https://github[.]com/[A-Za-z0-9_.-]+/software-factory/issues/[1-9][0-9]*$ &&
+          "$6" == "--json" ]]; then
+      CONTROL_ACTION="$1" TICKET="$3" CONTROL_FLAG="--issue" CONTROL_VALUE="$5"
+    elif [[ $# -eq 6 && "$1" == "resume" && "$2" == "--ticket" &&
+            "$3" =~ ^T-[0-9]+$ && "$4" == "--factory-sha" &&
+            "$5" =~ ^[0-9a-f]{40}$ && "$6" == "--json" ]]; then
+      CONTROL_ACTION="$1" TICKET="$3" CONTROL_FLAG="--factory-sha" CONTROL_VALUE="$5"
+    else
+      usage
+    fi
     controller_state_dir
     CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
     require_managed_file "$CONTROLLER" "active release controller"
@@ -1190,7 +1204,8 @@ PY
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR" \
-      --action "$CONTROL_ACTION" --ticket "$TICKET"
+      --action "$CONTROL_ACTION" --ticket "$TICKET" \
+      "$CONTROL_FLAG" "$CONTROL_VALUE"
     ;;
   qualification)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||

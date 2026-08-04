@@ -201,6 +201,92 @@ class TicketAttestTests(unittest.TestCase):
             )
         self.assertCountEqual([run["role"] for run in runs], ["reviewer", "narrator"])
 
+    def test_terminal_linear_sync_runs_only_after_protected_validation(self):
+        order = []
+        linear = {
+            "identifier": "SF-700",
+            "issue_id": "issue-700",
+            "source_ref": "refs/remotes/origin/main",
+            "state": "Done",
+            "state_id": "state-done",
+            "updated": True,
+        }
+
+        def terminal(*_args):
+            order.append("terminal")
+            return {"basis": "attested-done", "ticket": "T-700"}
+
+        def execute(*_args, **_kwargs):
+            order.append("linear")
+            return subprocess.CompletedProcess([], 0, json.dumps(linear), "")
+
+        def git(*args, **_kwargs):
+            output = "b" * 40 + "\n" if "rev-parse" in args else ""
+            return subprocess.CompletedProcess([], 0, output, "")
+
+        with (
+            patch.object(TICKET_ATTEST, "protected_terminal", side_effect=terminal),
+            patch.object(TICKET_ATTEST, "run", side_effect=execute),
+            patch.object(TICKET_ATTEST, "git", side_effect=git),
+        ):
+            result = TICKET_ATTEST.finalize_terminal(
+                self.product, self.product, str(self.remote), "T-700", "attested-done"
+            )
+
+        self.assertEqual(order, ["terminal", "linear"])
+        self.assertEqual(result["linear"], linear)
+        self.assertEqual(result["protected_main"], "b" * 40)
+
+    def test_terminal_linear_sync_refuses_when_protected_validation_fails(self):
+        def git(*_args, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with (
+            patch.object(TICKET_ATTEST, "git", side_effect=git),
+            patch.object(
+                TICKET_ATTEST, "protected_terminal",
+                side_effect=TICKET_ATTEST.ValidationError("missing terminal"),
+            ),
+            patch.object(TICKET_ATTEST, "run") as execute,
+            self.assertRaisesRegex(TICKET_ATTEST.Refusal, "protected terminal"),
+        ):
+            TICKET_ATTEST.finalize_terminal(
+                self.product, self.product, str(self.remote), "T-700", "attested-done"
+            )
+        execute.assert_not_called()
+
+    def test_terminal_controller_event_is_append_once(self):
+        state = self.temp / "controller-events"
+        state.mkdir(mode=0o700)
+        state = state.resolve()
+        terminal = {
+            "basis": "attested-emergency-closeout",
+            "protected_main": "b" * 40,
+            "linear": {
+                "identifier": "SF-700",
+                "issue_id": "issue-700",
+                "state_id": "state-done",
+            },
+        }
+        with patch.dict(os.environ, {"FACTORY_CONTROLLER_STATE_DIR": str(state)}):
+            TICKET_ATTEST.record_terminal_controller_event(
+                "T-700", KIT_SHA, terminal
+            )
+            TICKET_ATTEST.record_terminal_controller_event(
+                "T-700", KIT_SHA, terminal
+            )
+
+        events = list((state / "events").glob("*.json"))
+        self.assertEqual(len(events), 1)
+        value = json.loads(events[0].read_text())
+        digest = value.pop("event_sha256")
+        encoded = json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()
+        self.assertEqual(digest, hashlib.sha256(encoded).hexdigest())
+        self.assertEqual(value["event"], "linear_terminal_synced")
+        self.assertEqual(value["terminal_basis"], "attested-emergency-closeout")
+
     def test_overlay_consumption_uses_launcher_bound_operator_map(self):
         external = self.temp / "operator-map.json"
         operator = {
@@ -1840,13 +1926,11 @@ else:
         self.prepare_done(closeout_pr="open", closeout_wrong=True)
         self.assertIn("branch, base, or head", self.attest("done").stderr)
 
-    def test_done_accepts_already_merged_exact_closeout_pr(self):
+    def test_done_refuses_merged_closeout_absent_from_protected_main(self):
         self.prepare_done(closeout_pr="merged")
         result = self.attest("done")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual(payload["closeout_pr_state"], "MERGED")
-        self.assertFalse(payload["auto_merge"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("protected terminal validation failed", result.stderr)
         self.assertNotIn("closeout_merge_argv", json.loads(self.state.read_text()))
         project = self.product / "factory/PROJECT.env"
         project.write_text(project.read_text() + "MAX_CONCURRENT_TICKETS=4\n")

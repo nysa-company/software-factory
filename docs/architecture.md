@@ -12,7 +12,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. All products share the Software Factory Linear team; each initiative gets a Linear Project.
-- **`factory/KIT_PIN`:** exactly one lowercase, full 40-character certified kit SHA. External products fail closed when it is missing, malformed, or different from the physical release.
+- **`factory/KIT_PIN`:** exactly one lowercase, full 40-character kit SHA. Production requires a protected-main, successful-CI installed release; a sealed qualification may instead bind one clean local candidate SHA/tree. External products fail closed when the pin is missing, malformed, or different from the physical release.
 - **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), and required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`).
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
@@ -99,8 +99,13 @@ focused local work. Pull requests run the same targeted-or-deferred selection
 on Linux and macOS: mapped leaf changes execute their suites, while broad work
 runs policy gates and defers complete coverage. Pushes to `main` partition the
 complete registry into four stable groups per platform on separate hosted
-runners. The factory-script, Hermes-contract, and factory-kit lifecycle suites
-remain intact and sequential inside their own groups. A group is directly
+runners. Their public suite IDs remain intact. The factory-script suite uses
+six fixed internal workers with private temporary roots; lifecycle cases that
+share launch, cancellation, Git, accounting, or cleanup state remain
+sequential inside one worker. Worker process groups are drained on failure or
+interruption, and successful logs are replayed in stable order. The
+Hermes-contract and factory-kit lifecycle suites remain sequential inside
+their own groups. A group is directly
 runnable as `bash ci/test-all.sh --group N`; an optional `--shard SHARD` narrows
 that group for local diagnosis. After all four groups succeed, three stable
 evidence aliases per platform retain the installed release contract. Release
@@ -238,13 +243,16 @@ release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-rea
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
-Contract 1.8 additionally exposes `ticket-control pause|resume`: pause removes
-only one idle passport-bound claim and records an owner-only intent bound to
-its exact in-flight lifecycle state, while resume validates that state, the
-passport lineage, remote branch, unique worktree, and recorded claim status
-before reacquiring one lease. Backlog, canceled, merged, and Done tickets are
+Contract 1.8 additionally exposes `ticket-control pause|resume`: pause requires
+one exact Software Factory issue URL, removes only one idle passport-bound
+claim, releases its lease, and records an owner-only repro intent bound to its
+Factory SHA, head, passport, run snapshot, lifecycle state, Resume-State, and
+claim status. Resume requires the operator to name the exact active Factory
+SHA, validates the state, passport lineage, remote branch, unique worktree,
+recorded claim status, and target release before reacquiring one lease, then
+archives the repro record. Backlog, canceled, merged, and Done tickets are
 never pause/resume targets. Startup and interrupted-reconciliation recovery
-never turn paused or historical passports into runnable claims.
+never turn paused or historical repro records into runnable claims.
 The product test-immutability gate treats one ticket-only higher numbered
 frozen contract plus its matching PASS marker as a new tests-first epoch. New
 Planner output uses the canonical append-only marker. Historical Planner output
@@ -710,6 +718,14 @@ against the exact qualification kit SHA before returning only that ticket to
 lifecycles continue. A qualification Spec-linter `FAIL` also returns the
 ticket directly to Backlog instead of entering the ordinary replan/round-three
 authorization loop.
+Every ticket mutation passes one action-aware state whitelist, including
+Reviewer reconciliation, operator resume materialization, and qualification
+backlog return. Planner/Spec-linter, Builder/Reviewer, and authenticated
+contract-repair loops derive their attempt number from existing durable ticket
+or signed repair evidence. Each transition receipt binds that number and the
+controller appends it as a typed event; a third failed lap resolves to
+`ESCALATE` before another provider launch. Repair replays keep the coarse
+business state for Linear compatibility but are no longer invisible.
 The first terminal failed Cursor attempt for a protected qualification keeps
 its claim and authenticated evidence while the controller appends the existing
 same-family direct-CLI fallback and resumes the same deterministic stage. The
@@ -830,8 +846,11 @@ An authenticated merged passport enters closeout before dependency refresh,
 even when a prior wait already released its publication lease.
 An open closeout PR is a controller wait. After it merges, retrying `done`
 revalidates the exact protected-main Done receipt, ledger, original merge and
-checks, and closeout merge before the controller emits completion and releases
-the ticket; stale prepublication dependency logic is never reopened.
+checks, and closeout merge, then projects only the mapped issue's state to
+Linear Done and re-reads that exact issue. The controller records one
+idempotent terminal-sync event before it emits completion and releases the
+ticket. Missing mapping, API failure, or unconfirmed Done leaves the claim
+retryable; stale prepublication dependency logic is never reopened.
 Done in the sealed product root also suppresses passport-based claim recovery.
 Any residual claim is renewed and released before scheduling, while the
 historical passport remains available for audit and reduction.
@@ -917,7 +936,9 @@ an explicitly passportless basis only when protected main says it was built
 outside the Factory and controller claim/passport records are both absent.
 Retries accept only the already-committed receipt and original approval hash;
 the terminal reader independently revalidates commit topology, authorized
-paths, source ticket blob, receipt digest, timestamps, and ledger prefix.
+paths, source ticket blob, receipt digest, timestamps, and ledger prefix. A
+merged emergency closeout uses the same protected-terminal-first exact Linear
+Done projection as ordinary closeout.
 
 A control-plane release may close an already-approved ticket from its older
 ticket-pinned release. Done validates the protected bundle and approval against
@@ -1195,7 +1216,11 @@ the install lock. Certification may reuse an unexpired passing suite result for
 the exact unchanged sealed release, but always reruns product certification and
 all product, config, receipt, and activation validation. Fresh certification
 refreshes evidence only after the isolated suite, tracked-tree check, and sealed
-release verification pass. Product receipts bind the exact evidence ID/digest
+release verification pass. Install first proves the SHA is on `origin/main`
+and binds exact successful protected main CI. The installed launcher labels
+helper runs `production-certified`; the qualification launcher labels its
+separately SHA/tree-sealed candidate `qualification-candidate`. Mutable local
+kits cannot claim either scope and remain development-only. Product receipts bind the exact evidence ID/digest
 and cannot expire after that evidence. Products may opt into the sealed
 `certification-runner.py` with a repository-owned declarative DAG. It records
 wall time, CPU, peak memory, cache status, exact input digests, and artifact

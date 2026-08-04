@@ -428,6 +428,51 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
+    def test_rejected_unblock_is_reported_once_in_health_and_linear(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Blocked-Escalated")
+            .replace(
+                "Initiative: I-001", "Resume-State: Review\nInitiative: I-001"
+            )
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+
+        self.reconcile()
+        self.reconcile()
+        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        issue["updatedAt"] = "2026-08-01T00:00:02Z"
+        self.reconcile()
+
+        rejection = self.mapping["_sync"]["last_rejected"]
+        self.assertEqual(rejection["ticket"], "T-001")
+        self.assertEqual(rejection["local_state"], "blocked-escalated")
+        self.assertEqual(rejection["remote_state"], "ready")
+        self.assertEqual(rejection["required_state"], "review")
+        self.assertEqual(
+            self.mapping["tickets"]["T-001"]["operator_rejection"], rejection
+        )
+        self.assertEqual(len(self.fake.comments), 1)
+        self.assertIn("Resume-State: Review", self.fake.comments[0])
+        self.assertIn("OPERATOR RESUME RECEIPT", self.fake.comments[0])
+
+        self.reconcile()
+        self.assertEqual(len(self.fake.comments), 1)
+        saved = json.loads(self.map_path.read_text())
+        self.assertEqual(saved["_sync"]["last_rejected"], rejection)
+
+        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        issue["updatedAt"] = "2026-08-01T00:00:03Z"
+        self.fake.comment_create_success = False
+        with self.assertRaisesRegex(RuntimeError, "commentCreate did not succeed"):
+            self.reconcile()
+        self.assertEqual(
+            self.mapping["_sync"]["last_rejected"]["rejection_sha256"],
+            rejection["rejection_sha256"],
+        )
+
     def test_repeated_block_without_overlay_requires_a_fresh_remote_baseline(self):
         self.reconcile()
         path = self.factory / "tickets" / "T-001.md"
@@ -874,6 +919,34 @@ class LinearSyncTest(unittest.TestCase):
             for query, _variables in self.fake.calls
         ))
 
+    def test_exact_ticket_sync_persists_rejected_unblock_health(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Blocked-Escalated")
+            .replace(
+                "Initiative: I-001", "Resume-State: Review\nInitiative: I-001"
+            )
+        )
+        self.reconcile()
+        self.reconcile()
+        stale = LINEAR.load_map(self.map_path)
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        issue["updatedAt"] = "2026-08-01T00:00:02Z"
+
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.sync_ticket_operator(
+                "key", self.factory, self.map_path, "T-001"
+            )
+        LINEAR.save_map(self.map_path, stale)
+
+        saved = json.loads(self.map_path.read_text())
+        rejection = saved["tickets"]["T-001"]["operator_rejection"]
+        self.assertEqual(saved["_sync"]["last_rejected"], rejection)
+        self.assertEqual(rejection["required_state"], "review")
+
     def test_exact_ticket_sync_refuses_unmapped_ticket_without_network_or_write(self):
         self.reconcile()
         mapping = LINEAR.load_map(self.map_path)
@@ -942,6 +1015,137 @@ class LinearSyncTest(unittest.TestCase):
                         "key", self.factory, self.map_path, "T-001"
                     )
                 self.assertEqual(self.map_path.read_bytes(), before)
+
+    def test_terminal_sync_projects_only_protected_done_and_is_idempotent(self):
+        self.reconcile()
+        mapping = LINEAR.load_map(self.map_path)
+        mapping["tickets"]["T-001"]["operator"] = {
+            "approval": "Linear",
+            "state": "Approved",
+            "state_base": "awaiting approval",
+        }
+        LINEAR.save_map(self.map_path, mapping)
+        done = (self.factory / "tickets/T-001.md").read_text().replace(
+            "State: Backlog", "State: Done"
+        )
+
+        with (
+            patch.object(LINEAR, "committed_ticket", return_value=(
+                done, "refs/remotes/origin/main",
+            )),
+            patch.object(LINEAR, "gql", self.fake),
+        ):
+            first = LINEAR.sync_ticket_terminal(
+                "key", self.factory, self.map_path, "T-001"
+            )
+            second = LINEAR.sync_ticket_terminal(
+                "key", self.factory, self.map_path, "T-001"
+            )
+
+        self.assertTrue(first["updated"])
+        self.assertFalse(second["updated"])
+        self.assertEqual(first["state"], "Done")
+        self.assertEqual(sum(
+            "issueUpdate" in query for query, _variables in self.fake.calls
+        ), 1)
+        saved = LINEAR.load_map(self.map_path)["tickets"]["T-001"]
+        self.assertEqual(saved["source_ref"], "refs/remotes/origin/main")
+        self.assertNotIn("operator", saved)
+
+    def test_terminal_sync_refuses_before_protected_truth_without_network(self):
+        self.reconcile()
+        before = self.map_path.read_bytes()
+        self.fake.calls.clear()
+        text = (self.factory / "tickets/T-001.md").read_text().replace(
+            "State: Backlog", "State: Done"
+        )
+
+        with (
+            patch.object(LINEAR, "committed_ticket", return_value=(text, "HEAD")),
+            patch.object(LINEAR, "gql", self.fake),
+            self.assertRaisesRegex(RuntimeError, "protected terminal ticket"),
+        ):
+            LINEAR.sync_ticket_terminal(
+                "key", self.factory, self.map_path, "T-001"
+            )
+
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.map_path.read_bytes(), before)
+
+    def test_terminal_sync_refuses_unmapped_ticket_without_network(self):
+        self.reconcile()
+        mapping = LINEAR.load_map(self.map_path)
+        mapping["tickets"].clear()
+        LINEAR.save_map(self.map_path, mapping)
+        before = self.map_path.read_bytes()
+        self.fake.calls.clear()
+
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            self.assertRaisesRegex(RuntimeError, "mapped initialized Linear issue"),
+        ):
+            LINEAR.sync_ticket_terminal(
+                "key", self.factory, self.map_path, "T-001"
+            )
+
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.map_path.read_bytes(), before)
+
+    def test_operator_map_path_honors_only_absolute_launcher_binding(self):
+        external = self.root / "operator-map.json"
+        with patch.dict(os.environ, {"FACTORY_OPERATOR_MAP": str(external)}):
+            self.assertEqual(LINEAR.operator_map_path(self.factory), external)
+        with (
+            patch.dict(os.environ, {"FACTORY_OPERATOR_MAP": "relative.json"}),
+            self.assertRaisesRegex(RuntimeError, "must be absolute"),
+        ):
+            LINEAR.operator_map_path(self.factory)
+
+    def test_failed_terminal_update_leaves_map_unchanged(self):
+        self.reconcile()
+        before = self.map_path.read_bytes()
+        self.fake.issue_update_success = False
+        done = (self.factory / "tickets/T-001.md").read_text().replace(
+            "State: Backlog", "State: Done"
+        )
+
+        with (
+            patch.object(LINEAR, "committed_ticket", return_value=(
+                done, "refs/remotes/origin/main",
+            )),
+            patch.object(LINEAR, "gql", self.fake),
+            self.assertRaisesRegex(RuntimeError, "terminal issueUpdate"),
+        ):
+            LINEAR.sync_ticket_terminal(
+                "key", self.factory, self.map_path, "T-001"
+            )
+
+        self.assertEqual(self.map_path.read_bytes(), before)
+
+    def test_terminal_sync_rechecks_protected_source_before_mutation(self):
+        self.reconcile()
+        before = self.map_path.read_bytes()
+        done = (self.factory / "tickets/T-001.md").read_text().replace(
+            "State: Backlog", "State: Done"
+        )
+        self.fake.calls.clear()
+
+        with (
+            patch.object(LINEAR, "committed_ticket", side_effect=(
+                (done, "refs/remotes/origin/main"),
+                (done + "\n", "refs/remotes/origin/main"),
+            )),
+            patch.object(LINEAR, "gql", self.fake),
+            self.assertRaisesRegex(RuntimeError, "protected terminal ticket changed"),
+        ):
+            LINEAR.sync_ticket_terminal(
+                "key", self.factory, self.map_path, "T-001"
+            )
+
+        self.assertFalse(any(
+            "issueUpdate" in query for query, _variables in self.fake.calls
+        ))
+        self.assertEqual(self.map_path.read_bytes(), before)
 
     def test_setup_creates_all_states_and_labels(self):
         mapping = LINEAR.load_map(self.map_path)

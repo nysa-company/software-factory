@@ -69,6 +69,8 @@ PY
     fail "helper did not receive physical release path"
   grep -qF "FACTORY_RELEASE_CONTRACT_VERSION=$contract" "$file" ||
     fail "helper did not receive release contract"
+  grep -qFx "FACTORY_KIT_TRUST_SCOPE=production-certified" "$file" ||
+    fail "installed helper did not receive certified production trust scope"
 }
 
 assert_helper_confinement() {
@@ -2578,6 +2580,8 @@ launcher_text = open(
 assert "/private/tmp/nysa-sf-qualification" in launcher_text
 assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
 assert '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"' in launcher_text
+assert 'KIT_TRUST_SCOPE="qualification-candidate"' in launcher_text
+assert '"FACTORY_KIT_TRUST_SCOPE=$KIT_TRUST_SCOPE"' in launcher_text
 assert '"FACTORY_LEDGER=$PRODUCT_ROOT/factory/runtime-ledger.csv"' in launcher_text
 assert '"FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"' in launcher_text
 assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text

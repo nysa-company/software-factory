@@ -40,8 +40,10 @@ exact newer Linear approval and enables protected auto-merge, and done records
 verified merge/deployment closeout and requests protected auto-merge for its
 factory-owned metadata/accounting PR. No second operator approval exists.
 After that PR merges, protected-main terminal evidence yields `COMPLETE`,
-releases the lease, and supplies Done to Linear sync. An API outage never stops an in-flight ticket. The local sync map and logs show
-stale health, and new operator actions wait for the next successful pull. A
+the trusted closeout path updates and re-verifies only that mapped Linear issue,
+records one durable sync event, and then releases the lease. Terminal API or
+mapping failure remains a retryable closeout wait. An API outage never stops an
+in-flight role. The local sync map and logs show stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 
 ## Workflow states
@@ -89,6 +91,10 @@ The reconciler must first observe Linear in Blocked-Escalated after the local
 block. Only a later Linear update to the declared resume state is operator
 authority; a pre-block state still visible during reconciliation is restored
 to Blocked-Escalated and cannot resume the ticket.
+If that later update names any other state, the reconciler keeps the ticket
+blocked, records the exact decision in `_sync.last_rejected`, and posts one
+deduplicated comment naming the required `Resume-State` plus the receipt-bound
+Git directive. The narrow transition list is not widened.
 Every later block clears the prior resume overlay and records a new blocked
 baseline even when both blocks share the same coarse state; only an update
 strictly newer than that latest baseline may resume again.

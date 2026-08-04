@@ -8,6 +8,19 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role through `~/.factory/bin/factory-launch <project> run`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
 - Don't: let a stuck run keep burning budget while you wait.
 
+## Park a ticket on a Factory defect
+
+- Open the defect in the Software Factory GitHub repository, then wait for the
+  ticket to reach an idle passport boundary.
+- Park only that ticket with
+  `factory-launch <project> ticket-control pause --ticket T-NNN --issue <issue-url> --json`.
+  The sealed controller releases its lease and retains an owner-only repro
+  record; sibling tickets continue.
+- After a successor Factory has migrated the passport, resume deliberately with
+  `factory-launch <project> ticket-control resume --ticket T-NNN --factory-sha <full-sha> --json`.
+- Do not move Markdown or Linear state by hand. A missing issue, changed
+  passport/state, active role, or different target Factory refuses cleanly.
+
 ## Runaway spend
 
 - Notice: daily spend rollup jumps, or a provider console alert fires.
@@ -117,15 +130,15 @@ an in-flight manifest or backdate an override.
 - Do: keep KILL published and run `scripts/kill-switch.sh`. After recorded process groups drain, it quarantines only a safe, unchanged owner whose PID is absent or has a different process start identity. Re-run doctor and preflight, reconcile manifests and active claims, then remove KILL only when accounting and control state agree.
 - Don't: delete or rename `factory/.provider.lock` by hand. A live, malformed, changed, symlinked, hard-linked, or otherwise ambiguous lock is deliberately retained for inspection; ordinary launch never steals it and the ownership token must not be printed.
 
-## Spec-linter or reviewer reached the two-round limit
+## Spec-linter or reviewer reached the authorization boundary
 
 - Notice: the launcher's `next-stage` route returns `ESCALATE` and names the next semantic round.
 - Do: if one more cycle is warranted, append exactly `OPERATOR AUTHORIZATION: spec-linter round <N>` or `OPERATOR AUTHORIZATION: reviewer round <N>` using the round named by the sequencer, then run it again.
-- Don't: add commentary to the authorization line, authorize a future round, or let the dispatcher infer authorization. A stale or inexact line grants nothing.
+- Don't: add commentary to the authorization line, authorize a future round, or let the dispatcher infer authorization. A stale or inexact line grants nothing. If the third failed lap reaches the hard loop cap, open a Factory issue and park the ticket; no further semantic-round override is available.
 
 ## Linear, GitHub, or Railway down
 
-- Do: if Linear is down, in-flight factory work continues from the ticket files, but do not expect a new priority, Ready, approval, or unblock action to take effect until sync recovers. Check `_sync.last_success_at` and `_sync.last_error` in `factory/linear-map.json`. GitHub or Railway outages still pause the stages that depend on them.
+- Do: if Linear is down, in-flight factory work continues from the ticket files, but do not expect a new priority, Ready, approval, or unblock action to take effect until sync recovers. Check `_sync.last_success_at`, `_sync.last_error`, and `_sync.last_rejected` in the machine-local `factory/linear-map.json`. GitHub or Railway outages still pause the stages that depend on them.
 - Don't: edit factory-owned Linear descriptions or force local state to imitate an operator transition that has not been ingested.
 - Note: on a new product, the first normal Linear reconciliation may durably initialize the missing real `factory/runs/` directory. A file, symlink, or other invalid entry at that path is an integrity failure, not something sync replaces.
 
