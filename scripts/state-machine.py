@@ -2966,6 +2966,35 @@ def resolve(args: argparse.Namespace) -> str:
     return next((line.strip() for line in output.splitlines() if line.strip()), "")
 
 
+def reviewer_repair_catchup(args: argparse.Namespace, stage: str) -> bool:
+    if stage_role(stage) not in {"planner", "spec-linter", "test-author"}:
+        return False
+    evidence = authenticated_role_evidence(args)
+    if evidence is None:
+        return False
+    roles = [item["role"] for item in evidence[1]]
+    reviewers = [index for index, role in enumerate(roles) if role == "reviewer"]
+    if not reviewers:
+        return False
+    reviewer = reviewers[-1]
+    after = roles[reviewer + 1:]
+    verdicts = re.findall(
+        r"^\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*$",
+        (
+            args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
+        ).read_text(encoding="utf-8"),
+        re.I | re.M,
+    )
+    return (
+        bool(verdicts)
+        and verdicts[-1].upper() == "REQUEST CHANGES"
+        and "test-author" in roles[:reviewer]
+        and bool(after)
+        and after[0] == "planner"
+        and "builder" not in after
+    )
+
+
 def transition(args: argparse.Namespace, state: str) -> None:
     run_helper(
         args, "ticket-state.sh", "--ticket", args.ticket,
@@ -3041,6 +3070,13 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
         current = current_state(args.workdir, args.ticket)
         target = TARGET_STATE[role]
         if stage == "FIX planner" and current in {"Building", "Review"}:
+            repair_override = True
+        elif (
+            not repair_override
+            and current in {"Building", "Review"}
+            and target == "Planning"
+            and reviewer_repair_catchup(args, stage)
+        ):
             repair_override = True
         if not repair_override:
             while current != target:
