@@ -3455,3 +3455,12 @@ receipt directives. Exact-ticket and full-board pulls preserve the same
 evidence across overlapping saves. The operator transition whitelist remains
 unchanged; the already-tested absent-map attestation refusal remains the
 current behavior, and the ignored machine-local map is not re-tracked.
+
+## 2026-08-04 — Decision 253: Role admission uses the launcher-bound CLI root
+
+Category: Reliability
+
+Contract 1.8 role admission passes the launcher-validated
+`FACTORY_CLI_RUNTIME_ROOT` to the provider concurrency checker. Qualification
+therefore uses its short owner-local Cursor path consistently with Doctor;
+missing, unsafe, or overlong roots still fail closed before provider spend.

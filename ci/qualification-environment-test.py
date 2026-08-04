@@ -224,6 +224,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
             launcher_text,
         )
         self.assertIn('CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"', launcher_text)
+        self.assertIn(
+            '--cli-root "${FACTORY_CLI_RUNTIME_ROOT:-}"', runner_text,
+        )
         for relative in (
             "provider/accounting",
             "provider/cli-runtimes",
