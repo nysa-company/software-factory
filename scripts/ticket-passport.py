@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
@@ -147,26 +148,46 @@ def write_atomic(path: Path, value: dict[str, Any]) -> None:
 
 def key(state_dir: Path) -> bytes:
     path = state_dir / "passport.key"
-    if not path.exists() and not path.is_symlink():
-        try:
-            descriptor = os.open(
-                path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
+    lock = os.open(
+        state_dir / ".passport-key.lock",
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        info = os.fstat(lock)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise PassportError("passport key lock is unsafe")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not path.exists() and not path.is_symlink():
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=".passport.key.", dir=state_dir
             )
-        except FileExistsError:
-            pass
-        else:
             try:
-                os.write(descriptor, secrets.token_bytes(32))
-                os.fsync(descriptor)
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    descriptor = -1
+                    stream.write(secrets.token_bytes(32))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                try:
+                    os.link(temporary, path)
+                except FileExistsError:
+                    pass
             finally:
-                os.close(descriptor)
-    raw = read_regular(path, 0o600, 32)
-    if len(raw) != 32:
-        raise PassportError("passport authentication key is invalid")
-    return raw
+                if descriptor >= 0:
+                    os.close(descriptor)
+                Path(temporary).unlink(missing_ok=True)
+        raw = read_regular(path, 0o600, 32)
+        if len(raw) != 32:
+            raise PassportError("passport authentication key is invalid")
+        return raw
+    finally:
+        os.close(lock)
 
 
 def authenticate(value: dict[str, Any], secret: bytes) -> dict[str, Any]:

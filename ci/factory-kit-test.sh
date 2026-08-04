@@ -223,8 +223,9 @@ migrated = manager.migrate_v2_journal(
     catalog, routes, profiles, readiness,
 )
 assert migrated["revisions"][:-1] == value["revisions"]
-assert migrated["revisions"][-1]["body"]["prior_resolution"] == manager.active_resolution(value)
-assert manager.active_resolution(migrated) == migrated["revisions"][-1]["body"]["new_resolution"]
+body = migrated["revisions"][-1]["body"]
+assert body["prior_resolution_sha256"] == manager.ROUTER.content_hash(manager.active_resolution(value))
+assert manager.active_resolution(migrated) == body.get("new_resolution", manager.active_resolution(value))
 path.write_text(json.dumps(migrated, sort_keys=True, separators=(",", ":")) + "\n")
 PY
 }

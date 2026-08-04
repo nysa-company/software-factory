@@ -1059,7 +1059,10 @@ one parent-hashed release-migration revision that preserves every prior
 revision and the active resolution. Both paths update the ticket Kit-SHA before
 work is reclaimed. The initial v1-to-v2 schema-migration revision may preserve
 the same Kit-SHA; only a later `release-migration` revision claims a release
-change. In both cases the embedded legacy bytes, digest, policy, selections,
+change. A release migration binds an unchanged active resolution by its
+canonical SHA-256 and includes a full refreshed resolution only when physical
+route evidence changes; legacy full-resolution revisions remain valid. In both
+cases the embedded legacy bytes, digest, policy, selections,
 pin commit, and revision hash chain must match exactly. This authorization
 never changes ticket state, migrates a branch, renews a lease, or permits an
 unprotected-main record.
@@ -1303,6 +1306,12 @@ cleanup for every non-cascading sibling dependency inside the exact
 protected-test scope; `ON DELETE CASCADE` closes that dependency without a
 redundant edit. Missing closure blocks before Builder, preserves valid
 Test-author commits, and never grants unrelated protected-test ownership.
+Planner and Spec-linter also inspect protected tests associated with each
+Builder-owned production file for static import/export allowlists, exact-source
+assertions, and snapshots. A conflict is executable only when the operator
+declares exact `<test path> => <literal>` evidence in
+`Protected-Test-Conflicts` and includes that tracked test in `Fixture-Seams`;
+unknown checks and unowned declarations fail before Builder.
 Under Contract 1.8, Reviewer-owned Test-author work first routes through one
 ticket-only Planner repair that appends a higher frozen-contract epoch. The
 sequencer authenticates that exact commit before Test-author, preserving

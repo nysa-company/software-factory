@@ -513,7 +513,7 @@ def ticket_without_control(text: str) -> str:
     return "\n".join(
         line
         for line in text.splitlines()
-        if not re.match(r"^(?:State|Kit-SHA):", line, re.IGNORECASE)
+        if not re.match(r"^(?:State|Kit-SHA|Merge-Policy):", line, re.IGNORECASE)
     ).strip()
 
 
@@ -607,7 +607,7 @@ def reconcile_preprovider_branch(
         worktree,
         "-c", "user.name=Software Factory",
         "-c", "user.email=factory@local",
-        "merge", "--no-ff", "--no-edit", main,
+        "merge", "--no-ff", "--no-edit", "-X", "theirs", main,
     )
     git(worktree, "checkout", main, "--", ticket_path)
     git(worktree, "rm", "-f", "--", plan_path)
@@ -750,6 +750,41 @@ def prepare_worktree(
     return destination, True, branch_created, reset_head
 
 
+def reconcile_authorized_preprovider_branches(
+    product: Path, worktree_root: Path, prefix: str, remote: str,
+    authorizations: dict[str, str],
+) -> dict[str, str]:
+    main = git(product, "rev-parse", "origin/main").strip()
+    reset = {}
+    for ticket, authorized_head in sorted(authorizations.items()):
+        branch = prefix + ticket
+        observed = git(
+            product, "ls-remote", "--heads", remote, f"refs/heads/{branch}"
+        ).split()
+        if len(observed) != 2 or observed[1] != f"refs/heads/{branch}":
+            raise DispatchError("authorized pre-provider branch is unavailable")
+        remote_head = observed[0]
+        git(
+            product, "fetch", "--quiet", remote,
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        )
+        if git_succeeds(product, "merge-base", "--is-ancestor", main, remote_head):
+            continue
+        if remote_head != authorized_head:
+            raise DispatchError("ticket remote branch does not match reset authorization")
+        destination, created, branch_created, reset_head = prepare_worktree(
+            product, worktree_root, ticket, prefix, remote, authorized_head
+        )
+        if reset_head != authorized_head:
+            raise DispatchError("authorized pre-provider branch was not reset")
+        reset[ticket] = reset_head
+        if created:
+            git(product, "worktree", "remove", "--force", str(destination))
+            if branch_created:
+                git(product, "branch", "-D", branch)
+    return reset
+
+
 def create_lease(
     directory: Path, ticket: str, existing: set[str], ttl: int
 ) -> dict[str, Any]:
@@ -834,6 +869,7 @@ def main() -> None:
     created_worktree: Path | None = None
     created_branch = ""
     lease_created = False
+    preprovider_resets: dict[str, str] = {}
     try:
         product = args.factory_root.resolve(strict=True)
         if any(not TICKET.fullmatch(item) for item in args.exclude_ticket):
@@ -854,13 +890,25 @@ def main() -> None:
         ))
         if not mapping_path.is_absolute():
             raise DispatchError("Linear operator map path is invalid")
-        mapping = fresh_mapping(mapping_path, args.max_linear_age)
         maximum = capacity(factory)
         qualification_state = qualification(product, factory, maximum)
         prefix = ticket_branch_prefix(factory)
         reset_authorizations = preprovider_reset_authorizations(
             factory, qualification_state, prefix
         )
+        if args.action == "claim" and reset_authorizations:
+            safe_directory(args.worktree_root, "worktree root", owner_only=True)
+            admission_descriptor = admission_lock(
+                args.worktree_root / ".dispatch-admission.lock"
+            )
+            lock(launch_lock)
+            held_launch = True
+            preprovider_resets = reconcile_authorized_preprovider_branches(
+                product, args.worktree_root, prefix, remote, reset_authorizations
+            )
+            launch_lock.rmdir()
+            held_launch = False
+        mapping = fresh_mapping(mapping_path, args.max_linear_age)
         if qualification_state is not None:
             maximum = qualification_state["capacity"]
             if qualification_state["done"] == qualification_state["target_done"]:
@@ -879,9 +927,10 @@ def main() -> None:
         lease_dir = factory / ".dispatch-leases"
         if args.action == "claim":
             safe_directory(args.worktree_root, "worktree root", owner_only=True)
-            admission_descriptor = admission_lock(
-                args.worktree_root / ".dispatch-admission.lock"
-            )
+            if admission_descriptor < 0:
+                admission_descriptor = admission_lock(
+                    args.worktree_root / ".dispatch-admission.lock"
+                )
         leased, lease_ids = lease_records(lease_dir)
         if len(leased) >= maximum:
             print(canonical({
@@ -931,6 +980,7 @@ def main() -> None:
             product, args.worktree_root, ticket["ticket"],
             prefix, remote, reset_authorizations.get(ticket["ticket"], ""),
         )
+        reset_head = reset_head or preprovider_resets.get(ticket["ticket"], "")
         if created:
             created_worktree = destination
         if branch_created:

@@ -122,6 +122,29 @@ class StateMachineTest(unittest.TestCase):
             for rule in rules:
                 self.assertIn(rule, prompt)
 
+    def test_role_prompts_fail_closed_on_protected_source_boundaries(self) -> None:
+        prompts = {
+            "planner": (
+                "import/export allowlists",
+                "exact protected test plus literal",
+                "An unknown or unparsable static source-boundary check is a block",
+            ),
+            "spec-linter": (
+                "FAIL before Builder when a planned module literal is rejected",
+                "exact test and literal",
+                "unknown or unparsable static source-boundary checks also FAIL closed",
+            ),
+            "test-author": (
+                "Protected-Test-Conflicts: <test path> => <literal>",
+                "change only that exact protected test inside `Fixture-Seams`",
+                "never broaden the allowlist or ownership",
+            ),
+        }
+        for role, rules in prompts.items():
+            prompt = (ROOT / "roles" / f"{role}.md").read_text()
+            for rule in rules:
+                self.assertIn(rule, prompt)
+
     def test_planner_emits_the_epoch_gate_marker_append_only(self) -> None:
         prompt = (ROOT / "roles/planner.md").read_text()
         self.assertIn("- **Freeze result:** PASS. Contract version N is frozen.", prompt)

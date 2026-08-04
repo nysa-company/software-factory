@@ -56,9 +56,16 @@ FALLBACK_BODY_KEYS = frozenset((
     "approved_snapshot_digest", "reason", "approval_receipt",
     "prior_resolution", "new_resolution", "contributor_families",
 ))
-RELEASE_MIGRATION_BODY_KEYS = frozenset((
+LEGACY_RELEASE_MIGRATION_BODY_KEYS = frozenset((
     "kind", "migrated_at", "pin_commit", "old_kit_sha", "new_kit_sha",
     "prior_resolution",
+))
+LEGACY_REFRESHED_RELEASE_MIGRATION_BODY_KEYS = (
+    LEGACY_RELEASE_MIGRATION_BODY_KEYS | frozenset(("new_resolution",))
+)
+RELEASE_MIGRATION_BODY_KEYS = frozenset((
+    "kind", "migrated_at", "pin_commit", "old_kit_sha", "new_kit_sha",
+    "prior_resolution_sha256",
 ))
 REFRESHED_RELEASE_MIGRATION_BODY_KEYS = (
     RELEASE_MIGRATION_BODY_KEYS | frozenset(("new_resolution",))
@@ -500,21 +507,24 @@ def migrate_v2_journal(journal, pin_commit, new_kit_sha, migrated_at,
         if readiness is not None:
             validate_journal(journal, catalog, routes, profile_map)
         return journal
+    prior_resolution = active_resolution(journal)
     body = {
         "kind": "release-migration",
         "migrated_at": migrated_at,
         "new_kit_sha": new_kit_sha,
         "old_kit_sha": journal["kit_sha"],
         "pin_commit": pin_commit,
-        "prior_resolution": active_resolution(journal),
+        "prior_resolution_sha256": ROUTER.content_hash(prior_resolution),
     }
     if readiness is not None:
         try:
-            body["new_resolution"] = ROUTER.refresh_resolution(
-                body["prior_resolution"], catalog, routes, profile_map, readiness
+            refreshed = ROUTER.refresh_resolution(
+                prior_resolution, catalog, routes, profile_map, readiness
             )
         except ROUTER.RouterError as exc:
             raise ManagerError("cannot refresh release resolution: %s" % exc)
+        if refreshed != prior_resolution:
+            body["new_resolution"] = refreshed
     result = dict(journal)
     result["kit_sha"] = new_kit_sha
     result["revisions"] = list(journal["revisions"])
@@ -577,18 +587,19 @@ def migrate_route_document(document_blob, pin_commit, new_kit_sha, migrated_at,
 
 
 def active_resolution(journal):
-    body = journal["revisions"][-1]["body"]
-    if body["kind"] == "migration":
-        plan_blob = base64.b64decode(body["legacy_plan_b64"], validate=True)
-        return json.loads(
-            plan_blob.decode("utf-8"),
-            object_pairs_hook=ROUTER._object_no_duplicates,
-        )["resolution"]
-    if body["kind"] == "fallback":
-        return body["new_resolution"]
-    if body.get("new_resolution") is not None:
-        return body["new_resolution"]
-    return body["prior_resolution"]
+    for revision in reversed(journal["revisions"]):
+        body = revision["body"]
+        if body["kind"] == "migration":
+            plan_blob = base64.b64decode(body["legacy_plan_b64"], validate=True)
+            return json.loads(
+                plan_blob.decode("utf-8"),
+                object_pairs_hook=ROUTER._object_no_duplicates,
+            )["resolution"]
+        if body["kind"] == "fallback" or "new_resolution" in body:
+            return body["new_resolution"]
+        if "prior_resolution" in body:
+            return body["prior_resolution"]
+    raise ManagerError("route journal has no active resolution")
 
 
 def _validate_resolution(value, catalog, routes, profile_map, historical=False):
@@ -734,13 +745,14 @@ def validate_journal(
                 raise ManagerError("invalid fallback resolution: %s" % exc)
             prior_resolution = new_resolution
         else:
-            if frozenset(body) not in (
+            body_keys = frozenset(body)
+            if body_keys not in (
+                LEGACY_RELEASE_MIGRATION_BODY_KEYS,
+                LEGACY_REFRESHED_RELEASE_MIGRATION_BODY_KEYS,
                 RELEASE_MIGRATION_BODY_KEYS,
                 REFRESHED_RELEASE_MIGRATION_BODY_KEYS,
             ):
-                _exact_keys(
-                    body, RELEASE_MIGRATION_BODY_KEYS, "%s.body" % location
-                )
+                raise ManagerError("%s.body has invalid keys" % location)
             if body["kind"] != "release-migration":
                 raise ManagerError("later route journal revision kind is invalid")
             for key in ("pin_commit", "old_kit_sha", "new_kit_sha"):
@@ -751,8 +763,19 @@ def validate_journal(
                 raise ManagerError("release migration old kit SHA mismatch")
             if body["new_kit_sha"] == current_kit:
                 raise ManagerError("release migration must change kit SHA")
-            if body["prior_resolution"] != prior_resolution:
-                raise ManagerError("release migration prior resolution mismatch")
+            if "prior_resolution" in body:
+                if body["prior_resolution"] != prior_resolution:
+                    raise ManagerError("release migration prior resolution mismatch")
+            else:
+                _digest(
+                    body["prior_resolution_sha256"],
+                    "release migration prior resolution digest",
+                )
+                if (
+                    body["prior_resolution_sha256"]
+                    != ROUTER.content_hash(prior_resolution)
+                ):
+                    raise ManagerError("release migration prior resolution mismatch")
             if "new_resolution" in body:
                 try:
                     _validate_resolution(

@@ -1,4 +1,4 @@
-Version: 10
+Version: 11
 
 # Role: Planner
 
@@ -32,6 +32,7 @@ Treat the acceptance criteria as text under test ("unit tests for English"). Bef
 7. **Derived-fixture distinctness** — freeze the exact result of every casing, normalization, or mutation used to create an invalid fixture and verify it is byte-distinct from every valid fixture. An identity transformation is a contract contradiction, not a negative case.
 8. **Generated-value determinism** — when a fixture asserts an exact generated identifier, sequence, counter, or timestamp, freeze the initializer/reset and evaluate its first generated value. An expected value the setup cannot produce is a contract contradiction, and a repair scope must include every setup edit required to make it producible.
 9. **Fixture lifecycle closure** — for every required serialized test command, trace setup, reset, and teardown across criteria. When cleanup deletes a parent row, enumerate every sibling dependent table: authorize child-first cleanup for each non-cascading foreign key; an exact `ON DELETE CASCADE` is sufficient without a redundant cleanup edit. Freeze only the minimal protected-test setup edits required for that closure and leave unrelated helpers and tests outside Test-author ownership.
+10. **Protected source boundaries** — for every production file in Builder ownership, inspect associated existing protected tests for import/export allowlists, exact-source assertions, and source snapshots. Prove every planned module specifier is admitted before freezing. A conflict blocks the contract and names the exact protected test plus literal; request an operator declaration formatted `Protected-Test-Conflicts: <test path> => <literal>` and include that test in `Fixture-Seams` for exact Test-author ownership. An unknown or unparsable static source-boundary check is a block, never `none`.
 
 ## Rules
 
@@ -52,6 +53,7 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v11: detects protected-test source-boundary conflicts before contract freeze.
 - v10: requires serialized fixture setup/reset/teardown dependency closure before freezing protected-test ownership.
 - v9: opens a test-first repair epoch and forbids broad product suites during contract-only repairs.
 - v8: requires the canonical single-line freeze marker used by the tests-first epoch gate.

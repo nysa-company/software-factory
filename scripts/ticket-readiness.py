@@ -55,6 +55,33 @@ def paths(text: str, name: str, workdir: Path) -> list[str]:
     return result
 
 
+def protected_test_conflicts(
+    text: str, workdir: Path, test_author_paths: list[str]
+) -> None:
+    raw = field(text, "Protected-Test-Conflicts")
+    if raw.casefold() == "none":
+        return
+    entries = [item.strip() for item in raw.split(",")]
+    if not entries or len(entries) != len(set(entries)):
+        raise ReadinessError("Protected-Test-Conflicts entries are duplicated")
+    for entry in entries:
+        path, separator, literal = entry.partition(" => ")
+        if (
+            not separator
+            or not re.fullmatch(r"[A-Za-z0-9._/@:+-]{1,200}", literal)
+        ):
+            raise ReadinessError("protected-test conflict declaration is invalid")
+        conflict_paths = paths(
+            f"Protected-Test-Conflict-Path: {path}",
+            "Protected-Test-Conflict-Path",
+            workdir,
+        )
+        if conflict_paths[0] not in test_author_paths:
+            raise ReadinessError(
+                f"protected-test conflict lacks Test-author ownership: {entry}"
+            )
+
+
 def validate(ticket: str, workdir: Path) -> None:
     if not re.fullmatch(r"T-[0-9]+", ticket):
         raise ReadinessError("invalid ticket identifier")
@@ -70,10 +97,9 @@ def validate(ticket: str, workdir: Path) -> None:
     text = ticket_path.read_text(encoding="utf-8")
     if field(text, "Product-Decisions").casefold() != "frozen":
         raise ReadinessError("product decisions are not frozen")
-    if field(text, "Protected-Test-Conflicts").casefold() != "none":
-        raise ReadinessError("protected-test conflict requires operator resolution")
-    paths(text, "Fixture-Seams", workdir)
+    fixture_seams = paths(text, "Fixture-Seams", workdir)
     paths(text, "Authentication-Seams", workdir)
+    protected_test_conflicts(text, workdir, fixture_seams)
 
 
 def main() -> None:

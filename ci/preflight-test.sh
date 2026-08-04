@@ -822,6 +822,8 @@ printf '%s\n' \
   'Protected-Test-Conflicts: none' \
   >> "$READINESS/factory/tickets/T-110.md"
 printf '%s\n' 'export const fixture = true;' > "$READINESS/app/tests/fixture.js"
+printf '%s\n' "const allowed = ['./db.js'];" \
+  > "$READINESS/app/tests/source-boundary.test.js"
 init_git_repo "$READINESS"
 if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
      --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-pass.out" &&
@@ -831,6 +833,47 @@ else
   echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
   FAILURES=$((FAILURES + 1))
 fi
+sed 's#Protected-Test-Conflicts: none#Protected-Test-Conflicts: app/tests/source-boundary.test.js => ./new.js#' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-boundary-unowned.out"; then
+  echo "FAIL: protected source-boundary conflict passed without Test-author ownership"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'app/tests/source-boundary.test.js => ./new.js' \
+     "$TMP/source-boundary-unowned.out"; then
+  echo "PASS: protected source-boundary conflict names the exact test and literal"
+else
+  echo "FAIL: protected source-boundary conflict omitted exact evidence"
+  FAILURES=$((FAILURES + 1))
+fi
+sed 's#Fixture-Seams: app/tests/fixture.js#Fixture-Seams: app/tests/fixture.js,app/tests/source-boundary.test.js#' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-boundary-owned.out"; then
+  echo "PASS: exact protected source-boundary ownership proceeds"
+else
+  echo "FAIL: exact protected source-boundary ownership was rejected"
+  FAILURES=$((FAILURES + 1))
+fi
+sed 's#Protected-Test-Conflicts: .*#Protected-Test-Conflicts: unparsable#' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-boundary-unknown.out"; then
+  echo "FAIL: unknown protected source-boundary declaration passed"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'declaration is invalid' "$TMP/source-boundary-unknown.out"; then
+  echo "PASS: unknown protected source-boundary declaration fails closed"
+else
+  echo "FAIL: unknown protected source-boundary declaration returned wrong refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+sed -e 's#Protected-Test-Conflicts: .*#Protected-Test-Conflicts: none#' \
+    -e 's#Fixture-Seams: .*#Fixture-Seams: app/tests/fixture.js#' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
 sed 's/^State: Ready$/State: Planning/' \
   "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
 mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"

@@ -3369,7 +3369,16 @@ class Controller:
                     self.migrate_passport(claim, "merged")
                     self.closeout(claim)
                     return {"status": "progressed", "ticket": claim["ticket"]}
-                pr = self.ticket_pr(claim, receipt)
+                try:
+                    pr = self.ticket_pr(claim, receipt)
+                except ControllerError:
+                    if not self.ticket_merged(claim):
+                        raise
+                    if claim.get("publication_lease"):
+                        self.release_publication(claim)
+                    self.migrate_passport(claim, "merged")
+                    self.closeout(claim)
+                    return {"status": "progressed", "ticket": claim["ticket"]}
                 if pr.get("status") == "failed" and self.retry_ci(
                     claim, receipt, pr
                 ):

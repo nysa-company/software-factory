@@ -417,6 +417,35 @@ class DispatchPlanTest(unittest.TestCase):
             run("git", "log", "-1", "--format=%s", cwd=worktree),
         )
 
+    def test_stale_linear_map_cannot_deadlock_authorized_control_reset(self):
+        self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text() + "Merge-Policy: auto\n")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        ticket.write_text(ticket.read_text().replace(
+            "Merge-Policy: auto", "Merge-Policy: manual"
+        ))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "correct protected merge policy", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.authorize_preprovider_reset(old_head)
+        self.write_mapping(age=1000)
+
+        stale = self.command("claim", expected=2)
+
+        self.assertIn("Linear reconciliation is stale", stale["error"])
+        remote_head = run(
+            "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110"
+        ).split()[0]
+        self.assertNotEqual(remote_head, old_head)
+        self.assertFalse((self.product / "factory/.dispatch-leases/T-110.json").exists())
+        self.write_mapping()
+        value = self.command("claim")
+        self.assertEqual(value["ticket"], "T-110")
+
     def test_authorized_reset_rejects_non_control_ticket_drift(self):
         self.write_contract_18_qualification()
         run("git", "add", ".", cwd=self.product)
