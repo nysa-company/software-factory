@@ -16,6 +16,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
   save, and never advances full-board sync health.
+- Done is projected through one separate exact-ticket Linear mutation only
+  after the closeout receipt validates on protected main. The issue is re-read
+  as exact Done and one controller event is recorded before lease release;
+  missing mapping, API failure, or changed terminal truth remains retryable.
 - Linear description comparison canonicalizes the observed serializer-only
   ordered-list indentation, continuation, renumbering, inline-code, link, and
   fence-boundary forms. Nested-list structure, fenced content, and meaningful
@@ -3385,3 +3389,14 @@ order, reports the exact failed subset and assertion, and terminates surviving
 worker process groups on failure or interruption. Focused regressions cover
 parallel start, fixture-root isolation, failure diagnostics, and leaked-child
 cleanup.
+
+## 2026-08-03 — Decision 248: Terminal Linear projection follows protected truth
+
+Category: Trust boundary
+
+Ordinary and emergency closeout may update only the ticket's exact initialized
+Linear issue, and only after the closeout receipt validates on protected main.
+The updater sends only the Done state, re-reads exact Done, honors the
+launcher-bound operator map, and returns evidence for one idempotent controller
+event before claim release. Missing mapping, transport failure, changed source,
+or unconfirmed state leaves closeout retryable without partial map writes.

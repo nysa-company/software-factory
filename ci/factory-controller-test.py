@@ -64,6 +64,17 @@ class FactoryControllerTest(unittest.TestCase):
             job = plistlib.load(handle)
         self.assertEqual(job["ProcessType"], "Interactive")
 
+    def test_terminal_event_is_idempotent_across_restart(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        details = {"protected_main": "b" * 40, "terminal_basis": "attested-done"}
+        controller.event_once("linear_terminal_synced", "T-110", **details)
+        controller.event_once("linear_terminal_synced", "T-110", **details)
+        matching = [
+            json.loads(path.read_text()) for path in controller.events.glob("*.json")
+            if json.loads(path.read_text()).get("event") == "linear_terminal_synced"
+        ]
+        self.assertEqual(len(matching), 1)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
@@ -5941,6 +5952,63 @@ class FactoryControllerTest(unittest.TestCase):
                 "worktree": str(cell),
             }))
         self.assertEqual(calls, ["git-lock", "fetch", "git-unlock", "done"])
+
+    def test_closeout_records_exact_terminal_linear_evidence_once(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        (cell.parent / "closeout-T-110").mkdir()
+        events = []
+        controller.event_once = lambda *args, **kwargs: events.append((args, kwargs))
+        controller.json_call = lambda *_args, **_kwargs: {
+            "closeout_pr_state": "MERGED",
+            "terminal": {
+                "basis": "attested-done",
+                "protected_main": "b" * 40,
+                "linear": {
+                    "identifier": "SF-110",
+                    "issue_id": "issue-110",
+                    "source_ref": "refs/remotes/origin/main",
+                    "state": "Done",
+                    "state_id": "state-done",
+                    "updated": True,
+                },
+            },
+        }
+
+        with patch.object(CONTROL.subprocess, "run"):
+            self.assertTrue(controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            }))
+
+        self.assertEqual(events, [(('linear_terminal_synced', 'T-110'), {
+            "linear_identifier": "SF-110",
+            "linear_issue_id": "issue-110",
+            "linear_state_id": "state-done",
+            "protected_main": "b" * 40,
+            "terminal_basis": "attested-done",
+        })])
+
+    def test_closeout_refuses_merged_without_terminal_linear_evidence(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        (cell.parent / "closeout-T-110").mkdir()
+        controller.json_call = lambda *_args, **_kwargs: {
+            "closeout_pr_state": "MERGED",
+        }
+
+        with (
+            patch.object(CONTROL.subprocess, "run"),
+            self.assertRaisesRegex(CONTROL.ControllerError, "terminal Linear"),
+        ):
+            controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            })
 
     def test_closeout_waits_for_post_merge_check_propagation(self) -> None:
         controller = CONTROL.Controller(self.args)

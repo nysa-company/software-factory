@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
@@ -2382,6 +2383,135 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     return {"action": "approval", "head": head, "pr_number": current["number"], "auto_merge": True}
 
 
+def finalize_terminal(product, workdir, remote, ticket, expected_basis):
+    git(
+        workdir, "fetch", "--quiet", "--", remote,
+        "refs/heads/main:refs/remotes/origin/main",
+    )
+    try:
+        terminal = protected_terminal(workdir, ticket)
+    except ValidationError as error:
+        raise Refusal(f"protected terminal validation failed: {error}") from error
+    if terminal.get("basis") != expected_basis:
+        raise Refusal("protected terminal evidence has the wrong basis")
+    sync = run([
+        sys.executable, "-I", "-S", str(Path(__file__).with_name("linear-sync.py")),
+        "--factory-root", str(product), "--ticket", ticket, "--terminal",
+    ])
+    try:
+        linear = json.loads(sync.stdout)
+    except json.JSONDecodeError as error:
+        raise Refusal("Linear terminal sync returned invalid evidence") from error
+    if (
+        not isinstance(linear, dict)
+        or set(linear) != {
+            "identifier", "issue_id", "source_ref", "state", "state_id", "updated",
+        }
+        or not isinstance(linear["identifier"], str)
+        or not linear["identifier"]
+        or not isinstance(linear["issue_id"], str)
+        or not linear["issue_id"]
+        or linear["source_ref"] != "refs/remotes/origin/main"
+        or linear["state"] != "Done"
+        or not isinstance(linear["state_id"], str)
+        or not linear["state_id"]
+        or not isinstance(linear["updated"], bool)
+    ):
+        raise Refusal("Linear terminal sync did not confirm exact Done")
+    return {
+        "basis": terminal["basis"],
+        "protected_main": git(workdir, "rev-parse", "origin/main").stdout.strip(),
+        "linear": linear,
+    }
+
+
+def record_terminal_controller_event(ticket, kit_sha, terminal):
+    state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    if not state.is_absolute():
+        raise Refusal("trusted controller state is unavailable")
+    state_info = state.lstat()
+    if (
+        state.resolve(strict=True) != state
+        or not stat.S_ISDIR(state_info.st_mode)
+        or state_info.st_uid != os.geteuid()
+        or stat.S_IMODE(state_info.st_mode) != 0o700
+    ):
+        raise Refusal("trusted controller state is unsafe")
+    events = state / "events"
+    events.mkdir(mode=0o700, exist_ok=True)
+    info = events.lstat()
+    if (
+        events.resolve(strict=True) != events
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise Refusal("trusted controller event directory is unsafe")
+    linear = terminal["linear"]
+    details = {
+        "linear_identifier": linear["identifier"],
+        "linear_issue_id": linear["issue_id"],
+        "linear_state_id": linear["state_id"],
+        "protected_main": terminal["protected_main"],
+        "terminal_basis": terminal["basis"],
+    }
+    for path in sorted(events.glob("*.json")):
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "r") as stream:
+            event = json.load(stream)
+            info = os.fstat(stream.fileno())
+        digest = event.pop("event_sha256", "") if isinstance(event, dict) else ""
+        encoded = json.dumps(
+            event, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 1_000_000
+            or digest != hashlib.sha256(encoded).hexdigest()
+        ):
+            raise Refusal("controller event evidence is invalid")
+        if (
+            event.get("schema") == "nysa.software-factory.controller-event/v1"
+            and event.get("event") == "linear_terminal_synced"
+            and event.get("factory_sha") == kit_sha
+            and event.get("ticket") == ticket
+            and all(event.get(name) == value for name, value in details.items())
+        ):
+            return
+    value = {
+        "event": "linear_terminal_synced",
+        "factory_sha": kit_sha,
+        "observed_at_epoch_ns": time.time_ns(),
+        "schema": "nysa.software-factory.controller-event/v1",
+        "ticket": ticket,
+        **details,
+    }
+    encoded = json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    value["event_sha256"] = hashlib.sha256(encoded).hexdigest()
+    identity = hashlib.sha256(json.dumps(
+        {"factory_sha": kit_sha, "ticket": ticket, **details},
+        ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    path = events / f"terminal-{ticket}-{identity}.json"
+    try:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0), 0o600,
+        )
+    except FileExistsError:
+        return record_terminal_controller_event(ticket, kit_sha, terminal)
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump(value, stream, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def emergency_done(
     args, product, workdir, repo, prefix, remote, checks, kit_sha, method,
     preview, request,
@@ -2498,6 +2628,14 @@ def emergency_done(
     if retry and pending_push:
         push_head(product, workdir, remote, branch, head)
     closeout_pr = ensure_closeout_pr(repo, args.ticket, branch, head, method)
+    finalized = (
+        finalize_terminal(
+            product, workdir, remote, args.ticket, "attested-emergency-closeout",
+        )
+        if closeout_pr["state"] == "MERGED" else None
+    )
+    if finalized:
+        record_terminal_controller_event(args.ticket, kit_sha, finalized)
     return {
         "action": "emergency-done",
         "head": head,
@@ -2505,6 +2643,7 @@ def emergency_done(
         "closeout_pr_number": closeout_pr["number"],
         "closeout_pr_state": closeout_pr["state"],
         "auto_merge": closeout_pr["state"] != "MERGED",
+        **({"terminal": finalized} if finalized else {}),
     }
 
 
@@ -2614,6 +2753,10 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     closeout_pr = ensure_closeout_pr(
         repo, args.ticket, branch, head, method,
     )
+    finalized = (
+        finalize_terminal(product, workdir, remote, args.ticket, "attested-done")
+        if closeout_pr["state"] == "MERGED" else None
+    )
     return {
         "action": "done",
         "head": head,
@@ -2621,6 +2764,7 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
         "closeout_pr_number": closeout_pr["number"],
         "closeout_pr_state": closeout_pr["state"],
         "auto_merge": closeout_pr["state"] != "MERGED",
+        **({"terminal": finalized} if finalized else {}),
     }
 
 

@@ -346,6 +346,21 @@ class Controller:
             stream.flush()
             os.fsync(stream.fileno())
 
+    def event_once(self, name: str, ticket: str, **details: Any) -> None:
+        for path in sorted(self.events.glob("*.json")):
+            value = read(path)
+            digest = value.pop("event_sha256", "")
+            if digest != hashlib.sha256(canonical(value).encode()).hexdigest():
+                raise ControllerError("controller event evidence is invalid")
+            if (
+                value.get("event") == name
+                and value.get("factory_sha") == self.release_path.name
+                and value.get("ticket") == ticket
+                and all(value.get(key) == item for key, item in details.items())
+            ):
+                return
+        self.event(name, ticket, **details)
+
     def adopt_qualification_terminal(self, ticket: str) -> dict[str, Any]:
         if (
             not self.qualification
@@ -2913,7 +2928,36 @@ class Controller:
                 self.event("post_merge_check_wait", ticket, reason=detail)
                 return False
             raise
-        return value.get("closeout_pr_state") == "MERGED"
+        if value.get("closeout_pr_state") != "MERGED":
+            return False
+        terminal = value.get("terminal")
+        linear = terminal.get("linear") if isinstance(terminal, dict) else None
+        if (
+            not isinstance(terminal, dict)
+            or terminal.get("basis") not in {
+                "attested-done", "attested-emergency-closeout",
+            }
+            or not SHA.fullmatch(terminal.get("protected_main", ""))
+            or not isinstance(linear, dict)
+            or linear.get("state") != "Done"
+            or linear.get("source_ref") != "refs/remotes/origin/main"
+            or not isinstance(linear.get("identifier"), str)
+            or not linear["identifier"]
+            or not isinstance(linear.get("issue_id"), str)
+            or not linear["issue_id"]
+            or not isinstance(linear.get("state_id"), str)
+            or not linear["state_id"]
+        ):
+            raise ControllerError("closeout lacks exact protected terminal Linear evidence")
+        self.event_once(
+            "linear_terminal_synced", ticket,
+            linear_identifier=linear["identifier"],
+            linear_issue_id=linear["issue_id"],
+            linear_state_id=linear["state_id"],
+            protected_main=terminal["protected_main"],
+            terminal_basis=terminal["basis"],
+        )
+        return True
 
     def run_role(
         self, claim: dict[str, Any], role: str, receipt: str,

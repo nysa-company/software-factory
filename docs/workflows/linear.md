@@ -40,8 +40,10 @@ exact newer Linear approval and enables protected auto-merge, and done records
 verified merge/deployment closeout and requests protected auto-merge for its
 factory-owned metadata/accounting PR. No second operator approval exists.
 After that PR merges, protected-main terminal evidence yields `COMPLETE`,
-releases the lease, and supplies Done to Linear sync. An API outage never stops an in-flight ticket. The local sync map and logs show
-stale health, and new operator actions wait for the next successful pull. A
+the trusted closeout path updates and re-verifies only that mapped Linear issue,
+records one durable sync event, and then releases the lease. Terminal API or
+mapping failure remains a retryable closeout wait. An API outage never stops an
+in-flight role. The local sync map and logs show stale health, and new operator actions wait for the next successful pull. A
 ticket already ingested as Ready continues from the local record.
 
 ## Workflow states

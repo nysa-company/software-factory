@@ -835,8 +835,11 @@ An authenticated merged passport enters closeout before dependency refresh,
 even when a prior wait already released its publication lease.
 An open closeout PR is a controller wait. After it merges, retrying `done`
 revalidates the exact protected-main Done receipt, ledger, original merge and
-checks, and closeout merge before the controller emits completion and releases
-the ticket; stale prepublication dependency logic is never reopened.
+checks, and closeout merge, then projects only the mapped issue's state to
+Linear Done and re-reads that exact issue. The controller records one
+idempotent terminal-sync event before it emits completion and releases the
+ticket. Missing mapping, API failure, or unconfirmed Done leaves the claim
+retryable; stale prepublication dependency logic is never reopened.
 Done in the sealed product root also suppresses passport-based claim recovery.
 Any residual claim is renewed and released before scheduling, while the
 historical passport remains available for audit and reduction.
@@ -922,7 +925,9 @@ an explicitly passportless basis only when protected main says it was built
 outside the Factory and controller claim/passport records are both absent.
 Retries accept only the already-committed receipt and original approval hash;
 the terminal reader independently revalidates commit topology, authorized
-paths, source ticket blob, receipt digest, timestamps, and ledger prefix.
+paths, source ticket blob, receipt digest, timestamps, and ledger prefix. A
+merged emergency closeout uses the same protected-terminal-first exact Linear
+Done projection as ordinary closeout.
 
 A control-plane release may close an already-approved ticket from its older
 ticket-pinned release. Done validates the protected bundle and approval against
