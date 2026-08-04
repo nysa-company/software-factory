@@ -130,7 +130,29 @@ def read(path: Path) -> dict[str, Any]:
     return value
 
 
-def provider_configuration(release: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
+def qualification_capacity(product: Path) -> int:
+    path = product / "factory/QUALIFICATION.json"
+    if not path.exists():
+        return 4
+    value = json.loads(path.read_text(encoding="utf-8"))
+    capacity = value.get("capacity")
+    tickets = value.get("tickets")
+    target = value.get("target_done")
+    if (
+        value.get("schema") != "nysa.software-factory.qualification/v2"
+        or capacity not in (3, 4)
+        or target not in (3, 4)
+        or not isinstance(tickets, list)
+        or len(tickets) != target
+        or target > capacity
+    ):
+        raise EnvironmentError("qualification capacity is invalid")
+    return capacity
+
+
+def provider_configuration(
+    release: Path, capacity: int = 4,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     catalog = json.loads(
         (release / "scripts/model-routing/catalog-v1.json").read_text(
             encoding="utf-8"
@@ -148,12 +170,16 @@ def provider_configuration(release: Path) -> tuple[dict[str, Any], dict[str, Any
     }
     if not routes:
         raise EnvironmentError("qualification provider catalog has no enabled route")
-    limit = {"max_concurrent": 4, "max_starts": 24, "window_seconds": 60}
+    limit = {
+        "max_concurrent": capacity,
+        "max_starts": max(24, capacity * 6),
+        "window_seconds": 60,
+    }
     policy = {
         "account_routes": {
             route["account_route"]: limit for route in routes.values()
         },
-        "coupled_max_concurrent": 4,
+        "coupled_max_concurrent": capacity,
         "global": limit,
         "provider_families": {
             route["provider_family"]: limit for route in routes.values()
@@ -172,8 +198,8 @@ def provider_configuration(release: Path) -> tuple[dict[str, Any], dict[str, Any
     return policy, activation, policy_hash
 
 
-def prepare_provider(release: Path, root: Path) -> str:
-    policy, activation, policy_hash = provider_configuration(release)
+def prepare_provider(release: Path, root: Path, capacity: int) -> str:
+    policy, activation, policy_hash = provider_configuration(release, capacity)
     provider = root / "provider"
     provider.mkdir(mode=0o700)
     for name in (
@@ -613,6 +639,12 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         safe_directory(project)
     else:
         project.mkdir(mode=0o700)
+    if not takeover:
+        controller = project / "controller"
+        if controller.exists():
+            safe_directory(controller)
+        else:
+            controller.mkdir(mode=0o700)
     release = releases / sha
     active = project / "active.json"
     if release.exists() or active.exists():
@@ -626,7 +658,9 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("sealed qualification tree does not match the candidate")
     provider_policy_sha256 = (
         takeover["provider_policy_sha256"]
-        if takeover else prepare_provider(release, root)
+        if takeover else prepare_provider(
+            release, root, qualification_capacity(product)
+        )
     )
     qualification_mode = takeover["mode"] if takeover else "isolated"
 
@@ -766,7 +800,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             materialize(factory, sha, release)
         if git_tree(release) != tree:
             raise EnvironmentError("sealed qualification tree does not match the candidate")
-        policy, activation, policy_hash = provider_configuration(release)
+        policy, activation, policy_hash = provider_configuration(
+            release, qualification_capacity(product)
+        )
         if (
             read(root / "provider/provider-policy.json") != policy
             or read(root / "provider/provider-activation.json") != activation
