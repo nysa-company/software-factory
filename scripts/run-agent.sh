@@ -1736,7 +1736,8 @@ if [[ "$PROVIDER_CONTRACT_VERSION" == "1.8.0" &&
        ! python3 "$KIT_DIR/scripts/provider-concurrency-config.py" \
          --release "$KIT_DIR" --root "$(dirname "$FACTORY_PROVIDER_POLICY")" \
          --capacity "$CONTRACT_CAPACITY" check \
-         --activation "${FACTORY_PROVIDER_ACTIVATION:-}" >/dev/null; then
+         --activation "${FACTORY_PROVIDER_ACTIVATION:-}" \
+         --cli-root "${FACTORY_CLI_RUNTIME_ROOT:-}" >/dev/null; then
       echo "Contract 1.8 multi-ticket provider concurrency is not ready; no task was submitted" >&2
       exit 3
     fi
