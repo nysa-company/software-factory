@@ -3442,3 +3442,16 @@ Resume requires the operator to name the exact active Factory SHA, revalidates
 the portable checkpoint, and archives the repro record before execution can
 continue. Historical v1 pauses remain resumable only through the named-release
 boundary.
+
+## 2026-08-03 — Decision 252: Rejected unblocks are visible without widening authority
+
+Category: Reliability
+
+After the reconciler has observed the current Blocked-Escalated generation, a
+newer Linear move to any state other than the exact Resume-State remains
+unauthorized. It now records one digest-bound `last_rejected` sync-health event
+and posts one deduplicated Linear comment naming the required column and Git
+receipt directives. Exact-ticket and full-board pulls preserve the same
+evidence across overlapping saves. The operator transition whitelist remains
+unchanged; the already-tested absent-map attestation refusal remains the
+current behavior, and the ignored machine-local map is not re-tracked.

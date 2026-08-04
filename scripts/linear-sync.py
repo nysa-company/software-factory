@@ -53,6 +53,7 @@ TARGETED_OPERATOR_FIELDS = (
     "blocked_source_sha256",
     "blocked_remote_updated_at",
     "operator_state_source_sha256",
+    "operator_rejection",
 )
 
 # Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
@@ -444,6 +445,21 @@ def preserve_newer_operator_pull(path, mapping):
                 incoming_entry[name] = copy.deepcopy(current_entry[name])
             else:
                 incoming_entry.pop(name, None)
+    current_rejection = current.get("_sync", {}).get("last_rejected")
+    incoming_rejection = mapping.get("_sync", {}).get("last_rejected")
+    if (
+        isinstance(current_rejection, dict)
+        and (
+            current_rejection.get("observed_at", ""),
+            current_rejection.get("rejection_sha256", ""),
+        ) > (
+            (
+                incoming_rejection.get("observed_at", ""),
+                incoming_rejection.get("rejection_sha256", ""),
+            ) if isinstance(incoming_rejection, dict) else ("", "")
+        )
+    ):
+        mapping["_sync"]["last_rejected"] = copy.deepcopy(current_rejection)
 
 
 def save_map(path, mapping):
@@ -454,10 +470,15 @@ def save_map(path, mapping):
 
 
 def record_failure(map_path, mapping, error):
+    health = mapping.get("_sync", {})
     mapping["_sync"] = {
-        "last_success_at": mapping.get("_sync", {}).get("last_success_at"),
+        "last_success_at": health.get("last_success_at"),
         "last_error": str(error),
         "failed_at": utc_now(),
+        **(
+            {"last_rejected": health["last_rejected"]}
+            if isinstance(health.get("last_rejected"), dict) else {}
+        ),
     }
     save_map(map_path, mapping)
 
@@ -1025,7 +1046,7 @@ def linear_updated_after(candidate, baseline):
     return candidate is not None and baseline is not None and candidate > baseline
 
 
-def ingest_operator_fields(ticket, actual, mapping, entry, dry):
+def ingest_operator_fields(key, ticket, actual, mapping, entry, dry):
     operator = dict(entry.get("operator", {}))
     blocked_remote_updated_at = entry.get("blocked_remote_updated_at")
     source_digest = hashlib.sha256(ticket["text"].encode()).hexdigest()
@@ -1113,6 +1134,60 @@ def ingest_operator_fields(ticket, actual, mapping, entry, dry):
             operator["approval"] = "Linear"
     elif remote_state != local_state:
         log(f"{ticket['id']}: ignoring non-operator transition {local_state} -> {remote_state}")
+        if (
+            local_state == "blocked-escalated"
+            and linear_updated_after(remote_updated_at, blocked_remote_updated_at)
+        ):
+            required = effective.get("resume_state")
+            identity = {
+                "local_state": local_state,
+                "remote_state": remote_state,
+                "remote_updated_at": remote_updated_at,
+                "required_state": required,
+                "source_sha256": source_digest,
+                "ticket": ticket["id"],
+            }
+            rejection_digest = hashlib.sha256(
+                json.dumps(
+                    identity, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            rejection = {
+                **identity,
+                "observed_at": utc_now(),
+                "rejection_sha256": rejection_digest,
+            }
+            marker = f"<!-- nysa-operator-rejection:{rejection_digest} -->"
+            known_comment = any(
+                marker in (comment.get("body") or "")
+                for comment in (actual.get("comments") or {}).get("nodes", [])
+                if isinstance(comment, dict)
+            )
+            if (
+                (
+                    not isinstance(entry.get("operator_rejection"), dict)
+                    or entry["operator_rejection"].get("rejection_sha256")
+                    != rejection_digest
+                )
+                and not known_comment
+            ):
+                required_name = (
+                    STATES[required][0] if required in STATES else "a valid Resume-State"
+                )
+                post_comment(
+                    key, actual["id"],
+                    f"{marker}\n**Factory unblock rejected.** The ticket is "
+                    f"Blocked-Escalated, but Linear requested "
+                    f"{STATES.get(remote_state, (remote_state,))[0]}. Move it to "
+                    f"its exact `Resume-State: {required_name}` column. A Linear "
+                    "move alone is insufficient: commit the exact receipt-bound "
+                    "`OPERATOR RESUME: <role>` and `OPERATOR RESUME RECEIPT: "
+                    "<sha256>` lines described in the Factory operator runbook.",
+                    dry,
+                )
+            if not dry:
+                entry["operator_rejection"] = rejection
+                mapping["_sync"]["last_rejected"] = copy.deepcopy(rejection)
 
     operator["linear_updated_at"] = remote_updated_at
     operator["observed_at"] = utc_now()
@@ -1182,7 +1257,7 @@ def sync_ticket_operator(key, factory_dir, map_path, ticket_id, dry=False):
     working_entry = working["tickets"][ticket_id]
     actual = fetch_issue(key, issue_id)
     ingest_fallback_approval(actual, working_entry, dry)
-    ingest_operator_fields(ticket, actual, working, working_entry, dry)
+    ingest_operator_fields(key, ticket, actual, working, working_entry, dry)
     if dry:
         return
 
@@ -1204,6 +1279,18 @@ def sync_ticket_operator(key, factory_dir, map_path, ticket_id, dry=False):
                 current_entry[name] = copy.deepcopy(working_entry[name])
             else:
                 current_entry.pop(name, None)
+        rejection = working.get("_sync", {}).get("last_rejected")
+        current_rejection = current.get("_sync", {}).get("last_rejected")
+        if isinstance(rejection, dict) and (
+            rejection.get("observed_at", ""),
+            rejection.get("rejection_sha256", ""),
+        ) >= (
+            (
+                current_rejection.get("observed_at", ""),
+                current_rejection.get("rejection_sha256", ""),
+            ) if isinstance(current_rejection, dict) else ("", "")
+        ):
+            current["_sync"]["last_rejected"] = copy.deepcopy(rejection)
         apply_operator_clears(map_path, current)
         atomic_write(map_path, json.dumps(current, indent=2, sort_keys=True) + "\n")
 
@@ -1332,7 +1419,9 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 entry["identifier"] = actual["identifier"]
                 save_map(map_path, mapping)
             if entry.get("operator_fields_initialized"):
-                ticket = ingest_operator_fields(ticket, actual, mapping, entry, dry)
+                ticket = ingest_operator_fields(
+                    key, ticket, actual, mapping, entry, dry
+                )
             else:
                 log(f"{ticket['id']}: bootstrapping operator fields from Markdown")
             if not dry:
@@ -1354,7 +1443,9 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                     "source_ref": source_ref,
                 })
                 ingest_fallback_approval(actual, entry, dry)
-                ticket = ingest_operator_fields(ticket, actual, mapping, entry, dry)
+                ticket = ingest_operator_fields(
+                    key, ticket, actual, mapping, entry, dry
+                )
                 project_id = project_ids.get(ticket["initiative"])
                 desired_state_id = config["states"].get(ticket["state"])
                 if not dry:
@@ -1477,7 +1568,14 @@ def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
     if not setup_only:
         sync_tickets(key, factory_dir, mapping, map_path, dry)
     if not dry:
-        mapping["_sync"] = {"last_success_at": utc_now(), "last_error": None}
+        previous_health = mapping.get("_sync", {})
+        mapping["_sync"] = {
+            "last_success_at": utc_now(), "last_error": None,
+            **(
+                {"last_rejected": previous_health["last_rejected"]}
+                if isinstance(previous_health.get("last_rejected"), dict) else {}
+            ),
+        }
         save_map(map_path, mapping)
         retire_operator_clears(map_path)
 
