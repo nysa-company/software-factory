@@ -5469,6 +5469,52 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("protected_auto_merge_requested", calls)
         self.assertEqual(claim["publication_lease"], "f" * 64)
 
+    def test_auto_merge_race_rechecks_merged_before_open_pr_failure(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "f" * 64,
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        merged = iter((False, True))
+        calls = []
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.ticket_merged = lambda _claim: next(merged)
+        controller.ticket_pr = lambda *_args: (_ for _ in ()).throw(
+            CONTROL.ControllerError("ticket-pr: ticket PR is not open")
+        )
+        controller.release_publication = lambda _claim: calls.append("release")
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.closeout = lambda _claim: calls.append("closeout") or False
+        controller.withdraw_publication = lambda *_args: None
+        controller.json_call = lambda *arguments, **_kwargs: (
+            state_transition(
+                "AWAIT-MERGE protected auto-merge requested; "
+                "await merge and closeout"
+            )
+            if arguments[0] == "state-machine"
+            else (_ for _ in ()).throw(AssertionError(arguments))
+        )
+
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "progressed", "ticket": "T-110"},
+        )
+        self.assertEqual(calls, ["release", "passport", "closeout"])
+
     def test_launcher_authorizes_requested_stage_publication_recovery(self) -> None:
         launcher = (
             ROOT / "integrations/hermes/bin/factory-launch"
