@@ -5095,6 +5095,25 @@ Builder expires the grant. Ordinary backward transitions remain forbidden.
 Validation: the regression admits Spec-linter without rewinding Building and
 proves Builder evidence expires the grant; all 38 state-machine tests pass.
 
+## FI-20260804-179 — Successor restart excluded preserved blocked targets
+
+Status: Focused controller regression green; protected CI pending
+Priority: P0 (#285)
+Area: qualification upgrade recovery
+Owner: Factory
+First seen: T-101 generation 16 upgrade to Factory
+`fab17cd3864b94bc12c1cb218f2612039f444139`
+Impact: T-101's passport and route recovered, while intentionally preflight-
+blocked T-114 and T-118 remained preserved. The candidate-scoped restart
+barrier counted only runnable claims and returned `waiting_for_target`
+indefinitely, so T-101 could not resume.
+Smallest repair: the restart and recovered set use every exact target claim
+plus protected Done targets; the separate active count and scheduler continue
+to use only runnable claims. No blocked claim changes state or gains evidence.
+Validation: the regression requires a real second controller invocation with
+one runnable and two blocked targets, then proves both blocked claims remain
+passport-free and uncharged.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

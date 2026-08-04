@@ -3579,7 +3579,7 @@ class Controller:
             active = sorted(
                 item["ticket"] for item in claims if self.runnable(item)
             )
-            accounted = sorted(set(active) | {
+            accounted = sorted({item["ticket"] for item in claims} | {
                 ticket for ticket in self.qualification["tickets"]
                 if self.product_ticket_done(ticket)
             })
@@ -3606,9 +3606,7 @@ class Controller:
             and not self.qualification_marker("qualification-recovered")
             and self.qualification_marker("qualification-restart-boundary")
         ):
-            recovered = sorted(
-                item["ticket"] for item in existing if self.runnable(item)
-            )
+            recovered = sorted(item["ticket"] for item in existing)
             accounted = sorted(set(recovered) | {
                 ticket for ticket in self.qualification["tickets"]
                 if self.product_ticket_done(ticket)
