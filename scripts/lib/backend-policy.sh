@@ -826,12 +826,17 @@ if plan.get("schema") == "ticket-model-route-plan/v1":
     selection_reason = "pinned_route_plan"
 elif plan.get("schema") == "ticket-model-route-journal/v2":
     revision_value = plan["revisions"][-1]
-    body = revision_value["body"]
-    if body["kind"] == "migration":
-        legacy = json.loads(base64.b64decode(body["legacy_plan_b64"]))
-        resolution = legacy["resolution"]
-    else:
-        resolution = body.get("new_resolution", body["prior_resolution"])
+    for revision in reversed(plan["revisions"]):
+        body = revision["body"]
+        if body["kind"] == "migration":
+            resolution = json.loads(base64.b64decode(body["legacy_plan_b64"]))["resolution"]
+            break
+        if body["kind"] == "fallback" or "new_resolution" in body:
+            resolution = body["new_resolution"]
+            break
+        if "prior_resolution" in body:
+            resolution = body["prior_resolution"]
+            break
     revision = str(revision_value["revision"])
     revision_hash = revision_value["revision_hash"]
     selection_reason = "route_journal"

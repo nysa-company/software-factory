@@ -274,11 +274,17 @@ value = json.load(open(sys.argv[1]))
 if value.get("schema") == "ticket-model-route-plan/v1":
     resolution = value["resolution"]
 elif value.get("schema") == "ticket-model-route-journal/v2":
-    body = value["revisions"][-1]["body"]
-    if body["kind"] == "migration":
-        resolution = json.loads(base64.b64decode(body["legacy_plan_b64"]))["resolution"]
-    else:
-        resolution = body.get("new_resolution", body["prior_resolution"])
+    for revision in reversed(value["revisions"]):
+        body = revision["body"]
+        if body["kind"] == "migration":
+            resolution = json.loads(base64.b64decode(body["legacy_plan_b64"]))["resolution"]
+            break
+        if body["kind"] == "fallback" or "new_resolution" in body:
+            resolution = body["new_resolution"]
+            break
+        if "prior_resolution" in body:
+            resolution = body["prior_resolution"]
+            break
 else:
     raise SystemExit(2)
 print(resolution["profile_id"])
@@ -447,12 +453,17 @@ value = json.load(open(sys.argv[1]))
 if value.get("schema") == "ticket-model-route-plan/v1" and sys.argv[2] == "fallback-auto":
     resolution = value["resolution"]
 elif value.get("schema") == "ticket-model-route-journal/v2":
-    body = value["revisions"][-1]["body"]
-    if body["kind"] == "migration":
-        plan = json.loads(base64.b64decode(body["legacy_plan_b64"]))
-        resolution = plan["resolution"]
-    else:
-        resolution = body.get("new_resolution", body["prior_resolution"])
+    for revision in reversed(value["revisions"]):
+        body = revision["body"]
+        if body["kind"] == "migration":
+            resolution = json.loads(base64.b64decode(body["legacy_plan_b64"]))["resolution"]
+            break
+        if body["kind"] == "fallback" or "new_resolution" in body:
+            resolution = body["new_resolution"]
+            break
+        if "prior_resolution" in body:
+            resolution = body["prior_resolution"]
+            break
 else:
     raise SystemExit(2)
 print(resolution["profile_id"])

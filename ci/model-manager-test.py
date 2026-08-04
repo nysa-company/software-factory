@@ -734,6 +734,20 @@ class ModelManagerTest(unittest.TestCase):
         MANAGER_MODULE.validate_journal(
             migrated, self.catalog, self.routes, self.profiles
         )
+        legacy_migration = copy.deepcopy(migrated)
+        legacy_body = legacy_migration["revisions"][-1]["body"]
+        legacy_body["prior_resolution"] = resolution
+        del legacy_body["prior_resolution_sha256"]
+        legacy_migration["revisions"][-1]["revision_hash"] = (
+            MANAGER_MODULE._revision_hash(
+                legacy_migration["revisions"][-1]["revision"],
+                legacy_migration["revisions"][-1]["parent_hash"],
+                legacy_body,
+            )
+        )
+        MANAGER_MODULE.validate_journal(
+            legacy_migration, self.catalog, self.routes, self.profiles
+        )
         self.assertEqual(
             MANAGER_MODULE.migrate_v2_journal(
                 migrated, "f" * 40, "1" * 40, "2026-07-18T12:03:00Z",
@@ -824,7 +838,9 @@ class ModelManagerTest(unittest.TestCase):
         )
         self.assertEqual(migrated["revisions"][:-1], before["revisions"])
         body = migrated["revisions"][-1]["body"]
-        self.assertEqual(body["prior_resolution"], resolution)
+        self.assertEqual(
+            body["prior_resolution_sha256"], ROUTER.content_hash(resolution)
+        )
         self.assertEqual(
             MANAGER_MODULE.active_resolution(migrated), body["new_resolution"]
         )
@@ -968,6 +984,12 @@ class ModelManagerTest(unittest.TestCase):
             )
         journal_path = self.base / "long-journal.json"
         journal_path.write_text(ROUTER.canonical_json(journal) + "\n")
+        self.assertLess(journal_path.stat().st_size, 100_000)
+        self.assertTrue(all(
+            "prior_resolution_sha256" in revision["body"]
+            and "prior_resolution" not in revision["body"]
+            for revision in journal["revisions"][1:]
+        ))
         os.chmod(journal_path, 0o644)
         arguments = (
             "--ticket-plan", str(journal_path),
@@ -995,7 +1017,7 @@ class ModelManagerTest(unittest.TestCase):
         )
         self.assertLess(len(compact_result.stdout), 2048)
         self.assertGreater(
-            len(diagnostic_result.stdout), len(compact_result.stdout) * 100
+            len(diagnostic_result.stdout), len(compact_result.stdout) * 50
         )
 
         tampered = copy.deepcopy(journal)

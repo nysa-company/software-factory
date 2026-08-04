@@ -158,6 +158,9 @@ Release migration preserves every logical selection and all parent-hashed
 history. It re-probes the already-selected routes and records current adapter
 versions and reported identities in a new release-migration revision. Missing,
 disabled, unavailable, or logically changed routes stop migration.
+No-change revisions bind the prior resolution by SHA-256 instead of copying it;
+full refreshed evidence is recorded only when its physical identity changes.
+Legacy revisions containing full prior resolutions remain valid.
 
 ## Operator commands
 

@@ -1059,7 +1059,10 @@ one parent-hashed release-migration revision that preserves every prior
 revision and the active resolution. Both paths update the ticket Kit-SHA before
 work is reclaimed. The initial v1-to-v2 schema-migration revision may preserve
 the same Kit-SHA; only a later `release-migration` revision claims a release
-change. In both cases the embedded legacy bytes, digest, policy, selections,
+change. A release migration binds an unchanged active resolution by its
+canonical SHA-256 and includes a full refreshed resolution only when physical
+route evidence changes; legacy full-resolution revisions remain valid. In both
+cases the embedded legacy bytes, digest, policy, selections,
 pin commit, and revision hash chain must match exactly. This authorization
 never changes ticket state, migrates a branch, renews a lease, or permits an
 unprotected-main record.
