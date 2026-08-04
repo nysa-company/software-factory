@@ -3429,3 +3429,16 @@ loop, attempt, limit, and stopped stage; the third failed lap escalates before
 another provider call. The Markdown state remains the Linear-compatible coarse
 business state, while one shared action-aware whitelist validates every state
 mutation, including Reviewer and qualification back-edges.
+
+## 2026-08-03 — Decision 251: Parking preserves an issue-bound repro
+
+Category: Reliability
+
+The existing passport-bound pause is the Factory's Parked primitive; no second
+business or Linear state is added. A new pause requires an exact Software
+Factory issue URL and preserves the release, head, passport, run snapshot,
+current state, Resume-State, and claim status while releasing the ticket lease.
+Resume requires the operator to name the exact active Factory SHA, revalidates
+the portable checkpoint, and archives the repro record before execution can
+continue. Historical v1 pauses remain resumable only through the named-release
+boundary.

@@ -93,8 +93,8 @@
         "contract_version": "1.8.0",
         "helper": "scripts/factory-controller.py",
         "grammars": [
-          "pause --ticket <T-NNN> --json",
-          "resume --ticket <T-NNN> --json"
+          "pause --ticket <T-NNN> --issue <software-factory-issue-url> --json",
+          "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json"
         ],
         "output_schema": "nysa.software-factory.controller/v1",
         "authority": "records one exact passport-bound pause or explicitly reconstructs that ticket without scanning historical passports"

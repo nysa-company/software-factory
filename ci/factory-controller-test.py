@@ -40,6 +40,7 @@ ATTEST_SPEC = importlib.util.spec_from_file_location(
 assert ATTEST_SPEC and ATTEST_SPEC.loader
 ATTEST = importlib.util.module_from_spec(ATTEST_SPEC)
 ATTEST_SPEC.loader.exec_module(ATTEST)
+FACTORY_ISSUE = "https://github.com/nysa-company/software-factory/issues/253"
 
 
 def state_transition(
@@ -4468,7 +4469,10 @@ class FactoryControllerTest(unittest.TestCase):
         controller = CONTROL.Controller(self.args)
         ticket = "T-110"
         cell = self.root / "cell-pause"
-        cell.mkdir()
+        (cell / "factory/tickets").mkdir(parents=True)
+        (cell / "factory/tickets/T-110.md").write_text(
+            "State: Building\nResume-State: Planning\n", encoding="utf-8"
+        )
         passport = {
             "branch": f"ticket/{ticket}",
             "current_state": "Building",
@@ -4513,46 +4517,77 @@ class FactoryControllerTest(unittest.TestCase):
             return {}
 
         controller.json_call = launcher
-        self.assertEqual(controller.pause_ticket(ticket)["status"], "paused")
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "could not park a clean checkpoint"
+        ):
+            controller.pause_ticket(ticket, FACTORY_ISSUE)
+        self.assertTrue(controller.claim_path(ticket).exists())
+        self.assertFalse(controller.pause_path(ticket).exists())
+        controller.park_claim = lambda _claim: True
+        self.assertEqual(
+            controller.pause_ticket(ticket, FACTORY_ISSUE)["status"], "paused"
+        )
         self.assertFalse(controller.claim_path(ticket).exists())
         self.assertTrue(controller.pause_path(ticket).exists())
         self.assertEqual(
             CONTROL.read(controller.pause_path(ticket))["current_state"],
             "Building",
         )
-        self.assertEqual(controller.pause_ticket(ticket)["status"], "paused")
+        pause = CONTROL.read(controller.pause_path(ticket))
+        self.assertEqual(pause["blocking_issue"], FACTORY_ISSUE)
+        self.assertEqual(pause["resume_state"], "Planning")
+        self.assertRegex(pause["pause_sha256"], CONTROL.DIGEST)
+        self.assertEqual(
+            controller.pause_ticket(ticket, FACTORY_ISSUE)["status"], "paused"
+        )
+
+        CONTROL.write(controller.pause_path(ticket), {**pause, "status": "claimed"})
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "pause intent digest is invalid"
+        ):
+            controller.resume_ticket(ticket, self.release.name)
+        CONTROL.write(controller.pause_path(ticket), pause)
 
         changed = {**passport, "head_sha": "f" * 40}
         CONTROL.write(passports / f"{ticket}.json", changed)
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "does not match the passport"
         ):
-            controller.resume_ticket(ticket)
+            controller.resume_ticket(ticket, self.release.name)
         CONTROL.write(passports / f"{ticket}.json", passport)
 
-        self.assertEqual(controller.resume_ticket(ticket)["status"], "resumed")
+        self.assertEqual(
+            controller.resume_ticket(ticket, self.release.name)["status"],
+            "resumed",
+        )
         resumed = CONTROL.read(controller.claim_path(ticket))
         self.assertEqual(resumed["status"], "waiting")
         self.assertEqual(resumed["lease"], "e" * 64)
         self.assertFalse(controller.pause_path(ticket).exists())
+        self.assertTrue(
+            (self.state / "repros" / f"{ticket}-{pause['pause_sha256']}.json").exists()
+        )
 
         resumed["status"] = "blocked"
         controller.save_claim(resumed)
-        controller.pause_ticket(ticket)
+        controller.pause_ticket(ticket, FACTORY_ISSUE)
         controller.ticket_release_current = lambda _claim: False
-        controller.resume_ticket(ticket)
+        controller.resume_ticket(ticket, self.release.name)
         self.assertEqual(
             CONTROL.read(controller.claim_path(ticket))["status"], "blocked"
         )
         controller.active_run = lambda _ticket: {"run_id": "active"}
         with self.assertRaisesRegex(CONTROL.ControllerError, "idle passport"):
-            controller.pause_ticket(ticket)
+            controller.pause_ticket(ticket, FACTORY_ISSUE)
 
     def test_pause_resume_state_boundary_survives_restart_and_cutover(self) -> None:
         controller = CONTROL.Controller(self.args)
         ticket = "T-110"
         cell = self.root / "cell-pause-boundary"
-        cell.mkdir()
+        (cell / "factory/tickets").mkdir(parents=True)
+        (cell / "factory/tickets/T-110.md").write_text(
+            "State: Building\n", encoding="utf-8"
+        )
         passport = {
             "branch": f"ticket/{ticket}",
             "current_state": "Building",
@@ -4580,7 +4615,7 @@ class FactoryControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "requires an in-flight passport"
         ):
-            controller.pause_ticket(ticket)
+            controller.pause_ticket(ticket, FACTORY_ISSUE)
         self.assertFalse(controller.pause_path(ticket).exists())
         CONTROL.write(passports / f"{ticket}.json", {
             **passport,
@@ -4590,11 +4625,15 @@ class FactoryControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "requires an in-flight passport"
         ):
-            controller.pause_ticket(ticket)
+            controller.pause_ticket(ticket, FACTORY_ISSUE)
         self.assertFalse(controller.pause_path(ticket).exists())
 
         CONTROL.write(passports / f"{ticket}.json", passport)
-        controller.pause_ticket(ticket)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "Software Factory issue URL"
+        ):
+            controller.pause_ticket(ticket, "https://example.com/issues/253")
+        controller.pause_ticket(ticket, FACTORY_ISSUE)
         controller.qualification = {"tickets": [ticket]}
         claims = []
         controller.recover_missing_passport_claims(claims)
@@ -4626,21 +4665,21 @@ class FactoryControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "does not match the passport"
         ):
-            controller.resume_ticket(ticket)
+            controller.resume_ticket(ticket, self.release.name)
         CONTROL.write(passports / f"{ticket}.json", {
             **passport, "current_state": "Done",
         })
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "requires an in-flight passport"
         ):
-            controller.resume_ticket(ticket)
+            controller.resume_ticket(ticket, self.release.name)
         CONTROL.write(passports / f"{ticket}.json", {
             **passport, "publication_state": "merged",
         })
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "requires an in-flight passport"
         ):
-            controller.resume_ticket(ticket)
+            controller.resume_ticket(ticket, self.release.name)
 
         CONTROL.write(passports / f"{ticket}.json", passport)
         tickets = self.product / "factory/tickets"
@@ -4651,7 +4690,7 @@ class FactoryControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "requires an in-flight passport"
         ):
-            controller.resume_ticket(ticket)
+            controller.resume_ticket(ticket, self.release.name)
         (tickets / f"{ticket}.md").unlink()
         self.assertTrue(controller.pause_path(ticket).exists())
         self.assertFalse(controller.claim_path(ticket).exists())
@@ -4663,7 +4702,7 @@ class FactoryControllerTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 CONTROL.ControllerError, "capacity is full"
             ):
-                controller.resume_ticket(ticket)
+                controller.resume_ticket(ticket, self.release.name)
         self.assertTrue(controller.pause_path(ticket).exists())
         self.assertFalse(controller.claim_path(ticket).exists())
 
@@ -4690,7 +4729,13 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": ticket,
         } if args[0] == "claim" else {}
 
-        self.assertEqual(restarted.resume_ticket(ticket)["status"], "resumed")
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "resume intent is unavailable"
+        ):
+            restarted.resume_ticket(ticket, self.release.name)
+        self.assertEqual(
+            restarted.resume_ticket(ticket, successor.name)["status"], "resumed"
+        )
         resumed = CONTROL.read(restarted.claim_path(ticket))
         self.assertEqual(resumed["lease"], "1" * 64)
         self.assertEqual(resumed["status"], "claimed")
@@ -5370,6 +5415,21 @@ class FactoryControllerTest(unittest.TestCase):
             'await merge and closeout"',
             guard,
         )
+
+    def test_launcher_ticket_parking_requires_issue_and_named_release(self) -> None:
+        launcher = (
+            ROOT / "integrations/hermes/bin/factory-launch"
+        ).read_text(encoding="utf-8")
+        contract = json.loads(
+            (ROOT / "integrations/hermes/contract.json").read_text()
+        )["launcher"]["commands"]["ticket-control"]
+        self.assertIn('"$4" == "--issue"', launcher)
+        self.assertIn('"$4" == "--factory-sha"', launcher)
+        self.assertEqual(contract["grammars"], [
+            "pause --ticket <T-NNN> --issue "
+            "<software-factory-issue-url> --json",
+            "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json",
+        ])
 
     def test_dependency_refresh_race_waits_then_migrates_exact_base(self) -> None:
         controller = CONTROL.Controller(self.args)

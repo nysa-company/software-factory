@@ -8,6 +8,19 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role through `~/.factory/bin/factory-launch <project> run`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
 - Don't: let a stuck run keep burning budget while you wait.
 
+## Park a ticket on a Factory defect
+
+- Open the defect in the Software Factory GitHub repository, then wait for the
+  ticket to reach an idle passport boundary.
+- Park only that ticket with
+  `factory-launch <project> ticket-control pause --ticket T-NNN --issue <issue-url> --json`.
+  The sealed controller releases its lease and retains an owner-only repro
+  record; sibling tickets continue.
+- After a successor Factory has migrated the passport, resume deliberately with
+  `factory-launch <project> ticket-control resume --ticket T-NNN --factory-sha <full-sha> --json`.
+- Do not move Markdown or Linear state by hand. A missing issue, changed
+  passport/state, active role, or different target Factory refuses cleanly.
+
 ## Runaway spend
 
 - Notice: daily spend rollup jumps, or a provider console alert fires.
