@@ -683,13 +683,19 @@ if [[ "$CONTRACT_VERSION" == "1.8.0" &&
       "$MAX_CONCURRENT_TICKETS" =~ ^[0-9]+$ &&
       "$MAX_CONCURRENT_TICKETS" -gt 1 ]]; then
   PROVIDER_CONCURRENCY_REQUIRED=true
+  PROVIDER_CONCURRENCY_ARGS=(
+    --release "$KIT_DIR"
+    --root "$(dirname "${FACTORY_PROVIDER_POLICY:-}")"
+    --capacity "$MAX_CONCURRENT_TICKETS"
+    check
+    --activation "${FACTORY_PROVIDER_ACTIVATION:-}"
+  )
+  [[ -z "${FACTORY_CLI_RUNTIME_ROOT:-}" ]] ||
+    PROVIDER_CONCURRENCY_ARGS+=(--cli-root "$FACTORY_CLI_RUNTIME_ROOT")
   if [[ -n "${FACTORY_PROVIDER_POLICY:-}" &&
         "${FACTORY_PROVIDER_POLICY:-}" == */provider-policy.json ]] &&
      "$PYTHON_BIN" -I -S "$KIT_DIR/scripts/provider-concurrency-config.py" \
-       --release "$KIT_DIR" \
-       --root "$(dirname "$FACTORY_PROVIDER_POLICY")" \
-       --capacity "$MAX_CONCURRENT_TICKETS" check \
-       --activation "${FACTORY_PROVIDER_ACTIVATION:-}" >/dev/null 2>&1; then
+       "${PROVIDER_CONCURRENCY_ARGS[@]}" >/dev/null 2>&1; then
     PROVIDER_CONCURRENCY_READY=true
   else
     PROVIDER_RUNTIME_STATUS="error"
