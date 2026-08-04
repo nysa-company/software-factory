@@ -4,6 +4,14 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Contract 1.8 emergency closeout is a narrow plan/apply authority for one
+  exact already-merged ticket. It binds an open GitHub issue, explicit owner,
+  bounded request window, protected-main tree/ticket state, exact PR and green
+  configured checks, and either an authenticated passport plus idle blocked
+  claim snapshot or an
+  explicit operator-built/no-runtime basis. Apply requires the exact plan hash
+  and reuses the ordinary ledger projection and protected closeout PR; it
+  records distinct terminal evidence and never synthesizes approval history.
 - Linear supports a fail-closed exact-ticket operator pull for an already
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
@@ -3349,3 +3357,17 @@ Category: Reliability
 Direct approval attestation treats an absent Linear operator map as no exact
 approval and returns the existing refusal instead of a traceback. It does not
 invent or weaken operator evidence.
+
+## 2026-08-03 — Decision 246: Emergency closeout is exact and receipt-bound
+
+Category: Trust boundary
+
+An already-merged ticket whose normal approval chain cannot be completed may
+close only through a fresh owner request linked to an open GitHub issue and the
+exact SHA-256 of a sealed read-only plan. The plan binds protected main, merged
+PR, configured successful checks, active release, authenticated passport, and
+idle blocked claim;
+an absent passport is accepted only for protected operator-built work with no
+claim or passport. Apply reuses ordinary ledger and protected closeout
+mechanisms, creates a distinct immutable terminal receipt, and is restart-safe
+without fabricating bundle or Linear approval evidence.

@@ -903,6 +903,22 @@ checks that hash at the immutable closeout commit and requires the current
 ledger to retain those bytes as an unchanged prefix, allowing only later rows
 to be appended.
 
+Contract 1.8 also exposes a narrow emergency plan/apply form through
+`ticket-attest` for an exact already-merged ticket whose normal approval chain
+cannot be completed. The read-only plan binds a current open GitHub issue,
+explicit non-automatic operator, bounded authorization window, protected-main
+commit/tree/ticket blob and state, exact merged PR and configured successful
+checks, active kit, and authenticated passport snapshot. Apply requires the
+plan also binds an idle blocked claim with no lease or publication capability.
+Its SHA-256 apply reuses the ordinary ledger projection, closeout branch, push,
+PR, and protected auto-merge. It records a distinct terminal receipt rather
+than synthesizing bundle or Linear approval. Exact operator-built work may use
+an explicitly passportless basis only when protected main says it was built
+outside the Factory and controller claim/passport records are both absent.
+Retries accept only the already-committed receipt and original approval hash;
+the terminal reader independently revalidates commit topology, authorized
+paths, source ticket blob, receipt digest, timestamps, and ledger prefix.
+
 A control-plane release may close an already-approved ticket from its older
 ticket-pinned release. Done validates the protected bundle and approval against
 that canonical ticket `Kit-SHA` and records the same SHA in its receipt; legacy
