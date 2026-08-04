@@ -20,6 +20,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
   missing mapping, API failure, or changed terminal truth remains retryable.
+- Production helpers run only from installed sealed releases whose SHA is on
+  Factory `origin/main` with exact successful protected CI. Qualification may
+  seal a clean local SHA/tree without that reachability; trusted launchers label
+  the two scopes, mutable kits cannot claim either, and run manifests preserve
+  the distinction.
 - Linear description comparison canonicalizes the observed serializer-only
   ordered-list indentation, continuation, renumbering, inline-code, link, and
   fence-boundary forms. Nested-list structure, fenced content, and meaningful
@@ -3400,3 +3405,15 @@ The updater sends only the Done state, re-reads exact Done, honors the
 launcher-bound operator map, and returns evidence for one idempotent controller
 event before claim release. Missing mapping, transport failure, changed source,
 or unconfirmed state leaves closeout retryable without partial map writes.
+
+## 2026-08-03 — Decision 249: Kit provenance is lane-scoped
+
+Category: Trust boundary
+
+Protected production install and certification retain their existing
+`origin/main` ancestry plus exact successful main-CI proof. Trusted launchers
+now label helper runs as `production-certified` or `qualification-candidate`,
+and either label requires a SHA/tree-sealed release; mutable checkouts remain
+`development-local` and cannot claim a trusted scope. This preserves fast local
+and qualification iteration without presenting unreachable candidates as
+production provenance.

@@ -12,7 +12,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. All products share the Software Factory Linear team; each initiative gets a Linear Project.
-- **`factory/KIT_PIN`:** exactly one lowercase, full 40-character certified kit SHA. External products fail closed when it is missing, malformed, or different from the physical release.
+- **`factory/KIT_PIN`:** exactly one lowercase, full 40-character kit SHA. Production requires a protected-main, successful-CI installed release; a sealed qualification may instead bind one clean local candidate SHA/tree. External products fail closed when the pin is missing, malformed, or different from the physical release.
 - **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), and required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`).
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
@@ -1205,7 +1205,11 @@ the install lock. Certification may reuse an unexpired passing suite result for
 the exact unchanged sealed release, but always reruns product certification and
 all product, config, receipt, and activation validation. Fresh certification
 refreshes evidence only after the isolated suite, tracked-tree check, and sealed
-release verification pass. Product receipts bind the exact evidence ID/digest
+release verification pass. Install first proves the SHA is on `origin/main`
+and binds exact successful protected main CI. The installed launcher labels
+helper runs `production-certified`; the qualification launcher labels its
+separately SHA/tree-sealed candidate `qualification-candidate`. Mutable local
+kits cannot claim either scope and remain development-only. Product receipts bind the exact evidence ID/digest
 and cannot expire after that evidence. Products may opt into the sealed
 `certification-runner.py` with a repository-owned declarative DAG. It records
 wall time, CPU, peak memory, cache status, exact input digests, and artifact

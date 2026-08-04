@@ -707,6 +707,7 @@ write_manifest() {
     echo "contract_version=$(meta_value "${FACTORY_CONTRACT_VERSION:-}")"
     echo "physical_kit_path=$(meta_value "${FACTORY_KIT_PATH:-}")"
     echo "kit_provenance_mode=$(meta_value "${FACTORY_KIT_PROVENANCE_MODE:-}")"
+    echo "kit_provenance_scope=$(meta_value "${FACTORY_KIT_PROVENANCE_SCOPE:-}")"
     echo "pid=$(meta_value "${RUN_PID:-}")"
     echo "pgid=$(meta_value "${RUN_PGID:-}")"
     echo "process_start=$(meta_value "${RUN_START_ID:-}")"

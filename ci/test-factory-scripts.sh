@@ -267,12 +267,19 @@ ROOT_PIN_ERROR="$(bash -c '
   factory_validate_kit_pin "$2" "$2" >/dev/null 2>&1 || true
   printf "%s\n" "$FACTORY_KIT_PIN_ERROR"
 ' _ "$ROOT/scripts/lib/kit-pin.sh" "$ROOT")"
+FORGED_PRODUCTION_SCOPE="$(FACTORY_KIT_TRUST_SCOPE=production-certified bash -c '
+  source "$1"
+  factory_load_kit_provenance "$2" "$2/conformance" >/dev/null 2>&1 || true
+  printf "%s\n" "$FACTORY_KIT_PIN_ERROR"
+' _ "$ROOT/scripts/lib/kit-pin.sh" "$ROOT")"
 if [[ "$IMPLICIT_PIN" == "1:$KIT_SHA" &&
-      "$ROOT_PIN_ERROR" == "external product requires factory/KIT_PIN" ]]; then
+      "$ROOT_PIN_ERROR" == "external product requires factory/KIT_PIN" &&
+      "$FORGED_PRODUCTION_SCOPE" == \
+        "production-certified requires a sealed release" ]]; then
   pass "only in-repo conformance receives implicit kit pin"
 else
   fail "only in-repo conformance receives implicit kit pin" \
-    "implicit=$IMPLICIT_PIN root=$ROOT_PIN_ERROR"
+    "implicit=$IMPLICIT_PIN root=$ROOT_PIN_ERROR scope=$FORGED_PRODUCTION_SCOPE"
 fi
 
 ROLE_MODELS="$(bash -c '
@@ -722,6 +729,7 @@ env \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
@@ -748,6 +756,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q '^contract_version=1.8.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
+   grep -q '^kit_provenance_scope=qualification-candidate$' "$SEALED_META" &&
    grep -q "^transition_receipt_sha256=$SEALED_RECEIPT$" "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
   pass "sealed release runs real sequencer and mock agent"
