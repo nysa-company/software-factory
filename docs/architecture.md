@@ -99,8 +99,13 @@ focused local work. Pull requests run the same targeted-or-deferred selection
 on Linux and macOS: mapped leaf changes execute their suites, while broad work
 runs policy gates and defers complete coverage. Pushes to `main` partition the
 complete registry into four stable groups per platform on separate hosted
-runners. The factory-script, Hermes-contract, and factory-kit lifecycle suites
-remain intact and sequential inside their own groups. A group is directly
+runners. Their public suite IDs remain intact. The factory-script suite uses
+six fixed internal workers with private temporary roots; lifecycle cases that
+share launch, cancellation, Git, accounting, or cleanup state remain
+sequential inside one worker. Worker process groups are drained on failure or
+interruption, and successful logs are replayed in stable order. The
+Hermes-contract and factory-kit lifecycle suites remain sequential inside
+their own groups. A group is directly
 runnable as `bash ci/test-all.sh --group N`; an optional `--shard SHARD` narrows
 that group for local diagnosis. After all four groups succeed, three stable
 evidence aliases per platform retain the installed release contract. Release
