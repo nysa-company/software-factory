@@ -6,6 +6,7 @@ import base64
 import csv
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -31,7 +32,13 @@ from approval_evidence import (  # noqa: E402
     validate_bundle_attestation as validate_shared_bundle_attestation,
     validate_bundle_commit as validate_shared_bundle_commit,
 )
-from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
+from legacy_closeout import (  # noqa: E402
+    EMERGENCY_DONE_SCHEMA,
+    EMERGENCY_PLAN_SCHEMA,
+    ValidationError,
+    protected_dependency,
+    protected_terminal,
+)
 from runtime_paths import canonical_factory_file  # noqa: E402
 
 
@@ -40,6 +47,10 @@ class Refusal(ValueError):
 
 
 ROLES = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
+EMERGENCY_REQUEST_SCHEMA = "nysa.software-factory.emergency-closeout-request/v1"
+EMERGENCY_REQUEST_KEYS = {
+    "schema", "issue", "operator_id", "reason", "issued_at", "expires_at",
+}
 
 
 def run(argv, *, cwd=None, input_text=None, check=True):
@@ -1029,6 +1040,241 @@ def successful_post_merge_checks(repo, merge, required):
             raise Refusal(f"required post-merge check is unsuccessful: {name}")
         successful.append(name)
     return successful
+
+
+def emergency_request(path, *, require_current=True):
+    if not path.is_absolute() or path.is_symlink():
+        raise Refusal("emergency closeout request is unsafe")
+    original = path
+    path = path.resolve(strict=True)
+    info = path.lstat()
+    if (
+        path != original
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_size > 64_000
+    ):
+        raise Refusal("emergency closeout request is unsafe")
+    try:
+        def unique_object(pairs):
+            value = {}
+            for name, item in pairs:
+                if name in value:
+                    raise ValueError("duplicate request field")
+                value[name] = item
+            return value
+
+        value = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    except (UnicodeError, ValueError) as error:
+        raise Refusal("emergency closeout request is invalid") from error
+    if not isinstance(value, dict) or set(value) != EMERGENCY_REQUEST_KEYS:
+        raise Refusal("emergency closeout request has unknown or missing fields")
+    issued = timestamp(value.get("issued_at"), "emergency issued_at")
+    expires = timestamp(value.get("expires_at"), "emergency expires_at")
+    current = datetime.now(timezone.utc)
+    if (
+        value.get("schema") != EMERGENCY_REQUEST_SCHEMA
+        or issued.tzinfo is None
+        or expires.tzinfo is None
+        or issued.microsecond
+        or expires.microsecond
+        or expires <= issued
+        or (expires - issued).total_seconds() > 24 * 60 * 60
+        or (
+            require_current
+            and (issued > current or (current - issued).total_seconds() > 15 * 60 or current >= expires)
+        )
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", value.get("operator_id", ""))
+        or value.get("operator_id") == "auto"
+        or not isinstance(value.get("reason"), str)
+        or not 20 <= len(value["reason"]) <= 500
+        or not re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*",
+            value.get("issue", ""),
+        )
+    ):
+        raise Refusal("emergency closeout request authority is invalid or expired")
+    return value
+
+
+def authenticated_passport(ticket, state_dir):
+    module_path = Path(__file__).with_name("ticket-passport.py")
+    spec = importlib.util.spec_from_file_location("emergency_ticket_passport", module_path)
+    if spec is None or spec.loader is None:
+        raise Refusal("passport validator is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        state_dir = module.safe_directory(state_dir)
+        value, _ = module.load_passport(
+            state_dir / "passports" / f"{ticket}.json", module.key(state_dir),
+        )
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise Refusal(f"authenticated emergency passport is unavailable: {error}") from error
+    return value
+
+
+def validate_linked_issue(url):
+    match = re.fullmatch(
+        r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)",
+        url,
+    )
+    issue = json.loads(gh("api", f"repos/{match.group(1)}/issues/{match.group(2)}").stdout)
+    if (
+        issue.get("number") != int(match.group(2))
+        or issue.get("html_url") != url
+        or issue.get("state") != "open"
+        or "pull_request" in issue
+    ):
+        raise Refusal("linked emergency closeout issue is not an exact open issue")
+
+
+def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, method):
+    request = emergency_request(args.request)
+    validate_linked_issue(request["issue"])
+    try:
+        protected_terminal(workdir, args.ticket)
+    except ValidationError as error:
+        if str(error) != "protected main lacks valid terminal evidence":
+            raise Refusal(f"protected terminal evidence is invalid: {error}") from error
+    else:
+        raise Refusal("ticket is already terminal on protected main")
+    main_head = git(workdir, "rev-parse", "origin/main").stdout.strip()
+    remote_main = git(
+        workdir, "ls-remote", "--heads", "--", os.environ["FACTORY_CERTIFIED_PRODUCT_ORIGIN"],
+        "refs/heads/main",
+    ).stdout.split()
+    if remote_main[:1] != [main_head]:
+        raise Refusal("origin/main is not the authoritative protected tip")
+    ticket_path = f"factory/tickets/{args.ticket}.md"
+    text = git(workdir, "show", f"{main_head}:{ticket_path}").stdout
+    state = field(text, "State")
+    if state not in {
+        "Ready", "Planning", "Building", "Review", "Awaiting Approval",
+        "Approved", "Blocked-Escalated",
+    }:
+        raise Refusal("emergency closeout requires one exact nonterminal protected state")
+    branch = f"{prefix}{args.ticket}"
+    pr = exact_pr(repo, branch, "all")
+    if pr.get("state") != "MERGED" or not pr.get("mergedAt"):
+        raise Refusal("ticket PR is not merged")
+    pr_head = pr.get("headRefOid", "")
+    merge = (pr.get("mergeCommit") or {}).get("oid", "")
+    if not valid_oid(pr_head) or not valid_oid(merge):
+        raise Refusal("merged PR lacks exact head and merge commits")
+    if git(workdir, "merge-base", "--is-ancestor", merge, main_head, check=False).returncode:
+        raise Refusal("PR merge commit is not reachable from authoritative origin/main")
+    successful = successful_post_merge_checks(repo, merge, checks)
+    state_dir = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    if not state_dir.is_absolute():
+        raise Refusal("trusted controller state is unavailable")
+    state_info = state_dir.lstat()
+    if (
+        state_dir.resolve(strict=True) != state_dir
+        or not stat.S_ISDIR(state_info.st_mode)
+        or state_info.st_uid != os.geteuid()
+        or stat.S_IMODE(state_info.st_mode) != 0o700
+    ):
+        raise Refusal("trusted controller state is unsafe")
+    passport_path = state_dir / "passports" / f"{args.ticket}.json"
+    claim_path = state_dir / "claims" / f"{args.ticket}.json"
+    if passport_path.exists() and not passport_path.is_symlink():
+        passport = authenticated_passport(args.ticket, state_dir)
+        if (
+            passport.get("ticket") != args.ticket
+            or passport.get("project") != os.environ.get("FACTORY_PROJECT")
+            or passport.get("branch") != branch
+            or passport.get("current_state") != state
+            or passport.get("publication_state") not in {
+                "none", "validating", "ready", "merge-pending", "merged", "repair",
+            }
+            or not valid_oid(passport.get("factory_sha", ""))
+            or not valid_oid(passport.get("head_sha", ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", passport.get("passport_sha256", ""))
+        ):
+            raise Refusal("authenticated passport does not match the emergency target")
+        passport_plan = {
+            name: passport[name]
+            for name in (
+                "passport_sha256", "current_state", "publication_state",
+                "factory_sha", "head_sha",
+            )
+        }
+        try:
+            claim_info = claim_path.lstat()
+            claim_raw = claim_path.read_bytes()
+            claim = json.loads(claim_raw)
+        except (FileNotFoundError, OSError, json.JSONDecodeError) as error:
+            raise Refusal("blocked emergency claim is unavailable") from error
+        if (
+            claim_path.is_symlink()
+            or not stat.S_ISREG(claim_info.st_mode)
+            or claim_info.st_uid != os.geteuid()
+            or stat.S_IMODE(claim_info.st_mode) != 0o600
+            or claim_info.st_nlink != 1
+            or claim_info.st_size > 64_000
+            or not isinstance(claim, dict)
+            or claim.get("schema") != "nysa.software-factory.controller-claim/v1"
+            or claim.get("ticket") != args.ticket
+            or claim.get("branch") != branch
+            or claim.get("status") != "blocked"
+            or claim.get("parked") is not True
+            or claim.get("lease") != ""
+            or claim.get("publication_lease") != ""
+            or not re.fullmatch(r"[a-z][a-z-]*", claim.get("role", ""))
+            or not isinstance(claim.get("blocked_reason"), str)
+            or not claim["blocked_reason"]
+            or not re.fullmatch(r"[0-9a-f]{64}", claim.get("receipt", ""))
+        ):
+            raise Refusal("emergency claim is not an exact idle blocked claim")
+        claim_plan = {
+            "sha256": hashlib.sha256(claim_raw).hexdigest(),
+            "status": claim["status"],
+            "role": claim["role"],
+            "blocked_reason": claim["blocked_reason"],
+            "receipt": claim["receipt"],
+            "parked": claim["parked"],
+        }
+        execution_basis = "authenticated-passport"
+    elif (
+        os.path.lexists(passport_path)
+        or os.path.lexists(claim_path)
+        or field(text, "Assignee") != "operator (built outside the software factory)"
+    ):
+        raise Refusal("passportless emergency target is not exact operator-built work")
+    else:
+        passport_plan = None
+        claim_plan = None
+        execution_basis = "operator-built-no-runtime"
+    plan = {
+        "schema": EMERGENCY_PLAN_SCHEMA,
+        "ticket": args.ticket,
+        "repository": repo,
+        "branch": branch,
+        "pr_number": pr["number"],
+        "pr_head": pr_head,
+        "merge_commit": merge,
+        "merged_at": pr["mergedAt"],
+        "protected_main": {
+            "commit": main_head,
+            "tree": git(workdir, "rev-parse", f"{main_head}^{{tree}}").stdout.strip(),
+            "ticket_blob": git(workdir, "rev-parse", f"{main_head}:{ticket_path}").stdout.strip(),
+            "state": state,
+        },
+        "required_checks": checks,
+        "successful_checks": successful,
+        "passport": passport_plan,
+        "claim": claim_plan,
+        "execution_basis": execution_basis,
+        "kit_sha": kit_sha,
+        "auto_merge_method": method,
+        **{name: value for name, value in request.items() if name != "schema"},
+    }
+    approval = hashlib.sha256(json.dumps(
+        plan, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    return {"action": "emergency-plan", "plan": plan, "approval_sha256": approval}
 
 
 def validate_closeout_commit(
@@ -2136,6 +2382,132 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     return {"action": "approval", "head": head, "pr_number": current["number"], "auto_merge": True}
 
 
+def emergency_done(
+    args, product, workdir, repo, prefix, remote, checks, kit_sha, method,
+    preview, request,
+):
+    branch = f"chore/{args.ticket.lower().replace('-', '')}-closeout"
+    head = ensure_clean_branch(product, workdir, branch, require_remote=False)
+    main_head = git(workdir, "rev-parse", "origin/main").stdout.strip()
+    remote_line = git(
+        workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}",
+    ).stdout.split()
+    remote_head = remote_line[0] if remote_line else ""
+    done_path = workdir / "factory" / "attestations" / args.ticket / "done.json"
+    retry = head != main_head
+    done_att = json.loads(done_path.read_text()) if done_path.is_file() else None
+    pending_push = remote_head != head
+    if not retry and remote_head not in ("", head):
+        raise Refusal("closeout branch must exactly match its certified remote tip")
+    if retry and pending_push and (
+        not done_att or remote_head not in ("", done_att.get("closeout_parent"))
+    ):
+        raise Refusal("closeout branch must exactly match its certified remote tip")
+    if retry and not done_att:
+        raise Refusal("modified closeout head lacks an exact emergency Done receipt")
+    if not retry and done_path.is_file():
+        raise Refusal("Done is already present on protected main; use terminal sequencing")
+    ticket_branch = f"{prefix}{args.ticket}"
+    pr = exact_pr(repo, ticket_branch, "all")
+    merge = (pr.get("mergeCommit") or {}).get("oid", "")
+    if (
+        pr.get("state") != "MERGED"
+        or not pr.get("mergedAt")
+        or not valid_oid(pr.get("headRefOid", ""))
+        or not valid_oid(merge)
+        or git(workdir, "merge-base", "--is-ancestor", merge, "origin/main", check=False).returncode
+    ):
+        raise Refusal("emergency closeout requires one exact merged ticket PR on protected main")
+    successful = successful_post_merge_checks(repo, merge, checks)
+    if retry:
+        plan = done_att.get("plan") if isinstance(done_att, dict) else None
+        expected_request = {
+            name: request[name] for name in EMERGENCY_REQUEST_KEYS if name != "schema"
+        }
+        if (
+            done_att.get("schema") != EMERGENCY_DONE_SCHEMA
+            or done_att.get("approval_sha256") != args.approve_hash
+            or not isinstance(plan, dict)
+            or any(plan.get(name) != value for name, value in expected_request.items())
+            or done_att.get("pr_number") != pr.get("number")
+            or done_att.get("pr_head") != pr.get("headRefOid")
+            or done_att.get("merge_commit") != merge
+            or done_att.get("merged_at") != pr.get("mergedAt")
+            or done_att.get("required_checks") != checks
+            or done_att.get("successful_checks") != successful
+        ):
+            raise Refusal("emergency closeout retry does not match its exact authorization")
+    else:
+        if preview["approval_sha256"] != args.approve_hash:
+            raise Refusal("approval hash does not match the exact emergency closeout plan")
+        plan = preview["plan"]
+        if (
+            plan["protected_main"]["commit"] != head
+            or plan["pr_number"] != pr.get("number")
+            or plan["pr_head"] != pr.get("headRefOid")
+            or plan["merge_commit"] != merge
+            or plan["merged_at"] != pr.get("mergedAt")
+            or plan["required_checks"] != checks
+            or plan["successful_checks"] != successful
+        ):
+            raise Refusal("emergency closeout target changed after planning")
+        ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
+        text = ticket_path.read_text()
+        if field(text, "State") != plan["protected_main"]["state"]:
+            raise Refusal("emergency closeout ticket changed after planning")
+        ledger = Path(__file__).with_name("ledger-view.py")
+        projection = run([
+            sys.executable, "-I", "-S", str(ledger), "project",
+            "--factory-root", str(product), "--workdir", str(workdir),
+            "--ticket", args.ticket,
+        ])
+        ledger_result = json.loads(projection.stdout)
+        text = replace_field(text, "State", "Done")
+        text = check_item(text, "PR merged and staging confirmed")
+        ticket_path.write_text(text)
+        done_att = {
+            "schema": EMERGENCY_DONE_SCHEMA,
+            "ticket": args.ticket,
+            "repository": repo,
+            "pr_number": pr["number"],
+            "pr_head": pr["headRefOid"],
+            "merge_commit": merge,
+            "merged_at": pr["mergedAt"],
+            "required_checks": checks,
+            "successful_checks": successful,
+            "ledger": ledger_result,
+            "kit_sha": kit_sha,
+            "closeout_parent": head,
+            "auto_merge_method": method,
+            "plan": plan,
+            "approval_sha256": args.approve_hash,
+            "attested_at": now(),
+        }
+        write_json(done_path, done_att)
+        head = commit_push(
+            product, workdir, remote, branch,
+            f"{args.ticket}: record authorized emergency closeout",
+            (workdir / "factory" / "ledger.csv", ticket_path, done_path),
+        )
+    try:
+        terminal = protected_terminal(workdir, args.ticket, head)
+    except ValidationError as error:
+        raise Refusal(f"emergency closeout receipt is invalid: {error}") from error
+    if terminal.get("basis") != "attested-emergency-closeout":
+        raise Refusal("emergency closeout did not produce exact terminal evidence")
+    if retry and pending_push:
+        push_head(product, workdir, remote, branch, head)
+    closeout_pr = ensure_closeout_pr(repo, args.ticket, branch, head, method)
+    return {
+        "action": "emergency-done",
+        "head": head,
+        "attestation": done_att,
+        "closeout_pr_number": closeout_pr["number"],
+        "closeout_pr_state": closeout_pr["state"],
+        "auto_merge": closeout_pr["state"] != "MERGED",
+    }
+
+
 def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     branch = f"chore/{args.ticket.lower().replace('-', '')}-closeout"
     head = ensure_clean_branch(product, workdir, branch, require_remote=False)
@@ -2258,15 +2630,26 @@ def main():
     parser.add_argument("--workdir", required=True)
     parser.add_argument(
         "--action",
-        choices=("bundle", "approval", "dependency-refresh", "refresh", "done"),
+        choices=(
+            "bundle", "approval", "dependency-refresh", "refresh", "done",
+            "emergency-plan", "emergency-apply",
+        ),
         required=True,
     )
     parser.add_argument("--attest-only", action="store_true")
+    parser.add_argument("--request", type=Path)
+    parser.add_argument("--approve-hash", default="")
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
     if args.attest_only and args.action != "approval":
         parser.error("--attest-only requires --action approval")
+    emergency = args.action in {"emergency-plan", "emergency-apply"}
+    if emergency != (args.request is not None) or (
+        args.action == "emergency-apply"
+        and not re.fullmatch(r"[0-9a-f]{64}", args.approve_hash)
+    ) or (args.action != "emergency-apply" and args.approve_hash):
+        parser.error("emergency closeout requires an exact request and apply approval hash")
     product = Path(os.environ["FACTORY_ROOT"]).resolve()
     workdir = Path(args.workdir).resolve()
     remote = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
@@ -2274,7 +2657,25 @@ def main():
     if not remote or not re.fullmatch(r"[0-9a-f]{40}", kit_sha):
         raise Refusal("trusted launcher evidence is unavailable")
     repo, prefix, checks, method = parse_project(product / "factory" / "PROJECT.env")
-    if args.action == "bundle":
+    if args.action == "emergency-plan":
+        result = emergency_preview(
+            args, product, workdir, repo, prefix, checks, kit_sha, method,
+        )
+    elif args.action == "emergency-apply":
+        retry = (
+            git(workdir, "rev-parse", "HEAD").stdout.strip()
+            != git(workdir, "rev-parse", "origin/main").stdout.strip()
+            and (workdir / "factory" / "attestations" / args.ticket / "done.json").is_file()
+        )
+        request = emergency_request(args.request, require_current=not retry)
+        preview = None if retry else emergency_preview(
+            args, product, workdir, repo, prefix, checks, kit_sha, method,
+        )
+        result = emergency_done(
+            args, product, workdir, repo, prefix, remote, checks, kit_sha,
+            method, preview, request,
+        )
+    elif args.action == "bundle":
         result = bundle(args, product, workdir, repo, prefix, remote, kit_sha)
     elif args.action == "approval":
         result = approval(

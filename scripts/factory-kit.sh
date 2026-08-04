@@ -2812,7 +2812,8 @@ for ticket_id in sorted(ticket_ids):
                     % (ticket_id, error)
                 )
         if terminal.get("basis") not in (
-            "attested-done", "validated-legacy-closeout",
+            "attested-done", "attested-emergency-closeout",
+            "validated-legacy-closeout",
             "validated-terminal-backfill",
             "validated-protected-merge-reconciliation",
             "certified-legacy-done",

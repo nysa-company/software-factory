@@ -433,7 +433,8 @@
           "--workdir",
           "<absolute-worktree>",
           "--action",
-          "<bundle|approval|dependency-refresh|refresh|done>",
+          "<bundle|approval|dependency-refresh|refresh|done|emergency-plan|emergency-apply>",
+          "[--request <absolute-owner-request.json> --approve-hash <lowercase-sha256> (emergency only)]",
           "--json"
         ],
         "output": "an evidence-bound tracked attestation and exact protected GitHub auto-merge request",
@@ -447,6 +448,8 @@
           "initial done requires exact clean chore/tNNN-closeout with HEAD equal to origin/main; retries require the exact remote attested closeout commit",
           "AUTO_MERGE_METHOD is required and exactly squash, merge, or rebase",
           "done creates or reuses one exact closeout PR and requests protected auto-merge without bypass",
+          "emergency-plan is read-only and binds one open GitHub issue, explicit non-auto operator, current protected main, exact merged PR and checks, and the authenticated passport",
+          "emergency-apply requires the exact plan hash and reuses the ordinary protected closeout PR and ledger projection without synthesizing approval evidence",
           "a valid existing closeout commit is retryable without another projection or commit",
           "all pushes use the certification receipt product origin",
           "GitHub credentials come only from the trusted Hermes profile"

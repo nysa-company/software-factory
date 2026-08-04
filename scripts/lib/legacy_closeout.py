@@ -78,6 +78,29 @@ NORMAL_LEDGER_KEYS = {
     "schema", "schema_version", "status", "ticket", "row_count",
     "ticket_cost_usd", "sha256",
 }
+EMERGENCY_DONE_SCHEMA = "nysa.software-factory.ticket-emergency-done/v1"
+EMERGENCY_PLAN_SCHEMA = "nysa.software-factory.emergency-closeout-plan/v1"
+EMERGENCY_DONE_KEYS = {
+    "schema", "ticket", "repository", "pr_number", "pr_head",
+    "merge_commit", "merged_at", "required_checks", "successful_checks",
+    "ledger", "kit_sha", "closeout_parent", "auto_merge_method", "plan",
+    "approval_sha256", "attested_at",
+}
+EMERGENCY_PLAN_KEYS = {
+    "schema", "ticket", "repository", "branch", "pr_number", "pr_head",
+    "merge_commit", "merged_at", "protected_main", "required_checks",
+    "successful_checks", "passport", "claim", "kit_sha", "auto_merge_method",
+    "execution_basis", "issue", "operator_id", "reason", "issued_at",
+    "expires_at",
+}
+EMERGENCY_MAIN_KEYS = {"commit", "tree", "ticket_blob", "state"}
+EMERGENCY_PASSPORT_KEYS = {
+    "passport_sha256", "current_state", "publication_state", "factory_sha",
+    "head_sha",
+}
+EMERGENCY_CLAIM_KEYS = {
+    "sha256", "status", "role", "blocked_reason", "receipt", "parked",
+}
 
 
 def run(repo, *args, input_text=None, check=True):
@@ -239,12 +262,179 @@ def repository_from_project(repo, ref):
     return values[0]
 
 
+def _emergency_terminal(repo, ticket, ref, done):
+    exact(done, EMERGENCY_DONE_KEYS, "emergency Done attestation")
+    plan = exact(done.get("plan"), EMERGENCY_PLAN_KEYS, "emergency closeout plan")
+    protected = exact(
+        plan.get("protected_main"), EMERGENCY_MAIN_KEYS,
+        "emergency protected-main basis",
+    )
+    passport = plan.get("passport")
+    if passport is not None:
+        exact(passport, EMERGENCY_PASSPORT_KEYS, "emergency passport basis")
+    claim = plan.get("claim")
+    if claim is not None:
+        exact(claim, EMERGENCY_CLAIM_KEYS, "emergency claim basis")
+    ledger = exact(done.get("ledger"), NORMAL_LEDGER_KEYS, "emergency Done ledger")
+    repository = repository_from_project(repo, ref)
+    parent = oid(done.get("closeout_parent"), "emergency closeout parent")
+    pr_head = oid(done.get("pr_head"), "emergency PR head")
+    merge = oid(done.get("merge_commit"), "emergency merge commit")
+    kit_sha = oid(done.get("kit_sha"), "emergency kit SHA")
+    for name in ("commit", "tree", "ticket_blob"):
+        oid(protected.get(name), f"emergency protected-main {name}")
+    if passport is not None:
+        digest(passport.get("passport_sha256"), "emergency passport passport_sha256")
+        for name in ("factory_sha", "head_sha"):
+            oid(passport.get(name), f"emergency passport {name}")
+    if claim is not None:
+        digest(claim.get("sha256"), "emergency claim sha256")
+        digest(claim.get("receipt"), "emergency claim receipt")
+    if (
+        done["schema"] != EMERGENCY_DONE_SCHEMA
+        or plan["schema"] != EMERGENCY_PLAN_SCHEMA
+        or done["ticket"] != ticket
+        or plan["ticket"] != ticket
+        or done["repository"] != repository
+        or plan["repository"] != repository
+        or plan["branch"] != f"ticket/{ticket}"
+        or done["pr_number"] != plan["pr_number"]
+        or not isinstance(done["pr_number"], int)
+        or done["pr_number"] <= 0
+        or pr_head != plan["pr_head"]
+        or merge != plan["merge_commit"]
+        or done["merged_at"] != plan["merged_at"]
+        or done["required_checks"] != plan["required_checks"]
+        or done["successful_checks"] != plan["successful_checks"]
+        or done["required_checks"] != done["successful_checks"]
+        or not done["required_checks"]
+        or len(done["required_checks"]) != len(set(done["required_checks"]))
+        or kit_sha != plan["kit_sha"]
+        or done["auto_merge_method"] != plan["auto_merge_method"]
+        or done["auto_merge_method"] not in {"squash", "merge", "rebase"}
+        or parent != protected["commit"]
+        or protected["state"] not in {
+            "Ready", "Planning", "Building", "Review", "Awaiting Approval",
+            "Approved", "Blocked-Escalated",
+        }
+        or plan["execution_basis"] not in {
+            "authenticated-passport", "operator-built-no-runtime",
+        }
+        or (plan["execution_basis"] == "authenticated-passport") != (passport is not None)
+        or (plan["execution_basis"] == "authenticated-passport") != (claim is not None)
+        or (
+            passport is not None
+            and (
+                passport["current_state"] != protected["state"]
+                or passport["publication_state"] not in {
+                    "none", "validating", "ready", "merge-pending", "merged", "repair",
+                }
+            )
+        )
+        or (
+            claim is not None
+            and (
+                claim["status"] != "blocked"
+                or claim["parked"] is not True
+                or not re.fullmatch(r"[a-z][a-z-]*", claim["role"])
+                or not isinstance(claim["blocked_reason"], str)
+                or not claim["blocked_reason"]
+            )
+        )
+        or not re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*",
+            plan["issue"],
+        )
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", plan["operator_id"])
+        or plan["operator_id"] == "auto"
+        or not isinstance(plan["reason"], str)
+        or not 20 <= len(plan["reason"]) <= 500
+        or ledger["schema"] != "nysa.software-factory.ledger-projection/v1"
+        or ledger["schema_version"] != 1
+        or ledger["status"] != "ok"
+        or ledger["ticket"] != ticket
+        or not isinstance(ledger["row_count"], int)
+        or ledger["row_count"] < 0
+        or not isinstance(ledger["ticket_cost_usd"], (int, float))
+    ):
+        raise ValidationError("emergency closeout identities do not match")
+    expected_approval = hashlib.sha256(json.dumps(
+        plan, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    digest(done["approval_sha256"], "emergency approval sha256")
+    digest(ledger["sha256"], "emergency ledger sha256")
+    if done["approval_sha256"] != expected_approval:
+        raise ValidationError("emergency closeout approval does not bind its exact plan")
+    merged_at = timestamp(done["merged_at"], "emergency merged_at")
+    issued_at = timestamp(plan["issued_at"], "emergency issued_at")
+    expires_at = timestamp(plan["expires_at"], "emergency expires_at")
+    attested_at = timestamp(done["attested_at"], "emergency attested_at")
+    if not merged_at <= issued_at <= attested_at <= expires_at:
+        raise ValidationError("emergency closeout timestamps are not ordered")
+    if run(repo, "rev-parse", f"{parent}^{{tree}}").stdout.strip() != protected["tree"]:
+        raise ValidationError("emergency protected-main tree does not match")
+    ticket_path = f"factory/tickets/{ticket}.md"
+    source_text = text_at(repo, parent, ticket_path)
+    if (
+        source_text is None
+        or blob_at(repo, parent, ticket_path) != protected["ticket_blob"]
+        or one_field(source_text, "State") != protected["state"]
+    ):
+        raise ValidationError("emergency source ticket does not match protected main")
+    if plan["execution_basis"] == "operator-built-no-runtime" and one_field(
+        source_text, "Assignee",
+    ) != "operator (built outside the software factory)":
+        raise ValidationError("passportless emergency source is not operator-built")
+    ticket_text = text_at(repo, ref, ticket_path)
+    if ticket_text is None or one_field(ticket_text, "State").lower() != "done":
+        raise ValidationError("emergency terminal ticket is not Done")
+    done_path = f"factory/attestations/{ticket}/done.json"
+    additions = run(
+        repo, "log", "--format=%H", "--diff-filter=A", f"{parent}..{ref}", "--",
+        done_path,
+    ).stdout.splitlines()
+    current_done_blob = blob_at(repo, ref, done_path)
+    closeouts = []
+    for addition in additions:
+        addition = oid(addition, "emergency closeout candidate")
+        topology = run(repo, "rev-list", "--parents", "-n", "1", addition).stdout.split()
+        if topology == [addition, parent] and blob_at(repo, addition, done_path) == current_done_blob:
+            closeouts.append(addition)
+    if len(closeouts) != 1:
+        raise ValidationError("emergency Done attestation addition is ambiguous")
+    closeout = closeouts[0]
+    paths = set(run(
+        repo, "diff-tree", "--no-commit-id", "--name-only", "-r", closeout,
+    ).stdout.splitlines())
+    required_paths = {ticket_path, done_path}
+    if not required_paths.issubset(paths) or not paths.issubset(
+        required_paths | {"factory/ledger.csv"}
+    ):
+        raise ValidationError("emergency closeout commit changes unauthorized paths")
+    ledger_text = text_at(repo, closeout, "factory/ledger.csv")
+    current_ledger = text_at(repo, ref, "factory/ledger.csv")
+    if (
+        ledger_text is None
+        or not ledger_text.endswith("\n")
+        or hashlib.sha256(ledger_text.encode()).hexdigest() != ledger["sha256"]
+        or current_ledger is None
+        or not current_ledger.startswith(ledger_text)
+    ):
+        raise ValidationError("emergency closeout ledger does not match")
+    return {
+        "basis": "attested-emergency-closeout", "ticket": ticket,
+        "text": ticket_text,
+    }
+
+
 def _normal_terminal(repo, ticket, ref):
     root = f"factory/attestations/{ticket}"
     done_path = f"{root}/done.json"
     bundle = json_at(repo, ref, f"{root}/bundle.json", "bundle attestation")
     approval = json_at(repo, ref, f"{root}/approval.json", "approval attestation")
     done = json_at(repo, ref, done_path, "Done attestation")
+    if isinstance(done, dict) and done.get("schema") == EMERGENCY_DONE_SCHEMA:
+        return _emergency_terminal(repo, ticket, ref, done)
     present = tuple(value is not None for value in (bundle, approval, done))
     if not any(present):
         return None

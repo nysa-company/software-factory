@@ -2325,7 +2325,9 @@ assert commands["ticket-attest"]["arguments"] == [
     "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]",
     "[--receipt <lowercase-sha256> (required for Contract 1.8 non-done actions)]",
     "--workdir", "<absolute-worktree>",
-    "--action", "<bundle|approval|dependency-refresh|refresh|done>", "--json"
+    "--action", "<bundle|approval|dependency-refresh|refresh|done|emergency-plan|emergency-apply>",
+    "[--request <absolute-owner-request.json> --approve-hash <lowercase-sha256> (emergency only)]",
+    "--json"
 ]
 assert any("fresh review" in item and "stale bundle" in item
            for item in commands["ticket-attest"]["validation"])

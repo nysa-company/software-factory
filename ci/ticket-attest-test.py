@@ -3,8 +3,10 @@
 
 import argparse
 import base64
+from datetime import timedelta
 import json
 import hashlib
+import hmac
 import importlib.util
 import os
 from pathlib import Path
@@ -50,6 +52,18 @@ class LauncherContractTests(unittest.TestCase):
             '"FACTORY_CONTRACT_VERSION=$CONTRACT_VERSION"',
             ticket_attest,
         )
+
+    def test_launcher_confines_emergency_closeout_to_contract_18(self):
+        launcher = (
+            ROOT / "integrations/hermes/bin/factory-launch"
+        ).read_text(encoding="utf-8")
+        ticket_attest = launcher.split(
+            "\n  ticket-attest)\n", 1,
+        )[1].split("\n  project-ledger)\n", 1)[0]
+        self.assertIn('"$CONTRACT_VERSION" == "1.8.0"', ticket_attest)
+        self.assertIn('"$ATTEST_EMERGENCY" -eq 0', ticket_attest)
+        self.assertIn('"FACTORY_CONTROLLER_STATE_DIR=$CONTROLLER_STATE_DIR"', ticket_attest)
+        self.assertIn('ATTEST_ACTION" == "emergency-apply"', ticket_attest)
 
 
 class TicketAttestTests(unittest.TestCase):
@@ -422,7 +436,9 @@ elif a[:2] == ["pr", "view"]:
                           "isDraft": s["draft"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
 elif a[:1] == ["api"]:
-    if a[1].endswith("/status"):
+    if a[1] == "repos/acme/factory/issues/269":
+        print(json.dumps({"number": 269, "html_url": "https://github.com/acme/factory/issues/269", "state": "open"}))
+    elif a[1].endswith("/status"):
         print(json.dumps({"statuses": [{"context": k, "state": "success" if v else "failure"}
                                       for k, v in s["checks"].items()]}))
     else:
@@ -1505,6 +1521,129 @@ else:
         }
         merged_state.update(state)
         self.write_state(**merged_state)
+
+    def prepare_emergency(self, *, passport=True, **state):
+        merge_sha = self.head()
+        command("git", "branch", "-f", "main", merge_sha, cwd=self.product)
+        command("git", "push", "-q", "origin", f"{merge_sha}:refs/heads/main", cwd=self.product)
+        self.workdir = self.temp / "emergency-closeout"
+        command(
+            "git", "worktree", "add", "-q", "-b", "chore/t700-closeout",
+            str(self.workdir), "origin/main", cwd=self.product,
+        )
+        self.env["FAKE_WORKDIR"] = str(self.workdir)
+        self.controller_state = self.temp / "controller"
+        self.controller_state.mkdir(mode=0o700)
+        self.controller_state = self.controller_state.resolve()
+        (self.controller_state / "passports").mkdir(mode=0o700)
+        (self.controller_state / "claims").mkdir(mode=0o700)
+        self.env.update({
+            "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
+            "FACTORY_PROJECT": "test-product",
+        })
+        if passport:
+            key = b"p" * 32
+            (self.controller_state / "passport.key").write_bytes(key)
+            (self.controller_state / "passport.key").chmod(0o600)
+            value = {
+                "schema": "nysa.software-factory.ticket-passport/v1",
+                "ticket": "T-700", "project": "test-product",
+                "branch": "ticket/T-700", "current_state": "Review",
+                "publication_state": "none", "factory_sha": KIT_SHA,
+                "head_sha": merge_sha,
+            }
+            canonical = lambda item: (json.dumps(
+                item, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ) + "\n").encode()
+            value["authentication_sha256"] = hmac.new(
+                key, canonical(value), hashlib.sha256,
+            ).hexdigest()
+            value["passport_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
+            passport_path = self.controller_state / "passports/T-700.json"
+            passport_path.write_bytes(canonical(value))
+            passport_path.chmod(0o600)
+            claim_path = self.controller_state / "claims/T-700.json"
+            claim_path.write_text(json.dumps({
+                "schema": "nysa.software-factory.controller-claim/v1",
+                "ticket": "T-700", "branch": "ticket/T-700",
+                "status": "blocked", "parked": True, "lease": "",
+                "publication_lease": "", "role": "reviewer",
+                "blocked_reason": "controller-error", "receipt": "1" * 64,
+            }))
+            claim_path.chmod(0o600)
+        issued = TICKET_ATTEST.datetime.now(TICKET_ATTEST.timezone.utc).replace(microsecond=0)
+        self.emergency_request = self.temp / "emergency.json"
+        self.emergency_request.write_text(json.dumps({
+            "schema": "nysa.software-factory.emergency-closeout-request/v1",
+            "issue": "https://github.com/acme/factory/issues/269",
+            "operator_id": "owner-1",
+            "reason": "Close exact merged work without synthesizing missing evidence.",
+            "issued_at": issued.isoformat().replace("+00:00", "Z"),
+            "expires_at": (issued + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+        }))
+        self.emergency_request = self.emergency_request.resolve()
+        merged_state = {
+            "merged": True, "merge_sha": merge_sha, "pr_head": merge_sha,
+        }
+        merged_state.update(state)
+        self.write_state(**merged_state)
+
+    def emergency(self, action, approval=""):
+        arguments = [
+            sys.executable, str(SCRIPT), "--ticket", "T-700",
+            "--workdir", str(self.workdir), "--action", action,
+            "--request", str(self.emergency_request),
+        ]
+        if action == "emergency-apply":
+            arguments.extend(("--approve-hash", approval))
+        return command(*arguments, env=self.env, check=False)
+
+    def test_emergency_closeout_requires_exact_hash_and_retries(self):
+        self.prepare_emergency()
+        planned = self.emergency("emergency-plan")
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        plan = json.loads(planned.stdout)
+        self.assertIn(
+            "approval hash does not match",
+            self.emergency("emergency-apply", "0" * 64).stderr,
+        )
+        self.update_state(create_fail=True)
+        failed = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertIn("did not create", failed.stderr)
+        closeout_head = self.head_at(self.workdir)
+        self.update_state(create_fail=False)
+        retried = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head_at(self.workdir), closeout_head)
+        self.assertEqual(
+            TICKET_ATTEST.protected_terminal(
+                self.workdir, "T-700", closeout_head,
+            )["basis"],
+            "attested-emergency-closeout",
+        )
+
+    def test_emergency_closeout_accepts_exact_operator_built_work(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Priority: normal\n", "Priority: normal\nAssignee: operator (built outside the software factory)\n",
+        ))
+        self.commit("record operator-built source")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.prepare_emergency(passport=False)
+        stale_claim = self.controller_state / "claims/T-700.json"
+        stale_claim.write_text("{}\n")
+        stale_claim.chmod(0o600)
+        self.assertIn(
+            "not exact operator-built work",
+            self.emergency("emergency-plan").stderr,
+        )
+        stale_claim.unlink()
+        planned = self.emergency("emergency-plan")
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        plan = json.loads(planned.stdout)
+        result = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(plan["plan"]["passport"])
 
     def prepare_done_after_successor_route(self):
         self.bundle()

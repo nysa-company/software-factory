@@ -2048,8 +2048,24 @@ PY
        "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
        "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
       die "ticket-attest requires contract 1.3.0 or newer"
-    ATTEST_LEASE="" ATTEST_RECEIPT="" ATTEST_ONLY=0
-    if [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 10 &&
+    ATTEST_LEASE="" ATTEST_RECEIPT="" ATTEST_ONLY=0 ATTEST_EMERGENCY=0
+    ATTEST_REQUEST="" ATTEST_APPROVE_HASH=""
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 9 &&
+          "$1" == "--ticket" && "$3" == "--workdir" &&
+          "$5" == "--action" && "$6" == "emergency-plan" &&
+          "$7" == "--request" && "$9" == "--json" ]]; then
+      ATTEST_WORKDIR="$4" ATTEST_ACTION="$6" ATTEST_REQUEST="$8"
+      ATTEST_EMERGENCY=1
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 11 &&
+            "$1" == "--ticket" && "$3" == "--workdir" &&
+            "$5" == "--action" && "$6" == "emergency-apply" &&
+            "$7" == "--request" && "$9" == "--approve-hash" &&
+            "${11}" == "--json" ]]; then
+      ATTEST_WORKDIR="$4" ATTEST_ACTION="$6" ATTEST_REQUEST="$8"
+      ATTEST_APPROVE_HASH="${10}" ATTEST_EMERGENCY=1
+      [[ "$ATTEST_APPROVE_HASH" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid emergency approval hash"
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 10 &&
           "$1" == "--ticket" && "$3" == "--receipt" &&
           "$5" == "--workdir" && "$7" == "--action" &&
           "$9" == "--attest-only" && "${10}" == "--json" ]]; then
@@ -2089,14 +2105,17 @@ PY
     [[ "$ATTEST_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
     [[ "$ATTEST_ACTION" == "bundle" || "$ATTEST_ACTION" == "approval" ||
        "$ATTEST_ACTION" == "dependency-refresh" ||
-       "$ATTEST_ACTION" == "refresh" || "$ATTEST_ACTION" == "done" ]] ||
+       "$ATTEST_ACTION" == "refresh" || "$ATTEST_ACTION" == "done" ||
+       "$ATTEST_ACTION" == "emergency-plan" ||
+       "$ATTEST_ACTION" == "emergency-apply" ]] ||
       die "invalid ticket-attest action"
-    if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" ]]; then
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" &&
+          "$ATTEST_EMERGENCY" -eq 0 ]]; then
       [[ "$ATTEST_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
         die "invalid transition receipt"
     fi
     resolve_product_workdir "$ATTEST_WORKDIR"
-    if [[ "$ATTEST_ACTION" == "done" ]]; then
+    if [[ "$ATTEST_ACTION" == "done" || "$ATTEST_EMERGENCY" -eq 1 ]]; then
       ATTEST_BRANCH="chore/$(printf '%s' "$ATTEST_TICKET" | tr '[:upper:]' '[:lower:]' | tr -d '-')-closeout"
       [[ "$(git -C "$RESOLVED_WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null)" == "$ATTEST_BRANCH" ]] ||
         die "done worktree branch must be $ATTEST_BRANCH"
@@ -2115,6 +2134,26 @@ PY
     ATTEST_HELPER="$RELEASE_PATH/scripts/ticket-attest.sh"
     require_managed_file "$ATTEST_HELPER" "active release ticket-attest helper"
     add_certified_origin_env
+    if [[ "$ATTEST_EMERGENCY" -eq 1 ]]; then
+      ATTEST_REQUEST="$(expand_absolute_path "$ATTEST_REQUEST" 2>/dev/null || true)"
+      [[ -n "$ATTEST_REQUEST" ]] || die "emergency closeout request must be absolute"
+      require_managed_file "$ATTEST_REQUEST" "emergency closeout request"
+      controller_state_dir
+      EMERGENCY_ARGS=(
+        --ticket "$ATTEST_TICKET" --workdir "$RESOLVED_WORKDIR"
+        --action "$ATTEST_ACTION" --request "$ATTEST_REQUEST"
+      )
+      [[ "$ATTEST_ACTION" != "emergency-apply" ]] ||
+        EMERGENCY_ARGS+=(--approve-hash "$ATTEST_APPROVE_HASH")
+      HELPER_ENV+=(
+        "FACTORY_CONTROLLER_STATE_DIR=$CONTROLLER_STATE_DIR"
+        "FACTORY_CONTRACT_VERSION=$CONTRACT_VERSION"
+      )
+      cleanup_runtime
+      trap - EXIT HUP INT TERM
+      exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \
+        "$RELEASE_PATH/scripts/ticket-attest.py" "${EMERGENCY_ARGS[@]}"
+    fi
     add_dispatch_lease_env "$ATTEST_LEASE"
     if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" ]]; then
       TICKET="$ATTEST_TICKET" LEASE_ID="$ATTEST_LEASE"

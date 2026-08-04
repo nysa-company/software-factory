@@ -478,7 +478,8 @@ PY
   REFRESH_ACTIVE=1
 fi
 if [[ -n "$TERMINAL_BASIS" ]]; then
-  if [[ "$TERMINAL_BASIS" == "attested-done" ]]; then
+  if [[ "$TERMINAL_BASIS" == "attested-done" ||
+        "$TERMINAL_BASIS" == "attested-emergency-closeout" ]]; then
     echo "COMPLETE attested Done is on protected main; release the matching lease"
   else
     echo "REFUSE protected main returned an unknown terminal basis"
