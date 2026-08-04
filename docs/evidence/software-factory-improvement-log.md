@@ -5114,6 +5114,78 @@ Validation: the regression requires a real second controller invocation with
 one runnable and two blocked targets, then proves both blocked claims remain
 passport-free and uncharged.
 
+## FI-20260804-180 — Concurrent passport initialization exposed an empty key
+
+Status: Focused passport regression green; protected CI and qualification pending
+Priority: P0 (#278)
+Area: controller recovery authentication
+Owner: Factory
+Impact: a second controller could open `passport.key` after its exclusive
+creation but before the first 32-byte write and reject a healthy recovery.
+Smallest repair: serialize all callers on one validated owner-only file lock,
+write and fsync a temporary, and publish once with no replacement.
+Validation: the regression pauses key generation, starts a concurrent reader,
+and proves both return the same complete key without partial visibility.
+
+## FI-20260804-181 — Linear freshness blocked its own authorized repair
+
+Status: Focused dispatch regressions green; protected CI and qualification pending
+Priority: P0 (#279)
+Area: pre-provider branch reset
+Owner: Factory
+Impact: stale Linear evidence stopped dispatch before the exact authorized
+control reset that was required for the next reconciliation to become fresh.
+Smallest repair: in claim mode only, run authenticated qualification resets
+before freshness, treat Merge-Policy as operator control, and prefer protected
+main when that field conflicts during lineage merge.
+Validation: a stale map plus protected Merge-Policy correction resets without
+a lease or provider call; the first command still refuses stale Linear and the
+fresh retry claims normally. Semantic drift remains refused.
+
+## FI-20260804-182 — No-op route migrations duplicated full resolutions
+
+Status: Focused model regressions green; protected CI and qualification pending
+Priority: P0 (#249)
+Area: route-journal migration
+Owner: Factory
+Impact: repeated kit pins copied the same resolution into every revision,
+driving journals toward the 1 MiB admission ceiling and making validation
+quadratic in bytes rewritten.
+Smallest repair: bind the prior resolution by canonical SHA-256, emit refreshed
+resolution evidence only when it changes, and scan backward for the latest
+material resolution. Legacy full-resolution revisions remain valid.
+Validation: 70 consecutive migrations stay below 100 KiB, tampered digests
+fail, physical refreshes remain active, and legacy journals validate.
+
+## FI-20260804-183 — Frozen contracts missed protected import allowlists
+
+Status: Focused readiness/preflight regressions green; protected CI and qualification pending
+Priority: P1 (#282)
+Area: planning and protected-test ownership
+Owner: Factory
+First seen: T-101 / nysa-app PR #322
+Impact: Builder implemented the exact frozen import, then protected CI rejected
+the pre-existing allowlist that no role owned, forcing a full planning lap.
+Smallest repair: Planner and Spec-linter inspect static source-boundary guards;
+readiness admits only exact `<test path> => <literal>` declarations whose
+tracked test is in Fixture-Seams. Unknown or unowned declarations fail closed.
+Validation: the mock conflict names the test/literal, refuses without ownership,
+passes with exact ownership, and rejects malformed evidence without app tests.
+
+## FI-20260804-184 — Auto-merge raced the open-PR approval lookup
+
+Status: Focused controller regressions green; protected CI and qualification pending
+Priority: P0 (#287)
+Area: publication closeout
+Owner: Factory
+First seen: T-101 / nysa-app PR #322
+Impact: GitHub merged after the controller's first query, then the open-PR
+helper failed and parked an otherwise complete ticket.
+Smallest repair: recheck merged state once around only that open-PR failure and
+enter the existing ordinary closeout path when confirmed.
+Validation: the deterministic query sequence false → open-PR failure → true
+releases publication, migrates the passport, and starts closeout; false rethrows.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
