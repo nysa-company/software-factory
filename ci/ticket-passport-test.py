@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, wait
 import hashlib
 import importlib.util
 import json
@@ -107,6 +108,26 @@ class TicketPassportTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.origin.stop()
         self.temporary.cleanup()
+
+    def test_concurrent_key_initialization_never_exposes_partial_key(self) -> None:
+        started = __import__("threading").Event()
+        release = __import__("threading").Event()
+        token_bytes = PASSPORT.secrets.token_bytes
+
+        def paused_token_bytes(size: int) -> bytes:
+            started.set()
+            self.assertTrue(release.wait(2))
+            return token_bytes(size)
+
+        with mock.patch.object(
+            PASSPORT.secrets, "token_bytes", side_effect=paused_token_bytes
+        ), ThreadPoolExecutor(max_workers=2) as pool:
+            creator = pool.submit(PASSPORT.key, self.state_dir)
+            self.assertTrue(started.wait(2))
+            reader = pool.submit(PASSPORT.key, self.state_dir)
+            self.assertFalse(wait([reader], timeout=0.05).done)
+            release.set()
+            self.assertEqual(creator.result(timeout=2), reader.result(timeout=2))
 
     def terminal(
         self,
