@@ -206,9 +206,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             launcher_text,
         )
         self.assertIn(
-            '"FACTORY_CLI_RUNTIME_ROOT=$PROVIDER_STATE_ROOT/cli-runtimes"',
+            '"FACTORY_CLI_RUNTIME_ROOT=$CLI_RUNTIME_ROOT"',
             launcher_text,
         )
+        self.assertIn('CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"', launcher_text)
         for relative in (
             "provider/accounting",
             "provider/cli-runtimes",

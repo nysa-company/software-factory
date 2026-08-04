@@ -177,7 +177,9 @@ def desired_configuration(
     return policy, activation
 
 
-def paths(root: Path, activation: Path | None = None) -> dict[str, Path]:
+def paths(
+    root: Path, activation: Path | None = None, cli_root: Path | None = None,
+) -> dict[str, Path]:
     activation = activation or root / "isolated-v1.enabled"
     if not activation.is_absolute() or activation.parent != root:
         raise ConfigError("provider activation path must be directly under the state root")
@@ -185,15 +187,15 @@ def paths(root: Path, activation: Path | None = None) -> dict[str, Path]:
         "activation": activation,
         "apply_root": root / "provider-apply-locks",
         "attempt_root": root / "provider-attempts",
-        "cli_root": root / "cli-runtimes",
+        "cli_root": cli_root or root / "cli-runtimes",
         "configuration_lock": root / "provider-configuration.lock",
         "database": root / "accounting/state-v2.sqlite3",
         "policy": root / "provider-policy.json",
     }
 
 
-def validate_cursor_runtime_path(root: Path) -> None:
-    runtime = root / "cli-runtimes/c" / ("0" * 22) / "data"
+def validate_cursor_runtime_path(cli_root: Path) -> None:
+    runtime = cli_root / "c" / ("0" * 22) / "data"
     if len(str(runtime)) > 75 or len(str(runtime / "projects")) > 84:
         raise ConfigError("owner-local root is too long for isolated Cursor scratch")
 
@@ -201,7 +203,7 @@ def validate_cursor_runtime_path(root: Path) -> None:
 def plan(release: Path, root: Path, capacity: int) -> dict[str, Any]:
     if not root.is_absolute():
         raise ConfigError("provider state root path must be absolute")
-    validate_cursor_runtime_path(root)
+    validate_cursor_runtime_path(paths(root)["cli_root"])
     policy, activation = desired_configuration(release, capacity)
     value = {
         "activation": activation,
@@ -346,12 +348,13 @@ def validate_limit(value: Any, label: str, capacity: int) -> None:
 
 
 def check(
-    release: Path, root: Path, capacity: int, activation: Path | None = None
+    release: Path, root: Path, capacity: int, activation: Path | None = None,
+    cli_root: Path | None = None,
 ) -> dict[str, Any]:
-    validate_cursor_runtime_path(root)
     routes = catalog_routes(release)
     secure_directory(root, "provider state root")
-    selected = paths(root, activation)
+    selected = paths(root, activation, cli_root)
+    validate_cursor_runtime_path(selected["cli_root"])
     policy_raw, policy = read_json(selected["policy"], "provider policy")
     activation_raw, activation = read_json(
         selected["activation"], "provider activation"
@@ -476,6 +479,7 @@ def main() -> None:
     apply_parser.add_argument("--approve-hash", required=True)
     check_parser = commands.add_parser("check")
     check_parser.add_argument("--activation", type=Path)
+    check_parser.add_argument("--cli-root", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "plan":
@@ -486,7 +490,8 @@ def main() -> None:
             )
         else:
             value = check(
-                args.release, args.root, args.capacity, args.activation
+                args.release, args.root, args.capacity, args.activation,
+                args.cli_root,
             )
         print(canonical(value))
     except (

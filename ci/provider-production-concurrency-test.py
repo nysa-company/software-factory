@@ -250,6 +250,23 @@ cleanup_cli_runtime
         )
         self.assertEqual(self.command("check", check=False).returncode, 2)
 
+    def test_check_accepts_a_distinct_short_cli_runtime_root(self) -> None:
+        self.apply()
+        cli_root = self.root / "q"
+        cli_root.mkdir(mode=0o700)
+        ready = json.loads(
+            self.command("check", "--cli-root", str(cli_root)).stdout
+        )
+        self.assertEqual(ready["runtime_root"]["path"], str(cli_root))
+
+        too_long = self.root / ("x" * 80)
+        too_long.mkdir(mode=0o700)
+        refused = self.command(
+            "check", "--cli-root", str(too_long), check=False
+        )
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("too long for isolated Cursor scratch", refused.stderr)
+
     def test_configuration_lock_serializes_apply_and_reservation(self) -> None:
         self.apply()
         lock_path = self.state / "provider-configuration.lock"
@@ -704,6 +721,12 @@ esac
         sha = "1" * 40
         (product / "factory/KIT_PIN").write_text(sha + "\n")
         (product / "factory/PROJECT.env").write_text("MAX_CONCURRENT_TICKETS=3\n")
+        binary_root = self.root / "doctor-bin"
+        binary_root.mkdir()
+        for name in ("agent", "claude", "codex", "gh", "hermes"):
+            path = binary_root / name
+            path.write_text("#!/bin/sh\nprintf '%s\\n' test\n")
+            path.chmod(0o700)
         environment = {
             **os.environ,
             "FACTORY_PROVIDER_ACTIVATION": str(self.state / "isolated-v1.enabled"),
@@ -711,8 +734,10 @@ esac
             "FACTORY_PROVIDER_ATTEMPT_ROOT": str(self.state / "provider-attempts"),
             "FACTORY_PROVIDER_DB": str(self.state / "accounting/state-v2.sqlite3"),
             "FACTORY_PROVIDER_POLICY": str(self.state / "provider-policy.json"),
+            "FACTORY_CLI_RUNTIME_ROOT": str(self.root),
             "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
             "HOME": str(self.home),
+            "PATH": f"{binary_root}:{os.environ['PATH']}",
         }
         arguments = [
             str(DOCTOR),
