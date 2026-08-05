@@ -52,6 +52,13 @@ EMERGENCY_REQUEST_SCHEMA = "nysa.software-factory.emergency-closeout-request/v1"
 EMERGENCY_REQUEST_KEYS = {
     "schema", "issue", "operator_id", "reason", "issued_at", "expires_at",
 }
+EMERGENCY_PAUSE_KEYS = {
+    "blocking_issue", "branch", "budget_sha256", "created_at_epoch",
+    "current_stage", "current_state", "factory_sha", "head_sha",
+    "passport_factory_sha", "passport_sha256", "pause_sha256",
+    "resume_state", "run_snapshot_sha256", "schema", "status", "ticket",
+    "worktree",
+}
 
 
 def run(argv, *, cwd=None, input_text=None, check=True):
@@ -1158,6 +1165,78 @@ def authenticated_passport(ticket, state_dir):
     return value
 
 
+def controller_record(path, label):
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or info.st_size > 64_000
+        ):
+            raise Refusal(f"{label} is unsafe")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            raw = handle.read()
+        value = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise Refusal(f"{label} is unavailable") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(value, dict):
+        raise Refusal(f"{label} is invalid")
+    return raw, value
+
+
+def paused_claim_basis(path, ticket, branch, state, passport, issue):
+    raw, value = controller_record(path, "paused emergency checkpoint")
+    signed = dict(value)
+    pause_digest = signed.pop("pause_sha256", "")
+    budget = value.get("budget_sha256")
+    if (
+        set(value) != EMERGENCY_PAUSE_KEYS
+        or value.get("schema") != "nysa.software-factory.ticket-pause/v2"
+        or value.get("blocking_issue") != issue
+        or value.get("ticket") != ticket
+        or value.get("branch") != branch
+        or value.get("status") != "blocked"
+        or value.get("current_state") != state
+        or value.get("current_state") != passport.get("current_state")
+        or value.get("head_sha") != passport.get("head_sha")
+        or value.get("passport_sha256") != passport.get("passport_sha256")
+        or not valid_oid(value.get("factory_sha", ""))
+        or not valid_oid(value.get("passport_factory_sha", ""))
+        or not isinstance(value.get("created_at_epoch"), int)
+        or isinstance(value.get("created_at_epoch"), bool)
+        or value["created_at_epoch"] <= 0
+        or not isinstance(value.get("current_stage"), str)
+        or not value["current_stage"]
+        or not isinstance(value.get("resume_state"), str)
+        or not value["resume_state"]
+        or not isinstance(value.get("worktree"), str)
+        or not Path(value["worktree"]).is_absolute()
+        or (budget is not None and not re.fullmatch(r"[0-9a-f]{64}", budget))
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("run_snapshot_sha256", ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", pause_digest)
+        or pause_digest != hashlib.sha256(json.dumps(
+            signed, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+    ):
+        raise Refusal("paused emergency checkpoint is invalid")
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "status": "blocked",
+        "role": "factory-paused",
+        "blocked_reason": "factory-issue-pause",
+        "receipt": pause_digest,
+        "parked": True,
+    }
+
+
 def validate_linked_issue(url):
     match = re.fullmatch(
         r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)",
@@ -1224,6 +1303,7 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
         raise Refusal("trusted controller state is unsafe")
     passport_path = state_dir / "passports" / f"{args.ticket}.json"
     claim_path = state_dir / "claims" / f"{args.ticket}.json"
+    pause_path = state_dir / f"pause-{args.ticket}.json"
     if passport_path.exists() and not passport_path.is_symlink():
         passport = authenticated_passport(args.ticket, state_dir)
         if (
@@ -1246,45 +1326,44 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
                 "factory_sha", "head_sha",
             )
         }
-        try:
-            claim_info = claim_path.lstat()
-            claim_raw = claim_path.read_bytes()
-            claim = json.loads(claim_raw)
-        except (FileNotFoundError, OSError, json.JSONDecodeError) as error:
-            raise Refusal("blocked emergency claim is unavailable") from error
-        if (
-            claim_path.is_symlink()
-            or not stat.S_ISREG(claim_info.st_mode)
-            or claim_info.st_uid != os.geteuid()
-            or stat.S_IMODE(claim_info.st_mode) != 0o600
-            or claim_info.st_nlink != 1
-            or claim_info.st_size > 64_000
-            or not isinstance(claim, dict)
-            or claim.get("schema") != "nysa.software-factory.controller-claim/v1"
-            or claim.get("ticket") != args.ticket
-            or claim.get("branch") != branch
-            or claim.get("status") != "blocked"
-            or claim.get("parked") is not True
-            or claim.get("lease") != ""
-            or claim.get("publication_lease") != ""
-            or not re.fullmatch(r"[a-z][a-z-]*", claim.get("role", ""))
-            or not isinstance(claim.get("blocked_reason"), str)
-            or not claim["blocked_reason"]
-            or not re.fullmatch(r"[0-9a-f]{64}", claim.get("receipt", ""))
-        ):
-            raise Refusal("emergency claim is not an exact idle blocked claim")
-        claim_plan = {
-            "sha256": hashlib.sha256(claim_raw).hexdigest(),
-            "status": claim["status"],
-            "role": claim["role"],
-            "blocked_reason": claim["blocked_reason"],
-            "receipt": claim["receipt"],
-            "parked": claim["parked"],
-        }
+        if os.path.lexists(claim_path):
+            claim_raw, claim = controller_record(
+                claim_path, "blocked emergency claim",
+            )
+            if (
+                claim.get("schema") != "nysa.software-factory.controller-claim/v1"
+                or claim.get("ticket") != args.ticket
+                or claim.get("branch") != branch
+                or claim.get("status") != "blocked"
+                or claim.get("parked") is not True
+                or claim.get("lease") != ""
+                or claim.get("publication_lease") != ""
+                or not re.fullmatch(r"[a-z][a-z-]*", claim.get("role", ""))
+                or not isinstance(claim.get("blocked_reason"), str)
+                or not claim["blocked_reason"]
+                or not re.fullmatch(r"[0-9a-f]{64}", claim.get("receipt", ""))
+            ):
+                raise Refusal("emergency claim is not an exact idle blocked claim")
+            claim_plan = {
+                "sha256": hashlib.sha256(claim_raw).hexdigest(),
+                "status": claim["status"],
+                "role": claim["role"],
+                "blocked_reason": claim["blocked_reason"],
+                "receipt": claim["receipt"],
+                "parked": claim["parked"],
+            }
+        elif os.path.lexists(pause_path):
+            claim_plan = paused_claim_basis(
+                pause_path, args.ticket, branch, state, passport,
+                request["issue"],
+            )
+        else:
+            raise Refusal("blocked emergency claim is unavailable")
         execution_basis = "authenticated-passport"
     elif (
         os.path.lexists(passport_path)
         or os.path.lexists(claim_path)
+        or os.path.lexists(pause_path)
     ):
         raise Refusal("passportless emergency target is not exact operator-built work")
     else:

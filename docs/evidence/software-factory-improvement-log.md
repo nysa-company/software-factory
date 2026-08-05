@@ -5305,6 +5305,25 @@ compact digest with the canonical active-resolution hash.
 Validation: one focused regression proves legacy and compact acceptance,
 digest tampering refusal, and unchanged logical-routing enforcement.
 
+## FI-20260805-193 — Hard-cap pause could not enter emergency closeout
+
+Status: Focused attestation regressions green; protected CI and qualification pending
+Priority: P1 (#319)
+Area: emergency closeout
+Owner: Factory
+First seen: T-108 under Factory
+`0c6b134660968db9063ffd91b886ddc38c3fadb6`
+Impact: the correct three-lap semantic cap parked the ticket with an empty
+claim role and receipt. Ticket control safely replaced that claim with a
+signed pause, but emergency planning accepted only a live blocked claim and
+therefore had no supported recovery basis.
+Smallest repair: derive the existing authenticated-claim plan shape from an
+exact controller-signed pause only when it matches the passport and the same
+open Factory issue named by the owner request. The emergency plan and terminal
+schemas remain unchanged.
+Validation: focused tests prove exact paused recovery, issue mismatch refusal,
+pause-digest tamper refusal, and end-to-end emergency terminal validation.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
