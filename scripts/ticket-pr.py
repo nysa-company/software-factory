@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
@@ -400,7 +400,9 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
     return "pass", []
 
 
-def railway_preview_urls(repo: str, number: int) -> list[str]:
+def railway_preview_evidence(
+    repo: str, number: int, branch: str, head: str,
+) -> tuple[list[str], dict[str, object]]:
     result = run([
         "gh", "pr", "view", str(number), "--repo", repo,
         "--json", "comments",
@@ -412,7 +414,7 @@ def railway_preview_urls(repo: str, number: int) -> list[str]:
         raise Refusal("GitHub returned invalid preview evidence") from error
     if not isinstance(comments, list):
         raise Refusal("GitHub returned invalid preview evidence")
-    urls = []
+    bodies = []
     for comment in comments:
         if not isinstance(comment, dict):
             raise Refusal("GitHub returned malformed preview evidence")
@@ -424,22 +426,118 @@ def railway_preview_urls(repo: str, number: int) -> list[str]:
             and isinstance(body, str)
         ):
             continue
-        for candidate in re.findall(r"\[Web\]\((https://[^\s()]+)\)", body):
-            parsed = urlsplit(candidate)
-            if (
-                parsed.scheme != "https"
-                or not parsed.hostname
-                or not parsed.hostname.endswith(".up.railway.app")
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.port is not None
-                or parsed.query
-                or parsed.fragment
-                or parsed.path not in ("", "/")
-            ):
-                raise Refusal("Railway preview URL is malformed")
-            urls.append(candidate.rstrip("/"))
-    return list(dict.fromkeys(urls))
+        if "railway-bot-comment-version=2" in body:
+            bodies.append(body)
+    if not bodies:
+        return [], {
+            "expected": head, "observed": [], "reason": "not_reported",
+            "status": "wait",
+        }
+    body = bodies[-1]
+    rows = re.findall(
+        r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*"
+        r"\[Web\]\((https://[^\s()]+)\)\s*\|[^\n]*$",
+        body,
+        re.M,
+    )
+    if not rows:
+        raise Refusal("Railway preview comment has no service evidence")
+    urls = []
+    deployments = []
+    railway = Path.home() / ".railway/bin/railway"
+    if not railway.is_file() or not os.access(railway, os.X_OK):
+        return [], {
+            "expected": head, "observed": [], "reason": "cli_unavailable",
+            "status": "wait",
+        }
+    for service, status_cell, candidate in rows:
+        parsed = urlsplit(candidate)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or not parsed.hostname.endswith(".up.railway.app")
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ("", "/")
+        ):
+            raise Refusal("Railway preview URL is malformed")
+        urls.append(candidate.rstrip("/"))
+        links = re.findall(r"\[View Logs\]\((https://[^\s()]+)\)", status_cell)
+        if len(links) != 1:
+            raise Refusal("Railway preview deployment link is malformed")
+        detail = urlsplit(links[0])
+        match = re.fullmatch(
+            r"/project/([0-9a-f-]{36})/service/([0-9a-f-]{36})", detail.path
+        )
+        query = parse_qs(detail.query, strict_parsing=True)
+        if (
+            detail.scheme != "https"
+            or detail.hostname != "railway.com"
+            or not match
+            or set(query) != {"id", "environmentId"}
+            or any(len(values) != 1 for values in query.values())
+            or not all(
+                re.fullmatch(r"[0-9a-f-]{36}", query[name][0])
+                for name in ("id", "environmentId")
+            )
+        ):
+            raise Refusal("Railway preview deployment link is malformed")
+        project, service_id = match.groups()
+        deployment_id = query["id"][0]
+        environment = query["environmentId"][0]
+        result = subprocess.run(
+            [
+                str(railway), "deployment", "list", "-p", project,
+                "-e", environment, "-s", service_id, "--limit", "100", "--json",
+            ],
+            text=True, capture_output=True, check=False,
+        )
+        if result.returncode:
+            return urls, {
+                "expected": head, "observed": deployments,
+                "reason": "cli_unavailable", "status": "wait",
+            }
+        try:
+            values = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise Refusal("Railway returned invalid deployment evidence") from error
+        if not isinstance(values, list):
+            raise Refusal("Railway returned invalid deployment evidence")
+        matching = [
+            item for item in values
+            if isinstance(item, dict) and item.get("id") == deployment_id
+        ]
+        if len(matching) != 1:
+            deployments.append({"service": service.strip(), "sha": None})
+            continue
+        deployment = matching[0]
+        metadata = deployment.get("meta")
+        if not isinstance(metadata, dict):
+            raise Refusal("Railway returned malformed deployment evidence")
+        observed = metadata.get("commitHash")
+        if observed is not None and not re.fullmatch(r"[0-9a-f]{40}", observed):
+            raise Refusal("Railway returned malformed deployment commit")
+        deployments.append({
+            "deployment_id": deployment_id,
+            "service": service.strip(),
+            "sha": observed,
+            "status": deployment.get("status"),
+        })
+        if metadata.get("repo") != repo or metadata.get("branch") != branch:
+            raise Refusal("Railway deployment repository or branch is invalid")
+    exact = bool(deployments) and len(deployments) == len(rows) and all(
+        item.get("sha") == head and item.get("status") == "SUCCESS"
+        for item in deployments
+    )
+    return list(dict.fromkeys(urls)), {
+        "expected": head,
+        "observed": deployments,
+        "reason": None if exact else "stale_or_pending",
+        "status": "pass" if exact else "wait",
+    }
 
 
 def main() -> None:
@@ -531,12 +629,18 @@ def main() -> None:
         ):
             raise Refusal("ticket PR branch, base, head, or state is invalid")
         check_status, checks = required_check_status(repo, pr["number"])
-        preview_urls = (
-            railway_preview_urls(repo, pr["number"])
-            if boundary in {"narrator", "publication"}
+        preview_urls = []
+        preview_identity: dict[str, object] | None = None
+        if (
+            boundary in {"narrator", "publication"}
             and check_status == "pass"
-            else []
-        )
+        ):
+            preview_urls, preview_identity = railway_preview_evidence(
+                repo, pr["number"], branch, head,
+            )
+            if preview_identity["status"] != "pass":
+                check_status = "wait"
+                checks = [f"preview identity {preview_identity['reason']}"]
         if (
             boundary in {"narrator", "publication"}
             and check_status == "pass"
@@ -556,6 +660,7 @@ def main() -> None:
             "head": head,
             "pr_number": pr["number"],
             "preview_urls": preview_urls,
+            "preview_identity": preview_identity,
             "schema": SCHEMA,
             "status": status,
             "ticket": args.ticket,

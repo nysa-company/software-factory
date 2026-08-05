@@ -140,14 +140,40 @@ elif args[:2] == ['pr', 'checks']:
 elif args[:2] == ['pr', 'view']:
     print(json.dumps({'comments': [{
         'author': {'login': 'railway-app'},
-        'body': '| api | success | [Web](https://api-example-pr-7.up.railway.app) | now |\\n'
-                '| web | success | [Web](https://web-example-pr-7.up.railway.app) | now |',
+        'body': '<!-- railway-bot-comment-version=2 -->\\n'
+                '| api | ✅ Success ([View Logs](https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/11111111-1111-1111-1111-111111111111?id=33333333-3333-3333-3333-333333333333&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)) | [Web](https://api-example-pr-7.up.railway.app) | now |\\n'
+                '| web | ✅ Success ([View Logs](https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/22222222-2222-2222-2222-222222222222?id=44444444-4444-4444-4444-444444444444&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)) | [Web](https://web-example-pr-7.up.railway.app) | now |',
     }]}))
 else:
     raise SystemExit(2)
 """
         )
         (self.bin / "gh").chmod(0o700)
+        self.home = self.root / "home"
+        railway_bin = self.home / ".railway/bin"
+        railway_bin.mkdir(parents=True)
+        (railway_bin / "railway").write_text(
+            """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+service = args[args.index('-s') + 1]
+deployment = (
+    '33333333-3333-3333-3333-333333333333'
+    if service.startswith('1111') else
+    '44444444-4444-4444-4444-444444444444'
+)
+print(json.dumps([{
+    'id': deployment,
+    'status': 'SUCCESS',
+    'meta': {
+        'branch': 'ticket/T-100',
+        'commitHash': os.environ['FAKE_DEPLOYED_SHA'],
+        'repo': 'example/product',
+    },
+}]))
+"""
+        )
+        (railway_bin / "railway").chmod(0o700)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -181,7 +207,7 @@ else:
 
     def command(
         self, expected=0, bucket="pass", lease_id=LEASE_ID,
-        contract="", stage="", receipt="",
+        contract="", stage="", receipt="", deployed_sha=None,
     ):
         head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
@@ -190,6 +216,7 @@ else:
         environment = {
                 **os.environ,
                 "PATH": f"{self.bin}:{os.environ['PATH']}",
+                "HOME": str(self.home),
                 "FACTORY_ROOT": str(self.product),
                 "FACTORY_LEDGER": str(self.ledger),
                 "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
@@ -200,6 +227,7 @@ else:
                 "FAKE_PR_TRACE": str(self.trace),
                 "FAKE_PR_HEAD": head,
                 "FAKE_CHECK_BUCKET": bucket,
+                "FAKE_DEPLOYED_SHA": deployed_sha or head,
         }
         if contract:
             environment.update({
@@ -605,6 +633,15 @@ else:
                 "https://api-example-pr-7.up.railway.app",
                 "https://web-example-pr-7.up.railway.app",
             ],
+        )
+        self.assertEqual(ready["preview_identity"]["status"], "pass")
+
+        stale = self.command(deployed_sha="d" * 40)
+        self.assertEqual(stale["status"], "wait")
+        self.assertEqual(stale["preview_identity"]["reason"], "stale_or_pending")
+        self.assertEqual(
+            {item["sha"] for item in stale["preview_identity"]["observed"]},
+            {"d" * 40},
         )
 
         (self.product / "implementation.txt").write_text("changed after review\n")

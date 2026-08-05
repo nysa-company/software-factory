@@ -3484,3 +3484,39 @@ claim plus protected Done targets, while scheduling still counts only runnable
 claims. Successor upgrades therefore preserve intentional preflight blocks
 without inventing passports, leases, or work; missing target claims still keep
 the barrier closed.
+
+## 2026-08-04 — Decision 256: Qualification authority outlives disposable scratch
+
+Category: Qualification
+
+The sealed release and Cursor scratch may remain under `/private/tmp`, but an
+isolated qualification's controller passports/events, provider accounting,
+HMAC key, and paused worktrees live under the owner-only
+`~/.factory/qualification/<project>` root. Restore is supported only from a
+signed safe pause with the exact Factory/product/manifest/runtime, branch/head,
+stage, passport, pause, and run-snapshot identities; missing or changed evidence
+never gains authority from Git history.
+
+## 2026-08-04 — Decision 257: Paid evidence waits for exact deployment identity
+
+Category: Publication
+
+Green protected checks and a Railway success comment are insufficient for
+Narrator. Every linked preview service must report the exact reviewed
+repository, branch, and commit through Railway deployment evidence. Stale,
+pending, or unavailable identity waits without a role charge, resets its bound
+when the head changes, and emits one typed block after the bounded interval.
+Reviewer passport migration also precedes cell parking so its authenticated
+publication head can wait without a false controller error.
+
+## 2026-08-04 — Decision 258: Terminal prerequisites and replay are exact and early
+
+Category: Reliability
+
+Qualification preflight hydrates only committed immutable PR heads required by
+legacy and protected terminal records, verifies their exact SHA and ancestry,
+and changes no branch, ref, worktree, or ledger. Once both implementation and
+closeout PRs are merged, the controller persists an exact passport-, PR-,
+Factory-, and protected-main-bound Done request. A clean parked terminal
+`controller-error` may replay only that request; all other blocked claims remain
+ineligible, and terminal events are idempotent.

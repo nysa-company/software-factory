@@ -349,6 +349,8 @@ optional = (
     value.get("receipt_id", ""), value.get("product_tree", ""),
     value.get("qualification_mode", ""), value.get("takeover_kits_root", ""),
     value.get("operator_map_path", ""), value.get("product_sha", ""),
+    value.get("controller_state_path", ""),
+    value.get("provider_state_path", ""),
 )
 if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0"):
     for index, item in enumerate(optional):
@@ -357,7 +359,7 @@ if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1
         if index < 2 and not item:
             raise SystemExit(1)
 else:
-    optional = ("", "", "", "", "", "")
+    optional = ("", "", "", "", "", "", "", "")
 runtime_tuple = value.get("runtime_tuple", {})
 tuple_keys = {
     "factory_sha", "factory_tree", "product_sha", "product_tree",
@@ -410,7 +412,8 @@ unset FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER FACTORY_LAUNCH_TEST_ACTIVE_PARSED
 IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
   ACTIVE_PRODUCT_PATH ACTIVE_RELEASE_PATH RECEIPT_ID ACTIVE_PRODUCT_TREE \
   QUALIFICATION_MODE TAKEOVER_KITS_ROOT TAKEOVER_OPERATOR_MAP \
-  ACTIVE_PRODUCT_SHA ACTIVE_RUNTIME_TUPLE ACTIVE_RUNTIME_NODE \
+  ACTIVE_PRODUCT_SHA ACTIVE_CONTROLLER_STATE ACTIVE_PROVIDER_STATE \
+  ACTIVE_RUNTIME_TUPLE ACTIVE_RUNTIME_NODE \
   ACTIVE_RUNTIME_NPM <<EOF
 $ACTIVE_DATA
 EOF
@@ -421,6 +424,8 @@ EOF
 [[ "$TAKEOVER_KITS_ROOT" == "-" ]] && TAKEOVER_KITS_ROOT=""
 [[ "$TAKEOVER_OPERATOR_MAP" == "-" ]] && TAKEOVER_OPERATOR_MAP=""
 [[ "$ACTIVE_PRODUCT_SHA" == "-" ]] && ACTIVE_PRODUCT_SHA=""
+[[ "$ACTIVE_CONTROLLER_STATE" == "-" ]] && ACTIVE_CONTROLLER_STATE=""
+[[ "$ACTIVE_PROVIDER_STATE" == "-" ]] && ACTIVE_PROVIDER_STATE=""
 [[ "$ACTIVE_RUNTIME_NODE" == "-" ]] && ACTIVE_RUNTIME_NODE=""
 [[ "$ACTIVE_RUNTIME_NPM" == "-" ]] && ACTIVE_RUNTIME_NPM=""
 
@@ -677,7 +682,12 @@ KIT_TRUST_SCOPE="production-certified"
 if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
   MODEL_STATE_ROOT="$TAKEOVER_KITS_ROOT/projects"
 elif [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
-  PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"
+  [[ "$ACTIVE_CONTROLLER_STATE" == "$HOME/.factory/qualification/$PROJECT/controller" &&
+     "$ACTIVE_PROVIDER_STATE" == "$HOME/.factory/qualification/$PROJECT/provider" ]] ||
+    die "qualification durable authority path is invalid"
+  require_managed_directory "$ACTIVE_CONTROLLER_STATE" "qualification controller state"
+  require_managed_directory "$ACTIVE_PROVIDER_STATE" "qualification provider state"
+  PROVIDER_STATE_ROOT="$ACTIVE_PROVIDER_STATE"
   PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/provider-activation.json"
   CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"
 fi
@@ -835,6 +845,8 @@ validate_preflight_command() {
 controller_state_dir() {
   if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
     CONTROLLER_STATE_DIR="$TAKEOVER_KITS_ROOT/projects/$PROJECT/controller"
+  elif [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+    CONTROLLER_STATE_DIR="$ACTIVE_CONTROLLER_STATE"
   else
     CONTROLLER_STATE_DIR="$KITS_ROOT/projects/$PROJECT/controller"
   fi
