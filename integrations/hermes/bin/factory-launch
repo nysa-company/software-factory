@@ -359,7 +359,7 @@ if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1
         if index < 2 and not item:
             raise SystemExit(1)
 else:
-    optional = ("", "", "", "", "", "")
+    optional = ("", "", "", "", "", "", "", "")
 runtime_tuple = value.get("runtime_tuple", {})
 tuple_keys = {
     "factory_sha", "factory_tree", "product_sha", "product_tree",
