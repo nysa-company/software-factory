@@ -5186,6 +5186,73 @@ enter the existing ordinary closeout path when confirmed.
 Validation: the deterministic query sequence false → open-PR failure → true
 releases publication, migrates the passport, and starts closeout; false rethrows.
 
+## FI-20260804-185 — Safe qualification pause depended on temporary storage
+
+Status: Focused qualification regression green; protected CI and canary pending
+Priority: P0 (#297)
+Area: qualification recovery
+Owner: Factory
+Impact: purging `/private/tmp` removed the passport key, claim, events, and
+provider accounting required to resume an otherwise valid safe pause.
+Smallest repair: keep authority and parked checkpoints under the owner-only
+durable Factory root; restore only an exact signed, drained pause.
+Validation: prepare, sign and park, remove the disposable root, then restore the
+same head without recreating authority.
+
+## FI-20260804-186 — Green preview status could serve a stale commit
+
+Status: Focused Ticket-PR/controller regressions green; protected CI and canary pending
+Priority: P1 (#298)
+Area: Narrator admission
+Owner: Factory
+Impact: stale Railway services consumed a paid Narrator attempt and triggered
+unnecessary repair work.
+Smallest repair: require every bot-linked service deployment to bind the exact
+repository, branch, and reviewed SHA; wait without charge and time out once.
+Validation: exact two-service identity admits, stale identity waits, and a
+head-bound controller timer blocks once without launching a role.
+
+## FI-20260804-187 — Reviewer cell parked before passport migration
+
+Status: Focused and full controller regressions green; protected CI pending
+Priority: P1 (#299)
+Area: publication checkpointing
+Owner: Factory
+Impact: an expected Reviewer evidence commit looked like a foreign clean-cell
+head and became a top-level controller error while CI was still validating.
+Smallest repair: migrate the authenticated Reviewer passport before relocating
+or parking its clean cell.
+Validation: the regression fixes the exact call order; all controller tests pass.
+
+## FI-20260804-188 — Terminal history objects arrived one failure at a time
+
+Status: Focused qualification regression green; protected CI and canary pending
+Priority: P1 (#300)
+Area: qualification preflight
+Owner: Factory
+Impact: unreachable squash-PR heads made valid terminal records appear tampered
+only after paid work and protected closeout.
+Smallest repair: scan supported committed migration receipts once, fetch only
+their exact immutable PR refs without writing FETCH_HEAD or refs, then verify
+all required commit ancestry.
+Validation: an unreachable evidence ancestor is hydrated in one pass, refs stay
+byte-identical, the second offline pass performs no network access, and a
+mismatched ref fails with its migration path, PR, and expected SHA.
+
+## FI-20260804-189 — Transient terminal error permanently blocked Done replay
+
+Status: Focused and full controller regressions green; protected CI and canary pending
+Priority: P1 (#301)
+Area: terminal closeout
+Owner: Factory
+Impact: merged, clean, attested work could not re-enter the idempotent Done path
+after a local dependency failure.
+Smallest repair: persist the exact merged PRs, passport, Factory, and protected
+main before Done; only that clean parked `controller-error` may reacquire a
+lease and replay, with terminal events emitted once.
+Validation: exact replay recovers, unrelated errors stay blocked, and protected
+main drift invalidates the request.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

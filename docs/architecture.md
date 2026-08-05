@@ -443,6 +443,25 @@ the exact project and frozen candidate SHA. Different qualification roots for
 that same candidate share the scope, while predecessor-candidate charges stay
 outside its allowance. The provider coordinator's machine-day cap remains
 global, so candidate isolation cannot evade aggregate machine accounting.
+Its release and CLI scratch remain disposable under `/private/tmp`, but signed
+passports, controller events, provider accounting, paused worktrees, and HMAC
+authority live under the owner-only `~/.factory/qualification/<project>` root.
+Restore accepts only a fully paused, drained environment whose Factory/product
+tuple, manifest, runtime tuple, passport, branch/head, stage, pause digest, and
+run snapshot still match; it rebuilds no authority from Git history.
+Before provider admission, qualification also hydrates only immutable PR refs
+named by committed terminal migrations, verifies their exact expected heads,
+and leaves every checked-out tree and ref unchanged.
+
+After a successful Reviewer publication commit, passport migration precedes
+cell parking so the expected validating-head change remains a waiting boundary.
+Narrator admission additionally requires every Railway preview deployment
+linked by the trusted bot comment to report the exact reviewed repository,
+branch, and commit; stale or unavailable identity waits without a role charge
+and becomes one typed timeout. A merged terminal closeout persists one exact
+passport/PR/protected-main request before the idempotent Done action. Only that
+request may reopen a clean parked `controller-error`; unrelated errors remain
+blocked.
 A ticket
 whose terminal boundary spans one or more Factory migrations reuses that
 evidence only when one unique contiguous authenticated migration suffix links

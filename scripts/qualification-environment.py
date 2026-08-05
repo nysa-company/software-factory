@@ -30,11 +30,15 @@ from qualification_artifacts import (  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
+AUTHORITY_SCHEMA = "nysa.software-factory.qualification-authority/v1"
 ACTIVATION_SCHEMA = "nysa.software-factory.provider-activation/v2"
 POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ROOT = re.compile(r"^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9._-]+$")
+FACTORY_ISSUE = re.compile(
+    r"^https://github[.]com/[A-Za-z0-9_.-]+/software-factory/issues/[1-9][0-9]*$"
+)
 CURSOR_DATA_PATH_LIMIT = 75
 CURSOR_ATTEMPT_PLACEHOLDER = "0000000000-0000000-cli"
 
@@ -128,6 +132,129 @@ def read(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise EnvironmentError("qualification state file is malformed")
     return value
+
+
+def authority_root(project: str, create: bool = False) -> Path:
+    factory = Path.home().resolve(strict=True) / ".factory"
+    safe_directory(factory)
+    qualification = factory / "qualification"
+    if not qualification.exists():
+        qualification.mkdir(mode=0o700)
+    safe_directory(qualification)
+    root = qualification / project
+    if create:
+        if root.exists() or root.is_symlink():
+            raise EnvironmentError("qualification environment already exists")
+        safe_directory(root, create=True)
+    else:
+        safe_directory(root)
+    return root
+
+
+def authority_identity(
+    project: str,
+    factory_sha: str,
+    factory_tree: str,
+    product: Path,
+    product_sha: str,
+    product_tree: str,
+    product_origin_value: str,
+    runtime_tuple: dict[str, str] | None,
+) -> dict[str, Any]:
+    manifest = product / "factory/QUALIFICATION.json"
+    value = {
+        "contract_version": "1.8.0",
+        "controller_state_path": str(
+            Path.home().resolve(strict=True)
+            / ".factory/qualification" / project / "controller"
+        ),
+        "factory_sha": factory_sha,
+        "factory_tree": factory_tree,
+        "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "product_origin": product_origin_value,
+        "product_path": str(product),
+        "product_sha": product_sha,
+        "product_tree": product_tree,
+        "project": project,
+        "provider_state_path": str(
+            Path.home().resolve(strict=True)
+            / ".factory/qualification" / project / "provider"
+        ),
+        "runtime_tuple": runtime_tuple or {},
+        "schema": AUTHORITY_SCHEMA,
+    }
+    value["authority_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
+    return value
+
+
+def validate_paused_authority(
+    factory: Path, product: Path, controller: Path, identity: dict[str, Any],
+) -> None:
+    claims = controller / "claims"
+    if claims.is_dir() and any(claims.glob("T-*.json")):
+        raise EnvironmentError("qualification restore requires paused claims")
+    pauses = sorted(controller.glob("pause-T-*.json"))
+    if not pauses or not (controller / "passport.key").is_file():
+        raise EnvironmentError("qualification restore requires a signed safe pause")
+    spec = importlib.util.spec_from_file_location(
+        "qualification_restore_passport", factory / "scripts/ticket-passport.py"
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("qualification restore passport verifier is unavailable")
+    passport = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(passport)
+    secret = passport.key(controller)
+    for pause_path in pauses:
+        intent = read(pause_path)
+        ticket = intent.get("ticket", "")
+        worktree = Path(intent.get("worktree", ""))
+        passport_path = controller / "passports" / f"{ticket}.json"
+        signed_intent = dict(intent)
+        pause_digest = signed_intent.pop("pause_sha256", "")
+        if (
+            intent.get("schema") != "nysa.software-factory.ticket-pause/v2"
+            or not re.fullmatch(r"T-[0-9]+", ticket)
+            or intent.get("factory_sha") != identity["factory_sha"]
+            or not FACTORY_ISSUE.fullmatch(intent.get("blocking_issue", ""))
+            or not worktree.is_absolute()
+            or not passport_path.is_file()
+            or pause_digest != hashlib.sha256(json.dumps(
+                signed_intent, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"),
+            ).encode()).hexdigest()
+        ):
+            raise EnvironmentError("qualification safe-pause evidence is invalid")
+        value, _ = passport.load_passport(passport_path, secret)
+        selected = []
+        for path in sorted((product / "factory/runs").glob("*.meta")):
+            fields = dict(
+                line.split("=", 1)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if "=" in line
+            )
+            if fields.get("ticket") == ticket:
+                selected.append((
+                    path.name, hashlib.sha256(path.read_bytes()).hexdigest(),
+                ))
+        run_snapshot = hashlib.sha256(json.dumps(
+            selected, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        if (
+            value.get("ticket") != ticket
+            or value.get("factory_sha") != identity["factory_sha"]
+            or value.get("head_sha") != intent.get("head_sha")
+            or value.get("current_state") != intent.get("current_state")
+            or value.get("current_stage") != intent.get("current_stage")
+            or value.get("passport_sha256") != intent.get("passport_sha256")
+            or intent.get("run_snapshot_sha256") != run_snapshot
+            or not worktree.is_dir()
+            or command("git", "-C", str(worktree), "status", "--porcelain=v1", "-z")
+            or command("git", "-C", str(worktree), "symbolic-ref", "--short", "HEAD")
+            != intent.get("branch")
+            or command("git", "-C", str(worktree), "rev-parse", "HEAD")
+            != intent.get("head_sha")
+        ):
+            raise EnvironmentError("qualification safe-pause evidence changed")
 
 
 def qualification_capacity(product: Path) -> int:
@@ -238,6 +365,38 @@ def prepare_provider(release: Path, root: Path, capacity: int) -> str:
     return policy_hash
 
 
+def validate_provider(release: Path, root: Path, capacity: int) -> str:
+    policy, activation, policy_hash = provider_configuration(release, capacity)
+    provider = safe_directory(root / "provider")
+    if (
+        read(provider / "provider-policy.json") != policy
+        or read(provider / "provider-activation.json") != activation
+    ):
+        raise EnvironmentError("durable qualification provider policy changed")
+    command(
+        "/usr/bin/python3", str(release / "scripts/provider-activation.py"),
+        "--config", str(provider / "provider-activation.json"),
+        "--policy", str(provider / "provider-policy.json"),
+        "--contract-version", "1.8.0", "--status",
+    )
+    status = json.loads(command(
+        "/usr/bin/python3", str(release / "scripts/provider-coordinator.py"),
+        "--db", str(provider / "accounting/state-v2.sqlite3"), "status",
+    ))
+    attempts = status.get("attempts")
+    if (
+        not isinstance(attempts, list)
+        or status.get("active_reserve_micro_usd") != 0
+        or status.get("legacy_intervals") != []
+        or any(
+            not isinstance(item, dict) or item.get("state") != "terminal"
+            for item in attempts
+        )
+    ):
+        raise EnvironmentError("durable qualification provider is not drained")
+    return policy_hash
+
+
 def product_origin(product: Path) -> str:
     origins = command(
         "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
@@ -245,6 +404,142 @@ def product_origin(product: Path) -> str:
     if len(origins) != 1 or not origins[0]:
         raise EnvironmentError("qualification product origin is ambiguous")
     return origins[0]
+
+
+def configured_repository(product: Path) -> str:
+    values = re.findall(
+        r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
+        (product / "factory/PROJECT.env").read_text(encoding="utf-8"),
+        re.M,
+    )
+    if len(values) != 1:
+        raise EnvironmentError("qualification product repository is ambiguous")
+    return values[0]
+
+
+def commit_present(product: Path, sha: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(product), "cat-file", "-e", f"{sha}^{{commit}}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=120,
+    ).returncode == 0
+
+
+def historical_pr_objects(product: Path) -> int:
+    """Hydrate immutable PR heads needed by committed terminal migrations."""
+    migrations = product / "factory/migrations"
+    if not migrations.is_dir():
+        return 0
+    supported = {
+        "nysa.software-factory.legacy-closeout/v1": ("pr",),
+        "nysa.software-factory.terminal-backfill/v1": (
+            "implementation_pr", "closeout_pr",
+        ),
+        "nysa.software-factory.protected-merge-reconciliation/v1": (
+            "original_pr", "adoption_pr",
+        ),
+    }
+    repository = configured_repository(product)
+    requirements: dict[tuple[int, str], dict[str, Any]] = {}
+    for path in sorted(migrations.glob("**/*.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise EnvironmentError(
+                f"historical object record is malformed: {path.relative_to(product)}"
+            ) from error
+        keys = supported.get(value.get("schema")) if isinstance(value, dict) else None
+        if not keys:
+            continue
+        relative = str(path.relative_to(product))
+        if value.get("repository") != repository:
+            raise EnvironmentError(
+                f"historical object repository mismatch: {relative}"
+            )
+        for key in keys:
+            record = value.get(key)
+            if record is None:
+                continue
+            if (
+                not isinstance(record, dict)
+                or isinstance(record.get("number"), bool)
+                or not isinstance(record.get("number"), int)
+                or record["number"] <= 0
+                or not SHA.fullmatch(record.get("head", ""))
+            ):
+                raise EnvironmentError(
+                    f"historical PR record is malformed: {relative} {key}"
+                )
+            identity = (record["number"], record["head"])
+            item = requirements.setdefault(identity, {
+                "commits": set(), "paths": set(),
+            })
+            item["commits"].add(record["head"])
+            item["paths"].add(relative)
+            if (
+                value.get("schema")
+                == "nysa.software-factory.protected-merge-reconciliation/v1"
+                and key == "original_pr"
+            ):
+                evidence = value.get("evidence_head", "")
+                if not SHA.fullmatch(evidence):
+                    raise EnvironmentError(
+                        f"historical evidence head is malformed: {relative}"
+                    )
+                item["commits"].add(evidence)
+
+    for (number, head), item in sorted(requirements.items()):
+        missing = sorted(
+            sha for sha in item["commits"] if not commit_present(product, sha)
+        )
+        if missing:
+            reference = f"refs/pull/{number}/head"
+            observed = subprocess.run(
+                ["git", "-C", str(product), "ls-remote", "--refs", "origin", reference],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            fields = observed.stdout.split()
+            relative = sorted(item["paths"])[0]
+            if observed.returncode or fields != [head, reference]:
+                raise EnvironmentError(
+                    f"historical PR head unavailable: {relative} PR #{number} "
+                    f"expected {head}"
+                )
+            fetched = subprocess.run(
+                [
+                    "git", "-C", str(product), "fetch", "--quiet", "--no-tags",
+                    "--no-write-fetch-head", "origin", reference,
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            if fetched.returncode:
+                raise EnvironmentError(
+                    f"historical PR head fetch failed: {relative} PR #{number} "
+                    f"expected {head}"
+                )
+        absent = sorted(
+            sha for sha in item["commits"] if not commit_present(product, sha)
+        )
+        if absent:
+            raise EnvironmentError(
+                f"historical commit object missing: {sorted(item['paths'])[0]} "
+                f"PR #{number} expected {absent[0]}"
+            )
+        for sha in item["commits"]:
+            if sha != head and subprocess.run(
+                ["git", "-C", str(product), "merge-base", "--is-ancestor", sha, head],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=120,
+            ).returncode:
+                raise EnvironmentError(
+                    f"historical commit is not in PR: {sorted(item['paths'])[0]} "
+                    f"PR #{number} expected {sha}"
+                )
+    return len(requirements)
 
 
 def certification_preflight(
@@ -615,9 +910,32 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         factory, product, sha, tree, contract,
     )
     origin = product_origin(product)
+    historical_objects = historical_pr_objects(product)
+    restoring = bool(getattr(args, "restore", False))
     takeover = takeover_source(
         factory, product, args.project, getattr(args, "takeover_project", None)
     )
+    if restoring and takeover:
+        raise EnvironmentError("takeover qualification cannot restore isolated authority")
+    identity = authority_identity(
+        args.project, sha, tree, product, product_sha, product_tree, origin,
+        runtime_tuple,
+    )
+    authority: Path | None = None
+    controller_state_path = ""
+    provider_state_path = ""
+    if not takeover:
+        authority = authority_root(args.project, create=not restoring)
+        controller = authority / "controller"
+        if restoring:
+            if read(authority / "authority.json") != identity:
+                raise EnvironmentError("durable qualification authority changed")
+            safe_directory(controller)
+            validate_paused_authority(factory, product, controller, identity)
+        else:
+            controller.mkdir(mode=0o700)
+        controller_state_path = str(controller)
+        provider_state_path = str(authority / "provider")
 
     safe_directory(root, create=not root.exists())
     releases = root / "releases"
@@ -639,12 +957,6 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         safe_directory(project)
     else:
         project.mkdir(mode=0o700)
-    if not takeover:
-        controller = project / "controller"
-        if controller.exists():
-            safe_directory(controller)
-        else:
-            controller.mkdir(mode=0o700)
     release = releases / sha
     active = project / "active.json"
     if release.exists() or active.exists():
@@ -658,8 +970,10 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("sealed qualification tree does not match the candidate")
     provider_policy_sha256 = (
         takeover["provider_policy_sha256"]
-        if takeover else prepare_provider(
-            release, root, qualification_capacity(product)
+        if takeover else (
+            validate_provider(release, authority, qualification_capacity(product))
+            if restoring else
+            prepare_provider(release, authority, qualification_capacity(product))
         )
     )
     qualification_mode = takeover["mode"] if takeover else "isolated"
@@ -680,6 +994,9 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     if takeover:
         receipt_value["operator_map_path"] = takeover["operator_map_path"]
         receipt_value["takeover_kits_root"] = takeover["takeover_kits_root"]
+    else:
+        receipt_value["controller_state_path"] = controller_state_path
+        receipt_value["provider_state_path"] = provider_state_path
     receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
     receipt_value["receipt_id"] = receipt_id
     write(receipts / f"{receipt_id}.json", receipt_value)
@@ -700,6 +1017,11 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     if takeover:
         active_value["operator_map_path"] = takeover["operator_map_path"]
         active_value["takeover_kits_root"] = takeover["takeover_kits_root"]
+    else:
+        active_value["controller_state_path"] = controller_state_path
+        active_value["provider_state_path"] = provider_state_path
+        if not restoring:
+            write(authority / "authority.json", identity)
     write(active, active_value)
     registry = profile_projects / f"{args.project}.env"
     descriptor = os.open(
@@ -714,6 +1036,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     result = bind_runtime_tuple({
         "factory_sha": sha,
         "factory_tree": tree,
+        "authority_root": str(authority) if authority else None,
+        "historical_pr_objects": historical_objects,
         "launcher": str(release / "integrations/hermes/bin/factory-launch"),
         "product_sha": product_sha,
         "product_tree": product_tree,
@@ -722,7 +1046,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "qualification_mode": qualification_mode,
         "root": str(root),
         "schema": SCHEMA,
-        "status": "prepared",
+        "status": "restored" if restoring else "prepared",
     }, runtime_tuple)
     write(root / "environment.json", result)
     return result
@@ -755,6 +1079,12 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     runtime_tuple = certification_preflight(
         factory, product, sha, tree, contract,
     )
+    historical_objects = historical_pr_objects(product)
+    origin = product_origin(product)
+    identity = authority_identity(
+        args.project, sha, tree, product, product_sha, product_tree, origin,
+        runtime_tuple,
+    )
 
     marker = read(root / "marker.json")
     active_path = root / f"projects/{args.project}/active.json"
@@ -775,7 +1105,14 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     if qualification_mode == "takeover":
         raise EnvironmentError("takeover qualification requires one frozen candidate")
 
-    controller = safe_directory(root / f"projects/{args.project}/controller")
+    authority = authority_root(args.project)
+    controller = safe_directory(Path(active.get("controller_state_path", "")))
+    provider = safe_directory(Path(active.get("provider_state_path", "")))
+    if (
+        controller != authority / "controller"
+        or provider != authority / "provider"
+    ):
+        raise EnvironmentError("durable qualification authority path changed")
     lock = os.open(
         controller / "reconcile.lock",
         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -804,8 +1141,8 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             release, qualification_capacity(product)
         )
         if (
-            read(root / "provider/provider-policy.json") != policy
-            or read(root / "provider/provider-activation.json") != activation
+            read(provider / "provider-policy.json") != policy
+            or read(provider / "provider-activation.json") != activation
         ):
             raise EnvironmentError("successor changes the active provider policy")
 
@@ -825,6 +1162,8 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "controller_state_path": str(controller),
+            "provider_state_path": str(provider),
             "qualification_mode": qualification_mode,
             "status": "pass",
         }, runtime_tuple)
@@ -847,14 +1186,18 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "controller_state_path": str(controller),
+            "provider_state_path": str(provider),
             "qualification_mode": qualification_mode,
             "receipt_id": receipt_id,
             "release_path": str(release),
         }, runtime_tuple)
         replace(active_path, next_active)
+        replace(authority / "authority.json", identity)
         result = bind_runtime_tuple({
             "factory_sha": sha,
             "factory_tree": tree,
+            "historical_pr_objects": historical_objects,
             "launcher": str(release / "integrations/hermes/bin/factory-launch"),
             "product_sha": product_sha,
             "product_tree": product_tree,
@@ -879,10 +1222,13 @@ def main() -> None:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--takeover-project")
     parser.add_argument("--upgrade", action="store_true")
+    parser.add_argument("--restore", action="store_true")
     args = parser.parse_args()
     try:
         if not PROJECT.fullmatch(args.project):
             raise EnvironmentError("invalid qualification project")
+        if args.upgrade and args.restore:
+            raise EnvironmentError("qualification restore and upgrade are exclusive")
         print(json.dumps(upgrade(args) if args.upgrade else prepare(args), sort_keys=True))
     except (
         FileNotFoundError, json.JSONDecodeError, OSError, EnvironmentError,

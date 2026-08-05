@@ -51,6 +51,7 @@ INFLIGHT_STATES = frozenset({
     "Approved", "Blocked-Escalated",
 })
 RECONCILE_INTERVAL_SECONDS = 15
+PREVIEW_IDENTITY_WAIT_SECONDS = 900
 COMPLETION_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v1"
 )
@@ -679,7 +680,7 @@ class Controller:
             elif matching_adoption:
                 raise ControllerError("qualification terminal adoption is unexpected")
             if not matching_complete:
-                self.event("ticket_complete", ticket)
+                self.event_once("ticket_complete", ticket)
 
     def record_admission_failure(
         self, error: ControllerError, claims: list[dict[str, Any]]
@@ -1488,7 +1489,7 @@ class Controller:
                 )
                 return False
             root = safe_directory(source.parent)
-            parked_root = root / "parked"
+            parked_root = self.state / "parked" if self.qualification else root / "parked"
             if not parked_root.exists():
                 parked_root.mkdir(mode=0o700)
             safe_directory(parked_root)
@@ -1532,9 +1533,16 @@ class Controller:
         if not self.parked(claim):
             return
         source = Path(claim["worktree"])
-        root = safe_directory(source.parent.parent)
+        root = (
+            self.state / "cells" if self.qualification else source.parent.parent
+        )
+        if self.qualification and not root.exists():
+            root.mkdir(mode=0o700)
+        root = safe_directory(root)
         if (
-            source.parent != root / "parked"
+            source.parent != (
+                self.state / "parked" if self.qualification else root / "parked"
+            )
             or source.name != claim["ticket"]
             or not source.is_dir()
             or not self.remote_passport_valid(claim)
@@ -2030,6 +2038,48 @@ class Controller:
             self.save_claim(claim)
             marker_path.unlink()
             self.event("interrupted_claim_recovered", claim["ticket"])
+
+    def recover_terminal_requests(self, claims: list[dict[str, Any]]) -> None:
+        for claim in claims:
+            passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+            request_path = self.terminal_request_path(claim["ticket"])
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") != "controller-error"
+                or claim.get("receipt")
+                or claim.get("role")
+                or claim.get("publication_lease")
+                or claim.get("parked") is not True
+                or self.role_active(claim)
+                or not passport_path.exists()
+                or not request_path.exists()
+            ):
+                continue
+            passport = read(passport_path)
+            worktree = Path(claim["worktree"])
+            if (
+                passport.get("ticket") != claim["ticket"]
+                or passport.get("publication_state") != "merged"
+                or subprocess.run(
+                    ["git", "-C", str(worktree), "status", "--porcelain=v1", "-z"],
+                    text=True, capture_output=True, check=False, timeout=120,
+                ).stdout
+                or not self.remote_passport_valid(claim)
+            ):
+                continue
+            closeout_branch = f"chore/{claim['ticket'].lower().replace('-', '')}-closeout"
+            try:
+                if self.terminal_request(
+                    claim, closeout_branch, create=False
+                ) is None:
+                    continue
+                self.ensure_lease(claim, "terminal-replay")
+            except (ControllerError, OSError, subprocess.SubprocessError):
+                continue
+            claim.update(status="claimed")
+            claim.pop("blocked_reason", None)
+            self.save_claim(claim)
+            self.event_once("terminal_replay_recovered", claim["ticket"])
 
     def recover_each(
         self,
@@ -2788,7 +2838,6 @@ class Controller:
             self.release_ticket_lease(claim)
             self.event("role_blocked", claim["ticket"], role=claim["role"])
             return False
-        self.relocate_qualification_cell(claim)
         if claim["role"] == "reviewer":
             self.json_call(
                 "ticket-state", "--ticket", claim["ticket"],
@@ -2796,6 +2845,7 @@ class Controller:
                 "--action", "reviewer-reconcile", "--json",
             )
             self.migrate_passport(claim, "validating")
+        self.relocate_qualification_cell(claim)
         claim.update(receipt="", role="", status="claimed")
         self.save_claim(claim)
         return True
@@ -2805,6 +2855,43 @@ class Controller:
             "ticket-pr", "--ticket", claim["ticket"], "--lease", claim["lease"],
             "--receipt", receipt, "--workdir", claim["worktree"], "--json",
         )
+
+    def wait_for_preview_identity(
+        self, claim: dict[str, Any], pr: dict[str, Any]
+    ) -> bool:
+        identity = pr.get("preview_identity")
+        head = pr.get("head", "")
+        if (
+            not isinstance(identity, dict)
+            or identity.get("status") != "wait"
+            or identity.get("expected") != head
+            or not SHA.fullmatch(head)
+        ):
+            raise ControllerError("preview identity wait evidence is invalid")
+        now = int(time.time())
+        if claim.get("preview_wait_head") != head:
+            claim["preview_wait_head"] = head
+            claim["preview_wait_started_epoch"] = now
+            self.event_once("preview_identity_wait", claim["ticket"], expected=head)
+        started = claim.get("preview_wait_started_epoch")
+        if isinstance(started, bool) or not isinstance(started, int) or started > now:
+            raise ControllerError("preview identity wait boundary is invalid")
+        if now - started >= PREVIEW_IDENTITY_WAIT_SECONDS:
+            self.block(claim, "preview-identity-timeout")
+            self.event_once(
+                "preview_identity_timeout", claim["ticket"], expected=head,
+                observed=identity.get("observed", []),
+            )
+            return False
+        self.save_claim(claim)
+        return True
+
+    def clear_preview_identity_wait(self, claim: dict[str, Any]) -> None:
+        if "preview_wait_head" not in claim:
+            return
+        claim.pop("preview_wait_head", None)
+        claim.pop("preview_wait_started_epoch", None)
+        self.save_claim(claim)
 
     def refresh_dependency_tracking(self, claim: dict[str, Any]) -> bool:
         path = (
@@ -2967,17 +3054,117 @@ class Controller:
         )
         return True
 
-    def ticket_merged(self, claim: dict[str, Any]) -> bool:
-        repo_values = re.findall(
+    def project_repository(self) -> str:
+        values = re.findall(
             r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
             (self.product / "factory/PROJECT.env").read_text(encoding="utf-8"),
             re.M,
         )
-        if len(repo_values) != 1:
+        if len(values) != 1:
             raise ControllerError("GH_REPO is missing or ambiguous")
+        return values[0]
+
+    def merged_pr_identity(self, branch: str) -> dict[str, Any] | None:
         result = subprocess.run(
             [
-                "gh", "pr", "list", "--repo", repo_values[0], "--state", "merged",
+                "gh", "pr", "list", "--repo", self.project_repository(),
+                "--state", "merged", "--head", branch,
+                "--json", "number,headRefName,headRefOid,mergeCommit,state,mergedAt",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        if result.returncode:
+            raise ControllerError(result.stderr.strip() or "GitHub merge query failed")
+        try:
+            values = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ControllerError("GitHub merge query returned malformed evidence") from error
+        if not values:
+            return None
+        if not isinstance(values, list) or len(values) != 1:
+            raise ControllerError("merged PR identity is ambiguous")
+        value = values[0]
+        merge = value.get("mergeCommit")
+        if (
+            not isinstance(value, dict)
+            or value.get("headRefName") != branch
+            or value.get("state") != "MERGED"
+            or not value.get("mergedAt")
+            or isinstance(value.get("number"), bool)
+            or not isinstance(value.get("number"), int)
+            or value["number"] <= 0
+            or not SHA.fullmatch(value.get("headRefOid", ""))
+            or not isinstance(merge, dict)
+            or not SHA.fullmatch(merge.get("oid", ""))
+        ):
+            raise ControllerError("merged PR identity is malformed")
+        return {
+            "head": value["headRefOid"],
+            "merge_commit": merge["oid"],
+            "number": value["number"],
+        }
+
+    def terminal_request_path(self, ticket: str) -> Path:
+        return self.state / f"terminal-request-{ticket}.json"
+
+    def terminal_request(
+        self, claim: dict[str, Any], closeout_branch: str, create: bool,
+    ) -> dict[str, Any] | None:
+        branch = claim.get("branch", "")
+        passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+        if branch != f"ticket/{claim['ticket']}" or not passport_path.exists():
+            return None
+        implementation = self.merged_pr_identity(branch)
+        closeout = self.merged_pr_identity(closeout_branch)
+        if implementation is None or closeout is None:
+            return None
+        passport = read(passport_path)
+        if (
+            passport.get("ticket") != claim["ticket"]
+            or passport.get("branch") != branch
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("publication_state") != "merged"
+            or not DIGEST.fullmatch(passport.get("passport_sha256", ""))
+        ):
+            raise ControllerError("terminal request passport is invalid")
+        remote = subprocess.run(
+            [
+                "git", "-C", str(self.product), "ls-remote", "--heads", "origin",
+                "refs/heads/main",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        fields = remote.stdout.split()
+        if remote.returncode or len(fields) != 2 or not SHA.fullmatch(fields[0]):
+            raise ControllerError("protected main terminal expectation is unavailable")
+        value = {
+            "action": "done",
+            "branch": branch,
+            "closeout_pr": closeout,
+            "factory_sha": self.release_path.name,
+            "implementation_pr": implementation,
+            "passport_sha256": passport.get("passport_sha256"),
+            "protected_main": fields[0],
+            "schema": "nysa.software-factory.terminal-request/v1",
+            "ticket": claim["ticket"],
+        }
+        value["request_sha256"] = hashlib.sha256(
+            canonical(value).encode()
+        ).hexdigest()
+        path = self.terminal_request_path(claim["ticket"])
+        if path.exists():
+            if read(path) != value:
+                raise ControllerError("terminal request identity changed")
+        elif create:
+            write(path, value)
+        else:
+            return None
+        return value
+
+    def ticket_merged(self, claim: dict[str, Any]) -> bool:
+        result = subprocess.run(
+            [
+                "gh", "pr", "list", "--repo", self.project_repository(), "--state", "merged",
                 "--head", claim["branch"], "--json", "headRefName,mergedAt,state",
             ],
             text=True, capture_output=True, check=False, timeout=120,
@@ -3018,6 +3205,7 @@ class Controller:
                 ],
                 check=True, timeout=120,
             )
+        self.terminal_request(claim, branch, create=True)
         try:
             value = self.json_call(
                 "ticket-attest", "--ticket", ticket, "--lease", claim["lease"],
@@ -3196,7 +3384,7 @@ class Controller:
                     self.release_publication(claim)
                 self.migrate_passport(claim, "merged")
                 if self.closeout(claim):
-                    self.event("ticket_complete", claim["ticket"])
+                    self.event_once("ticket_complete", claim["ticket"])
                     self.release(claim)
                     return {"status": "complete", "ticket": claim["ticket"]}
                 return {"status": "waiting", "ticket": claim["ticket"]}
@@ -3247,6 +3435,12 @@ class Controller:
                 if role in {"reviewer", "narrator"}:
                     pr = self.ticket_pr(claim, receipt)
                     if pr.get("status") == "wait":
+                        if (
+                            role == "narrator"
+                            and isinstance(pr.get("preview_identity"), dict)
+                            and not self.wait_for_preview_identity(claim, pr)
+                        ):
+                            return {"status": "blocked", "ticket": claim["ticket"]}
                         return {"status": "waiting", "ticket": claim["ticket"]}
                     if pr.get("status") == "failed" and self.retry_ci(
                         claim, receipt, pr
@@ -3262,6 +3456,7 @@ class Controller:
                     if pr.get("status") == "failed":
                         failed_checks = list(pr.get("checks", []))
                 if role == "narrator":
+                    self.clear_preview_identity_wait(claim)
                     self.run_role(claim, role, receipt, failed_checks, pr)
                 else:
                     self.run_role(claim, role, receipt, failed_checks)
@@ -3398,7 +3593,7 @@ class Controller:
                 self.closeout(claim)
                 return {"status": "waiting", "ticket": claim["ticket"]}
             if stage.startswith("COMPLETE"):
-                self.event("ticket_complete", claim["ticket"])
+                self.event_once("ticket_complete", claim["ticket"])
                 self.release(claim)
                 return {"status": "complete", "ticket": claim["ticket"]}
             if stage.startswith("ESCALATE "):
@@ -3557,6 +3752,7 @@ class Controller:
         existing = [claim for claim in existing if claim not in completed]
         self.record_qualification_done_targets()
         self.recover_missing_passport_claims(existing)
+        self.recover_terminal_requests(existing)
         self.recover_each(
             existing, self.recover_interrupted_claims, "interrupted-reconciliation",
         )
@@ -3678,6 +3874,7 @@ class Controller:
                     and not self.role_active(claim)
                 ]
                 self.recover_missing_passport_claims(claims)
+                self.recover_terminal_requests(idle)
                 self.recover_each(
                     idle, self.recover_interrupted_claims,
                     "interrupted-reconciliation",

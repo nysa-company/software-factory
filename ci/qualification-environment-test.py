@@ -37,6 +37,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
         if not Path("/private/tmp").is_dir():
             self.skipTest("qualification trust root is macOS-only")
         self.workspace = Path(tempfile.mkdtemp(prefix="qualification-test."))
+        self.original_home = os.environ.get("HOME")
+        self.home = self.workspace / "home"
+        self.home.mkdir(mode=0o700)
+        (self.home / ".factory").mkdir(mode=0o700)
+        os.environ["HOME"] = str(self.home)
         self.root = Path(tempfile.mkdtemp(
             prefix="nysa-sf-qualification.q-", dir="/private/tmp",
         )).resolve()
@@ -140,6 +145,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             for name in directories:
                 (Path(base) / name).chmod(0o700)
         shutil.rmtree(self.root)
+        if self.original_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self.original_home
         shutil.rmtree(self.workspace)
 
     def test_prepares_exact_read_only_candidate_once(self) -> None:
@@ -151,6 +160,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         value = ENVIRONMENT.prepare(args)
         release = Path(value["launcher"]).parents[3]
+        authority = Path(value["authority_root"])
         self.assertEqual(value["factory_sha"], self.sha)
         self.assertEqual(
             value["product_sha"], run(self.product, "git", "rev-parse", "HEAD")
@@ -173,14 +183,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.root,
             "/usr/bin/python3",
             str(release / "scripts/provider-activation.py"),
-            "--config", str(self.root / "provider/provider-activation.json"),
-            "--policy", str(self.root / "provider/provider-policy.json"),
+            "--config", str(authority / "provider/provider-activation.json"),
+            "--policy", str(authority / "provider/provider-policy.json"),
             "--contract-version", "1.8.0",
             "--status",
         ))
         self.assertEqual(status["execution_mode"], "cli-concurrent-v1")
         policy = json.loads(
-            (self.root / "provider/provider-policy.json").read_text()
+            (authority / "provider/provider-policy.json").read_text()
         )
         self.assertEqual(policy["coupled_max_concurrent"], 3)
         self.assertEqual(policy["global"]["max_concurrent"], 3)
@@ -188,7 +198,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ROOT / "integrations/hermes/bin/factory-launch"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'PROVIDER_STATE_ROOT="$QUALIFICATION_ROOT/provider"', launcher_text
+            'PROVIDER_STATE_ROOT="$ACTIVE_PROVIDER_STATE"', launcher_text
         )
         self.assertIn(
             '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"',
@@ -233,10 +243,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "provider/provider-apply-locks",
             "provider/provider-attempts",
         ):
-            path = self.root / relative
+            path = authority / relative
             self.assertTrue(path.is_dir())
             self.assertEqual(path.stat().st_mode & 0o777, 0o700)
-        configuration_lock = self.root / "provider/provider-configuration.lock"
+        configuration_lock = authority / "provider/provider-configuration.lock"
         self.assertTrue(configuration_lock.is_file())
         self.assertEqual(configuration_lock.stat().st_mode & 0o777, 0o600)
         with self.assertRaisesRegex(
@@ -278,6 +288,79 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 project="relay",
                 root=self.root,
             ))
+
+    def test_hydrates_historical_pr_objects_once_without_moving_refs(self) -> None:
+        publisher = self.workspace / "publisher"
+        remote = self.workspace / "history.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(remote))
+        run(self.workspace, "git", "init", "-q", "-b", "main", str(publisher))
+        run(publisher, "git", "config", "user.name", "Test")
+        run(publisher, "git", "config", "user.email", "test@example.invalid")
+        (publisher / "factory").mkdir()
+        (publisher / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        run(publisher, "git", "add", ".")
+        run(publisher, "git", "commit", "-qm", "base")
+        run(publisher, "git", "remote", "add", "origin", str(remote))
+        run(publisher, "git", "push", "-q", "origin", "main")
+        run(publisher, "git", "switch", "-qc", "ticket/T-030")
+        (publisher / "evidence.txt").write_text("evidence\n", encoding="utf-8")
+        run(publisher, "git", "add", ".")
+        run(publisher, "git", "commit", "-qm", "evidence")
+        evidence = run(publisher, "git", "rev-parse", "HEAD")
+        (publisher / "tip.txt").write_text("tip\n", encoding="utf-8")
+        run(publisher, "git", "add", ".")
+        run(publisher, "git", "commit", "-qm", "tip")
+        head = run(publisher, "git", "rev-parse", "HEAD")
+        run(
+            publisher, "git", "push", "-q", "origin",
+            f"HEAD:refs/pull/30/head",
+        )
+        run(publisher, "git", "switch", "-q", "main")
+        migration = publisher / "factory/migrations/protected-merge-reconciliation/T-030.json"
+        migration.parent.mkdir(parents=True)
+        migration.write_text(json.dumps({
+            "adoption_pr": {"head": head, "number": 30},
+            "evidence_head": evidence,
+            "original_pr": {"head": head, "number": 30},
+            "repository": "example/product",
+            "schema": "nysa.software-factory.protected-merge-reconciliation/v1",
+        }) + "\n", encoding="utf-8")
+        run(publisher, "git", "add", ".")
+        run(publisher, "git", "commit", "-qm", "record migration")
+        run(publisher, "git", "push", "-q", "origin", "main")
+
+        consumer = self.workspace / "consumer"
+        run(
+            self.workspace, "git", "clone", "-q", "--no-local",
+            "--single-branch", "--branch", "main", str(remote), str(consumer),
+        )
+        self.assertFalse(ENVIRONMENT.commit_present(consumer, head))
+        refs = run(consumer, "git", "show-ref")
+        self.assertEqual(ENVIRONMENT.historical_pr_objects(consumer), 1)
+        self.assertTrue(ENVIRONMENT.commit_present(consumer, head))
+        self.assertTrue(ENVIRONMENT.commit_present(consumer, evidence))
+        self.assertEqual(run(consumer, "git", "show-ref"), refs)
+        run(consumer, "git", "remote", "set-url", "origin", "invalid://offline")
+        self.assertEqual(ENVIRONMENT.historical_pr_objects(consumer), 1)
+
+    def test_historical_pr_ref_mismatch_fails_closed(self) -> None:
+        migrations = self.product / "factory/migrations/contract-1.3"
+        migrations.mkdir(parents=True)
+        (self.product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        (migrations / "T-013.json").write_text(json.dumps({
+            "pr": {"head": "f" * 40, "number": 13},
+            "repository": "example/product",
+            "schema": "nysa.software-factory.legacy-closeout/v1",
+        }) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            r"historical PR head unavailable: .*T-013.json PR #13",
+        ):
+            ENVIRONMENT.historical_pr_objects(self.product)
         self.assertFalse((self.root / "marker.json").exists())
 
     def test_takeover_reuses_authenticated_live_state_without_copying_it(self) -> None:
@@ -535,7 +618,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         legacy_active.pop("product_sha")
         legacy_active.pop("runtime_tuple")
         ENVIRONMENT.replace(active_path, legacy_active)
-        controller = self.root / "projects/relay/controller"
+        controller = Path(first["authority_root"]) / "controller"
         claims = controller / "claims"
         self.assertTrue(controller.is_dir())
         self.assertEqual(controller.stat().st_mode & 0o777, 0o700)
@@ -566,6 +649,89 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(key.read_bytes(), b"p" * 32)
         self.assertTrue((self.root / f"releases/{self.sha}").is_dir())
         self.assertTrue((self.root / f"releases/{successor}").is_dir())
+
+    def test_restores_signed_safe_pause_after_disposable_root_is_removed(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            product_root=self.product,
+            project="relay",
+            root=self.root,
+        )
+        first = ENVIRONMENT.prepare(args)
+        authority = Path(first["authority_root"])
+        controller = authority / "controller"
+        parked = controller / "parked/T-101"
+        parked.parent.mkdir(mode=0o700)
+        run(self.product, "git", "branch", "ticket/T-101")
+        run(
+            self.product, "git", "worktree", "add", "-q", str(parked),
+            "ticket/T-101",
+        )
+        head = run(parked, "git", "rev-parse", "HEAD")
+        secret = b"p" * 32
+        key = controller / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        body = {
+            "branch": "ticket/T-101",
+            "current_stage": "RUN builder",
+            "current_state": "Building",
+            "factory_sha": self.sha,
+            "head_sha": head,
+            "project": "relay",
+            "publication_state": "none",
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": "T-101",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, ENVIRONMENT.canonical(body), hashlib.sha256,
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            ENVIRONMENT.canonical(passport)
+        ).hexdigest()
+        passports = controller / "passports"
+        passports.mkdir(mode=0o700)
+        ENVIRONMENT.write(passports / "T-101.json", passport)
+        run_snapshot = hashlib.sha256(b"[]").hexdigest()
+        pause = {
+            "blocking_issue": "https://github.com/example/software-factory/issues/1",
+            "branch": "ticket/T-101",
+            "budget_sha256": None,
+            "created_at_epoch": 1,
+            "current_stage": "RUN builder",
+            "current_state": "Building",
+            "factory_sha": self.sha,
+            "head_sha": head,
+            "passport_sha256": passport["passport_sha256"],
+            "passport_factory_sha": self.sha,
+            "resume_state": None,
+            "run_snapshot_sha256": run_snapshot,
+            "schema": "nysa.software-factory.ticket-pause/v2",
+            "status": "claimed",
+            "ticket": "T-101",
+            "worktree": str(parked),
+        }
+        pause["pause_sha256"] = hashlib.sha256(json.dumps(
+            pause, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        ENVIRONMENT.write(controller / "pause-T-101.json", pause)
+
+        for base, directories, files in os.walk(self.root, topdown=False):
+            for name in files:
+                (Path(base) / name).chmod(0o600)
+            for name in directories:
+                (Path(base) / name).chmod(0o700)
+        shutil.rmtree(self.root)
+        restored = ENVIRONMENT.prepare(argparse.Namespace(
+            **vars(args), restore=True,
+        ))
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        self.assertEqual(restored["status"], "restored")
+        self.assertEqual(active["controller_state_path"], str(controller))
+        self.assertEqual(active["provider_state_path"], str(authority / "provider"))
+        self.assertEqual(key.read_bytes(), secret)
+        self.assertEqual(run(parked, "git", "rev-parse", "HEAD"), head)
 
 
 if __name__ == "__main__":
