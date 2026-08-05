@@ -6,8 +6,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,6 +128,179 @@ class QualificationReducerTest(unittest.TestCase):
             REDUCER.QualificationError, "replayed or is incomplete"
         ):
             REDUCER.verify(*evidence)
+
+    def test_protected_terminal_reconciliation_is_zero_cost_and_fail_closed(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, _caps = evidence
+        ticket = manifest["tickets"][0]
+        original_passport = passports.pop(ticket)
+        normal = terminals[ticket]
+        terminals[ticket] = {
+            "merge_commit": normal["merge_commit"],
+            "pr_head": normal["approved_pr_head"],
+            "pr_number": normal["pr_number"],
+            "required_checks": normal["required_checks"],
+            "schema": "nysa.software-factory.ticket-emergency-done/v1",
+            "successful_checks": normal["successful_checks"],
+            "ticket": ticket,
+        }
+        prs[ticket]["headRefName"] = f"ticket/{ticket}-reviewed"
+        events[:] = [
+            item for item in events
+            if not (
+                item.get("ticket") == ticket
+                and item.get("event") in {
+                    "publication_acquired", "publication_released",
+                }
+            )
+        ]
+        reconciliation = {
+            "done_sha256": hashlib.sha256(
+                REDUCER.canonical(terminals[ticket]).encode()
+            ).hexdigest(),
+            "event": "protected_terminal_reconciled",
+            "factory_sha": manifest["factory_sha"],
+            "observed_at_epoch_ns": len(events) + 1,
+            "protected_main_sha": "b" * 40,
+            "protected_main_tree": "c" * 40,
+            "protected_ticket_blob": "d" * 40,
+            "qualification_charge_micro_usd": 0,
+            "reconciliation_schema": (
+                REDUCER.PROTECTED_TERMINAL_RECONCILIATION_SCHEMA
+            ),
+            "terminal_basis": "attested-emergency-closeout",
+            "ticket": ticket,
+        }
+        events.append(reconciliation)
+
+        report = REDUCER.verify(*evidence)
+        reconciled = next(item for item in report["tickets"] if item["ticket"] == ticket)
+        self.assertEqual(reconciled["roles"], 0)
+        self.assertEqual(reconciled["charge_micro_usd"], 0)
+        self.assertEqual(report["total_charge_micro_usd"], 18_000_000)
+
+        duplicate_source = copy.deepcopy(evidence)
+        duplicate_source[1][ticket] = original_passport
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "inputs are incomplete"
+        ):
+            REDUCER.verify(*duplicate_source)
+
+        charged = copy.deepcopy(evidence)
+        charged[2][-1]["qualification_charge_micro_usd"] = 1
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "reconciliation is invalid"
+        ):
+            REDUCER.verify(*charged)
+
+        drifted = copy.deepcopy(evidence)
+        drifted[4][ticket]["headRefOid"] = "e" * 40
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "reconciliation is invalid"
+        ):
+            REDUCER.verify(*drifted)
+
+        replayed_publication = copy.deepcopy(evidence)
+        replayed_publication[2].extend([{
+            "event": "publication_acquired",
+            "factory_sha": manifest["factory_sha"],
+            "observed_at_epoch_ns": len(replayed_publication[2]) + 1,
+            "ticket": ticket,
+        }, {
+            "event": "publication_released",
+            "factory_sha": manifest["factory_sha"],
+            "observed_at_epoch_ns": len(replayed_publication[2]) + 2,
+            "ticket": ticket,
+        }])
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "serialization proof is incomplete"
+        ):
+            REDUCER.verify(*replayed_publication)
+
+        duplicated = copy.deepcopy(evidence)
+        duplicated[2].append({
+            **duplicated[2][-1],
+            "observed_at_epoch_ns": len(duplicated[2]) + 1,
+        })
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "reconciliation is duplicated"
+        ):
+            REDUCER.verify(*duplicated)
+
+    def test_protected_terminal_reconciliation_detects_protected_main_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            product = Path(temporary)
+            ticket_path = product / "factory/tickets/T-110.md"
+            ticket_path.parent.mkdir(parents=True)
+            ticket_path.write_text("State: Done\n", encoding="utf-8")
+            done_path = product / "factory/attestations/T-110/done.json"
+            done_path.parent.mkdir(parents=True)
+            done = {"ticket": "T-110"}
+            done_path.write_text(json.dumps(done) + "\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(product)], check=True)
+            subprocess.run(
+                ["git", "-C", str(product), "config", "user.email", "test@nysa.dev"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(product), "config", "user.name", "Test"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(product), "add", "factory"], check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(product), "commit", "-qm", "terminal"],
+                check=True,
+            )
+            observed = subprocess.run(
+                ["git", "-C", str(product), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            tree = subprocess.run(
+                ["git", "-C", str(product), "rev-parse", "HEAD^{tree}"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            blob = subprocess.run(
+                [
+                    "git", "-C", str(product), "rev-parse",
+                    "HEAD:factory/tickets/T-110.md",
+                ],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            event = {
+                "done_sha256": hashlib.sha256(
+                    REDUCER.canonical(done).encode()
+                ).hexdigest(),
+                "protected_main_sha": observed,
+                "protected_main_tree": tree,
+                "protected_ticket_blob": blob,
+                "terminal_basis": "attested-emergency-closeout",
+            }
+            with patch.object(REDUCER, "protected_terminal", return_value={
+                "basis": "attested-emergency-closeout", "ticket": "T-110",
+            }):
+                REDUCER.validate_protected_reconciliation(
+                    product, "T-110", event, observed, done,
+                )
+                ticket_path.write_text("State: Done\nchanged\n", encoding="utf-8")
+                subprocess.run(
+                    ["git", "-C", str(product), "add", str(ticket_path)], check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(product), "commit", "-qm", "drift"],
+                    check=True,
+                )
+                current = subprocess.run(
+                    ["git", "-C", str(product), "rev-parse", "HEAD"],
+                    text=True, capture_output=True, check=True,
+                ).stdout.strip()
+                with self.assertRaisesRegex(
+                    REDUCER.QualificationError, "reconciliation changed"
+                ):
+                    REDUCER.validate_protected_reconciliation(
+                        product, "T-110", event, current, done,
+                    )
 
     def test_three_ticket_successor_accepts_authenticated_history_and_cap(self):
         evidence = list(self.evidence())
