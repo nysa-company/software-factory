@@ -5253,6 +5253,24 @@ lease and replay, with terminal events emitted once.
 Validation: exact replay recovers, unrelated errors stay blocked, and protected
 main drift invalidates the request.
 
+## FI-20260804-190 — Qualification registration rejected its own detached SHA
+
+Status: Focused role-runner regression green; protected CI and qualification pending
+Priority: P0 (#312)
+Area: pre-provider registered-checkout integrity
+Owner: Factory
+First seen: T-108 and T-118 under Factory
+`1c744aba034f5a125536b411d180c5a2183a9b82`
+Impact: both Planners stopped before provider submission with zero provider
+charge because the sealed product checkout was correctly detached at protected
+main.
+Smallest repair: record branch or detached as an explicit ref identity while
+retaining the existing exact HEAD, status, and tracked-content snapshots.
+Ticket execution remains branch-bound and real Git errors still fail closed.
+Validation: a focused detached-control/branch-ticket role run reaches and
+completes the mock adapter; stale-remote, missing-commit, and history-rewrite
+guards remain green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

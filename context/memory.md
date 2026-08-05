@@ -175,6 +175,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   active commit, and the local qualification control worktree must be based on
   that current protected ref with only the admitted control diff. Qualification
   therefore never requires a preliminary product activation.
+- A sealed qualification may register its immutable product checkout at a
+  detached protected-main SHA. The runner records detached versus branch
+  identity explicitly while still snapshotting exact HEAD, status, and content;
+  ticket worktrees remain branch-bound.
 - Sealed qualification provider admission scopes product- and ticket-budget
   accounting to the exact project plus frozen candidate SHA. Predecessor
   candidates cannot exhaust a successor's allowance, multiple roots for the
@@ -3520,3 +3524,12 @@ closeout PRs are merged, the controller persists an exact passport-, PR-,
 Factory-, and protected-main-bound Done request. A clean parked terminal
 `controller-error` may replay only that request; all other blocked claims remain
 ineligible, and terminal events are idempotent.
+
+## 2026-08-04 — Decision 259: Detached qualification registration is valid
+
+Category: Qualification
+
+The immutable registered product checkout may be detached at its exact
+protected-main SHA while ticket work remains on authenticated ticket branches.
+The role runner distinguishes this valid state from a Git error and continues
+to guard exact HEAD, status, and tracked content throughout provider execution.

@@ -555,6 +555,9 @@ the same trusted marker used by disposable development environments; provider
 attempts therefore retain per-attempt homes without depending on a ticket's
 cell path. Environment preparation also rejects a root whose worst-case Cursor
 attempt data path would exceed the adapter's isolated-scratch limit.
+Its immutable registered product checkout may be detached at the exact
+authenticated protected-main SHA; role admission records that identity while
+ticket execution remains branch-bound.
 For a production-successor qualification, preparation additionally requires
 a clean linked qualification worktree of the canonical product repository,
 the selected tickets' authenticated passports with an exact release-history

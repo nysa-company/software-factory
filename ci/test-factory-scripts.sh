@@ -3336,6 +3336,26 @@ setup_role_exit_fixture() {
 }
 
 if [[ "$SUBSET" == "role-exit-git" ]]; then
+setup_role_exit_fixture T-606
+git -C "$ROLE_EXIT_ROOT" checkout -q --detach HEAD
+DETACHED_REGISTERED_STATUS=0
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-606 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "detached registered checkout" > "$TMP/detached-registered.out" 2>&1 ||
+  DETACHED_REGISTERED_STATUS=$?
+if [[ "$DETACHED_REGISTERED_STATUS" -eq 0 ]] &&
+   grep -q '^task_submitted=1$' "$ROLE_EXIT_ROOT/factory/runs/"*.meta &&
+   grep -q 'mock adapter ran task' "$ROLE_EXIT_ROOT/factory/runs/"*.out; then
+  pass "detached registered checkout permits branch-bound ticket work"
+else
+  fail "detached registered checkout permits branch-bound ticket work" \
+    "status=$DETACHED_REGISTERED_STATUS"
+fi
+
 setup_role_exit_fixture T-607
 REMOTE_DRIFT_TREE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse 'HEAD^{tree}')"
 REMOTE_DRIFT_COMMIT="$(printf '%s\n' 'remote drift' | git -C "$ROLE_EXIT_WORKTREE" \
