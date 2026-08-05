@@ -30,6 +30,10 @@ from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
     ensure_ticket as ensure_qualification_artifacts,
 )
+from legacy_closeout import (  # noqa: E402
+    ValidationError as ProtectedTerminalError,
+    protected_terminal,
+)
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -57,6 +61,9 @@ COMPLETION_CORRECTION_SCHEMA = (
 )
 TERMINAL_ADOPTION_SCHEMA = (
     "nysa.software-factory.qualification-terminal-adoption/v2"
+)
+PROTECTED_TERMINAL_RECONCILIATION_SCHEMA = (
+    "nysa.software-factory.qualification-protected-terminal-reconciliation/v1"
 )
 
 
@@ -569,6 +576,57 @@ class Controller:
             raise ControllerError("qualification terminal adoption marker raced")
         return value
 
+    def qualification_protected_terminal(
+        self, ticket: str,
+    ) -> dict[str, Any]:
+        done_path = f"factory/attestations/{ticket}/done.json"
+        ticket_path = f"factory/tickets/{ticket}.md"
+        try:
+            terminal = protected_terminal(self.product, ticket)
+            result = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "rev-parse",
+                    "refs/remotes/origin/main",
+                    "refs/remotes/origin/main^{tree}",
+                    f"refs/remotes/origin/main:{ticket_path}",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            )
+            protected_main, protected_tree, ticket_blob = result.stdout.splitlines()
+            done = json.loads(subprocess.run(
+                [
+                    "git", "-C", str(self.product), "show",
+                    f"refs/remotes/origin/main:{done_path}",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout)
+        except (
+            ProtectedTerminalError, json.JSONDecodeError, OSError,
+            subprocess.SubprocessError, ValueError,
+        ) as error:
+            raise ControllerError(
+                "qualification protected terminal is invalid"
+            ) from error
+        if (
+            terminal.get("ticket") != ticket
+            or terminal.get("basis") not in {
+                "attested-done", "attested-emergency-closeout",
+            }
+            or not SHA.fullmatch(protected_main)
+            or not SHA.fullmatch(protected_tree)
+            or not SHA.fullmatch(ticket_blob)
+        ):
+            raise ControllerError("qualification protected terminal is invalid")
+        return {
+            "done_sha256": hashlib.sha256(canonical(done).encode()).hexdigest(),
+            "protected_main_sha": protected_main,
+            "protected_main_tree": protected_tree,
+            "protected_ticket_blob": ticket_blob,
+            "qualification_charge_micro_usd": 0,
+            "reconciliation_schema": PROTECTED_TERMINAL_RECONCILIATION_SCHEMA,
+            "terminal_basis": terminal["basis"],
+        }
+
     def record_qualification_done_targets(self) -> None:
         if not self.qualification:
             return
@@ -601,8 +659,51 @@ class Controller:
                 and item.get("event") == "terminal_adopted"
                 and item.get("ticket") == ticket
             ]
-            if len(matching_complete) > 1 or len(matching_adoption) > 1:
+            matching_reconciliation = [
+                item for item in records
+                if item.get("factory_sha") == self.release_path.name
+                and item.get("event") == "protected_terminal_reconciled"
+                and item.get("ticket") == ticket
+            ]
+            if (
+                len(matching_complete) > 1
+                or len(matching_adoption) > 1
+                or len(matching_reconciliation) > 1
+            ):
                 raise ControllerError("qualification terminal evidence was duplicated")
+            passport_path = self.state / "passports" / f"{ticket}.json"
+            if not passport_path.exists():
+                if matching_adoption:
+                    raise ControllerError(
+                        "qualification terminal adoption is unexpected"
+                    )
+                reconciliation = self.qualification_protected_terminal(ticket)
+                if matching_reconciliation:
+                    stable = {
+                        "done_sha256", "protected_ticket_blob",
+                        "qualification_charge_micro_usd",
+                        "reconciliation_schema", "terminal_basis",
+                    }
+                    if any(
+                        matching_reconciliation[0].get(name)
+                        != reconciliation[name]
+                        for name in stable
+                    ):
+                        raise ControllerError(
+                            "qualification protected terminal evidence changed"
+                        )
+                else:
+                    self.event(
+                        "protected_terminal_reconciled", ticket,
+                        **reconciliation,
+                    )
+                if not matching_complete:
+                    self.event_once("ticket_complete", ticket)
+                continue
+            if matching_reconciliation:
+                raise ControllerError(
+                    "qualification passport conflicts with protected terminal reconciliation"
+                )
             adoption = None
             if self.qualification.get("mode") == "successor":
                 passport = read(

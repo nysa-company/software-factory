@@ -77,6 +77,95 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(matching), 1)
 
+    def test_qualification_reconciles_protected_terminal_without_passport(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 114)]
+        (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "budget_usd": "100.000000",
+            "capacity": 4,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": CONTROL.QUALIFICATION_SCHEMA,
+            "target_done": 4,
+            "tickets": tickets,
+        }), encoding="utf-8")
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.parent.mkdir()
+        ticket.write_text("State: Done\n", encoding="utf-8")
+        done = self.product / "factory/attestations/T-110/done.json"
+        done.parent.mkdir(parents=True)
+        done.write_text('{"ticket":"T-110"}\n', encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(self.product)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.product), "config", "user.email", "test@nysa.dev"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", "factory"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "commit", "-qm", "terminal"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "update-ref",
+                "refs/remotes/origin/main", "HEAD",
+            ],
+            check=True,
+        )
+        controller = CONTROL.Controller(self.args)
+        with patch.object(CONTROL, "protected_terminal", return_value={
+            "basis": "attested-emergency-closeout", "ticket": "T-110",
+        }):
+            controller.record_qualification_done_targets()
+            controller.record_qualification_done_targets()
+        records = [CONTROL.read(path) for path in controller.events.glob("*.json")]
+        self.assertEqual(sum(
+            item.get("event") == "protected_terminal_reconciled"
+            for item in records
+        ), 1)
+        self.assertEqual(sum(
+            item.get("event") == "ticket_complete" for item in records
+        ), 1)
+        self.assertFalse((self.state / "passports").exists())
+        self.assertEqual(list(controller.claims.iterdir()), [])
+
+    def test_qualification_plain_done_without_protected_terminal_refuses(self) -> None:
+        tickets = [f"T-{number}" for number in range(110, 114)]
+        (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "budget_usd": "100.000000",
+            "capacity": 4,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": CONTROL.QUALIFICATION_SCHEMA,
+            "target_done": 4,
+            "tickets": tickets,
+        }), encoding="utf-8")
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.parent.mkdir()
+        ticket.write_text("State: Done\n", encoding="utf-8")
+        controller = CONTROL.Controller(self.args)
+        with (
+            patch.object(
+                CONTROL, "protected_terminal",
+                side_effect=CONTROL.ProtectedTerminalError("missing evidence"),
+            ),
+            self.assertRaisesRegex(
+                CONTROL.ControllerError, "protected terminal is invalid",
+            ),
+        ):
+            controller.record_qualification_done_targets()
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()

@@ -22,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import (  # noqa: E402
     passport_head_lineage, successor_release_lineage,
 )
+from legacy_closeout import (  # noqa: E402
+    ValidationError as ProtectedTerminalError,
+    protected_terminal,
+)
 
 
 SCHEMA = "nysa.software-factory.qualification-report/v1"
@@ -29,6 +33,9 @@ MANIFEST_SCHEMA = "nysa.software-factory.qualification/v2"
 EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
 TERMINAL_ADOPTION_SCHEMA = (
     "nysa.software-factory.qualification-terminal-adoption/v2"
+)
+PROTECTED_TERMINAL_RECONCILIATION_SCHEMA = (
+    "nysa.software-factory.qualification-protected-terminal-reconciliation/v1"
 )
 PASSPORT_MIGRATION_SCHEMA = (
     "nysa.software-factory.ticket-passport-migration/v2"
@@ -122,6 +129,20 @@ def iso(value: str) -> datetime:
     return parsed
 
 
+def protected_reconciliations(
+    events: list[dict[str, Any]], factory_sha: str,
+) -> dict[str, dict[str, Any]]:
+    records = [
+        item for item in events
+        if item.get("event") == "protected_terminal_reconciled"
+        and item.get("factory_sha") == factory_sha
+    ]
+    result = {item.get("ticket"): item for item in records}
+    if len(result) != len(records):
+        raise QualificationError("protected terminal reconciliation is duplicated")
+    return result
+
+
 def verify(
     manifest: dict[str, Any],
     passports: dict[str, dict[str, Any]],
@@ -135,6 +156,8 @@ def verify(
     target_done = manifest.get("target_done")
     successor = manifest.get("mode") == "successor"
     source_factory_sha = manifest.get("source_factory_sha")
+    reconciliations = protected_reconciliations(events, factory_sha)
+    reconciled = set(reconciliations)
     manifest_keys = {
         "budget_usd", "capacity", "contract_version", "factory_sha",
         "generation", "per_run_budget_usd", "per_ticket_budget_usd",
@@ -177,7 +200,9 @@ def verify(
         or len(tickets) != target_done
         or len(set(tickets)) != target_done
         or any(not TICKET.fullmatch(ticket) for ticket in tickets)
-        or set(passports) != set(tickets)
+        or bool(set(passports) & reconciled)
+        or set(passports) | reconciled != set(tickets)
+        or not reconciled.issubset(set(tickets))
         or set(terminals) != set(tickets)
         or set(pull_requests) != set(tickets)
         or set(ticket_caps) != set(tickets)
@@ -196,6 +221,68 @@ def verify(
     qualification_total = 0
     per_run_cap = int(Decimal(manifest["per_run_budget_usd"]) * 1_000_000)
     for ticket in tickets:
+        done = terminals[ticket]
+        pr = pull_requests[ticket]
+        merge = (pr.get("mergeCommit") or {}).get("oid")
+        if ticket in reconciled:
+            reconciliation = reconciliations[ticket]
+            head = (
+                done.get("approved_pr_head")
+                if done.get("schema") == "nysa.software-factory.ticket-done/v1"
+                else done.get("pr_head")
+            )
+            allowed = {
+                "done_sha256", "event", "event_sha256", "factory_sha",
+                "observed_at_epoch_ns", "protected_main_sha",
+                "protected_main_tree", "protected_ticket_blob",
+                "qualification_charge_micro_usd", "reconciliation_schema",
+                "schema", "terminal_basis", "ticket",
+            }
+            required = allowed - {"event_sha256", "schema"}
+            if (
+                not required.issubset(reconciliation)
+                or not set(reconciliation).issubset(allowed)
+                or reconciliation.get("reconciliation_schema")
+                != PROTECTED_TERMINAL_RECONCILIATION_SCHEMA
+                or reconciliation.get("terminal_basis") not in {
+                    "attested-done", "attested-emergency-closeout",
+                }
+                or reconciliation.get("qualification_charge_micro_usd") != 0
+                or not SHA.fullmatch(reconciliation.get("protected_main_sha", ""))
+                or not SHA.fullmatch(reconciliation.get("protected_main_tree", ""))
+                or not SHA.fullmatch(reconciliation.get("protected_ticket_blob", ""))
+                or not DIGEST.fullmatch(reconciliation.get("done_sha256", ""))
+                or done.get("schema") not in {
+                    "nysa.software-factory.ticket-done/v1",
+                    "nysa.software-factory.ticket-emergency-done/v1",
+                }
+                or done.get("ticket") != ticket
+                or reconciliation.get("done_sha256")
+                != hashlib.sha256(canonical(done).encode()).hexdigest()
+                or done.get("required_checks") != done.get("successful_checks")
+                or not done.get("required_checks")
+                or pr.get("number") != done.get("pr_number")
+                or pr.get("headRefOid") != head
+                or pr.get("baseRefName") != "main"
+                or pr.get("state") != "MERGED"
+                or merge != done.get("merge_commit")
+                or not SHA.fullmatch(head or "")
+                or not SHA.fullmatch(merge or "")
+            ):
+                raise QualificationError(
+                    f"{ticket} protected terminal reconciliation is invalid"
+                )
+            ticket_reports.append({
+                "charge_micro_usd": 0,
+                "evidence_mode": "protected-terminal-reconciliation",
+                "merge_commit": merge,
+                "pr_head": head,
+                "pr_number": pr["number"],
+                "qualification_charge_micro_usd": 0,
+                "roles": 0,
+                "ticket": ticket,
+            })
+            continue
         passport = passports[ticket]
         charges = passport.get("charge_records")
         completed = passport.get("completed_role_evidence")
@@ -270,9 +357,6 @@ def verify(
             )
         ):
             raise QualificationError(f"{ticket} role evidence was replayed or is incomplete")
-        done = terminals[ticket]
-        pr = pull_requests[ticket]
-        merge = (pr.get("mergeCommit") or {}).get("oid")
         if (
             done.get("schema") != "nysa.software-factory.ticket-done/v1"
             or done.get("ticket") != ticket
@@ -295,6 +379,7 @@ def verify(
         qualification_total += qualification_charge
         ticket_reports.append({
             "charge_micro_usd": charge,
+            "evidence_mode": "passport",
             "qualification_charge_micro_usd": qualification_charge,
             "merge_commit": merge,
             "pr_head": pr["headRefOid"],
@@ -306,13 +391,16 @@ def verify(
     if qualification_total > qualification_budget:
         raise QualificationError("qualification exceeded its total budget")
 
-    common_history = set.intersection(*[
+    passport_histories = [
         {
             item["factory_sha"]
             for item in passports[ticket]["factory_release_history"]
         }
-        for ticket in tickets
-    ])
+        for ticket in tickets if ticket in passports
+    ]
+    common_history = (
+        set.intersection(*passport_histories) if passport_histories else set()
+    )
     relevant = [
         item for item in events
         if item.get("factory_sha") == factory_sha
@@ -439,7 +527,7 @@ def verify(
             released.add(holder)
             holder = None
             release_count += 1
-    publication_targets = set(tickets) - adopted
+    publication_targets = set(tickets) - adopted - reconciled
     if (
         holder is not None
         or acquired != publication_targets
@@ -499,6 +587,54 @@ def effective_ticket_caps(
         raise QualificationError("authenticated ticket caps are invalid") from error
 
 
+def validate_protected_reconciliation(
+    product: Path, ticket: str, event: dict[str, Any],
+    protected: str, done: dict[str, Any],
+) -> None:
+    observed = event.get("protected_main_sha", "")
+    ticket_path = f"factory/tickets/{ticket}.md"
+    done_path = f"factory/attestations/{ticket}/done.json"
+    if not SHA.fullmatch(observed):
+        raise QualificationError(
+            f"{ticket} protected terminal reconciliation is invalid"
+        )
+    try:
+        terminal = protected_terminal(product, ticket)
+        command(
+            "git", "-C", str(product), "merge-base", "--is-ancestor",
+            observed, protected,
+        )
+        observed_tree = command(
+            "git", "-C", str(product), "rev-parse", f"{observed}^{{tree}}",
+        ).strip()
+        observed_ticket = command(
+            "git", "-C", str(product), "rev-parse", f"{observed}:{ticket_path}",
+        ).strip()
+        current_ticket = command(
+            "git", "-C", str(product), "rev-parse", f"{protected}:{ticket_path}",
+        ).strip()
+        observed_done = json.loads(command(
+            "git", "-C", str(product), "show", f"{observed}:{done_path}",
+        ))
+    except (json.JSONDecodeError, ProtectedTerminalError) as error:
+        raise QualificationError(
+            f"{ticket} protected terminal reconciliation is invalid"
+        ) from error
+    if (
+        terminal.get("ticket") != ticket
+        or terminal.get("basis") != event.get("terminal_basis")
+        or observed_tree != event.get("protected_main_tree")
+        or observed_ticket != event.get("protected_ticket_blob")
+        or current_ticket != observed_ticket
+        or observed_done != done
+        or hashlib.sha256(canonical(observed_done).encode()).hexdigest()
+        != event.get("done_sha256")
+    ):
+        raise QualificationError(
+            f"{ticket} protected terminal reconciliation changed"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--product-root", required=True, type=Path)
@@ -511,6 +647,12 @@ def main() -> None:
         manifest = json.loads(
             regular(product / "factory/QUALIFICATION.json").decode("utf-8")
         )
+        events = event_records(state / "events")
+        reconciliations = protected_reconciliations(
+            events, manifest.get("factory_sha", ""),
+        )
+        if not set(reconciliations).issubset(set(manifest.get("tickets", []))):
+            raise QualificationError("qualification inputs are incomplete")
         spec = importlib.util.spec_from_file_location(
             "ticket_passport", args.kit_dir / "scripts/ticket-passport.py"
         )
@@ -523,7 +665,7 @@ def main() -> None:
             ticket: passport_module.load_passport(
                 state / "passports" / f"{ticket}.json", secret
             )[0]
-            for ticket in manifest["tickets"]
+            for ticket in manifest["tickets"] if ticket not in reconciliations
         }
         command(
             "git", "-C", str(product), "fetch", "--quiet", "origin",
@@ -539,6 +681,11 @@ def main() -> None:
                 "git", "-C", str(product), "show",
                 f"origin/main:factory/attestations/{ticket}/done.json",
             ))
+            if ticket in reconciliations:
+                validate_protected_reconciliation(
+                    product, ticket, reconciliations[ticket], protected,
+                    terminals[ticket],
+                )
             pr_number = terminals[ticket]["pr_number"]
             pull_requests[ticket] = json.loads(command(
                 "gh", "pr", "view", str(pr_number), "--repo", repo, "--json",
@@ -562,7 +709,7 @@ def main() -> None:
                 raise QualificationError(f"{ticket} protected checks are not green")
         report = verify(
             manifest, passports,
-            event_records(state / "events"),
+            events,
             terminals, pull_requests,
             effective_ticket_caps(product, args.kit_dir, manifest),
         )
