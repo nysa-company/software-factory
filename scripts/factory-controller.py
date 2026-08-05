@@ -287,6 +287,10 @@ class Controller:
         safe_directory(self.events, create=True)
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
+        self.qualification_manifest_sha256 = (
+            hashlib.sha256(canonical(self.qualification).encode()).hexdigest()
+            if self.qualification else ""
+        )
         self.fallback_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
@@ -356,6 +360,13 @@ class Controller:
             "ticket": ticket or None,
             **details,
         }
+        if self.qualification:
+            value.update({
+                "qualification_generation": self.qualification["generation"],
+                "qualification_manifest_sha256": (
+                    self.qualification_manifest_sha256
+                ),
+            })
         raw = canonical(value).encode()
         value["event_sha256"] = hashlib.sha256(raw).hexdigest()
         path = self.events / (
@@ -381,6 +392,15 @@ class Controller:
                 value.get("event") == name
                 and value.get("factory_sha") == self.release_path.name
                 and value.get("ticket") == ticket
+                and (
+                    not self.qualification
+                    or (
+                        value.get("qualification_generation")
+                        == self.qualification["generation"]
+                        and value.get("qualification_manifest_sha256")
+                        == self.qualification_manifest_sha256
+                    )
+                )
                 and all(value.get(key) == item for key, item in details.items())
             ):
                 return
@@ -2962,11 +2982,20 @@ class Controller:
         self, claim: dict[str, Any], pr: dict[str, Any]
     ) -> bool:
         identity = pr.get("preview_identity")
+        preflight = pr.get("preview_preflight")
         head = pr.get("head", "")
+        identity_wait = (
+            isinstance(identity, dict)
+            and identity.get("status") == "wait"
+            and identity.get("expected") == head
+        )
+        preflight_wait = (
+            isinstance(preflight, dict)
+            and preflight.get("status") == "wait"
+            and preflight.get("head") == head
+        )
         if (
-            not isinstance(identity, dict)
-            or identity.get("status") != "wait"
-            or identity.get("expected") != head
+            not (identity_wait or preflight_wait)
             or not SHA.fullmatch(head)
         ):
             raise ControllerError("preview identity wait evidence is invalid")
@@ -2982,7 +3011,10 @@ class Controller:
             self.block(claim, "preview-identity-timeout")
             self.event_once(
                 "preview_identity_timeout", claim["ticket"], expected=head,
-                observed=identity.get("observed", []),
+                observed=(
+                    preflight.get("evidence", {})
+                    if preflight_wait else identity.get("observed", [])
+                ),
             )
             return False
         self.save_claim(claim)
@@ -3209,6 +3241,54 @@ class Controller:
     def terminal_request_path(self, ticket: str) -> Path:
         return self.state / f"terminal-request-{ticket}.json"
 
+    def terminal_request_main_is_safe(
+        self, request: dict[str, Any], current: str,
+    ) -> bool:
+        expected = request.get("protected_main", "")
+        if expected == current:
+            return True
+        if (
+            request.get("schema")
+            != "nysa.software-factory.terminal-request/v2"
+            or not SHA.fullmatch(expected)
+            or not SHA.fullmatch(request.get("protected_ticket_blob", ""))
+        ):
+            return False
+        with self.git_lock:
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "fetch", "--quiet",
+                    "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main",
+                ],
+                check=True, timeout=120,
+            )
+            commits = [
+                expected,
+                request.get("implementation_pr", {}).get("merge_commit", ""),
+                request.get("closeout_pr", {}).get("merge_commit", ""),
+            ]
+            if any(
+                not SHA.fullmatch(commit)
+                or subprocess.run(
+                    [
+                        "git", "-C", str(self.product), "merge-base",
+                        "--is-ancestor", commit, current,
+                    ],
+                    check=False, timeout=120,
+                ).returncode
+                for commit in commits
+            ):
+                return False
+            path = f"factory/tickets/{request['ticket']}.md"
+            blobs = [
+                subprocess.run(
+                    ["git", "-C", str(self.product), "rev-parse", f"{commit}:{path}"],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.strip()
+                for commit in (expected, current)
+            ]
+        return blobs == [request["protected_ticket_blob"]] * 2
+
     def terminal_request(
         self, claim: dict[str, Any], closeout_branch: str, create: bool,
     ) -> dict[str, Any] | None:
@@ -3239,6 +3319,23 @@ class Controller:
         fields = remote.stdout.split()
         if remote.returncode or len(fields) != 2 or not SHA.fullmatch(fields[0]):
             raise ControllerError("protected main terminal expectation is unavailable")
+        with self.git_lock:
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "fetch", "--quiet",
+                    "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main",
+                ],
+                check=True, timeout=120,
+            )
+            ticket_blob = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "rev-parse",
+                    f"{fields[0]}:factory/tickets/{claim['ticket']}.md",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+        if not SHA.fullmatch(ticket_blob):
+            raise ControllerError("protected terminal ticket is unavailable")
         value = {
             "action": "done",
             "branch": branch,
@@ -3247,7 +3344,8 @@ class Controller:
             "implementation_pr": implementation,
             "passport_sha256": passport.get("passport_sha256"),
             "protected_main": fields[0],
-            "schema": "nysa.software-factory.terminal-request/v1",
+            "protected_ticket_blob": ticket_blob,
+            "schema": "nysa.software-factory.terminal-request/v2",
             "ticket": claim["ticket"],
         }
         value["request_sha256"] = hashlib.sha256(
@@ -3255,8 +3353,20 @@ class Controller:
         ).hexdigest()
         path = self.terminal_request_path(claim["ticket"])
         if path.exists():
-            if read(path) != value:
+            existing = read(path)
+            existing_digest = existing.get("request_sha256", "")
+            existing_payload = dict(existing)
+            existing_payload.pop("request_sha256", None)
+            stable = {"protected_main", "request_sha256"}
+            if (
+                existing_digest
+                != hashlib.sha256(canonical(existing_payload).encode()).hexdigest()
+                or {key: item for key, item in existing.items() if key not in stable}
+                != {key: item for key, item in value.items() if key not in stable}
+                or not self.terminal_request_main_is_safe(existing, fields[0])
+            ):
                 raise ControllerError("terminal request identity changed")
+            return existing
         elif create:
             write(path, value)
         else:
@@ -3544,6 +3654,19 @@ class Controller:
                         ):
                             return {"status": "blocked", "ticket": claim["ticket"]}
                         return {"status": "waiting", "ticket": claim["ticket"]}
+                    if (
+                        role == "narrator"
+                        and pr.get("status") == "failed"
+                        and isinstance(pr.get("preview_preflight"), dict)
+                        and pr["preview_preflight"].get("status") == "fail"
+                    ):
+                        self.block(claim, "preview-preflight")
+                        self.event_once(
+                            "preview_preflight_blocked", claim["ticket"],
+                            expected=pr.get("head"),
+                            reason=pr["preview_preflight"].get("reason"),
+                        )
+                        return {"status": "blocked", "ticket": claim["ticket"]}
                     if pr.get("status") == "failed" and self.retry_ci(
                         claim, receipt, pr
                     ):

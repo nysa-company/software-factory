@@ -5324,6 +5324,50 @@ schemas remain unchanged.
 Validation: focused tests prove exact paused recovery, issue mismatch refusal,
 pause-digest tamper refusal, and end-to-end emergency terminal validation.
 
+## FI-20260805-194 — Concurrent main advancement invalidated terminal replay
+
+Status: Focused controller regression green; protected CI and qualification pending
+Priority: P0 (#323)
+Area: concurrent terminal closeout
+Owner: Factory
+First seen: T-118 while T-108 advanced protected main
+Impact: an unrelated concurrent merge stranded a fully merged ticket before
+its final Linear synchronization.
+Smallest repair: persist the protected ticket blob with terminal request v2;
+permit a later main tip only when the old tip and both bound merge commits are
+ancestors and that ticket blob is unchanged.
+Validation: an unrelated commit replays the immutable request; changing the
+ticket still returns `terminal request identity changed`.
+
+## FI-20260805-195 — Reused qualification authority mixed manifest generations
+
+Status: Focused reducer/controller regressions green; protected CI and qualification pending
+Priority: P0 (#326)
+Area: qualification reduction
+Owner: Factory
+First seen: generation 26 reduction after an earlier same-release T-088 reconciliation
+Impact: a completed cohort could not reduce green because immutable historical
+events from another manifest shared the same Factory SHA.
+Smallest repair: bind every qualification event to the exact manifest
+generation and canonical manifest digest, then reduce only that boundary.
+Validation: prior-generation T-088 evidence remains byte-identical and is
+excluded; partial boundary metadata fails closed.
+
+## FI-20260805-196 — Preview pairing defects reached paid Narrator
+
+Status: Focused Ticket-PR/controller regressions green; protected CI and qualification pending
+Priority: P1 (#318; extends #298)
+Area: Narrator admission
+Owner: Factory
+First seen: T-100 PR #308 and T-108 PR #338
+Impact: exact-head deployments could still pair the PR web service with
+production API/CORS origins, wasting a Narrator attempt and repair lap.
+Smallest repair: after exact deployment identity, run one optional certified
+product hook with bounded head-bound JSON; pass admits, wait stays uncharged,
+and fail blocks before Narrator. Products without a hook retain current policy.
+Validation: configured paired pass and production-origin failure are covered;
+the existing no-hook path remains green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -614,6 +614,49 @@ class QualificationReducerTest(unittest.TestCase):
 
         self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
 
+    def test_manifest_generation_scopes_reused_controller_events(self):
+        manifest, _passports, current, _terminals, _prs, _caps = self.evidence()
+        digest = hashlib.sha256(REDUCER.canonical(manifest).encode()).hexdigest()
+        for event in current:
+            event.update({
+                "qualification_generation": manifest["generation"],
+                "qualification_manifest_sha256": digest,
+            })
+        historical = {
+            "event": "protected_terminal_reconciled",
+            "factory_sha": manifest["factory_sha"],
+            "observed_at_epoch_ns": 0,
+            "qualification_generation": manifest["generation"] + 1,
+            "qualification_manifest_sha256": "f" * 64,
+            "ticket": "T-088",
+        }
+        events = [historical, *current]
+        before = copy.deepcopy(events)
+        selected = REDUCER.qualification_events(events, manifest)
+        self.assertEqual(selected, current)
+        self.assertEqual(events, before)
+
+        outsider = {
+            **current[-1],
+            "event": "protected_terminal_reconciled",
+            "observed_at_epoch_ns": current[-1]["observed_at_epoch_ns"] + 1,
+            "ticket": "T-088",
+        }
+        scoped = REDUCER.qualification_events([*events, outsider], manifest)
+        self.assertEqual(
+            set(REDUCER.protected_reconciliations(
+                scoped, manifest["factory_sha"],
+            )) - set(manifest["tickets"]),
+            {"T-088"},
+        )
+
+        malformed = copy.deepcopy(events)
+        malformed[-1].pop("qualification_manifest_sha256")
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "boundary is malformed",
+        ):
+            REDUCER.qualification_events(malformed, manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. All products share the Software Factory Linear team; each initiative gets a Linear Project.
 - **`factory/KIT_PIN`:** exactly one lowercase, full 40-character kit SHA. Production requires a protected-main, successful-CI installed release; a sealed qualification may instead bind one clean local candidate SHA/tree. External products fail closed when the pin is missing, malformed, or different from the physical release.
-- **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), and required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`).
+- **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`), and optional repository-contained `PREVIEW_PREFLIGHT_SCRIPT`.
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
@@ -458,10 +458,16 @@ cell parking so the expected validating-head change remains a waiting boundary.
 Narrator admission additionally requires every Railway preview deployment
 linked by the trusted bot comment to report the exact reviewed repository,
 branch, and commit; stale or unavailable identity waits without a role charge
-and becomes one typed timeout. A merged terminal closeout persists one exact
-passport/PR/protected-main request before the idempotent Done action. Only that
-request may reopen a clean parked `controller-error`; unrelated errors remain
-blocked.
+and becomes one typed timeout. A product-configured preview preflight runs only
+after that identity passes. Its bounded JSON result must bind the same head;
+`wait` remains uncharged, `fail` blocks before Narrator, and missing, unsafe, or
+malformed evidence refuses. Products without the optional hook retain exact-SHA
+deployment admission without an invented topology policy. A merged terminal
+closeout persists one exact passport/PR/protected-main/ticket-blob request
+before the idempotent Done action. Only that request may reopen a clean parked
+`controller-error`; unrelated errors remain blocked. Later protected-main
+advancement remains eligible only when the recorded base and both bound merge
+commits are ancestors and the protected ticket blob is byte-identical.
 A ticket
 whose terminal boundary spans one or more Factory migrations reuses that
 evidence only when one unique contiguous authenticated migration suffix links
@@ -883,7 +889,11 @@ historical passport remains available for audit and reduction.
 Qualification restart and recovery count those protected Done targets together
 with runnable claims, retain the complete cohort in their boundary events, and
 schedule only unfinished tickets. The controller also records one
-candidate-bound completion event for each claimless protected Done target. In
+candidate-bound completion event for each claimless protected Done target.
+Every qualification event also binds the exact protected manifest generation
+and canonical manifest digest. Reduction selects only that boundary, rejects
+partial or malformed current-boundary metadata, and leaves older same-release
+event files immutable and auditable. In
 successor qualification it first verifies the unique authenticated release
 suffix from the manifest's production source through the passport's current
 pre-candidate release, then uses the surviving clean ticket cell to migrate the

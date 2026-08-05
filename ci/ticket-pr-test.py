@@ -187,6 +187,36 @@ print(json.dumps([{
             )
         self.ledger.write_text("\n".join(rows) + "\n")
 
+    def configure_preview_preflight(self, status, reason=None):
+        script = self.product / "factory/preview-preflight.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,sys\n"
+            "value=json.load(sys.stdin)\n"
+            f"print(json.dumps({{'evidence':{{'paired':{status == 'pass'!r}}},"
+            "'head':value['head'],"
+            f"'reason':{reason!r},"
+            "'schema':'nysa.software-factory.preview-preflight/v1',"
+            f"'status':{status!r}}},sort_keys=True))\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o700)
+        project = self.product / "factory/PROJECT.env"
+        project.write_text(
+            project.read_text(encoding="utf-8")
+            + "PREVIEW_PREFLIGHT_SCRIPT=factory/preview-preflight.py\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", self.product, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "configure preview preflight"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
+
     def test_exact_remote_head_retries_once(self):
         failed = subprocess.CompletedProcess(
             ["git"], 128, stdout="", stderr="transport unavailable"
@@ -660,6 +690,48 @@ print(json.dumps([{
         self.state.write_text(json.dumps(prs))
         refused = self.command(expected=2)
         self.assertIn("implementation changed", refused["error"])
+
+    def test_configured_preview_preflight_gates_narrator(self):
+        self.configure_preview_preflight("fail", "production_origin")
+        self.assertEqual(self.command()["status"], "prepared")
+        self.prepare_narrator()
+        current = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        prs = json.loads(self.state.read_text())
+        prs[0]["headRefOid"] = current
+        self.state.write_text(json.dumps(prs))
+
+        blocked = self.command()
+        self.assertEqual(blocked["status"], "failed")
+        self.assertEqual(
+            blocked["checks"], ["preview preflight production_origin"],
+        )
+        self.assertEqual(blocked["preview_identity"]["status"], "pass")
+        self.assertEqual(blocked["preview_preflight"], {
+            "evidence": {"paired": False},
+            "head": current,
+            "reason": "production_origin",
+            "schema": "nysa.software-factory.preview-preflight/v1",
+            "status": "fail",
+        })
+
+    def test_configured_preview_preflight_passes_exact_pair(self):
+        self.configure_preview_preflight("pass")
+        self.assertEqual(self.command()["status"], "prepared")
+        self.prepare_narrator()
+        current = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        prs = json.loads(self.state.read_text())
+        prs[0]["headRefOid"] = current
+        self.state.write_text(json.dumps(prs))
+
+        ready = self.command()
+        self.assertEqual(ready["status"], "ready")
+        self.assertEqual(ready["preview_preflight"]["status"], "pass")
 
     def test_narrator_recovery_creates_pr_only_after_valid_review_lineage(self):
         self.prepare_narrator(accounting_state="abandoned_conservative")
