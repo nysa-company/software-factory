@@ -555,6 +555,9 @@ the same trusted marker used by disposable development environments; provider
 attempts therefore retain per-attempt homes without depending on a ticket's
 cell path. Environment preparation also rejects a root whose worst-case Cursor
 attempt data path would exceed the adapter's isolated-scratch limit.
+Its immutable registered product checkout may be detached at the exact
+authenticated protected-main SHA; role admission records that identity while
+ticket execution remains branch-bound.
 For a production-successor qualification, preparation additionally requires
 a clean linked qualification worktree of the canonical product repository,
 the selected tickets' authenticated passports with an exact release-history
@@ -745,9 +748,10 @@ or signed repair evidence. Each transition receipt binds that number and the
 controller appends it as a typed event; a third failed lap resolves to
 `ESCALATE` before another provider launch. Repair replays keep the coarse
 business state for Linear compatibility but are no longer invisible.
-The first terminal failed Cursor attempt for a protected qualification keeps
-its claim and authenticated evidence while the controller appends the existing
-same-family direct-CLI fallback and resumes the same deterministic stage. The
+The first task-submitted terminal failed Cursor attempt for a protected
+qualification keeps its claim and authenticated evidence while the controller
+appends the existing same-family direct-CLI fallback and resumes the same
+deterministic stage. The
 fallback atomically converts an initial v1 route plan into a same-release v2
 journal before appending its revision, preserving the original plan bytes and
 provenance. Because that trusted fallback snapshots permitted partial role
@@ -755,6 +759,9 @@ changes, including a Builder's current-ticket root-cause log but never sibling
 tickets, tests, or Factory controls, it runs before terminal passport export;
 the resulting clean exact head then receives the failed charge through
 preserving passport migration.
+An unsubmitted durable-GO terminal is not a model fallback. The controller
+exports its conservative charge into the ordinary passport, blocks it under
+the same release, and leaves only the authenticated successor recovery path.
 It is idempotent across controller restart. A second task-submitted
 attempt for that ticket, role, and frozen candidate is refused as no progress
 instead of replayed; preserved attempts from predecessor candidates do not

@@ -5253,6 +5253,42 @@ lease and replay, with terminal events emitted once.
 Validation: exact replay recovers, unrelated errors stay blocked, and protected
 main drift invalidates the request.
 
+## FI-20260804-190 — Qualification registration rejected its own detached SHA
+
+Status: Focused role-runner regression green; protected CI and qualification pending
+Priority: P0 (#312)
+Area: pre-provider registered-checkout integrity
+Owner: Factory
+First seen: T-108 and T-118 under Factory
+`1c744aba034f5a125536b411d180c5a2183a9b82`
+Impact: both Planners stopped before provider submission with zero provider
+charge because the sealed product checkout was correctly detached at protected
+main.
+Smallest repair: record branch or detached as an explicit ref identity while
+retaining the existing exact HEAD, status, and tracked-content snapshots.
+Ticket execution remains branch-bound and real Git errors still fail closed.
+Validation: a focused detached-control/branch-ticket role run reaches and
+completes the mock adapter; stale-remote, missing-commit, and history-rewrite
+guards remain green.
+
+## FI-20260804-191 — First-role submission failure had no recovery passport
+
+Status: Focused controller regressions green; protected CI and qualification pending
+Priority: P0 (#314)
+Area: failed-attempt recovery
+Owner: Factory
+First seen: T-108 and T-118 under Factory
+`1c744aba034f5a125536b411d180c5a2183a9b82`
+Impact: both zero-provider Planner failures entered the submitted-provider
+fallback path, which correctly refused them but left no passport for successor
+recovery.
+Smallest repair: require `task_submitted=1` before model fallback. The ordinary
+failure path exports the conservative charge and blocks; the existing exact
+successor proof then resumes it without replaying history.
+Validation: the focused controller test proves an unsubmitted failure
+exports once without fallback, a submitted failure still falls back, and the
+existing successor-only recovery remains green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

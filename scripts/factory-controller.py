@@ -2873,6 +2873,7 @@ class Controller:
         qualification_fallback = (
             self.qualification
             and terminal.get("role_exit") == "provider_failed"
+            and terminal.get("task_submitted") == "1"
             and terminal.get("route_id", "").startswith("cursor-")
         )
         if not qualification_fallback:

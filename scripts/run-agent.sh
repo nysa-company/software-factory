@@ -389,6 +389,17 @@ registered_tracked_content() {
     "$FACTORY_TRUSTED_GIT_BIN" hash-object --stdin
 }
 
+registered_ref_identity() {
+  local branch status=0
+  branch="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
+    symbolic-ref --quiet --short HEAD 2>/dev/null)" || status=$?
+  case "$status" in
+    0) printf 'branch:%s' "$branch" ;;
+    1) printf 'detached' ;;
+    *) return "$status" ;;
+  esac
+}
+
 registered_status_after_run() {
   local status relative line
   status="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
@@ -898,7 +909,7 @@ verify_control_interval_integrity() {
     STATUS=11
   fi
   registered_status_after="$(registered_status_after_run 2>/dev/null || true)"
-  if [[ "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
+  if [[ "$(registered_ref_identity 2>/dev/null || true)" != "$REGISTERED_BRANCH_BEFORE" ||
         "$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)" != "$REGISTERED_HEAD_BEFORE" ||
         "$registered_status_after" != "$REGISTERED_STATUS_BEFORE" ||
         "$(registered_tracked_content 2>/dev/null || true)" != "$REGISTERED_CONTENT_BEFORE" ]]; then
@@ -2517,8 +2528,7 @@ else
         terminate_run_group
         wait "$RUN_PID" 2>/dev/null
         STATUS=125
-      elif ! REGISTERED_BRANCH_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
-          symbolic-ref --quiet --short HEAD 2>/dev/null)" ||
+      elif ! REGISTERED_BRANCH_BEFORE="$(registered_ref_identity)" ||
            ! REGISTERED_HEAD_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
           rev-parse HEAD 2>/dev/null)" ||
            ! REGISTERED_STATUS_BEFORE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \

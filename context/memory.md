@@ -73,10 +73,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   release migration or qualification takeover cannot erase successful roles
   from scheduling while retaining them in authenticated history.
 - A durable-GO exit 125 with no submission marker, progress, or usable
-  telemetry keeps the full conservative reservation and remains blocked under
-  the same release. Only a successor release may clear that exact receipt after
-  the signed remote passport proves its charge was exported once; a repeat
-  under the successor blocks again. New runs record
+  telemetry exports its full conservative reservation into the ordinary
+  passport and remains blocked under the same release without invoking model
+  fallback. Only a successor release may clear that exact receipt after the
+  signed remote passport proves its charge was exported once; a repeat under
+  the successor blocks again. New runs record
   `adapter_submission_unconfirmed` and a bounded diagnostic-output digest,
   while only the exact earlier blank-reason/empty-output shape remains readable
   during upgrade.
@@ -175,6 +176,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   active commit, and the local qualification control worktree must be based on
   that current protected ref with only the admitted control diff. Qualification
   therefore never requires a preliminary product activation.
+- A sealed qualification may register its immutable product checkout at a
+  detached protected-main SHA. The runner records detached versus branch
+  identity explicitly while still snapshotting exact HEAD, status, and content;
+  ticket worktrees remain branch-bound.
 - Sealed qualification provider admission scopes product- and ticket-budget
   accounting to the exact project plus frozen candidate SHA. Predecessor
   candidates cannot exhaust a successor's allowance, multiple roots for the
@@ -3520,3 +3525,21 @@ closeout PRs are merged, the controller persists an exact passport-, PR-,
 Factory-, and protected-main-bound Done request. A clean parked terminal
 `controller-error` may replay only that request; all other blocked claims remain
 ineligible, and terminal events are idempotent.
+
+## 2026-08-04 — Decision 259: Detached qualification registration is valid
+
+Category: Qualification
+
+The immutable registered product checkout may be detached at its exact
+protected-main SHA while ticket work remains on authenticated ticket branches.
+The role runner distinguishes this valid state from a Git error and continues
+to guard exact HEAD, status, and tracked content throughout provider execution.
+
+## 2026-08-04 — Decision 260: Unsubmitted attempts are not model fallbacks
+
+Category: Qualification
+
+A durable-GO Cursor terminal enters same-release model fallback only after a
+task was actually submitted. An unsubmitted conservative terminal first gains
+an authenticated passport charge, remains blocked under the current release,
+and can resume only through the existing successor-release proof.

@@ -1690,6 +1690,7 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket=T-112\n"
             "role=planner\n"
             "route_id=cursor-gpt\n"
+            "task_submitted=1\n"
             "accounting_state=abandoned_conservative\n"
             "exit_status=9\n"
             "role_exit=provider_failed\n"
@@ -1737,6 +1738,63 @@ class FactoryControllerTest(unittest.TestCase):
                 for call in calls
             )
         )
+
+    def test_qualification_unsubmitted_failure_exports_passport(self) -> None:
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 4,
+                "tickets": ["T-110", "T-111", "T-112", "T-113"],
+            }),
+            encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "b" * 64,
+            "role": "planner",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-112",
+            "worktree": str(self.root / "cell-3"),
+        }
+        (self.product / "factory/runs/failed.meta").write_text(
+            "run_id=failed\n"
+            "ticket=T-112\n"
+            "role=planner\n"
+            "route_id=cursor-gpt\n"
+            "task_submitted=0\n"
+            "accounting_state=abandoned_conservative\n"
+            "exit_status=125\n"
+            "role_exit=provider_failed\n"
+            f"transition_receipt_sha256={'b' * 64}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.passport = lambda *_args: calls.append("passport")
+        controller.json_call = lambda *args, **_kwargs: calls.append(args)
+        controller.save_claim = lambda *_args: None
+        controller.release_ticket_lease = lambda *_args: calls.append("release")
+        controller.event = lambda *_args, **_kwargs: calls.append("event")
+
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["blocked_reason"], "role-failure")
+        self.assertIn("passport", calls)
+        self.assertNotIn("migrate", calls)
+        self.assertFalse(any(
+            isinstance(call, tuple) and call[:2] == ("models", "fallback-auto")
+            for call in calls
+        ))
 
     def test_reconcile_rearms_exact_externally_applied_fallback(self) -> None:
         (self.product / "factory/QUALIFICATION.json").write_text(
