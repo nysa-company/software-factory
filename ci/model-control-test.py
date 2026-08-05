@@ -435,6 +435,32 @@ PY
             )["schema"],
             "ticket-model-route-journal/v2",
         )
+        bundle = self.workdir / "factory/attestations/T-901/bundle.json"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(json.dumps({"kit_sha": "b" * 40}) + "\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(bundle)], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm",
+                "stale bundle fixture",
+            ],
+            check=True,
+        )
+        stale = subprocess.run(
+            [
+                str(release / "scripts/model-control.sh"), "migrate-plan",
+                "--ticket", "T-901", "--workdir", str(self.workdir),
+            ],
+            env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(stale.returncode, 2)
+        self.assertIn(
+            "bundle attestation must be invalidated before route migration",
+            stale.stdout,
+        )
 
 
 if __name__ == "__main__":

@@ -114,6 +114,16 @@ class QualificationEnvironmentTest(unittest.TestCase):
             }) + "\n",
             encoding="utf-8",
         )
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\n", encoding="utf-8",
+        )
+        (self.product / "factory/tickets").mkdir()
+        for ticket in ("T-101", "T-102", "T-103"):
+            (self.product / f"factory/tickets/{ticket}.md").write_text(
+                f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
+                "Depends-On: none\n",
+                encoding="utf-8",
+            )
         (self.product / "factory/certification-plan.json").write_text(
             json.dumps({
                 "phases": [{
@@ -162,6 +172,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
         release = Path(value["launcher"]).parents[3]
         authority = Path(value["authority_root"])
         self.assertEqual(value["factory_sha"], self.sha)
+        runs = self.product / "factory/runs"
+        self.assertTrue(runs.is_dir())
+        self.assertEqual(runs.stat().st_mode & 0o777, 0o700)
         self.assertEqual(
             value["product_sha"], run(self.product, "git", "rev-parse", "HEAD")
         )
@@ -253,6 +266,44 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT.EnvironmentError, "already exists",
         ):
             ENVIRONMENT.prepare(args)
+
+    def test_rejects_unsafe_runtime_root_and_noncanonical_contracts(self) -> None:
+        runs = self.product / "factory/runs"
+        runs.symlink_to(self.workspace)
+        with self.assertRaisesRegex(ENVIRONMENT.EnvironmentError, "factory/runs is unsafe"):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+        runs.unlink()
+        ticket = self.product / "factory/tickets/T-101.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Product-Decisions: frozen",
+            "Product-Decisions: frozen - inherited",
+        ))
+        run(self.product, "git", "add", "factory/tickets/T-101.md")
+        run(self.product, "git", "commit", "-qm", "decorate control field")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "Product-Decisions must be exactly frozen",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+
+    def test_rejects_internal_qualification_dependency(self) -> None:
+        ticket = self.product / "factory/tickets/T-103.md"
+        ticket.write_text(ticket.read_text().replace("Depends-On: none", "Depends-On: T-101"))
+        run(self.product, "git", "add", "factory/tickets/T-103.md")
+        run(self.product, "git", "commit", "-qm", "dependent cohort")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "qualification cohort dependency T-103 -> T-101",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
 
     def test_rejects_root_too_long_for_cursor_scratch(self) -> None:
         root = Path(tempfile.mkdtemp(
@@ -373,7 +424,16 @@ class QualificationEnvironmentTest(unittest.TestCase):
         (self.product / ".gitignore").write_text(
             "factory/linear-map.json\n", encoding="utf-8",
         )
-        run(self.product, "git", "add", "factory/KIT_PIN", ".gitignore")
+        for ticket in tickets:
+            (self.product / f"factory/tickets/{ticket}.md").write_text(
+                f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
+                "Depends-On: none\n",
+                encoding="utf-8",
+            )
+        run(
+            self.product, "git", "add", "factory/KIT_PIN", ".gitignore",
+            "factory/tickets",
+        )
         run(self.product, "git", "commit", "-qm", "protected source")
         protected_sha = run(self.product, "git", "rev-parse", "HEAD")
         protected_tree = run(self.product, "git", "rev-parse", "HEAD^{tree}")
@@ -417,7 +477,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         run(
             self.product, "git", "add", "factory/KIT_PIN",
-            "factory/QUALIFICATION.json",
+            "factory/QUALIFICATION.json", "factory/tickets",
         )
         run(self.product, "git", "commit", "-qm", "authorize qualification")
 
@@ -512,7 +572,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             root=self.root,
             takeover_project="relay",
         )
-        (self.product / "factory/runs").mkdir()
+        (self.product / "factory/runs").mkdir(mode=0o700)
         with (
             mock.patch.object(Path, "home", return_value=account),
             mock.patch.object(

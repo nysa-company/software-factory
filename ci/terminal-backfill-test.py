@@ -45,6 +45,9 @@ class TerminalBackfillTests(unittest.TestCase):
         self.bin.mkdir()
         command("git", "init", "-q", "-b", "main", self.repo)
         command("git", "init", "--bare", "-q", self.remote)
+        for repository in (self.repo, self.remote):
+            command("git", "-C", repository, "config", "maintenance.auto", "false")
+            command("git", "-C", repository, "config", "gc.auto", "0")
         command("git", "-C", self.remote, "config", "receive.autogc", "false")
         command("git", "-C", self.repo, "remote", "add", "origin", self.remote)
         (self.repo / "factory/tickets").mkdir(parents=True)

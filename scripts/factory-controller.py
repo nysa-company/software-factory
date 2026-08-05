@@ -933,6 +933,42 @@ class Controller:
             raise ControllerError("launcher returned malformed JSON")
         return value
 
+    @staticmethod
+    def preflight_refusal_evidence(value: dict[str, Any]) -> dict[str, Any]:
+        output = value.get("output")
+        exit_code = value.get("exit_code")
+        if (
+            value.get("status") != "error"
+            or isinstance(exit_code, bool)
+            or not isinstance(exit_code, int)
+            or not 1 <= exit_code <= 255
+            or not isinstance(output, str)
+            or len(output.encode("utf-8")) > 1_048_576
+        ):
+            raise ControllerError("preflight refusal evidence is malformed or oversized")
+        lines = []
+        for raw in output.replace("\x00", "").splitlines():
+            line = raw.strip()
+            if not re.search(r"(?:^|\b)(?:FAIL:|PREFLIGHT FAIL|READINESS BLOCKED:)", line):
+                continue
+            line = re.sub(
+                r"(?i)([A-Za-z0-9_.-]*(?:key|token|secret|password|auth)"
+                r"[A-Za-z0-9_.-]*\s*[:=]\s*)\S+",
+                r"\1[redacted]", line,
+            )
+            line = re.sub(
+                r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://\S+", "[redacted-url]", line,
+            )
+            lines.append(line[:500])
+            if len(lines) == 8:
+                break
+        return {
+            "preflight_exit_code": exit_code,
+            "preflight_failure_lines": lines,
+            "preflight_output_sha256": hashlib.sha256(output.encode()).hexdigest(),
+            "preflight_reason_code": "deterministic_refusal" if lines else "unclassified_refusal",
+        }
+
     def claim_path(self, ticket: str) -> Path:
         return self.claims / f"{ticket}.json"
 
@@ -1139,6 +1175,22 @@ class Controller:
         return claims
 
     def product_ticket_done(self, ticket: str) -> bool:
+        if self.qualification and ticket in self.qualification["tickets"]:
+            protected = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "show",
+                    f"refs/remotes/origin/main:factory/tickets/{ticket}.md",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            if protected.returncode == 0:
+                states = re.findall(
+                    r"^State:\s*(.*?)\s*$", protected.stdout, re.I | re.M,
+                )
+                if len(states) == 1 and states[0].casefold() == "done":
+                    self.qualification_protected_terminal(ticket)
+                    return True
+                return False
         try:
             text = (
                 self.product / "factory" / "tickets" / f"{ticket}.md"
@@ -2316,11 +2368,22 @@ class Controller:
                 self.release_ticket_lease(claim)
                 raise
             if preflight.get("status") != "ok" or preflight.get("exit_code") != 0:
-                self.release_ticket_lease(claim)
+                try:
+                    evidence = self.preflight_refusal_evidence(preflight)
+                except ControllerError as error:
+                    self.event(
+                        "preflight_refusal_invalid", claim["ticket"], error=str(error),
+                        transition_receipt_sha256=transition["receipt"],
+                    )
+                    self.release_ticket_lease(claim)
+                    claim["blocked_reason"] = "preflight-evidence"
+                    self.save_claim(claim)
+                    continue
                 self.event(
-                    "preflight_retry_blocked", claim["ticket"],
+                    "preflight_retry_blocked", claim["ticket"], **evidence,
                     transition_receipt_sha256=transition["receipt"],
                 )
+                self.release_ticket_lease(claim)
                 continue
             claim.update(receipt="", role="", status="claimed")
             claim.pop("blocked_reason", None)
@@ -3576,6 +3639,19 @@ class Controller:
                 allow=(0, 1),
             )
             if preflight.get("status") != "ok" or preflight.get("exit_code") != 0:
+                try:
+                    evidence = self.preflight_refusal_evidence(preflight)
+                except ControllerError as error:
+                    self.event(
+                        "preflight_refusal_invalid", claim["ticket"], error=str(error),
+                        transition_receipt_sha256=receipt,
+                    )
+                    self.block(claim, "preflight-evidence")
+                    return
+                self.event(
+                    "preflight_refused", claim["ticket"], **evidence,
+                    transition_receipt_sha256=receipt,
+                )
                 self.block(claim, "preflight")
                 return
         claim.update(receipt=receipt, role=role, status="running")
@@ -3746,7 +3822,10 @@ class Controller:
                             and not self.wait_for_preview_identity(claim, pr)
                         ):
                             return {"status": "blocked", "ticket": claim["ticket"]}
-                        return {"status": "waiting", "ticket": claim["ticket"]}
+                        return {
+                            "status": "waiting", "ticket": claim["ticket"],
+                            "wait_reason": "pr-gate",
+                        }
                     if (
                         role == "narrator"
                         and pr.get("status") == "failed"
@@ -3763,7 +3842,10 @@ class Controller:
                     if pr.get("status") == "failed" and self.retry_ci(
                         claim, receipt, pr
                     ):
-                        return {"status": "waiting", "ticket": claim["ticket"]}
+                        return {
+                            "status": "waiting", "ticket": claim["ticket"],
+                            "wait_reason": "pr-gate",
+                        }
                     if role == "narrator" and pr.get("status") != "ready":
                         self.block(claim, "narrator-pr-gate")
                         return {"status": "blocked", "ticket": claim["ticket"]}
@@ -3791,9 +3873,15 @@ class Controller:
                 if pr.get("status") == "failed" and self.retry_ci(
                     claim, receipt, pr
                 ):
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 if pr.get("status") == "wait":
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 if pr.get("status") != "ready":
                     self.block(claim, "bundle-pr-gate")
                     return {"status": "blocked", "ticket": claim["ticket"]}
@@ -4145,6 +4233,7 @@ class Controller:
 
         results: dict[str, dict[str, str]] = {}
         settled: set[str] = set()
+        retry_after: dict[str, float] = {}
         futures: dict[Future, dict[str, Any]] = {}
         worker_limit = min(4, self.capacity)
         executor = ThreadPoolExecutor(max_workers=worker_limit)
@@ -4193,6 +4282,7 @@ class Controller:
                     claim for claim in claims
                     if claim["ticket"] not in busy
                     and claim["ticket"] not in settled
+                    and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                 ]
                 self.recover_missing_passport_claims(claims)
@@ -4241,6 +4331,7 @@ class Controller:
                     claim for claim in claims
                     if claim["ticket"] not in busy
                     and claim["ticket"] not in settled
+                    and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                     and self.runnable(claim)
                 ]
@@ -4288,7 +4379,15 @@ class Controller:
                         missing_ok=True
                     )
                     results[claim["ticket"]] = item
-                    if item.get("status") in {
+                    if (
+                        item.get("status") == "waiting"
+                        and item.get("wait_reason") == "pr-gate"
+                        and futures
+                    ):
+                        retry_after[claim["ticket"]] = (
+                            time.monotonic() + RECONCILE_INTERVAL_SECONDS
+                        )
+                    elif item.get("status") in {
                         "active", "blocked", "budget", "error", "maintenance",
                         "waiting",
                     }:

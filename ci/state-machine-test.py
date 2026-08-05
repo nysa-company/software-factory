@@ -126,13 +126,19 @@ class StateMachineTest(unittest.TestCase):
         prompts = {
             "planner": (
                 "import/export allowlists",
-                "exact protected test plus literal",
+                "exact protected test plus a concise identifier",
                 "An unknown or unparsable static source-boundary check is a block",
+                "--conflict-entry",
+                "CONFLICT DECLARATION PASS",
+                "--global-literal",
+                "GLOBAL TEXT PASS",
             ),
             "spec-linter": (
                 "FAIL before Builder when a planned module literal is rejected",
-                "exact test and literal",
-                "unknown or unparsable static source-boundary checks also FAIL closed",
+                "naming the exact test and assertion",
+                "unknown or unparsable static checks also FAIL closed",
+                "page-wide text assertions",
+                "GLOBAL TEXT PASS",
             ),
             "test-author": (
                 "Protected-Test-Conflicts: <test path> => <literal>",

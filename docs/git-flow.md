@@ -42,6 +42,12 @@ expensive product checks for allowlisted PRs, but every product push to `main`
 runs its full verification so deployment evidence remains bound to the merged
 SHA.
 
+The Factory workflow uses the official Node-24 action-runtime majors
+(`checkout@v5`, `setup-node@v5`, and `setup-python@v6`); the generated product
+baseline carries the same checkout/Node pins. macOS installs GNU coreutils with
+Homebrew auto-update disabled so unrelated third-party taps are neither updated
+nor trusted.
+
 Do not infer safety from commit size, commit messages, or a Markdown suffix:
 one-line code and executable Markdown prompt changes require full post-merge
 CI before release. Do not put `paths-ignore` on a required workflow; GitHub

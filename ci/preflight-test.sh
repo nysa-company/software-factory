@@ -824,6 +824,8 @@ printf '%s\n' \
 printf '%s\n' 'export const fixture = true;' > "$READINESS/app/tests/fixture.js"
 printf '%s\n' "const allowed = ['./db.js'];" \
   > "$READINESS/app/tests/source-boundary.test.js"
+printf '%s\n' 'screen.queryByText("Skip", { exact: false });' \
+  > "$READINESS/app/tests/global-shell.test.tsx"
 init_git_repo "$READINESS"
 if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
      --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-pass.out" &&
@@ -831,6 +833,32 @@ if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
   echo "PASS: contract 1.8 provider-free readiness passes executable seams"
 else
   echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
+  FAILURES=$((FAILURES + 1))
+fi
+if ! python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --global-literal 'Skip to main content' --workdir "$READINESS" \
+     > "$TMP/global-text-collision.out" &&
+   grep -qF 'app/tests/global-shell.test.tsx:1 => Skip' \
+     "$TMP/global-text-collision.out" &&
+   python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --global-literal 'Account settings' --workdir "$READINESS" \
+     > "$TMP/global-text-pass.out" &&
+   grep -qx 'GLOBAL TEXT PASS' "$TMP/global-text-pass.out"; then
+  echo "PASS: global protected-test text collisions fail before freeze"
+else
+  echo "FAIL: global protected-test text collision scan is not fail-closed"
+  FAILURES=$((FAILURES + 1))
+fi
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --conflict-entry 'app/tests/source-boundary.test.js => readWebFile:src/app.css' \
+     > "$TMP/conflict-entry-pass.out" &&
+   grep -qx 'CONFLICT DECLARATION PASS' "$TMP/conflict-entry-pass.out" &&
+   ! python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --conflict-entry 'app/tests/source-boundary.test.js => ["src/app.css"]' \
+     > "$TMP/conflict-entry-fail.out"; then
+  echo "PASS: Planner conflict declarations use the readiness parser grammar"
+else
+  echo "FAIL: Planner conflict declaration grammar is not deterministic"
   FAILURES=$((FAILURES + 1))
 fi
 sed 's#Protected-Test-Conflicts: none#Protected-Test-Conflicts: app/tests/source-boundary.test.js => ./new.js#' \

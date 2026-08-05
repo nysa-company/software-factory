@@ -454,6 +454,14 @@ run snapshot still match; it rebuilds no authority from Git history.
 Before provider admission, qualification also hydrates only immutable PR refs
 named by committed terminal migrations, verifies their exact expected heads,
 and leaves every checked-out tree and ref unchanged.
+Preparation creates an absent ignored `factory/runs/` through the
+owner-controlled physical `factory/` descriptor at mode 0700; a file, symlink,
+foreign owner, or permissive runtime directory refuses. Every selected
+unfinished ticket must also use exact `Product-Decisions: frozen` metadata.
+A cohort containing one selected ticket that depends on another is rejected in
+favor of sequential generations. When a canonical Linear map exists,
+preparation initializes only selected unmapped issues; historical tickets are
+not reconciled.
 
 After a successful Reviewer publication commit, passport migration precedes
 cell parking so the expected validating-head change remains a waiting boundary.
@@ -745,7 +753,10 @@ passport only when it has no run record or active process, its prior Planner
 receipt is unconsumed, its cell is clean and remote-equal, and its route names
 the current Factory. The controller reacquires only that ticket lease, issues
 a fresh state-machine receipt, and reruns sealed preflight. Failure releases
-the lease and keeps the same block; only a pass reopens ordinary Planner
+the lease and keeps the same block; before release the controller persists the
+redacted failure lines, exit code, reason code, and full-output digest in one
+bounded event. Malformed or oversized refusal output creates a distinct
+fail-closed evidence block. Only a pass reopens ordinary Planner
 reconciliation. Passport, terminal, submitted, dirty, drifted, unlisted, and
 stale-route claims remain closed.
 During a protected qualification, the development scheduler authenticates a
@@ -893,7 +904,11 @@ Linear Done and re-reads that exact issue. The controller records one
 idempotent terminal-sync event before it emits completion and releases the
 ticket. Missing mapping, API failure, or unconfirmed Done leaves the claim
 retryable; stale prepublication dependency logic is never reopened.
-Done in the sealed product root also suppresses passport-based claim recovery.
+For qualification, validated protected-main Done is authoritative even when
+the sealed registered checkout remains intentionally detached with a
+nonterminal ticket. That target is excluded from admission and cannot be
+reclaimed. Outside qualification, Done in the product root suppresses
+passport-based claim recovery.
 Any residual claim is renewed and released before scheduling, while the
 historical passport remains available for audit and reduction.
 Qualification restart and recovery count those protected Done targets together
@@ -912,7 +927,9 @@ If signed post-merge route migrations advanced the ticket head, both adoption
 and final reduction require one unique contiguous v2 passport suffix from the
 Done-approved PR head through the current passport head, Factory, protected
 base, route, and parent digests. Historical membership, disconnected or
-ambiguous suffixes, and substituted passport parents remain invalid.
+ambiguous suffixes, and substituted passport parents remain invalid. Route
+migration refuses before preview or approval whenever an existing bundle
+attestation binds a different Kit-SHA; evidence is never silently rewritten.
 The typed terminal-adoption marker and event seal the manifest source, immediate
 passport predecessor, source/candidate passport digests, and protected Done/PR
 identity.

@@ -1,4 +1,4 @@
-Version: 10
+Version: 11
 
 # Role: Spec-linter
 
@@ -14,7 +14,7 @@ The ticket file in Planning (spec'd description, acceptance criteria, frozen con
 
 1. **Criteria quality** — every acceptance criterion is pass/fail decidable (a test or screenshot settles it, no judgment call) and unambiguous (no term two readers could quantify differently). "Works correctly", "handles edge cases", "is fast", and "appropriate" are blocking only when the builder must interpret them to choose product behavior.
 2. **Contract coverage** — every material behavior of the frozen contract is exercised by at least one criterion; every criterion is implementable against the contract as written. Closely related fields, fixtures, and equivalent invalid-input permutations may share one coverage row and one representative test.
-3. **Consistency** — the description, criteria, and contract do not contradict each other, the linked product docs (names, paths, shapes, counts must match exactly), or a recorded ruling in `factory/rulings.md`. Evaluate every derived invalid fixture exactly; if its transformation is byte-identical to an accepted valid fixture, the contract fails this check. Evaluate every exact generated identifier, sequence, counter, or timestamp from its frozen initializer/reset; fail a value the setup cannot produce or a repair scope that excludes its required setup correction. For every required serialized test command, trace setup, reset, and teardown across criteria. If cleanup deletes a parent row, enumerate every sibling dependent table and FAIL unless each non-cascading foreign key has child-first cleanup inside the exact protected-test scope; an exact `ON DELETE CASCADE` needs no redundant cleanup edit, and unrelated helpers or tests remain outside Test-author ownership. Independently inspect protected tests associated with every Builder-owned production file for import/export allowlists, exact-source assertions, and source snapshots. FAIL before Builder when a planned module literal is rejected, naming the exact test and literal, unless the exact `<test path> => <literal>` conflict is declared and that test is in `Fixture-Seams`; unknown or unparsable static source-boundary checks also FAIL closed.
+3. **Consistency** — the description, criteria, and contract do not contradict each other, the linked product docs (names, paths, shapes, counts must match exactly), or a recorded ruling in `factory/rulings.md`. Evaluate every derived invalid fixture exactly; if its transformation is byte-identical to an accepted valid fixture, the contract fails this check. Evaluate every exact generated identifier, sequence, counter, or timestamp from its frozen initializer/reset; fail a value the setup cannot produce or a repair scope that excludes its required setup correction. For every required serialized test command, trace setup, reset, and teardown across criteria. If cleanup deletes a parent row, enumerate every sibling dependent table and FAIL unless each non-cascading foreign key has child-first cleanup inside the exact protected-test scope; an exact `ON DELETE CASCADE` needs no redundant cleanup edit, and unrelated helpers or tests remain outside Test-author ownership. Independently inspect protected tests associated with every Builder-owned production file for import/export allowlists, exact-source assertions, source snapshots, and page-wide text assertions. FAIL before Builder when a planned module literal is rejected or a new global-shell literal lacks a `GLOBAL TEXT PASS` from `ticket-readiness.py`, naming the exact test and assertion, unless the exact parser-valid conflict is declared and that test is in `Fixture-Seams`; unknown or unparsable static checks also FAIL closed.
 4. **Edge coverage** — security, authorization, isolation, data-loss, external-effect, and irreversible failure cases must be covered or explicitly out of scope. Additional equivalent permutations, exhaustive mutation lists, and defensive tests that do not change product behavior are warnings.
 
 ## Output — appended to the ticket file's log
@@ -68,6 +68,7 @@ Receipt-row ticket, criterion 2 reads "the row shows the summary nicely." Findin
 
 ## Changelog
 
+- v11: requires bounded static global-shell text collision evidence before Builder.
 - v10: independently rejects undeclared or unowned protected source-boundary conflicts.
 - v9: requires fixture lifecycle dependency closure inside exact protected-test ownership.
 - v8: rejects generated fixture values their frozen initializer cannot produce.

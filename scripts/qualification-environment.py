@@ -277,6 +277,112 @@ def qualification_capacity(product: Path) -> int:
     return capacity
 
 
+def prepare_product_runtime(product: Path, create: bool = True) -> None:
+    """Create the one ignored runtime root a clean worktree cannot contain."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    factory = os.open(product / "factory", flags)
+    try:
+        parent = os.fstat(factory)
+        if parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) & 0o022:
+            raise EnvironmentError("qualification product factory directory is unsafe")
+        try:
+            value = os.stat("runs", dir_fd=factory, follow_symlinks=False)
+        except FileNotFoundError:
+            if not create:
+                return
+            os.mkdir("runs", 0o700, dir_fd=factory)
+            os.fsync(factory)
+            value = os.stat("runs", dir_fd=factory, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(value.st_mode)
+            or value.st_uid != os.geteuid()
+            or stat.S_IMODE(value.st_mode) != 0o700
+        ):
+            raise EnvironmentError("qualification product factory/runs is unsafe")
+        runs = os.open("runs", flags, dir_fd=factory)
+        try:
+            os.fsync(runs)
+        finally:
+            os.close(runs)
+    finally:
+        os.close(factory)
+
+
+def validate_selected_contracts(product: Path) -> None:
+    """Reject non-canonical metadata and dependent qualification cohorts early."""
+    manifest = json.loads(
+        (product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
+    )
+    selected = manifest.get("tickets")
+    if not isinstance(selected, list) or any(
+        not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket)
+        for ticket in selected
+    ):
+        raise EnvironmentError("qualification tickets are invalid")
+    cohort = set(selected)
+    for ticket in selected:
+        path = product / "factory/tickets" / f"{ticket}.md"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise EnvironmentError(f"qualification ticket is unavailable: {path}") from error
+
+        def values(name: str) -> list[str]:
+            return re.findall(
+                rf"^{re.escape(name)}:\s*(.*?)\s*$", text, re.MULTILINE | re.IGNORECASE,
+            )
+
+        states = values("State")
+        if len(states) != 1:
+            raise EnvironmentError(f"{path}: State must appear exactly once")
+        if states[0].lower() == "done":
+            continue
+        decisions = values("Product-Decisions")
+        if decisions != ["frozen"]:
+            raise EnvironmentError(f"{path}: Product-Decisions must be exactly frozen")
+        dependencies = set(re.findall(r"T-[0-9]+", " ".join(values("Depends-On"))))
+        internal = sorted(dependencies & cohort)
+        if internal:
+            raise EnvironmentError(
+                f"qualification cohort dependency {ticket} -> {internal[0]}; "
+                "use independent tickets or sequential generations"
+            )
+
+
+def initialize_selected_linear(factory: Path, product: Path) -> None:
+    map_path = Path(os.environ.get(
+        "FACTORY_OPERATOR_MAP", product / "factory/linear-map.json",
+    ))
+    if not map_path.is_file() or map_path.is_symlink():
+        return
+    try:
+        mapping = json.loads(map_path.read_text(encoding="utf-8"))
+        selected = json.loads(
+            (product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
+        )["tickets"]
+    except (KeyError, OSError, json.JSONDecodeError) as error:
+        raise EnvironmentError("qualification Linear map is malformed") from error
+    tickets = mapping.get("tickets", {}) if isinstance(mapping, dict) else {}
+    missing = [
+        ticket for ticket in selected
+        if not isinstance(tickets.get(ticket), dict)
+        or tickets[ticket].get("operator_fields_initialized") is not True
+    ]
+    for ticket in missing:
+        result = subprocess.run(
+            [
+                sys.executable, str(factory / "scripts/linear-sync.py"),
+                "--factory-root", str(product), "--ticket", ticket, "--initialize",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        if result.returncode:
+            raise EnvironmentError(
+                f"{ticket}: selected-ticket Linear initialization failed: "
+                f"{result.stdout.strip() or result.stderr.strip()}"
+            )
+
+
 def provider_configuration(
     release: Path, capacity: int = 4,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
@@ -889,10 +995,14 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         )
     factory = args.factory_root.resolve(strict=True)
     product = args.product_root.resolve(strict=True)
+    prepare_product_runtime(product, create=False)
     if command("git", "-C", str(factory), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("Factory candidate must be clean")
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
+    validate_selected_contracts(product)
+    prepare_product_runtime(product)
+    initialize_selected_linear(factory, product)
     sha = command("git", "-C", str(factory), "rev-parse", "HEAD")
     tree = command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
@@ -1059,10 +1169,14 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     safe_directory(root)
     factory = args.factory_root.resolve(strict=True)
     product = args.product_root.resolve(strict=True)
+    prepare_product_runtime(product, create=False)
     if command("git", "-C", str(factory), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("Factory candidate must be clean")
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
+    validate_selected_contracts(product)
+    prepare_product_runtime(product)
+    initialize_selected_linear(factory, product)
     sha = command("git", "-C", str(factory), "rev-parse", "HEAD")
     tree = command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):

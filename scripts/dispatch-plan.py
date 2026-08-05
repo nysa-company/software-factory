@@ -361,6 +361,8 @@ def fresh_mapping(path: Path, maximum_age: int) -> dict[str, Any]:
         raise DispatchError("Linear reconciliation metadata is missing")
     error = sync.get("_last_error") or sync.get("last_error")
     if error:
+        if str(error).startswith("linear_rate_limited retry_after_seconds="):
+            raise DispatchError(str(error))
         raise DispatchError("Linear reconciliation reports an error")
     timestamp = sync.get("last_success_at")
     if not isinstance(timestamp, str):

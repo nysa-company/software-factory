@@ -5392,6 +5392,87 @@ invalid bundle still resolves to `AWAIT_BUDGET` before a Narrator retry, and
 proves a fresh Planner remains budget-blocked. The existing budget reducer
 suite remains green.
 
+## FI-20260805-198 — Fresh qualification omitted required runtime roots
+
+Status: Focused qualification regressions green; protected CI and canary pending
+Priority: P1/P2 (#266, #310, #311, #309)
+Area: qualification preparation
+Owner: Factory
+Impact: clean linked worktrees could fail only after sealing, while dependent
+cohorts could wait forever at the restart boundary.
+Smallest repair: initialize only the safe ignored runtime root and validate
+canonical freeze metadata plus cohort independence before materialization.
+Validation: clean creation, unsafe-root refusal, decorated-field refusal, and
+internal-dependency refusal are covered without provider submission.
+
+## FI-20260805-199 — Linear recovery scanned history and duplicated Projects
+
+Status: Focused Linear regressions green; protected CI and canary pending
+Priority: P1 (#296, #308)
+Area: Linear recovery
+Owner: Factory
+Impact: a lost ignored map could duplicate Projects, while a new selected
+ticket consumed quota reconciling unrelated history.
+Smallest repair: adopt one durable same-team initiative identity and add one
+explicit selected-ticket initialize path; ambiguity and bounded rate limits
+remain fail-closed.
+Validation: a fresh map adopts without Project creation and exact-ticket setup
+creates only the selected issue without fetching the historical mapped issue.
+
+## FI-20260805-200 — Contract collisions and invalid blocker grammar arrived late
+
+Status: Focused readiness/preflight regressions green; protected CI pending
+Priority: P1 (#294, #315)
+Area: pre-freeze planning
+Owner: Factory
+Impact: protected global text assertions and parser-invalid conflict proposals
+forced avoidable post-Builder repair laps.
+Smallest repair: reuse the readiness parser for blocker proposals and add one
+bounded static string-assertion collision mode for new global-shell text.
+Validation: the T-176 `Skip` substring case fails with exact path/line while an
+unrelated literal passes; prose/array declarations remain invalid.
+
+## FI-20260805-201 — Controller waits lost cause or idle capacity
+
+Status: Focused controller regressions green; protected CI pending
+Priority: P1 (#325, #331)
+Area: controller evidence and scheduling
+Owner: Factory
+Impact: preflight lease release masked the original refusal and exact-head
+green PR work could remain idle behind a long sibling role.
+Smallest repair: persist a bounded redacted refusal event before release and
+retry only typed PR-gate waits on the existing interval while a sibling future
+is live.
+Validation: evidence survives controller restart with secrets/URLs removed;
+the waiting claim launches once before the sibling completes.
+
+## FI-20260805-202 — Successor and terminal admission reused stale local truth
+
+Status: Focused controller/model-control regressions green; protected CI pending
+Priority: P0 (#334, #336)
+Area: migration and qualification terminal admission
+Owner: Factory
+Impact: a stale bundle failed only after approval, while protected-main Done
+could be reclaimed from an immutable detached qualification checkout.
+Smallest repair: reject a cross-Kit bundle before route-migration preview and
+make validated protected-main terminal evidence the shared qualification Done
+predicate.
+Validation: stale bundle preview refuses; detached local Ready plus protected
+attested Done reconciles once and is excluded from admission.
+
+## FI-20260805-203 — CI setup depended on deprecated runtimes and tap updates
+
+Status: Focused workflow contract green; protected CI pending
+Priority: P2 (#321, #322)
+Area: GitHub Actions
+Owner: Factory
+Impact: temporary Node-20 compatibility and unrelated Homebrew tap state added
+future runner risk and warning noise.
+Smallest repair: use official Node-24 action majors and disable Homebrew
+auto-update for the one coreutils install, without trusting or mutating taps.
+Validation: workflow contract pins every Factory occurrence and the generated
+product baseline.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
