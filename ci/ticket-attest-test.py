@@ -437,6 +437,7 @@ Merge-Policy: manual
             "closeout_wrong": False, "closeout_head": None,
             "create_fail": False, "closeout_merge_fail": False,
             "closeout_auto_merge": True,
+            "historical_head_ref": None,
         }
         value.update(updates)
         self.state.write_text(json.dumps(value))
@@ -516,8 +517,13 @@ elif a[:2] == ["pr", "view"]:
                           "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["closeout_auto_merge"] else None}))
     else:
-        print(json.dumps({"number": 7, "headRefName": "ticket/T-700",
-                          "baseRefName": "main", "headRefOid": head, "state": "OPEN",
+        print(json.dumps({"number": 7,
+                          "headRefName": s.get("historical_head_ref") or "ticket/T-700",
+                          "baseRefName": "main",
+                          "headRefOid": "c" * 40 if s["wrong_head"] else (s.get("pr_head") or head),
+                          "state": "MERGED" if s["merged"] else "OPEN",
+                          "mergedAt": "2026-07-17T18:00:00Z" if s["merged"] else None,
+                          "mergeCommit": {"oid": s["merge_sha"]} if s["merged"] else None,
                           "mergeStateStatus": s["merge_state"],
                           "isDraft": s["draft"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
@@ -1674,7 +1680,7 @@ else:
         merged_state.update(state)
         self.write_state(**merged_state)
 
-    def emergency(self, action, approval=""):
+    def emergency(self, action, approval="", pr=None):
         arguments = [
             sys.executable, str(SCRIPT), "--ticket", "T-700",
             "--workdir", str(self.workdir), "--action", action,
@@ -1682,6 +1688,8 @@ else:
         ]
         if action == "emergency-apply":
             arguments.extend(("--approve-hash", approval))
+        if pr is not None:
+            arguments.extend(("--pr", str(pr)))
         return command(*arguments, env=self.env, check=False)
 
     def test_emergency_closeout_requires_exact_hash_and_retries(self):
@@ -1730,6 +1738,44 @@ else:
         result = self.emergency("emergency-apply", plan["approval_sha256"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(plan["plan"]["passport"])
+
+    def test_emergency_closeout_accepts_exact_backlog_protected_merge(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace("State: Review", "State: Backlog"))
+        self.commit("record backlog split")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.prepare_emergency(
+            passport=False,
+            historical_head_ref="ticket/T-700-safe-implementation-reviewed",
+        )
+        self.assertIn(
+            "nonterminal protected state",
+            self.emergency("emergency-plan").stderr,
+        )
+        self.update_state(historical_head_ref="feature/unrelated")
+        self.assertIn(
+            "does not bind the protected ticket",
+            self.emergency("emergency-plan", pr=7).stderr,
+        )
+        self.update_state(
+            historical_head_ref="ticket/T-700-safe-implementation-reviewed",
+        )
+        planned = self.emergency("emergency-plan", pr=7)
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        plan = json.loads(planned.stdout)
+        self.assertEqual(
+            plan["plan"]["execution_basis"], "protected-merge-no-runtime",
+        )
+        result = self.emergency(
+            "emergency-apply", plan["approval_sha256"], pr=7,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            TICKET_ATTEST.protected_terminal(
+                self.workdir, "T-700", self.head_at(self.workdir),
+            )["basis"],
+            "attested-emergency-closeout",
+        )
 
     def prepare_done_after_successor_route(self):
         self.bundle()

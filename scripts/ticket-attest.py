@@ -766,6 +766,33 @@ def exact_pr(repo, branch, state):
     return pr
 
 
+def emergency_pr(repo, branch, ticket, number, workdir, protected):
+    if number is None:
+        return exact_pr(repo, branch, "all")
+    fields = (
+        "number,headRefName,baseRefName,headRefOid,url,state,isDraft,"
+        "mergedAt,mergeCommit"
+    )
+    pr = json.loads(gh(
+        "pr", "view", str(number), "--repo", repo, "--json", fields,
+    ).stdout)
+    head = pr.get("headRefOid", "")
+    head_ref = pr.get("headRefName", "")
+    ticket_path = f"factory/tickets/{ticket}.md"
+    if (
+        pr.get("number") != number
+        or pr.get("baseRefName") != "main"
+        or pr.get("state") != "MERGED"
+        or not pr.get("mergedAt")
+        or not valid_oid(head)
+        or head_ref != branch and not head_ref.startswith(branch + "-")
+        or git(workdir, "rev-parse", f"{head}:{ticket_path}").stdout.strip()
+        != git(workdir, "rev-parse", f"{protected}:{ticket_path}").stdout.strip()
+    ):
+        raise Refusal("explicit emergency PR does not bind the protected ticket")
+    return pr
+
+
 def ensure_closeout_pr(repo, ticket, branch, head, method):
     fields = "number,headRefName,baseRefName,headRefOid,url,state,mergedAt,mergeCommit"
 
@@ -1151,13 +1178,15 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
     ticket_path = f"factory/tickets/{args.ticket}.md"
     text = git(workdir, "show", f"{main_head}:{ticket_path}").stdout
     state = field(text, "State")
-    if state not in {
+    if state not in ({
         "Ready", "Planning", "Building", "Review", "Awaiting Approval",
         "Approved", "Blocked-Escalated",
-    }:
+    } | ({"Backlog"} if args.pr is not None else set())):
         raise Refusal("emergency closeout requires one exact nonterminal protected state")
     branch = f"{prefix}{args.ticket}"
-    pr = exact_pr(repo, branch, "all")
+    pr = emergency_pr(
+        repo, branch, args.ticket, args.pr, workdir, main_head,
+    )
     if pr.get("state") != "MERGED" or not pr.get("mergedAt"):
         raise Refusal("ticket PR is not merged")
     pr_head = pr.get("headRefOid", "")
@@ -1241,13 +1270,17 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
     elif (
         os.path.lexists(passport_path)
         or os.path.lexists(claim_path)
-        or field(text, "Assignee") != "operator (built outside the software factory)"
     ):
         raise Refusal("passportless emergency target is not exact operator-built work")
     else:
         passport_plan = None
         claim_plan = None
-        execution_basis = "operator-built-no-runtime"
+        if state == "Backlog" and args.pr is not None:
+            execution_basis = "protected-merge-no-runtime"
+        elif field(text, "Assignee") == "operator (built outside the software factory)":
+            execution_basis = "operator-built-no-runtime"
+        else:
+            raise Refusal("passportless emergency target is not exact operator-built work")
     plan = {
         "schema": EMERGENCY_PLAN_SCHEMA,
         "ticket": args.ticket,
@@ -2538,7 +2571,9 @@ def emergency_done(
     if not retry and done_path.is_file():
         raise Refusal("Done is already present on protected main; use terminal sequencing")
     ticket_branch = f"{prefix}{args.ticket}"
-    pr = exact_pr(repo, ticket_branch, "all")
+    pr = emergency_pr(
+        repo, ticket_branch, args.ticket, args.pr, workdir, main_head,
+    )
     merge = (pr.get("mergeCommit") or {}).get("oid", "")
     if (
         pr.get("state") != "MERGED"
@@ -2783,6 +2818,7 @@ def main():
     parser.add_argument("--attest-only", action="store_true")
     parser.add_argument("--request", type=Path)
     parser.add_argument("--approve-hash", default="")
+    parser.add_argument("--pr", type=int)
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
@@ -2792,7 +2828,9 @@ def main():
     if emergency != (args.request is not None) or (
         args.action == "emergency-apply"
         and not re.fullmatch(r"[0-9a-f]{64}", args.approve_hash)
-    ) or (args.action != "emergency-apply" and args.approve_hash):
+    ) or (args.action != "emergency-apply" and args.approve_hash) or (
+        args.pr is not None and (not emergency or args.pr <= 0)
+    ):
         parser.error("emergency closeout requires an exact request and apply approval hash")
     product = Path(os.environ["FACTORY_ROOT"]).resolve()
     workdir = Path(args.workdir).resolve()
