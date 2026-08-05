@@ -1636,7 +1636,7 @@ else:
         merged_state.update(state)
         self.write_state(**merged_state)
 
-    def prepare_emergency(self, *, passport=True, **state):
+    def prepare_emergency(self, *, passport=True, paused=False, **state):
         merge_sha = self.head()
         command("git", "branch", "-f", "main", merge_sha, cwd=self.product)
         command("git", "push", "-q", "origin", f"{merge_sha}:refs/heads/main", cwd=self.product)
@@ -1685,6 +1685,27 @@ else:
                 "blocked_reason": "controller-error", "receipt": "1" * 64,
             }))
             claim_path.chmod(0o600)
+            if paused:
+                claim_path.unlink()
+                pause = {
+                    "blocking_issue": "https://github.com/acme/factory/issues/269",
+                    "branch": "ticket/T-700", "budget_sha256": None,
+                    "created_at_epoch": 1, "current_stage": "FIX builder",
+                    "current_state": "Review", "factory_sha": KIT_SHA,
+                    "head_sha": merge_sha, "passport_factory_sha": KIT_SHA,
+                    "passport_sha256": value["passport_sha256"],
+                    "resume_state": "Review", "run_snapshot_sha256": "2" * 64,
+                    "schema": "nysa.software-factory.ticket-pause/v2",
+                    "status": "blocked", "ticket": "T-700",
+                    "worktree": str(self.product.resolve()),
+                }
+                pause["pause_sha256"] = hashlib.sha256(json.dumps(
+                    pause, ensure_ascii=True, sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()).hexdigest()
+                pause_path = self.controller_state / "pause-T-700.json"
+                pause_path.write_text(json.dumps(pause))
+                pause_path.chmod(0o600)
         issued = TICKET_ATTEST.datetime.now(TICKET_ATTEST.timezone.utc).replace(microsecond=0)
         self.emergency_request = self.temp / "emergency.json"
         self.emergency_request.write_text(json.dumps({
@@ -1737,6 +1758,43 @@ else:
             )["basis"],
             "attested-emergency-closeout",
         )
+
+    def test_emergency_closeout_accepts_exact_paused_checkpoint(self):
+        self.prepare_emergency(paused=True)
+        path = self.controller_state / "pause-T-700.json"
+
+        def write_pause(value):
+            signed = dict(value)
+            signed.pop("pause_sha256", None)
+            value["pause_sha256"] = hashlib.sha256(json.dumps(
+                signed, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"),
+            ).encode()).hexdigest()
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+
+        pause = json.loads(path.read_text())
+        pause["blocking_issue"] = "https://github.com/acme/factory/issues/270"
+        write_pause(pause)
+        self.assertIn(
+            "paused emergency checkpoint is invalid",
+            self.emergency("emergency-plan").stderr,
+        )
+        pause["blocking_issue"] = "https://github.com/acme/factory/issues/269"
+        write_pause(pause)
+        pause["pause_sha256"] = "0" * 64
+        path.write_text(json.dumps(pause))
+        self.assertIn(
+            "paused emergency checkpoint is invalid",
+            self.emergency("emergency-plan").stderr,
+        )
+        write_pause(pause)
+        planned = self.emergency("emergency-plan")
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        plan = json.loads(planned.stdout)
+        self.assertEqual(plan["plan"]["claim"]["role"], "factory-paused")
+        result = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_emergency_closeout_accepts_exact_operator_built_work(self):
         ticket = self.product / "factory/tickets/T-700.md"

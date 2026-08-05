@@ -3555,3 +3555,15 @@ The migration writer and every downstream attestor accept the same legacy and
 compact release-migration schemas. Compact evidence inherits the active
 resolution only when its canonical digest matches; tampering and logical route
 changes remain refused.
+
+## 2026-08-05 — Decision 262: A signed pause is an emergency closeout boundary
+
+Category: Reliability
+
+When a Factory defect is discovered at a clean pre-provider boundary, ticket
+control can remove the idle claim while preserving a controller-signed pause.
+Emergency closeout may use that pause only when its digest, ticket, branch,
+state, head, passport, run snapshot, and blocking issue match the authenticated
+passport and the exact owner request. The ordinary semantic-loop cap remains
+unchanged; an unsigned, stale, mismatched, or passportless pause grants no
+authority.
