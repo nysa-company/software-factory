@@ -1694,7 +1694,7 @@ else:
                     "current_state": "Review", "factory_sha": KIT_SHA,
                     "head_sha": merge_sha, "passport_factory_sha": KIT_SHA,
                     "passport_sha256": value["passport_sha256"],
-                    "resume_state": "Review", "run_snapshot_sha256": "2" * 64,
+                    "resume_state": None, "run_snapshot_sha256": "2" * 64,
                     "schema": "nysa.software-factory.ticket-pause/v2",
                     "status": "blocked", "ticket": "T-700",
                     "worktree": str(self.product.resolve()),
@@ -1782,6 +1782,24 @@ else:
         )
         pause["blocking_issue"] = "https://github.com/acme/factory/issues/269"
         write_pause(pause)
+        planned = self.emergency("emergency-plan")
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        blocked_passport = {
+            "current_state": "Blocked-Escalated",
+            "head_sha": pause["head_sha"],
+            "passport_sha256": pause["passport_sha256"],
+        }
+        pause["current_state"] = "Blocked-Escalated"
+        write_pause(pause)
+        with self.assertRaisesRegex(
+            TICKET_ATTEST.Refusal, "paused emergency checkpoint is invalid",
+        ):
+            TICKET_ATTEST.paused_claim_basis(
+                path, "T-700", "ticket/T-700", "Blocked-Escalated",
+                blocked_passport, "https://github.com/acme/factory/issues/269",
+            )
+        pause.update(current_state="Review", resume_state=None)
+        write_pause(pause)
         pause["pause_sha256"] = "0" * 64
         path.write_text(json.dumps(pause))
         self.assertIn(
@@ -1795,6 +1813,70 @@ else:
         self.assertEqual(plan["plan"]["claim"]["role"], "factory-paused")
         result = self.emergency("emergency-apply", plan["approval_sha256"])
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_paused_emergency_checkpoint_resume_state_matrix(self):
+        self.prepare_emergency(paused=True)
+        path = self.controller_state / "pause-T-700.json"
+        pause = json.loads(path.read_text())
+
+        def validate(state, resume_state, passport=None):
+            pause.update(current_state=state, resume_state=resume_state)
+            signed = dict(pause)
+            signed.pop("pause_sha256", None)
+            pause["pause_sha256"] = hashlib.sha256(json.dumps(
+                signed, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"),
+            ).encode()).hexdigest()
+            path.write_text(json.dumps(pause))
+            path.chmod(0o600)
+            current = passport or {
+                "current_state": state,
+                "head_sha": pause["head_sha"],
+                "passport_sha256": pause["passport_sha256"],
+            }
+            return TICKET_ATTEST.paused_claim_basis(
+                path, "T-700", "ticket/T-700", state, current,
+                "https://github.com/acme/factory/issues/269",
+            )
+
+        for state in (
+            "Ready", "Planning", "Building", "Review",
+            "Awaiting Approval", "Approved",
+        ):
+            with self.subTest(state=state, resume_state=None):
+                self.assertEqual(validate(state, None)["role"], "factory-paused")
+        self.assertEqual(
+            validate("Blocked-Escalated", "Planning")["role"],
+            "factory-paused",
+        )
+        for state, resume_state in (
+            ("Blocked-Escalated", None),
+            ("Blocked-Escalated", ""),
+            ("Review", "Review"),
+            ("Review", ""),
+            ("Review", 1),
+        ):
+            with self.subTest(state=state, resume_state=resume_state):
+                with self.assertRaisesRegex(
+                    TICKET_ATTEST.Refusal,
+                    "paused emergency checkpoint is invalid",
+                ):
+                    validate(state, resume_state)
+        for passport in (
+            {
+                "current_state": "Review", "head_sha": "e" * 40,
+                "passport_sha256": pause["passport_sha256"],
+            },
+            {
+                "current_state": "Review", "head_sha": pause["head_sha"],
+                "passport_sha256": "e" * 64,
+            },
+        ):
+            with self.assertRaisesRegex(
+                TICKET_ATTEST.Refusal,
+                "paused emergency checkpoint is invalid",
+            ):
+                validate("Review", None, passport)
 
     def test_emergency_closeout_accepts_exact_operator_built_work(self):
         ticket = self.product / "factory/tickets/T-700.md"
