@@ -314,14 +314,17 @@ def _emergency_terminal(repo, ticket, ref, done):
         or done["auto_merge_method"] not in {"squash", "merge", "rebase"}
         or parent != protected["commit"]
         or protected["state"] not in {
-            "Ready", "Planning", "Building", "Review", "Awaiting Approval",
+            "Backlog", "Ready", "Planning", "Building", "Review", "Awaiting Approval",
             "Approved", "Blocked-Escalated",
         }
         or plan["execution_basis"] not in {
             "authenticated-passport", "operator-built-no-runtime",
+            "protected-merge-no-runtime",
         }
         or (plan["execution_basis"] == "authenticated-passport") != (passport is not None)
         or (plan["execution_basis"] == "authenticated-passport") != (claim is not None)
+        or (plan["execution_basis"] == "protected-merge-no-runtime")
+        != (protected["state"] == "Backlog")
         or (
             passport is not None
             and (
