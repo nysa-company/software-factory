@@ -547,17 +547,25 @@ if [[ -z "${FACTORY_LEDGER:-}" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] &&
   echo "REFUSE effective ledger could not be reduced"
   exit 1
 fi
+BUDGET_STAGE="AVAILABLE"
+emit_stage() {
+  local stage="$1"
+  if [[ ( "$stage" == RUN\ * || "$stage" == FIX\ * ) &&
+        "$BUDGET_STAGE" == AWAIT_BUDGET* ]]; then
+    printf '%s\n' "$BUDGET_STAGE"
+  else
+    printf '%s\n' "$stage"
+  fi
+  exit 0
+}
+
 if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
   BUDGET_STAGE="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
     "$REPO_ROOT" "$TICKET" "$FACTORY_RELEASE_SHA")" || {
       echo "REFUSE ticket budget could not be reduced"
       exit 1
     }
-  if [[ "$BUDGET_STAGE" == AWAIT_BUDGET* ]]; then
-    echo "$BUDGET_STAGE"
-    exit 0
-  fi
-  [[ "$BUDGET_STAGE" == "AVAILABLE" ]] || {
+  [[ "$BUDGET_STAGE" == "AVAILABLE" || "$BUDGET_STAGE" == AWAIT_BUDGET* ]] || {
     echo "REFUSE ticket budget reducer returned an invalid stage"
     exit 1
   }
@@ -569,10 +577,9 @@ if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
       --ledger "$LEDGER")" || {
         echo "REFUSE publication repair stage could not be reduced"
         exit 1
-      }
+    }
     if [[ "$REPAIR_STAGE" != "INACTIVE" ]]; then
-      echo "$REPAIR_STAGE"
-      exit 0
+      emit_stage "$REPAIR_STAGE"
     fi
     if grep -q '^FACTORY PUBLICATION REPAIR:' "$TICKET_FILE"; then
       echo "REFUSE publication repair directive lacks authenticated controller state"
@@ -690,8 +697,7 @@ PY
      [[ "$CHECKPOINT_NEXT_STAGE" == "RUN spec-linter" && "$LOCAL_SL" -eq 0 ]] ||
      [[ "$CHECKPOINT_NEXT_STAGE" == "RUN reviewer" && "$LOCAL_R" -eq 0 ]] ||
      [[ "$CHECKPOINT_NEXT_STAGE" == "RUN narrator" && "$LOCAL_N" -eq 0 ]]; then
-    echo "$CHECKPOINT_NEXT_STAGE"
-    exit 0
+    emit_stage "$CHECKPOINT_NEXT_STAGE"
   fi
   if { [[ "$CHECKPOINT_NEXT_STAGE" == "FIX test-author" && "$LOCAL_TA" -gt 0 ]] ||
        [[ "$CHECKPOINT_NEXT_STAGE" == "FIX builder" && "$LOCAL_B" -gt 0 ]]; }; then
@@ -702,8 +708,7 @@ PY
   fi
   if [[ "$CHECKPOINT_NEXT_STAGE" == AWAIT-OPERATOR* ]]; then
     if [[ "$LOCAL_TA" -eq 0 && "$LOCAL_B" -eq 0 ]]; then
-      echo "$CHECKPOINT_NEXT_STAGE"
-      exit 0
+      emit_stage "$CHECKPOINT_NEXT_STAGE"
     fi
     grep -qxE 'OPERATOR PUBLICATION REPAIR: (test-author|builder)' \
       "$TICKET_FILE" ||
@@ -749,14 +754,14 @@ narrator_bundle_stage() {
   local narrator_runs="$1"
   local attestation="$CONTENT_ROOT/factory/attestations/$TICKET/bundle.json"
   if [[ "$narrator_runs" -eq 0 ]]; then
-    echo "RUN narrator"
+    emit_stage "RUN narrator"
   elif [[ ! -e "$attestation" && ! -L "$attestation" ]] &&
        evidence_bundle_is_not_approvable; then
-    echo "FIX builder"
+    emit_stage "FIX builder"
   elif [[ ! -e "$attestation" && ! -L "$attestation" ]] &&
        ! evidence_bundle_is_valid; then
     if [[ "$narrator_runs" -eq 1 ]]; then
-      echo "RUN narrator"
+      emit_stage "RUN narrator"
     else
       echo "ESCALATE evidence bundle remained invalid after one Narrator retry"
     fi
@@ -859,7 +864,7 @@ if [[ "$REFRESH_ACTIVE" -eq 1 ]] &&
   exit 1
 fi
 
-if [[ "$P" -eq 0 ]]; then echo "RUN planner"; exit 0; fi
+if [[ "$P" -eq 0 ]]; then emit_stage "RUN planner"; fi
 
 # --- spec-lint gate: plan → lint → (replan on FAIL) → tests ---
 # The spec-linter appends its own verdict line (SPEC-LINT: PASS/FAIL) to the
@@ -905,27 +910,27 @@ if [[ "$TA" -eq 0 || "$REOPENED_TEST_FIRST_EPOCH" -eq 1 ]]; then
 fi
 if [[ "$REOPENED_TEST_FIRST_EPOCH" -eq 1 && "$TEST_FIRST_PHASE" != "complete" ]]; then
   case "$TEST_FIRST_PHASE" in
-    spec) echo "RUN spec-linter" ;;
+    spec) emit_stage "RUN spec-linter" ;;
     test)
       LATEST_SPEC_VERDICT="$(grep -iE '^[[:space:]]*SPEC-LINT:[[:space:]]*(PASS|FAIL)' "$TICKET_FILE" | tail -1)"
       if grep -qiE 'SPEC-LINT:[[:space:]]*FAIL' <<<"$LATEST_SPEC_VERDICT"; then
-        echo "RUN planner"
+        emit_stage "RUN planner"
       else
-        echo "RUN test-author"
+        emit_stage "RUN test-author"
       fi
       ;;
-    builder) echo "RUN builder" ;;
+    builder) emit_stage "RUN builder" ;;
   esac
   exit 0
 fi
 if [[ "$TA" -eq 0 ]]; then
-  if [[ "$P" -lt $((SLF + 1)) ]]; then echo "RUN planner"; exit 0; fi
-  if [[ "$SL" -lt "$P" ]]; then echo "RUN spec-linter"; exit 0; fi
+  if [[ "$P" -lt $((SLF + 1)) ]]; then emit_stage "RUN planner"; fi
+  if [[ "$SL" -lt "$P" ]]; then emit_stage "RUN spec-linter"; fi
 fi
 
-if [[ "$TA" -eq 0 ]]; then echo "RUN test-author"; exit 0; fi
-if [[ "$B" -eq 0 ]]; then echo "RUN builder"; exit 0; fi
-if [[ "$REVIEWER_RUNS" -eq 0 ]]; then echo "RUN reviewer"; exit 0; fi
+if [[ "$TA" -eq 0 ]]; then emit_stage "RUN test-author"; fi
+if [[ "$B" -eq 0 ]]; then emit_stage "RUN builder"; fi
+if [[ "$REVIEWER_RUNS" -eq 0 ]]; then emit_stage "RUN reviewer"; fi
 
 if [[ "$REVIEWER_RUNS" -gt "$VERDICTS" ]]; then
   echo "REFUSE reviewer has $REVIEWER_RUNS non-void successful run(s) but only $VERDICTS verdict(s) are logged on $TICKET_FILE — record the missing verdict, or mark a duplicate successful row with 'OPERATOR NOTE: reviewer run <ledger ordinal> void — duplicate'"
@@ -1214,8 +1219,7 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       if [[ "$FIX_BUILDER" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX builder"
       else
-        echo "RUN reviewer"
-        exit 0
+        emit_stage "RUN reviewer"
       fi
       ;;
     test-author)
@@ -1224,8 +1228,7 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
       else
-        echo "RUN reviewer"
-        exit 0
+        emit_stage "RUN reviewer"
       fi
       ;;
     both)
@@ -1236,14 +1239,12 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       elif [[ "$FIX_BUILDER_AFTER_TEST" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX builder"
       else
-        echo "RUN reviewer"
-        exit 0
+        emit_stage "RUN reviewer"
       fi
       ;;
   esac
 elif [[ "$FIX_BUILDER" -eq 1 || "$FIX_TEST_AUTHOR" -eq 1 ]]; then
-  echo "RUN reviewer"
-  exit 0
+  emit_stage "RUN reviewer"
 fi
 
 if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
@@ -1257,7 +1258,7 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
     echo "REFUSE fresh Reviewer manifest selection does not match sequenced evidence"
     exit 1
   fi
-  if [[ "$FRESH_REVIEWERS" -eq 0 ]]; then echo "RUN reviewer"; exit 0; fi
+  if [[ "$FRESH_REVIEWERS" -eq 0 ]]; then emit_stage "RUN reviewer"; fi
   if [[ "$FRESH_REVIEWERS" -ne "$FRESH_VERDICTS" ]]; then
     echo "REFUSE refreshed reviewer has $FRESH_REVIEWERS successful run(s) but $FRESH_VERDICTS post-refresh verdict(s) — record the missing verdict"
     exit 1
@@ -1284,12 +1285,10 @@ elif [[ "$A" -ge 1 &&
   if [[ "$REFRESH_ACTIVE" -eq 1 &&
         "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
         "$REFRESH_PRESERVE_NARRATOR" -eq 0 ]]; then
-    echo "RUN narrator"
-    exit 0
+    emit_stage "RUN narrator"
   fi
   if [[ "$CHECKPOINT_AWAIT_REOPENED" -eq 1 && "$LOCAL_N" -eq 0 ]]; then
-    echo "RUN narrator"
-    exit 0
+    emit_stage "RUN narrator"
   fi
   # Approval is evidence-sensitive: an ignored Linear overlay may inform the
   # future bundle-attestation path. Contract 1.2 stops before that boundary.
@@ -1356,4 +1355,4 @@ PY
   }
 fi
 
-echo "${CONTRACT17_FIX_ACTION:-FIX builder-or-test-author}"
+emit_stage "${CONTRACT17_FIX_ACTION:-FIX builder-or-test-author}"

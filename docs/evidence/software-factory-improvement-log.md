@@ -5368,6 +5368,30 @@ and fail blocks before Narrator. Products without a hook retain current policy.
 Validation: configured paired pass and production-origin failure are covered;
 the existing no-hook path remains green.
 
+## FI-20260805-197 — Exact budget exhaustion blocked provider-free attestation
+
+Status: Focused sequencer and budget regressions green; protected CI and
+successor qualification pending
+Priority: P0 (#332)
+Area: budget reduction and post-role attestation
+Owner: Factory
+First seen: T-109 under sealed qualification Factory
+`393e174668de16957698648d04787884c647febc`
+Impact: T-109 completed its corrected-preview Narrator successfully and
+committed approvable evidence, but its tenth conservative reservation brought
+current-candidate spend to exactly $100. The sequencer returned `AWAIT_BUDGET`
+before the deterministic bundle attestation, stranding the ticket in Review
+without requiring or permitting another provider attempt.
+Smallest repair: retain the authenticated budget reduction, continue all
+deterministic stage validation, and substitute `AWAIT_BUDGET` only when the
+resolved stage is a paid `RUN` or `FIX` action. No cap, reservation, charge,
+role sequence, or attestation validator changes.
+Validation: the focused sequencer fixture exhausts the exact cap with a
+successful Narrator, proves a valid bundle reaches `AWAIT-OPERATOR`, proves an
+invalid bundle still resolves to `AWAIT_BUDGET` before a Narrator retry, and
+proves a fresh Planner remains budget-blocked. The existing budget reducer
+suite remains green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
