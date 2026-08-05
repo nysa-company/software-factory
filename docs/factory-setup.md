@@ -15,6 +15,8 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - When that script uses the managed `scripts/secret-scan`, certification stages its checksum-verified pinned scanner into the disposable product copy before entering the network-denied sandbox.
 - Configure exactly one `origin` push URL. Certification records that literal URL as receipt `product_origin`; trusted contract 1.2 writes refuse a different or additional push destination.
 - Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid. Set `AUTO_MERGE_METHOD=squash`, `merge`, or `rebase` to the repository's protected merge strategy.
+- If live preview topology needs a product-specific deterministic check, set `PREVIEW_PREFLIGHT_SCRIPT` to one executable repository-contained path. It receives bounded JSON only after every deployment reports the exact reviewed SHA and must return head-bound pass/wait/fail JSON; omit it when exact deployment identity is sufficient.
+  Input is `{"schema":"nysa.software-factory.preview-preflight-input/v1","ticket":"T-NNN","head":"<sha>","previews":[...]}`. Output contains exactly `schema` (`nysa.software-factory.preview-preflight/v1`), the same `head`, `status` (`pass`, `wait`, or `fail`), `reason` (`null` only for pass), and a non-secret `evidence` object.
 - Leave `MAX_CONCURRENT_TICKETS` absent to use the contract default. Contracts
   1.1 through 1.5 default to `1` and accept integers through `4`; Contracts
   1.6 and 1.7 default to `4` and accept `1` through `6`; Contract 1.8 defaults

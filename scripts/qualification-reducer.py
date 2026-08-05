@@ -119,6 +119,58 @@ def event_records(path: Path) -> list[dict[str, Any]]:
     return sorted(records, key=lambda value: value["observed_at_epoch_ns"])
 
 
+def qualification_events(
+    events: list[dict[str, Any]], manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
+    factory_sha = manifest.get("factory_sha")
+    generation = manifest.get("generation")
+    manifest_sha256 = hashlib.sha256(canonical(manifest).encode()).hexdigest()
+    selected = []
+    other_scoped = []
+    unscoped = []
+    foreign = []
+    for item in events:
+        if item.get("factory_sha") != factory_sha:
+            foreign.append(item)
+            continue
+        has_generation = "qualification_generation" in item
+        has_manifest = "qualification_manifest_sha256" in item
+        if has_generation != has_manifest:
+            raise QualificationError("qualification event boundary is malformed")
+        if not has_generation:
+            unscoped.append(item)
+            continue
+        observed_generation = item.get("qualification_generation")
+        observed_manifest = item.get("qualification_manifest_sha256")
+        if (
+            not isinstance(observed_generation, int)
+            or isinstance(observed_generation, bool)
+            or observed_generation < 1
+            or not DIGEST.fullmatch(observed_manifest or "")
+        ):
+            raise QualificationError("qualification event boundary is malformed")
+        if (
+            observed_generation == generation
+            and observed_manifest == manifest_sha256
+        ):
+            selected.append(item)
+        else:
+            other_scoped.append(item)
+    if not selected:
+        raise QualificationError("qualification event boundary is missing")
+    boundary = min(item["observed_at_epoch_ns"] for item in selected)
+    if any(item.get("observed_at_epoch_ns", 0) >= boundary for item in unscoped):
+        raise QualificationError("qualification event boundary is incomplete")
+    if any(
+        item.get("observed_at_epoch_ns", 0) >= boundary
+        for item in other_scoped
+    ):
+        raise QualificationError("qualification event boundary changed")
+    return sorted(
+        [*foreign, *selected], key=lambda item: item["observed_at_epoch_ns"],
+    )
+
+
 def iso(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -647,7 +699,9 @@ def main() -> None:
         manifest = json.loads(
             regular(product / "factory/QUALIFICATION.json").decode("utf-8")
         )
-        events = event_records(state / "events")
+        events = qualification_events(
+            event_records(state / "events"), manifest,
+        )
         reconciliations = protected_reconciliations(
             events, manifest.get("factory_sha", ""),
         )

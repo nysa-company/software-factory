@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 from urllib.parse import parse_qs, urlsplit
@@ -90,6 +91,40 @@ def project_auto_merge_method(factory: Path) -> str:
     if len(values) != 1:
         raise Refusal("AUTO_MERGE_METHOD is missing or ambiguous")
     return values[0]
+
+
+def project_script(factory: Path, name: str) -> Path | None:
+    values = []
+    for raw in (factory / "PROJECT.env").read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(
+            rf"(?:export\s+)?{re.escape(name)}\s*=\s*([A-Za-z0-9._/-]+)",
+            raw.strip(),
+        )
+        if match:
+            values.append(match.group(1))
+    if not values:
+        return None
+    if len(values) != 1:
+        raise Refusal(f"{name} is ambiguous")
+    relative = Path(values[0])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise Refusal(f"{name} must be repository-contained")
+    root = factory.parent.resolve(strict=True)
+    candidate = root / relative
+    info = candidate.lstat()
+    resolved = candidate.resolve(strict=True)
+    if (
+        root not in resolved.parents
+        or not stat.S_ISREG(info.st_mode)
+        or candidate.is_symlink()
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_mode & 0o022
+        or info.st_size > 1_000_000
+        or not os.access(candidate, os.X_OK)
+    ):
+        raise Refusal(f"{name} is unsafe")
+    return candidate
 
 
 def latest_reviewer_head(product: Path, workdir: Path, ticket: str) -> str:
@@ -525,6 +560,7 @@ def railway_preview_evidence(
             "service": service.strip(),
             "sha": observed,
             "status": deployment.get("status"),
+            "url": candidate.rstrip("/"),
         })
         if metadata.get("repo") != repo or metadata.get("branch") != branch:
             raise Refusal("Railway deployment repository or branch is invalid")
@@ -538,6 +574,57 @@ def railway_preview_evidence(
         "reason": None if exact else "stale_or_pending",
         "status": "pass" if exact else "wait",
     }
+
+
+def preview_preflight(
+    factory: Path, ticket: str, head: str, identity: dict[str, object],
+) -> dict[str, object] | None:
+    script = project_script(factory, "PREVIEW_PREFLIGHT_SCRIPT")
+    if script is None:
+        return None
+    payload = {
+        "head": head,
+        "previews": identity.get("observed"),
+        "schema": "nysa.software-factory.preview-preflight-input/v1",
+        "ticket": ticket,
+    }
+    result = subprocess.run(
+        [str(script)], input=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        text=True, capture_output=True, check=False, timeout=120,
+        env={
+            "HOME": os.environ.get("HOME", ""),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        },
+    )
+    if result.returncode or len(result.stdout.encode()) > 1_000_000:
+        raise Refusal("preview preflight failed")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise Refusal("preview preflight returned invalid evidence") from error
+    status = value.get("status") if isinstance(value, dict) else None
+    reason = value.get("reason") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"evidence", "head", "reason", "schema", "status"}
+        or value.get("schema")
+        != "nysa.software-factory.preview-preflight/v1"
+        or value.get("head") != head
+        or status not in {"pass", "wait", "fail"}
+        or not isinstance(value.get("evidence"), dict)
+        or (
+            status == "pass" and reason is not None
+        )
+        or (
+            status != "pass"
+            and (
+                not isinstance(reason, str)
+                or not re.fullmatch(r"[a-z0-9_.-]{1,128}", reason)
+            )
+        )
+    ):
+        raise Refusal("preview preflight returned invalid evidence")
+    return value
 
 
 def main() -> None:
@@ -631,6 +718,7 @@ def main() -> None:
         check_status, checks = required_check_status(repo, pr["number"])
         preview_urls = []
         preview_identity: dict[str, object] | None = None
+        preview_gate: dict[str, object] | None = None
         if (
             boundary in {"narrator", "publication"}
             and check_status == "pass"
@@ -641,6 +729,15 @@ def main() -> None:
             if preview_identity["status"] != "pass":
                 check_status = "wait"
                 checks = [f"preview identity {preview_identity['reason']}"]
+            else:
+                preview_gate = preview_preflight(
+                    factory, args.ticket, head, preview_identity,
+                )
+                if preview_gate and preview_gate["status"] != "pass":
+                    check_status = (
+                        "failed" if preview_gate["status"] == "fail" else "wait"
+                    )
+                    checks = [f"preview preflight {preview_gate['reason']}"]
         if (
             boundary in {"narrator", "publication"}
             and check_status == "pass"
@@ -661,6 +758,7 @@ def main() -> None:
             "pr_number": pr["number"],
             "preview_urls": preview_urls,
             "preview_identity": preview_identity,
+            "preview_preflight": preview_gate,
             "schema": SCHEMA,
             "status": status,
             "ticket": args.ticket,

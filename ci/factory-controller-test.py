@@ -77,6 +77,31 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(matching), 1)
 
+    def test_qualification_events_bind_the_exact_manifest_generation(self) -> None:
+        manifest = {
+            "budget_usd": "100.000000",
+            "capacity": 4,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 27,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": CONTROL.QUALIFICATION_SCHEMA,
+            "target_done": 4,
+            "tickets": ["T-110", "T-111", "T-112", "T-113"],
+        }
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest), encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        controller.event("restart_boundary", tickets=manifest["tickets"])
+        event = CONTROL.read(next(controller.events.glob("*.json")))
+        self.assertEqual(event["qualification_generation"], 27)
+        self.assertEqual(
+            event["qualification_manifest_sha256"],
+            hashlib.sha256(CONTROL.canonical(manifest).encode()).hexdigest(),
+        )
+
     def test_qualification_reconciles_protected_terminal_without_passport(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 114)]
         (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
@@ -304,6 +329,30 @@ class FactoryControllerTest(unittest.TestCase):
             self.assertTrue(controller.wait_for_preview_identity(claim, first))
         self.assertEqual(claim["preview_wait_started_epoch"], 1000)
 
+        preflight_claim = {
+            key: item for key, item in claim.items()
+            if key not in {"preview_wait_head", "preview_wait_started_epoch"}
+        }
+        paired = {
+            "head": "a" * 40,
+            "preview_identity": {
+                "expected": "a" * 40,
+                "observed": [{"service": "api", "sha": "a" * 40}],
+                "status": "pass",
+            },
+            "preview_preflight": {
+                "evidence": {"observed_api": "production"},
+                "head": "a" * 40,
+                "reason": "production_origin",
+                "status": "wait",
+            },
+        }
+        with patch.object(CONTROL.time, "time", return_value=1050):
+            self.assertTrue(
+                controller.wait_for_preview_identity(preflight_claim, paired)
+            )
+        self.assertEqual(preflight_claim["preview_wait_started_epoch"], 1050)
+
         changed = copy.deepcopy(first)
         changed["head"] = changed["preview_identity"]["expected"] = "f" * 40
         with patch.object(CONTROL.time, "time", return_value=1100):
@@ -362,7 +411,7 @@ class FactoryControllerTest(unittest.TestCase):
             controller.recover_terminal_requests([unrelated])
         self.assertEqual(unrelated["status"], "blocked")
 
-    def test_terminal_request_is_bound_to_exact_protected_main(self) -> None:
+    def test_terminal_request_allows_only_unrelated_protected_main_advance(self) -> None:
         controller = CONTROL.Controller(self.args)
         (self.product / "factory/PROJECT.env").write_text(
             "GH_REPO=example/product\n", encoding="utf-8",
@@ -377,29 +426,71 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": "T-110",
         })
         claim = {"branch": "ticket/T-110", "ticket": "T-110"}
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text("State: Done\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", "-b", "main", self.product], check=True)
+        for key, value in (("user.name", "Test"), ("user.email", "test@example.invalid")):
+            subprocess.run(
+                ["git", "-C", self.product, "config", key, value], check=True,
+            )
+        subprocess.run(["git", "-C", self.product, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "terminal"], check=True,
+        )
+        terminal = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        remote = self.root / "remote.git"
+        subprocess.run(["git", "init", "--bare", "-q", remote], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "remote", "add", "origin", remote],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "main"], check=True,
+        )
         controller.merged_pr_identity = lambda branch: {
             "head": "a" * 40,
-            "merge_commit": "b" * 40,
+            "merge_commit": terminal,
             "number": 2 if "closeout" in branch else 1,
         }
-        current = ["c" * 40]
+        request = controller.terminal_request(
+            claim, "chore/t110-closeout", create=True,
+        )
+        self.assertEqual(
+            request["schema"], "nysa.software-factory.terminal-request/v2",
+        )
 
-        def remote(*_args, **_kwargs):
-            return subprocess.CompletedProcess(
-                [], 0, stdout=f"{current[0]}\trefs/heads/main\n", stderr="",
+        (self.product / "unrelated.txt").write_text("safe\n", encoding="utf-8")
+        subprocess.run(["git", "-C", self.product, "add", "unrelated.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "unrelated advance"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "main"], check=True,
+        )
+        self.assertEqual(
+            controller.terminal_request(claim, "chore/t110-closeout", create=False),
+            request,
+        )
+
+        ticket.write_text("State: Done\nchanged\n", encoding="utf-8")
+        subprocess.run(["git", "-C", self.product, "add", str(ticket)], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "change ticket"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "main"], check=True,
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "terminal request identity changed",
+        ):
+            controller.terminal_request(
+                claim, "chore/t110-closeout", create=False,
             )
-
-        with patch.object(CONTROL.subprocess, "run", side_effect=remote):
-            self.assertIsNotNone(controller.terminal_request(
-                claim, "chore/t110-closeout", create=True,
-            ))
-            current[0] = "e" * 40
-            with self.assertRaisesRegex(
-                CONTROL.ControllerError, "terminal request identity changed",
-            ):
-                controller.terminal_request(
-                    claim, "chore/t110-closeout", create=False,
-                )
 
     def test_launch_void_blocks_once_and_preserves_role_receipt(self) -> None:
         controller = CONTROL.Controller(self.args)
