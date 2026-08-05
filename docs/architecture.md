@@ -738,6 +738,14 @@ fails closed. A later successor may repeat that recovery only when every
 first-parent commit follows the same canonical pin, transition, merge,
 supersede, and repin grammar and every merged base belongs to current protected
 main lineage.
+An idle qualification claim blocked by Planner preflight may retry without a
+passport only when it has no run record or active process, its prior Planner
+receipt is unconsumed, its cell is clean and remote-equal, and its route names
+the current Factory. The controller reacquires only that ticket lease, issues
+a fresh state-machine receipt, and reruns sealed preflight. Failure releases
+the lease and keeps the same block; only a pass reopens ordinary Planner
+reconciliation. Passport, terminal, submitted, dirty, drifted, unlisted, and
+stale-route claims remain closed.
 During a protected qualification, the development scheduler authenticates a
 durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
 against the exact qualification kit SHA before returning only that ticket to

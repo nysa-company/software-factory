@@ -1343,6 +1343,189 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls[0][0][0], "preflight")
         self.assertIn("planner", calls[0][0])
 
+    def test_corrected_passportless_preflight_block_reopens_fail_closed(self) -> None:
+        tickets = ["T-110", "T-111", "T-112"]
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8"
+        )
+        (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "budget_usd": "100.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": CONTROL.QUALIFICATION_SCHEMA,
+            "target_done": 3,
+            "tickets": tickets,
+        }), encoding="utf-8")
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "blocked_reason": "preflight",
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "lease_released": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        CONTROL.write(self.state / "T-110.json", {
+            "branch": "ticket/T-110",
+            "consumed": False,
+            "receipt_sha256": "b" * 64,
+            "role": "planner",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN planner",
+            "ticket": "T-110",
+        })
+        transition = {
+            "action": "RUN",
+            "detail": "planner",
+            "loop": None,
+            "receipt": "c" * 64,
+            "role": "planner",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "stage": "RUN planner",
+            "status": "ok",
+            "ticket": "T-110",
+        }
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args[0])
+            if args[0] == "claim":
+                return {"lease_id": "d" * 64, "schema_version": 1, "ticket": "T-110"}
+            if args[0] == "state-machine":
+                return transition
+            if args[0] == "preflight":
+                return {"exit_code": 0, "status": "ok"}
+            raise AssertionError(args)
+
+        controller.json_call = json_call
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_cell_head_valid = lambda _claim: True
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(
+                CONTROL.subprocess, "run",
+                return_value=argparse.Namespace(stdout=""),
+            ),
+        ):
+            controller.recover_preflight_blocks([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "d" * 64)
+        self.assertNotIn("blocked_reason", claim)
+        self.assertNotIn("lease_released", claim)
+        self.assertEqual(calls, ["claim", "state-machine", "preflight"])
+
+        claim.update(
+            status="blocked", blocked_reason="preflight", lease_released=True,
+        )
+        controller.release_ticket_lease = lambda item: item.update(lease_released=True)
+        controller.json_call = lambda *args, **_kwargs: (
+            {"lease_id": "e" * 64, "schema_version": 1, "ticket": "T-110"}
+            if args[0] == "claim"
+            else transition if args[0] == "state-machine"
+            else {"exit_code": 1, "status": "error"}
+        )
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(
+                CONTROL.subprocess, "run",
+                return_value=argparse.Namespace(stdout=""),
+            ),
+        ):
+            controller.recover_preflight_blocks([claim])
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["blocked_reason"], "preflight")
+        self.assertTrue(claim["lease_released"])
+
+    def test_passportless_preflight_retry_rejects_unsafe_boundaries(self) -> None:
+        tickets = ["T-110", "T-111", "T-112"]
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8"
+        )
+        (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "budget_usd": "100.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": CONTROL.QUALIFICATION_SCHEMA,
+            "target_done": 3,
+            "tickets": tickets,
+        }), encoding="utf-8")
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "blocked_reason": "preflight",
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "lease_released": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        CONTROL.write(self.state / "T-110.json", {
+            "branch": "ticket/T-110",
+            "consumed": False,
+            "receipt_sha256": "b" * 64,
+            "role": "planner",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN planner",
+            "ticket": "T-110",
+        })
+        leases = []
+        controller.ensure_lease = lambda *_args: leases.append("lease")
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_cell_head_valid = lambda _claim: True
+
+        passport = self.state / "passports/T-110.json"
+        passport.parent.mkdir(mode=0o700)
+        CONTROL.write(passport, {})
+        controller.recover_preflight_blocks([claim])
+        passport.unlink()
+
+        run = self.product / "factory/runs/preflight.meta"
+        run.write_text("ticket=T-110\n", encoding="utf-8")
+        controller.recover_preflight_blocks([claim])
+        run.unlink()
+
+        with patch.object(
+            CONTROL.subprocess, "run",
+            return_value=argparse.Namespace(stdout=" M factory/tickets/T-110.md"),
+        ):
+            controller.recover_preflight_blocks([claim])
+
+        controller.remote_cell_head_valid = lambda _claim: False
+        with patch.object(
+            CONTROL.subprocess, "run",
+            return_value=argparse.Namespace(stdout=""),
+        ):
+            controller.recover_preflight_blocks([claim])
+
+        controller.role_active = lambda _claim: True
+        controller.recover_preflight_blocks([claim])
+        self.assertEqual(leases, [])
+
     def test_narrator_receives_trusted_publication_context(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"
