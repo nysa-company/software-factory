@@ -5289,6 +5289,22 @@ Validation: the focused controller test proves an unsubmitted failure
 exports once without fallback, a submitted failure still falls back, and the
 existing successor-only recovery remains green.
 
+## FI-20260804-192 — Ticket attestation rejected compact route migrations
+
+Status: Focused ticket-attestation regression green; protected CI and qualification pending
+Priority: P0 (#316)
+Area: route-journal consumers
+Owner: Factory
+First seen: T-118 under Factory
+`e0000949cc4c3193c955f0696efa2c0d7d7e5db4`
+Impact: model migration emitted its authenticated compact
+`prior_resolution_sha256`, but bundle attestation accepted only the legacy
+inline resolution and parked a ticket after successful Narrator evidence.
+Smallest repair: make the existing attestor accept both schemas and compare a
+compact digest with the canonical active-resolution hash.
+Validation: one focused regression proves legacy and compact acceptance,
+digest tampering refusal, and unchanged logical-routing enforcement.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

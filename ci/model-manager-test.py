@@ -571,6 +571,15 @@ class ModelManagerTest(unittest.TestCase):
         self.assertEqual(
             MANAGER_MODULE.active_resolution(refreshed), legacy["resolution"]
         )
+        attest_root = self.base / "attest-product"
+        (attest_root / "factory/route-plans").mkdir(parents=True)
+        (attest_root / "factory/route-plans/T-123.json").write_text(
+            ROUTER.canonical_json(refreshed) + "\n"
+        )
+        evidence = ATTEST_MODULE.route_plan_evidence(
+            attest_root, attest_root, "T-123", "c" * 40, []
+        )
+        self.assertEqual(evidence["policy_hash"], legacy["resolution"]["policy_hash"])
 
         rejected = self.command(
             "migrate-plan",
