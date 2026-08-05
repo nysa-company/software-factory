@@ -100,6 +100,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   Planner work still requires the visible Planning state; an authenticated
   `FIX planner` receipt may run beneath a later coarse state without mutating
   that state backward or recomputing repair ownership.
+- A qualification Planner-preflight block with no passport, run record, or
+  active process may retry only from a clean remote-equal cell, one unconsumed
+  Planner receipt, and a route pinned to the current Factory. The controller
+  reacquires one lease, issues a fresh receipt, and reruns sealed preflight;
+  failure releases the lease, while only a pass reopens ordinary execution.
 - A signed completed Planner repair retains narrow catch-up authority when its
   immediate deterministic successor opens a new test-first epoch beneath
   Building or Review. This permits only the authenticated resolved stage and
@@ -3567,3 +3572,14 @@ state, head, passport, run snapshot, and blocking issue match the authenticated
 passport and the exact owner request. The ordinary semantic-loop cap remains
 unchanged; an unsigned, stale, mismatched, or passportless pause grants no
 authority.
+
+## 2026-08-05 — Decision 263: Passportless preflight retries stay provider-free
+
+Category: Reliability
+
+An exact qualification Planner-preflight block may be retried only before any
+passport, run record, or active process exists and while its current route,
+clean remote head, unconsumed receipt, and manifest membership still agree.
+The controller reruns sealed preflight under a fresh exact-ticket lease and
+reopens ordinary reconciliation only on pass; every failed or drifted retry
+stays blocked without provider spend.

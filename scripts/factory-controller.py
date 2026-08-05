@@ -2237,6 +2237,99 @@ class Controller:
             for claim in claims:
                 recover(claim)
 
+    def recover_preflight_blocks(self, claims: list[dict[str, Any]]) -> None:
+        if not self.qualification:
+            return
+        for claim in claims:
+            receipt_path = self.state / f"{claim['ticket']}.json"
+            passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+            if (
+                claim["ticket"] not in self.qualification["tickets"]
+                or claim["status"] != "blocked"
+                or claim.get("blocked_reason") != "preflight"
+                or claim.get("receipt")
+                or claim.get("role")
+                or claim.get("publication_lease")
+                or claim.get("lease_released") is not True
+                or self.role_active(claim)
+                or passport_path.exists()
+                or passport_path.is_symlink()
+                or not receipt_path.is_file()
+                or receipt_path.is_symlink()
+            ):
+                continue
+            receipt = read(receipt_path)
+            if (
+                receipt.get("schema")
+                != "nysa.software-factory.transition-receipt/v1"
+                or receipt.get("ticket") != claim["ticket"]
+                or receipt.get("branch") != claim["branch"]
+                or receipt.get("stage") != "RUN planner"
+                or receipt.get("role") != "planner"
+                or receipt.get("consumed") is not False
+                or not DIGEST.fullmatch(receipt.get("receipt_sha256", ""))
+                or any(
+                    fields(path).get("ticket") == claim["ticket"]
+                    for path in (self.product / "factory/runs").glob("*.meta")
+                )
+                or subprocess.run(
+                    [
+                        "git", "-C", claim["worktree"], "status",
+                        "--porcelain=v1", "-z",
+                    ],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout
+                or not self.ticket_release_current(claim)
+                or not self.remote_cell_head_valid(claim)
+            ):
+                continue
+            self.ensure_lease(claim, "preflight-retry")
+            try:
+                try:
+                    ensure_qualification_artifacts(
+                        self.product, self.state, claim["ticket"]
+                    )
+                except QualificationArtifactError as error:
+                    raise ControllerError(str(error)) from error
+                transition = self.json_call(
+                    "state-machine", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--workdir", claim["worktree"],
+                    "--json", timeout=None,
+                )
+                if (
+                    not valid_transition_evidence(transition, claim["ticket"])
+                    or transition.get("role") != "planner"
+                ):
+                    raise ControllerError(
+                        "preflight retry transition evidence is invalid"
+                    )
+                preflight = self.json_call(
+                    "preflight", "--ticket", claim["ticket"],
+                    "--role", "planner", "--lease", claim["lease"],
+                    "--receipt", transition["receipt"],
+                    "--workdir", claim["worktree"], "--json", allow=(0, 1),
+                )
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError,
+            ):
+                self.release_ticket_lease(claim)
+                raise
+            if preflight.get("status") != "ok" or preflight.get("exit_code") != 0:
+                self.release_ticket_lease(claim)
+                self.event(
+                    "preflight_retry_blocked", claim["ticket"],
+                    transition_receipt_sha256=transition["receipt"],
+                )
+                continue
+            claim.update(receipt="", role="", status="claimed")
+            claim.pop("blocked_reason", None)
+            self.save_claim(claim)
+            self.event(
+                "preflight_retry_recovered", claim["ticket"],
+                transition_receipt_sha256=transition["receipt"],
+            )
+
     def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             successor_budget = (
@@ -3982,6 +4075,10 @@ class Controller:
             existing, self.recover_interrupted_claims, "interrupted-reconciliation",
         )
         self.recover_each(
+            existing, self.recover_preflight_blocks, "preflight-retry",
+            concurrent=True,
+        )
+        self.recover_each(
             existing, self.recover_upgraded_claims, "release-upgrade",
             concurrent=True,
         )
@@ -4103,6 +4200,10 @@ class Controller:
                 self.recover_each(
                     idle, self.recover_interrupted_claims,
                     "interrupted-reconciliation",
+                )
+                self.recover_each(
+                    idle, self.recover_preflight_blocks, "preflight-retry",
+                    concurrent=True,
                 )
                 self.recover_each(
                     idle, self.recover_upgraded_claims, "release-upgrade",
