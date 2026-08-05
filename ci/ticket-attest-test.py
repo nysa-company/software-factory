@@ -773,6 +773,28 @@ else:
         self.assertEqual(evidence["policy_hash"], resolution["policy_hash"])
         self.assertNotIn("legacy_planner_manifest_sha256", evidence)
 
+        release["prior_resolution_sha256"] = TICKET_ATTEST.content_hash(
+            release.pop("prior_resolution")
+        )
+        revision_one["revision_hash"] = TICKET_ATTEST.route_revision_hash(
+            1, revision_zero["revision_hash"], release
+        )
+        path.write_text(json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n")
+        TICKET_ATTEST.route_plan_evidence(
+            self.product, self.product, "T-700", KIT_SHA, []
+        )
+
+        release["prior_resolution_sha256"] = "0" * 64
+        revision_one["revision_hash"] = TICKET_ATTEST.route_revision_hash(
+            1, revision_zero["revision_hash"], release
+        )
+        path.write_text(json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n")
+        with self.assertRaisesRegex(TICKET_ATTEST.Refusal, "extend the prior route"):
+            TICKET_ATTEST.route_plan_evidence(
+                self.product, self.product, "T-700", KIT_SHA, []
+            )
+
+        release["prior_resolution_sha256"] = TICKET_ATTEST.content_hash(resolution)
         release["new_resolution"] = json.loads(json.dumps(resolution))
         release["new_resolution"]["selections"]["narrator"]["route_id"] = "changed"
         revision_one["revision_hash"] = TICKET_ATTEST.route_revision_hash(

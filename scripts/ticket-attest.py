@@ -234,6 +234,12 @@ def route_revision_hash(index, parent, body):
     ).encode("utf-8")).hexdigest()
 
 
+def content_hash(value):
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
 def logical_resolution(value):
     result = {
         key: item for key, item in value.items()
@@ -320,15 +326,24 @@ def route_plan_evidence(workdir, product, ticket, kit_sha, manifests):
                 resolution = body.get("new_resolution")
                 failed_digests.add(body.get("failed_manifest_digest"))
             elif index > 0 and body.get("kind") == "release-migration":
-                keys = {
+                inline_keys = {
                     "kind", "migrated_at", "pin_commit", "old_kit_sha",
                     "new_kit_sha", "prior_resolution",
                 }
+                compact_keys = inline_keys - {"prior_resolution"} | {
+                    "prior_resolution_sha256"
+                }
                 if "new_resolution" in body:
-                    keys.add("new_resolution")
+                    inline_keys.add("new_resolution")
+                    compact_keys.add("new_resolution")
+                prior_matches = (
+                    body.get("prior_resolution") == resolution
+                    if "prior_resolution" in body
+                    else body.get("prior_resolution_sha256") == content_hash(resolution)
+                )
                 if (
-                    set(body) != keys
-                    or body.get("prior_resolution") != resolution
+                    set(body) not in (inline_keys, compact_keys)
+                    or not prior_matches
                     or body.get("old_kit_sha") != current_kit
                     or not valid_oid(body.get("pin_commit", ""))
                     or not valid_oid(body.get("new_kit_sha", ""))

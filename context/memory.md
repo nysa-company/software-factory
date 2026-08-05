@@ -34,6 +34,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   diagnostic path. Apply performs one fresh readiness round and requires the
   exact preview readiness digest; it does not repeat identical probes inside
   the same command.
+- Every route-journal consumer accepts both legacy inline release migrations
+  and compact migrations whose canonical prior-resolution digest matches the
+  active history. A mismatched digest remains fail-closed before attestation.
 - A product using certification plan v2 has one exact runtime tuple: Factory
   SHA/tree, product SHA/tree, Contract, Node, and npm. The shared preflight runs
   before readiness tests, qualification materialization, certification suites,
@@ -3543,3 +3546,12 @@ A durable-GO Cursor terminal enters same-release model fallback only after a
 task was actually submitted. An unsubmitted conservative terminal first gains
 an authenticated passport charge, remains blocked under the current release,
 and can resume only through the existing successor-release proof.
+
+## 2026-08-04 — Decision 261: Compact route evidence is one shared contract
+
+Category: Reliability
+
+The migration writer and every downstream attestor accept the same legacy and
+compact release-migration schemas. Compact evidence inherits the active
+resolution only when its canonical digest matches; tampering and logical route
+changes remain refused.
