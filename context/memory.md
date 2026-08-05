@@ -192,6 +192,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   accounting to the exact project plus frozen candidate SHA. Predecessor
   candidates cannot exhaust a successor's allowance, multiple roots for the
   same candidate cannot reset it, and the machine-day cap remains global.
+- Contract 1.8 budget exhaustion blocks only a resolved paid `RUN` or `FIX`
+  stage. Deterministic validation and receipt-bound post-role reductions still
+  run, so an already successful and fully charged Narrator may reach bundle
+  attestation without another provider reservation; missing or invalid
+  evidence still resolves to a provider stage and remains budget-blocked.
 - Reviewer terminalization normalizes exact verdict-only Markdown headings,
   exact wrapped repair-owner lines, and known Cursor background-callback
   concatenation only when every verdict and owner signal agrees. Ambiguous,
@@ -3583,3 +3588,13 @@ clean remote head, unconsumed receipt, and manifest membership still agree.
 The controller reruns sealed preflight under a fresh exact-ticket lease and
 reopens ordinary reconciliation only on pass; every failed or drifted retry
 stays blocked without provider spend.
+
+## 2026-08-05 — Decision 264: Budget stops provider work, not trusted reduction
+
+Category: Reliability
+
+Once a successful role is fully accounted, reaching the ticket cap may not
+mask deterministic state validation or the receipt-bound attestation that role
+already produced. The sequencer substitutes `AWAIT_BUDGET` only for a resolved
+paid `RUN` or `FIX` action; it never weakens provider admission or evidence
+validation.

@@ -2718,6 +2718,74 @@ fi
 fi
 
 if [[ "$SUBSET" == "sequencer" ]]; then
+# Exhaustion blocks only a new provider role. A successful, fully accounted
+# Narrator may still reduce to its deterministic bundle-attestation boundary.
+POST_BUDGET_ROOT="$TMP/post-budget-reduction"
+write_envelope "$POST_BUDGET_ROOT"
+sed -i.bak 's/PER_TICKET_BUDGET_USD=20.00/PER_TICKET_BUDGET_USD=0.60/' \
+  "$POST_BUDGET_ROOT/factory/ENVELOPE.env"
+rm "$POST_BUDGET_ROOT/factory/ENVELOPE.env.bak"
+sed -i.bak 's/PER_RUN_BUDGET_USD=1.00/PER_RUN_BUDGET_USD=0.10/' \
+  "$POST_BUDGET_ROOT/factory/ENVELOPE.env"
+rm "$POST_BUDGET_ROOT/factory/ENVELOPE.env.bak"
+write_ticket "$POST_BUDGET_ROOT" T-532 Review
+cat >> "$POST_BUDGET_ROOT/factory/tickets/T-532.md" <<'TICKET'
+SPEC-LINT: PASS
+reviewer round 1: APPROVE
+TICKET
+cat > "$POST_BUDGET_ROOT/factory/tickets/T-532-bundle.md" <<'BUNDLE'
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
+git -C "$POST_BUDGET_ROOT" add factory/ENVELOPE.env factory/tickets
+git -C "$POST_BUDGET_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "post-budget fixture"
+POST_BUDGET_HEAD="$(git -C "$POST_BUDGET_ROOT" rev-parse HEAD)"
+for role in planner spec-linter test-author builder reviewer narrator; do
+  run_id="post-budget-$role"
+  ledger_row_run T-532 "$role" "$run_id" >> \
+    "$POST_BUDGET_ROOT/factory/ledger.csv"
+  write_run_manifest "$POST_BUDGET_ROOT" T-532 "$role" "$run_id" \
+    "$POST_BUDGET_HEAD"
+  printf 'effective_cost=0.100000\nkit_sha=%s\n' "$KIT_SHA" >> \
+    "$POST_BUDGET_ROOT/factory/runs/$run_id.meta"
+done
+POST_BUDGET_OK=1
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "AWAIT-OPERATOR bundle posted" "$POST_BUDGET_ROOT" T-532 || \
+  POST_BUDGET_OK=0
+printf '# What this does\n' > \
+  "$POST_BUDGET_ROOT/factory/tickets/T-532-bundle.md"
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "AWAIT_BUDGET ticket budget exhausted" "$POST_BUDGET_ROOT" T-532 || \
+  POST_BUDGET_OK=0
+write_ticket "$POST_BUDGET_ROOT" T-533 Ready
+cat > "$POST_BUDGET_ROOT/factory/runs/post-budget-planner.meta" <<META
+run_id=post-budget-planner
+ticket=T-533
+role=planner
+accounting_state=completed
+effective_cost=0.600000
+exit_status=5
+role_exit=budget
+kit_sha=$KIT_SHA
+META
+git -C "$POST_BUDGET_ROOT" add factory/tickets/T-533.md
+git -C "$POST_BUDGET_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "provider-budget fixture"
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "AWAIT_BUDGET ticket budget exhausted" "$POST_BUDGET_ROOT" T-533 || \
+  POST_BUDGET_OK=0
+if [[ "$POST_BUDGET_OK" -eq 1 ]]; then
+  pass "budget exhaustion permits only deterministic post-role reduction"
+fi
+
 # Full sequencer walkthrough: happy path.
 WALK="$TMP/walk"
 mkdir -p "$WALK/factory/tickets"
