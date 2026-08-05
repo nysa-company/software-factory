@@ -42,7 +42,7 @@ class FakeLinear:
             if self.viewer_error:
                 raise RuntimeError("viewer lookup failed")
             return {"viewer": {"id": self.viewer_id}}
-        if "teams {" in query:
+        if query.strip().startswith("{ teams"):
             return {"teams": {"nodes": [{"id": "team-1", "name": "Software Factory", "key": "SF"}]}}
         if "issues(first:" in query:
             return {"team": {"issues": {
@@ -57,6 +57,7 @@ class FakeLinear:
                                 if name == issue["state"]["name"]
                             ),
                         },
+                        "project": issue.get("project"),
                         "title": issue["title"],
                     }
                     for issue in self.issues.values()
@@ -71,6 +72,17 @@ class FakeLinear:
                     "templates": {"nodes": []},
                 }
             }
+        if "projects(first:" in query:
+            return {"projects": {
+                "nodes": [
+                    {
+                        **project,
+                        "teams": {"nodes": [{"id": "team-1"}]},
+                    }
+                    for project in self.projects.values()
+                ],
+                "pageInfo": {"hasNextPage": False},
+            }}
         if "workflowStateCreate" in query:
             name = variables["input"]["name"]
             return {"workflowStateCreate": {"workflowState": {
@@ -1167,6 +1179,48 @@ class LinearSyncTest(unittest.TestCase):
         ]
         self.assertEqual(colors, list(LINEAR.STATE_COLORS.values()))
 
+    def test_fresh_map_adopts_durably_identified_projects_without_duplicates(self):
+        self.reconcile()
+        created = len([
+            query for query, _variables in self.fake.calls if "projectCreate" in query
+        ])
+        self.map_path.unlink()
+        mapping = LINEAR.load_map(self.map_path)
+        self.fake.calls.clear()
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.setup("key", mapping, self.map_path)
+            LINEAR.ensure_projects(
+                "key", self.factory, mapping, self.map_path, dry=False,
+            )
+        self.assertEqual(mapping["initiatives"]["I-001"]["project_id"], "project-1")
+        self.assertEqual(
+            len([query for query, _variables in self.fake.calls if "projectCreate" in query]),
+            0,
+        )
+        self.assertEqual(len(self.fake.projects), created)
+
+    def test_exact_ticket_initialization_does_not_reconcile_history(self):
+        self.reconcile()
+        second = self.factory / "tickets/T-002.md"
+        second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
+            "# T-001 — first ticket", "# T-002 — second ticket",
+        ))
+        self.fake.calls.clear()
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        saved = LINEAR.load_map(self.map_path)
+        self.assertTrue(saved["tickets"]["T-002"]["operator_fields_initialized"])
+        self.assertEqual(
+            len([query for query, _variables in self.fake.calls if "issueCreate" in query]),
+            1,
+        )
+        self.assertFalse(any(
+            variables.get("id") == saved["tickets"]["T-001"]["issue_id"]
+            for query, variables in self.fake.calls if "issue(id:" in query
+        ))
+
     def test_legacy_map_is_migrated_in_memory(self):
         self.map_path.write_text('{"_config": null, "tickets": {}}\n')
         migrated = LINEAR.load_map(self.map_path)
@@ -1419,6 +1473,22 @@ class LinearSyncTest(unittest.TestCase):
         ):
             self.assertEqual(LINEAR.gql("key", "{ ok }"), {"ok": True})
         self.assertEqual(request.call_count, 2)
+
+    def test_graphql_persists_bounded_rate_limit_wait_after_retries(self):
+        limited = urllib.error.HTTPError(
+            LINEAR.API_URL, 429, "rate limited", {"Retry-After": "7200"}, None,
+        )
+        with (
+            patch.object(
+                LINEAR.urllib.request, "urlopen",
+                side_effect=[limited, limited, limited],
+            ),
+            patch.object(LINEAR.time, "sleep"),
+            self.assertRaisesRegex(
+                RuntimeError, r"linear_rate_limited retry_after_seconds=3600",
+            ),
+        ):
+            LINEAR.gql("key", "{ ok }")
 
     def test_graphql_retries_transient_server_failure(self):
         unavailable = urllib.error.HTTPError(

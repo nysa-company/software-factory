@@ -149,6 +149,7 @@ BANNER = (
     "decisions. Contract, execution stage, logs, evidence, and cost are "
     "projected from the product repo."
 )
+PROJECT_MARKER = "Software-Factory-Initiative:"
 
 
 def log(message):
@@ -212,6 +213,15 @@ def gql(key, query, variables=None):
                 log(f"Linear HTTP {error.code}, backing off {wait}s")
                 time.sleep(wait)
                 continue
+            if error.code == 429:
+                raw_wait = error.headers.get("Retry-After")
+                try:
+                    wait = int(raw_wait) if raw_wait is not None else 30
+                except (TypeError, ValueError):
+                    wait = 30
+                raise RuntimeError(
+                    f"linear_rate_limited retry_after_seconds={min(max(wait, 0), 3600)}"
+                ) from error
             detail = error.read().decode(errors="replace")
             raise RuntimeError(f"Linear HTTP {error.code}: {detail}") from error
     raise RuntimeError("Linear request failed after retries")
@@ -757,6 +767,60 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
         for item in (parse_initiative(path) for path in sorted(initiatives_dir.glob("I-*.md")))
     }
     config = mapping["_config"]
+    missing = [
+        initiative_id for initiative_id in initiatives
+        if not mapping["initiatives"].get(initiative_id, {}).get("project_id")
+    ]
+    candidates = {}
+    projects = {}
+    if missing:
+        page = gql(
+            key,
+            """query { projects(first: 250) {
+                 nodes { id name url content teams { nodes { id } } }
+                 pageInfo { hasNextPage }
+               } }""",
+        )["projects"]
+        if page.get("pageInfo", {}).get("hasNextPage"):
+            raise RuntimeError("Linear Project inventory is incomplete")
+        projects = {item["id"]: item for item in page.get("nodes", [])}
+        identities = {}
+        for project_id, project in projects.items():
+            marker = re.findall(
+                rf"^{re.escape(PROJECT_MARKER)}\s*(I-[0-9]+)\s*$",
+                project.get("content") or "", re.MULTILINE,
+            )
+            if len(marker) == 1:
+                identities.setdefault(project_id, set()).add(marker[0])
+        title_initiatives = {}
+        for path in sorted((factory_dir / "tickets").glob("T-*.md")):
+            text, _source = committed_ticket(factory_dir, path.stem)
+            if text is None:
+                continue
+            ticket = parse_ticket_text(path.stem, path, text)
+            title_initiatives.setdefault(ticket["title"], set()).add(ticket["initiative"])
+        for title, issues in factory_issue_index(key, config["team_id"]).items():
+            initiative_ids = title_initiatives.get(title, set())
+            if len(initiative_ids) != 1:
+                continue
+            for issue in issues:
+                project_id = (issue.get("project") or {}).get("id")
+                if project_id:
+                    identities.setdefault(project_id, set()).update(initiative_ids)
+        for initiative_id in missing:
+            matches = [
+                project for project_id, project in projects.items()
+                if identities.get(project_id) == {initiative_id}
+                and config["team_id"] in {
+                    team.get("id") for team in project.get("teams", {}).get("nodes", [])
+                }
+            ]
+            if len(matches) > 1:
+                raise RuntimeError(
+                    f"{initiative_id}: multiple durable Linear Project identities"
+                )
+            if matches:
+                candidates[initiative_id] = matches[0]
     for initiative_id, initiative in initiatives.items():
         entry = mapping["initiatives"].get(initiative_id)
         if entry is None:
@@ -784,6 +848,28 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                 else:
                     entry["operator"] = operator
             continue
+        if initiative_id in candidates:
+            project = candidates[initiative_id]
+            if dry:
+                log(f"{initiative_id}: DRY would adopt Linear Project {project['name']}")
+                continue
+            entry["project_id"] = project["id"]
+            if project.get("url"):
+                entry["project_url"] = project["url"]
+            save_map(map_path, mapping)
+            log(f"{initiative_id}: adopted Project {project['name']}")
+            continue
+        same_name = [
+            project for project in projects.values()
+            if project.get("name") == initiative["name"]
+            and config["team_id"] in {
+                team.get("id") for team in project.get("teams", {}).get("nodes", [])
+            }
+        ]
+        if same_name:
+            raise RuntimeError(
+                f"{initiative_id}: existing same-name Project lacks durable identity"
+            )
         if dry:
             log(f"{initiative_id}: DRY would create Linear Project")
             continue
@@ -793,7 +879,9 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
             {"input": {
                 "name": initiative["name"],
                 "description": initiative["summary"][:255],
-                "content": initiative["summary"],
+                "content": (
+                    f"{PROJECT_MARKER} {initiative_id}\n\n{initiative['summary']}"
+                ),
                 "teamIds": [config["team_id"]],
                 **({"targetDate": initiative["target_date"]} if initiative["target_date"] else {}),
             }},
@@ -944,7 +1032,7 @@ def factory_issue_index(key, team_id):
             key,
             """query($id: String!, $after: String) { team(id: $id) {
                  issues(first: 100, after: $after) {
-                   nodes { id identifier title description state { type } }
+                   nodes { id identifier title description state { type } project { id } }
                    pageInfo { hasNextPage endCursor }
                  }
                } }""",
@@ -1376,7 +1464,7 @@ def sync_ticket_terminal(key, factory_dir, map_path, ticket_id):
     }
 
 
-def sync_tickets(key, factory_dir, mapping, map_path, dry):
+def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
     config = mapping["_config"]
     viewer_id = fetch_viewer_id(key)
     existing_issues = factory_issue_index(key, config["team_id"])
@@ -1390,6 +1478,8 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
         if re.fullmatch(r"T-\d+", path.stem)
     )
     for path in ticket_paths:
+        if only is not None and path.stem not in only:
+            continue
         text, source_ref = committed_ticket(factory_dir, path.stem)
         if text is None:
             log(f"{path.stem}: no committed ticket source, skipping")
@@ -1559,6 +1649,36 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry):
                 save_map(map_path, mapping)
 
 
+def initialize_ticket(key, factory_dir, map_path, ticket_id, dry=False):
+    if not re.fullmatch(r"T-[0-9]+", ticket_id):
+        raise RuntimeError("exact-ticket initialization requires T-NNN")
+    mapping = load_map(map_path)
+    if not isinstance(mapping.get("_config"), dict):
+        raise RuntimeError("exact-ticket initialization requires canonical Linear setup")
+    text, _source = committed_ticket(factory_dir, ticket_id)
+    if text is None:
+        raise RuntimeError(f"{ticket_id}: committed ticket source is unavailable")
+    ticket = parse_ticket_text(
+        ticket_id, factory_dir / "tickets" / f"{ticket_id}.md", text,
+    )
+    project = mapping["initiatives"].get(ticket["initiative"], {})
+    if not isinstance(project, dict) or not project.get("project_id"):
+        raise RuntimeError(
+            f"{ticket_id}: mapped initiative Project is required before initialization"
+        )
+    sync_tickets(key, factory_dir, mapping, map_path, dry, {ticket_id})
+    if not dry:
+        previous = mapping.get("_sync", {})
+        mapping["_sync"] = {
+            "last_success_at": utc_now(), "last_error": None,
+            **(
+                {"last_rejected": previous["last_rejected"]}
+                if isinstance(previous.get("last_rejected"), dict) else {}
+            ),
+        }
+        save_map(map_path, mapping)
+
+
 def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
     if not mapping.get("_config") or setup_only:
         setup(key, mapping, map_path, dry)
@@ -1586,10 +1706,13 @@ def main():
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ticket")
+    parser.add_argument("--initialize", action="store_true")
     parser.add_argument("--terminal", action="store_true")
     args = parser.parse_args()
     if args.ticket and args.setup:
         parser.error("--ticket cannot be combined with --setup")
+    if args.initialize and (not args.ticket or args.terminal):
+        parser.error("--initialize requires --ticket and cannot be terminal")
     if args.terminal and (not args.ticket or args.dry_run):
         parser.error("--terminal requires --ticket and cannot be a dry run")
 
@@ -1609,12 +1732,22 @@ def main():
 
     if args.ticket:
         try:
-            if args.terminal:
+            if args.initialize:
+                with sync_lock(factory_dir, args.dry_run):
+                    initialize_ticket(
+                        key, factory_dir, map_path, args.ticket, args.dry_run,
+                    )
+            elif args.terminal:
                 result = sync_ticket_terminal(key, factory_dir, map_path, args.ticket)
                 print(json.dumps(result, sort_keys=True))
             else:
                 sync_ticket_operator(key, factory_dir, map_path, args.ticket, args.dry_run)
         except Exception as error:
+            if args.initialize and not args.dry_run:
+                try:
+                    record_failure(map_path, load_map(map_path), error)
+                except OSError:
+                    pass
             log(f"exact-ticket sync error: {error}")
             return 1
         return 0

@@ -59,6 +59,14 @@ Set up the shared Software Factory team per `docs/workflows/linear.md`: compact 
 
 Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Awaiting Approval and Blocked-Escalated tickets.
 
+Fresh-map recovery adopts only Projects with one durable initiative identity and
+fails on ambiguity or an unidentified same-name Project. For a new selected
+ticket after setup, use `scripts/linear-sync.py --factory-root <product-repo>
+--ticket T-NNN --initialize`; qualification preparation invokes that bounded
+path for selected unmapped tickets when the canonical map is present. A Linear
+rate limit is persisted as `linear_rate_limited retry_after_seconds=N` and
+keeps provider admission closed until a later successful reconciliation.
+
 ## Step 5 — Hermes release boundary
 
 - Create `~/.factory/bin` and `~/.factory/kits`. Install
@@ -109,6 +117,10 @@ Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to creat
   Its sealed helper environment binds the canonical live
   Linear map. It validates and reuses canonical authenticated passports
   and provider accounting under their existing lock rather than copying them.
+  A fresh isolated worktree may omit ignored runtime directories; the preparer
+  alone creates physical owner-only `factory/runs/`. It rejects noncanonical
+  selected-ticket freeze metadata and any selected dependency pair before
+  sealing, so the restart barrier cannot wait forever.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.

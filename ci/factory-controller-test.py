@@ -145,10 +145,12 @@ class FactoryControllerTest(unittest.TestCase):
             ],
             check=True,
         )
+        ticket.write_text("State: Ready\n", encoding="utf-8")
         controller = CONTROL.Controller(self.args)
         with patch.object(CONTROL, "protected_terminal", return_value={
             "basis": "attested-emergency-closeout", "ticket": "T-110",
         }):
+            self.assertTrue(controller.product_ticket_done("T-110"))
             controller.record_qualification_done_targets()
             controller.record_qualification_done_targets()
         records = [CONTROL.read(path) for path in controller.events.glob("*.json")]
@@ -1343,6 +1345,52 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls[0][0][0], "preflight")
         self.assertIn("planner", calls[0][0])
 
+    def test_preflight_refusal_evidence_survives_block_redacted_and_bounded(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        output = (
+            "PREFLIGHT FAIL: Fixture-Seams path is not a regular file\n"
+            "FAIL: token=do-not-persist https://secret.example.invalid/path\n"
+            + "ignored\n" * 20
+        )
+        controller.json_call = lambda *_args, **_kwargs: {
+            "exit_code": 1, "output": output, "status": "error",
+        }
+        controller.block = lambda item, reason: item.update(
+            status="blocked", blocked_reason=reason, lease_released=True,
+        )
+        controller.run_role(claim, "planner", "b" * 64, [])
+
+        events = [CONTROL.read(path) for path in controller.events.glob("*.json")]
+        refusal = next(item for item in events if item["event"] == "preflight_refused")
+        self.assertEqual(refusal["preflight_reason_code"], "deterministic_refusal")
+        self.assertEqual(len(refusal["preflight_failure_lines"]), 2)
+        self.assertNotIn("do-not-persist", json.dumps(refusal))
+        self.assertNotIn("secret.example.invalid", json.dumps(refusal))
+        self.assertEqual(
+            refusal["preflight_output_sha256"], hashlib.sha256(output.encode()).hexdigest(),
+        )
+        self.assertEqual(claim["blocked_reason"], "preflight")
+        self.assertEqual(
+            len(list(CONTROL.Controller(self.args).events.glob("*.json"))), 1,
+        )
+
+        malformed = dict(claim, status="claimed")
+        controller.json_call = lambda *_args, **_kwargs: {
+            "exit_code": 1, "output": ["not text"], "status": "error",
+        }
+        controller.run_role(malformed, "planner", "c" * 64, [])
+        self.assertEqual(malformed["blocked_reason"], "preflight-evidence")
+
     def test_corrected_passportless_preflight_block_reopens_fail_closed(self) -> None:
         tickets = ["T-110", "T-111", "T-112"]
         (self.product / "factory/PROJECT.env").write_text(
@@ -1436,7 +1484,11 @@ class FactoryControllerTest(unittest.TestCase):
             {"lease_id": "e" * 64, "schema_version": 1, "ticket": "T-110"}
             if args[0] == "claim"
             else transition if args[0] == "state-machine"
-            else {"exit_code": 1, "status": "error"}
+            else {
+                "exit_code": 1,
+                "output": "PREFLIGHT FAIL: deterministic fixture refusal\n",
+                "status": "error",
+            }
         )
         with (
             patch.object(CONTROL, "ensure_qualification_artifacts"),
@@ -5616,7 +5668,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls, {"T-110": 1, "T-111": 1, "T-112": 1})
         self.assertEqual(peak, 3)
 
-    def test_waiting_ticket_stays_settled_while_sibling_worker_is_live(
+    def test_pr_gated_waiting_ticket_rechecks_while_sibling_worker_is_live(
         self,
     ) -> None:
         import threading
@@ -5657,6 +5709,11 @@ class FactoryControllerTest(unittest.TestCase):
             calls[ticket] += 1
             if ticket == "T-110":
                 first_waited.set()
+                if calls[ticket] == 1:
+                    return {
+                        "status": "waiting", "ticket": ticket,
+                        "wait_reason": "pr-gate",
+                    }
             else:
                 self.assertTrue(first_waited.wait(1))
                 time.sleep(0.1)
@@ -5666,7 +5723,7 @@ class FactoryControllerTest(unittest.TestCase):
         with patch.object(CONTROL, "RECONCILE_INTERVAL_SECONDS", 0.02):
             result = controller.reconcile()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(calls, {"T-110": 1, "T-111": 1})
+        self.assertEqual(calls, {"T-110": 2, "T-111": 1})
 
     def test_scheduler_wakes_new_ticket_while_provider_future_is_live(self) -> None:
         import threading
@@ -6552,9 +6609,11 @@ class FactoryControllerTest(unittest.TestCase):
         )
         claims = []
         with patch.object(CONTROL.subprocess, "run") as run:
+            run.return_value.returncode = 1
             controller.recover_missing_passport_claims(claims)
         self.assertEqual(claims, [])
-        run.assert_not_called()
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0][3], "show")
 
     def test_done_product_ticket_prunes_existing_claim_before_recovery(self) -> None:
         controller = CONTROL.Controller(self.args)

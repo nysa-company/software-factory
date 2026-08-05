@@ -121,6 +121,12 @@ The measurable outcome this initiative delivers.
 
 Tickets contain `Initiative: I-NNN`. The reconciler creates the corresponding
 Linear Project, stores its UUID in `linear-map.json`, and assigns every issue.
+Created Projects carry a durable initiative marker. If the ignored map is lost,
+setup adopts one unambiguous same-team Project only when that marker or its
+existing Factory-managed issues establish the initiative identity; multiple
+identities or a same-name Project without durable identity fails before
+creating anything. `--ticket T-NNN --initialize` creates or adopts only that
+committed ticket after canonical team, workflow, and Project bindings exist.
 `View: factory` also creates a shared Project-filtered Factory Pipeline view
 and stores its UUID with the initiative mapping.
 Project status, target date, and issue membership may be edited in Linear and

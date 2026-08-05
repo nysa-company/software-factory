@@ -8,6 +8,13 @@ unset CI_FORCE_FULL
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
+[[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 4 &&
+    "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 1 ]] || {
+  echo "FAIL: CI actions must use Node 24 runtimes and macOS install must avoid tap updates" >&2
+  exit 1
+}
 [[ "$(grep -c 'targeted or deferred pull-request verification' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc -- '--changed-or-defer "$BASE_SHA" "$GITHUB_SHA"' "$WORKFLOW")" -eq 2 ]] || {
   echo "FAIL: behavioral Linux and macOS PR jobs must run targeted-or-deferred verification" >&2

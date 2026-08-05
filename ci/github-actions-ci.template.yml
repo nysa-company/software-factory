@@ -12,7 +12,7 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: classify change
@@ -25,10 +25,11 @@ jobs:
           else
             echo "full=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: github.event_name == 'push' || steps.scope.outputs.full == 'true'
         with:
           node-version: 22
+          package-manager-cache: false
       # <add with the same condition: npm ci / lint / typecheck once the product has them>
       - name: tests
         if: github.event_name == 'push' || steps.scope.outputs.full == 'true'
@@ -39,7 +40,7 @@ jobs:
   test-immutability:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # the check walks every commit on the branch
       - name: builder commits must not touch tests

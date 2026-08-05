@@ -23,7 +23,7 @@ jobs:
       base: ${{ steps.classify.outputs.base }}
       groups: ${{ steps.classify.outputs.groups }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: classify complete diff
@@ -52,14 +52,15 @@ jobs:
       matrix:
         group: ${{ fromJSON(needs.scope.outputs.groups) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: needs.scope.outputs.behavioral == 'true'
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
         if: needs.scope.outputs.behavioral == 'true'
         with:
           python-version: "3.12"
@@ -93,13 +94,16 @@ jobs:
       matrix:
         group: ${{ fromJSON(needs.scope.outputs.groups) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
+          package-manager-cache: false
       - name: install GNU timeout
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
         run: brew install coreutils
       - name: targeted or deferred pull-request verification under system Bash
         if: github.event_name == 'pull_request'
@@ -172,7 +176,7 @@ jobs:
   test-immutability:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: builder commits must not touch tests

@@ -3608,3 +3608,65 @@ A controller-signed pause records JSON null Resume-State outside
 `Blocked-Escalated`, where no resume overlay exists. Emergency validation
 accepts that exact null while continuing to require a nonempty resume state for
 `Blocked-Escalated`; every other malformed value remains refused.
+
+## 2026-08-05 — Decision 266: Clean qualification creates only ignored runtime
+
+Category: Qualification
+
+The trusted preparer creates an absent physical owner-only `factory/runs/`
+after the clean-worktree check. It rejects unsafe replacements, noncanonical
+Product-Decisions metadata, and selected dependency pairs before sealing; the
+ledger remains fail-closed and no provider work starts on preparation failure.
+
+## 2026-08-05 — Decision 267: Linear recovery is identity-bound and selected
+
+Category: Operations
+
+A lost ignored map may adopt only one same-team Project whose durable marker or
+Factory-managed issue membership proves the initiative identity. Qualification
+initializes only selected unmapped tickets after canonical setup; ambiguity,
+same-name identity gaps, and bounded rate limits remain provider-free waits.
+
+## 2026-08-05 — Decision 268: Static contract collisions fail before Builder
+
+Category: Planning
+
+Planner conflict declarations use the readiness parser's exact grammar. New
+global-shell literals are checked against bounded static protected-test text
+assertions before freeze; a collision names its test and assertion and requires
+explicit Test-author ownership rather than weakening the protected check.
+
+## 2026-08-05 — Decision 269: Preflight refusal evidence precedes lease release
+
+Category: Reliability
+
+The controller persists only bounded redacted failure lines, exit/reason codes,
+and the full-output digest before a Planner preflight block releases its lease.
+Malformed or oversized refusal evidence gets a distinct closed block, so later
+lease state cannot mask the original deterministic cause.
+
+## 2026-08-05 — Decision 270: PR waits can wake inside a live reconcile
+
+Category: Throughput
+
+A PR-gated waiting claim is reconsidered on the existing reconciliation
+interval while another worker remains live. The scheduler neither busy-polls
+nor launches twice; generic waits remain settled and stale, pending, or failed
+head evidence remains closed.
+
+## 2026-08-05 — Decision 271: Evidence never silently crosses Factory identity
+
+Category: Reliability
+
+Route migration fails before preview when an existing bundle binds a different
+Kit-SHA. Conversely, validated protected-main Done is authoritative for
+qualification admission even when the sealed registered checkout intentionally
+retains a nonterminal ticket; terminal work is never reclaimed.
+
+## 2026-08-05 — Decision 272: CI setup avoids temporary runtime compatibility
+
+Category: CI
+
+Factory and generated workflow pins use official Node-24 action-runtime majors.
+The macOS GNU-timeout install disables Homebrew auto-update so unrelated taps
+are neither trusted nor mutated; protected CI remains authoritative.

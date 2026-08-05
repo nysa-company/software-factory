@@ -15,6 +15,54 @@ class ReadinessError(ValueError):
     pass
 
 
+def protected_test_conflict(entry: str) -> tuple[str, str]:
+    path, separator, literal = entry.partition(" => ")
+    candidate = PurePosixPath(path)
+    if (
+        not separator
+        or candidate.is_absolute()
+        or not candidate.parts
+        or any(part in {"", ".", ".."} for part in candidate.parts)
+        or not re.fullmatch(r"[A-Za-z0-9._/@+-]+", path)
+        or not re.fullmatch(r"[A-Za-z0-9._/@:+-]{1,200}", literal)
+    ):
+        raise ReadinessError("protected-test conflict declaration is invalid")
+    return path, literal
+
+
+def protected_text_collisions(workdir: Path, literal: str) -> list[str]:
+    if not literal or len(literal) > 500 or any(ord(char) < 32 for char in literal):
+        raise ReadinessError("global text literal is invalid")
+    result = subprocess.run(
+        ["git", "-C", str(workdir), "ls-files", "-z"],
+        capture_output=True, check=True,
+    )
+    collisions = []
+    # ponytail: static string assertions only; add a parser if dynamic protected
+    # text expressions become common enough to justify one.
+    assertion = re.compile(
+        r"(?:get|query|find)(?:All)?ByText\(\s*(['\"])(.*?)\1"
+        r"(?P<options>[^)]*)\)", re.DOTALL,
+    )
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        relative = raw.decode("utf-8", errors="strict")
+        if not re.search(r"(?:^|/)[^/]*(?:test|spec)\.[cm]?[jt]sx?$", relative):
+            continue
+        path = workdir / relative
+        if path.stat().st_size > 1_048_576:
+            raise ReadinessError(f"protected test is oversized: {relative}")
+        text = path.read_text(encoding="utf-8")
+        for match in assertion.finditer(text):
+            expected = match.group(2)
+            exact_false = re.search(r"\bexact\s*:\s*false\b", match.group("options"))
+            if expected == literal or exact_false and expected in literal:
+                line = text.count("\n", 0, match.start()) + 1
+                collisions.append(f"{relative}:{line} => {expected}")
+    return collisions
+
+
 def field(text: str, name: str) -> str:
     values = re.findall(
         rf"^{re.escape(name)}:\s*(.*?)\s*$", text, re.IGNORECASE | re.MULTILINE
@@ -65,12 +113,7 @@ def protected_test_conflicts(
     if not entries or len(entries) != len(set(entries)):
         raise ReadinessError("Protected-Test-Conflicts entries are duplicated")
     for entry in entries:
-        path, separator, literal = entry.partition(" => ")
-        if (
-            not separator
-            or not re.fullmatch(r"[A-Za-z0-9._/@:+-]{1,200}", literal)
-        ):
-            raise ReadinessError("protected-test conflict declaration is invalid")
+        path, _literal = protected_test_conflict(entry)
         conflict_paths = paths(
             f"Protected-Test-Conflict-Path: {path}",
             "Protected-Test-Conflict-Path",
@@ -104,10 +147,31 @@ def validate(ticket: str, workdir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ticket", required=True)
-    parser.add_argument("--workdir", required=True, type=Path)
+    choice = parser.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--ticket")
+    choice.add_argument("--conflict-entry")
+    choice.add_argument("--global-literal")
+    parser.add_argument("--workdir", type=Path)
     args = parser.parse_args()
     try:
+        if args.conflict_entry:
+            protected_test_conflict(args.conflict_entry)
+            print("CONFLICT DECLARATION PASS")
+            return
+        if args.global_literal:
+            if args.workdir is None:
+                raise ReadinessError("--workdir is required with --global-literal")
+            collisions = protected_text_collisions(
+                args.workdir.resolve(strict=True), args.global_literal,
+            )
+            if collisions:
+                raise ReadinessError(
+                    "global protected-test text collision: " + ", ".join(collisions)
+                )
+            print("GLOBAL TEXT PASS")
+            return
+        if args.workdir is None:
+            raise ReadinessError("--workdir is required with --ticket")
         validate(args.ticket, args.workdir)
     except (OSError, UnicodeError, ReadinessError) as error:
         print(f"READINESS BLOCKED: {error}")

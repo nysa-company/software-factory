@@ -268,6 +268,24 @@ case "$command_name" in
       json_error "ticket route document is missing or unsafe"
     factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
       json_error "$FACTORY_KIT_PIN_ERROR"
+    bundle="$workdir/factory/attestations/$ticket/bundle.json"
+    if [[ -e "$bundle" || -L "$bundle" ]]; then
+      [[ -f "$bundle" && ! -L "$bundle" ]] ||
+        json_error "bundle attestation is unsafe"
+      python3 - "$bundle" "$FACTORY_KIT_SHA" <<'PY' ||
+import json, re, sys
+value = json.load(open(sys.argv[1]))
+kit = value.get("kit_sha", "") if isinstance(value, dict) else ""
+if not re.fullmatch(r"[0-9a-f]{40}", kit):
+    raise SystemExit(2)
+if kit != sys.argv[2]:
+    raise SystemExit(1)
+PY
+      case "$?" in
+        1) json_error "bundle attestation must be invalidated before route migration" ;;
+        *) json_error "bundle attestation is malformed" ;;
+      esac
+    fi
     profile_id="$(python3 - "$CONTROL_PLAN_FILE" <<'PY'
 import base64, json, sys
 value = json.load(open(sys.argv[1]))
