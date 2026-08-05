@@ -8,7 +8,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   exact already-merged ticket. It binds an open GitHub issue, explicit owner,
   bounded request window, protected-main tree/ticket state, exact PR and green
   configured checks, and either an authenticated passport plus idle blocked
-  claim snapshot or an
+  claim snapshot, an authenticated passport plus matching controller-signed
+  pause, or an
   explicit operator-built/no-runtime basis. Apply requires the exact plan hash
   and reuses the ordinary ledger projection and protected closeout PR; it
   records distinct terminal evidence and never synthesizes approval history.
@@ -3598,3 +3599,12 @@ mask deterministic state validation or the receipt-bound attestation that role
 already produced. The sequencer substitutes `AWAIT_BUDGET` only for a resolved
 paid `RUN` or `FIX` action; it never weakens provider admission or evidence
 validation.
+
+## 2026-08-05 — Decision 265: Pause resume identity follows lifecycle state
+
+Category: Reliability
+
+A controller-signed pause records JSON null Resume-State outside
+`Blocked-Escalated`, where no resume overlay exists. Emergency validation
+accepts that exact null while continuing to require a nonempty resume state for
+`Blocked-Escalated`; every other malformed value remains refused.

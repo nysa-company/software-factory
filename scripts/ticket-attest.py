@@ -1215,8 +1215,17 @@ def paused_claim_basis(path, ticket, branch, state, passport, issue):
         or value["created_at_epoch"] <= 0
         or not isinstance(value.get("current_stage"), str)
         or not value["current_stage"]
-        or not isinstance(value.get("resume_state"), str)
-        or not value["resume_state"]
+        or (
+            state == "Blocked-Escalated"
+            and (
+                not isinstance(value.get("resume_state"), str)
+                or not value["resume_state"]
+            )
+        )
+        or (
+            state != "Blocked-Escalated"
+            and value.get("resume_state") is not None
+        )
         or not isinstance(value.get("worktree"), str)
         or not Path(value["worktree"]).is_absolute()
         or (budget is not None and not re.fullmatch(r"[0-9a-f]{64}", budget))
