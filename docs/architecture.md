@@ -748,9 +748,10 @@ or signed repair evidence. Each transition receipt binds that number and the
 controller appends it as a typed event; a third failed lap resolves to
 `ESCALATE` before another provider launch. Repair replays keep the coarse
 business state for Linear compatibility but are no longer invisible.
-The first terminal failed Cursor attempt for a protected qualification keeps
-its claim and authenticated evidence while the controller appends the existing
-same-family direct-CLI fallback and resumes the same deterministic stage. The
+The first task-submitted terminal failed Cursor attempt for a protected
+qualification keeps its claim and authenticated evidence while the controller
+appends the existing same-family direct-CLI fallback and resumes the same
+deterministic stage. The
 fallback atomically converts an initial v1 route plan into a same-release v2
 journal before appending its revision, preserving the original plan bytes and
 provenance. Because that trusted fallback snapshots permitted partial role
@@ -758,6 +759,9 @@ changes, including a Builder's current-ticket root-cause log but never sibling
 tickets, tests, or Factory controls, it runs before terminal passport export;
 the resulting clean exact head then receives the failed charge through
 preserving passport migration.
+An unsubmitted durable-GO terminal is not a model fallback. The controller
+exports its conservative charge into the ordinary passport, blocks it under
+the same release, and leaves only the authenticated successor recovery path.
 It is idempotent across controller restart. A second task-submitted
 attempt for that ticket, role, and frozen candidate is refused as no progress
 instead of replayed; preserved attempts from predecessor candidates do not

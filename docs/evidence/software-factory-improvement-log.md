@@ -5271,6 +5271,24 @@ Validation: a focused detached-control/branch-ticket role run reaches and
 completes the mock adapter; stale-remote, missing-commit, and history-rewrite
 guards remain green.
 
+## FI-20260804-191 — First-role submission failure had no recovery passport
+
+Status: Focused controller regressions green; protected CI and qualification pending
+Priority: P0 (#314)
+Area: failed-attempt recovery
+Owner: Factory
+First seen: T-108 and T-118 under Factory
+`1c744aba034f5a125536b411d180c5a2183a9b82`
+Impact: both zero-provider Planner failures entered the submitted-provider
+fallback path, which correctly refused them but left no passport for successor
+recovery.
+Smallest repair: require `task_submitted=1` before model fallback. The ordinary
+failure path exports the conservative charge and blocks; the existing exact
+successor proof then resumes it without replaying history.
+Validation: the focused controller test proves an unsubmitted failure
+exports once without fallback, a submitted failure still falls back, and the
+existing successor-only recovery remains green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
