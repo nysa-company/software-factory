@@ -5510,6 +5510,11 @@ Validation: mixed partition plus independent protected-base advancement passes;
 expired authority, wrong replay base, semantic source drift, missing receipt,
 and false successful-role evidence remain closed. The failed charge is retained
 once and restart migration is idempotent.
+Successor audit addendum: the authorization separately binds the current
+recovery Factory and `failed_test_factory_sha`; the latter must be present in
+the authenticated release history and must exactly match both the consumed
+receipt and terminal manifest. This preserves prior-candidate evidence instead
+of requiring it to masquerade as successor output.
 
 ## FI-20260805-206 — Production lacked a bounded pre-provider control-plane escape
 

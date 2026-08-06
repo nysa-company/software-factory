@@ -345,12 +345,15 @@ same-UID token exposure remains until a broker or OS isolation is used.
   because the remote history is intentionally replaced. Protected main may
   also have advanced independently since the ticket's replay base.
 - Do: use one `ticket-history-repair-authorization/v1` record keyed by the
-  exact new head. Bind the current passport, failed Test-author run/receipt,
-  issue, operator, old remote head, route, 24-hour-or-shorter window, distinct
+  exact new head. Bind the current passport and recovery Factory, the failed
+  Test-author run/receipt and its historical `failed_test_factory_sha`, issue,
+  operator, old remote head, route, 24-hour-or-shorter window, distinct
   `authorization_parent` and `replay_base`, and the exact force-with-lease
-  target. Merge only that record through protected CI, then publish the exact
-  new head once with the record's force-with-lease value. Let the sealed
-  controller migrate/export the passport and resume Test-author normally.
+  target. The historical Factory must already belong to the authenticated
+  passport release history and match the preserved receipt and manifest. Merge
+  only that record through protected CI, then publish the exact new head once
+  with the record's force-with-lease value. Let the sealed controller
+  migrate/export the passport and resume Test-author normally.
 - Don't: reuse the late-test normalization schema for a mixed-commit split,
   make protected main masquerade as the replay base, omit the append-only role
   log, hand-edit a passport, or promote the failed push to successful evidence.

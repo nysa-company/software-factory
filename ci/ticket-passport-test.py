@@ -1180,7 +1180,7 @@ class TicketPassportTest(unittest.TestCase):
             r"^[0-9a-f]{64}$",
         )
 
-    def test_failed_mixed_history_repair_survives_protected_base_advance(self) -> None:
+    def test_failed_mixed_history_repair_survives_successor_and_base_advance(self) -> None:
         replay_base = run("git", "rev-parse", "HEAD", cwd=self.product)
         ticket = self.product / "factory/tickets/T-110.md"
         old_ticket = "# T-110\n\nState: Building\n\nFrozen contract is unchanged.\n"
@@ -1251,6 +1251,14 @@ class TicketPassportTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+        self.passport_args.factory_sha = "b" * 40
+        previous = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(previous["factory_sha"], "b" * 40)
+        self.assertEqual(previous["factory_release_history"], [
+            {"contract_version": "1.8.0", "factory_sha": "a" * 40},
+            {"contract_version": "1.8.0", "factory_sha": "b" * 40},
+        ])
+
         run("git", "reset", "--hard", replay_base, cwd=self.product)
         ticket.write_text(old_ticket, encoding="utf-8")
         run("git", "add", str(ticket.relative_to(self.product)), cwd=self.product)
@@ -1285,7 +1293,8 @@ class TicketPassportTest(unittest.TestCase):
             "authorization_parent": authorization_parent,
             "branch": "ticket/T-110",
             "expires_at_epoch": issued + 3600,
-            "factory_sha": "a" * 40,
+            "factory_sha": "b" * 40,
+            "failed_test_factory_sha": "a" * 40,
             "failed_test_receipt_sha256": repair["receipt_sha256"],
             "failed_test_run_id": "run-history-repair",
             "force_with_lease_head": old_head,
@@ -1312,6 +1321,38 @@ class TicketPassportTest(unittest.TestCase):
             json.dumps(expired, sort_keys=True, separators=(",", ":")),
             f"factory/migrations/ticket-rewrite/{rewritten}.json",
             "nysa-company/relay-factory", "app/tests/", route,
+        ))
+        mismatched_failed_factory = dict(
+            authorization, failed_test_factory_sha="b" * 40
+        )
+        self.assertIsNone(PASSPORT.authorized_history_repair(
+            self.passport_args, previous, current, "Building",
+            authorization_parent, mismatched_failed_factory,
+            json.dumps(
+                mismatched_failed_factory,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            f"factory/migrations/ticket-rewrite/{rewritten}.json",
+            "nysa-company/relay-factory", "app/tests/", route,
+        ))
+        unknown_failed_factory = dict(
+            authorization, failed_test_factory_sha="c" * 40
+        )
+        self.assertIsNone(PASSPORT.authorized_history_repair(
+            self.passport_args, previous, current, "Building",
+            authorization_parent, unknown_failed_factory,
+            json.dumps(
+                unknown_failed_factory, sort_keys=True, separators=(",", ":")
+            ),
+            f"factory/migrations/ticket-rewrite/{rewritten}.json",
+            "nysa-company/relay-factory", "app/tests/", route,
+        ))
+        self.assertTrue(PASSPORT.failed_rewrite_manifest(
+            self.passport_args, previous, repair["receipt_sha256"], "a" * 40
+        ))
+        self.assertFalse(PASSPORT.failed_rewrite_manifest(
+            self.passport_args, previous, repair["receipt_sha256"], "b" * 40
         ))
         self.assertFalse(PASSPORT.verified_history_repair(
             str(self.product), authorization_parent, old_head, rewritten,
