@@ -3811,3 +3811,15 @@ zero or one valid relocation only when protected reconciliation, emergency
 reconciliation, and terminal adoption cover every selected ticket. Any cohort
 with a publication target still requires exactly one current-candidate
 relocation; duplicate and foreign-ticket evidence remain invalid.
+
+## 2026-08-06 — Decision 283: Product certification applies Seatbelt per phase
+
+Category: Safety
+
+macOS does not permit a sandboxed process to apply another Seatbelt profile.
+The protected product wrapper therefore coordinates only its disposable tree;
+the sealed runner launches every declared phase through exactly one mandatory
+Factory-generated profile. Filesystem restrictions remain common, denied phases
+retain no external network, and only a reviewed optional or required phase uses
+the network-enabled profile. Missing or malformed profile bindings fail before
+any phase starts.

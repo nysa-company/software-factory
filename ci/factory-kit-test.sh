@@ -271,50 +271,10 @@ esac
 [[ "$(pwd -P)" == "$FACTORY_PRODUCT_ROOT" ]]
 [[ "$FACTORY_KIT_RELEASE" == *factory-kit-certification*/release ]]
 [[ -x .context/tools/gitleaks/8.30.1/gitleaks ]]
-python3 - "$FACTORY_CERTIFICATION_EVIDENCE" <<'PY'
-import json, os, pathlib, subprocess, sys
-path = pathlib.Path(sys.argv[1])
-value = {
-    "contract_version": os.environ["FACTORY_CONTRACT_VERSION"],
-    "ended_at": "2026-07-29T00:00:01Z",
-    "factory_sha": os.environ["FACTORY_KIT_SHA"],
-    "factory_tree": os.environ["FACTORY_KIT_TREE"],
-    "max_workers": 2,
-    "network_reviewed": os.environ.get("FACTORY_CERTIFICATION_NETWORK_REVIEWED") == "1",
-    "phases": [{
-        "artifact_sha256": "a" * 64,
-        "cache_hit": True,
-        "cache_record_sha256": "e" * 64,
-        "command": ["fixture"],
-        "ended_at": "2026-07-29T00:00:01Z",
-        "exit_status": 0,
-        "input_sha256": "b" * 64,
-        "name": "fixture",
-        "network_declared": "denied",
-        "network_granted": False,
-        "output_sha256": "d" * 64,
-        "peak_memory_kb": 1,
-        "started_at": "2026-07-29T00:00:00Z",
-        "system_cpu_seconds": 0,
-        "user_cpu_seconds": 0,
-        "wall_seconds": 1,
-    }],
-    "plan_sha256": "c" * 64,
-    "product_sha": os.environ["FACTORY_PRODUCT_SHA"],
-    "product_tree": os.environ["FACTORY_PRODUCT_TREE"],
-    "runtime": {
-        "node": subprocess.check_output(["node", "--version"], text=True).strip(),
-        "npm": subprocess.check_output(["npm", "--version"], text=True).strip(),
-    },
-    "runtime_tuple": json.loads(os.environ["FACTORY_CERTIFICATION_TUPLE"]),
-    "schema": "nysa.software-factory.certification-result/v1",
-    "started_at": "2026-07-29T00:00:00Z",
-    "status": "pass",
-    "wall_seconds": 1,
-}
-path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
-os.chmod(path, 0o600)
-PY
+python3 "$FACTORY_KIT_RELEASE/scripts/certification-runner.py" \
+  --plan factory/certification-plan.json \
+  --result "$FACTORY_CERTIFICATION_EVIDENCE" \
+  --workers 2
 if [[ -f factory/FAIL_CERTIFY ]]; then
   printf '%s\n' \
     'api_token=supersecret multi token tail' \
@@ -437,6 +397,7 @@ mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" \
   "$KIT_REPO/integrations/hermes/bin"
 mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
+  "$ROOT/scripts/certification-runner.py" \
   "$ROOT/scripts/certification-preflight.py" \
   "$KIT_REPO/scripts/"
 cp "$ROOT/scripts/lib/certification_plan.py" \
@@ -605,7 +566,17 @@ cat > "$TMP/fake-sandbox-exec" <<'EOF'
 #!/usr/bin/env bash
 set -eu
 [[ "$1" == "-f" ]]
+if [[ "${FACTORY_KIT_FAKE_SANDBOX_ACTIVE:-0}" == "1" ]]; then
+  echo "sandbox-exec: sandbox_apply: Operation not permitted" >&2
+  exit 71
+fi
+export FACTORY_KIT_FAKE_SANDBOX_ACTIVE=1
 cp "$2" "${FACTORY_KIT_SANDBOX_CAPTURE:?}"
+if grep -qx '(allow network-outbound)' "$2"; then
+  printf 'allow\n' >> "${FACTORY_KIT_SANDBOX_CAPTURE}.network"
+else
+  printf 'deny\n' >> "${FACTORY_KIT_SANDBOX_CAPTURE}.network"
+fi
 printf '%s\n' "$PATH" > "${FACTORY_KIT_SANDBOX_CAPTURE}.path"
 command -v git > "${FACTORY_KIT_SANDBOX_CAPTURE}.git"
 readlink "$(command -v git)" > "${FACTORY_KIT_SANDBOX_CAPTURE}.git-target" 2>/dev/null ||
@@ -1204,6 +1175,8 @@ unset FACTORY_KIT_TEST_FORCE_PRODUCTION_SANDBOX
 unset FACTORY_KIT_SANDBOX_EXEC
 unset FACTORY_KIT_SANDBOX_CAPTURE
 if [[ -f "$CERT_SANDBOX_CAPTURE" ]] &&
+   grep -qx 'deny' "${CERT_SANDBOX_CAPTURE}.network" &&
+   ! grep -qx 'allow' "${CERT_SANDBOX_CAPTURE}.network" &&
    grep -q '^(deny default)' "$CERT_SANDBOX_CAPTURE" &&
    ! grep -qx '(allow file-read\*)' "$CERT_SANDBOX_CAPTURE" &&
    ! grep -qx '(allow network\*)' "$CERT_SANDBOX_CAPTURE" &&
@@ -1242,6 +1215,18 @@ if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
   pass "receipt identity and isolated certification bindings are exact"
 else
   fail "receipt identity and isolated certification bindings are exact"
+fi
+
+if [[ "${FACTORY_KIT_OUTER_SANDBOX:-0}" != "1" &&
+      "$(uname -s)" == "Darwin" && -x /usr/bin/sandbox-exec ]]; then
+  export FACTORY_KIT_TEST_FORCE_PRODUCTION_SANDBOX=1
+  export FACTORY_KIT_SANDBOX_EXEC=/usr/bin/sandbox-exec
+  expect_success "real Seatbelt certification applies one phase sandbox" \
+    certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+  unset FACTORY_KIT_TEST_FORCE_PRODUCTION_SANDBOX
+  unset FACTORY_KIT_SANDBOX_EXEC
+else
+  pass "real Seatbelt certification probe skipped when already sandboxed or unavailable"
 fi
 
 chmod u+w "$RECEIPT_STALE"

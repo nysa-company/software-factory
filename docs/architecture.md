@@ -1402,6 +1402,12 @@ phase output, npm debug logs, result evidence, and their digests survive a
 failed product-certification workspace. Before source preparation, an existing
 active product must match its exact committed activation generation, canonical
 path, and origin; a fresh project remains certifiable without an active record.
+On macOS the protected product wrapper only coordinates its disposable tree;
+each declared phase enters exactly one Factory-generated Seatbelt profile.
+Production requires both the external-network-denied and reviewed-network
+profiles before any phase starts. This avoids unsupported nested Seatbelt while
+keeping filesystem restrictions common to every phase and granting external
+network only to the exact reviewed phase.
 An activated contract 1.2, 1.3, or 1.4 keeps that receipt as the runtime destination
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.
