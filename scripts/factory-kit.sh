@@ -1902,7 +1902,6 @@ contract_version = sys.argv[21]
 runtime_tuple = sys.argv[22]
 cache_input = sys.argv[23]
 cache_output = sys.argv[24]
-prefix = [sandbox_exec, "-f", profile] if profile else []
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
 if os.path.isfile("/usr/bin/xcode-select"):
@@ -1955,7 +1954,7 @@ environment = {
     "FACTORY_CONTRACT_VERSION": contract_version,
     "FACTORY_CERTIFICATION_TUPLE": runtime_tuple,
     "FACTORY_CERTIFICATION_EVIDENCE": certification_evidence,
-    "FACTORY_KIT_OUTER_SANDBOX": "1",
+    "FACTORY_CERTIFICATION_PHASE_SANDBOX_REQUIRED": "1" if sandbox_exec else "0",
     "FACTORY_CERTIFICATION_NETWORK_REVIEWED": network_reviewed,
 }
 if cache_input:
@@ -1965,6 +1964,9 @@ if cache_output:
 if sandbox_exec and deny_profile:
     environment["FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX"] = json.dumps(
         [sandbox_exec, "-f", deny_profile], separators=(",", ":")
+    )
+    environment["FACTORY_CERTIFICATION_NETWORK_ALLOW_PREFIX"] = json.dumps(
+        [sandbox_exec, "-f", profile], separators=(",", ":")
     )
 environment.update(tool_environment)
 if capture:
@@ -1976,7 +1978,7 @@ if deny_home:
 with open(output, "wb") as stream:
     try:
         result = subprocess.run(
-            prefix + [script],
+            [script],
             cwd=product,
             env=environment,
             stdout=stream,

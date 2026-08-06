@@ -40,6 +40,7 @@ class CertificationRunnerTest(unittest.TestCase):
         runtime: dict | None = None,
         cache_input: Path | None = None,
         cache_output: Path | None = None,
+        extra_environment: dict[str, str] | None = None,
     ):
         phases = [{**phase, "network": phase.get("network", "denied")} for phase in phases]
         runtime = runtime or self.runtime()
@@ -76,6 +77,8 @@ class CertificationRunnerTest(unittest.TestCase):
             environment["FACTORY_CERTIFICATION_CACHE_INPUT"] = str(cache_input)
         if cache_output is not None:
             environment["FACTORY_CERTIFICATION_CACHE_OUTPUT"] = str(cache_output)
+        if extra_environment:
+            environment.update(extra_environment)
         completed = subprocess.run(
             [
                 sys.executable, str(RUNNER), "--plan", str(plan),
@@ -349,6 +352,60 @@ class CertificationRunnerTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertTrue(sentinel.exists())
             self.assertTrue(result["phases"][0]["network_granted"])
+
+    def test_required_phase_sandboxes_select_exact_network_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            trace = root / "profiles"
+            wrapper = root / "prefix.py"
+            wrapper.write_text(
+                "import os,pathlib,sys\n"
+                "label,trace,*command=sys.argv[1:]\n"
+                "with pathlib.Path(trace).open('a') as stream: stream.write(label+'\\n')\n"
+                "os.execvp(command[0], command)\n"
+            )
+            prefixes = {
+                "FACTORY_CERTIFICATION_PHASE_SANDBOX_REQUIRED": "1",
+                "FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX": json.dumps([
+                    sys.executable, str(wrapper), "deny", str(trace),
+                ]),
+                "FACTORY_CERTIFICATION_NETWORK_ALLOW_PREFIX": json.dumps([
+                    sys.executable, str(wrapper), "allow", str(trace),
+                ]),
+            }
+            phases = [
+                {
+                    "artifacts": [],
+                    "command": ["true"],
+                    "depends_on": [],
+                    "name": "checks",
+                    "network": "denied",
+                },
+                {
+                    "artifacts": [],
+                    "command": ["true"],
+                    "depends_on": [],
+                    "name": "dependencies",
+                    "network": "required",
+                },
+            ]
+            completed, result = self.run_plan(
+                root, phases, network_reviewed=True,
+                extra_environment=prefixes,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(sorted(trace.read_text().splitlines()), ["allow", "deny"])
+            self.assertEqual(result["status"], "pass")
+
+            trace.unlink()
+            prefixes.pop("FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX")
+            completed, result = self.run_plan(
+                root, phases, network_reviewed=True,
+                extra_environment=prefixes,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIsNone(result)
+            self.assertFalse(trace.exists())
 
     def test_exact_phase_evidence_reuse_and_input_invalidators(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

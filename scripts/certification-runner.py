@@ -228,6 +228,23 @@ def iso(epoch: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
+def phase_prefix(name: str, required: bool) -> list[str]:
+    raw = os.environ.get(name, "")
+    if not raw:
+        if required:
+            raise PlanError("certification phase sandbox prefix is missing")
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise PlanError("certification phase sandbox prefix is invalid") from error
+    if not isinstance(value, list) or not value or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise PlanError("certification phase sandbox prefix is invalid")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", required=True, type=Path)
@@ -242,6 +259,9 @@ def main() -> int:
     contract_version = os.environ.get("FACTORY_CONTRACT_VERSION", "")
     serialized_tuple = os.environ.get("FACTORY_CERTIFICATION_TUPLE", "")
     network_reviewed = os.environ.get("FACTORY_CERTIFICATION_NETWORK_REVIEWED", "0")
+    sandbox_required = os.environ.get(
+        "FACTORY_CERTIFICATION_PHASE_SANDBOX_REQUIRED", "0"
+    )
     cache_input_raw = os.environ.get("FACTORY_CERTIFICATION_CACHE_INPUT", "")
     cache_output_raw = os.environ.get("FACTORY_CERTIFICATION_CACHE_OUTPUT", "")
     if (
@@ -252,6 +272,7 @@ def main() -> int:
         or not SHA.fullmatch(product_tree)
         or not args.result.is_absolute()
         or network_reviewed not in {"0", "1"}
+        or sandbox_required not in {"0", "1"}
     ):
         print("invalid certification runner boundary", file=sys.stderr)
         return 2
@@ -290,6 +311,16 @@ def main() -> int:
         runtime_tuple = strict_tuple(json.loads(serialized_tuple))
         compare_tuple(runtime_tuple, expected_tuple(identity, plan))
         compare_tuple(runtime_tuple, observed_tuple(identity))
+        prefixes = {
+            False: phase_prefix(
+                "FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX",
+                sandbox_required == "1",
+            ),
+            True: phase_prefix(
+                "FACTORY_CERTIFICATION_NETWORK_ALLOW_PREFIX",
+                sandbox_required == "1",
+            ),
+        }
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(json.dumps(diagnostic(error), sort_keys=True), file=sys.stderr)
         return 2
@@ -471,18 +502,7 @@ def main() -> int:
         stream = secure_log(log)
         environment = os.environ.copy()
         environment["TMPDIR"] = tempfile.mkdtemp(prefix=".tmp-", dir=phase_root)
-        command = list(phase["command"])
-        deny_prefix = os.environ.get("FACTORY_CERTIFICATION_NETWORK_DENY_PREFIX", "")
-        if not granted and deny_prefix:
-            try:
-                prefix = json.loads(deny_prefix)
-            except json.JSONDecodeError as error:
-                raise PlanError("certification network deny prefix is invalid") from error
-            if not isinstance(prefix, list) or not all(
-                isinstance(item, str) and item for item in prefix
-            ):
-                raise PlanError("certification network deny prefix is invalid")
-            command = prefix + command
+        command = prefixes[granted] + list(phase["command"])
         process = subprocess.Popen(
             command,
             cwd=root,
