@@ -347,13 +347,14 @@ read-only branch-head observation; every semantic mismatch and second
 transport failure still refuses publication.
 Protected-base attestation applies the same one-retry boundary only to its
 exact read-only `ls-remote`; mutations and semantic refusals never retry.
-Reviewer terminalization accepts the role contract's standalone verdict,
-exact verdict-only or `Verdict:` Markdown headings, and exact Markdown-wrapped
-repair-owner lines. Cursor background-completion text concatenated to the owner
-is split only when every verdict and owner signal remains identical. Ambiguous,
-contradictory, or ownerless output is charged but not recorded as completed-role
-evidence; the controller reruns only Reviewer under the remaining ticket
-budget.
+Reviewer terminalization accepts the role contract's standalone verdict and
+exact verdict-only or `Verdict:` lines with a bounded Markdown heading,
+emphasis wrapper, or terminal period, plus exact Markdown-wrapped repair-owner
+lines. Cursor background-completion text concatenated to the owner is split
+only when every verdict and owner signal remains identical. Ambiguous,
+contradictory, negated, prose-only, or ownerless output is charged but not
+recorded as completed-role evidence; the controller reruns only Reviewer under
+the remaining ticket budget.
 The ticket-budget stage reduces immutable charges against the authenticated
 base envelope plus any active ticket-scoped cap override. Budget-wait claims
 bind both the envelope and immutable override-record bytes, so adding an
@@ -383,21 +384,26 @@ Before interpreting any transition, the controller validates the complete
 state-machine envelope: schema, status, ticket, action, detail, receipt digest,
 typed stage, and exact stage-to-role mapping. Any mutation blocks and releases
 the lease before provider or publication work.
-Linear reconciliation retries only rate limits and transient server responses
-(`429`, `500`, `502`, `503`, and `504`) at the HTTP boundary, at most twice.
-`Retry-After` is clamped to 0 through 30 seconds; missing or malformed values
-use bounded exponential backoff. Semantic GraphQL errors remain fail-closed for
-the next reconciliation cycle.
+Linear reconciliation retries transient server responses and quota responses
+reported as HTTP `400`/`429` or GraphQL errors at most twice. Short retry
+delays are clamped to 0 through 30 seconds. Exhaustion persists one typed
+cooldown of at most one hour, and every scheduled or exact-ticket entry point
+makes zero Linear calls until it expires. Other semantic GraphQL errors remain
+fail-closed for the next reconciliation cycle.
 Description projection compares a narrow canonical Markdown form that covers
 Linear's ordered-list indentation, continuation, renumbering, inline-code, and
 fence-boundary round trips. Nested-list structure, fenced content, and unknown
 or meaning-changing edits remain distinct and are restored from Git.
-The slow full-board Linear cycle owns a cycle lock, while each map mutation owns
-only a short map lock. A ticket-state consumer first writes a durable
-operator-version-bound clear intent, so a stale full-board snapshot cannot
-restore consumed authority. Unsafe admission remains fail-closed, but identical
-inputs update one durable incident and emit only bounded reminders while
-already authenticated claims continue reconciling.
+The full-board Linear cycle owns a cycle lock, while each map mutation owns only
+a short map lock. One paginated team issue inventory and one Project inventory
+serve every mapped ticket and initiative; a full issue/comment read occurs only
+when the latest comment changes inside the bounded approval window. Canceled
+issues remain available by exact mapped ID but cannot be adopted by title. A
+ticket-state consumer first writes a durable operator-version-bound clear
+intent, so a stale full-board snapshot cannot restore consumed authority.
+Unsafe admission remains fail-closed, but identical inputs update one durable
+incident and emit only bounded reminders while already authenticated claims
+continue reconciling.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.
@@ -598,7 +604,12 @@ environment;
 an ordinary or unbound launcher continues to require a clean, current `main`
 checkout. The helper also binds the canonical live Linear map and revalidates
 it on every launch, so ticket-state
-logic consumes the same approval overlay as production. The sealed launcher keeps its candidate
+logic consumes the same approval overlay as production. Before sealing, every
+selected ticket blob in that control tree must equal the protected
+`origin/main` blob used by dispatch. Dispatch repeats the comparison after its
+authoritative fetch and before selection, lease creation, or worktree
+materialization; a missing or changed blob refuses without copying local
+control changes into a ticket branch. The sealed launcher keeps its candidate
 release and disposable worktrees under the qualification root while resolving
 controller state, route state, and provider accounting to the canonical owner-only roots. The
 installed and sealed launchers therefore contend on the same reconciliation
@@ -1350,6 +1361,10 @@ and every receipt revalidation also require owner-local subscription
 concurrency to cover Cursor, Claude Code, and Codex at no less than that
 capacity.
 Activation reruns those bindings and refuses stale or drifted receipts.
+Production certification, read-only activation planning, and activation itself
+also reject any `factory/QUALIFICATION.json` before receipt issuance,
+consumption, or journal creation. A matching candidate manifest is still
+qualification-only authority and is never silently ignored in production.
 Installation and certification serialize the kit-suite evidence decision under
 the install lock. Certification may reuse an unexpired passing suite result for
 the exact unchanged sealed release, but always reruns product certification and
@@ -1420,6 +1435,12 @@ Launch checks occur before locking, after locking, and before the task GO
 signal. Maintenance must be published first; activation then waits for the
 launch lock, active-run drain, and dispatcher-lease drain. This ordering prevents a new task from
 crossing the release switch.
+Ticket-lease validation prefers an exact protected-main Done receipt or
+lease-free Canceled state over any retained ticket ref. Those refs are not
+deleted or rewritten during planning or activation, so a shared qualification
+cell cannot be detached. A genuinely nonterminal protected ticket still uses
+the exact remote branch and in-flight release authorization and remains
+fail-closed on local, tracking, or remote ambiguity.
 
 The activation journal advances through `prepared`,
 `maintenance_published`, `launch_drained`, `services_stopped`,

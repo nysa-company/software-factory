@@ -5550,6 +5550,75 @@ Validation: exact expiry recovers once; live, renewed, malformed, mismatched,
 duplicate, active, and sibling records remain closed or untouched, and restart
 is idempotent.
 
+## FI-20260806-208 — Qualification could dispatch a different ticket contract
+
+Status: Focused qualification and dispatch regressions green; protected CI pending
+Priority: P1 (#341)
+Area: qualification identity
+Owner: Factory
+Impact: the sealed manifest authenticated ticket metadata but not the selected
+ticket blobs, so a control-only checkout could validate one contract and
+dispatch protected main's different contract.
+Smallest repair: require every selected control ticket blob to equal freshly
+fetched protected `origin/main` both before sealing and before claim.
+Validation: mismatches refuse before materialization, lease, or worktree; exact
+blobs continue through both boundaries.
+
+## FI-20260806-209 — Exact Reviewer verdict labels rejected harmless decoration
+
+Status: Focused Reviewer regressions green; protected CI pending
+Priority: P2 (#343)
+Area: Reviewer parsing
+Owner: Factory
+Impact: exact `Verdict:` labels with terminal punctuation or Markdown emphasis
+were treated as malformed, causing avoidable Review laps.
+Smallest repair: normalize only bounded label punctuation and emphasis in the
+shared parser.
+Validation: exact decorated APPROVE and REQUEST CHANGES labels pass; mixed,
+negated, and prose-only verdicts remain invalid.
+
+## FI-20260806-210 — Stale ticket refs shadowed protected terminal truth
+
+Status: Focused activation regression green; protected CI pending
+Priority: P1 (#366)
+Area: production activation
+Owner: Factory
+Impact: a retained qualification ticket ref could block activation after the
+same ticket was already protected Done or lease-free Canceled.
+Smallest repair: validate exact protected terminal truth before selecting a
+ticket ref, without deleting or rewriting any lane's ref.
+Validation: protected Canceled ignores an unchanged stale Planning ref;
+nonterminal protected truth still enforces the existing ref and authorization
+checks.
+
+## FI-20260806-211 — Qualification manifests could enter production ceremony
+
+Status: Focused certification and activation regressions green; protected CI pending
+Priority: P1 (#368)
+Area: production boundary
+Owner: Factory
+Impact: a qualification-only product shape could reach production
+certification or activation, making lane identity ambiguous.
+Smallest repair: reject any `factory/QUALIFICATION.json` before certification
+receipts or activation journals are read or written.
+Validation: stale and current manifests fail certification, plan, and activate
+without creating a receipt or journal.
+
+## FI-20260806-212 — Full Linear reconciliation exhausted request quota
+
+Status: Focused Linear regressions green; protected CI pending
+Priority: P1 (#369)
+Area: Linear reconciliation
+Owner: Factory
+Impact: each scheduled cycle fetched every mapped issue and Project separately,
+then retried quota responses on the next scheduler tick.
+Smallest repair: reuse one paginated issue inventory and one Project inventory,
+fetch comment history only after a recent latest-comment change, and persist a
+typed bounded quota cooldown checked before credentials or API access.
+Validation: a stable one-page cycle uses three reads regardless of mapped ticket
+count; HTTP 400/429 and GraphQL quota shapes share the cooldown, whose active
+window makes zero API calls.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

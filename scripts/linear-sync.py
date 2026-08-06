@@ -50,6 +50,7 @@ FALLBACK_APPROVAL = re.compile(
 TARGETED_OPERATOR_FIELDS = (
     "operator",
     "model_fallback_approval",
+    "linear_comment_head_sha256",
     "blocked_source_sha256",
     "blocked_remote_updated_at",
     "operator_state_source_sha256",
@@ -200,10 +201,39 @@ def gql(key, query, variables=None):
             with urllib.request.urlopen(request, timeout=30) as response:
                 data = json.loads(response.read().decode())
             if data.get("errors"):
+                wait = rate_limit_seconds(detail=data["errors"])
+                if wait is not None:
+                    if attempt < 2:
+                        delay = min(2 ** attempt, 30)
+                        log(f"Linear quota exhausted, backing off {delay}s")
+                        time.sleep(delay)
+                        continue
+                    raise RuntimeError(
+                        f"linear_rate_limited retry_after_seconds={wait}"
+                    )
                 raise RuntimeError(f"GraphQL errors: {data['errors']}")
             return data["data"]
         except urllib.error.HTTPError as error:
-            if error.code in {429, 500, 502, 503, 504} and attempt < 2:
+            detail = (
+                error.read().decode(errors="replace")
+                if error.code == 400 else "rate limit" if error.code == 429 else ""
+            )
+            quota_wait = rate_limit_seconds(error.headers, detail)
+            if quota_wait is not None:
+                if attempt < 2:
+                    raw_wait = error.headers.get("Retry-After")
+                    try:
+                        wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
+                    except (TypeError, ValueError):
+                        wait = 2 ** attempt
+                    wait = min(max(wait, 0), 30)
+                    log(f"Linear quota exhausted, backing off {wait}s")
+                    time.sleep(wait)
+                    continue
+                raise RuntimeError(
+                    f"linear_rate_limited retry_after_seconds={quota_wait}"
+                ) from error
+            if error.code in {500, 502, 503, 504} and attempt < 2:
                 raw_wait = error.headers.get("Retry-After")
                 try:
                     wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
@@ -213,18 +243,26 @@ def gql(key, query, variables=None):
                 log(f"Linear HTTP {error.code}, backing off {wait}s")
                 time.sleep(wait)
                 continue
-            if error.code == 429:
-                raw_wait = error.headers.get("Retry-After")
-                try:
-                    wait = int(raw_wait) if raw_wait is not None else 30
-                except (TypeError, ValueError):
-                    wait = 30
-                raise RuntimeError(
-                    f"linear_rate_limited retry_after_seconds={min(max(wait, 0), 3600)}"
-                ) from error
-            detail = error.read().decode(errors="replace")
             raise RuntimeError(f"Linear HTTP {error.code}: {detail}") from error
     raise RuntimeError("Linear request failed after retries")
+
+
+def rate_limit_seconds(headers=None, detail=None):
+    try:
+        encoded = (
+            json.dumps(detail, sort_keys=True)
+            if not isinstance(detail, str) else detail
+        )
+    except (TypeError, ValueError):
+        encoded = str(detail)
+    if "rate limit" not in encoded.lower() and "ratelimited" not in encoded.lower():
+        return None
+    raw = headers.get("Retry-After") if headers is not None else None
+    try:
+        wait = int(raw) if raw is not None else 3600
+    except (TypeError, ValueError):
+        wait = 3600
+    return min(max(wait, 0), 3600)
 
 
 def normalize_state(value):
@@ -422,6 +460,22 @@ def parsed_timestamp(value):
     except ValueError:
         return None
     return value.astimezone(dt.timezone.utc) if value.tzinfo is not None else None
+
+
+def rate_limit_cooldown(mapping, now=None):
+    health = mapping.get("_sync") if isinstance(mapping, dict) else None
+    health = health if isinstance(health, dict) else {}
+    match = re.fullmatch(
+        r"linear_rate_limited retry_after_seconds=([0-9]+)",
+        str(health.get("last_error") or ""),
+    )
+    failed_at = parsed_timestamp(health.get("failed_at"))
+    if match is None or failed_at is None:
+        return 0
+    wait = min(int(match.group(1)), 3600)
+    now = now or dt.datetime.now(dt.timezone.utc)
+    remaining = (failed_at + dt.timedelta(seconds=wait) - now).total_seconds()
+    return max(0, int(remaining + 0.999))
 
 
 def operator_freshness(entry):
@@ -772,18 +826,18 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
         if not mapping["initiatives"].get(initiative_id, {}).get("project_id")
     ]
     candidates = {}
-    projects = {}
+    page = gql(
+        key,
+        """query { projects(first: 250) {
+             nodes { id name url content targetDate status { name }
+                     teams { nodes { id } } }
+             pageInfo { hasNextPage }
+           } }""",
+    )["projects"]
+    if page.get("pageInfo", {}).get("hasNextPage"):
+        raise RuntimeError("Linear Project inventory is incomplete")
+    projects = {item["id"]: item for item in page.get("nodes", [])}
     if missing:
-        page = gql(
-            key,
-            """query { projects(first: 250) {
-                 nodes { id name url content teams { nodes { id } } }
-                 pageInfo { hasNextPage }
-               } }""",
-        )["projects"]
-        if page.get("pageInfo", {}).get("hasNextPage"):
-            raise RuntimeError("Linear Project inventory is incomplete")
-        projects = {item["id"]: item for item in page.get("nodes", [])}
         identities = {}
         for project_id, project in projects.items():
             marker = re.findall(
@@ -799,7 +853,7 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                 continue
             ticket = parse_ticket_text(path.stem, path, text)
             title_initiatives.setdefault(ticket["title"], set()).add(ticket["initiative"])
-        for title, issues in factory_issue_index(key, config["team_id"]).items():
+        for title, issues in factory_issue_index(key, config["team_id"])[0].items():
             initiative_ids = title_initiatives.get(title, set())
             if len(initiative_ids) != 1:
                 continue
@@ -828,11 +882,7 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
             if not dry:
                 mapping["initiatives"][initiative_id] = entry
         if entry.get("project_id"):
-            project = gql(
-                key,
-                "query($id: String!) { project(id: $id) { id name url targetDate status { name } } }",
-                {"id": entry["project_id"]},
-            )["project"]
+            project = projects.get(entry["project_id"])
             if project:
                 if project.get("url") and entry.get("project_url") != project["url"] and not dry:
                     entry["project_url"] = project["url"]
@@ -1025,30 +1075,73 @@ def fetch_issue_state(key, issue_id):
 
 
 def factory_issue_index(key, team_id):
-    result = {}
+    by_title = {}
+    by_id = {}
     after = None
     while True:
         page = gql(
             key,
             """query($id: String!, $after: String) { team(id: $id) {
                  issues(first: 100, after: $after) {
-                   nodes { id identifier title description state { type } project { id } }
+                   nodes { id identifier title description priority updatedAt
+                           state { id name type } project { id }
+                           labels { nodes { id name } } assignee { id }
+                           comments(last: 1) {
+                             nodes { id createdAt updatedAt }
+                           } }
                    pageInfo { hasNextPage endCursor }
                  }
                } }""",
             {"id": team_id, "after": after},
         )["team"]["issues"]
         for issue in page["nodes"]:
-            if (
-                issue.get("state", {}).get("type") != "canceled"
-                and (issue.get("description") or "").startswith(BANNER)
-            ):
-                result.setdefault(issue["title"], []).append(issue)
+            if not (issue.get("description") or "").startswith(BANNER):
+                continue
+            by_id[issue["id"]] = issue
+            if issue.get("state", {}).get("type") != "canceled":
+                by_title.setdefault(issue["title"], []).append(issue)
         if not page["pageInfo"]["hasNextPage"]:
-            return result
+            return by_title, by_id
         after = page["pageInfo"].get("endCursor")
         if not after:
             raise RuntimeError("Linear issue history is incomplete")
+
+
+def comment_head(issue):
+    nodes = (issue.get("comments") or {}).get("nodes")
+    if not isinstance(nodes, list) or len(nodes) > 1:
+        raise RuntimeError("Linear comment head is invalid")
+    if not nodes:
+        return "", None
+    comment = nodes[-1]
+    identity = {
+        key: comment.get(key) for key in ("id", "createdAt", "updatedAt")
+    }
+    if not all(isinstance(value, str) and value for value in identity.values()):
+        raise RuntimeError("Linear comment head is invalid")
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return digest, parsed_timestamp(identity["createdAt"])
+
+
+def fetch_recent_comments(key, issue, entry, dry):
+    digest, created_at = comment_head(issue)
+    recent = (
+        created_at is not None
+        and created_at >= dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+            seconds=FALLBACK_APPROVAL_TTL_SECONDS
+        )
+    )
+    if digest != entry.get("linear_comment_head_sha256") and recent:
+        issue = fetch_issue(key, issue["id"])
+        ingest_fallback_approval(issue, entry, dry)
+        nodes = (issue.get("comments") or {}).get("nodes", [])
+        head = {"comments": {"nodes": nodes[-1:]}}
+        digest, _created_at = comment_head(head)
+    if not dry:
+        entry["linear_comment_head_sha256"] = digest
+    return issue
 
 
 def ingest_fallback_approval(actual, entry, dry):
@@ -1345,6 +1438,13 @@ def sync_ticket_operator(key, factory_dir, map_path, ticket_id, dry=False):
     working_entry = working["tickets"][ticket_id]
     actual = fetch_issue(key, issue_id)
     ingest_fallback_approval(actual, working_entry, dry)
+    digest, _created_at = comment_head({
+        "comments": {
+            "nodes": (actual.get("comments") or {}).get("nodes", [])[-1:]
+        }
+    })
+    if not dry:
+        working_entry["linear_comment_head_sha256"] = digest
     ingest_operator_fields(key, ticket, actual, working, working_entry, dry)
     if dry:
         return
@@ -1467,7 +1567,7 @@ def sync_ticket_terminal(key, factory_dir, map_path, ticket_id):
 def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
     config = mapping["_config"]
     viewer_id = fetch_viewer_id(key)
-    existing_issues = factory_issue_index(key, config["team_id"])
+    existing_issues, issues_by_id = factory_issue_index(key, config["team_id"])
     stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
@@ -1503,8 +1603,19 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
         desired_state_id = config["states"].get(ticket["state"])
 
         if entry.get("issue_id"):
-            actual = fetch_issue(key, entry["issue_id"])
-            ingest_fallback_approval(actual, entry, dry)
+            actual = issues_by_id.get(entry["issue_id"])
+            if actual is None:
+                actual = fetch_issue(key, entry["issue_id"])
+                ingest_fallback_approval(actual, entry, dry)
+                digest, _created_at = comment_head({
+                    "comments": {
+                        "nodes": (actual.get("comments") or {}).get("nodes", [])[-1:]
+                    }
+                })
+                if not dry:
+                    entry["linear_comment_head_sha256"] = digest
+            else:
+                actual = fetch_recent_comments(key, actual, entry, dry)
             if not entry.get("identifier") and actual.get("identifier") and not dry:
                 entry["identifier"] = actual["identifier"]
                 save_map(map_path, mapping)
@@ -1524,7 +1635,10 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                 raise RuntimeError(
                     f"{ticket['id']}: multiple active Factory issues require reconciliation"
                 )
-            actual = fetch_issue(key, candidates[0]["id"]) if candidates else None
+            actual = (
+                fetch_recent_comments(key, candidates[0], entry, dry)
+                if candidates else None
+            )
             if actual is not None:
                 entry.update({
                     "issue_id": actual["id"],
@@ -1532,7 +1646,6 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     "operator_fields_initialized": True,
                     "source_ref": source_ref,
                 })
-                ingest_fallback_approval(actual, entry, dry)
                 ticket = ingest_operator_fields(
                     key, ticket, actual, mapping, entry, dry
                 )
@@ -1725,6 +1838,13 @@ def main():
     except RuntimeError as error:
         log(str(error))
         return 1
+    try:
+        cooldown = rate_limit_cooldown(load_map(map_path))
+    except (OSError, ValueError, json.JSONDecodeError):
+        cooldown = 0
+    if cooldown:
+        log(f"Linear quota cooldown active; retry_after_seconds={cooldown}")
+        return 1 if args.ticket else 0
     key = api_key()
     if not key:
         log(f"no API key (set LINEAR_API_KEY or create {KEY_FILE}) — skipping cycle")

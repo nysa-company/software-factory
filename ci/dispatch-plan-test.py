@@ -552,6 +552,20 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["dependencies"], {ticket: () for ticket in tickets})
         self.assertEqual(value["done"], 0)
 
+    def test_claim_rechecks_presealed_ticket_blob_before_worktree(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "local qualification control", cwd=self.product)
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn(
+            "qualification ticket source differs from protected dispatch",
+            value["error"],
+        )
+        self.assertFalse((self.product / "factory/.dispatch-leases").exists())
+        self.assertEqual(list(self.worktrees.iterdir()), [])
+
     def test_contract_18_qualification_accepts_ordered_three_ticket_cohort(self):
         tickets = self.write_contract_18_qualification(3, {
             "T-111": ["T-110"],

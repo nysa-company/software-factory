@@ -311,6 +311,23 @@ def qualification(
     }
 
 
+def validate_qualification_ticket_sources(
+    product: Path, state: dict[str, Any] | None,
+) -> None:
+    if state is None or state.get("schema") != QUALIFICATION_SCHEMA_V2:
+        return
+    for ticket in state["tickets"]:
+        path = f"factory/tickets/{ticket}.md"
+        control = git(product, "rev-parse", f"HEAD:{path}", check=False).strip()
+        protected = git(
+            product, "rev-parse", f"origin/main:{path}", check=False
+        ).strip()
+        if not SHA.fullmatch(control) or control != protected:
+            raise DispatchError(
+                f"{ticket}: qualification ticket source differs from protected dispatch"
+            )
+
+
 def preprovider_reset_authorizations(
     factory: Path, qualification_state: dict[str, Any] | None, prefix: str
 ) -> dict[str, str]:
@@ -894,6 +911,7 @@ def main() -> None:
             raise DispatchError("Linear operator map path is invalid")
         maximum = capacity(factory)
         qualification_state = qualification(product, factory, maximum)
+        validate_qualification_ticket_sources(product, qualification_state)
         prefix = ticket_branch_prefix(factory)
         reset_authorizations = preprovider_reset_authorizations(
             factory, qualification_state, prefix

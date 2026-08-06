@@ -1256,6 +1256,42 @@ push_main "$PRODUCT_ONE"
 expect_success "revised product tuple certifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 RECEIPT_A="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+RECEIPTS_BEFORE_QUALIFICATION="$(
+  find "$STATE/receipts" -maxdepth 1 -type f | wc -l | tr -d ' '
+)"
+JOURNALS_BEFORE_QUALIFICATION="$(
+  find "$STATE/projects/alpha/activation-journal" -type f 2>/dev/null |
+    wc -l | tr -d ' '
+)"
+for qualification_sha in "$SHA_B" "$SHA_A"; do
+  printf '%s\n' \
+    "{\"budget_usd\":\"100.000000\",\"capacity\":4,\"contract_version\":\"1.8.0\",\"factory_sha\":\"$qualification_sha\",\"generation\":1,\"per_run_budget_usd\":\"2.000000\",\"per_ticket_budget_usd\":\"25.000000\",\"schema\":\"nysa.software-factory.qualification/v2\",\"target_done\":4,\"tickets\":[\"T-001\",\"T-002\",\"T-003\",\"T-004\"]}" \
+    > "$PRODUCT_ONE/factory/QUALIFICATION.json"
+  expect_failure "production certification rejects qualification manifest $qualification_sha" \
+    certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+  [[ "$LAST_OUTPUT" == *"production product contains qualification-only"* ]] ||
+    fail "production certification reports qualification-only product shape" "$LAST_OUTPUT"
+done
+expect_failure "activation plan rejects qualification-only product before receipt use" \
+  plan --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  --receipt "$RECEIPT_A"
+expect_failure "activation rejects qualification-only product before journal creation" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  --receipt "$RECEIPT_A"
+rm "$PRODUCT_ONE/factory/QUALIFICATION.json"
+RECEIPTS_AFTER_QUALIFICATION="$(
+  find "$STATE/receipts" -maxdepth 1 -type f | wc -l | tr -d ' '
+)"
+JOURNALS_AFTER_QUALIFICATION="$(
+  find "$STATE/projects/alpha/activation-journal" -type f 2>/dev/null |
+    wc -l | tr -d ' '
+)"
+if [[ "$RECEIPTS_BEFORE_QUALIFICATION" == "$RECEIPTS_AFTER_QUALIFICATION" &&
+      "$JOURNALS_BEFORE_QUALIFICATION" == "$JOURNALS_AFTER_QUALIFICATION" ]]; then
+  pass "qualification-only refusal creates no receipt or activation journal"
+else
+  fail "qualification-only refusal creates no receipt or activation journal"
+fi
 BAD_RECEIPT_NAME="$STATE/receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
 mv "$RECEIPT_A" "$BAD_RECEIPT_NAME"
 expect_failure "receipt filename must match bound receipt ID" \
@@ -1607,6 +1643,26 @@ push_main "$PRODUCT_ONE"
 expect_success "candidate with old ticket lease can certify" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_WRONG_LEASE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+STALE_TERMINAL_REF="$(
+  git -C "$PRODUCT_ONE" ls-remote --heads origin refs/heads/ticket/T-006 |
+    awk '{print $1}'
+)"
+expect_success "protected canceled truth ignores a stale nonterminal ticket ref" \
+  plan --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
+  --receipt "$RECEIPT_WRONG_LEASE"
+[[ "$STALE_TERMINAL_REF" == "$(
+    git -C "$PRODUCT_ONE" ls-remote --heads origin refs/heads/ticket/T-006 |
+      awk '{print $1}'
+  )" ]] ||
+  fail "terminal truth validation must not mutate a qualification ticket ref"
+TERMINAL_TICKET_FIXTURE="$TMP/t006-terminal.md"
+cp "$PRODUCT_ONE/factory/tickets/T-006.md" "$TERMINAL_TICKET_FIXTURE"
+printf '%s\n' 'State: Ready' > "$PRODUCT_ONE/factory/tickets/T-006.md"
+commit_all "$PRODUCT_ONE" "make ticket branch authoritative again"
+push_main "$PRODUCT_ONE"
+expect_success "nonterminal protected ticket tuple recertifies" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
+RECEIPT_WRONG_LEASE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 expect_failure "different nonterminal ticket lease blocks activation" \
   activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_WRONG_LEASE"
@@ -1872,6 +1928,7 @@ commit_all "$LEASE_BRANCH_WORKTREE" "restore authoritative ticket lease for roll
 git -C "$LEASE_BRANCH_WORKTREE" push -q origin ticket/T-006
 git -C "$PRODUCT_ONE" rm -q \
   "factory/migrations/inflight-release/$SHA_B.json"
+cp "$TERMINAL_TICKET_FIXTURE" "$PRODUCT_ONE/factory/tickets/T-006.md"
 restore_product_tuple "$PRODUCT_ONE" "$SHA_A"
 printf '%s\n\n' "$SHA_A" > "$PRODUCT_ONE/factory/KIT_PIN"
 expect_failure "rollback rejects KIT_PIN blank-line extras" \

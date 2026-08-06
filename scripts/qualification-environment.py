@@ -347,6 +347,24 @@ def validate_selected_contracts(product: Path) -> None:
                 f"qualification cohort dependency {ticket} -> {internal[0]}; "
                 "use independent tickets or sequential generations"
             )
+    for ticket in selected:
+        path = f"factory/tickets/{ticket}.md"
+        try:
+            control_blob = command(
+                "git", "-C", str(product), "rev-parse", f"HEAD:{path}"
+            )
+            protected_blob = command(
+                "git", "-C", str(product), "rev-parse",
+                f"refs/remotes/origin/main:{path}",
+            )
+        except EnvironmentError as error:
+            raise EnvironmentError(
+                f"{ticket}: protected dispatch ticket source is unavailable"
+            ) from error
+        if control_blob != protected_blob:
+            raise EnvironmentError(
+                f"{ticket}: qualification ticket source differs from protected dispatch"
+            )
 
 
 def initialize_selected_linear(factory: Path, product: Path) -> None:

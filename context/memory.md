@@ -26,6 +26,22 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
   save, and never advances full-board sync health.
+- Scheduled Linear reconciliation reads one paginated issue inventory and one
+  Project inventory instead of refetching every mapped object. It fetches full
+  comment history only when the latest comment changes inside the approval
+  window. HTTP 400/429 and GraphQL quota responses produce one typed bounded
+  cooldown; no Linear call is made until its persisted expiry.
+- Qualification pre-seal and dispatch both require every selected ticket's Git
+  blob in the sealed control checkout to equal protected `origin/main`.
+  Qualification-only metadata can therefore never validate one contract and
+  dispatch another.
+- Production certification, activation planning, and activation reject any
+  `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
+  qualification continues to require its exact manifest.
+- Activation validates protected-main Done or lease-free Canceled truth before
+  considering retained ticket refs. A stale terminal ref is left untouched for
+  lane safety; genuinely nonterminal protected truth still requires the exact
+  branch lease and authorization.
 - Done is projected through one separate exact-ticket Linear mutation only
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
@@ -224,10 +240,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   run, so an already successful and fully charged Narrator may reach bundle
   attestation without another provider reservation; missing or invalid
   evidence still resolves to a provider stage and remains budget-blocked.
-- Reviewer terminalization normalizes exact verdict-only Markdown headings,
-  exact wrapped repair-owner lines, and known Cursor background-callback
-  concatenation only when every verdict and owner signal agrees. Ambiguous,
-  contradictory, and ownerless output remains invalid.
+- Reviewer terminalization normalizes exact verdict-only and `Verdict:` lines
+  with bounded heading, emphasis, and terminal-period variants, exact wrapped
+  repair-owner lines, and known Cursor background-callback concatenation only
+  when every verdict and owner signal agrees. Ambiguous, contradictory,
+  negated, prose-only, and ownerless output remains invalid.
 - Contract 1.8 treats GitHub's exact empty no-required-checks-yet response as
   publication wait. Every other malformed or non-JSON check response remains
   a fail-closed controller error.
@@ -3834,3 +3851,43 @@ row. Reordering and new rows are safe; missing, changed, duplicate, malformed,
 or schema-drifted rows refuse. Closeout projection seeds durable history from
 the exact protected-main worktree instead of a possibly stale runtime checkout,
 preventing a concurrent closeout from deleting already-protected accounting.
+
+## 2026-08-06 — Decision 285: Qualification dispatches protected ticket bytes
+
+Category: Reliability
+
+A qualification candidate may carry control metadata, but every selected
+ticket blob must equal freshly fetched protected main both before seal and
+before claim. No local ticket edit is copied into the execution checkout.
+
+## 2026-08-06 — Decision 286: Reviewer labels tolerate only bounded decoration
+
+Category: State machine
+
+The shared Reviewer parser accepts an exact verdict label with optional heading,
+bold emphasis, and terminal period. It does not infer verdicts from prose,
+negation, or mixed labels.
+
+## 2026-08-06 — Decision 287: Protected terminal truth precedes retained refs
+
+Category: Reliability
+
+Production activation validates protected Done or lease-free Canceled before
+consulting retained ticket refs. Refs remain immutable for lane isolation;
+nonterminal protected truth keeps the existing exact lease checks.
+
+## 2026-08-06 — Decision 288: Qualification metadata is production-invalid
+
+Category: Safety
+
+Production certification, planning, and activation reject a product containing
+`factory/QUALIFICATION.json` before receipt or journal mutation. Qualification
+continues to require the same manifest.
+
+## 2026-08-06 — Decision 289: Linear reconciliation is batched and cooldown-aware
+
+Category: Throughput
+
+Scheduled reconciliation reuses paginated issue and Project inventories and
+loads full comments only for a recent changed comment head. Typed quota
+responses persist a bounded cooldown that is checked before any Linear access.

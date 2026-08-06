@@ -4,6 +4,7 @@
 import copy
 import importlib.util
 import fcntl
+import io
 import json
 import os
 import re
@@ -48,10 +49,21 @@ class FakeLinear:
             return {"team": {"issues": {
                 "nodes": [
                     {
+                        "assignee": issue.get("assignee"),
+                        "comments": {"nodes": [
+                            {
+                                key: comment[key]
+                                for key in ("id", "createdAt", "updatedAt")
+                            }
+                            for comment in issue.get("comments", {}).get("nodes", [])[-1:]
+                        ]},
                         "description": issue["description"],
                         "id": issue["id"],
                         "identifier": issue["identifier"],
+                        "labels": issue["labels"],
+                        "priority": issue["priority"],
                         "state": {
+                            **issue["state"],
                             "type": next(
                                 kind for _state, (name, kind) in LINEAR.STATES.items()
                                 if name == issue["state"]["name"]
@@ -59,6 +71,7 @@ class FakeLinear:
                         },
                         "project": issue.get("project"),
                         "title": issue["title"],
+                        "updatedAt": issue["updatedAt"],
                     }
                     for issue in self.issues.values()
                 ],
@@ -188,15 +201,17 @@ class FakeLinear:
 
 
 class FakeResponse:
+    def __init__(self, payload=None):
+        self.payload = payload or {"data": {"ok": True}}
+
     def __enter__(self):
         return self
 
     def __exit__(self, *_args):
         return False
 
-    @staticmethod
-    def read():
-        return b'{"data":{"ok":true}}'
+    def read(self):
+        return json.dumps(self.payload).encode()
 
 
 def config():
@@ -678,6 +693,66 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         updates_after = sum("issueUpdate" in query for query, _variables in self.fake.calls)
         self.assertEqual(updates_before, updates_after)
+
+    def test_steady_full_cycle_uses_only_batched_inventories(self):
+        self.reconcile()
+        self.fake.calls.clear()
+        LINEAR._VIEWER_ID_CACHE.clear()
+
+        self.reconcile()
+
+        self.assertEqual(len(self.fake.calls), 3)
+        self.assertFalse(any(
+            "issue(id:" in query or "project(id:" in query
+            for query, _variables in self.fake.calls
+        ))
+
+    def test_recent_comment_fetches_only_its_changed_issue(self):
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        issue = self.fake.issues[entry["issue_id"]]
+        stamp = LINEAR.utc_now()
+        issue["comments"]["nodes"].append({
+            "id": "comment-approval",
+            "body": (
+                f"FACTORY MODEL FALLBACK APPROVAL: {'a' * 64} "
+                f"RUN: run-1 REASON: provider_unavailable NONCE: {'b' * 32}"
+            ),
+            "createdAt": stamp,
+            "updatedAt": stamp,
+            "user": {"id": "operator-1", "name": "Operator"},
+        })
+        self.fake.calls.clear()
+        LINEAR._VIEWER_ID_CACHE.clear()
+
+        self.reconcile()
+
+        self.assertEqual(sum(
+            "issue(id:" in query for query, _variables in self.fake.calls
+        ), 1)
+        self.assertEqual(
+            entry["model_fallback_approval"]["comment_id"], "comment-approval"
+        )
+
+    def test_mapped_canceled_issue_uses_inventory_but_is_not_adopted(self):
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        issue = self.fake.issues[entry["issue_id"]]
+        issue["state"] = {
+            "id": config()["states"]["canceled"], "name": "Canceled"
+        }
+        self.fake.calls.clear()
+        LINEAR._VIEWER_ID_CACHE.clear()
+        self.reconcile()
+        self.assertFalse(any(
+            "issue(id:" in query for query, _variables in self.fake.calls
+        ))
+
+        self.mapping["tickets"].clear()
+        self.reconcile()
+        self.assertNotEqual(
+            self.mapping["tickets"]["T-001"]["issue_id"], issue["id"]
+        )
 
     def test_linear_link_wrappers_do_not_trigger_description_rewrite(self):
         path = self.factory / "tickets" / "T-001.md"
@@ -1489,6 +1564,57 @@ class LinearSyncTest(unittest.TestCase):
             ),
         ):
             LINEAR.gql("key", "{ ok }")
+
+    def test_graphql_normalizes_http_400_and_graphql_quota_errors(self):
+        body = b'{"errors":[{"message":"Rate limit exceeded"}]}'
+        limited = [
+            urllib.error.HTTPError(
+                LINEAR.API_URL, 400, "bad request", {}, io.BytesIO(body),
+            )
+            for _index in range(3)
+        ]
+        graphql = FakeResponse({
+            "errors": [{
+                "message": "Quota exhausted",
+                "extensions": {"code": "RATELIMITED"},
+            }]
+        })
+        for failures in (limited, [graphql, graphql, graphql]):
+            with self.subTest(kind=type(failures[0]).__name__):
+                with (
+                    patch.object(
+                        LINEAR.urllib.request, "urlopen", side_effect=failures
+                    ),
+                    patch.object(LINEAR.time, "sleep"),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        r"linear_rate_limited retry_after_seconds=3600",
+                    ),
+                ):
+                    LINEAR.gql("key", "{ ok }")
+
+    def test_persisted_quota_cooldown_makes_zero_api_calls_until_expiry(self):
+        self.mapping["_sync"] = {
+            "failed_at": LINEAR.utc_now(),
+            "last_error": "linear_rate_limited retry_after_seconds=3600",
+        }
+        LINEAR.save_map(self.map_path, self.mapping)
+        with (
+            patch.object(
+                sys, "argv", ["linear-sync.py", "--factory-root", str(self.root)]
+            ),
+            patch.object(LINEAR, "api_key") as key,
+            patch.object(LINEAR, "gql") as gql,
+        ):
+            self.assertEqual(LINEAR.main(), 0)
+        key.assert_not_called()
+        gql.assert_not_called()
+
+        expired = LINEAR.dt.datetime.now(
+            LINEAR.dt.timezone.utc
+        ) - LINEAR.dt.timedelta(hours=2)
+        self.mapping["_sync"]["failed_at"] = expired.isoformat()
+        self.assertEqual(LINEAR.rate_limit_cooldown(self.mapping), 0)
 
     def test_graphql_retries_transient_server_failure(self):
         unavailable = urllib.error.HTTPError(
