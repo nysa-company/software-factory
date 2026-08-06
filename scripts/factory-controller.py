@@ -1048,11 +1048,14 @@ class Controller:
     def record_dispatch_refusal(
         self, refusal: Any, claims: list[dict[str, Any]]
     ) -> None:
+        errors = {
+            "initiative_missing": "ticket initiative is missing",
+            "invalid_ticket_contract": "ticket dependencies are invalid",
+        }
         if (
             not isinstance(refusal, dict)
             or set(refusal) != {"error", "reason_code", "ticket"}
-            or refusal.get("error") != "ticket dependencies are invalid"
-            or refusal.get("reason_code") != "invalid_ticket_contract"
+            or errors.get(refusal.get("reason_code")) != refusal.get("error")
             or not TICKET.fullmatch(refusal.get("ticket", ""))
         ):
             raise ControllerError("dispatch admission refusal is malformed")

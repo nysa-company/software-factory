@@ -5636,6 +5636,21 @@ Validation: malformed prose, tokens, duplicates, and duplicate fields skip the
 named ticket while a sibling starts; malformed refusal payloads and selected
 qualification contracts still refuse.
 
+## FI-20260806-214 — Null Linear initiative silently removed Ready tickets
+
+Status: Focused dispatcher and controller regressions green; protected CI pending
+Priority: P0 (#372)
+Area: admission visibility
+Owner: Factory
+Impact: an explicit null operator initiative removed the committed field and a
+bare dispatch filter silently omitted an otherwise Ready ticket, making a live
+lane appear healthy and idle.
+Smallest repair: retain the versioned tombstone but carry a named
+`initiative_missing` refusal through dispatch, controller results, events, and
+durable incident evidence.
+Validation: ordinary and qualification scans name the affected ticket while a
+healthy sibling starts; unknown or mismatched refusal payloads remain closed.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

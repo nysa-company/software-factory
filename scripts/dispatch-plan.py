@@ -504,6 +504,11 @@ def candidates(
             continue
         initiative = field(effective, "Initiative")
         if not re.fullmatch(r"I-[0-9]+", initiative):
+            refusals.append({
+                "error": "ticket initiative is missing",
+                "reason_code": "initiative_missing",
+                "ticket": path.stem,
+            })
             continue
         priority = field(effective, "Priority", "none").lower()
         if priority not in PRIORITY:

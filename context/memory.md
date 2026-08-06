@@ -39,6 +39,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   reports its exact ID in controller results, events, and durable incident
   evidence while eligible siblings continue. A selected qualification ticket
   with the same defect still refuses the sealed cohort globally.
+- An operator-owned null initiative remains an explicit versioned tombstone,
+  but a Ready ticket made initiative-less is never silently discarded:
+  admission reports its exact ID and `initiative_missing` while healthy
+  siblings continue.
 - Production certification, activation planning, and activation reject any
   `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
   qualification continues to require its exact manifest.
@@ -3903,3 +3907,12 @@ Category: Reliability
 Ordinary admission skips a malformed dependency contract with named durable
 evidence instead of aborting every sibling. Selected qualification contracts
 remain cohort-fatal so a sealed run cannot silently weaken its authorized set.
+
+## 2026-08-06 — Decision 291: Null initiatives are visible admission refusals
+
+Category: Reliability
+
+Linear's null initiative remains an authoritative tombstone rather than
+falling back to Git. A Ready ticket with no effective initiative is reported
+by ID in admission results, events, and incident evidence instead of silently
+disappearing from the candidate set.

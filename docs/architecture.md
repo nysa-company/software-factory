@@ -407,7 +407,9 @@ continue reconciling. During ordinary admission, malformed dependency syntax is
 isolated to that exact ticket and reported in controller results, events, and
 incident evidence while eligible siblings continue. The same defect in a
 selected qualification ticket remains globally fail-closed for the sealed
-cohort.
+cohort. A null operator initiative remains authoritative, but if it removes a
+Ready ticket's effective initiative, admission emits a named
+`initiative_missing` refusal while eligible siblings continue.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.

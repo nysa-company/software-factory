@@ -308,6 +308,37 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["reason_code"], "no_candidate")
         self.assertEqual(value["admission_refusal"]["ticket"], "T-300")
 
+    def test_null_operator_initiative_names_ticket_and_admits_sibling(self):
+        self.write_mapping(states={"T-200": "Ready"})
+        mapping = json.loads(self.mapping.read_text())
+        mapping["tickets"]["T-200"]["operator"]["initiative"] = None
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+
+        value = self.command("shadow")
+
+        self.assertEqual(value["ticket"], "T-100")
+        self.assertEqual(value["admission_refusal"], {
+            "error": "ticket initiative is missing",
+            "reason_code": "initiative_missing",
+            "ticket": "T-200",
+        })
+
+    def test_qualification_null_operator_initiative_is_named_not_silent(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "add qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.write_mapping(states={"T-110": "Ready"})
+        mapping = json.loads(self.mapping.read_text())
+        mapping["tickets"]["T-110"]["operator"]["initiative"] = None
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+
+        value = self.command("shadow")
+
+        self.assertEqual(value["ticket"], "T-111")
+        self.assertEqual(value["admission_refusal"]["reason_code"], "initiative_missing")
+        self.assertEqual(value["admission_refusal"]["ticket"], "T-110")
+
     def test_malformed_dependency_shapes_share_one_ticket_refusal(self):
         path = self.product / "factory/tickets/T-300.md"
         original = path.read_text()

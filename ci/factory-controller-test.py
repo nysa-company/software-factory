@@ -5630,6 +5630,26 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             controller.claim_new([])
 
+    def test_named_initiative_refusal_is_returned(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        refusal = {
+            "error": "ticket initiative is missing",
+            "reason_code": "initiative_missing",
+            "ticket": "T-184",
+        }
+        controller.json_call = lambda *_args, **_kwargs: {
+            "action": "WAIT", "admission_refusal": refusal,
+        }
+        controller.pin_routes = lambda _claims: []
+
+        result = controller.reconcile()
+
+        self.assertEqual(result["results"], [{**refusal, "status": "skipped"}])
+        self.assertEqual(
+            CONTROL.read(self.state / "admission-incident.json")["ticket"],
+            "T-184",
+        )
+
     def test_identical_admission_failure_is_durable_and_deduplicated(self) -> None:
         controller = CONTROL.Controller(self.args)
         events = []
