@@ -43,6 +43,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   but a Ready ticket made initiative-less is never silently discarded:
   admission reports its exact ID and `initiative_missing` while healthy
   siblings continue.
+- Linear Project creation refuses missing mapped Projects, foreign-team
+  mappings, duplicate durable markers, and same-name identity conflicts;
+  Doctor exposes the canonical mapped Project IDs and URLs.
+- A contract-blocked Linear baseline is recorded once per substantive blocker.
+  Exact resume directives and reconciler-authored writes do not advance it;
+  accepted same-blocker decisions survive overlapping saves, while rejected
+  moves stay visible in Linear and typed sync health.
 - Production certification, activation planning, and activation reject any
   `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
   qualification continues to require its exact manifest.
@@ -3916,3 +3923,22 @@ Linear's null initiative remains an authoritative tombstone rather than
 falling back to Git. A Ready ticket with no effective initiative is reported
 by ID in admission results, events, and incident evidence instead of silently
 disappearing from the candidate set.
+
+## 2026-08-06 — Decision 292: Linear Project identity fails before creation
+
+Category: Reliability
+
+One durable initiative marker and mapped Project ID define canonical identity.
+Missing mappings, foreign-team Projects, duplicate markers, and same-name
+conflicts refuse reconciliation; no heuristic silently creates or adopts a
+replacement. Doctor exposes the canonical mapping for operator cleanup.
+
+## 2026-08-06 — Decision 293: Contract resume intent outranks self-writes
+
+Category: Reliability
+
+The Linear blocked baseline is immutable for one substantive blocker and
+ignores exact receipt-bound resume lines. A decision already validated for that
+same blocker survives a concurrent newer reconciler snapshot. Rejected moves
+remain blocked in authenticated Factory truth but are not overwritten in
+Linear; their typed reason is persisted and deduplicated.

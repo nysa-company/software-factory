@@ -409,7 +409,12 @@ incident evidence while eligible siblings continue. The same defect in a
 selected qualification ticket remains globally fail-closed for the sealed
 cohort. A null operator initiative remains authoritative, but if it removes a
 Ready ticket's effective initiative, admission emits a named
-`initiative_missing` refusal while eligible siblings continue.
+`initiative_missing` refusal while eligible siblings continue. Linear Project
+reconciliation adopts one exact durable initiative marker and refuses missing
+mapped Projects, foreign-team mappings, duplicate markers, and same-name
+identity conflicts before creating or updating anything. Doctor lists the
+canonical mapped Project IDs and URLs; reconciliation failures remain visible
+in its Linear health output.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.
@@ -689,6 +694,12 @@ exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path:
 `OPERATOR RESUME: <role>` and
 `OPERATOR RESUME RECEIPT: <transition-receipt-sha256>`.
+Linear records the blocked-state timestamp once per substantive blocker. Exact
+resume directive lines do not create a new blocker identity, and later
+reconciler-authored writes cannot advance that baseline. A validated operator
+decision for the same blocker wins over a concurrent reconciler snapshot; a
+rejected move remains visible in Linear and in typed sync health instead of
+being silently patched back.
 The state machine selects the unique receipt-directive commit whose single
 parent is an authenticated head in the current passport or its v2 migration
 history, whose resulting ticket contains the exact visible role-and-receipt

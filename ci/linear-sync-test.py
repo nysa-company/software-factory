@@ -90,7 +90,9 @@ class FakeLinear:
                 "nodes": [
                     {
                         **project,
-                        "teams": {"nodes": [{"id": "team-1"}]},
+                        "teams": project.get(
+                            "teams", {"nodes": [{"id": "team-1"}]}
+                        ),
                     }
                     for project in self.projects.values()
                 ],
@@ -434,6 +436,55 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["operator"]["state"], "Building")
 
+    def test_blocked_resume_baseline_ignores_directives_and_reconciler_writes(self):
+        self.reconcile()
+        path = self.factory / "tickets" / "T-001.md"
+        path.write_text(
+            path.read_text()
+            .replace("State: Backlog", "State: Blocked-Escalated")
+            .replace("Initiative: I-001", "Resume-State: Building\nInitiative: I-001")
+        )
+        issue = self.fake.issues[self.mapping["tickets"]["T-001"]["issue_id"]]
+
+        self.reconcile()
+        issue["updatedAt"] = "2026-08-01T00:00:01Z"
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        self.assertEqual(entry["blocked_remote_updated_at"], issue["updatedAt"])
+
+        issue["updatedAt"] = "2026-08-01T00:00:03Z"
+        self.reconcile()
+        self.assertEqual(entry["blocked_remote_updated_at"], "2026-08-01T00:00:01Z")
+
+        path.write_text(
+            path.read_text().rstrip()
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {'a' * 64}\n"
+        )
+        self.reconcile()
+        self.assertEqual(entry["blocked_remote_updated_at"], "2026-08-01T00:00:01Z")
+
+        issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
+        issue["updatedAt"] = "2026-08-01T00:00:01Z"
+        self.reconcile()
+        entry = self.mapping["tickets"]["T-001"]
+        self.assertNotIn("state", entry["operator"])
+        self.assertEqual(entry["operator_rejection"]["reason_code"], "resume_state_not_fresh")
+        self.assertEqual(issue["state"]["name"], "Building")
+
+        issue["state"] = {
+            "id": config()["states"]["blocked-escalated"],
+            "name": "Blocked-Escalated",
+        }
+        issue["updatedAt"] = "2026-08-01T00:00:03Z"
+        self.reconcile()
+        issue["state"] = {"id": config()["states"]["building"], "name": "Building"}
+        issue["updatedAt"] = "2026-08-01T00:00:02Z"
+        self.reconcile()
+        self.assertEqual(
+            self.mapping["tickets"]["T-001"]["operator"]["state"], "Building"
+        )
+
         path.write_text(
             path.read_text() + "\nNew blocker under the same coarse state.\n"
         )
@@ -478,9 +529,11 @@ class LinearSyncTest(unittest.TestCase):
         self.assertEqual(rejection["local_state"], "blocked-escalated")
         self.assertEqual(rejection["remote_state"], "ready")
         self.assertEqual(rejection["required_state"], "review")
+        self.assertEqual(rejection["reason_code"], "resume_state_mismatch")
         self.assertEqual(
             self.mapping["tickets"]["T-001"]["operator_rejection"], rejection
         )
+        self.assertEqual(issue["state"]["name"], "Ready")
         self.assertEqual(len(self.fake.comments), 1)
         self.assertIn("Resume-State: Review", self.fake.comments[0])
         self.assertIn("OPERATOR RESUME RECEIPT", self.fake.comments[0])
@@ -1273,6 +1326,84 @@ class LinearSyncTest(unittest.TestCase):
             0,
         )
         self.assertEqual(len(self.fake.projects), created)
+
+    def test_mapped_project_refuses_same_name_duplicate(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        self.fake.projects["project-duplicate"] = {
+            **canonical,
+            "content": "Unmarked duplicate.",
+            "id": "project-duplicate",
+        }
+
+        with self.assertRaisesRegex(
+            RuntimeError, "I-001: conflicting Linear Project identity"
+        ):
+            self.reconcile()
+
+        self.assertEqual(
+            len([query for query, _variables in self.fake.calls if "projectCreate" in query]),
+            1,
+        )
+
+    def test_mapped_project_refuses_duplicate_marker_and_foreign_team(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        self.fake.projects["project-duplicate"] = {
+            **canonical,
+            "id": "project-duplicate",
+            "name": "Different display name",
+        }
+        with self.assertRaisesRegex(
+            RuntimeError, "I-001: multiple durable Linear Project identities"
+        ):
+            self.reconcile()
+
+        self.fake.projects.pop("project-duplicate")
+        canonical["teams"] = {"nodes": [{"id": "team-2"}]}
+        with self.assertRaisesRegex(
+            RuntimeError, "I-001: mapped Linear Project belongs to another team"
+        ):
+            self.reconcile()
+
+    def test_unmarked_same_name_project_is_never_duplicated(self):
+        self.fake.projects["project-unmarked"] = {
+            "content": "No durable identity.",
+            "id": "project-unmarked",
+            "name": "First initiative",
+            "status": {"name": "Planned"},
+            "targetDate": None,
+            "url": "https://linear.app/test/project/project-unmarked",
+        }
+
+        with self.assertRaisesRegex(
+            RuntimeError, "I-001: existing same-name Project lacks durable identity"
+        ):
+            self.reconcile()
+
+        self.assertFalse(any(
+            "projectCreate" in query for query, _variables in self.fake.calls
+        ))
+
+    def test_foreign_marked_project_is_not_recreated(self):
+        self.fake.projects["project-foreign"] = {
+            "content": f"{LINEAR.PROJECT_MARKER} I-001",
+            "id": "project-foreign",
+            "name": "First initiative",
+            "status": {"name": "Planned"},
+            "targetDate": None,
+            "teams": {"nodes": [{"id": "team-2"}]},
+            "url": "https://linear.app/test/project/project-foreign",
+        }
+
+        with self.assertRaisesRegex(
+            RuntimeError, "I-001: durable Linear Project belongs to another team"
+        ):
+            self.reconcile()
+
+        self.assertFalse(any(
+            "projectCreate" in query for query, _variables in self.fake.calls
+        ))
 
     def test_exact_ticket_initialization_does_not_reconcile_history(self):
         self.reconcile()

@@ -459,7 +459,13 @@ document = {
             f"password: |\n  doctor-multiline-never-print\n"
             f"sync failed at https://user:{password}@example.invalid/path?token=also-secret"
         ),
-    }
+    },
+    "initiatives": {
+        "I-001": {
+            "project_id": "project-canonical",
+            "project_url": "https://linear.app/test/project/project-canonical",
+        }
+    },
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(document, handle)
@@ -561,6 +567,11 @@ assert checks["credentials"]["validated_authentication"] is False
 assert isinstance(checks["linear_sync"]["age_seconds"], int)
 assert checks["linear_sync"]["status"] == "warning"
 assert "[redacted]" in checks["linear_sync"]["last_error"]
+assert checks["linear_sync"]["projects"] == [{
+    "initiative": "I-001",
+    "project_id": "project-canonical",
+    "project_url": "https://linear.app/test/project/project-canonical",
+}]
 allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(check["status"] in allowed for check in checks.values())

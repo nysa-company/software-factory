@@ -5651,6 +5651,37 @@ durable incident evidence.
 Validation: ordinary and qualification scans name the affected ticket while a
 healthy sibling starts; unknown or mismatched refusal payloads remain closed.
 
+## FI-20260806-215 — Linear Project identity could silently duplicate
+
+Status: Focused Linear and Doctor regressions green; protected CI pending
+Priority: P1 (#373)
+Area: Linear Project reconciliation
+Owner: Factory
+Impact: losing one map pointer or marker could create another indistinguishable
+same-name Project, while an existing mapping concealed duplicate markers or a
+Project moved to another team.
+Smallest repair: reuse the paginated Project inventory to require one durable
+identity before creation and expose canonical mapped IDs and URLs in Doctor.
+Validation: marked adoption remains idempotent; unmarked same-name, duplicate
+marker, mapped duplicate, missing, and foreign-team shapes refuse without a
+create mutation.
+
+## FI-20260806-216 — Linear resume intent lost a reconciler write race
+
+Status: Focused Linear regressions green; protected CI pending
+Priority: P0 (#375)
+Area: Linear operator reconciliation
+Owner: Factory
+Impact: a valid contract-blocker move could be silently patched back because
+the reconciler advanced its own freshness baseline and stale-save protection
+then erased the accepted decision.
+Smallest repair: keep one substantive-blocker baseline, ignore exact resume
+directive and self-write changes, preserve a validated same-blocker decision,
+and never patch a rejected operator column back silently.
+Validation: stale and wrong moves remain named refusals; a valid move older than
+a later reconciler write survives, two ticket identities remain isolated, and
+new blocker digests still clear prior authority.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

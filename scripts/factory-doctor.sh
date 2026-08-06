@@ -485,6 +485,7 @@ LINEAR_STATUS="unknown"
 LINEAR_LAST_SUCCESS=""
 LINEAR_AGE=""
 LINEAR_LAST_ERROR=""
+LINEAR_PROJECTS_JSON="[]"
 LINEAR_MAP=""
 if [[ -n "$FACTORY_DIR" ]]; then
   LINEAR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
@@ -521,6 +522,32 @@ try:
         error,
     )
     error = error.replace("\r", " ").replace("\n", " ")
+    initiatives = data.get("initiatives") or {}
+    if not isinstance(initiatives, dict):
+        raise ValueError
+    projects = []
+    for initiative, entry in sorted(initiatives.items()):
+        if not re.fullmatch(r"I-[0-9]+", initiative) or not isinstance(entry, dict):
+            raise ValueError
+        project_id = entry.get("project_id")
+        project_url = entry.get("project_url")
+        if project_id is None:
+            continue
+        if not isinstance(project_id, str) or not re.fullmatch(r"[A-Za-z0-9-]+", project_id):
+            raise ValueError
+        if (
+            project_url is not None
+            and (
+                not isinstance(project_url, str)
+                or not re.fullmatch(r"https://linear\.app/[^\s\x00-\x1f\x7f]+", project_url)
+            )
+        ):
+            raise ValueError
+        projects.append({
+            "initiative": initiative,
+            "project_id": project_id,
+            "project_url": project_url,
+        })
     age = ""
     status = "warning" if error else "unknown"
     if success:
@@ -533,17 +560,20 @@ try:
     print(success)
     print(age)
     print(error)
+    print(json.dumps(projects, sort_keys=True, separators=(",", ":")))
 except Exception:
     print("error")
     print("")
     print("")
     print("invalid Linear sync metadata")
+    print("[]")
 PY
 )"
   LINEAR_STATUS="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 1 { print; exit }')"
   LINEAR_LAST_SUCCESS="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 2 { print; exit }')"
   LINEAR_AGE="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 3 { print; exit }')"
   LINEAR_LAST_ERROR="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 4 { print; exit }' | sanitize)"
+  LINEAR_PROJECTS_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 5 { print; exit }')"
 fi
 
 PROVIDER_RUNTIME_STATUS="ok"
@@ -733,6 +763,7 @@ export MAX_CONCURRENT_TICKETS DISPATCH_LEASES STALE_DISPATCH_LEASES MALFORMED_DI
 export HERMES_STATUS HERMES_PATH HERMES_VERSION CLI_STATUS CLI_FILE
 export CREDENTIAL_STATUS GH_PRESENT LINEAR_PRESENT
 export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAST_ERROR
+export LINEAR_PROJECTS_JSON
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
 export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
@@ -849,6 +880,7 @@ document = {
             "last_success_at": optional("LINEAR_LAST_SUCCESS"),
             "age_seconds": number("LINEAR_AGE"),
             "last_error": optional("LINEAR_LAST_ERROR"),
+            "projects": json.loads(os.environ["LINEAR_PROJECTS_JSON"]),
         },
         "isolated_provider": {
             "status": os.environ["PROVIDER_RUNTIME_STATUS"],
