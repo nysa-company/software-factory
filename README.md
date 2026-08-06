@@ -18,13 +18,13 @@ Built July 2026 for the Nysa project, factored out so any product can use it. De
 ## Worker model portfolios
 
 There is no single global primary/secondary chain; each role has one. With no
-operator activation, `cursor-balanced-v2` is the default:
+operator activation, `cursor-opus-v1` is the default:
 
 | Role | Primary | Secondary |
 |---|---|---|
 | Planner | Cursor GPT-5.6 Sol High, high effort | Codex GPT-5.6 Sol, high effort |
 | Builder; Narrator | Cursor GPT-5.6 Sol High, high effort | Codex GPT-5.6 Terra, high effort |
-| Spec-linter; Test-author | Cursor Claude Fable 5 Thinking, medium effort | Claude Fable 5, medium effort |
+| Spec-linter; Test-author | Cursor Claude Opus 5 Thinking, medium effort | Claude Fable 5, medium effort |
 | Reviewer | Cursor Claude Sonnet 5 Thinking High, high effort | Claude Sonnet 5, high effort |
 
 Cursor is a separate route but not a separate model family: Cursor GPT remains

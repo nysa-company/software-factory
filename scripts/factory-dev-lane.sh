@@ -3458,11 +3458,11 @@ CURSOR_AGENT_VERSION=$cursor_version
 CODEX_PINNED=$codex_version
 CLAUDE_CODE_PINNED=$claude_version
 CURSOR_OPENAI_MODEL=gpt-5.6-sol-high
-CURSOR_ANTHROPIC_MODEL=claude-fable-5-thinking-medium
+CURSOR_ANTHROPIC_MODEL=claude-opus-5-thinking-medium
 EOF
   chmod 600 "$root/home/.factory/global.env"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
-    profile=cursor-balanced-v2
+    profile=cursor-opus-v1
     profile_hash="$(python3 - "$root/kit/scripts/model-routing/profiles-v1.json" "$profile" <<'PY'
 import hashlib, json, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -3830,17 +3830,18 @@ run_subscription_internal() {
     attempt="$ticket-subscription-canary"
     output="$root/runtime/provider-inputs/$ticket.out"
     command_path="$root/kit/scripts/adapters/$adapter.sh"
+    attempt_root="$root/runtime/cli-attempts/$attempt"
+    mkdir -p "$root/runtime/cli-attempts"
+    chmod 700 "$root/runtime/cli-attempts"
+    mkdir -m 700 "$attempt_root" "$attempt_root/home" "$attempt_root/tmp"
+    printf '%s\n' "$attempt" >"$attempt_root/owner"
+    chmod 600 "$attempt_root/owner"
+    attempt_roots+=("$attempt_root")
     if [[ "$selected" == claude ]]; then
-      attempt_root="$root/runtime/cli-attempts/$attempt"
-      mkdir -p "$root/runtime/cli-attempts"
-      chmod 700 "$root/runtime/cli-attempts"
-      mkdir -m 700 "$attempt_root" "$attempt_root/home" \
-        "$attempt_root/config" "$attempt_root/tmp"
-      printf '%s\n' "$attempt" >"$attempt_root/owner"
+      mkdir -m 700 "$attempt_root/config"
       cp "$root/session-home/.claude/.credentials.json" \
         "$attempt_root/config/.credentials.json"
-      chmod 600 "$attempt_root/owner" "$attempt_root/config/.credentials.json"
-      attempt_roots+=("$attempt_root")
+      chmod 600 "$attempt_root/config/.credentials.json"
       claude_subscription_env "$root" env \
         HOME="$attempt_root/home" TMPDIR="$attempt_root/tmp" \
         CLAUDE_CONFIG_DIR="$attempt_root/config" \
@@ -3863,7 +3864,14 @@ run_subscription_internal() {
       "Reply with exactly CANARY_OK. Do not read, execute, or modify files." \
       >"$output" 2>&1 &
     else
-      codex_subscription_env "$root" python3 "$root/kit/scripts/provider-cli-runtime.py" \
+      mkdir -m 700 "$attempt_root/home/.codex"
+      cp "$root/session-home/.codex/auth.json" \
+        "$attempt_root/home/.codex/auth.json"
+      chmod 600 "$attempt_root/home/.codex/auth.json"
+      codex_subscription_env "$root" env \
+        HOME="$attempt_root/home" TMPDIR="$attempt_root/tmp" \
+        FACTORY_CLI_INTERNAL_SANDBOX=1 FACTORY_CLI_ATTEMPT_ID="$attempt" \
+        python3 "$root/kit/scripts/provider-cli-runtime.py" \
       --coordinator "$root/kit/scripts/provider-coordinator.py" \
       --db "$root/runtime/provider-state.sqlite3" \
       --policy "$root/runtime/provider-policy.json" \
@@ -3919,18 +3927,16 @@ assert value["counts"] == {"terminal":4}, value
 assert value["active_reserve_micro_usd"] == 0, value
 ' || die "subscription canary reservations did not drain"
   subscription_provider_idle || die "subscription canary left a provider process"
-  if [[ "$selected" == claude ]]; then
-    for attempt_root in "${attempt_roots[@]}"; do
-      python3 - "$attempt_root" "$root" <<'PY' ||
+  for attempt_root in "${attempt_roots[@]}"; do
+    python3 - "$attempt_root" "$root" <<'PY' ||
 import pathlib, shutil, sys
 path=pathlib.Path(sys.argv[1]); root=pathlib.Path(sys.argv[2])
 if path.parent != root/"runtime"/"cli-attempts" or path.is_symlink():
     raise SystemExit(1)
 shutil.rmtree(path)
 PY
-        die "subscription canary Claude runtime cleanup failed"
-    done
-  fi
+      die "subscription canary CLI runtime cleanup failed"
+  done
   echo "PROVIDER_CALLS=4"
   echo "PROVIDER_MODE=cli-concurrent-v1"
   echo "PROVIDER_SPLIT=$selected:4"
@@ -5280,7 +5286,7 @@ PY
 import json, sys
 v=json.load(open(sys.argv[1]))
 for r in v["routes"]:
-    if r["route_id"] == "cursor-claude-fable-5-thinking-medium": print(r["selection_id"])
+    if r["route_id"] == "cursor-claude-opus-5-thinking-medium": print(r["selection_id"])
 PY
 )"
   [[ -n "$openai" && -n "$anthropic" ]] || die "Cursor catalog routes are missing"

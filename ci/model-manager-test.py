@@ -335,7 +335,7 @@ class ModelManagerTest(unittest.TestCase):
 
     def test_probe_context_applies_scopes_and_uses_active_or_default_profile(self):
         initial = self.output("probe-context")
-        self.assertEqual(initial["profile_id"], "cursor-balanced-v2")
+        self.assertEqual(initial["profile_id"], "cursor-opus-v1")
         self.assertEqual(initial["disabled_route_ids"], [])
 
         self.activate("claude-priority-v1")

@@ -298,10 +298,10 @@ NO_STATE_PROFILE="$(env -u FACTORY_MODEL_PROFILE_OVERRIDE \
   -u FACTORY_MODEL_STATE_ROOT -u FACTORY_PROJECT \
   bash -c 'source "$1"; factory_load_model_probe_context; printf "%s\n" "$FACTORY_MODEL_PROFILE_ID"' \
   _ "$ROOT/scripts/lib/backend-policy.sh")"
-if [[ "$NO_STATE_PROFILE" == "cursor-balanced-v2" ]]; then
-  pass "no-record backend context selects cursor-balanced-v2"
+if [[ "$NO_STATE_PROFILE" == "cursor-opus-v1" ]]; then
+  pass "no-record backend context selects cursor-opus-v1"
 else
-  fail "no-record backend context selects cursor-balanced-v2" "$NO_STATE_PROFILE"
+  fail "no-record backend context selects cursor-opus-v1" "$NO_STATE_PROFILE"
 fi
 
 PINNED_MANAGER="$TMP/pinned-manager"
