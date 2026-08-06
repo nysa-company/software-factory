@@ -320,6 +320,83 @@ class QualificationReducerTest(unittest.TestCase):
                         product, "T-110", event, current, done,
                     )
 
+    def test_all_terminal_successor_does_not_require_synthetic_relocation(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, caps = evidence
+        removed = manifest["tickets"].pop()
+        manifest.update({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+            "target_done": 3,
+        })
+        for values in (passports, terminals, prs, caps):
+            del values[removed]
+        events[:] = [
+            item for item in events
+            if item.get("ticket") != removed
+            and item.get("event") not in {
+                "cell_relocated", "publication_acquired", "publication_released",
+            }
+        ]
+        for event in events:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = manifest["tickets"]
+        manifest_digest = hashlib.sha256(
+            REDUCER.canonical(manifest).encode()
+        ).hexdigest()
+        for ticket in manifest["tickets"]:
+            passports.pop(ticket)
+            events.append({
+                "done_sha256": hashlib.sha256(
+                    REDUCER.canonical(terminals[ticket]).encode()
+                ).hexdigest(),
+                "event": "protected_terminal_reconciled",
+                "factory_sha": manifest["factory_sha"],
+                "protected_main_sha": "b" * 40,
+                "protected_main_tree": "c" * 40,
+                "protected_ticket_blob": "d" * 40,
+                "qualification_charge_micro_usd": 0,
+                "qualification_generation": manifest["generation"],
+                "qualification_manifest_sha256": manifest_digest,
+                "reconciliation_schema": (
+                    REDUCER.PROTECTED_TERMINAL_RECONCILIATION_SCHEMA
+                ),
+                "terminal_basis": "attested-done",
+                "ticket": ticket,
+            })
+        for epoch, event in enumerate(events, 1):
+            event["observed_at_epoch_ns"] = epoch
+
+        report = REDUCER.verify(*evidence)
+        self.assertEqual(report["status"], "green")
+        self.assertTrue(all(item["roles"] == 0 for item in report["tickets"]))
+
+        duplicate_relocation = copy.deepcopy(evidence)
+        duplicate_relocation[2].extend([{
+            "event": "cell_relocated",
+            "factory_sha": manifest["factory_sha"],
+            "observed_at_epoch_ns": len(duplicate_relocation[2]) + number,
+            "ticket": manifest["tickets"][0],
+        } for number in (1, 2)])
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "relocation, or completion proof is missing"
+        ):
+            REDUCER.verify(*duplicate_relocation)
+
+        live_without_relocation = list(self.evidence())
+        live_without_relocation[2] = [
+            item for item in live_without_relocation[2]
+            if item.get("event") != "cell_relocated"
+        ]
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "relocation, or completion proof is missing"
+        ):
+            REDUCER.verify(*live_without_relocation)
+
     def test_successor_emergency_terminal_retains_exact_passport_evidence(self):
         evidence = list(self.evidence())
         manifest, passports, events, terminals, prs, caps = evidence
