@@ -448,6 +448,7 @@ def candidates(
     qualification_state: dict[str, Any] | None = None,
 ):
     result = []
+    refusals = []
     tickets = factory / "tickets"
     safe_directory(tickets, "ticket directory")
     pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
@@ -463,7 +464,17 @@ def candidates(
         ):
             continue
         text = safe_file(path, f"ticket {path.stem}")
-        ticket_dependencies = dependencies(text)
+        try:
+            ticket_dependencies = dependencies(text)
+        except DispatchError:
+            if qualification_state is not None:
+                raise
+            refusals.append({
+                "error": "ticket dependencies are invalid",
+                "reason_code": "invalid_ticket_contract",
+                "ticket": path.stem,
+            })
+            continue
         if qualification_state is not None:
             unresolved = any(
                 item not in qualification_state["terminal"]
@@ -511,7 +522,7 @@ def candidates(
                 },
             )
         )
-    return [item[2] for item in sorted(result)]
+    return [item[2] for item in sorted(result)], refusals
 
 
 def worktree_records(product: Path) -> list[dict[str, str]]:
@@ -958,23 +969,24 @@ def main() -> None:
                 "schema": SCHEMA, "status": "WAIT",
             }))
             return
-        selected = candidates(
+        selected, refusals = candidates(
             factory,
             mapping,
             leased | active_tickets(factory) | set(args.exclude_ticket),
             qualification_state,
         )
+        refusal = {"admission_refusal": refusals[0]} if refusals else {}
         if not selected:
             print(canonical({
                 "action": "WAIT", "reason_code": "no_candidate",
-                "schema": SCHEMA, "status": "WAIT",
+                "schema": SCHEMA, "status": "WAIT", **refusal,
             }))
             return
         ticket = selected[0]
         if args.action == "shadow":
             print(canonical({
                 **ticket, "action": "SHADOW", "schema": SCHEMA,
-                "status": "SHADOW",
+                "status": "SHADOW", **refusal,
             }))
             return
         lock(launch_lock)
@@ -1024,6 +1036,7 @@ def main() -> None:
                     "schema": SCHEMA,
                     "status": "CLAIMED",
                     "worktree": str(destination),
+                    **refusal,
                 }
             )
         )

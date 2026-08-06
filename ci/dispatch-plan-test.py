@@ -261,13 +261,83 @@ class DispatchPlanTest(unittest.TestCase):
             "protected_dependency",
             side_effect=DISPATCH.ValidationError("not terminal"),
         ):
-            selected = DISPATCH.candidates(
+            selected, refusals = DISPATCH.candidates(
                 self.product / "factory",
                 DISPATCH.load_mapping(self.mapping),
                 set(),
             )
         self.assertNotIn("T-200", {item["ticket"] for item in selected})
         self.assertIn("T-100", {item["ticket"] for item in selected})
+        self.assertEqual(refusals, [])
+
+    def test_malformed_non_goal_dependency_is_named_without_blocking_siblings(self):
+        ticket = self.product / "factory/tickets/T-300.md"
+        ticket.write_text(
+            ticket.read_text()
+            + "Depends-On: none — prose is not a dependency literal\n"
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "add malformed non-goal ticket", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+        value = self.command("shadow")
+
+        self.assertEqual(value["ticket"], "T-200")
+        self.assertEqual(value["admission_refusal"], {
+            "error": "ticket dependencies are invalid",
+            "reason_code": "invalid_ticket_contract",
+            "ticket": "T-300",
+        })
+
+    def test_malformed_only_ticket_returns_named_wait(self):
+        for ticket in ("T-100", "T-200", "T-400"):
+            path = self.product / f"factory/tickets/{ticket}.md"
+            path.write_text(path.read_text().replace("State: Ready", "State: Backlog"))
+        malformed = self.product / "factory/tickets/T-300.md"
+        malformed.write_text(
+            malformed.read_text().replace("State: Backlog", "State: Ready")
+            + "Depends-On: not-a-ticket\n"
+        )
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "leave one malformed eligible ticket", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+        value = self.command("shadow")
+
+        self.assertEqual(value["action"], "WAIT")
+        self.assertEqual(value["reason_code"], "no_candidate")
+        self.assertEqual(value["admission_refusal"]["ticket"], "T-300")
+
+    def test_malformed_dependency_shapes_share_one_ticket_refusal(self):
+        path = self.product / "factory/tickets/T-300.md"
+        original = path.read_text()
+        for suffix in (
+            "Depends-On: T-100,T-100\n",
+            "Depends-On: invalid\n",
+            "Depends-On: T-100\nDepends-On: T-200\n",
+        ):
+            with self.subTest(suffix=suffix):
+                path.write_text(original + suffix)
+                selected, refusals = DISPATCH.candidates(
+                    self.product / "factory",
+                    DISPATCH.load_mapping(self.mapping),
+                    set(),
+                )
+                self.assertIn("T-200", {item["ticket"] for item in selected})
+                self.assertEqual(refusals[0]["ticket"], "T-300")
+                self.assertEqual(
+                    refusals[0]["reason_code"], "invalid_ticket_contract"
+                )
+
+    def test_selected_qualification_dependency_remains_fail_closed(self):
+        self.write_qualification()
+        path = self.product / "factory/tickets/T-100.md"
+        path.write_text(path.read_text() + "Depends-On: invalid\n")
+
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "ticket dependencies are invalid"
+        ):
+            DISPATCH.qualification(self.product, self.product / "factory", 4)
 
     def test_claim_prepares_exact_worktree_then_next_claim_is_distinct(self):
         first = self.command("claim")
