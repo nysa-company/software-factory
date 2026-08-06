@@ -681,7 +681,15 @@ state, that state remains unchanged while the authenticated repair receipt
 runs the earlier role; ordinary deterministic stages then catch up without
 adding a general backward state transition. When a completed Planner repair
 opens a new test-first epoch beneath Building or Review, its signed archive
-retains that same narrow authority for the immediate resolved catch-up stage.
+retains that same narrow authority through the alternating Planner/Spec-linter
+prefix until Test-author or the three-failure loop cap. A post-Reviewer
+Spec-linter FAIL may therefore produce `RUN planner` beneath Building or
+Review. Receipt verification rechecks the current rejection, authenticated
+role prefix, exact branch/head/passport identity, and uncapped
+`planner-spec-linter` loop before deriving the launcher-only `CATCHUP planner`
+preflight admission. Ordinary `RUN planner`, missing or malformed loop data,
+an impossible role order, a stale receipt, and the capped third failure remain
+closed. No ticket state is rewound and the receipt schema is unchanged.
 If that exact backward repair blocks again, the active signed repair also
 authorizes the block at the unchanged coarse state. The block records that
 coarse state as its resume target, and the same signed repair must authenticate

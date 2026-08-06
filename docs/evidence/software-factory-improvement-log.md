@@ -5473,6 +5473,24 @@ auto-update for the one coreutils install, without trusting or mutating taps.
 Validation: workflow contract pins every Factory occurrence and the generated
 product baseline.
 
+## FI-20260805-204 — Post-Reviewer Spec-linter FAIL could not re-admit Planner
+
+Status: Focused state-machine, preflight, controller, and qualification
+regressions green; protected CI and live successor canary pending
+Priority: P0 (#344)
+Area: state-machine admission
+Owner: Factory
+Impact: the state machine preserved Building and correctly resolved the second
+Planner/Spec-linter lap, but Planner preflight rejected its own authenticated
+`RUN planner` receipt.
+Smallest repair: derive one launcher-only `CATCHUP planner` admission from the
+unchanged signed receipt, exact Reviewer repair role prefix, and uncapped loop;
+do not rewind state or add a generic override.
+Validation: attempts one and two are admitted only with exact evidence;
+missing, zero, boolean, capped, wrong-kind, wrong-limit, reordered, overlong,
+ordinary, and malformed cases stay closed. Existing pause/restart and
+qualification reducer suites remain green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

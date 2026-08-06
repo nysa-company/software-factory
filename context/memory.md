@@ -106,10 +106,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   Planner receipt, and a route pinned to the current Factory. The controller
   reacquires one lease, issues a fresh receipt, and reruns sealed preflight;
   failure releases the lease, while only a pass reopens ordinary execution.
-- A signed completed Planner repair retains narrow catch-up authority when its
-  immediate deterministic successor opens a new test-first epoch beneath
-  Building or Review. This permits only the authenticated resolved stage and
-  does not enable a general backward transition.
+- A signed completed Planner repair retains narrow catch-up authority while
+  its reopened test-first epoch follows the exact alternating
+  Planner/Spec-linter prefix beneath Building or Review. A verified uncapped
+  Spec-linter FAIL receipt may derive launcher-only `CATCHUP planner`
+  admission; ordinary, stale, malformed, reordered, or capped receipts remain
+  closed, no ticket state is rewound, and no general bypass exists.
 - A tests-first epoch begins only in a ticket-only commit with one higher
   frozen-contract heading and one matching PASS marker. New Planner output uses
   the canonical append-only form. Historical output may replace only the
@@ -3670,3 +3672,16 @@ Category: CI
 Factory and generated workflow pins use official Node-24 action-runtime majors.
 The macOS GNU-timeout install disables Homebrew auto-update so unrelated taps
 are neither trusted nor mutated; protected CI remains authoritative.
+
+## 2026-08-05 — Decision 273: Planner catch-up is derived, not overridden
+
+Category: State machine
+
+After a Reviewer rejection, only the authenticated alternating
+Planner/Spec-linter repair prefix may preserve a Planning-level role beneath a
+Building or Review coarse state. Receipt verification derives one
+`CATCHUP planner` preflight admission only for an uncapped
+`planner-spec-linter` attempt below the three-failure ceiling. The existing
+issue-bound pause/successor restore, receipt-bound operator resume, and
+hash-approved emergency closeout remain the manual recovery paths; no generic
+state-machine bypass is introduced.
