@@ -761,6 +761,14 @@ authenticates the signed repair and selects its owner or a higher-priority
 dependency transition. Mismatched, partial, unauthenticated, or active-role
 claims remain blocked, and invalid repair evidence fails before a provider
 call.
+If deterministic preflight requires an operator ticket fix after that active
+repair is prepared, the state machine may rebind only a repair with no owner
+success to the exact authenticated forward passport migration from its signed
+head to current HEAD. The superseded signed record is archived, the active
+record is re-signed at the new head and tree, and the attempt count is
+unchanged. Missing, ambiguous, rewritten, cross-Factory, dependency-repair, or
+post-success lineage refuses with `repair_record_head_moved` instead of
+re-running the original resume-commit validator.
 For a retained contract-block terminal, the controller materializes the block
 but does not request resume until the committed ticket visibly names that exact
 current blocker receipt. This check grants no authority—the state machine still

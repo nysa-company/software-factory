@@ -50,6 +50,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   Exact resume directives and reconciler-authored writes do not advance it;
   accepted same-blocker decisions survive overlapping saves, while rejected
   moves stay visible in Linear and typed sync health.
+- An active contract repair with no owner success may follow one exact
+  authenticated forward passport migration after an operator preflight fix.
+  The old signed record is archived, the active record is rebound without
+  incrementing attempts, and any ambiguous lineage fails closed by name.
 - Production certification, activation planning, and activation reject any
   `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
   qualification continues to require its exact manifest.
@@ -3952,3 +3956,14 @@ invalid ancestry, and over-full content as ticket-scoped durable events; Doctor
 folds the latest refusal and recovery event per ticket. Substantive operator
 rulings are pushed and migrated first, followed by a separate exact receipt
 commit, so the security boundary and the operating instructions agree.
+
+## 2026-08-06 — Decision 295: Preflight fixes rebind idle repairs
+
+Category: State machine
+
+An active ordinary contract repair with no successful owner evidence may move
+from its signed head only through one exact authenticated forward passport
+migration. The superseded signed record is archived and the active record is
+re-signed at current HEAD without consuming another attempt. Dependency,
+post-success, cross-Factory, rewritten, missing, or ambiguous lineage remains
+closed with a typed head-moved refusal.

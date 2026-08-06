@@ -5681,6 +5681,7 @@ and never patch a rejected operator column back silently.
 Validation: stale and wrong moves remain named refusals; a valid move older than
 a later reconciler write survives, two ticket identities remain isolated, and
 new blocker digests still clear prior authority.
+
 ## FI-20260806-217 — Valid contract-resume mistakes looked like an idle lane
 
 Status: Focused state, controller, and Doctor regressions green; protected CI pending
@@ -5696,6 +5697,22 @@ required two-push sequence.
 Validation: over-full, unpushed, wrong-receipt, invalid-ancestry, restart, and
 two-ticket evidence cases are deterministic; a correct pushed commit still
 reopens only its bound role.
+
+## FI-20260806-218 — Operator preflight fixes invalidated active repairs
+
+Status: Focused state-machine regression green; protected CI pending
+Priority: P0 (#377)
+Area: contract-repair lineage
+Owner: Factory
+Impact: the required ticket fix advanced HEAD after repair preparation, causing
+the original resume-commit validator to reject the descendant and strand the
+claim as a controller error before any provider call.
+Smallest repair: rebind only an idle ordinary repair with no owner success
+through the exact authenticated forward passport migration, archiving the old
+signed record and retaining one attempt.
+Validation: the prepared head, operator-fix head, passport edge, rebound signed
+record, superseded archive, and stable attempt count are checked together;
+ambiguous or unauthenticated head movement remains a typed refusal.
 
 ## Maintenance rule
 

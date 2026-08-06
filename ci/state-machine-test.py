@@ -2396,6 +2396,107 @@ class StateMachineTest(unittest.TestCase):
             )
         resolve.assert_called_once_with(self.args)
 
+    def test_active_repair_rebinds_after_operator_preflight_fix(self) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nProduct-Decisions: not frozen\n"
+            + "OPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {'b' * 64}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "resume blocked planner", cwd=self.product)
+        repair_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        body = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": repair_head,
+            "migration_history": [],
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        record = STATE.signed_repair({
+            "blocked_receipt": "b" * 64,
+            "blocked_role": "planner",
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": repair_head,
+            "head_tree": run(
+                "git", "rev-parse", "HEAD^{tree}", cwd=self.product
+            ),
+            "passport_sha256": passport["passport_sha256"],
+            "repair_role": "planner",
+            "schema": STATE.REPAIR_SCHEMA,
+            "ticket": "T-110",
+        }, secret)
+        STATE.write_atomic(STATE.repair_path(self.args), record)
+        attempts = STATE.contract_repair_attempt(self.args)
+
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "Product-Decisions: not frozen", "Product-Decisions: frozen"
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "apply operator preflight ruling", cwd=self.product)
+        fixed_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        def migrate(_args):
+            migrated_body = {
+                **body,
+                "head_sha": fixed_head,
+                "migration_history": [{
+                    "from_factory_sha": self.args.factory_sha,
+                    "from_head_sha": repair_head,
+                    "from_passport_sha256": passport["passport_sha256"],
+                    "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                    "to_factory_sha": self.args.factory_sha,
+                    "to_head_sha": fixed_head,
+                }],
+                "parent_digest": passport["passport_sha256"],
+            }
+            migrated = dict(migrated_body)
+            migrated["authentication_sha256"] = hmac.new(
+                secret, STATE.canonical(migrated_body), hashlib.sha256
+            ).hexdigest()
+            migrated["passport_sha256"] = hashlib.sha256(
+                STATE.canonical(migrated)
+            ).hexdigest()
+            STATE.write_atomic(passports / "T-110.json", migrated)
+
+        with mock.patch.object(STATE, "migrate_passport", side_effect=migrate):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args), ("FIX planner", True)
+            )
+
+        rebound_passport, _ = STATE.authenticated_passport(self.args)
+        rebound = STATE.load_repair(self.args, secret)
+        self.assertEqual(rebound["head_sha"], fixed_head)
+        self.assertEqual(
+            rebound["passport_sha256"], rebound_passport["passport_sha256"]
+        )
+        archived = (
+            STATE.repair_path(self.args).parent / "superseded"
+            / f"T-110-{record['repair_sha256']}.json"
+        )
+        self.assertEqual(json.loads(archived.read_text()), record)
+        self.assertEqual(STATE.contract_repair_attempt(self.args), attempts)
+
     def test_dependency_conflict_routes_exactly_one_new_test_author(self) -> None:
         secret = b"k" * 32
         (self.state_dir / "passport.key").write_bytes(secret)

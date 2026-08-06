@@ -70,6 +70,13 @@ class ContractResumeError(StateError):
         self.evidence = evidence
 
 
+class ContractRepairError(StateError):
+    def __init__(self, reason_code: str, message: str, **evidence: Any) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.evidence = evidence
+
+
 def first_differing_line(expected: str, actual: str) -> int | None:
     expected_lines = expected.splitlines(keepends=True)
     actual_lines = actual.splitlines(keepends=True)
@@ -2511,6 +2518,95 @@ def retire_contract_repair(
     os.replace(source, destination)
 
 
+def rebind_contract_repair(
+    args: argparse.Namespace,
+    passport: dict[str, Any],
+    secret: bytes,
+    record: dict[str, Any],
+    successes: list[dict[str, str]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    recorded_head = record.get("head_sha", "")
+    if (
+        record.get("repair_source") is not None
+        or successes
+        or record.get("factory_sha") != args.factory_sha
+        or current_head == recorded_head
+    ):
+        return passport, record
+    if not SHA.fullmatch(recorded_head) or not branch_contains(args, recorded_head):
+        raise ContractRepairError(
+            "repair_record_head_moved",
+            "contract repair record head is outside current branch lineage",
+            current_head=current_head,
+            recorded_head=recorded_head,
+        )
+    if (
+        passport.get("head_sha") == recorded_head
+        and passport.get("passport_sha256") == record.get("passport_sha256")
+    ):
+        migrate_passport(args)
+        passport, migrated_secret = authenticated_passport(args)
+        if migrated_secret != secret:
+            raise StateError("contract repair passport secret changed")
+    migrations = passport.get("migration_history")
+    matching = [
+        edge for edge in migrations
+        if isinstance(edge, dict)
+        and edge.get("schema") == PASSPORT_MIGRATION_SCHEMA
+        and edge.get("from_factory_sha") == record.get("factory_sha")
+        and edge.get("from_head_sha") == recorded_head
+        and edge.get("from_passport_sha256") == record.get("passport_sha256")
+        and edge.get("to_factory_sha") == args.factory_sha
+        and edge.get("to_head_sha") == current_head
+    ] if isinstance(migrations, list) else []
+    if (
+        len(matching) != 1
+        or passport.get("ticket") != args.ticket
+        or passport.get("branch") != record.get("branch")
+        or passport.get("factory_sha") != args.factory_sha
+        or passport.get("head_sha") != current_head
+    ):
+        raise ContractRepairError(
+            "repair_record_head_moved",
+            "contract repair record cannot follow the authenticated head migration",
+            current_head=current_head,
+            recorded_head=recorded_head,
+        )
+    archive = repair_path(args).parent / "superseded"
+    archive.mkdir(mode=0o700, exist_ok=True)
+    info = archive.lstat()
+    if (
+        archive.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise StateError("superseded contract repair directory is unsafe")
+    digest = record.get("repair_sha256", "")
+    destination = archive / f"{args.ticket}-{digest}.json"
+    if destination.exists() or destination.is_symlink():
+        if (
+            destination.is_symlink()
+            or json.loads(destination.read_text(encoding="utf-8")) != record
+        ):
+            raise StateError("superseded contract repair record conflicts")
+    else:
+        write_atomic(destination, record)
+    body = {
+        key: value for key, value in record.items()
+        if key not in {"authentication_sha256", "repair_sha256"}
+    }
+    body.update({
+        "head_sha": current_head,
+        "head_tree": git(args.workdir, "rev-parse", "HEAD^{tree}"),
+        "passport_sha256": passport["passport_sha256"],
+    })
+    rebound = signed_repair(body, secret)
+    write_atomic(repair_path(args), rebound)
+    return passport, rebound
+
+
 def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     text = (
         args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
@@ -2626,6 +2722,11 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     successes = contract_repair_successes(args, owner, head)
     if source is None and len(successes) > 1:
         raise StateError("contract repair has duplicate successful evidence")
+    passport, record = rebind_contract_repair(
+        args, passport, secret, record, successes
+    )
+    head = record.get("head_sha", "")
+    successes = contract_repair_successes(args, owner, head)
     authenticated_head = None
     if passport.get("head_sha") != git(args.workdir, "rev-parse", "HEAD"):
         if not has_directive or not args.receipt:
@@ -3466,7 +3567,7 @@ def main() -> None:
             "error": str(error), "schema": SCHEMA, "status": "error",
             "ticket": args.ticket,
         }
-        if isinstance(error, ContractResumeError):
+        if isinstance(error, (ContractRepairError, ContractResumeError)):
             failure.update(reason_code=error.reason_code, **error.evidence)
         print(json.dumps(failure, sort_keys=True))
         raise SystemExit(1)
