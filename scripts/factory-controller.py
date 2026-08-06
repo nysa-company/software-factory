@@ -3654,36 +3654,79 @@ class Controller:
             raise ControllerError("GH_REPO is missing or ambiguous")
         return values[0]
 
-    def merged_pr_identity(self, branch: str) -> dict[str, Any] | None:
-        result = subprocess.run(
+    def approval_pr_number(self, claim: dict[str, Any]) -> int:
+        path = (
+            Path(claim["worktree"]) / "factory" / "attestations"
+            / claim["ticket"] / "approval.json"
+        )
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ControllerError("approval PR identity is unavailable") from error
+        if not isinstance(value, dict):
+            raise ControllerError("approval PR identity is malformed")
+        number = value.get("pr_number")
+        if (
+            value.get("schema") != "nysa.software-factory.ticket-approval/v1"
+            or value.get("ticket") != claim["ticket"]
+            or value.get("repository") != self.project_repository()
+            or value.get("branch") != claim["branch"]
+            or isinstance(number, bool)
+            or not isinstance(number, int)
+            or number <= 0
+        ):
+            raise ControllerError("approval PR identity is malformed")
+        return number
+
+    def merged_pr_identity(
+        self, branch: str, number: int | None = None,
+    ) -> dict[str, Any] | None:
+        command = (
+            ["gh", "pr", "view", str(number), "--repo", self.project_repository()]
+            if number is not None else
             [
                 "gh", "pr", "list", "--repo", self.project_repository(),
                 "--state", "merged", "--head", branch,
-                "--json", "number,headRefName,headRefOid,mergeCommit,state,mergedAt",
+            ]
+        )
+        result = subprocess.run(
+            [
+                *command, "--json",
+                "number,headRefName,baseRefName,headRefOid,mergeCommit,state,mergedAt",
             ],
             text=True, capture_output=True, check=False, timeout=120,
         )
         if result.returncode:
             raise ControllerError(result.stderr.strip() or "GitHub merge query failed")
         try:
-            values = json.loads(result.stdout)
+            evidence = json.loads(result.stdout)
         except json.JSONDecodeError as error:
             raise ControllerError("GitHub merge query returned malformed evidence") from error
+        values = [evidence] if number is not None else evidence
         if not values:
             return None
         if not isinstance(values, list) or len(values) != 1:
             raise ControllerError("merged PR identity is ambiguous")
         value = values[0]
+        if not isinstance(value, dict):
+            raise ControllerError("merged PR identity is malformed")
         merge = value.get("mergeCommit")
         if (
-            not isinstance(value, dict)
+            number is not None and value.get("number") != number
             or value.get("headRefName") != branch
-            or value.get("state") != "MERGED"
-            or not value.get("mergedAt")
+            or value.get("baseRefName") != "main"
             or isinstance(value.get("number"), bool)
             or not isinstance(value.get("number"), int)
             or value["number"] <= 0
             or not SHA.fullmatch(value.get("headRefOid", ""))
+        ):
+            raise ControllerError("merged PR identity is malformed")
+        if value.get("state") != "MERGED":
+            if not value.get("mergedAt") and merge is None:
+                return None
+            raise ControllerError("merged PR identity is malformed")
+        if (
+            not value.get("mergedAt")
             or not isinstance(merge, dict)
             or not SHA.fullmatch(merge.get("oid", ""))
         ):
@@ -3752,7 +3795,9 @@ class Controller:
         passport_path = self.state / "passports" / f"{claim['ticket']}.json"
         if branch != f"ticket/{claim['ticket']}" or not passport_path.exists():
             return None
-        implementation = self.merged_pr_identity(branch)
+        implementation = self.merged_pr_identity(
+            branch, self.approval_pr_number(claim),
+        )
         closeout = self.merged_pr_identity(closeout_branch)
         if implementation is None or closeout is None:
             return None
@@ -3830,22 +3875,9 @@ class Controller:
         return value
 
     def ticket_merged(self, claim: dict[str, Any]) -> bool:
-        result = subprocess.run(
-            [
-                "gh", "pr", "list", "--repo", self.project_repository(), "--state", "merged",
-                "--head", claim["branch"], "--json", "headRefName,mergedAt,state",
-            ],
-            text=True, capture_output=True, check=False, timeout=120,
-        )
-        if result.returncode:
-            raise ControllerError(result.stderr.strip() or "GitHub merge query failed")
-        values = json.loads(result.stdout)
-        return (
-            isinstance(values, list)
-            and len(values) == 1
-            and values[0].get("state") == "MERGED"
-            and bool(values[0].get("mergedAt"))
-        )
+        return self.merged_pr_identity(
+            claim["branch"], self.approval_pr_number(claim),
+        ) is not None
 
     def closeout(self, claim: dict[str, Any]) -> bool:
         ticket = claim["ticket"]

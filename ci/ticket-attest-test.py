@@ -2039,6 +2039,17 @@ else:
             "reviews, and merge policy remain authoritative.",
         )
 
+    def test_done_binds_approved_pr_amid_historical_branch_prs(self):
+        self.prepare_done(duplicate=True)
+
+        result = self.attest("done")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(
+            (self.workdir / "factory/attestations/T-700/done.json").read_text()
+        )
+        self.assertEqual(receipt["pr_number"], 7)
+
     def test_done_accepts_approval_followed_by_successor_route(self):
         self.prepare_done_after_successor_route()
 

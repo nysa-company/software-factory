@@ -883,7 +883,9 @@ Git remote configuration cannot redirect it.
 Contract 1.3 adds only the dedicated `ticket-attest` route. `bundle` binds the
 latest successful Reviewer and Narrator runs, reviewed SHA, post-review
 ticket/bundle controls, bundle Git blob, and the unique exact open PR, then
-records Awaiting Approval. Ticket-PR and bundle attestation share one
+records Awaiting Approval. Historical merged or closed PRs on the fixed ticket
+branch remain lineage evidence but never compete with that current open
+publication candidate. Ticket-PR and bundle attestation share one
 fail-closed Narrator-evidence classifier: only bounded ordinary PNG blobs under
 the current ticket's evidence directory are admitted, additions and updates
 must be referenced by the current bundle, and deletions must have been
@@ -979,7 +981,9 @@ When concurrency is greater than one, every attestation action also requires the
 unexpired opaque dispatcher lease through the trusted launcher environment;
 the lease is validated with the existing lease helper and never enters an
 attestation or command result. Done starts only from `HEAD == origin/main`,
-binds the exact approved PR head and protected bundle/approval blobs, and
+resolves the merged implementation PR by the exact number sealed in the
+protected approval attestation, binds its approved head and the protected
+bundle/approval blobs, and
 refuses status/check name collisions. It projects and commits once, then owns
 creation/reuse and protected auto-merge of the exact closeout PR. A retry
 revalidates the same remote commit. Only valid attested Done on protected main
