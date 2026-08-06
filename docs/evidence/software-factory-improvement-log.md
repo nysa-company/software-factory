@@ -5619,6 +5619,23 @@ Validation: a stable one-page cycle uses three reads regardless of mapped ticket
 count; HTTP 400/429 and GraphQL quota shapes share the cooldown, whose active
 window makes zero API calls.
 
+## FI-20260806-213 — One malformed ticket aborted every new admission
+
+Status: Focused dispatcher and controller regressions green; protected CI pending
+Priority: P0 (#371)
+Area: admission isolation
+Owner: Factory
+Impact: invalid dependency syntax in one ordinary backlog ticket aborted the
+whole candidate scan and produced an unnamed incident, blocking unrelated
+eligible siblings.
+Smallest repair: quarantine only that ticket during ordinary enumeration and
+carry its exact typed refusal through dispatch, controller results, events, and
+durable incident evidence. Selected qualification contracts remain globally
+fail-closed.
+Validation: malformed prose, tokens, duplicates, and duplicate fields skip the
+named ticket while a sibling starts; malformed refusal payloads and selected
+qualification contracts still refuse.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

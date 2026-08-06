@@ -35,6 +35,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
   dispatch another.
+- Ordinary admission isolates a ticket with malformed dependency syntax and
+  reports its exact ID in controller results, events, and durable incident
+  evidence while eligible siblings continue. A selected qualification ticket
+  with the same defect still refuses the sealed cohort globally.
 - Production certification, activation planning, and activation reject any
   `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
   qualification continues to require its exact manifest.
@@ -3891,3 +3895,11 @@ Category: Throughput
 Scheduled reconciliation reuses paginated issue and Project inventories and
 loads full comments only for a recent changed comment head. Typed quota
 responses persist a bounded cooldown that is checked before any Linear access.
+
+## 2026-08-06 — Decision 290: Malformed backlog contracts are ticket-local
+
+Category: Reliability
+
+Ordinary admission skips a malformed dependency contract with named durable
+evidence instead of aborting every sibling. Selected qualification contracts
+remain cohort-fatal so a sealed run cannot silently weaken its authorized set.
