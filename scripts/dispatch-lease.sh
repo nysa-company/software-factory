@@ -12,9 +12,15 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-[[ "$OPERATION" == "claim" || "$OPERATION" == "renew" || "$OPERATION" == "release" ]] || {
-  echo "usage: dispatch-lease.sh <claim|renew|release> --ticket T-NNN [--lease ID]" >&2
+[[ "$OPERATION" == "claim" || "$OPERATION" == "renew" || "$OPERATION" == "release" ||
+   "$OPERATION" == "release-expired" ]] || {
+  echo "usage: dispatch-lease.sh <claim|renew|release|release-expired> --ticket T-NNN [--lease ID]" >&2
   exit 2
+}
+[[ "$OPERATION" != "release-expired" ||
+   "${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}" == "1.8.0" ]] || {
+  echo "expired lease recovery requires contract 1.8.0" >&2
+  exit 3
 }
 [[ "$TICKET" =~ ^T-[0-9]+$ ]] || { echo "invalid ticket identifier" >&2; exit 2; }
 
@@ -62,7 +68,7 @@ fi
 if [[ "$OPERATION" == "claim" ]]; then
   [[ ! -e "$FACTORY_DIR/KILL" ]] || { echo "KILL file present; lease refused" >&2; exit 4; }
   [[ ! -e "$FACTORY_DIR/MAINTENANCE" ]] || { echo "MAINTENANCE file present; lease refused" >&2; exit 4; }
-elif [[ "$OPERATION" == "release" ]] && factory_dispatch_has_ticket_run "$ROOT" "$TICKET"; then
+elif [[ "$OPERATION" == release* ]] && factory_dispatch_has_ticket_run "$ROOT" "$TICKET"; then
   echo "ticket has an active run; lease release refused" >&2
   exit 7
 fi
@@ -170,13 +176,15 @@ PY
     [[ ! -e "$FACTORY_DIR/KILL" ]] || { echo "KILL file appeared during renewal; lease refused" >&2; exit 4; }
     [[ ! -e "$FACTORY_DIR/MAINTENANCE" ]] || { echo "MAINTENANCE file appeared during renewal; lease refused" >&2; exit 4; }
     ;;
-  release)
+  release|release-expired)
     [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || { echo "release requires a canonical --lease" >&2; exit 2; }
-    python3 - "$LEASE_FILE" "$TICKET" "$LEASE_ID" <<'PY'
-import json, pathlib, stat, sys
+    python3 - "$LEASE_FILE" "$TICKET" "$LEASE_ID" "$OPERATION" <<'PY'
+import json, pathlib, stat, sys, time
 
-path, ticket, lease_id = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+path, ticket, lease_id, operation = pathlib.Path(sys.argv[1]), *sys.argv[2:]
 if not path.exists() and not path.is_symlink():
+    if operation == "release-expired":
+        raise SystemExit("expired dispatcher lease is absent")
     print('{"absent":true,"ticket":%s}' % json.dumps(ticket))
     raise SystemExit
 value = path.lstat()
@@ -185,8 +193,19 @@ if not stat.S_ISREG(value.st_mode) or path.is_symlink():
 record = json.loads(path.read_text())
 if record.get("schema_version") != 1 or record.get("ticket") != ticket or record.get("lease_id") != lease_id:
     raise SystemExit("dispatcher lease does not match")
+if operation == "release-expired" and (
+    not isinstance(record.get("claimed_epoch"), int)
+    or isinstance(record.get("claimed_epoch"), bool)
+    or not isinstance(record.get("expires_epoch"), int)
+    or isinstance(record.get("expires_epoch"), bool)
+    or record["expires_epoch"] <= record["claimed_epoch"]
+    or record["expires_epoch"] > int(time.time())
+):
+    raise SystemExit("dispatcher lease is not an exact expired lease")
 path.unlink()
-print('{"released":true,"ticket":%s}' % json.dumps(ticket))
+print(json.dumps({
+    "expired": operation == "release-expired", "released": True, "ticket": ticket,
+}, sort_keys=True))
 PY
     ;;
 esac

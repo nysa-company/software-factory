@@ -636,7 +636,13 @@ terminal passport export uses the same contiguous v2 lineage proof before the
 controller may invoke block recovery; ordinary exports still require raw Git
 ancestry. A live current exact-ticket lease is validated
 independently; an absent old lease may therefore be replaced without weakening
-receipt, terminal, passport, or current ownership checks. If an earlier
+receipt, terminal, passport, or current ownership checks. If a prior candidate
+instead left an expired lease file while the migrated successor claim is parked
+and lease-free, the controller first authenticates the exact current passport,
+route, branch, and remote head. The sealed lease helper then rechecks and
+removes only that expired lease under the ordinary launch/lease locks before a
+fresh claim. A renewal race, live run, malformed record, duplicate identity,
+wrong ticket, or sibling lease remains closed and untouched. If an earlier
 controller cleared the blocked claim fields during that migration, the
 successor restores them only from the latest passport-bound charge and exact
 terminal receipt. A same-release controller restart may also replace an
@@ -993,6 +999,21 @@ checks that hash at the immutable closeout commit and requires the current
 ledger to retain those bytes as an unchanged prefix, allowing only later rows
 to be appended.
 
+Contract 1.8 exposes `emergency-admit` for one otherwise unchanged pre-provider
+role receipt. Its read-only plan binds an open Factory issue, non-automatic
+operator, bounded reason and expiry, current release SHA/tree and trust scope,
+project/origin, ticket branch/head/tree/blob, route, authenticated passport,
+lifecycle and Resume-State, empty publication authority, current lease, and one
+unconsumed deterministic role receipt. Apply requires the exact plan hash and
+creates an owner-only HMAC-authenticated immutable authorization. The launcher
+consults it only after normal receipt consumption rejects; it consumes the same
+receipt once before the unchanged runner performs budget, concurrency,
+credential, provider, and accounting admission. Provider or terminal evidence,
+maintenance, loop caps, drift, replay, ambiguity, or a closed issue refuses the
+fallback. The controller archives use against the unique run manifest and
+authenticated passport charge. It cannot select another role, mutate state or
+evidence, or reach approval, merge, publication, CI, or terminal gates.
+
 Contract 1.8 also exposes a narrow emergency plan/apply form through
 `ticket-attest` for an exact already-merged ticket whose normal approval chain
 cannot be completed. The read-only plan binds a current open GitHub issue,
@@ -1123,6 +1144,23 @@ and second parent are unchanged. The controller does not migrate until its clean
 cell head is the exact remote ticket tip. Only an operator's explicit
 `--force-with-lease=<old-head>` can publish the authorized rewrite, and a
 restart after recovery is a no-op.
+An exact failed Test-author push that repaired mixed commit topology uses the
+separate `ticket-history-repair-authorization/v1` schema. The protected record
+binds one open issue, explicit operator, maximum 24-hour window, failed run and
+receipt, old remote head, new head/tree, passport, route, and exact
+force-with-lease value. Its `authorization_parent` is the protected-main commit
+directly below that one-file record; its distinct `replay_base` must already
+belong to the signed passport's base history and be the common base of both
+ticket histories. This allows unrelated protected-main advancement without
+pretending it was the ticket replay base. Verification requires the old line
+to contain mixed or late test history, the new line to satisfy both ordering
+rules, identical per-path non-Factory patches, unchanged protected merge trees
+and second parents, and no final-tree delta except one append-only current
+ticket log. Migration preserves prior success evidence, adds the failed
+conservative charge exactly once, and never promotes that failed run to
+success. The controller therefore resumes ordinary Test-author work after the
+operator publishes the exact authorized head; no role, CI, approval, or
+publication gate is bypassed.
 An exact `Blocked-Escalated` ticket remains blocked during normalization; only
 its existing authenticated resume receipt may restore the recorded resume state.
 After activation, the operator uses the existing preview-hash-bound `models

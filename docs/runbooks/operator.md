@@ -227,6 +227,7 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Notice: if main advances, use sealed `ticket-attest --action refresh` on the exact ticket worktree. It disables stale auto-merge, merges protected main without force, retires the old receipts, and makes fresh Reviewer, Narrator, bundle, and Linear approval evidence mandatory.
 - Notice: after the ticket PR merges, the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes `ticket-attest --action done`. It verifies the merge and configured post-merge contexts, projects the ledger once, commits Done plus closeout evidence, creates or reuses the exact factory-owned closeout PR, and requests protected auto-merge. No operator approval or manual GitHub merge is required. After protected main contains valid Done, sequencing returns `COMPLETE` and the dispatcher releases the lease. Projection refuses any active or ambiguous claim.
 - Emergency only: for an already-merged ticket that cannot satisfy normal approval evidence, create one owner-only request naming an open GitHub issue, operator, 20+ character reason, and a current `issued_at`/`expires_at` window of at most 24 hours. Run sealed `ticket-attest --action emergency-plan --request <absolute.json>` from the clean `chore/tNNN-closeout` worktree, review its exact PR/check/main/passport basis, then run `emergency-apply` with the returned `approval_sha256`. Apply reuses the ordinary ledger projection and protected closeout PR; it never fabricates bundle or approval evidence. An authenticated target may use either its exact idle blocked claim or a controller-signed pause bound to the same ticket, head, state, passport, and open Factory issue. A passportless target is accepted only when protected main explicitly identifies it as `Assignee: operator (built outside the software factory)` and no runtime claim, passport, or pause exists. Every use needs its own issue and exact plan-hash approval.
+- Emergency role admission only: stop the controller at an idle exact claim, then create an owner-only `nysa.software-factory.emergency-role-admission-request/v1` naming one open Factory issue, non-`auto` operator, 20–500 character reason, and current expiry of at most 24 hours. Run sealed `emergency-admit plan` with the exact ticket, role, receipt, worktree, and request; review every bound identity and approve only its returned SHA-256. Run `emergency-admit apply` with the same inputs and that hash, then restart ordinary reconciliation. The launcher uses this authorization only if normal receipt consumption rejects and only before provider submission. Confirm one `emergency_admission_archived` event names the resulting run and passport charge. A changed, consumed, or capped receipt, claim, head, route, passport, lease, issue, maintenance state, active run, publication authority, or plan hash must be investigated rather than overridden.
 - Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Confirm the factory-owned close-out PR entered protected auto-merge; do not supply another business approval or manual merge.
 - Don't: edit rows by hand, project while any ticket has a live or ambiguous run, or commit the runtime ledger itself.
 
@@ -339,6 +340,20 @@ same-UID token exposure remains until a broker or OS isolation is used.
 - Don't: publish before protected authorization, use a bare `--force`, edit or
   waive passport evidence, change the route, or retry a stale lease. Any drift
   requires a new reviewed authorization rather than modifying the old record.
+- Notice: a successful Test-author may split one mixed test/implementation
+  commit, append its required ticket log, and then fail the ordinary push
+  because the remote history is intentionally replaced. Protected main may
+  also have advanced independently since the ticket's replay base.
+- Do: use one `ticket-history-repair-authorization/v1` record keyed by the
+  exact new head. Bind the current passport, failed Test-author run/receipt,
+  issue, operator, old remote head, route, 24-hour-or-shorter window, distinct
+  `authorization_parent` and `replay_base`, and the exact force-with-lease
+  target. Merge only that record through protected CI, then publish the exact
+  new head once with the record's force-with-lease value. Let the sealed
+  controller migrate/export the passport and resume Test-author normally.
+- Don't: reuse the late-test normalization schema for a mixed-commit split,
+  make protected main masquerade as the replay base, omit the append-only role
+  log, hand-edit a passport, or promote the failed push to successful evidence.
 - Don't: waive the immutability gate or ask the builder to edit tests post-implementation.
 
 ## Parallel kit work while production is running
@@ -601,13 +616,13 @@ These run in your interactive session — never inside the loop. The factory's o
   authorizes a later blocker. The exact ticket-only commit may be the direct
   child of the current authenticated passport head; block recovery validates
   that boundary and migrates the passport through it before resuming.
-- Treat that exact receipt-bound `OPERATOR RESUME` flow as the emergency
-  state-machine recovery mechanism. The envelope and semantic-round overrides
-  documented elsewhere do not grant lifecycle transitions, and no generic
-  state-machine bypass is approved. Do not edit state by hand or invent an
-  environment or shell override. Any future exception requires exact owner
-  authorization bound to the affected ticket, receipt, head, state, and reason,
-  plus a dedicated GitHub issue before implementation or use.
+- Treat receipt-bound `OPERATOR RESUME` as the contract-block recovery and
+  hash-approved `emergency-admit` as the one-use pre-provider control-plane
+  fallback. Neither grants a lifecycle transition or skips any downstream
+  gate. Envelope and semantic-round overrides grant no state authority. Do not
+  edit state by hand or invent an environment or shell override; every
+  emergency admission needs its own open Factory issue and exact plan-hash
+  approval.
 
 ## The general rule
 

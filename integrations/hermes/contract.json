@@ -68,6 +68,16 @@
         ],
         "output": "ticket lease release confirmation"
       },
+      "release-expired": {
+        "contract_version": "1.8.0",
+        "arguments": [
+          "--ticket",
+          "<T-NNN>",
+          "--lease",
+          "<opaque-lease-id>"
+        ],
+        "output": "exact expired ticket lease release confirmation; live, mismatched, malformed, or active leases remain closed"
+      },
       "contract": {
         "arguments": [
           "--json"
@@ -132,6 +142,21 @@
         ],
         "output_schema": "nysa.software-factory.state-machine/v1",
         "authority": "sole transition resolver; materializes legal ticket state, calls next-stage once, and issues an owner-only one-use receipt bound to the exact head, tree, evidence, route, passport, Factory release, and certified product origin"
+      },
+      "emergency-admit": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/emergency-admit.py",
+        "grammars": [
+          "plan --ticket <T-NNN> --role <exact-role> --receipt <lowercase-sha256> --workdir <exact-ticket-worktree> --request <absolute-owner-request.json> --json",
+          "apply --ticket <T-NNN> --role <exact-role> --receipt <lowercase-sha256> --workdir <exact-ticket-worktree> --request <absolute-owner-request.json> --approve-hash <lowercase-sha256> --json",
+          "archive --ticket <T-NNN> --role <exact-role> --receipt <lowercase-sha256> --workdir <exact-ticket-worktree> --json"
+        ],
+        "output_schemas": {
+          "plan": "nysa.software-factory.emergency-role-admission-plan/v1",
+          "apply": "nysa.software-factory.emergency-role-admission/v1",
+          "archive": "nysa.software-factory.emergency-role-archive/v1"
+        },
+        "authority": "one hash-approved, issue-bound, expiring fallback consumption of the unchanged deterministic pre-provider role receipt; every budget, lease, provider, publication, approval, merge, and terminal gate remains ordinary and mandatory"
       },
       "passport": {
         "contract_version": "1.8.0",
@@ -817,6 +842,7 @@
     "scripts/ledger-view.py",
     "scripts/dispatch-lease.sh",
     "scripts/dispatch-lease-heartbeat.py",
+    "scripts/emergency-admit.py",
     "scripts/dispatch-plan.py",
     "scripts/ticket-pr.py",
     "scripts/lib/dispatch-leases.sh",

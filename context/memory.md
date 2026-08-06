@@ -124,10 +124,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   only an explicit exact-old-head force-with-lease may publish it.
 - A consumed contract-block receipt remains in lineage across protected
   history normalization only through one authenticated same-release migration
-  edge with byte-identical old/new Git trees and current route/base bindings.
-  Passport export and block recovery share that proof. Missing authorization,
-  tree drift, or multiple matches fail closed; this is not a general
-  state-machine override.
+  edge with byte-identical old/new Git trees, or through one protected
+  history-repair edge whose only final-tree delta is the exact append-only
+  current ticket log. Current route/base bindings remain mandatory. Passport
+  export and block recovery share that proof. Missing authorization, semantic
+  drift, or multiple matches fail closed; this is not a general state-machine
+  override.
 - If the active signed backward repair itself contract-blocks, its later coarse
   state is retained as the exact resume target. The same repair authenticates
   block recovery and resume; ordinary role/state drift remains refused.
@@ -3169,8 +3171,9 @@ Category: Trust boundary
 
 A consumed contract-block receipt may cross protected history normalization
 only through one authenticated same-release migration edge whose old and new
-Git trees are byte-identical and whose route and protected-base bindings match
-the current passport. Missing rewrite authorization, changed content, or an
+Git trees are byte-identical, or whose only protected history-repair delta is
+an append-only current ticket log. Route and protected-base bindings must match
+the current passport. Missing rewrite authorization, semantic drift, or an
 ambiguous edge remains blocked; the receipt-bound operator directive is still
 the only resume authority.
 
@@ -3685,3 +3688,40 @@ Building or Review coarse state. Receipt verification derives one
 issue-bound pause/successor restore, receipt-bound operator resume, and
 hash-approved emergency closeout remain the manual recovery paths; no generic
 state-machine bypass is introduced.
+
+## 2026-08-05 — Decision 274: History repair separates authorization and replay bases
+
+Category: Reliability
+
+A failed Test-author push may publish one protected, issue-bound, expiring
+mixed-history repair only when the signed passport separately identifies the
+current protected authorization parent and its earlier ticket replay base.
+The old/new histories must preserve every per-path non-Factory patch and
+protected merge while the final tree changes only by the authenticated
+append-only ticket log. Migration retains the failed charge exactly once,
+never records false success, and resumes through the ordinary state machine.
+
+## 2026-08-05 — Decision 275: Emergency admission consumes only an unchanged role receipt
+
+Category: Safety
+
+Contract 1.8 may fall back from ordinary receipt consumption to one open-issue,
+hash-approved, expiring authorization for the exact ticket, role, receipt,
+head/tree, route, authenticated passport, lifecycle state, Factory tree, and
+current lease. Apply is inert until the ordinary launcher rejects. Consumption
+is owner-authenticated and one-use before provider submission; the normal
+runner still owns budget, concurrency, credentials, accounting, and evidence.
+The controller archives the use against one terminal manifest and passport
+charge. Drift, capped loops, active work, replay, publication, approval, merge,
+and terminal boundaries remain impossible to override.
+
+## 2026-08-05 — Decision 276: Successors retire only exact expired lease files
+
+Category: Reliability
+
+A parked lease-free successor claim may recover from a prior candidate's stale
+lease only after its current passport, route, branch, and remote head are exact.
+The sealed helper rechecks expiry and exact lease identity while holding the
+ordinary locks, then the controller durably claims a fresh lease. Renewal races,
+live runs, malformed or duplicate identities, wrong tickets, and siblings stay
+closed; restart observes the completed migration without repeating release.

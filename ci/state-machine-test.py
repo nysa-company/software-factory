@@ -1477,6 +1477,21 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.contract_blocked_receipt(self.args)
 
+        body["migration_history"] = [migration, rewrite]
+        write_passport(body)
+        self.assertEqual(STATE.contract_blocked_receipt(self.args), "planner")
+        (self.product / "app.js").write_text("semantic drift\n", encoding="utf-8")
+        run("git", "add", "app.js", cwd=self.product)
+        run("git", "commit", "-qm", "change normalized source", cwd=self.product)
+        unsafe = run("git", "rev-parse", "HEAD", cwd=self.product)
+        rewrite["to_head_sha"] = unsafe
+        body["head_sha"] = unsafe
+        write_passport(body)
+        with self.assertRaisesRegex(
+            STATE.StateError, "contract blocker is outside receipt lineage"
+        ):
+            STATE.contract_blocked_receipt(self.args)
+
         run("git", "reset", "--hard", resumed, cwd=self.product)
         rewrite["to_head_sha"] = normalized
         resume_migration["from_head_sha"] = old_tip

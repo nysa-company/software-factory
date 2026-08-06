@@ -3786,6 +3786,142 @@ class FactoryControllerTest(unittest.TestCase):
             claims, recovery, "release-upgrade", concurrent=True
         )
 
+    def test_successor_recovers_only_exact_expired_parked_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "generation": 1, "mode": "successor", "tickets": ["T-110"],
+        }
+        cell = self.root / "parked/T-110"
+        cell.mkdir(parents=True)
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "",
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {
+            "branch": claim["branch"],
+            "factory_sha": self.release.name,
+            "ticket": claim["ticket"],
+        })
+        controller.marker(
+            f"passport-route-migration-pending-T-110-{self.release.name}",
+            {
+                "factory_sha": self.release.name,
+                "schema": CONTROL.EVENT_SCHEMA,
+                "ticket": "T-110",
+            },
+        )
+        leases = self.product / "factory/.dispatch-leases"
+        leases.mkdir()
+        now = int(time.time())
+        stale = {
+            "claimed_epoch": now - 901,
+            "expires_epoch": now - 1,
+            "lease_id": "b" * 64,
+            "schema_version": 1,
+            "ticket": "T-110",
+        }
+        sibling = {
+            "claimed_epoch": now,
+            "expires_epoch": now + 900,
+            "lease_id": "c" * 64,
+            "schema_version": 1,
+            "ticket": "T-111",
+        }
+        CONTROL.write(leases / "T-110.json", stale)
+        CONTROL.write(leases / "T-111.json", sibling)
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("parked claim owns no lease")
+            if args[0] == "release-expired":
+                self.assertEqual(
+                    args,
+                    (
+                        "release-expired", "--ticket", "T-110",
+                        "--lease", stale["lease_id"],
+                    ),
+                )
+                (leases / "T-110.json").unlink()
+                return {"expired": True, "released": True, "ticket": "T-110"}
+            if args[0] == "claim":
+                return {
+                    "lease_id": "d" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            return {}
+
+        controller.json_call = json_call
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_passport_valid = lambda _claim: True
+        controller.migrate_passport = lambda *_args: None
+        controller.restore_contract_blocker = lambda _claim: False
+
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "d" * 64)
+        self.assertEqual(CONTROL.read(leases / "T-111.json"), sibling)
+        self.assertFalse((leases / "T-110.json").exists())
+        calls_before_restart = list(calls)
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(calls, calls_before_restart)
+
+    def test_successor_expired_lease_recovery_refuses_live_or_malformed(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "generation": 1, "mode": "successor", "tickets": ["T-110"],
+        }
+        cell = self.root / "parked/T-110"
+        cell.mkdir(parents=True)
+        claim = {
+            "branch": "ticket/T-110", "lease": "", "parked": True,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {
+            "branch": claim["branch"], "factory_sha": self.release.name,
+            "ticket": claim["ticket"],
+        })
+        leases = self.product / "factory/.dispatch-leases"
+        leases.mkdir()
+        now = int(time.time())
+        live = {
+            "claimed_epoch": now, "expires_epoch": now + 900,
+            "lease_id": "b" * 64, "schema_version": 1, "ticket": "T-110",
+        }
+        CONTROL.write(leases / "T-110.json", live)
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_passport_valid = lambda _claim: True
+        controller.json_call = lambda *_args, **_kwargs: self.fail(
+            "live lease must not be released"
+        )
+        self.assertFalse(controller.release_expired_successor_lease(claim))
+        self.assertEqual(CONTROL.read(leases / "T-110.json"), live)
+        live["ticket"] = "T-111"
+        CONTROL.write(leases / "T-110.json", live)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "dispatcher lease state is unsafe"
+        ):
+            controller.release_expired_successor_lease(claim)
+
     def test_factory_upgrade_preserves_failed_terminal_for_recovery(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-failed-upgrade"

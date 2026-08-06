@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|ticket-control|qualification|dispatch-plan|state-machine|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|ticket-control|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -912,6 +912,8 @@ validate_lease_command() {
      "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
     die "dispatcher leases require contract 1.1.0 or newer"
+  [[ "$1" != "release-expired" || "$CONTRACT_VERSION" == "1.8.0" ]] ||
+    die "expired lease recovery requires contract 1.8.0"
   LEASE_ID=""
   if [[ "$1" == "claim" ]]; then
     [[ $# -eq 3 && "$2" == "--ticket" ]] || usage
@@ -1325,6 +1327,69 @@ PY
     trap - EXIT HUP INT TERM
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \
       "$STATE_MACHINE" "${STATE_ARGS[@]}"
+    ;;
+  emergency-admit)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "emergency role admission requires contract 1.8.0"
+    EMERGENCY_ACTION="${1:-}" EMERGENCY_REQUEST="" EMERGENCY_APPROVE_HASH=""
+    if [[ "$EMERGENCY_ACTION" == "plan" && $# -eq 12 &&
+          "$2" == "--ticket" && "$4" == "--role" &&
+          "$6" == "--receipt" && "$8" == "--workdir" &&
+          "${10}" == "--request" && "${12}" == "--json" ]]; then
+      TICKET="$3" EMERGENCY_ROLE="$5" TRANSITION_RECEIPT="$7"
+      TICKET_WORKDIR="$9" EMERGENCY_REQUEST="${11}"
+    elif [[ "$EMERGENCY_ACTION" == "apply" && $# -eq 14 &&
+            "$2" == "--ticket" && "$4" == "--role" &&
+            "$6" == "--receipt" && "$8" == "--workdir" &&
+            "${10}" == "--request" && "${12}" == "--approve-hash" &&
+            "${14}" == "--json" ]]; then
+      TICKET="$3" EMERGENCY_ROLE="$5" TRANSITION_RECEIPT="$7"
+      TICKET_WORKDIR="$9" EMERGENCY_REQUEST="${11}"
+      EMERGENCY_APPROVE_HASH="${13}"
+      [[ "$EMERGENCY_APPROVE_HASH" =~ ^[0-9a-f]{64}$ ]] ||
+        die "invalid emergency admission approval hash"
+    elif [[ "$EMERGENCY_ACTION" == "archive" && $# -eq 10 &&
+            "$2" == "--ticket" && "$4" == "--role" &&
+            "$6" == "--receipt" && "$8" == "--workdir" &&
+            "${10}" == "--json" ]]; then
+      TICKET="$3" EMERGENCY_ROLE="$5" TRANSITION_RECEIPT="$7"
+      TICKET_WORKDIR="$9"
+    else
+      usage
+    fi
+    [[ "$TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+    role_is_allowed "$EMERGENCY_ROLE" ||
+      die "emergency admission role is not allowed by the active contract"
+    [[ "$TRANSITION_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
+      die "invalid transition receipt"
+    resolve_product_workdir "$TICKET_WORKDIR"
+    validate_ticket_worktree "$TICKET"
+    TICKET_WORKDIR="$RESOLVED_WORKDIR"
+    if [[ -n "$EMERGENCY_REQUEST" ]]; then
+      [[ "$EMERGENCY_REQUEST" == /* ]] ||
+        die "emergency admission request must be absolute"
+      require_managed_file "$EMERGENCY_REQUEST" "emergency admission request"
+    fi
+    add_certified_origin_env
+    controller_state_dir
+    EMERGENCY_HELPER="$RELEASE_PATH/scripts/emergency-admit.py"
+    require_managed_file "$EMERGENCY_HELPER" "active release emergency admission helper"
+    EMERGENCY_ARGS=(
+      "$EMERGENCY_ACTION" --factory-root "$PRODUCT_ROOT"
+      --workdir "$TICKET_WORKDIR" --kit-dir "$RELEASE_PATH"
+      --state-dir "$CONTROLLER_STATE_DIR" --ticket "$TICKET"
+      --contract-version "$CONTRACT_VERSION" --factory-sha "$KIT_SHA"
+      --project "$PROJECT" --receipt "$TRANSITION_RECEIPT"
+      --role "$EMERGENCY_ROLE"
+    )
+    [[ -z "$EMERGENCY_REQUEST" ]] ||
+      EMERGENCY_ARGS+=(--request "$EMERGENCY_REQUEST")
+    [[ -z "$EMERGENCY_APPROVE_HASH" ]] ||
+      EMERGENCY_ARGS+=(--approve-hash "$EMERGENCY_APPROVE_HASH")
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \
+      "$EMERGENCY_HELPER" "${EMERGENCY_ARGS[@]}"
     ;;
   passport)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
@@ -2338,8 +2403,19 @@ PY
     fi
     if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
       TICKET="$RUN_TICKET"
-      transition_receipt consume "$RUN_ROLE" ||
-        die "transition receipt consumption failed"
+      if ! transition_receipt consume "$RUN_ROLE"; then
+        EMERGENCY_HELPER="$RELEASE_PATH/scripts/emergency-admit.py"
+        require_managed_file "$EMERGENCY_HELPER" \
+          "active release emergency admission helper"
+        run_selected_python "$EMERGENCY_HELPER" consume \
+          --factory-root "$PRODUCT_ROOT" --workdir "$RESOLVED_WORKDIR" \
+          --kit-dir "$RELEASE_PATH" --state-dir "$CONTROLLER_STATE_DIR" \
+          --ticket "$RUN_TICKET" --contract-version "$CONTRACT_VERSION" \
+          --factory-sha "$KIT_SHA" --project "$PROJECT" \
+          --receipt "$TRANSITION_RECEIPT" --role "$RUN_ROLE" \
+          --lease "$LEASE_ID" >/dev/null ||
+          die "transition receipt consumption failed"
+      fi
       HELPER_ENV+=(
         "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
         "FACTORY_TRANSITION_STATE_DIR=$CONTROLLER_STATE_DIR"
@@ -2354,7 +2430,7 @@ PY
       --workdir "$RESOLVED_WORKDIR" \
       -- "$@"
     ;;
-  claim|renew|release)
+  claim|renew|release|release-expired)
     validate_lease_command "$COMMAND" "$@"
     LEASE_HELPER="$RELEASE_PATH/scripts/dispatch-lease.sh"
     require_managed_file "$LEASE_HELPER" "active release dispatcher lease helper"

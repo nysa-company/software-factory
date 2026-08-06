@@ -1619,6 +1619,91 @@ class Controller:
             "ticket_lease_recovered", claim["ticket"], recovery=label,
         )
 
+    def release_expired_successor_lease(self, claim: dict[str, Any]) -> bool:
+        if (
+            self.qualification is None
+            or self.qualification.get("mode") != "successor"
+            or not self.parked(claim)
+            or claim.get("lease") != ""
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+            or not self.ticket_release_current(claim)
+        ):
+            return False
+        try:
+            if not self.remote_passport_valid(claim):
+                return False
+        except ControllerError:
+            return False
+        passport = read(
+            self.state / "passports" / f"{claim['ticket']}.json"
+        )
+        if (
+            passport.get("ticket") != claim["ticket"]
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+        ):
+            raise ControllerError("expired lease recovery passport is not exact")
+        directory = self.product / "factory" / ".dispatch-leases"
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            return False
+        if (
+            directory.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+        ):
+            raise ControllerError("dispatcher lease state is unsafe")
+        records: dict[str, dict[str, Any]] = {}
+        lease_ids: set[str] = set()
+        for path in sorted(directory.iterdir()):
+            if not re.fullmatch(r"T-[0-9]+[.]json", path.name):
+                raise ControllerError("dispatcher lease state is unsafe")
+            value = read(path)
+            ticket = value.get("ticket", "")
+            lease_id = value.get("lease_id", "")
+            claimed = value.get("claimed_epoch")
+            expires = value.get("expires_epoch")
+            if (
+                set(value) != {
+                    "schema_version", "ticket", "lease_id",
+                    "claimed_epoch", "expires_epoch",
+                }
+                or value.get("schema_version") != 1
+                or ticket != path.stem
+                or not TICKET.fullmatch(ticket)
+                or not DIGEST.fullmatch(lease_id)
+                or ticket in records
+                or lease_id in lease_ids
+                or isinstance(claimed, bool)
+                or not isinstance(claimed, int)
+                or isinstance(expires, bool)
+                or not isinstance(expires, int)
+                or expires <= claimed
+            ):
+                raise ControllerError("dispatcher lease state is unsafe")
+            records[ticket] = value
+            lease_ids.add(lease_id)
+        record = records.get(claim["ticket"])
+        if record is None or record["expires_epoch"] > int(time.time()):
+            return False
+        result = self.json_call(
+            "release-expired", "--ticket", claim["ticket"],
+            "--lease", record["lease_id"],
+        )
+        if result != {
+            "expired": True, "released": True, "ticket": claim["ticket"],
+        }:
+            raise ControllerError("expired dispatcher lease release is invalid")
+        self.event_once(
+            "expired_ticket_lease_released", claim["ticket"],
+            expired_lease_sha256=hashlib.sha256(
+                record["lease_id"].encode()
+            ).hexdigest(),
+        )
+        return True
+
     def park_claim(self, claim: dict[str, Any]) -> bool:
         """Release a clean checkpointed ticket from a disposable cell."""
         if self.role_active(claim):
@@ -1982,6 +2067,36 @@ class Controller:
             "--workdir", claim["worktree"], "--json",
         )
 
+    def archive_emergency_admission(
+        self, claim: dict[str, Any], terminal: dict[str, str]
+    ) -> None:
+        if not (
+            self.state / "emergency-admissions" / claim["ticket"]
+        ).is_dir():
+            return
+        value = self.json_call(
+            "emergency-admit", "archive", "--ticket", claim["ticket"],
+            "--role", claim["role"], "--receipt", claim["receipt"],
+            "--workdir", claim["worktree"], "--json",
+        )
+        if value.get("status") == "absent":
+            return
+        if (
+            value.get("action") != "archive"
+            or value.get("status") != "archived"
+            or value.get("ticket") != claim["ticket"]
+            or not DIGEST.fullmatch(value.get("approval_sha256", ""))
+            or not DIGEST.fullmatch(value.get("record_sha256", ""))
+        ):
+            raise ControllerError("emergency admission archive is invalid")
+        self.event_once(
+            "emergency_admission_archived", claim["ticket"],
+            approval_sha256=value["approval_sha256"],
+            archive_sha256=value["record_sha256"],
+            role=claim["role"], run_id=terminal.get("run_id"),
+            transition_receipt_sha256=claim["receipt"],
+        )
+
     def migrate_passport(
         self, claim: dict[str, Any], publication: str
     ) -> dict[str, Any]:
@@ -2128,6 +2243,7 @@ class Controller:
                 self.migrate_passport(claim, publication)
             else:
                 self.passport(claim, publication)
+            self.archive_emergency_admission(claim, terminal)
             claim["status"] = "running"
             self.save_claim(claim)
             self.event(
@@ -2460,6 +2576,7 @@ class Controller:
             try:
                 self.renew(claim)
             except ControllerError:
+                self.release_expired_successor_lease(claim)
                 lease = self.json_call("claim", "--ticket", claim["ticket"])
                 if (
                     lease.get("schema_version") != 1
@@ -3061,6 +3178,7 @@ class Controller:
                 )
             else:
                 self.passport(claim, publication)
+            self.archive_emergency_admission(claim, terminal)
         if (
             terminal.get("accounting_state") in {"cancelled", "cancelled_conservative"}
             or terminal.get("role_exit") == "cancelled"

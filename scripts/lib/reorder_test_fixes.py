@@ -388,6 +388,26 @@ def nonexempt_patch_ids(repo, commits, exempt_paths):
     return Counter(values)
 
 
+def nonexempt_path_patch_ids(repo, commits, exempt_paths):
+    """Return per-path patches so a mixed commit may be split without drift."""
+    values = []
+    for commit in commits:
+        parent = git(repo, "rev-parse", f"{commit.sha}^1").stdout.strip()
+        for path in sorted(
+            path for path in commit.files if not is_exempt(path, exempt_paths)
+        ):
+            patch = git(
+                repo, "diff", "--binary", "--no-ext-diff", "--no-renames",
+                parent, commit.sha, "--", path,
+            ).stdout
+            result = run(["git", "patch-id", "--stable"], input_text=patch)
+            fields = result.stdout.split()
+            if len(fields) < 1 or not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
+                raise Fail(f"commit has no stable patch identity: {commit.sha}:{path}")
+            values.append((path, fields[0]))
+    return Counter(values)
+
+
 def protected_merges(repo, commits):
     result = []
     for commit in commits:
@@ -436,6 +456,34 @@ def verified_normalization_plan(
         return old_plan
     except (Fail, OSError):
         return None
+
+
+def verified_history_repair(
+    repo, base, old_head, new_head, test_paths, exempt_paths
+):
+    """Authenticate a patch-identical repair of mixed or late test history."""
+    try:
+        if old_head == new_head:
+            return False
+        for head in (old_head, new_head):
+            if git(repo, "merge-base", base, head).stdout.strip() != base:
+                return False
+        old = classify_commits(repo, base, old_head, test_paths, exempt_paths)
+        new = classify_commits(repo, base, new_head, test_paths, exempt_paths)
+        old_plan = plan_new_order(old)
+        if old_plan is None and not any(item.kind == "MIXED" for item in old):
+            return False
+        if old_plan is not None and not merge_boundaries_preserved(old, old_plan[0]):
+            return False
+        return (
+            plan_new_order(new) is None
+            and not any(item.kind == "MIXED" for item in new)
+            and protected_merges(repo, old) == protected_merges(repo, new)
+            and nonexempt_path_patch_ids(repo, old, exempt_paths)
+            == nonexempt_path_patch_ids(repo, new, exempt_paths)
+        )
+    except (Fail, OSError):
+        return False
 
 
 def normalization_allowed(repo, base, old_head, new_head, test_paths, exempt_paths):

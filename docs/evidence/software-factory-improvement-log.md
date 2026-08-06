@@ -5491,6 +5491,60 @@ missing, zero, boolean, capped, wrong-kind, wrong-limit, reordered, overlong,
 ordinary, and malformed cases stay closed. Existing pause/restart and
 qualification reducer suites remain green.
 
+## FI-20260805-205 — Mixed history repair could not cross protected-main advancement
+
+Status: Focused passport and state-machine regressions green; protected CI and
+live successor canary pending
+Priority: P0 (#348)
+Area: passport and history-rewrite recovery
+Owner: Factory
+Impact: T-178's Test-author correctly split a mixed test/checker commit and
+preserved every product blob, but its expected non-force push failed and the
+controller could not export the receipt. The existing normalization schema
+also conflated the protected authorization parent with the older ticket replay
+base.
+Smallest repair: add one expiring issue-bound authorization that binds those
+bases separately, proves per-path patch equivalence plus an append-only ticket
+log, and reuses the existing migrate-before-export controller recovery.
+Validation: mixed partition plus independent protected-base advancement passes;
+expired authority, wrong replay base, semantic source drift, missing receipt,
+and false successful-role evidence remain closed. The failed charge is retained
+once and restart migration is idempotent.
+
+## FI-20260805-206 — Production lacked a bounded pre-provider control-plane escape
+
+Status: Focused emergency-admission regressions green; protected CI and live
+qualification exercise pending
+Priority: P0 (#346)
+Area: role admission
+Owner: Factory
+Impact: a new receipt-consumption defect could require a full Factory repair and
+successor cycle even when every ticket, role, head, route, passport, lease, and
+downstream gate was unchanged.
+Smallest repair: add one open-issue, expiring plan/apply authorization consulted
+only after ordinary receipt consumption rejects, consumed once before provider
+submission, and archived against the resulting manifest and passport charge.
+Validation: Planning, Building, and Review roles pass; wrong hashes, HMAC drift,
+capped loops, publication authority, active work, maintenance, route drift, and
+replay stay closed. Budget, provider, CI, approval, merge, and terminal paths are
+unchanged.
+
+## FI-20260805-207 — Successor recovery stranded behind an expired lease file
+
+Status: Focused lease and controller regressions green; protected CI and live
+successor canary pending
+Priority: P1 (#347)
+Area: successor recovery
+Owner: Factory
+Impact: an authenticated migrated parked claim could not claim capacity because
+the prior candidate's exact expired lease file still occupied the ticket.
+Smallest repair: authenticate the parked successor identity, then atomically
+recheck and release only the exact expired lease before the ordinary fresh
+claim.
+Validation: exact expiry recovers once; live, renewed, malformed, mismatched,
+duplicate, active, and sibling records remain closed or untouched, and restart
+is idempotent.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
