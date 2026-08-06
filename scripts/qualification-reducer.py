@@ -310,7 +310,8 @@ def verify(
                 "done_sha256", "event", "event_sha256", "factory_sha",
                 "observed_at_epoch_ns", "protected_main_sha",
                 "protected_main_tree", "protected_ticket_blob",
-                "qualification_charge_micro_usd", "reconciliation_schema",
+                "qualification_charge_micro_usd", "qualification_generation",
+                "qualification_manifest_sha256", "reconciliation_schema",
                 "schema", "terminal_basis", "ticket",
             }
             required = allowed - {"event_sha256", "schema"}
