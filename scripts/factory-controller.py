@@ -294,6 +294,7 @@ class Controller:
             hashlib.sha256(canonical(self.qualification).encode()).hexdigest()
             if self.qualification else ""
         )
+        self.admission_refusals: dict[str, dict[str, str]] = {}
         self.fallback_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
@@ -999,6 +1000,9 @@ class Controller:
             "error": str(decoded.get("error", raw))[:4096],
             "reason_code": str(decoded.get("reason_code", "unsafe_state"))[:64],
         }
+        ticket = decoded.get("ticket", "")
+        if isinstance(ticket, str) and TICKET.fullmatch(ticket):
+            evidence["ticket"] = ticket
         digest = hashlib.sha256(canonical(evidence).encode()).hexdigest()
         path = self.state / "admission-incident.json"
         now = time.time_ns()
@@ -1023,16 +1027,43 @@ class Controller:
             value["next_reminder_epoch_ns"] = now + 900_000_000_000
         write(path, value)
         if not same or reminder:
-            self.event(
-                "admission_blocked_reminder" if reminder else "admission_blocked",
+            name = (
+                "admission_blocked_reminder" if reminder else "admission_blocked"
+            )
+            details = dict(
                 error=evidence["error"],
                 existing_claims=sorted(item["ticket"] for item in claims),
                 incident_sha256=digest,
                 reason_code=evidence["reason_code"],
             )
+            if "ticket" in evidence:
+                self.event(name, evidence["ticket"], **details)
+            else:
+                self.event(name, **details)
 
     def clear_admission_failure(self) -> None:
-        (self.state / "admission-incident.json").unlink(missing_ok=True)
+        if not self.admission_refusals:
+            (self.state / "admission-incident.json").unlink(missing_ok=True)
+
+    def record_dispatch_refusal(
+        self, refusal: Any, claims: list[dict[str, Any]]
+    ) -> None:
+        if (
+            not isinstance(refusal, dict)
+            or set(refusal) != {"error", "reason_code", "ticket"}
+            or refusal.get("error") != "ticket dependencies are invalid"
+            or refusal.get("reason_code") != "invalid_ticket_contract"
+            or not TICKET.fullmatch(refusal.get("ticket", ""))
+        ):
+            raise ControllerError("dispatch admission refusal is malformed")
+        ticket = refusal["ticket"]
+        if ticket in self.admission_refusals:
+            return
+        result = {**refusal, "status": "skipped"}
+        self.admission_refusals[ticket] = result
+        self.record_admission_failure(
+            ControllerError(canonical(refusal)), claims
+        )
 
     def marker(self, name: str, value: dict[str, Any] | None = None) -> bool:
         path = self.state / f"{name}.json"
@@ -1327,6 +1358,8 @@ class Controller:
             for ticket in excluded:
                 arguments.extend(["--exclude-ticket", ticket])
             value = self.json_call(*arguments, "--json")
+            if "admission_refusal" in value:
+                self.record_dispatch_refusal(value["admission_refusal"], claims)
             if value.get("action") == "WAIT":
                 break
             if (
@@ -4473,6 +4506,7 @@ class Controller:
                 return result
 
     def reconcile(self) -> dict[str, Any]:
+        self.admission_refusals = {}
         existing = self.load_claims()
         if self.qualification:
             tickets = set(self.qualification["tickets"])
@@ -4727,6 +4761,8 @@ class Controller:
         finally:
             executor.shutdown(wait=True)
         claims = self.load_claims()
+        for ticket, refusal in self.admission_refusals.items():
+            results.setdefault(ticket, refusal)
         ordered = [results[ticket] for ticket in sorted(results)]
         return {
             "active": len(

@@ -403,7 +403,11 @@ ticket-state consumer first writes a durable operator-version-bound clear
 intent, so a stale full-board snapshot cannot restore consumed authority.
 Unsafe admission remains fail-closed, but identical inputs update one durable
 incident and emit only bounded reminders while already authenticated claims
-continue reconciling.
+continue reconciling. During ordinary admission, malformed dependency syntax is
+isolated to that exact ticket and reported in controller results, events, and
+incident evidence while eligible siblings continue. The same defect in a
+selected qualification ticket remains globally fail-closed for the sealed
+cohort.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.

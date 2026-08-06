@@ -5554,6 +5554,82 @@ class FactoryControllerTest(unittest.TestCase):
             events,
         )
 
+    def test_named_ticket_refusal_does_not_block_sibling_or_repeat_in_cycle(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        refusal = {
+            "error": "ticket dependencies are invalid",
+            "reason_code": "invalid_ticket_contract",
+            "ticket": "T-184",
+        }
+        values = [
+            {
+                "action": "START",
+                "admission_refusal": refusal,
+                "branch": "ticket/T-110",
+                "lease_id": "a" * 64,
+                "priority": "normal",
+                "ticket": "T-110",
+                "worktree": str(cell),
+            },
+            {"action": "WAIT", "admission_refusal": refusal},
+        ]
+        controller.json_call = lambda *_args, **_kwargs: (
+            values.pop(0) if values else {
+                "action": "WAIT", "admission_refusal": refusal,
+            }
+        )
+        controller.pin_routes = lambda _claims: []
+        controller.reconcile_ticket = lambda item: {
+            "status": "active", "ticket": item["ticket"],
+        }
+
+        result = controller.reconcile()
+
+        self.assertEqual(result["active"], 1)
+        self.assertEqual(result["results"], [
+            {"status": "active", "ticket": "T-110"},
+            {
+                "error": "ticket dependencies are invalid",
+                "reason_code": "invalid_ticket_contract",
+                "status": "skipped",
+                "ticket": "T-184",
+            },
+        ])
+        incident = CONTROL.read(self.state / "admission-incident.json")
+        self.assertEqual(incident["count"], 1)
+        self.assertEqual(incident["ticket"], "T-184")
+        events = [CONTROL.read(path) for path in controller.events.glob("*.json")]
+        blocked = [item for item in events if item["event"] == "admission_blocked"]
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(blocked[0]["ticket"], "T-184")
+
+        restarted = CONTROL.Controller(self.args)
+        restarted.json_call = lambda *_args, **_kwargs: {
+            "action": "WAIT", "admission_refusal": refusal,
+        }
+        restarted.claim_new(restarted.load_claims())
+        self.assertEqual(
+            CONTROL.read(self.state / "admission-incident.json")["count"], 2
+        )
+
+    def test_malformed_dispatch_refusal_fails_closed(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.json_call = lambda *_args, **_kwargs: {
+            "action": "WAIT",
+            "admission_refusal": {
+                "error": "ticket dependencies are invalid",
+                "reason_code": "invalid_ticket_contract",
+                "ticket": "not-a-ticket",
+            },
+        }
+
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "dispatch admission refusal is malformed"
+        ):
+            controller.claim_new([])
+
     def test_identical_admission_failure_is_durable_and_deduplicated(self) -> None:
         controller = CONTROL.Controller(self.args)
         events = []
