@@ -1147,7 +1147,8 @@ restart after recovery is a no-op.
 An exact failed Test-author push that repaired mixed commit topology uses the
 separate `ticket-history-repair-authorization/v1` schema. The protected record
 binds one open issue, explicit operator, maximum 24-hour window, failed run and
-receipt, old remote head, new head/tree, passport, route, and exact
+receipt, the current recovery Factory and historical failed-run Factory, old
+remote head, new head/tree, passport, route, and exact
 force-with-lease value. Its `authorization_parent` is the protected-main commit
 directly below that one-file record; its distinct `replay_base` must already
 belong to the signed passport's base history and be the common base of both
@@ -1158,7 +1159,9 @@ rules, identical per-path non-Factory patches, unchanged protected merge trees
 and second parents, and no final-tree delta except one append-only current
 ticket log. Migration preserves prior success evidence, adds the failed
 conservative charge exactly once, and never promotes that failed run to
-success. The controller therefore resumes ordinary Test-author work after the
+success. The historical Factory must occur in the authenticated passport's
+release history; successor migration never relabels its receipt or manifest as
+new evidence. The controller therefore resumes ordinary Test-author work after the
 operator publishes the exact authorized head; no role, CI, approval, or
 publication gate is bypassed.
 An exact `Blocked-Escalated` ticket remains blocked during normalization; only

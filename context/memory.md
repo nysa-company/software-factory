@@ -3701,6 +3701,16 @@ protected merge while the final tree changes only by the authenticated
 append-only ticket log. Migration retains the failed charge exactly once,
 never records false success, and resumes through the ordinary state machine.
 
+## 2026-08-05 — Decision 277: Successor history repair preserves failed-release identity
+
+Category: Reliability
+
+A successor validates a failed Test-author repair against two Factory
+identities: the current recovery release and the historical release recorded
+by the consumed receipt and terminal manifest. The latter must already occur
+in the authenticated passport release history. Migration must not relabel old
+evidence with the successor SHA.
+
 ## 2026-08-05 — Decision 275: Emergency admission consumes only an unchanged role receipt
 
 Category: Safety

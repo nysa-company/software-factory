@@ -521,8 +521,10 @@ def ticket_log_append_allowed(
 
 
 def failed_rewrite_manifest(
-    args: argparse.Namespace, previous: dict[str, Any], receipt_digest: str
+    args: argparse.Namespace, previous: dict[str, Any], receipt_digest: str,
+    factory_sha: str | None = None,
 ) -> bool:
+    factory_sha = factory_sha or args.factory_sha
     matches = []
     for path in sorted((args.factory_root / "factory/runs").glob("*.meta")):
         value = manifest_fields(path)
@@ -543,7 +545,7 @@ def failed_rewrite_manifest(
         and value.get("exit_status") == "11"
         and value.get("role_exit") == "role_exit_push_failed"
         and value.get("role_head_before") == previous.get("head_sha")
-        and value.get("kit_sha") == args.factory_sha
+        and value.get("kit_sha") == factory_sha
         and value.get("contract_version") == args.contract_version
         and DIGEST.fullmatch(value.get("output_sha256", "")) is not None
         and output.is_file()
@@ -653,6 +655,7 @@ def authorized_history_repair(
     authorization_parent = authorization.get("authorization_parent", "")
     replay_base = authorization.get("replay_base", "")
     receipt_digest = authorization.get("failed_test_receipt_sha256", "")
+    failed_factory = authorization.get("failed_test_factory_sha", "")
     run_id = authorization.get("failed_test_run_id", "")
     issued = authorization.get("issued_at_epoch")
     expires = authorization.get("expires_at_epoch")
@@ -663,6 +666,7 @@ def authorized_history_repair(
         "branch": current["branch"],
         "expires_at_epoch": expires,
         "factory_sha": args.factory_sha,
+        "failed_test_factory_sha": failed_factory,
         "failed_test_receipt_sha256": receipt_digest,
         "failed_test_run_id": run_id,
         "force_with_lease_head": previous.get("head_sha"),
@@ -691,6 +695,11 @@ def authorized_history_repair(
         or not SHA.fullmatch(replay_base)
         or replay_base not in previous.get("base_history", [])
         or not DIGEST.fullmatch(receipt_digest)
+        or not SHA.fullmatch(failed_factory)
+        or {
+            "contract_version": args.contract_version,
+            "factory_sha": failed_factory,
+        } not in previous.get("factory_release_history", [])
         or not RUN_ID.fullmatch(run_id)
         or not isinstance(issued, int)
         or isinstance(issued, bool)
@@ -739,14 +748,16 @@ def authorized_history_repair(
     except (FileNotFoundError, json.JSONDecodeError, OSError, PassportError):
         return None
     if (
-        consumed.get("factory_sha") != args.factory_sha
+        consumed.get("factory_sha") != failed_factory
         or consumed.get("head_sha") != previous.get("head_sha")
         or consumed.get("project") != args.project
         or consumed.get("branch") != current["branch"]
         or consumed.get("role") != "test-author"
         or consumed.get("stage") not in {"RUN test-author", "FIX test-author"}
         or consumed.get("contract_version") != args.contract_version
-        or not failed_rewrite_manifest(args, previous, receipt_digest)
+        or not failed_rewrite_manifest(
+            args, previous, receipt_digest, failed_factory
+        )
         or not ticket_log_append_allowed(
             args.workdir, previous["head_sha"], current["head_sha"], args.ticket,
         )
