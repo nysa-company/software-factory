@@ -247,8 +247,10 @@ Contract 1.8 additionally exposes `ticket-control pause|resume`: pause requires
 one exact Software Factory issue URL, removes only one idle passport-bound
 claim, releases its lease, and records an owner-only repro intent bound to its
 Factory SHA, head, passport, run snapshot, lifecycle state, Resume-State, and
-claim status. Resume-State is required for `Blocked-Escalated` and is JSON
-null for lifecycle states that have no resume overlay. Resume requires the
+claim status. The signed checkpoint retains only idle `claimed`, `waiting`,
+`blocked`, or `budget` status; a budget pause also binds the exact budget
+digest. Resume-State is required for `Blocked-Escalated`; other lifecycle
+states retain either JSON null or an allowed existing resume overlay. Resume requires the
 operator to name the exact active Factory
 SHA, validates the state, passport lineage, remote branch, unique worktree,
 recorded claim status, and target release before reacquiring one lease, then
@@ -1021,7 +1023,8 @@ explicit non-automatic operator, bounded authorization window, protected-main
 commit/tree/ticket blob and state, exact merged PR and configured successful
 checks, active kit, and authenticated passport snapshot. Apply requires the
 plan also binds either an idle blocked claim or a matching controller-signed
-pause, with no lease or publication capability.
+pause, including an exact idle budget pause, with no lease or publication
+capability.
 Its SHA-256 apply reuses the ordinary ledger projection, closeout branch, push,
 PR, and protected auto-merge. It records a distinct terminal receipt rather
 than synthesizing bundle or Linear approval. Exact operator-built work may use

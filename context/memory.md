@@ -13,6 +13,9 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   explicit operator-built/no-runtime basis. Apply requires the exact plan hash
   and reuses the ordinary ledger projection and protected closeout PR; it
   records distinct terminal evidence and never synthesizes approval history.
+  A controller-signed pause may retain only idle claimed, waiting, blocked, or
+  budget status; budget pauses bind the exact budget digest, and nonblocked
+  lifecycle states may retain an allowed existing Resume-State overlay.
 - Linear supports a fail-closed exact-ticket operator pull for an already
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
@@ -3735,3 +3738,13 @@ The sealed helper rechecks expiry and exact lease identity while holding the
 ordinary locks, then the controller durably claims a fresh lease. Renewal races,
 live runs, malformed or duplicate identities, wrong tickets, and siblings stay
 closed; restart observes the completed migration without repeating release.
+
+## 2026-08-06 — Decision 278: Emergency closeout accepts exact idle pause shapes
+
+Category: Reliability
+
+Emergency attestation accepts the idle `blocked`, `claimed`, `waiting`, and
+`budget` statuses emitted by `ticket-control pause`; budget pauses require their
+exact signed budget digest. A nonblocked lifecycle pause may retain only an
+allowed Resume-State overlay. Active or unknown statuses, malformed budgets,
+and invalid lifecycle overlays remain closed.
