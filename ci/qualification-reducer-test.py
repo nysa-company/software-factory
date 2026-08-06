@@ -165,6 +165,10 @@ class QualificationReducerTest(unittest.TestCase):
             "protected_main_tree": "c" * 40,
             "protected_ticket_blob": "d" * 40,
             "qualification_charge_micro_usd": 0,
+            "qualification_generation": manifest["generation"],
+            "qualification_manifest_sha256": hashlib.sha256(
+                REDUCER.canonical(manifest).encode()
+            ).hexdigest(),
             "reconciliation_schema": (
                 REDUCER.PROTECTED_TERMINAL_RECONCILIATION_SCHEMA
             ),
@@ -178,6 +182,20 @@ class QualificationReducerTest(unittest.TestCase):
         self.assertEqual(reconciled["roles"], 0)
         self.assertEqual(reconciled["charge_micro_usd"], 0)
         self.assertEqual(report["total_charge_micro_usd"], 18_000_000)
+
+        incomplete_boundary = copy.deepcopy(evidence)
+        incomplete_boundary[2][-1].pop("qualification_manifest_sha256")
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "reconciliation is invalid"
+        ):
+            REDUCER.verify(*incomplete_boundary)
+
+        unknown_boundary = copy.deepcopy(evidence)
+        unknown_boundary[2][-1]["qualification_unknown"] = "refuse"
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "reconciliation is invalid"
+        ):
+            REDUCER.verify(*unknown_boundary)
 
         duplicate_source = copy.deepcopy(evidence)
         duplicate_source[1][ticket] = original_passport

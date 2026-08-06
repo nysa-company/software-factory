@@ -35,6 +35,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   and Done select the exact PR number sealed in the approval attestation;
   multiple open candidates, a missing bound PR, or branch/base/head drift
   remains fail-closed.
+- Protected-terminal qualification evidence carries the authenticated
+  generation and manifest digest used to select it. The reducer accepts those
+  exact boundary fields while missing, partial, unknown, or cross-generation
+  event shapes remain fail-closed.
 - Production helpers run only from installed sealed releases whose SHA is on
   Factory `origin/main` with exact successful protected CI. Qualification may
   seal a clean local SHA/tree without that reachability; trusted launchers label
@@ -3783,3 +3787,13 @@ attestation and revalidate its branch, base, head, merge, checks, and protected
 ancestry. Historical PRs remain auditable without making the current lifecycle
 ambiguous, while multiple current candidates or bound-identity drift still
 refuse.
+
+## 2026-08-06 — Decision 281: Terminal reconciliation retains its generation boundary
+
+Category: Reliability
+
+The strict protected-terminal reducer consumes the generation and manifest
+digest already authenticated by qualification event selection. Both fields
+are required; partial or additional event shapes remain invalid. This keeps
+zero-cost historical terminal adoption compatible with reused durable
+authority without weakening cross-generation isolation.
