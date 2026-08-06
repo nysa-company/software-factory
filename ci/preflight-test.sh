@@ -995,6 +995,19 @@ else
   echo "$PLANNER_REPAIR_OUT"
   FAILURES=$((FAILURES + 1))
 fi
+PLANNER_CATCHUP_STATUS=0
+PLANNER_CATCHUP_OUT="$(run_sealed_preflight "$READINESS" T-110 \
+  "$READINESS_RELEASE" "$READINESS_TREE" planner "" "CATCHUP planner")" ||
+  PLANNER_CATCHUP_STATUS=$?
+if [[ "$PLANNER_CATCHUP_STATUS" -eq 0 &&
+      "$PLANNER_CATCHUP_OUT" == *"State: Building is authorized by the verified Planner catch-up"* &&
+      "$PLANNER_CATCHUP_OUT" == *"PREFLIGHT PASS"* ]]; then
+  echo "PASS: authenticated post-Reviewer Planner catch-up preserves the coarse state"
+else
+  echo "FAIL: authenticated post-Reviewer Planner catch-up rejected the coarse state"
+  echo "$PLANNER_CATCHUP_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
 STALE_PLANNER_STATUS=0
 STALE_PLANNER_OUT="$(run_sealed_preflight "$READINESS" T-110 \
   "$READINESS_RELEASE" "$READINESS_TREE" planner "" "RUN planner")" ||
@@ -1005,6 +1018,18 @@ if [[ "$STALE_PLANNER_STATUS" -ne 0 &&
 else
   echo "FAIL: non-repair Planner preflight accepted the coarse state"
   echo "$STALE_PLANNER_OUT"
+  FAILURES=$((FAILURES + 1))
+fi
+MALFORMED_CATCHUP_STATUS=0
+MALFORMED_CATCHUP_OUT="$(run_sealed_preflight "$READINESS" T-110 \
+  "$READINESS_RELEASE" "$READINESS_TREE" planner "" "CATCHUP spec-linter")" ||
+  MALFORMED_CATCHUP_STATUS=$?
+if [[ "$MALFORMED_CATCHUP_STATUS" -ne 0 &&
+      "$MALFORMED_CATCHUP_OUT" == *"FAIL: ticket not Planning (State: Building)"* ]]; then
+  echo "PASS: malformed catch-up admission remains fail-closed"
+else
+  echo "FAIL: malformed catch-up admission was accepted"
+  echo "$MALFORMED_CATCHUP_OUT"
   FAILURES=$((FAILURES + 1))
 fi
 sed 's/Product-Decisions: frozen/Product-Decisions: unresolved/' \

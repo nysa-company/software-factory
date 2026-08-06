@@ -336,6 +336,13 @@ elif [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
   STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
   pass "ticket $TICKET $STATE is authorized by the verified FIX planner transition"
   STATE_ACCEPTED=1
+elif [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
+        "$ROLE" == "planner" &&
+        "${FACTORY_VERIFIED_TRANSITION_STAGE:-}" == "CATCHUP planner" ]] &&
+     grep -qE '^State: (Building|Review)$' "$TICKET_FILE"; then
+  STATE="$(grep -m1 '^State:' "$TICKET_FILE")"
+  pass "ticket $TICKET $STATE is authorized by the verified Planner catch-up"
+  STATE_ACCEPTED=1
 else
   STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
   fail "ticket not $EXPECTED_STATE ($STATE)"

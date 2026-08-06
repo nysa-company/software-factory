@@ -2978,21 +2978,57 @@ def reviewer_repair_catchup(args: argparse.Namespace, stage: str) -> bool:
         return False
     reviewer = reviewers[-1]
     after = roles[reviewer + 1:]
+    ticket_text = (
+        args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    ).read_text(encoding="utf-8")
     verdicts = re.findall(
         r"^\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*$",
-        (
-            args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
-        ).read_text(encoding="utf-8"),
-        re.I | re.M,
+        ticket_text, re.I | re.M,
+    )
+    specs = re.findall(
+        r"^\s*SPEC-LINT:\s*(PASS|FAIL)(?:\s+—\s+.*)?\s*$",
+        ticket_text, re.I | re.M,
+    )
+    alternating = [
+        "planner" if index % 2 == 0 else "spec-linter"
+        for index in range(LOOP_LIMIT * 2)
+    ]
+    expected_stage = (
+        "RUN spec-linter"
+        if len(after) % 2 == 1
+        else (
+            "RUN planner"
+            if specs and specs[-1].upper() == "FAIL"
+            else "RUN test-author"
+        )
     )
     return (
         bool(verdicts)
         and verdicts[-1].upper() == "REQUEST CHANGES"
         and "test-author" in roles[:reviewer]
         and bool(after)
-        and after[0] == "planner"
-        and "builder" not in after
+        and after == alternating[:len(after)]
+        and stage == expected_stage
     )
+
+
+def verified_preflight_stage(
+    args: argparse.Namespace, receipt: dict[str, Any]
+) -> str:
+    stage = receipt["stage"]
+    loop = receipt.get("loop")
+    planner_catchup = (
+        stage == "RUN planner"
+        and isinstance(loop, dict)
+        and set(loop) == {"attempt", "capped", "kind", "limit"}
+        and type(loop["attempt"]) is int
+        and 0 < loop["attempt"] < LOOP_LIMIT
+        and loop["capped"] is False
+        and loop["kind"] == "planner-spec-linter"
+        and loop["limit"] == LOOP_LIMIT
+        and reviewer_repair_catchup(args, stage)
+    )
+    return "CATCHUP planner" if planner_catchup else stage
 
 
 def transition(args: argparse.Namespace, state: str) -> None:
@@ -3352,6 +3388,7 @@ def main() -> None:
                 raise StateError("receipt is required")
             receipt = verify(args, consume=args.action == "consume")
             result = {
+                "preflight_stage": verified_preflight_stage(args, receipt),
                 "receipt": receipt["receipt_sha256"],
                 "schema": SCHEMA,
                 "stage": receipt["stage"],

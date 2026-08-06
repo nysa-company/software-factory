@@ -739,7 +739,8 @@ class StateMachineTest(unittest.TestCase):
         ticket.write_text(
             "# T-110\n\nState: Building\n"
             "reviewer round 1: REQUEST CHANGES\n"
-            "reviewer round 1 FIX-OWNER: test-author\n",
+            "reviewer round 1 FIX-OWNER: test-author\n"
+            "SPEC-LINT: FAIL — frozen path mismatch\n",
             encoding="utf-8",
         )
         completed = [
@@ -779,6 +780,153 @@ class StateMachineTest(unittest.TestCase):
             self.assertFalse(
                 STATE.reviewer_repair_catchup(self.args, "RUN spec-linter")
             )
+
+    def test_reviewer_repair_catchup_sequence_and_receipt_loop_fail_closed(
+        self,
+    ) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        prefix = [
+            {"role": role} for role in (
+                "planner", "spec-linter", "test-author", "builder", "reviewer",
+            )
+        ]
+
+        def write(verdict="REQUEST CHANGES", spec="FAIL") -> None:
+            ticket.write_text(
+                "# T-110\n\nState: Building\n"
+                f"reviewer round 1: {verdict}\n"
+                f"SPEC-LINT: {spec}\n",
+                encoding="utf-8",
+            )
+
+        valid = (
+            (("planner",), "RUN spec-linter", "FAIL"),
+            (("planner", "spec-linter"), "RUN planner", "FAIL"),
+            (("planner", "spec-linter"), "RUN test-author", "PASS"),
+            (("planner", "spec-linter", "planner"), "RUN spec-linter", "FAIL"),
+            (("planner", "spec-linter") * 3, "RUN planner", "FAIL"),
+        )
+        for after, stage, spec in valid:
+            with self.subTest(after=after, stage=stage, spec=spec):
+                write(spec=spec)
+                completed = prefix + [{"role": role} for role in after]
+                with mock.patch.object(
+                    STATE, "authenticated_role_evidence",
+                    return_value=({}, completed),
+                ):
+                    self.assertTrue(
+                        STATE.reviewer_repair_catchup(self.args, stage)
+                    )
+
+        invalid = (
+            ((), "RUN planner"),
+            (("spec-linter",), "RUN planner"),
+            (("planner", "planner"), "RUN planner"),
+            (("planner", "spec-linter", "narrator"), "RUN spec-linter"),
+            (("planner", "spec-linter", "builder"), "RUN planner"),
+            (("planner",), "RUN planner"),
+            (("planner", "spec-linter"), "RUN spec-linter"),
+            (("planner", "spec-linter") * 3 + ("planner",), "RUN spec-linter"),
+        )
+        write()
+        for after, stage in invalid:
+            with self.subTest(after=after, stage=stage):
+                completed = prefix + [{"role": role} for role in after]
+                with mock.patch.object(
+                    STATE, "authenticated_role_evidence",
+                    return_value=({}, completed),
+                ):
+                    self.assertFalse(
+                        STATE.reviewer_repair_catchup(self.args, stage)
+                    )
+
+        write(verdict="APPROVE")
+        completed = prefix + [{"role": role} for role in ("planner", "spec-linter")]
+        with mock.patch.object(
+            STATE, "authenticated_role_evidence", return_value=({}, completed)
+        ):
+            self.assertFalse(
+                STATE.reviewer_repair_catchup(self.args, "RUN planner")
+            )
+
+        write()
+        for prior in (
+            [{"role": "planner"}, {"role": "reviewer"}],
+            [{"role": "planner"}, {"role": "spec-linter"}, {"role": "test-author"}],
+        ):
+            with self.subTest(prior=prior):
+                with mock.patch.object(
+                    STATE,
+                    "authenticated_role_evidence",
+                    return_value=(
+                        {}, prior + [{"role": "planner"}, {"role": "spec-linter"}]
+                    ),
+                ):
+                    self.assertFalse(
+                        STATE.reviewer_repair_catchup(self.args, "RUN planner")
+                    )
+
+        valid_receipt = {
+            "stage": "RUN planner",
+            "loop": {
+                "attempt": 2,
+                "capped": False,
+                "kind": "planner-spec-linter",
+                "limit": 3,
+            },
+        }
+        with mock.patch.object(
+            STATE, "authenticated_role_evidence", return_value=({}, completed)
+        ):
+            for attempt in (1, 2):
+                with self.subTest(attempt=attempt):
+                    self.assertEqual(
+                        STATE.verified_preflight_stage(
+                            self.args,
+                            {
+                                **valid_receipt,
+                                "loop": {
+                                    **valid_receipt["loop"],
+                                    "attempt": attempt,
+                                },
+                            },
+                        ),
+                        "CATCHUP planner",
+                    )
+            for change in (
+                {"attempt": 0},
+                {"attempt": 3},
+                {"attempt": True},
+                {"capped": True},
+                {"kind": "builder-reviewer"},
+                {"limit": 4},
+            ):
+                loop = {**valid_receipt["loop"], **change}
+                with self.subTest(loop=loop):
+                    self.assertEqual(
+                        STATE.verified_preflight_stage(
+                            self.args, {**valid_receipt, "loop": loop}
+                        ),
+                        "RUN planner",
+                    )
+            self.assertEqual(
+                STATE.verified_preflight_stage(
+                    self.args, {"stage": "RUN planner", "loop": None}
+                ),
+                "RUN planner",
+            )
+            for malformed in (
+                {key: value for key, value in valid_receipt["loop"].items()
+                 if key != "attempt"},
+                {**valid_receipt["loop"], "extra": 1},
+            ):
+                with self.subTest(malformed=malformed):
+                    self.assertEqual(
+                        STATE.verified_preflight_stage(
+                            self.args, {**valid_receipt, "loop": malformed}
+                        ),
+                        "RUN planner",
+                    )
 
     def test_replay_after_committed_role_transition_preserves_narrator_evidence(
         self,

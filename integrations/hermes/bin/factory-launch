@@ -881,6 +881,9 @@ transition_receipt() {
   TRANSITION_STAGE="$("$PYTHON_BIN" -I -S -c \
     'import json,sys; print(json.load(sys.stdin)["stage"])' <<<"$output")" ||
     return 1
+  TRANSITION_PREFLIGHT_STAGE="$("$PYTHON_BIN" -I -S -c \
+    'import json,sys; value=json.load(sys.stdin); print(value.get("preflight_stage", value["stage"]))' \
+    <<<"$output")" || return 1
 }
 
 add_dispatch_lease_env() {
@@ -1983,10 +1986,15 @@ PY
             "$TRANSITION_STAGE" != "FIX builder-or-test-author" ]]; then
         die "transition receipt returned an invalid preflight stage"
       fi
+      if [[ "$TRANSITION_PREFLIGHT_STAGE" != "$TRANSITION_STAGE" &&
+            !( "$TRANSITION_STAGE" == "RUN planner" &&
+               "$TRANSITION_PREFLIGHT_STAGE" == "CATCHUP planner" ) ]]; then
+        die "transition receipt returned an invalid preflight admission"
+      fi
       HELPER_ENV+=(
         "FACTORY_TRANSITION_RECEIPT_SHA256=$TRANSITION_RECEIPT"
         "FACTORY_TRANSITION_STATE_DIR=$CONTROLLER_STATE_DIR"
-        "FACTORY_VERIFIED_TRANSITION_STAGE=$TRANSITION_STAGE"
+        "FACTORY_VERIFIED_TRANSITION_STAGE=$TRANSITION_PREFLIGHT_STAGE"
       )
     fi
     PREFLIGHT_ARGS=(--ticket "$TICKET")
