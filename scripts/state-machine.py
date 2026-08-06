@@ -598,12 +598,32 @@ def contract_block_head_in_lineage(
     for edge in suffix:
         if ancestor(edge["from_head_sha"], edge["to_head_sha"]):
             continue
+        ticket_path = f"factory/tickets/{args.ticket}.md"
+        changed = git(
+            args.workdir, "diff", "--name-status", "--no-renames",
+            f"{edge['from_head_sha']}^{{tree}}",
+            f"{edge['to_head_sha']}^{{tree}}",
+        ).splitlines()
+        old_ticket = git(
+            args.workdir, "show", f"{edge['from_head_sha']}:{ticket_path}"
+        )
+        new_ticket = git(
+            args.workdir, "show", f"{edge['to_head_sha']}:{ticket_path}"
+        )
+        same_tree = git(
+            args.workdir, "rev-parse", f"{edge['from_head_sha']}^{{tree}}"
+        ) == git(
+            args.workdir, "rev-parse", f"{edge['to_head_sha']}^{{tree}}"
+        )
         if (
             not DIGEST.fullmatch(edge.get("rewrite_authorization_sha256", ""))
-            or git(
-                args.workdir, "rev-parse", f"{edge['from_head_sha']}^{{tree}}"
-            ) != git(
-                args.workdir, "rev-parse", f"{edge['to_head_sha']}^{{tree}}"
+            or (
+                not same_tree
+                and not (
+                    changed == [f"M\t{ticket_path}"]
+                    and new_ticket.startswith(old_ticket)
+                    and len(new_ticket) > len(old_ticket)
+                )
             )
         ):
             return False

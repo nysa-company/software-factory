@@ -17,13 +17,16 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import (  # noqa: E402
     successor_release_lineage, valid_v2_migration,
 )
-from reorder_test_fixes import verified_normalization_plan  # noqa: E402
+from reorder_test_fixes import (  # noqa: E402
+    verified_history_repair, verified_normalization_plan,
+)
 from role_output import RoleOutputError, sha256 as role_output_sha256
 
 
@@ -39,6 +42,9 @@ INFLIGHT_SCHEMA = "nysa.software-factory.inflight-release-authorization/v1"
 REWRITE_SCHEMA = "nysa.software-factory.ticket-rewrite-authorization/v1"
 NORMALIZATION_SCHEMA = (
     "nysa.software-factory.ticket-history-normalization-authorization/v1"
+)
+HISTORY_REPAIR_SCHEMA = (
+    "nysa.software-factory.ticket-history-repair-authorization/v1"
 )
 MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
 LINEAGE_SCHEMA = "nysa.software-factory.ticket-passport-lineage-authorization/v1"
@@ -493,6 +499,27 @@ def rewrite_delta_allowed(
     return seen_test
 
 
+def ticket_log_append_allowed(
+    workdir: Path, old_head: str, new_head: str, ticket: str
+) -> bool:
+    path = f"factory/tickets/{ticket}.md"
+    if git(
+        workdir, "diff", "--name-status", "--no-renames",
+        f"{old_head}^{{tree}}", f"{new_head}^{{tree}}",
+    ).splitlines() != [f"M\t{path}"]:
+        return False
+    old = git(workdir, "show", f"{old_head}:{path}", check=False)
+    new = git(workdir, "show", f"{new_head}:{path}", check=False)
+    current = git(workdir, "ls-tree", new_head, "--", path).split()
+    return (
+        bool(old)
+        and new.startswith(old)
+        and len(new) > len(old)
+        and len(current) >= 4
+        and current[:2] == ["100644", "blob"]
+    )
+
+
 def failed_rewrite_manifest(
     args: argparse.Namespace, previous: dict[str, Any], receipt_digest: str
 ) -> bool:
@@ -561,6 +588,11 @@ def authorized_ticket_rewrite(
         authorization = json.loads(raw, object_pairs_hook=unique_object)
     except (json.JSONDecodeError, ValueError):
         return None
+    if authorization.get("schema") == HISTORY_REPAIR_SCHEMA:
+        return authorized_history_repair(
+            args, previous, current, current_state, protected,
+            authorization, raw, relative, repository, test_paths, route,
+        )
     if authorization.get("schema") == NORMALIZATION_SCHEMA:
         return authorized_history_normalization(
             args, previous, current, current_state, protected,
@@ -601,6 +633,137 @@ def authorized_ticket_rewrite(
             test_paths, args.ticket,
         )
     ):
+        return None
+    return hashlib.sha256(canonical(authorization)).hexdigest()
+
+
+def authorized_history_repair(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    current_state: str,
+    protected: str,
+    authorization: dict[str, Any],
+    raw: str,
+    relative: str,
+    repository: str,
+    test_paths: str,
+    route: str,
+) -> str | None:
+    authorization_parent = authorization.get("authorization_parent", "")
+    replay_base = authorization.get("replay_base", "")
+    receipt_digest = authorization.get("failed_test_receipt_sha256", "")
+    run_id = authorization.get("failed_test_run_id", "")
+    issued = authorization.get("issued_at_epoch")
+    expires = authorization.get("expires_at_epoch")
+    issue = authorization.get("issue", "")
+    operator = authorization.get("operator", "")
+    expected = {
+        "authorization_parent": authorization_parent,
+        "branch": current["branch"],
+        "expires_at_epoch": expires,
+        "factory_sha": args.factory_sha,
+        "failed_test_receipt_sha256": receipt_digest,
+        "failed_test_run_id": run_id,
+        "force_with_lease_head": previous.get("head_sha"),
+        "head": current["head_sha"],
+        "head_tree": current["head_tree"],
+        "issue": issue,
+        "issued_at_epoch": issued,
+        "mode": "failed-push-history-repair",
+        "operator": operator,
+        "passport_sha256": previous.get("passport_sha256"),
+        "previous_head": previous.get("head_sha"),
+        "previous_tree": previous.get("head_tree"),
+        "replay_base": replay_base,
+        "repository": repository,
+        "route_plan_sha256": route,
+        "schema": HISTORY_REPAIR_SCHEMA,
+        "state": current_state,
+        "ticket": args.ticket,
+    }
+    now = int(time.time())
+    if (
+        authorization != expected
+        or current_state != "Building"
+        or not SHA.fullmatch(authorization_parent)
+        or previous.get("protected_base_sha") != authorization_parent
+        or not SHA.fullmatch(replay_base)
+        or replay_base not in previous.get("base_history", [])
+        or not DIGEST.fullmatch(receipt_digest)
+        or not RUN_ID.fullmatch(run_id)
+        or not isinstance(issued, int)
+        or isinstance(issued, bool)
+        or not isinstance(expires, int)
+        or isinstance(expires, bool)
+        or not issued <= now < expires <= issued + 86_400
+        or not re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*",
+            issue,
+        )
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", operator)
+        or raw.encode() + b"\n" != canonical(authorization)
+    ):
+        return None
+    introductions = git(
+        args.factory_root, "log", "--format=%H", "--diff-filter=A",
+        protected, "--", relative,
+    ).splitlines()
+    if len(introductions) != 1:
+        return None
+    introduction = introductions[0]
+    parents = git(
+        args.factory_root, "show", "-s", "--format=%P", introduction
+    ).split()
+    changed = git(
+        args.factory_root, "diff-tree", "--no-commit-id", "--name-status",
+        "--no-renames", "-r", introduction,
+    ).splitlines()
+    if (
+        parents != [authorization_parent]
+        or changed != [f"A\t{relative}"]
+        or subprocess.run(
+            [
+                "git", "-C", str(args.factory_root), "merge-base",
+                "--is-ancestor", introduction, protected,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=120,
+        ).returncode
+    ):
+        return None
+    try:
+        consumed = receipt(args.state_dir, args.ticket, receipt_digest)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, PassportError):
+        return None
+    if (
+        consumed.get("factory_sha") != args.factory_sha
+        or consumed.get("head_sha") != previous.get("head_sha")
+        or consumed.get("project") != args.project
+        or consumed.get("branch") != current["branch"]
+        or consumed.get("role") != "test-author"
+        or consumed.get("stage") not in {"RUN test-author", "FIX test-author"}
+        or consumed.get("contract_version") != args.contract_version
+        or not failed_rewrite_manifest(args, previous, receipt_digest)
+        or not ticket_log_append_allowed(
+            args.workdir, previous["head_sha"], current["head_sha"], args.ticket,
+        )
+        or not verified_history_repair(
+            str(args.workdir), replay_base, previous["head_sha"],
+            current["head_sha"], test_paths.split(),
+            "factory/ conformance/factory/ .gitignore context/memory.md".split(),
+        )
+    ):
+        return None
+    terminal = [
+        manifest_fields(path)
+        for path in sorted((args.factory_root / "factory/runs").glob("*.meta"))
+        if manifest_fields(path).get("transition_receipt_sha256")
+        == receipt_digest
+    ]
+    if len(terminal) != 1 or terminal[0].get("run_id") != run_id:
         return None
     return hashlib.sha256(canonical(authorization)).hexdigest()
 
@@ -1196,12 +1359,20 @@ def migrated_receipt_lineage(
             == previous.get("route_plan_sha256")
         ):
             starts.append(index)
+    bound_passport = consumed.get("passport_sha256")
+    bound_starts = [
+        index for index in starts
+        if valid_v2_migration(migrations[index])
+        and DIGEST.fullmatch(bound_passport or "")
+        and migrations[index]["from_passport_file_sha256"] == bound_passport
+    ]
+    if bound_starts:
+        starts = bound_starts
     if len(starts) != 1:
         return False
 
     start = starts[0]
     suffix = migrations[start:]
-    bound_passport = consumed.get("passport_sha256")
     v2_lineage = (
         all(valid_v2_migration(item) for item in suffix)
         and isinstance(bound_passport, str)
@@ -1260,7 +1431,13 @@ def migrated_receipt_lineage(
             return False
         if (
             not DIGEST.fullmatch(edge.get("rewrite_authorization_sha256", ""))
-            or not same_tree
+            or (
+                not same_tree
+                and not ticket_log_append_allowed(
+                    args.workdir, edge["from_head_sha"], edge["to_head_sha"],
+                    args.ticket,
+                )
+            )
         ):
             return False
         rewrites.append(edge)

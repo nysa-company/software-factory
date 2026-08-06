@@ -215,6 +215,34 @@ else
   fail "release reclaims one slot and stale records still consume capacity" "status=$RECLAIM_RC"
 fi
 
+cp "$PRODUCT/factory/PROJECT.env" "$TMP/project-before-expired.env"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$PRODUCT/factory/PROJECT.env"
+LIVE_EXPIRED_RC=0
+FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_ROOT="$PRODUCT" \
+  "$LEASE" release-expired --ticket "$THIRD_TICKET" --lease "$THIRD_ID" \
+  > "$TMP/live-expired.out" 2>&1 || LIVE_EXPIRED_RC=$?
+WRONG_EXPIRED_RC=0
+FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_ROOT="$PRODUCT" \
+  "$LEASE" release-expired --ticket "$SECOND_TICKET" \
+  --lease 0000000000000000000000000000000000000000000000000000000000000000 \
+  > "$TMP/wrong-expired.out" 2>&1 || WRONG_EXPIRED_RC=$?
+EXPIRED_RELEASE="$(
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_ROOT="$PRODUCT" \
+    "$LEASE" release-expired --ticket "$SECOND_TICKET" --lease "$SECOND_ID"
+)"
+mv "$TMP/project-before-expired.env" "$PRODUCT/factory/PROJECT.env"
+if [[ "$LIVE_EXPIRED_RC" -ne 0 && "$WRONG_EXPIRED_RC" -ne 0 &&
+      -f "$PRODUCT/factory/.dispatch-leases/$THIRD_TICKET.json" &&
+      ! -e "$PRODUCT/factory/.dispatch-leases/$SECOND_TICKET.json" ]] &&
+   [[ "$(printf '%s\n' "$EXPIRED_RELEASE" | python3 -c \
+     'import json,sys; value=json.load(sys.stdin); print(value.get("expired"), value.get("ticket"))')" == \
+      "True $SECOND_TICKET" ]]; then
+  pass "exact expired lease recovery refuses live and mismatched owners"
+else
+  fail "exact expired lease recovery refuses live and mismatched owners" \
+    "live=$LIVE_EXPIRED_RC wrong=$WRONG_EXPIRED_RC"
+fi
+
 touch "$PRODUCT/factory/MAINTENANCE"
 RENEW_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$SECOND_TICKET" --lease "$SECOND_ID" >/dev/null 2>&1 || RENEW_RC=$?

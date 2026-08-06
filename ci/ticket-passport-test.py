@@ -1180,6 +1180,185 @@ class TicketPassportTest(unittest.TestCase):
             r"^[0-9a-f]{64}$",
         )
 
+    def test_failed_mixed_history_repair_survives_protected_base_advance(self) -> None:
+        replay_base = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket = self.product / "factory/tickets/T-110.md"
+        old_ticket = "# T-110\n\nState: Building\n\nFrozen contract is unchanged.\n"
+        ticket.write_text(old_ticket, encoding="utf-8")
+        test = self.product / "app/tests/detail.test.js"
+        test.parent.mkdir(parents=True)
+        test.write_text("acceptance test\n", encoding="utf-8")
+        checker = self.product / "app/check.js"
+        checker.write_text("checker\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "mixed test and checker", cwd=self.product)
+        implementation = self.product / "app/server.js"
+        implementation.write_text("implementation\n", encoding="utf-8")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "implementation", cwd=self.product)
+        old_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        old_tree = run("git", "rev-parse", "HEAD^{tree}", cwd=self.product)
+        run(
+            "git", "push", "-q", "origin",
+            f"{old_head}:refs/heads/ticket/T-110", cwd=self.product,
+        )
+
+        secret = PASSPORT.key(self.state_dir)
+        prior = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = prior["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal("run-prior", "planner", prior["receipt_sha256"], "a" * 40)
+        self.passport_args.receipt = prior["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+
+        protected = self.root / "protected-history-repair"
+        run("git", "clone", "-q", str(self.remote), str(protected), cwd=self.root)
+        run("git", "config", "user.name", "Test", cwd=protected)
+        run("git", "config", "user.email", "test@example.invalid", cwd=protected)
+        (protected / "protected.txt").write_text("advanced\n", encoding="utf-8")
+        run("git", "add", ".", cwd=protected)
+        run("git", "commit", "-qm", "advance protected main", cwd=protected)
+        authorization_parent = run("git", "rev-parse", "HEAD", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+        previous = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(previous["protected_base_sha"], authorization_parent)
+        self.assertIn(replay_base, previous["base_history"])
+
+        self.state_args.role = "test-author"
+        repair = STATE.issue(self.state_args, "RUN test-author")
+        self.state_args.receipt = repair["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        output = self.product / "factory/runs/run-history-repair.out"
+        output.write_text("history repair complete\n", encoding="utf-8")
+        os.chmod(output, 0o600)
+        output_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+        (self.product / "factory/runs/run-history-repair.meta").write_text(
+            "run_id=run-history-repair\n"
+            "phase=completed\n"
+            "accounting_state=abandoned_conservative\n"
+            "task_submitted=1\n"
+            "effective_cost=2.000000\n"
+            "exit_status=11\n"
+            "ticket=T-110\n"
+            "role=test-author\n"
+            "role_exit=role_exit_push_failed\n"
+            f"role_head_before={old_head}\n"
+            f"kit_sha={'a' * 40}\n"
+            "contract_version=1.8.0\n"
+            f"transition_receipt_sha256={repair['receipt_sha256']}\n"
+            f"output_sha256={output_digest}\n",
+            encoding="utf-8",
+        )
+
+        run("git", "reset", "--hard", replay_base, cwd=self.product)
+        ticket.write_text(old_ticket, encoding="utf-8")
+        run("git", "add", str(ticket.relative_to(self.product)), cwd=self.product)
+        run("git", "commit", "-qm", "ticket state", cwd=self.product)
+        test.parent.mkdir(parents=True)
+        test.write_text("acceptance test\n", encoding="utf-8")
+        run("git", "add", str(test.relative_to(self.product)), cwd=self.product)
+        run("git", "commit", "-qm", "test only", cwd=self.product)
+        checker.write_text("checker\n", encoding="utf-8")
+        run("git", "add", str(checker.relative_to(self.product)), cwd=self.product)
+        run("git", "commit", "-qm", "checker only", cwd=self.product)
+        implementation.write_text("implementation\n", encoding="utf-8")
+        run(
+            "git", "add", str(implementation.relative_to(self.product)),
+            cwd=self.product,
+        )
+        run("git", "commit", "-qm", "implementation", cwd=self.product)
+        self.assertEqual(
+            run("git", "rev-parse", "HEAD^{tree}", cwd=self.product), old_tree
+        )
+        ticket.write_text(
+            old_ticket + "\nTest-author history repair recorded.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket.relative_to(self.product)), cwd=self.product)
+        run("git", "commit", "-qm", "record history repair", cwd=self.product)
+        rewritten = run("git", "rev-parse", "HEAD", cwd=self.product)
+        current = PASSPORT.identity(self.passport_args)
+        route = previous["route_plan_sha256"]
+        issued = int(PASSPORT.time.time()) - 1
+        authorization = {
+            "authorization_parent": authorization_parent,
+            "branch": "ticket/T-110",
+            "expires_at_epoch": issued + 3600,
+            "factory_sha": "a" * 40,
+            "failed_test_receipt_sha256": repair["receipt_sha256"],
+            "failed_test_run_id": "run-history-repair",
+            "force_with_lease_head": old_head,
+            "head": rewritten,
+            "head_tree": current["head_tree"],
+            "issue": "https://github.com/nysa-company/software-factory/issues/348",
+            "issued_at_epoch": issued,
+            "mode": "failed-push-history-repair",
+            "operator": "test-operator",
+            "passport_sha256": previous["passport_sha256"],
+            "previous_head": old_head,
+            "previous_tree": old_tree,
+            "replay_base": replay_base,
+            "repository": "nysa-company/relay-factory",
+            "route_plan_sha256": route,
+            "schema": PASSPORT.HISTORY_REPAIR_SCHEMA,
+            "state": "Building",
+            "ticket": "T-110",
+        }
+        expired = dict(authorization, expires_at_epoch=issued)
+        self.assertIsNone(PASSPORT.authorized_history_repair(
+            self.passport_args, previous, current, "Building",
+            authorization_parent, expired,
+            json.dumps(expired, sort_keys=True, separators=(",", ":")),
+            f"factory/migrations/ticket-rewrite/{rewritten}.json",
+            "nysa-company/relay-factory", "app/tests/", route,
+        ))
+        self.assertFalse(PASSPORT.verified_history_repair(
+            str(self.product), authorization_parent, old_head, rewritten,
+            ["app/tests/"],
+            "factory/ conformance/factory/ .gitignore context/memory.md".split(),
+        ))
+
+        path = protected / f"factory/migrations/ticket-rewrite/{rewritten}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(authorization, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=protected)
+        run("git", "commit", "-qm", "authorize exact history repair", cwd=protected)
+        run("git", "push", "-q", "origin", "HEAD:main", cwd=protected)
+        run(
+            "git", "push", "-q",
+            f"--force-with-lease=refs/heads/ticket/T-110:{old_head}",
+            "origin", f"{rewritten}:refs/heads/ticket/T-110", cwd=self.product,
+        )
+        run("git", "fetch", "-q", "origin", "main", cwd=self.product)
+
+        migrated = PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(migrated["head_sha"], rewritten)
+        self.assertEqual(
+            migrated["migration_history"][-1]["from_protected_base_sha"],
+            authorization_parent,
+        )
+        self.assertRegex(
+            migrated["migration_history"][-1]["rewrite_authorization_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+        failed_charges = [
+            item for item in migrated["charge_records"]
+            if item["run_id"] == "run-history-repair"
+        ]
+        self.assertEqual(len(failed_charges), 1)
+        self.assertFalse(any(
+            item["run_id"] == "run-history-repair"
+            for item in migrated["completed_role_evidence"]
+        ))
+        self.passport_args.receipt = repair["receipt_sha256"]
+        exported = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(exported["head_sha"], rewritten)
+        self.assertEqual(PASSPORT.migrate(self.passport_args, secret), exported)
+
     def test_accepted_late_test_merge_history_normalizes_with_exact_evidence(self) -> None:
         protected = self.root / "protected-normalization"
         run("git", "clone", "-q", str(self.remote), str(protected), cwd=self.root)

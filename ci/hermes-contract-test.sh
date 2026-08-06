@@ -2534,6 +2534,7 @@ for surface in [
     "scripts/factory-controller.py",
     "scripts/qualification-environment.py",
     "scripts/state-machine.py",
+    "scripts/emergency-admit.py",
     "scripts/ticket-passport.py",
     "scripts/publication-lease.py",
     "scripts/publication-conflict-policy.py",
@@ -2589,6 +2590,8 @@ assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text
 assert 'CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"' in launcher_text
 assert '"FACTORY_CLI_RUNTIME_ROOT=$CLI_RUNTIME_ROOT"' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
+assert 'if ! transition_receipt consume "$RUN_ROLE"; then' in launcher_text
+assert '"$EMERGENCY_HELPER" consume' in launcher_text
 runner_text = open(
     os.path.join(root, "scripts", "run-agent.sh"), encoding="utf-8"
 ).read()
