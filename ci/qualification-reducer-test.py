@@ -336,6 +336,7 @@ class QualificationReducerTest(unittest.TestCase):
         ticket = manifest["tickets"][0]
         passport = passports[ticket]
         passport_sha = "d" * 64
+        terminal_factory = "e" * 40
         for name in ("charge_records", "completed_role_evidence"):
             for item in passport[name]:
                 item["factory_sha"] = source
@@ -354,7 +355,7 @@ class QualificationReducerTest(unittest.TestCase):
         pause_file = "e" * 64
         pause_receipt = "f" * 64
         terminals[ticket] = {
-            "kit_sha": candidate,
+            "kit_sha": terminal_factory,
             "merge_commit": merge,
             "plan": {
                 "claim": {
@@ -366,7 +367,7 @@ class QualificationReducerTest(unittest.TestCase):
                     "status": "blocked",
                 },
                 "execution_basis": "authenticated-passport",
-                "kit_sha": candidate,
+                "kit_sha": terminal_factory,
                 "passport": {
                     "current_state": "Review",
                     "factory_sha": source,
@@ -410,6 +411,8 @@ class QualificationReducerTest(unittest.TestCase):
             "source_passport_sha256": passport_sha,
             "source_publication_state": "validating",
             "terminal_basis": "attested-emergency-closeout",
+            "terminal_factory_sha": terminal_factory,
+            "terminal_release_receipt_id": "9" * 64,
             "ticket": ticket,
         })
         for epoch, event in enumerate(events, 1):

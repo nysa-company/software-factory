@@ -167,6 +167,8 @@ class FactoryControllerTest(unittest.TestCase):
     def test_qualification_reconciles_exact_emergency_terminal_with_passport(self) -> None:
         ticket = "T-110"
         source = "b" * 40
+        terminal_factory = "e" * 40
+        terminal_receipt = "9" * 64
         head = "c" * 40
         passport_sha = "d" * 64
         (self.product / "factory/PROJECT.env").write_text(
@@ -223,7 +225,7 @@ class FactoryControllerTest(unittest.TestCase):
         done_path = self.product / f"factory/attestations/{ticket}/done.json"
         done_path.parent.mkdir(parents=True)
         done = {
-            "kit_sha": "a" * 40,
+            "kit_sha": terminal_factory,
             "plan": {
                 "claim": {
                     "blocked_reason": "factory-issue-pause",
@@ -234,7 +236,7 @@ class FactoryControllerTest(unittest.TestCase):
                     "status": "blocked",
                 },
                 "execution_basis": "authenticated-passport",
-                "kit_sha": "a" * 40,
+                "kit_sha": terminal_factory,
                 "passport": {
                     name: passport[name]
                     for name in (
@@ -261,6 +263,10 @@ class FactoryControllerTest(unittest.TestCase):
         }
         controller = CONTROL.Controller(self.args)
         controller.qualification_protected_terminal = lambda _ticket: protected
+        controller.qualification_release_receipts = lambda: {
+            "a" * 40: "8" * 64,
+            terminal_factory: terminal_receipt,
+        }
 
         result = controller.qualification_emergency_terminal(ticket)
         self.assertEqual(
@@ -268,6 +274,25 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA,
         )
         self.assertEqual(result["source_passport_sha256"], passport_sha)
+        self.assertEqual(result["terminal_factory_sha"], terminal_factory)
+        self.assertEqual(result["terminal_release_receipt_id"], terminal_receipt)
+        controller.qualification_release_receipts = lambda: {"a" * 40: "8" * 64}
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "emergency terminal evidence is invalid",
+        ):
+            controller.qualification_emergency_terminal(ticket)
+        controller.qualification_release_receipts = lambda: {
+            "a" * 40: "8" * 64,
+            terminal_factory: terminal_receipt,
+        }
+        changed_done = copy.deepcopy(done)
+        changed_done["plan"]["kit_sha"] = "f" * 40
+        done_path.write_text(json.dumps(changed_done), encoding="utf-8")
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "emergency terminal evidence is invalid",
+        ):
+            controller.qualification_emergency_terminal(ticket)
+        done_path.write_text(json.dumps(done), encoding="utf-8")
         changed = copy.deepcopy(pause)
         changed["budget_sha256"] = "short"
         changed["pause_sha256"] = hashlib.sha256(
@@ -294,6 +319,75 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(sum(
             item.get("event") == "ticket_complete" for item in records
         ), 1)
+
+    def test_qualification_release_receipts_follow_exact_chain(self) -> None:
+        environment = self.root
+        releases = environment / "releases"
+        projects = environment / "projects"
+        receipts = environment / "receipts"
+        for path in (releases, projects, receipts, projects / "relay"):
+            path.mkdir(mode=0o700)
+        current = "a" * 40
+        prior = "e" * 40
+        release = releases / current
+        release.mkdir()
+        controller = CONTROL.Controller(self.args)
+        controller.release_path = release
+
+        def receipt(kit_sha: str, previous: str | None, project: str = "relay") -> str:
+            value = {
+                "contract_version": "1.8.0",
+                "kit_sha": kit_sha,
+                "kit_tree": "1" * 40,
+                "product_path": str(self.product),
+                "project": project,
+                "provider_policy_sha256": "2" * 64,
+                "qualification_mode": "isolated",
+                "status": "pass",
+            }
+            if previous:
+                value["previous_receipt_id"] = previous
+            receipt_id = hashlib.sha256(
+                (CONTROL.canonical(value) + "\n").encode()
+            ).hexdigest()
+            value["receipt_id"] = receipt_id
+            CONTROL.write(receipts / f"{receipt_id}.json", value)
+            return receipt_id
+
+        prior_receipt = receipt(prior, None)
+        current_receipt = receipt(current, prior_receipt)
+        active_path = projects / "relay/active.json"
+        CONTROL.write(active_path, {
+            "kit_sha": current,
+            "project": "relay",
+            "receipt_id": current_receipt,
+            "release_path": str(release),
+        })
+        self.assertEqual(controller.qualification_release_receipts(), {
+            current: current_receipt,
+            prior: prior_receipt,
+        })
+
+        changed = CONTROL.read(receipts / f"{prior_receipt}.json")
+        changed["project"] = "other"
+        CONTROL.write(receipts / f"{prior_receipt}.json", changed)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification release receipt is invalid",
+        ):
+            controller.qualification_release_receipts()
+
+        foreign_receipt = receipt(prior, None, "other")
+        current_receipt = receipt(current, foreign_receipt)
+        CONTROL.write(active_path, {
+            "kit_sha": current,
+            "project": "relay",
+            "receipt_id": current_receipt,
+            "release_path": str(release),
+        })
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification release receipt is invalid",
+        ):
+            controller.qualification_release_receipts()
 
     def test_qualification_plain_done_without_protected_terminal_refuses(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 114)]
