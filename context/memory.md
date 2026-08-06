@@ -39,6 +39,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   generation and manifest digest used to select it. The reducer accepts those
   exact boundary fields while missing, partial, unknown, or cross-generation
   event shapes remain fail-closed.
+- Qualification requires one current-candidate cell relocation whenever any
+  selected ticket still needs publication. When every selected ticket is
+  already authenticated terminal, zero or one valid relocation is accepted;
+  duplicate or foreign relocation evidence still fails closed.
 - Production helpers run only from installed sealed releases whose SHA is on
   Factory `origin/main` with exact successful protected CI. Qualification may
   seal a clean local SHA/tree without that reachability; trusted launchers label
@@ -3797,3 +3801,13 @@ digest already authenticated by qualification event selection. Both fields
 are required; partial or additional event shapes remain invalid. This keeps
 zero-cost historical terminal adoption compatible with reused durable
 authority without weakening cross-generation isolation.
+
+## 2026-08-06 — Decision 282: Terminal cohorts do not fabricate live-cell proof
+
+Category: Reliability
+
+An all-terminal successor has no runnable cell to relocate. The reducer accepts
+zero or one valid relocation only when protected reconciliation, emergency
+reconciliation, and terminal adoption cover every selected ticket. Any cohort
+with a publication target still requires exactly one current-candidate
+relocation; duplicate and foreign-ticket evidence remain invalid.

@@ -659,6 +659,9 @@ def verify(
     boundary_tickets = (
         boundaries[0].get("tickets") if len(boundaries) == 1 else None
     )
+    publication_targets = (
+        set(tickets) - adopted - reconciled - emergency_reconciled
+    )
     if (
         not isinstance(boundary_tickets, list)
         or len(boundary_tickets) not in (
@@ -668,11 +671,17 @@ def verify(
         or not set(tickets).issubset(boundary_tickets)
         or len(recoveries) != 1
         or recoveries[0].get("tickets") != boundary_tickets
-        or len(relocations) != 1
-        or relocations[0].get("ticket") not in boundary_tickets
+        or len(relocations) > 1
+        or (publication_targets and len(relocations) != 1)
         or (
-            len(boundary_tickets) == target_done
-            and relocations[0].get("ticket") not in tickets
+            relocations
+            and (
+                relocations[0].get("ticket") not in boundary_tickets
+                or (
+                    len(boundary_tickets) == target_done
+                    and relocations[0].get("ticket") not in tickets
+                )
+            )
         )
         or len(completions) != len(tickets)
         or {item.get("ticket") for item in completions} != set(tickets)
@@ -698,7 +707,6 @@ def verify(
             released.add(holder)
             holder = None
             release_count += 1
-    publication_targets = set(tickets) - adopted - reconciled - emergency_reconciled
     if (
         holder is not None
         or acquired != publication_targets

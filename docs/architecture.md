@@ -515,9 +515,14 @@ merge commits, and protected main. A qualification may close either an
 explicitly ordered three-ticket cohort at capacity three or four independent
 tickets at capacity four. Tracked dependencies must form an acyclic graph and
 every dependency outside the cohort must already have protected terminal
-evidence. The three-ticket form proves the exact selected restart, relocation,
-lifecycle, and serialized publication but makes no PR-concurrency claim; the
-four-ticket form additionally requires overlapping PR validation. An earlier
+evidence. The three-ticket form proves the exact selected restart, lifecycle,
+and serialized publication but makes no PR-concurrency claim; whenever any
+target still needs candidate publication it also requires one exact cell
+relocation. An all-terminal successor accepts no relocation only when every
+target is already covered by protected reconciliation, emergency
+reconciliation, or authenticated terminal adoption; it never reopens work to
+synthesize one. The four-ticket form additionally requires overlapping PR
+validation. An earlier
 fresh three-ticket qualification may retain its authenticated four-ticket
 restart boundary; a production-successor cohort requires the exact selected
 three-ticket boundary. An excluded claim remains parked and untouched except that
